@@ -160,21 +160,25 @@ def test_admin_created_custom_group_origin(fresh_db):
 
 
 def test_admin_groups_template_uses_mapped_email_in_subtitle(fresh_db):
-    """List view JS must consult `g.mapped_email` for the subtitle so
-    mapped Admin/Everyone show the Workspace email under the canonical
-    name instead of `Admin / Admin`."""
+    """The group selector must consult `mapped_email` when choosing what a
+    row is CALLED, so a mapped Admin/Everyone shows the Workspace email
+    under the canonical name instead of `Admin / Admin`. (The list page this
+    used to pin is retired — its rows are the Access workspace's left
+    column, which is where the naming rule now lives.)"""
     from app.main import app
 
     client = TestClient(app)
     _, token = _seed_admin()
     resp = client.get(
-        "/admin/groups",
+        "/admin/access",
         headers={"Accept": "text/html"},
         cookies={"access_token": token},
     )
     assert resp.status_code == 200
     body = resp.text
-    assert "g.mapped_email" in body
+    assert "mapped_email" in body
+    # The three-way naming rule itself, not just the field read.
+    assert "function titleOf" in body and "function subtitleOf" in body
 
 
 def test_access_overview_returns_origin_and_mapped_email(fresh_db, monkeypatch):
@@ -207,11 +211,12 @@ def test_access_overview_returns_origin_and_mapped_email(fresh_db, monkeypatch):
     assert everyone["is_google_managed"] is False
 
 
-def test_admin_access_template_renders_origin_pill_and_mapped_email(fresh_db, monkeypatch):
-    """The /admin/access page JS must read `origin` / `mapped_email` from
-    each group so the sidebar gets the same pill + subtitle as
-    /admin/groups. Pin the JS contract so a renderer regression that
-    drops the consult on these fields fails CI."""
+def test_admin_groups_template_renders_origin_pill_and_mapped_email(fresh_db, monkeypatch):
+    """The group selector must read `origin` / `mapped_email` /
+    `is_google_managed` per group so every row gets the same pill and name.
+    (This contract has moved twice: it was the standalone matrix's sidebar,
+    then the list page's table, and is back on the workspace's left column
+    now that the list page is retired.)"""
     monkeypatch.setenv("AGNES_GROUP_ADMIN_EMAIL", "admins@workspace.test")
     from app.main import app
 
@@ -224,14 +229,16 @@ def test_admin_access_template_renders_origin_pill_and_mapped_email(fresh_db, mo
     )
     assert resp.status_code == 200, resp.text
     body = resp.text
-    # JS reads these fields per group when rendering the sidebar.
+    # JS reads these fields per group when rendering each row.
     assert "g.origin" in body
     assert "g.mapped_email" in body
     assert "g.is_google_managed" in body
-    # Origin chip CSS classes (multi-color) must be present so the pill renders.
-    assert ".origin-google_sync" in body
-    assert ".origin-system" in body
-    assert ".origin-custom" in body
+    # Origin chip CSS classes (multi-color) must be present so the pill
+    # renders. `.ax-orig--*` is the workspace's spelling of the retired
+    # list's `.origin-*`; same three values, same token pairs.
+    assert ".ax-orig--google_sync" in body
+    assert ".ax-orig--system" in body
+    assert ".ax-orig--custom" in body
 
 
 def test_user_groups_payload_carries_origin(fresh_db, monkeypatch):
@@ -669,9 +676,11 @@ def test_admin_users_template_renders_color_coded_chips(fresh_db):
 
 
 def test_admin_group_detail_template_uses_mapped_email_subtitle(fresh_db, monkeypatch):
-    """Detail page Jinja must render `mapped_email` as the subtitle when
-    the row is the env-mapped Admin/Everyone, instead of the canonical
-    name (which would yield `Admin / Admin`)."""
+    """The selected group's header must show `mapped_email` as the subtitle
+    when the row is the env-mapped Admin/Everyone, instead of repeating the
+    canonical name (which would read `Admin / Admin`). The detail page that
+    used to own this header 308s onto the workspace, so the rule is pinned
+    on the pane that inherited it."""
     monkeypatch.setenv("AGNES_GROUP_ADMIN_EMAIL", "admins@workspace.test")
     from app.main import app
     from src.db import SYSTEM_ADMIN_GROUP, get_system_db
@@ -686,14 +695,26 @@ def test_admin_group_detail_template_uses_mapped_email_subtitle(fresh_db, monkey
 
     client = TestClient(app)
     _, token = _seed_admin()
-    resp = client.get(
+    # The old detail URL still resolves — onto the workspace, with that group
+    # selected. Both halves matter: the redirect, and the header it lands on.
+    redirect = client.get(
         f"/admin/groups/{admin_gid}",
+        headers={"Accept": "text/html"},
+        cookies={"access_token": token},
+        follow_redirects=False,
+    )
+    assert redirect.status_code == 308
+    assert redirect.headers["location"] == f"/admin/access?group={admin_gid}"
+
+    resp = client.get(
+        f"/admin/access?group={admin_gid}",
         headers={"Accept": "text/html"},
         cookies={"access_token": token},
     )
     assert resp.status_code == 200, resp.text
     body = resp.text
-    # The mapped Workspace email shows up as the gd-title-email subtitle.
-    assert "admins@workspace.test" in body
-    # The data attribute the JS reads to skip the deriveDisplayName rewrite.
-    assert 'data-mapped-email="admins@workspace.test"' in body
+    # The header renders the canonical name with the Workspace email beneath
+    # it (`.ax-idsub`), fed by `subtitleOf()` off the overview payload.
+    assert 'id="ax-what-idsub"' in body
+    assert "ax-idsub" in body
+    assert "mapped_email" in body

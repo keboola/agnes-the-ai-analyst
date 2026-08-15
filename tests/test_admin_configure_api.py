@@ -4,6 +4,8 @@ import ipaddress
 import socket
 from unittest.mock import patch
 
+import pytest
+
 
 def _auth(token):
     return {"Authorization": f"Bearer {token}"}
@@ -301,6 +303,334 @@ class TestAdminConfigureSSRF:
         # Should NOT be 400 with SSRF message — may be 400 from failed connection test, or 200
         if resp.status_code == 400:
             assert "private" not in resp.json()["detail"].lower()
+
+
+class TestServerConfigAuthProvidersValidation:
+    """`_validate_auth_providers_in_patch` gate on POST /api/admin/server-config.
+
+    Spec (2026-08-12 keboola auth provider): an explicitly empty
+    ``auth.providers`` list is a config error — one overlay write must never
+    be able to lock every user out — so the admin API rejects it with 422.
+    ``null`` is the documented "clear the override" value (validator
+    early-returns; reader treats it as unset = all providers), and a
+    non-empty list is accepted and persisted.
+
+    ``auth`` is a danger section, so every request here carries
+    ``confirm_danger=true`` — without it the danger gate 400s before the
+    providers validator runs (asserted explicitly below so nobody mistakes
+    that 400 for the 422 contract).
+    """
+
+    def test_empty_providers_list_rejected_with_422(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/server-config",
+            json={"sections": {"auth": {"providers": []}}, "confirm_danger": True},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 422, resp.text
+        assert "empty" in resp.json()["detail"]
+
+    def test_comma_separated_string_providers_accepted(self, seeded_app):
+        """The admin API accepts the comma-separated string form too — it is a
+        value the runtime resolver honors from yaml/env, so rejecting it here
+        would lock an operator whose config spells providers as text out of
+        saving the auth section (Devin review on #1288). `password` is always
+        available, so the list has a usable method."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/server-config",
+            json={"sections": {"auth": {"providers": "password,google"}}, "confirm_danger": True},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 200, resp.text
+
+    def test_all_unknown_string_providers_rejected_with_422(self, seeded_app):
+        """The all-unknown guard applies to the string form as well."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/server-config",
+            json={"sections": {"auth": {"providers": "gogle,keybola"}}, "confirm_danger": True},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 422, resp.text
+        assert "no known provider" in resp.json()["detail"]
+
+    def test_all_unknown_providers_list_rejected_with_422(self, seeded_app):
+        """A list of only misspelled names would fail open to all providers at
+        runtime; the admin API surfaces the typo as a 422 instead of silently
+        re-enabling every sign-in method."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/server-config",
+            json={"sections": {"auth": {"providers": ["gogle", "keybola"]}}, "confirm_danger": True},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 422, resp.text
+        assert "no known provider" in resp.json()["detail"]
+
+    def test_partially_known_providers_list_accepted(self, seeded_app):
+        """A list with at least one known AND available name is accepted (the
+        runtime uses the known subset and warns about the rest)."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/server-config",
+            json={"sections": {"auth": {"providers": ["password", "gogle"]}}, "confirm_danger": True},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 200, resp.text
+
+    def test_all_unavailable_providers_rejected_with_422(self, seeded_app):
+        """Known but unconfigured providers (no Google OAuth, no Keboola stack
+        in the test env) admit nobody as written; the runtime's rescue would
+        treat the list as unset — ALL sign-in methods — with a loud error, the
+        opposite of the operator's intent. The admin API refuses at save time
+        so the operator learns now instead of shipping that."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/server-config",
+            json={"sections": {"auth": {"providers": ["google", "keboola"]}}, "confirm_danger": True},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 422, resp.text
+        assert "no usable sign-in method" in resp.json()["detail"]
+
+    def test_google_only_refusal_explains_the_env_var_probe(self, seeded_app):
+        """`providers: [google]` with a yaml-only Google config 422s here
+        because google.is_available() reads GOOGLE_CLIENT_ID/SECRET captured
+        at import time — the refusal is inexplicable to an operator who just
+        filled Google settings into instance.yaml unless the detail says so
+        (Devin Review on PR #1288)."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/server-config",
+            json={"sections": {"auth": {"providers": ["google"]}}, "confirm_danger": True},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 422, resp.text
+        detail = resp.json()["detail"]
+        assert "no usable sign-in method" in detail
+        assert "GOOGLE_CLIENT_ID" in detail and "GOOGLE_CLIENT_SECRET" in detail
+
+    def test_http_auth_keboola_stack_url_is_refused(self, seeded_app):
+        """auth.keboola URLs are held to the source-connection bar
+        (_validate_stack_url rejects non-https): they carry credentials at
+        use time, so a cleartext scheme is refused at store time
+        (Devin Review on PR #1288)."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/server-config",
+            json={
+                "sections": {"auth": {"keboola": {"stack_url": "http://connection.example.com"}}},
+                "confirm_danger": True,
+            },
+            headers=_auth(token),
+        )
+        assert resp.status_code == 422, resp.text
+        assert "must be https" in resp.text
+
+    def test_keboola_enabled_and_configured_in_same_save_accepted(self, seeded_app):
+        """Enabling keboola AND supplying its config in one save must pass —
+        availability is evaluated against the current config merged with the
+        patch, not the pre-save config alone."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/server-config",
+            json={
+                "sections": {
+                    "auth": {
+                        "providers": ["keboola"],
+                        "keboola": {
+                            "client_id": "cid",
+                            "client_secret": "csecret",
+                            "project_id": "12345",
+                            "stack_url": "https://example.com",
+                        },
+                    }
+                },
+                "confirm_danger": True,
+            },
+            headers=_auth(token),
+        )
+        assert resp.status_code == 200, resp.text
+
+    def test_empty_providers_without_confirm_danger_hits_danger_gate_first(self, seeded_app):
+        """auth is a danger section: without confirm_danger the request 400s
+        at the danger gate before the providers validator ever runs."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/server-config",
+            json={"sections": {"auth": {"providers": []}}},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 400, resp.text
+        assert "confirm_danger" in resp.json()["detail"]
+
+    def test_nonempty_providers_accepted_and_persisted(self, seeded_app):
+        import yaml
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/server-config",
+            json={"sections": {"auth": {"providers": ["password"]}}, "confirm_danger": True},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 200, resp.text
+        overlay = yaml.safe_load((seeded_app["env"]["data_dir"] / "state" / "instance.yaml").read_text())
+        assert overlay["auth"]["providers"] == ["password"]
+
+    def test_masking_sentinel_secret_does_not_fake_keboola_availability(self, seeded_app):
+        """The availability check must run on the SCRUBBED patch: a masking
+        sentinel (`***`) round-tripped from the GET payload for a secret leaf is
+        truthy and, on the raw patch, would falsely report keboola as available
+        and let a [keboola]-only lockout through. With no real client_secret
+        stored, the sentinel is stripped and the save is correctly rejected
+        (Devin review on #1288)."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/server-config",
+            json={
+                "sections": {
+                    "auth": {
+                        "providers": ["keboola"],
+                        "keboola": {
+                            "client_id": "cid",
+                            "client_secret": "***",  # masking sentinel, not a real value
+                            "project_id": "12345",
+                            "stack_url": "https://example.com",
+                        },
+                    }
+                },
+                "confirm_danger": True,
+            },
+            headers=_auth(token),
+        )
+        assert resp.status_code == 422, resp.text
+        assert "no usable sign-in method" in resp.json()["detail"]
+
+    def test_keboola_login_and_datasource_stack_in_one_save_accepted(self, seeded_app):
+        """keboola's stack_url falls back to data_source.keboola.stack_url; an
+        admin who configures the login AND the data-source address in one save
+        (auth.keboola has no stack_url of its own) must not be refused — the
+        fallback is evaluated against this patch's data_source, not only the
+        stored config (Devin review on #1288)."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/server-config",
+            json={
+                "sections": {
+                    "auth": {
+                        "providers": ["keboola"],
+                        "keboola": {"client_id": "cid", "client_secret": "csecret", "project_id": "12345"},
+                    },
+                    "data_source": {"keboola": {"stack_url": "https://example.com"}},
+                },
+                "confirm_danger": True,
+            },
+            headers=_auth(token),
+        )
+        assert resp.status_code == 200, resp.text
+
+    def test_non_dict_keboola_block_rejected_with_422(self, seeded_app):
+        """A malformed auth.keboola (not an object) must 422 with a clear
+        message, not crash the availability merge with a 500."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/server-config",
+            json={"sections": {"auth": {"keboola": "oops-a-string"}}, "confirm_danger": True},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 422, resp.text
+        assert "auth.keboola must be an object" in resp.json()["detail"]
+
+    def test_clearing_sole_providers_config_without_touching_providers_rejected(self, monkeypatch):
+        """The lockout guard fires even when the patch does NOT touch
+        auth.providers: an instance already restricted to [keboola] must not be
+        able to clear keboola's config in a separate save and self-lock-out."""
+        from fastapi import HTTPException
+        import app.api.admin as admin
+
+        # Existing effective allowlist = [keboola]; nothing configured for it.
+        def fake_get_value(*keys, default=None):
+            if keys == ("auth", "providers"):
+                return ["keboola"]
+            return default
+
+        monkeypatch.setattr("app.instance_config.get_value", fake_get_value)
+        # A save that touches auth.keboola but not auth.providers.
+        with pytest.raises(HTTPException) as exc:
+            admin._validate_auth_providers_in_patch({"auth": {"keboola": {"client_id": ""}}})
+        assert exc.value.status_code == 422
+        assert "no usable sign-in method" in exc.value.detail
+
+    def test_unrelated_auth_save_not_blocked_when_providers_unset(self, monkeypatch):
+        """When no allowlist is configured, an unrelated auth save must pass —
+        the runtime offers all providers, so there is no lockout to guard."""
+        import app.api.admin as admin
+
+        monkeypatch.setattr("app.instance_config.get_value", lambda *k, default=None: default)
+        # Must not raise.
+        admin._validate_auth_providers_in_patch({"auth": {"allowed_domain": "example.com"}})
+
+    def test_unrelated_auth_save_not_blocked_for_env_provider_allowlist(self, monkeypatch):
+        """An env-configured provider's availability (google/email) can't be
+        changed by any server-config save, so an unrelated auth save (e.g.
+        allowed_domain) against a pre-existing [google] allowlist must NOT be
+        re-validated — only a patch that touches auth.keboola re-checks, since
+        that is the only availability a config save can break (Devin #1288).
+        Otherwise the admin would be dead-ended with no config field to fix it."""
+        import app.api.admin as admin
+
+        def fake_get_value(*keys, default=None):
+            if keys == ("auth", "providers"):
+                return ["google"]  # env-configured, unavailable in the API process
+            return default
+
+        monkeypatch.setattr("app.instance_config.get_value", fake_get_value)
+        # Patch does NOT touch auth.keboola → must not raise despite google
+        # being unavailable.
+        admin._validate_auth_providers_in_patch({"auth": {"allowed_domain": "example.com"}})
+
+    def test_null_providers_accepted_as_clear_override(self, seeded_app):
+        """``providers: null`` is NOT rejected — the validator early-returns
+        on None, the overlay persists the null, and the allowlist reader
+        (`configured_allowlist`) treats it as unset = every provider."""
+        import yaml
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/server-config",
+            json={"sections": {"auth": {"providers": None}}, "confirm_danger": True},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 200, resp.text
+        overlay = yaml.safe_load((seeded_app["env"]["data_dir"] / "state" / "instance.yaml").read_text())
+        assert overlay["auth"]["providers"] is None
+        # And the reader side: null resolves to "no allowlist" (all providers).
+        import app.instance_config as ic
+
+        ic._instance_config = None
+        try:
+            from app.auth.provider_registry import configured_allowlist
+
+            assert configured_allowlist() is None
+        finally:
+            ic._instance_config = None
 
 
 class TestAdminRegistry:
@@ -733,6 +1063,33 @@ class TestDocumentedServerConfigKeysAreWritable:
         assert not undeclared, (
             "editable via /admin/server-config but no _KNOWN_FIELDS entry, so the panel "
             f"cannot render it and its booleans escape the mask carve-out: {undeclared}"
+        )
+
+    def test_every_editable_bool_switch_is_declared_as_a_bool_field(self):
+        """Editable bool switch ⇒ a `kind: "bool"` declaration at its exact
+        config path, nested object levels included. The section-level guard
+        above cannot see this: `auth` had a `_KNOWN_FIELDS` entry, yet
+        `auth.keboola.allow_token_header` (config path three levels deep) had
+        no field declaration, so /admin/server-config rendered a free-text box
+        instead of a toggle for the switch (Devin Review on PR #1288)."""
+        from app.api.admin import _KNOWN_FIELDS
+        from app.switches import SWITCHES
+
+        missing = []
+        for s in SWITCHES:
+            if not (s.editable and s.config_keys and s.kind == "bool"):
+                continue
+            node = _KNOWN_FIELDS.get(s.config_keys[0], {})
+            # Walk intermediate levels through their object declarations
+            # (e.g. auth → keboola.fields) down to the leaf's parent.
+            for key in s.config_keys[1:-1]:
+                node = ((node.get(key) or {}).get("fields")) or {}
+            spec = node.get(s.config_keys[-1]) or {}
+            if spec.get("kind") != "bool":
+                missing.append(".".join(s.config_keys))
+        assert not missing, (
+            "editable bool switch with no kind='bool' _KNOWN_FIELDS declaration at its "
+            f"config path — the panel renders a text box instead of a toggle: {missing}"
         )
 
     def test_the_chat_and_studio_flags_render_as_booleans(self):

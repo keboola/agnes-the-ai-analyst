@@ -13,18 +13,22 @@ import os
 import logging
 
 from authlib.integrations.starlette_client import OAuth
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import RedirectResponse
 
 from app.auth.jwt import create_access_token, SESSION_COOKIE_MAX_AGE_SECONDS
 from app.auth._common import safe_next_path
+from app.auth.provider_registry import require_provider
 from app.instance_config import get_allowed_domains
 
-from src.repositories import users_repo
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/auth/google", tags=["auth"])
+router = APIRouter(
+    prefix="/auth/google",
+    tags=["auth"],
+    dependencies=[Depends(require_provider("google"))],
+)
 
 oauth = OAuth()
 
@@ -99,7 +103,6 @@ async def google_callback(request: Request):
         from src.db import get_system_db
         from src.repositories import use_pg
         from app.auth.group_sync import apply_user_groups
-        import uuid
 
         # On Postgres the system state lives in PG; opening the system DuckDB
         # here would create a stale ``state/system.duckdb`` (and is a hard error
@@ -108,43 +111,11 @@ async def google_callback(request: Request):
         # ignore ``conn``, so ``None`` is safe on PG.
         conn = None if use_pg() else get_system_db()
         try:
-            repo = users_repo()
-            user = repo.get_by_email(email)
-            if not user:
-                user_id = str(uuid.uuid4())
-                repo.create(id=user_id, email=email, name=name)
-                # Issue #748: auto-grant Everyone at creation (source=
-                # 'system_seed') unless AGNES_GROUP_EVERYONE_EMAIL maps
-                # Everyone to a Workspace group — then apply_user_groups
-                # below is the sole writer. Creation-time only: never
-                # called again for a returning user, so an admin's manual
-                # removal later sticks.
-                try:
-                    from app.auth.group_sync import ensure_everyone_membership
+            from app.auth.provisioning import UserDeactivatedError, ensure_user
 
-                    ensure_everyone_membership(user_id, added_by="auth.google:first-signin")
-                except Exception:
-                    logger.exception(
-                        "ensure_everyone_membership failed for new user %s",
-                        email,
-                    )
-                # v39: subscribe new user to every system plugin so the
-                # mandatory tier reaches them on their first session
-                # without an admin reconcile. Fail-soft — the import +
-                # fanout sit inside the same conn used for repo.create
-                # above, so a transient marketplace_plugins read failure
-                # doesn't block sign-in.
-                try:
-                    from src.repositories import user_curated_subscriptions_repo
-
-                    user_curated_subscriptions_repo().fanout_system_for_user(user_id)
-                except Exception:
-                    logger.exception(
-                        "system-plugin fanout failed for new user %s",
-                        email,
-                    )
-                user = repo.get_by_email(email)
-            if not bool(user.get("active", True)):
+            try:
+                user = ensure_user(email, name, source="auth.google:first-signin")
+            except UserDeactivatedError:
                 return RedirectResponse(url="/login?error=deactivated")
 
             # Sync Workspace groups → user_group_members (source='google_sync').

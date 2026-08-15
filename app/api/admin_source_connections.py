@@ -36,12 +36,14 @@ from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
 from app.auth.access import require_admin
+from app.keboola_identity import project_identity
 from app.secrets_vault import VaultKeyNotConfiguredError, can_store_secrets
 from connectors.keboola.semantic_layer import MasterTokenRequiredError, require_master_token
 from connectors.keboola.storage_api import KeboolaStorageClient, StorageApiError, is_upstream_client_error
 from connectors.mcp.client import exc_summary
 from src.keboola_chat_tools import (
     build_stdio_spec,
+    merge_env,
     derived_source_id,
     derived_tool_id,
     exposed_tool_name,
@@ -173,9 +175,28 @@ def _with_secret_status(row: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any
         # nothing because the row was there all along. (Devin Review.)
         derived = mcp_sources_repo().get(derived_source_id(row["id"]))
         row["has_chat_tools"] = bool(derived) and derived.get("enabled", True) is not False
+        # The page needs the source id to grant the whole set in one call.
+        # Served rather than recomputed in JS: `derived_source_id` is server
+        # logic, and a second copy of it in the template is a rename away from
+        # pointing the grant at a source that does not exist.
+        row["chat_tools_source_id"] = derived["id"] if derived else None
     except Exception:
         row["has_chat_tools"] = False
+        row["chat_tools_source_id"] = None
     return row
+
+
+def _workspace_schema_of(config: Optional[Dict[str, Any]]) -> Optional[str]:
+    """The connection's ``workspace_schema``, or None when unset.
+
+    ``config`` is admin-supplied free-form JSON, so the value can be any
+    type; only a non-empty string counts. Anything else is treated as unset
+    rather than letting enable/re-sync crash on it. (Devin Review on this PR.)
+    """
+    raw = (config or {}).get("workspace_schema")
+    if not isinstance(raw, str):
+        return None
+    return raw.strip() or None
 
 
 def _resolve_token(connection_id: str, row: Dict[str, Any]) -> Optional[str]:
@@ -232,22 +253,6 @@ def _reject_disallowed_token_env(token_env: Optional[str]) -> None:
                 "or store the token in the vault via PUT .../secret instead."
             ),
         )
-
-
-def project_identity(payload: Optional[Dict[str, Any]]) -> tuple[Optional[Any], str]:
-    """``(project_id, project_name)`` from a Storage API payload that carries
-    an ``owner`` block — both ``GET /tokens/verify`` and ``GET /v2/storage``
-    do, so one reader serves the token preflights and the /test probe.
-
-    Returns ``(None, "")`` when the payload has no owner id: an identity we
-    cannot read must never be persisted as a *known* identity, or the
-    cross-token check below would compare against a hole and pass anything.
-    """
-    owner = (payload or {}).get("owner") or {}
-    owner_id = owner.get("id")
-    if owner_id is None:
-        return None, ""
-    return owner_id, owner.get("name") or ""
 
 
 def _record_project_identity(connection_id: str, row: Dict[str, Any], payload: Dict[str, Any]) -> None:
@@ -310,8 +315,8 @@ def project_mismatch_message(row: Dict[str, Any], payload: Dict[str, Any], *, wh
         return None
     token_id, token_name = project_identity(payload)
     # Compared as strings: the id round-trips through a JSON config column on
-    # two different backends (DuckDB JSON, PG JSONB), and a 5947 that comes
-    # back as "5947" would otherwise read as a permanent, unfixable mismatch
+    # two different backends (DuckDB JSON, PG JSONB), and a 12345 that comes
+    # back as "12345" would otherwise read as a permanent, unfixable mismatch
     # on a correctly-configured connection. Devin Review on #1242 raised the
     # same risk across endpoints.
     if token_id is None or str(token_id) == str(known_id):
@@ -545,6 +550,11 @@ def _resync_derived_chat_tools(connection_id: str) -> None:
             connection_id=connection_id,
             connection_name=row.get("name") or connection_id,
             stack_url=stack_url,
+            # Connection-derived exactly like the stack URL: added later it has
+            # to arrive, removed it has to go. Without it here, setting a
+            # workspace schema on an already-enabled connection did nothing
+            # until the admin toggled chat tools off and on.
+            workspace_schema=_workspace_schema_of(row.get("config")),
         )
         # Only what the CONNECTION determines is re-derived — its name and its
         # stack URL, the two things that actually go stale when it is edited.
@@ -559,11 +569,10 @@ def _resync_derived_chat_tools(connection_id: str) -> None:
             for field in ("enabled", "scope", "connect_hint", "command", "args", "auth_method", "auth_secret_env"):
                 if field in existing:
                     spec[field] = existing[field]
-            # `env` is merged rather than replaced: the stack URL is ours, any
-            # other key the admin added is theirs.
-            merged_env = dict(existing.get("env") or {})
-            merged_env.update(spec.get("env") or {})
-            spec["env"] = merged_env
+            # `env` is merged rather than replaced: the keys this module
+            # derives are ours (and absent means absent — see `merge_env`),
+            # any other key the admin added is theirs.
+            spec["env"] = merge_env(existing.get("env"), spec.get("env") or {})
         # A rename onto a name another MCP source already holds cannot be
         # upserted — `mcp_sources.name` is unique. Skipping loudly beats
         # letting the upsert raise into the broad handler below, which would
@@ -1107,6 +1116,13 @@ async def enable_chat_tools(
         connection_id=connection_id,
         connection_name=row.get("name") or connection_id,
         stack_url=stack_url,
+        # Passed through whenever the connection sets `config.workspace_schema`
+        # — no token-kind check, the code only refuses to invent a value. A
+        # master-token setup normally leaves it unset (Keboola creates the
+        # workspace itself); setting it anyway pins query_data to that
+        # workspace deliberately. Read from the connection so the admin sets it
+        # in one place rather than editing the derived MCP source by hand.
+        workspace_schema=_workspace_schema_of(config),
     )
     # What the vault held before this call decides how a failed write is undone.
     # This endpoint is idempotent by design — re-running is how a rotated token
@@ -1174,9 +1190,7 @@ async def enable_chat_tools(
         # request to re-derive anything. (Devin Review on this PR, both sides.)
         if "connect_hint" in existing_row:
             spec["connect_hint"] = existing_row["connect_hint"]
-        merged_env = dict(existing_row.get("env") or {})
-        merged_env.update(spec.get("env") or {})
-        spec["env"] = merged_env
+        spec["env"] = merge_env(existing_row.get("env"), spec.get("env") or {})
     was_enabled = existing_row is not None
     # What the registry held before this call. The registration step both
     # writes fresh rows and reconciles stale ones away, so a failed re-run has

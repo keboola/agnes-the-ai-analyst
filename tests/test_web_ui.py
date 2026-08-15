@@ -390,15 +390,44 @@ class TestAdminRoleGuards:
         resp = web_client.get("/admin/tables", cookies=admin_cookie)
         assert resp.status_code == 200
 
-    def test_analyst_cannot_access_admin_access_page(self, web_client, analyst_cookie):
-        """The unified /admin/access page replaces the dropped
-        /admin/permissions page. Non-admin must still be blocked."""
-        resp = web_client.get("/admin/access", cookies=analyst_cookie)
+    def test_analyst_cannot_access_admin_groups_page(self, web_client, analyst_cookie):
+        """Grants moved onto the group detail page's Access tab; /admin/groups
+        is the entry point. Non-admin must still be blocked."""
+        resp = web_client.get("/admin/groups", cookies=analyst_cookie)
         assert resp.status_code == 403
 
-    def test_admin_can_access_admin_access_page(self, web_client, admin_cookie):
+    def test_admin_can_access_admin_groups_page(self, web_client, admin_cookie):
+        resp = web_client.get("/admin/groups", cookies=admin_cookie)
+        assert resp.status_code == 200
+
+    def test_access_page_renders(self, web_client, admin_cookie):
+        """/admin/access is a real page again — the cross-group Access
+        workspace plus Simulate. It was a standalone matrix, was retired into
+        the group detail page's Access tab (grants key on `group_id`), and
+        came back as the surface that tab cannot be: one place to move between
+        groups, and to answer "why can't this person see X?"."""
         resp = web_client.get("/admin/access", cookies=admin_cookie)
         assert resp.status_code == 200
+        assert "Simulate a person" in resp.text
+
+    def test_legacy_grants_url_redirects_to_access(self, web_client, admin_cookie):
+        """The page's oldest URL 308s onto it rather than 404ing, carrying
+        ?group= through so an old deep link still preselects that group."""
+        resp = web_client.get("/admin/grants", cookies=admin_cookie, follow_redirects=False)
+        assert resp.status_code == 308
+        assert resp.headers["location"] == "/admin/access"
+
+        resp = web_client.get("/admin/grants?group=grp-123", cookies=admin_cookie, follow_redirects=False)
+        assert resp.status_code == 308
+        assert resp.headers["location"] == "/admin/access?group=grp-123"
+
+    def test_access_urls_keep_their_admin_gate(self, web_client, analyst_cookie):
+        """Both the page and the legacy redirect refuse a non-admin — the
+        redirect must not answer 308 naming an internal URL where the page
+        answers 403."""
+        for url in ("/admin/access", "/admin/grants"):
+            resp = web_client.get(url, cookies=analyst_cookie, follow_redirects=False)
+            assert resp.status_code == 403, url
 
     def test_analyst_cannot_access_corporate_memory_admin(self, web_client, admin_cookie, analyst_cookie):
         resp = web_client.get("/admin/corporate-memory", cookies=analyst_cookie)
@@ -636,24 +665,81 @@ class TestUnauthenticatedHtmlRedirects:
             f"Expected google login URL with ?next in login page; snippet: {body[:800]}"
         )
 
-    def test_login_email_page_extracts_and_renders_next(self, web_client):
+    def test_login_email_page_extracts_and_renders_next(self, web_client, monkeypatch):
         """/login/email (magic link) must extract ?next from the URL and
         emit it into the hidden form field so it round-trips to the POST."""
+        monkeypatch.setenv("SMTP_HOST", "smtp.example.com")  # mail transport → page renders
         resp = web_client.get("/login/email?next=/catalog")
         assert resp.status_code == 200
         body = resp.text
         # The template renders <input type="hidden" name="next" value="/catalog">
         assert 'name="next" value="/catalog"' in body, f"Expected /catalog in next hidden field; snippet: {body[:800]}"
 
-    def test_login_email_page_rejects_open_redirect_in_next(self, web_client):
+    def test_login_email_page_rejects_open_redirect_in_next(self, web_client, monkeypatch):
         """Hostile ?next values (e.g. //evil) must be sanitized away before
         the hidden field is rendered."""
+        monkeypatch.setenv("SMTP_HOST", "smtp.example.com")
         resp = web_client.get("/login/email?next=//evil.example/")
         assert resp.status_code == 200
         body = resp.text
         assert "evil.example" not in body
         # Empty string is the sanitized default.
         assert 'name="next" value=""' in body
+
+    def test_login_email_page_renders_magic_link_form(self, web_client, monkeypatch):
+        """/login/email must render the magic-link form, not the password
+        form. The password form posts to /auth/password/*, which 404s
+        under an `auth.providers: [email]` allowlist — that mismatch used
+        to lock the whole web UI out (regression)."""
+        monkeypatch.setenv("SMTP_HOST", "smtp.example.com")
+        resp = web_client.get("/login/email")
+        assert resp.status_code == 200
+        body = resp.text
+        assert 'action="/auth/email/send-link/web"' in body
+        assert "/auth/password/login/web" not in body
+
+    def test_login_email_page_redirects_when_no_mail_transport(self, web_client, monkeypatch):
+        """Without SMTP/SendGrid (and outside dev mode) the magic-link page
+        would take an email and claim a link was sent that never arrives, so
+        it redirects to /login with an explanatory error instead of pretending
+        (Devin review on #1288)."""
+        for var in ("SMTP_HOST", "SENDGRID_API_KEY", "LOCAL_DEV_MODE"):
+            monkeypatch.delenv(var, raising=False)
+        resp = web_client.get("/login/email", follow_redirects=False)
+        assert resp.status_code == 302
+        assert resp.headers["location"] == "/login?error=email_not_configured"
+
+    def test_send_link_web_post_refuses_when_no_mail_transport(self, web_client, monkeypatch):
+        """The POST sibling must refuse on its own — it is reachable without a
+        freshly-rendered GET (stale form, bookmark, scripted client), and
+        without a transport the sent-page's "We sent a sign-in link" would be
+        a lie: delivery is silently skipped (Devin Review on PR #1288)."""
+        for var in ("SMTP_HOST", "SENDGRID_API_KEY", "LOCAL_DEV_MODE"):
+            monkeypatch.delenv(var, raising=False)
+        resp = web_client.post(
+            "/auth/email/send-link/web",
+            data={"email": "someone@example.com"},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+        assert resp.headers["location"] == "/login?error=email_not_configured"
+
+    def test_sent_page_expiry_copy_is_computed_from_the_token_ttl(self, web_client, monkeypatch):
+        """The sent-page's expiry sentence must be rendered from
+        MAGIC_LINK_EXPIRY, not hand-copied — the template said "15 minutes"
+        while the token actually lived an hour (Devin Review on PR #1288).
+        The expectation is derived from the constant so a TTL change cannot
+        re-split the copy from the behavior."""
+        from app.auth.providers.email import MAGIC_LINK_EXPIRY
+
+        monkeypatch.setenv("SMTP_HOST", "smtp.example.com")
+        monkeypatch.delenv("LOCAL_DEV_MODE", raising=False)
+        resp = web_client.post(
+            "/auth/email/send-link/web",
+            data={"email": "someone@example.com"},
+        )
+        assert resp.status_code == 200
+        assert f"The link expires in {MAGIC_LINK_EXPIRY // 60} minutes." in resp.text
 
     def test_google_login_stashes_safe_next_in_session(self, web_client, monkeypatch):
         """google_login() must stash the sanitized next_path in the session.

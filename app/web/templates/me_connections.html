@@ -1,151 +1,185 @@
-{% extends "base_page.html" %}
+{% extends "base_index.html" %}
+{# My connections — the RAIL redesign of the per-user MCP credential page.
+   Topnav serves the frozen pre-redesign copy (me_connections_legacy.html,
+   the /me/activity pattern — see the route's layout switch and
+   tests/test_ui_layout_theme.py::TestDefaultContentParity).
+
+   Same anatomy as /me/profile and /me/activity: the base_index shell (one
+   unbroken --ds-surface, no floating hero over a grey canvas), an
+   identity-led head band, `.cc-btn` controls. The card grid is page-local
+   (`connx-*`): a connection card is not a collapsible `.dsec` section — its
+   whole job is one status pill and one row of actions.
+
+   Every JS contract of the legacy page is kept verbatim (`data-source`,
+   `data-action`, `data-token`, `data-status`, `data-highlight`,
+   `#source-{id}`) — the script below IS the legacy script. #}
+
 {% block title %}My connections — {{ instance_brand }}{% endblock %}
 
-{% set page_hero_eyebrow = "MCP" %}
-{% set page_hero_title = "My connections" %}
-{% set page_hero_subtitle = "Connect your own accounts so Agnes queries data as you. You see only what you are allowed to see." %}
-
 {% block head_extra %}
+<link rel="stylesheet" href="{{ static_url('css/catalog_card.css') }}">
 <style>
-.conn-page { max-width: 760px; }
-.conn-card {
+/* ── Head band — the same anatomy as /me/activity's ── */
+.connx-head { margin: 2px 0 0; }
+.connx-kicker { font-size: 12px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--ds-agnes); }
+.connx-head h1 { font-size: 24px; margin: 2px 0 0; }
+.connx-head .lede { color: var(--ds-text-secondary); font-size: 15px; margin: 6px 0 0; max-width: 64ch; }
+
+.connx-list { max-width: 760px; }
+.connx-card {
   border: 1px solid var(--ds-border);
-  border-radius: var(--ds-radius-md, 8px);
+  border-radius: var(--ds-radius-md, 10px);
   padding: 16px 18px;
   margin-bottom: 14px;
   background: var(--ds-surface);
 }
-.conn-card__head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
-.conn-card__name { font-weight: 600; }
-.conn-card__meta { font-size: 13px; color: var(--ds-text-secondary); }
-.conn-pill {
+.connx-card__head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.connx-card__name { font-weight: 600; }
+.connx-card__meta { font-size: 13px; color: var(--ds-text-secondary); }
+.connx-pill {
   margin-left: auto; font-size: 12px; font-weight: 600;
-  padding: 3px 10px; border-radius: 999px;
+  padding: 3px 10px; border-radius: 999px; flex-shrink: 0;
 }
-.conn-pill--on { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); }
-.conn-pill--off { background: var(--ds-accent-warn-bg); color: var(--ds-accent-warn-ink); }
-.conn-hint { font-size: 13px; color: var(--ds-text-secondary); margin: 8px 0; }
-.conn-row { display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
-.conn-row input { flex: 1; min-width: 200px; }
-.conn-updated { font-size: 12px; color: var(--ds-text-muted); margin-top: 6px; }
-.conn-note {
+.connx-pill--on { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); }
+.connx-pill--off { background: var(--ds-accent-warn-bg); color: var(--ds-accent-warn-ink); }
+.connx-hint { font-size: 13px; color: var(--ds-text-secondary); margin: 8px 0; }
+.connx-row { display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
+.connx-row input {
+  flex: 1; min-width: 200px;
+  border: 1px solid var(--ds-border); border-radius: 8px;
+  padding: 7px 10px; font-size: 13px;
+  background: var(--ds-surface); color: var(--ds-text-primary);
+}
+.connx-row input:focus-visible { outline: 2px solid var(--ds-primary); outline-offset: 1px; }
+/* Danger variant of the shared control — catalog_card.css has no red button,
+   and Disconnect/Remove must not look like the primary path. */
+.cc-btn--danger { color: var(--ds-accent-danger-ink); border-color: var(--ds-accent-danger-ink); }
+.cc-btn--danger:hover { background: var(--ds-accent-danger-bg); }
+.connx-updated { font-size: 12px; color: var(--ds-text-muted); margin-top: 6px; }
+.connx-note {
   font-size: 12px; color: var(--ds-text-secondary);
-  border: 1px solid var(--ds-border); border-radius: var(--ds-radius-md, 8px);
+  border: 1px solid var(--ds-border); border-radius: var(--ds-radius-md, 10px);
+  background: var(--ds-surface-sunken);
   padding: 10px 12px; margin-top: 18px;
 }
-.conn-status { font-size: 13px; margin-top: 6px; min-height: 18px; color: var(--ds-text-secondary); }
-.conn-status--error { color: var(--ds-accent-danger-ink); }
-.conn-status--ok { color: var(--ds-accent-success-ink); }
-.conn-empty { color: var(--ds-text-secondary); }
-.conn-banner {
-  border-radius: var(--ds-radius-md, 8px);
+.connx-status { font-size: 13px; margin-top: 6px; min-height: 18px; color: var(--ds-text-secondary); }
+.connx-status--error { color: var(--ds-accent-danger-ink); }
+.connx-status--ok { color: var(--ds-accent-success-ink); }
+.connx-empty { color: var(--ds-text-secondary); }
+.connx-banner {
+  border-radius: var(--ds-radius-md, 10px);
   padding: 10px 14px; margin-bottom: 14px; font-size: 13px;
 }
-.conn-banner--ok { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); }
-.conn-banner--error { background: var(--ds-accent-danger-bg); color: var(--ds-accent-danger-ink); }
+.connx-banner--ok { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); }
+.connx-banner--error { background: var(--ds-accent-danger-bg); color: var(--ds-accent-danger-ink); }
+.connx-banner--error a { color: inherit; font-weight: 600; }
 </style>
 {% endblock %}
 
-{% block page %}
-<div class="conn-page" data-highlight="{{ highlight_source }}">
+{% block page_head %}
+<div class="connx-head">
+  <div class="connx-kicker">Your account</div>
+  <h1>My connections</h1>
+  <p class="lede">Connect your own accounts so {{ instance_brand_short }} queries data as you. You see only what you are allowed to see.</p>
+</div>
+{% endblock %}
+
+{% block page_surface %}
+<div class="connx-list conn-page" data-highlight="{{ highlight_source }}">
   {% if connected_source %}
-    <div class="conn-banner conn-banner--ok">Connected <strong>{{ connected_name or connected_source }}</strong> — Agnes can now call it as you.</div>
+    <div class="connx-banner connx-banner--ok">Connected <strong>{{ connected_name or connected_source }}</strong> — {{ instance_brand_short }} can now call it as you.</div>
   {% endif %}
   {% if connect_error %}
-    <div class="conn-banner conn-banner--error">Connect failed: {{ connect_error }}.
+    <div class="connx-banner connx-banner--error">Connect failed: {{ connect_error }}.
       {% if retry_source %}<a href="/api/mcp/sources/{{ retry_source }}/oauth/authorize">Try again</a>{% endif %}
     </div>
   {% endif %}
   {% if not connect_sources %}
-    <p class="conn-empty">You have no per-user MCP sources to connect. When an admin grants you a source that authenticates per person, it appears here.</p>
+    <p class="connx-empty">You have no per-user MCP sources to connect. When an admin grants you a source that authenticates per person, it appears here.</p>
   {% endif %}
 
   {% for s in connect_sources %}
-  <div class="conn-card" id="source-{{ s.id }}" data-source="{{ s.id }}" data-auth-kind="{{ s.auth_kind }}">
-    <div class="conn-card__head">
+  <div class="connx-card conn-card" id="source-{{ s.id }}" data-source="{{ s.id }}" data-auth-kind="{{ s.auth_kind }}">
+    <div class="connx-card__head">
       <div>
-        <div class="conn-card__name">{{ s.name }}</div>
-        <div class="conn-card__meta">{% if s.auth_kind == "oauth" %}Sign in with your own account — Agnes calls this source as you{% else %}Uses your personal token — Agnes calls this source as you{% endif %}</div>
+        <div class="connx-card__name">{{ s.name }}</div>
+        <div class="connx-card__meta">{% if s.auth_kind == "oauth" %}Sign in with your own account — {{ instance_brand_short }} calls this source as you{% else %}Uses your personal token — {{ instance_brand_short }} calls this source as you{% endif %}</div>
       </div>
       {% if s.has_secret %}
-        <span class="conn-pill conn-pill--on">Connected</span>
+        <span class="connx-pill connx-pill--on">Connected</span>
       {% elif s.stored %}
-        <span class="conn-pill conn-pill--off">Expired — reconnect</span>
+        <span class="connx-pill connx-pill--off">Expired — reconnect</span>
       {% else %}
-        <span class="conn-pill conn-pill--off">Not connected</span>
+        <span class="connx-pill connx-pill--off">Not connected</span>
       {% endif %}
     </div>
 
-    {% if s.hint_html %}<div class="conn-hint">{{ s.hint_html | safe }}</div>{% endif %}
+    {% if s.hint_html %}<div class="connx-hint">{{ s.hint_html | safe }}</div>{% endif %}
 
     {% if not s.source_has_tools %}
     {# The register → connect → introspect bootstrap: the source is visible
        (you can connect/disconnect) but has no granted tools yet, so chat
        can't use it. Tell the user instead of silently hiding the card
        (UX round on #1130). #}
-    <div class="conn-hint">No tools are enabled for this source yet{% if is_admin %} —
+    <div class="connx-hint">No tools are enabled for this source yet{% if is_admin %} —
       <a href="/admin/mcp-sources/{{ s.id }}">open the admin page</a> to introspect and grant them{% endif %}.</div>
     {% elif not s.has_tools %}
     {# Source HAS enabled tools, you just have none granted — the revoked-access
        case whose card this page deliberately keeps visible so the credential
-       stays removable. Saying "no tools yet" here sent people to an admin to
-       chase tools that were already enabled (Devin Review on #1167). #}
-    <div class="conn-hint">You no longer have access to this source's tools. Your stored
+       stays removable (Devin Review on #1167). #}
+    <div class="connx-hint">You no longer have access to this source's tools. Your stored
       credential is kept here so you can remove it; ask an admin to restore access.</div>
     {% endif %}
 
     {% if s.auth_kind == "oauth" %}
-    <div class="conn-row">
+    <div class="connx-row">
       {# GET .../oauth/authorize calls _require_source_grant too, so on an
          ungranted card this anchor only bounces back with
-         connect_error=not_granted. An explained dead end is still a dead
-         end (Devin Review on #1167). #}
+         connect_error=not_granted (Devin Review on #1167). #}
       {% if s.can_act %}
-      <a class="btn btn-primary btn-sm" href="/api/mcp/sources/{{ s.id }}/oauth/authorize" data-action="oauth-connect">{% if s.stored %}Reconnect{% else %}Connect with {{ s.name }}{% endif %}</a>
+      <a class="cc-btn cc-btn--primary" href="/api/mcp/sources/{{ s.id }}/oauth/authorize" data-action="oauth-connect">{% if s.stored %}Reconnect{% else %}Connect with {{ s.name }}{% endif %}</a>
       {% endif %}
       {# Test forwards to the upstream and is grant-gated server-side — don't
          render a button that can only 403 (Devin Review on #1167). #}
       {% if s.has_secret and s.can_act %}
-      <button type="button" class="btn btn-secondary btn-sm" data-action="test">Test</button>
+      <button type="button" class="cc-btn" data-action="test">Test</button>
       {% endif %}
       {# Disconnect keys off `stored`, not `has_secret` — a lapsed connection
          must still be removable (Devin Review on #1130). #}
       {% if s.stored %}
-      <button type="button" class="btn btn-danger btn-sm" data-action="oauth-disconnect">Disconnect</button>
+      <button type="button" class="cc-btn cc-btn--danger" data-action="oauth-disconnect">Disconnect</button>
       {% endif %}
     </div>
-    {% if s.expires_at %}<div class="conn-updated">Token expires {{ s.expires_at }}</div>{% endif %}
+    {% if s.expires_at %}<div class="connx-updated">Token expires {{ s.expires_at }}</div>{% endif %}
     {% else %}
-    <div class="conn-row">
-      {# Same rule as Test below: `PUT .../my-secret` is grant-gated, so on a
-         revoked card the paste field and Save could only ever produce a bare
-         "Save failed (403)". Remove keeps rendering — the own-credential
-         carve-out is what makes the card worth showing (Devin Review on #1167). #}
+    <div class="connx-row">
+      {# `PUT .../my-secret` is grant-gated, so on a revoked card the paste
+         field and Save could only ever produce a bare "Save failed (403)".
+         Remove keeps rendering — the own-credential carve-out is what makes
+         the card worth showing (Devin Review on #1167). #}
       {% if s.can_act %}
       <input type="password" autocomplete="off" placeholder="Paste your token" data-token />
-      <button type="button" class="btn btn-primary btn-sm" data-action="save">{% if s.has_secret %}Replace token{% else %}Connect{% endif %}</button>
+      <button type="button" class="cc-btn cc-btn--primary" data-action="save">{% if s.has_secret %}Replace token{% else %}Connect{% endif %}</button>
       {% endif %}
       {% if s.has_secret and s.can_act %}
-      <button type="button" class="btn btn-secondary btn-sm" data-action="test">Test</button>
+      <button type="button" class="cc-btn" data-action="test">Test</button>
       {% endif %}
       {% if s.has_secret %}
-      <button type="button" class="btn btn-danger btn-sm" data-action="remove">Remove</button>
+      <button type="button" class="cc-btn cc-btn--danger" data-action="remove">Remove</button>
       {% endif %}
     </div>
     {% endif %}
-    {% if s.updated_at %}<div class="conn-updated">Updated {{ s.updated_at }}</div>{% endif %}
-    <div class="conn-status" data-status></div>
+    {% if s.updated_at %}<div class="connx-updated">Updated {{ s.updated_at }}</div>{% endif %}
+    <div class="connx-status conn-status" data-status></div>
   </div>
   {% endfor %}
 
-  <div class="conn-note">
+  <div class="connx-note">
     Your token is encrypted and used only for your own requests. Admins cannot see it, and it never passes through the chat.
-    Remove/Disconnect stops Agnes from using the token — to fully revoke it, revoke it in the upstream system.
+    Remove/Disconnect stops {{ instance_brand_short }} from using the token — to fully revoke it, revoke it in the upstream system.
   </div>
 </div>
-{% endblock %}
 
-{% block scripts %}
 <script>
 (function () {
   function api(method, path, body) {
@@ -159,8 +193,8 @@
   function say(card, msg, state) {
     var el = card.querySelector("[data-status]");
     el.textContent = msg || "";
-    el.classList.remove("conn-status--error", "conn-status--ok");
-    if (state) { el.classList.add("conn-status--" + state); }
+    el.classList.remove("connx-status--error", "connx-status--ok");
+    if (state) { el.classList.add("connx-status--" + state); }
   }
 
   document.querySelectorAll(".conn-card").forEach(function (card) {

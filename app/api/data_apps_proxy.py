@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 from typing import Optional
 
 import httpx
@@ -60,6 +61,7 @@ from app.api.data_apps import (
     OwnerNotFoundError,
     _can_view,
     _feature_gate,
+    preview_cookie_name,
     redeploy_current,
     try_acquire_op_lease,
 )
@@ -154,8 +156,8 @@ def _resolve_proxy_caller(request: Request, slug: str, conn: Optional[object]) -
     preview-token fallback below instead of short-circuiting the route).
 
     If normal auth fails, falls back to a ``data-app-preview:<slug>``
-    scoped token (cookie named ``_PREVIEW_COOKIE_NAME``, or ``Authorization:
-    Bearer``) — mirroring the ``data-app-git`` scope-pin precedent in
+    scoped token (cookie named ``preview_cookie_name(slug)``, or
+    ``Authorization: Bearer``) — mirroring the ``data-app-git`` scope-pin precedent in
     ``app/api/data_apps_git.py``: the resolved identity is trusted to VIEW
     THIS SLUG ONLY when the token's scope claim is exactly
     ``data-app-preview:<slug>``. A token minted for a different app, or one
@@ -181,7 +183,11 @@ def _resolve_proxy_caller(request: Request, slug: str, conn: Optional[object]) -
     if auth_header and auth_header.startswith("Bearer "):
         token = auth_header.removeprefix("Bearer ")
     if not token:
-        token = request.cookies.get(_PREVIEW_COOKIE_NAME)
+        # Per-app cookie name first (`preview_cookie_name`); the bare legacy
+        # name is still accepted so a preview already open across an upgrade
+        # keeps working for the rest of its 30-minute TTL. Either way the scope
+        # check below is what decides — reading a cookie grants nothing.
+        token = request.cookies.get(preview_cookie_name(slug)) or request.cookies.get(_PREVIEW_COOKIE_NAME)
     if not token:
         return None, False
 
@@ -318,12 +324,105 @@ def _not_running_response(slug: str, state: str, accepts_json: bool) -> Response
     return Response(_STOPPED_HTML.format(state=state), media_type="text/html", status_code=409)
 
 
+def _readiness_poll_url(request: Request, slug: str) -> str:
+    """Where the holding page should poll for readiness.
+
+    Relative by default — correct for the path-prefix form, and it avoids
+    pinning a host into the page.
+
+    ABSOLUTE when the request arrived on an app subdomain.
+    `DataAppSubdomainMiddleware` rewrites EVERY path on `<slug>.<base>` to
+    `/apps/<slug>/…`, with no carve-out for `/api/*` — so a relative poll
+    became `/apps/<slug>/api/data-apps/<slug>/readiness`, landed back on the
+    proxy, got the holding page's own HTML, threw in `r.json()`, was
+    swallowed by the `catch`, and the page spun forever while the app was up
+    (Devin Review on this PR).
+
+    A carve-out in the middleware would be the wrong fix: an app may serve
+    its own `/api/*` — the scaffolded dashboard does exactly that — so
+    diverting those to Agnes would break the app it is hosting.
+    """
+    if not request.scope.get("agnes_data_app_subdomain"):
+        return f"/api/data-apps/{slug}/readiness"
+    from app.instance_config import get_public_url
+
+    base = (get_public_url() or "").rstrip("/")
+    # With no configured public URL there is nothing to point at but the
+    # subdomain itself, which is what swallows the poll. Keep the relative
+    # form (unchanged behaviour) rather than guessing a host.
+    return f"{base}/api/data-apps/{slug}/readiness" if base else f"/api/data-apps/{slug}/readiness"
+
+
 def _waking_response(request: Request, slug: str, accepts_json: bool) -> Response:
     if accepts_json:
         return JSONResponse({"status": "waking"}, status_code=503)
     from app.web.router import templates
 
-    return templates.TemplateResponse(request, "data_app_waking.html", {"slug": slug}, status_code=503)
+    return templates.TemplateResponse(
+        request,
+        "data_app_waking.html",
+        {"slug": slug, "readiness_url": _readiness_poll_url(request, slug)},
+        status_code=503,
+    )
+
+
+#: How long after a deploy a live-but-silent container is still read as
+#: "starting" rather than broken. A first deploy clones the repo, runs
+#: `npm install` and builds before anything listens — ~90s measured on a real
+#: dashboard — so the window has to clear that with room, while staying short
+#: enough that a wedged app becomes a diagnosable error rather than a spinner
+#: nobody can explain.
+_START_GRACE_SECONDS = 420
+
+
+def _as_utc(value) -> Optional[datetime]:
+    """Coerce a DB timestamp to an aware UTC datetime, or None.
+
+    Naive values are read as UTC. Those columns are zoneless `TIMESTAMP`
+    written with SQL `now()`, so the value carries the DB session's zone —
+    this reading is the codebase's standing convention (`data_apps.py`,
+    `collections.py`, ~15 other places) and containers run UTC.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    if not isinstance(value, datetime):
+        return None
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+
+
+def _within_start_grace(row: dict) -> bool:
+    """True while a running container may still legitimately be booting.
+
+    Measured from the LATER of the last deploy and the row's last write, so a
+    missing or unparseable clock returns False: without one the honest answer
+    is "this is not provably still starting", and the caller records a real
+    error rather than serving a holding page forever.
+
+    Why the later of the two rather than the deploy alone: `record_deploy`
+    writes `last_deploy_at` only from `POST /{slug}/deploy`, so the auto-wake
+    path (`_trigger_wake` → `redeploy_current`) never refreshes it. A woken
+    app's grace would be measured from a deploy that could be days old — and
+    the boot a wake performs is exactly the slow clone/install/build this
+    window exists for (Devin Review on this PR). `updated_at` moves on the
+    wake's own `set_state`, so the maximum covers both without inventing a
+    deploy that never happened.
+
+    The comparison is symmetric (`abs`). A naive stamp from a session ahead of
+    UTC lands in the future, and a one-sided window would treat that as
+    already expired; an offset larger than the grace itself is a misconfigured
+    host, where the outcome is the diagnosable one — a recorded error, not a
+    silent spinner.
+    """
+    stamps = [s for s in (_as_utc(row.get("last_deploy_at")), _as_utc(row.get("updated_at"))) if s is not None]
+    if not stamps:
+        return False
+    now = datetime.now(timezone.utc)
+    return abs((now - max(stamps)).total_seconds()) < _START_GRACE_SECONDS
 
 
 def _error_response(row: dict) -> Response:
@@ -443,7 +542,50 @@ async def proxy_app(slug: str, path: str, request: Request, conn=Depends(_get_db
         try:
             return await _proxy(request, slug, path)
         except (httpx.ConnectError, httpx.ConnectTimeout):
-            data_apps_repo().set_state(row["id"], "error", "container unreachable")
+            # A refused connection is not proof the app is broken, and this
+            # is a latch: nothing clears `error` except a redeploy, because
+            # the `state == "error"` branch below only reports the stored
+            # detail and never re-checks. So one badly-timed request used to
+            # brick a healthy app permanently.
+            #
+            # That window is not narrow. A first deploy clones, runs
+            # `npm install` and builds before anything listens on 8888 —
+            # ~90s on a real app — and the deploy marks the row `running` as
+            # soon as the runner accepts the container, not when it serves.
+            # Watched live: the app finished building and served 200 inside
+            # the container while Agnes answered `app_error / container
+            # unreachable` to every caller, until an unrelated redeploy
+            # happened to reset it.
+            #
+            # So ask the runner what is actually true before latching. A
+            # container that is up but not yet listening is *starting*, and
+            # the honest answer is the same "waking" page a sleeping app
+            # gets. Only a container that is genuinely gone or stopped is an
+            # error worth remembering.
+            #
+            # The "starting" verdict is TIME-BOUNDED. The runner's status
+            # contract is `running | paused | stopped | absent`, so a live
+            # container whose app process died or wedged without exiting
+            # still reads `running` — and without a bound this would trade a
+            # permanent latch for a permanent spinner, which is not obviously
+            # better and is harder to diagnose (Devin Review on this PR).
+            # Past the grace window a container that still is not listening
+            # has stopped being "slow to boot" and become broken.
+            try:
+                container = (await run_in_threadpool(_runner().status, slug)).get("container")
+            except (RunnerUnavailable, RunnerError):
+                container = None  # runner itself is down — say nothing about the app
+            if container == "paused":
+                # Paused is the pause-mode sleep state, not a fault: fall
+                # through to the sleeping branch's wake rather than recording
+                # an error the caller would have to redeploy away.
+                await _trigger_wake(row)
+                return _waking_response(request, slug, accepts_json)
+            if container == "running" and _within_start_grace(row):
+                return _waking_response(request, slug, accepts_json)
+            if container is not None:
+                detail = "container not listening" if container == "running" else f"container {container}"
+                data_apps_repo().set_state(row["id"], "error", detail)
             raise HTTPException(status_code=502, detail="container_unreachable")
 
     if state == "sleeping":

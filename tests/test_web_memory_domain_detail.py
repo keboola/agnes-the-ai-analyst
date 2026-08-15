@@ -106,11 +106,10 @@ class TestMemoryDomainDetail:
         assert 'href="/corporate-memory"' in body
 
     def test_back_link_targets_the_library_under_rail(self, seeded_app, monkeypatch):
-        # Under the rail IA (#896) /corporate-memory is orphaned (nothing in
-        # the rail nav links to it) — and so is the unified Catalog this used
-        # to fall back to, since Marketplace was retired from the rail. The
-        # back link must return to the Library's Memory band, the rail's one
-        # browse surface.
+        # Under rail /corporate-memory REDIRECTS to the Library's Memory band
+        # (spec 2026-08-12), so the back link points straight at the band
+        # rather than bouncing through the redirect. Scoped to the hero's own
+        # back link, like its ?source=library sibling below.
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         dom_id = _make_domain("ops-rail", "Ops Rail")
         _make_item("ops_rail_item_1", "Ops rail runbook", dom_id)
@@ -121,7 +120,7 @@ class TestMemoryDomainDetail:
         body = resp.text
         assert 'class="detail-back" href="/library?section=memory_domain"' in body
         assert "/catalog?kind=memory" not in body
-        assert 'href="/corporate-memory"' not in body
+        assert 'class="detail-back" href="/corporate-memory"' not in body
 
     def test_back_link_returns_to_the_library_when_opened_from_it(self, seeded_app, monkeypatch):
         # Library rows link in with ?source=library — sending the visitor

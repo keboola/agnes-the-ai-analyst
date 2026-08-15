@@ -547,3 +547,89 @@ class TestAgentEscapeHatch:
 
         assert result.exit_code == 0
         assert mock_post.call_args_list[0].args[0] == "/api/v1/agents/myagent/sessions"
+
+
+#: The sandbox workspace prompt asks the agent to end every answer with a
+#: fenced ```next_actions trailer; the web chat lifts it into one-click
+#: buttons. `agnes chat` is the one AG-UI client that puts the stream in
+#: front of a HUMAN, so it strips the trailer at render time — the wire
+#: format itself (and `--once --json`) deliberately stays raw for
+#: programmatic callers, the same line `app.chat.sources.strip_block`
+#: draws for the sources fence. Deltas split mid-fence on purpose: the
+#: SSE mapper forwards the runner's token chunks verbatim, which can cut
+#: anywhere.
+_TRAILER_ANSWER = "Revenue was 4.2M.\n\n```next_actions\n- Break it down by country\n```"
+
+EVENTS_TRAILER_SPLIT = [
+    {"type": "RUN_STARTED"},
+    {"type": "TEXT_MESSAGE_CONTENT", "delta": "Revenue was 4.2M.\n\n``"},
+    {"type": "TEXT_MESSAGE_CONTENT", "delta": "`next_ac"},
+    {"type": "TEXT_MESSAGE_CONTENT", "delta": "tions\n- Break it down by country\n"},
+    {"type": "TEXT_MESSAGE_CONTENT", "delta": "```"},
+    {"type": "TEXT_MESSAGE_END", "content": _TRAILER_ANSWER},
+    {"type": "RUN_FINISHED"},
+]
+
+EVENTS_TRAILER_IN_END_ONLY = [
+    {"type": "RUN_STARTED"},
+    {"type": "TEXT_MESSAGE_END", "content": _TRAILER_ANSWER},
+    {"type": "RUN_FINISHED"},
+]
+
+EVENTS_TRAILER_UNTERMINATED = [
+    {"type": "RUN_STARTED"},
+    {"type": "TEXT_MESSAGE_CONTENT", "delta": "Answer.\n\n```next_actions\n- half"},
+    {"type": "RUN_FINISHED"},
+]
+
+EVENTS_ORDINARY_CODE_FENCE = [
+    {"type": "RUN_STARTED"},
+    {"type": "TEXT_MESSAGE_CONTENT", "delta": "See:\n\n``"},
+    {"type": "TEXT_MESSAGE_CONTENT", "delta": "`sql\nSELECT 1\n```\n"},
+    {"type": "TEXT_MESSAGE_END", "content": "See:\n\n```sql\nSELECT 1\n```"},
+    {"type": "RUN_FINISHED"},
+]
+
+
+class TestNextActionsTrailer:
+    def _run_once(self, events, *extra_args):
+        with (
+            patch("cli.commands.chat.api_post", return_value=_resp(201, {"session_id": "sess-1"})),
+            patch("cli.commands.chat.api_post_sse", return_value=iter(events)),
+            patch("cli.commands.chat.api_delete", return_value=_resp(204)),
+        ):
+            return runner.invoke(app, ["chat", "myagent", "--once", "hi", *extra_args])
+
+    def test_streamed_trailer_never_reaches_the_terminal(self):
+        result = self._run_once(EVENTS_TRAILER_SPLIT)
+        assert result.exit_code == 0
+        assert "Revenue was 4.2M." in result.output
+        assert "next_actions" not in result.output
+        assert "Break it down by country" not in result.output
+
+    def test_fallback_print_strips_the_trailer_too(self):
+        """The no-deltas shape (fake runner, watchdog partial-save) prints
+        TEXT_MESSAGE_END.content directly — same strip applies."""
+        result = self._run_once(EVENTS_TRAILER_IN_END_ONLY)
+        assert result.exit_code == 0
+        assert "Revenue was 4.2M." in result.output
+        assert "next_actions" not in result.output
+
+    def test_an_unterminated_opener_is_not_a_block_and_is_shown(self):
+        """Same rule as every other implementation of this fence: stripping
+        an unterminated opener would eat a truncated answer's tail."""
+        result = self._run_once(EVENTS_TRAILER_UNTERMINATED)
+        assert "```next_actions" in result.output
+        assert "- half" in result.output
+
+    def test_an_ordinary_code_fence_streams_through(self):
+        result = self._run_once(EVENTS_ORDINARY_CODE_FENCE)
+        assert "```sql" in result.output
+        assert "SELECT 1" in result.output
+
+    def test_once_json_keeps_the_raw_wire_format(self):
+        """--json is the programmatic surface — exactly the caller the
+        machine-readable trailer exists for. No strip."""
+        result = self._run_once(EVENTS_TRAILER_SPLIT, "--json")
+        assert result.exit_code == 0
+        assert "next_actions" in result.output
