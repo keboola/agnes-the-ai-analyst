@@ -526,6 +526,95 @@
         .tbl-src { font-size: 12.5px; color: var(--ds-text-secondary); white-space: nowrap; }
         .tbl-src__proj { display: block; font-size: 11px; color: var(--ds-text-muted); }
 
+        /* ── Access column chip (table access policies, admin UI — Task 15)
+           One control, three visual states, all opening the SAME policy
+           editor modal (`openAccessPolicyModal`) — the modal explains an
+           ineligible table's fix inline rather than the row silently
+           offering nothing (design doc §13: "visible but disabled with the
+           reason inline"). Modelled on the `.tbl-pkg` chip above rather
+           than folded into the ⋯ actions menu — a security control an
+           admin should see at a glance, not one buried behind a menu item. ── */
+        .access-chip {
+            display: inline-flex;
+            align-items: center;
+            max-width: 100%;
+            padding: 3px 8px;
+            border-radius: var(--ds-radius-pill);
+            border: 1px solid var(--ds-border);
+            background: var(--ds-surface-dim);
+            color: var(--ds-text-muted);
+            font-size: 11px;
+            font-weight: 600;
+            font-family: inherit;
+            line-height: 1.3;
+            text-align: left;
+            white-space: normal;
+            cursor: pointer;
+        }
+
+        .access-chip:hover {
+            border-color: color-mix(in srgb, currentColor 45%, transparent);
+        }
+
+        .access-chip:focus-visible {
+            outline: var(--ds-focus-outline);
+            outline-offset: var(--ds-focus-outline-offset);
+        }
+
+        .access-chip--fixed {
+            border: none;
+            background: none;
+            padding: 3px 0;
+            cursor: help;
+        }
+
+        .access-chip--unavailable {
+            border-style: dashed;
+        }
+
+        .access-chip--active {
+            color: var(--ds-accent-success-ink);
+            background: var(--ds-accent-success-bg);
+            border-color: color-mix(in srgb, var(--ds-accent-success-line) 50%, transparent);
+        }
+
+        .access-chip-meta {
+            font-size: 10px;
+            color: var(--ds-text-secondary);
+            margin-top: 2px;
+        }
+
+        .form-hint--warn {
+            color: var(--ds-accent-warn-ink);
+            background: var(--ds-accent-warn-bg);
+            padding: 8px;
+            border-radius: 6px;
+            margin-bottom: 14px;
+        }
+
+        .form-hint--danger {
+            color: var(--ds-accent-danger-ink);
+            background: var(--ds-accent-danger-bg);
+            padding: 8px;
+            border-radius: 6px;
+            margin-bottom: 14px;
+        }
+
+        .ap-preview-result {
+            margin-top: 10px;
+            font-size: 12px;
+        }
+
+        .ap-history-row {
+            padding: 6px 0;
+            border-bottom: 1px solid var(--ds-border);
+            font-size: 12px;
+        }
+
+        .ap-history-row:last-child {
+            border-bottom: none;
+        }
+
         /* ── Row actions — one ⋯ per row, one menu for the table ────────
            Five icon buttons per row spent the widest column in the table on
            controls used once a month, and read as noise beside the data. The
@@ -3490,6 +3579,88 @@
         </div>
       </div>
     </div>
+
+    <!-- ═══════════════ Access Policy modal (table access policies, Task 15) ═══════════════
+         Opened from the Access column (openAccessPolicyModal), not from the
+         ⋯ actions menu — a separate state var (`_apTable`) from the generic
+         edit-table modal so the two can be opened independently without
+         clobbering each other's in-progress edit. Plain <textarea>, no
+         syntax highlighting (design doc §13: "inventing it here is scope
+         creep"). -->
+    <div class="modal-overlay" id="accessPolicyModal">
+        <div class="modal" style="max-width:720px;">
+            <div class="modal-header">
+                <h2>Access Policy — <span id="apTableName">—</span></h2>
+                <button class="modal-close" onclick="closeAccessPolicyModal()">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="18" y1="6" x2="6" y2="18"/>
+                        <line x1="6" y1="6" x2="18" y2="18"/>
+                    </svg>
+                </button>
+            </div>
+            <div class="modal-body">
+                <div class="form-hint form-hint--warn" id="apInterlockWarning" style="display:none;">
+                    <!-- Filled by _apRenderInterlockWarning() — mirrors the
+                         onEditBqAccessModeChange() pattern: computed and
+                         shown BEFORE save, not discovered only from a
+                         rejected PUT. -->
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label" for="apSql">Policy SQL</label>
+                    <textarea class="form-textarea" id="apSql" rows="8"
+                              placeholder="SELECT * FROM &lt;table&gt; WHERE ..."></textarea>
+                    <div class="form-hint">
+                        Plain SQL, DuckDB dialect. Reference the caller's identity with
+                        <code>$user_email</code>, <code>$user_id</code>, or <code>$user_groups</code>
+                        (a list — use <code>list_contains($user_groups, col)</code>). A variable may only
+                        stand where a value stands.
+                    </div>
+                    <button type="button" class="btn btn-secondary btn-sm" style="margin-top:8px;"
+                            onclick="apUseTableAsBase()">Use table as base</button>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label" for="apNote">Why does this policy exist?
+                        <span class="optional">(required when a policy is attached)</span></label>
+                    <textarea class="form-textarea" id="apNote" rows="2"
+                              placeholder="e.g. restrict rows to the caller's cost centre"></textarea>
+                    <div class="form-hint">The next admin who finds this policy needs to know whether it's safe to change.</div>
+                </div>
+
+                <div class="form-hint form-hint--danger" id="apSaveError" style="display:none;"></div>
+
+                <div class="form-group">
+                    <label class="form-label">Preview</label>
+                    <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                        <input type="text" class="form-input" id="apPreviewUser" placeholder="preview as user email"
+                               style="max-width:220px;">
+                        <span class="form-hint" style="margin:0;">or</span>
+                        <input type="text" class="form-input" id="apPreviewGroups" placeholder="groups, comma-separated"
+                               style="max-width:220px;">
+                        <button type="button" class="btn btn-secondary btn-sm" onclick="apRunPreview()">Preview</button>
+                    </div>
+                    <div class="form-hint">
+                        Single-persona preview — pick a user OR type an ad-hoc group set. Runs the SQL above
+                        (or, left blank, the stored policy) without saving anything.
+                    </div>
+                    <div id="apPreviewResult" style="display:none;"></div>
+                </div>
+
+                <div class="form-group" id="apHistorySection" style="display:none;">
+                    <label class="form-label">Recent policy edits</label>
+                    <div id="apHistoryList"></div>
+                </div>
+            </div>
+            <div class="modal-footer" style="justify-content:space-between;">
+                <button class="btn btn-danger btn-sm" id="apClearBtn" onclick="apClearPolicy()" style="display:none;">Clear policy</button>
+                <div style="display:flex; gap:10px;">
+                    <button class="btn btn-secondary" onclick="closeAccessPolicyModal()">Cancel</button>
+                    <button class="btn btn-primary" id="apSaveBtn" onclick="apSavePolicy()">Save policy</button>
+                </div>
+            </div>
+        </div>
+    </div>
 {% endblock %}
 
 {% block scripts %}
@@ -5405,6 +5576,61 @@
              + '</span>';
     }
 
+    // Table access policies design doc §3: a policy may only survive on a
+    // table agnes pull can't route around.
+    function _apIsEligible(t) {
+        return (t.query_mode === 'remote') || !!t.server_only;
+    }
+
+    // Per-row Access-policy control (design doc §13) — three states, ALL
+    // opening the same modal (openAccessPolicyModal):
+    //   (1) no policy on an internal table -> fixed, non-interactive "—"
+    //       (internal tables already row-scope via
+    //       connectors/internal/access.py — layering a second SQL policy
+    //       on top is out of scope here and would be actively confusing).
+    //   (2) no policy on an eligible table -> a plain "—" button that
+    //       opens the editor to attach one.
+    //   (3) no policy on a table that is still distributed -> a muted
+    //       "not available — distributed" button; still opens the SAME
+    //       modal, which explains the fix inline (§13: "visible but
+    //       disabled with the reason inline").
+    //   (4) a policy attached -> a tinted "Policy" chip with a by/date
+    //       caption underneath.
+    // A fifth state the design doc names — a "Policy · check" warn chip
+    // when a referenced mapping table is empty/stale (§15.1) — is NOT
+    // implemented: no surface today exposes "which mapping table does
+    // this policy depend on, and is it empty/stale" short of parsing the
+    // stored SQL server-side and cross-referencing policy_mapping rows'
+    // sync state — a new endpoint, out of scope for this task.
+    // TODO: wire once that signal exists (see Task 15's implementation
+    // report for the plan doc reference).
+    function renderAccessPolicyChip(t) {
+        var openCall = 'openAccessPolicyModal(' + escapeHtmlAttr(JSON.stringify(t)) + ')';
+        if ((t.source_type || '') === 'internal') {
+            return '<span class="access-chip access-chip--fixed" '
+                 + 'title="Internal tables use their own built-in row scoping, not access policies.">—</span>';
+        }
+        var hasPolicy = !!(t.access_policy_sql && String(t.access_policy_sql).trim());
+        if (hasPolicy) {
+            var metaBits = [];
+            if (t.access_policy_updated_by) { metaBits.push(escapeHtml(t.access_policy_updated_by)); }
+            if (t.access_policy_updated_at) { metaBits.push(escapeHtml(String(t.access_policy_updated_at).slice(0, 10))); }
+            var meta = metaBits.length ? ('<div class="access-chip-meta">' + metaBits.join(' &middot; ') + '</div>') : '';
+            var tip = t.access_policy_note ? t.access_policy_note : 'Access policy attached';
+            return '<button type="button" class="access-chip access-chip--active" '
+                 + 'title="' + escapeHtmlAttr(tip) + '" '
+                 + "onclick='" + openCall + "'>Policy</button>" + meta;
+        }
+        if (!_apIsEligible(t)) {
+            return '<button type="button" class="access-chip access-chip--unavailable" '
+                 + 'title="Only a server_only or query_mode=&#39;remote&#39; table can carry an access policy — click to see the fix." '
+                 + "onclick='" + openCall + "'>not available — distributed</button>";
+        }
+        return '<button type="button" class="access-chip access-chip--none" '
+             + 'title="No access policy — click to add one" '
+             + "onclick='" + openCall + "'>—</button>";
+    }
+
     // Deep-link from a table row into the grant editor, scoped to this
     // table_id. Grants are group-scoped, so this lands on the group list
     // with a "pick a group" banner; picking one carries the hash to that
@@ -5435,6 +5661,302 @@
         .catch(function(err) {
             showToast('Delete failed: ' + err.message, 'error');
         });
+    }
+
+    // ── Access Policy modal (table access policies, admin UI — Task 15) ──
+    // Deliberately separate state (`_apTable`) from the generic edit-table
+    // modal (`openEditModal` / `currentEditTableId`) — the Access chip and
+    // the ⋯ actions menu can be opened independently on the same row, and
+    // sharing state would let one clobber the other's in-progress edit.
+    let _apTable = null;
+
+    function openAccessPolicyModal(table) {
+        _apTable = table;
+        document.getElementById('apTableName').textContent = table.name || table.id;
+        document.getElementById('apSql').value = table.access_policy_sql || '';
+        document.getElementById('apNote').value = table.access_policy_note || '';
+        document.getElementById('apPreviewUser').value = '';
+        document.getElementById('apPreviewGroups').value = '';
+        var previewEl = document.getElementById('apPreviewResult');
+        previewEl.style.display = 'none';
+        previewEl.innerHTML = '';
+        _apHideSaveError();
+        document.getElementById('apClearBtn').style.display = table.access_policy_sql ? '' : 'none';
+        _apRenderInterlockWarning();
+        _apLoadHistory(table.id);
+        document.getElementById('accessPolicyModal').classList.add('active');
+    }
+
+    function closeAccessPolicyModal() {
+        document.getElementById('accessPolicyModal').classList.remove('active');
+        _apTable = null;
+    }
+
+    // Inline interlock warning (design doc §3.1/§13) — computed and shown
+    // BEFORE save, not discovered only from a rejected PUT.
+    function _apRenderInterlockWarning() {
+        var warn = document.getElementById('apInterlockWarning');
+        if (!_apTable || _apIsEligible(_apTable)) {
+            warn.style.display = 'none';
+            warn.textContent = '';
+            return;
+        }
+        warn.textContent = 'This table is distributed — agnes pull downloads it, so a policy here could be '
+            + 'routed around by pulling the raw parquet. Set server_only=true first, or move this table to '
+            + "query_mode='remote', before attaching a policy.";
+        warn.style.display = '';
+    }
+
+    function apUseTableAsBase() {
+        if (!_apTable) return;
+        document.getElementById('apSql').value = 'SELECT * FROM ' + (_apTable.name || _apTable.id);
+    }
+
+    function _apShowSaveError(msg) {
+        var el = document.getElementById('apSaveError');
+        el.textContent = msg;
+        el.style.display = '';
+    }
+
+    function _apHideSaveError() {
+        var el = document.getElementById('apSaveError');
+        el.style.display = 'none';
+        el.textContent = '';
+    }
+
+    async function apSavePolicy() {
+        if (!_apTable) return;
+        var sql = document.getElementById('apSql').value.trim();
+        var note = document.getElementById('apNote').value.trim();
+        _apHideSaveError();
+
+        // Fail fast client-side; the API 422s the same way
+        // (policy_note_required) and that response is rendered inline the
+        // same way below — this just skips the round trip for the common case.
+        if (sql && !note) {
+            _apShowSaveError('access_policy_note is required whenever a policy is attached -- explain why '
+                + 'this policy exists so the next admin to find it knows whether it is safe to change.');
+            return;
+        }
+
+        var btn = document.getElementById('apSaveBtn');
+        btn.disabled = true;
+        btn.textContent = 'Saving...';
+        try {
+            var r = await fetch('/api/admin/registry/' + encodeURIComponent(_apTable.id), {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    access_policy_sql: sql || null,
+                    access_policy_note: sql ? note : null,
+                }),
+            });
+            if (!r.ok) {
+                var d = await r.json().catch(function() { return {}; });
+                // §16 error contract: `detail` is a "reason: message" string
+                // for every policy-write rejection (policy_note_required,
+                // access_policy_requires_undistributed,
+                // policy_unlisted_table_reference, ...). Rendered INLINE
+                // here — NOT via the 4s auto-hide showToast() saveTableEdit()
+                // uses for ordinary field edits. A security-invariant
+                // rejection has to stay legible while the admin re-reads the
+                // SQL, not vanish on its own timer.
+                _apShowSaveError(typeof d.detail === 'string' ? d.detail : (d.detail || d.error || ('HTTP ' + r.status)));
+                return;
+            }
+            _apTable.access_policy_sql = sql || null;
+            _apTable.access_policy_note = sql ? note : null;
+            showToast(sql ? 'Access policy saved' : 'Access policy cleared', 'success');
+            closeAccessPolicyModal();
+            if (typeof loadAdminTablesLayout === 'function') loadAdminTablesLayout();
+        } catch (err) {
+            _apShowSaveError('Network error: ' + err.message);
+        } finally {
+            btn.disabled = false;
+            btn.textContent = 'Save policy';
+        }
+    }
+
+    async function apClearPolicy() {
+        if (!_apTable) return;
+        if (!(await confirmModal('Clear the access policy on "' + (_apTable.name || _apTable.id)
+                + '"? Everyone with access to this table will see every row and column again.'))) {
+            return;
+        }
+        _apHideSaveError();
+        var btn = document.getElementById('apClearBtn');
+        btn.disabled = true;
+        try {
+            var r = await fetch('/api/admin/registry/' + encodeURIComponent(_apTable.id), {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ access_policy_sql: null }),
+            });
+            if (!r.ok) {
+                var d = await r.json().catch(function() { return {}; });
+                _apShowSaveError(typeof d.detail === 'string' ? d.detail : (d.detail || d.error || ('HTTP ' + r.status)));
+                return;
+            }
+            _apTable.access_policy_sql = null;
+            _apTable.access_policy_note = null;
+            showToast('Access policy cleared', 'success');
+            closeAccessPolicyModal();
+            if (typeof loadAdminTablesLayout === 'function') loadAdminTablesLayout();
+        } catch (err) {
+            _apShowSaveError('Network error: ' + err.message);
+        } finally {
+            btn.disabled = false;
+        }
+    }
+
+    // v1: single-persona preview (pick a user OR type an ad-hoc group set) —
+    // design doc §13.1's full persona -> rows -> columns MATRIX (every
+    // distinct group-set among users who can read this table, plus union
+    // coverage + pairwise overlap) needs a "list the distinct group-sets of
+    // users with access to this table" primitive that doesn't exist yet (it
+    // would walk data-package grants / StackResolver per table -- a new
+    // admin endpoint, not template JS). TODO: once that primitive exists,
+    // drive apRunPreview()'s POST once per distinct group-set here and
+    // render the matrix (+ union coverage, pairwise overlap) instead of a
+    // single result.
+    async function apRunPreview() {
+        if (!_apTable) return;
+        var sql = document.getElementById('apSql').value.trim();
+        var userVal = document.getElementById('apPreviewUser').value.trim();
+        var groupsVal = document.getElementById('apPreviewGroups').value.trim();
+        var resultEl = document.getElementById('apPreviewResult');
+
+        if (!userVal && !groupsVal) {
+            resultEl.style.display = '';
+            resultEl.innerHTML = '<div class="form-hint form-hint--danger" style="margin-bottom:0;">'
+                + 'Enter a user email OR a comma-separated group list to preview as.</div>';
+            return;
+        }
+
+        // Leaving the textarea blank previews the STORED policy -- the
+        // preview endpoint treats an omitted `sql` that way (falls back to
+        // `row["access_policy_sql"]` server-side); typing something previews
+        // that CANDIDATE without saving it. A table with neither comes back
+        // as a 422 `policy_preview_no_policy`, rendered inline below like
+        // any other preview error.
+        var payload = {};
+        if (sql) { payload.sql = sql; }
+        if (userVal) {
+            payload.as_user = userVal;
+        } else {
+            payload.as_groups = groupsVal.split(',').map(function(s) { return s.trim(); }).filter(Boolean);
+        }
+
+        resultEl.style.display = '';
+        resultEl.innerHTML = '<div class="form-hint">Running preview…</div>';
+        try {
+            var r = await fetch('/api/admin/registry/' + encodeURIComponent(_apTable.id) + '/policy/preview', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+            });
+            var body = await r.json().catch(function() { return {}; });
+            if (!r.ok) {
+                resultEl.innerHTML = '<div class="form-hint form-hint--danger" style="margin-bottom:0;">'
+                    + escapeHtml(typeof body.detail === 'string' ? body.detail : (body.detail || body.error || ('HTTP ' + r.status)))
+                    + '</div>';
+                return;
+            }
+            resultEl.innerHTML = _apRenderPreviewResult(body);
+        } catch (err) {
+            resultEl.innerHTML = '<div class="form-hint form-hint--danger" style="margin-bottom:0;">'
+                + 'Network error: ' + escapeHtml(err.message) + '</div>';
+        }
+    }
+
+    function _apRenderPreviewResult(body) {
+        var cols = body.columns || [];
+        var hiddenCols = cols.filter(function(c) { return c.hidden; }).map(function(c) { return c.name; });
+        var visibleCols = cols.filter(function(c) { return !c.hidden; }).map(function(c) { return c.name; });
+        var rows = body.sample_rows || [];
+
+        var html = '<div class="ap-preview-result">';
+        html += '<strong>' + formatNumber(body.rows_visible) + '</strong> of <strong>'
+             + formatNumber(body.rows_total) + '</strong> rows visible';
+        if (hiddenCols.length) {
+            html += '<div class="form-hint" style="margin-top:6px;">Hidden columns: '
+                 + escapeHtml(hiddenCols.join(', ')) + '</div>';
+        }
+        if (rows.length && visibleCols.length) {
+            html += '<div style="margin-top:8px; max-height:220px; overflow:auto; '
+                 + 'border:1px solid var(--ds-border); border-radius:6px;">';
+            html += '<table class="data-table"><thead><tr>';
+            visibleCols.forEach(function(c) { html += '<th>' + escapeHtml(c) + '</th>'; });
+            html += '</tr></thead><tbody>';
+            rows.slice(0, 10).forEach(function(row) {
+                html += '<tr>';
+                visibleCols.forEach(function(c) {
+                    var v = row[c];
+                    html += '<td>' + escapeHtml(v === null || v === undefined ? '' : String(v)) + '</td>';
+                });
+                html += '</tr>';
+            });
+            html += '</tbody></table></div>';
+        }
+        html += '</div>';
+        return html;
+    }
+
+    // Recent policy edits (design doc §13: "History inline: the last N
+    // audit_log rows with the note"). Reads the existing Activity Center
+    // API (GET /api/admin/activity, resource + action_prefix filters) —
+    // zero new backend surface — rather than
+    // templates/macros/_detail.html's version_timeline(): that macro
+    // renders server-side from a Jinja-built `versions` list, but this
+    // page's rows (and which table's modal is open) are chosen entirely at
+    // runtime by the operator, so there is no per-table `versions` list to
+    // pass at template-render time. `since_minutes` is capped at 30 days
+    // (the endpoint's own max) — an edit older than that won't show here.
+    async function _apLoadHistory(tableId) {
+        var section = document.getElementById('apHistorySection');
+        var list = document.getElementById('apHistoryList');
+        section.style.display = 'none';
+        list.innerHTML = '';
+        try {
+            var r = await fetch('/api/admin/activity?resource=' + encodeURIComponent(tableId)
+                + '&action_prefix=update_table&since_minutes=43200&limit=50', { credentials: 'same-origin' });
+            if (!r.ok) return;
+            var body = await r.json();
+            var rows = (body.rows || []).filter(function(row) {
+                var params = _apParseAuditParams(row);
+                var fields = (params && params.updated_fields) || [];
+                return fields.indexOf('access_policy_sql') !== -1 || fields.indexOf('access_policy_note') !== -1;
+            }).slice(0, 5);
+            if (!rows.length) return;
+            list.innerHTML = rows.map(function(row) {
+                var params = _apParseAuditParams(row) || {};
+                var who = row.user_email || row.user_name || row.user_id || 'unknown';
+                var when = String(row.timestamp || '').slice(0, 16).replace('T', ' ');
+                var cleared = ('access_policy_sql' in params) && !params.access_policy_sql;
+                var summary = cleared
+                    ? 'cleared the policy'
+                    : (params.access_policy_note ? escapeHtml(params.access_policy_note) : 'updated the policy (no note recorded)');
+                return '<div class="ap-history-row"><strong>' + escapeHtml(when) + '</strong> — '
+                     + escapeHtml(who) + ': ' + summary + '</div>';
+            }).join('');
+            section.style.display = '';
+        } catch (e) {
+            // History is a convenience surface — a failed fetch just leaves
+            // the section hidden rather than showing an error the admin
+            // can't act on.
+        }
+    }
+
+    // audit_log.params is a DuckDB JSON column; depending on backend/driver
+    // it can arrive already-parsed (object) or as raw JSON text (string) —
+    // the same ambiguity activity_center.html's prettyJson() defends against.
+    function _apParseAuditParams(row) {
+        var raw = row && row.params;
+        if (raw && typeof raw === 'object') return raw;
+        if (typeof raw === 'string' && raw) {
+            try { return JSON.parse(raw); } catch (e) { return null; }
+        }
+        return null;
     }
 
     // btn is the clicked element (passed as `this` from onclick) so the
@@ -5804,11 +6326,12 @@
           + '<table class="data-table" id="adminTablesFlat">'
           + '<colgroup>'
           +   '<col style="width: 4%">'
-          +   '<col style="width: 27%">'
-          +   '<col style="width: 15%">'
-          +   '<col style="width: 15%">'
-          +   '<col style="width: 19%">'
-          +   '<col style="width: 14%">'
+          +   '<col style="width: 24%">'
+          +   '<col style="width: 13%">'
+          +   '<col style="width: 13%">'
+          +   '<col style="width: 16%">'
+          +   '<col style="width: 11%">'
+          +   '<col style="width: 13%">'
           +   '<col style="width: 6%">'
           + '</colgroup>'
           + '<thead><tr>'
@@ -5818,6 +6341,7 @@
           +   '<th>Source</th>'
           +   '<th>Mode</th>'
           +   '<th>Package</th>'
+          +   '<th>Access</th>'
           +   '<th>Reaches</th>'
           +   '<th><span class="tbl-sr">Actions</span></th>'
           + '</tr></thead><tbody>';
@@ -5929,6 +6453,11 @@
                       + ' title="A table reaches nobody until a package carries it">'
                       + 'In no package</button></td>';
             }
+
+            // ── Access (table access policies, admin UI — Task 15): what a
+            // caller who can reach this table actually sees, narrower than
+            // Package/Reaches which answer whether they can reach it at all.
+            html += '<td>' + renderAccessPolicyChip(t) + '</td>';
 
             // ── Reaches
             if (isInternal) {

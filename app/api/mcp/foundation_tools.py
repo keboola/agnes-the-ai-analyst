@@ -533,9 +533,14 @@ def register_foundation_tools(
             rows:     How many sample rows to return (default 5, max 50).
 
         Returns ``{"schema": {...}, "sample": {"table_id": ..., "rows": [...],
-        "source": ...}}`` where ``sample.rows`` is a list of ``{column: value}``
+        "source": ..., "row_scope": {"policied_tables": [...], "note": str} |
+        None}}`` where ``sample.rows`` is a list of ``{column: value}``
         objects (empty when the table has no rows — there is no ``columns``
-        key; column names come from ``schema.columns``).
+        key; column names come from ``schema.columns``). ``sample.row_scope``
+        is present when this table has an access policy applied — the rows
+        are YOUR scoped slice, not the whole table. When present, state that
+        qualification in your answer; never present a count or aggregate
+        over the sample as an organisation-wide figure.
         """
         rows = min(max(1, rows), 50)
         async with httpx.AsyncClient() as c:
@@ -566,7 +571,13 @@ def register_foundation_tools(
                    BigQuery dialect for remote tables (check sql_flavor in catalog).
             limit: Maximum rows to return (default 1000).
 
-        Returns ``{"columns": [...], "rows": [[...], ...], "truncated": bool}``.
+        Returns ``{"columns": [...], "rows": [[...], ...], "truncated": bool,
+        "row_scope": {"policied_tables": [...], "note": str} | None}``.
+        ``row_scope`` is present when a table this query touched has an
+        access policy applied — the result is YOUR scoped slice, not the
+        whole table. When present, state that qualification in your answer;
+        never present an aggregate over the result as an organisation-wide
+        figure.
         """
         async with httpx.AsyncClient() as c:
             r = await c.post(

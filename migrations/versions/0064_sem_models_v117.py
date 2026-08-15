@@ -1,9 +1,9 @@
 """semantic_models, semantic_sources, data_package_semantic_models
 
-Mirrors DuckDB ``_v115_to_v116``. Pure additive DDL, no backfill.
+Mirrors DuckDB ``_v116_to_v117``. Pure additive DDL, no backfill.
 
-Revision ID: 0063_sem_models_v116
-Revises: 0062_knowledge_domains_backfill
+Revision ID: 0064_sem_models_v117
+Revises: 0063_access_policy_columns_v116
 Create Date: 2026-08-13
 
 Note on the down_revision: this chains after
@@ -23,8 +23,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision: str = "0063_sem_models_v116"
-down_revision: Union[str, None] = "0062_knowledge_domains_backfill"
+revision: str = "0064_sem_models_v117"
+down_revision: Union[str, None] = "0063_access_policy_columns_v116"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

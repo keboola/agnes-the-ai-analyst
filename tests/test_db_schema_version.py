@@ -1402,3 +1402,84 @@ def test_add_column_default_reaches_pre_existing_rows():
     assert row[1] is False, "…for BOOLEAN too — is_draft = FALSE filters on it"
     assert row[2] is None, "…and a column with no DEFAULT still reads NULL"
     conn.close()
+
+
+def test_v116_table_registry_access_policy_columns(tmp_path):
+    """v115→v116 (table access policies, §4): a fresh install carries the
+    five access-policy columns on ``table_registry`` — access_policy_sql /
+    access_policy_note / access_policy_updated_at / access_policy_updated_by
+    default NULL, policy_mapping defaults FALSE — and the migration step is
+    idempotent."""
+    db_path = tmp_path / "system.duckdb"
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)
+    # `>=`, matching this file's own convention (see the v80 check above): the
+    # claim under test is that a fresh install carries the v116 columns, not
+    # that the ladder stops at 116. An equality here fails on every later
+    # migration for reasons having nothing to do with access policies.
+    assert SCHEMA_VERSION >= 116
+    assert get_schema_version(conn) == SCHEMA_VERSION
+
+    cols = {r[1] for r in conn.execute("PRAGMA table_info('table_registry')").fetchall()}
+    assert {
+        "access_policy_sql",
+        "access_policy_note",
+        "access_policy_updated_at",
+        "access_policy_updated_by",
+        "policy_mapping",
+    } <= cols, f"access-policy columns missing from table_registry: {cols}"
+
+    conn.execute("INSERT INTO table_registry (id, name) VALUES ('t1', 'orders')")
+    row = conn.execute(
+        "SELECT access_policy_sql, access_policy_note, access_policy_updated_at, "
+        "access_policy_updated_by, policy_mapping FROM table_registry WHERE id = 't1'"
+    ).fetchone()
+    assert row == (None, None, None, None, False), f"new row's access-policy columns: {row}"
+
+    # idempotency — re-running the step must not raise
+    from src.db import _v115_to_v116
+
+    _v115_to_v116(conn)
+    conn.close()
+
+
+def test_v115_db_migrates_to_v116_adds_access_policy_columns(tmp_path):
+    """A DB pinned at v115 (a live instance's state before this migration)
+    climbs to v116 via the upgrade-block dispatch, keeping an existing row
+    intact with the five new columns reading their documented defaults.
+
+    ``table_registry`` is REFERENCES'd by ``sync_state``/``sync_history``,
+    and DuckDB refuses to DROP a column from a table other tables have FKs
+    into — the same restriction ``test_v97_db_upgrades_to_v98`` hit for
+    ``chat_sessions`` (referenced by ``chat_messages``). So, like that test,
+    this exercises the ``current < 116`` dispatch + idempotent guarded ALTER
+    directly rather than simulating a column-free table.
+    """
+    db_path = tmp_path / "v115.duckdb"
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)
+    conn.execute("UPDATE schema_version SET version = 115")
+    conn.execute("INSERT INTO table_registry (id, name) VALUES ('keep', 'orders')")
+    conn.close()
+
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)
+    assert get_schema_version(conn) == SCHEMA_VERSION
+
+    cols = {r[1] for r in conn.execute("PRAGMA table_info('table_registry')").fetchall()}
+    assert {
+        "access_policy_sql",
+        "access_policy_note",
+        "access_policy_updated_at",
+        "access_policy_updated_by",
+        "policy_mapping",
+    } <= cols
+
+    row = conn.execute("SELECT id, access_policy_sql, policy_mapping FROM table_registry WHERE id = 'keep'").fetchone()
+    assert row == ("keep", None, False), f"existing row must survive the upgrade with defaulted columns: {row}"
+
+    # idempotency — re-running the step must not raise
+    from src.db import _v115_to_v116
+
+    _v115_to_v116(conn)
+    conn.close()
