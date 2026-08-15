@@ -101,14 +101,14 @@ def test_run_pull_redownloads_when_parquet_missing_despite_matching_hash(
 ):
     """Regression: hash-equal-but-file-missing must re-download.
 
-    Repro: analyst's `~/.config/agnes/sync_state.json` says the local
+    Repro: the workspace's `.claude/agnes/sync_state.json` says the local
     parquet is in sync with the server (hashes match), but the actual
-    `<workspace>/server/parquet/<tid>.parquet` file is gone — manual rm,
-    a different workspace sharing the same global sync_state, an
-    operator nuking server/parquet/, etc. Pre-fix `agnes pull` would
-    skip the download (hash matches) and the next DuckDB view rebuild
-    would fail on a missing file. Now the existence check forces a
-    re-download even when the hash equality says "you have this."
+    `<workspace>/server/parquet/<tid>.parquet` file is gone — manual rm, an
+    operator nuking server/parquet/, the one-time legacy-state migration
+    (#1311) seeding a hash from a stale machine-global record, etc. Pre-fix
+    `agnes pull` would skip the download (hash matches) and the next DuckDB
+    view rebuild would fail on a missing file. Now the existence check
+    forces a re-download even when the hash equality says "you have this."
     """
     canned_manifest = {"tables": {"tbl1": {"hash": "abc", "rows": 0, "size_bytes": 0}}}
     canned_memory = {"mandatory": [], "approved": []}
@@ -138,16 +138,17 @@ def test_run_pull_redownloads_when_parquet_missing_despite_matching_hash(
     monkeypatch.setattr("cli.lib.pull._is_valid_parquet", lambda p: True, raising=False)
     monkeypatch.setattr("cli.lib.pull._file_md5", lambda p: "abc", raising=False)
 
-    # Seed sync_state.json claiming we already have tbl1 with the matching hash —
-    # but DON'T put a parquet on disk. Pre-fix this combo would short-circuit
-    # the download.
+    # Seed the workspace-scoped sync_state claiming we already have tbl1
+    # with the matching hash — but DON'T put a parquet on disk. Pre-fix
+    # this combo would short-circuit the download.
     from cli.config import save_sync_state
 
     save_sync_state(
         {
             "tables": {"tbl1": {"hash": "abc", "rows": 0, "size_bytes": 0}},
             "last_sync": "2026-01-01T00:00:00+00:00",
-        }
+        },
+        workspace=tmp_path,
     )
 
     target_parquet = tmp_path / "server" / "parquet" / "tbl1.parquet"
@@ -191,14 +192,15 @@ def test_run_pull_skips_download_when_hash_matches_and_file_present(
     monkeypatch.setattr("cli.lib.pull.api_get", _api_get, raising=False)
     monkeypatch.setattr("cli.lib.pull.stream_download", _stream_download, raising=False)
 
-    # Seed both sync_state AND the parquet on disk.
+    # Seed both the workspace-scoped sync_state AND the parquet on disk.
     from cli.config import save_sync_state
 
     save_sync_state(
         {
             "tables": {"tbl1": {"hash": "abc", "rows": 0, "size_bytes": 0}},
             "last_sync": "2026-01-01T00:00:00+00:00",
-        }
+        },
+        workspace=tmp_path,
     )
     parquet_dir = tmp_path / "server" / "parquet"
     parquet_dir.mkdir(parents=True)
@@ -438,7 +440,8 @@ def test_download_one_preserves_old_file_on_persistent_hash_mismatch(
         {
             "tables": {"tbl1": {"hash": "oldhash", "rows": 0, "size_bytes": 0}},
             "last_sync": "2026-01-01T00:00:00+00:00",
-        }
+        },
+        workspace=tmp_path,
     )
 
     canned_manifest = {"tables": {"tbl1": {"hash": "serverhash", "rows": 0, "size_bytes": 0}}}
@@ -601,7 +604,7 @@ def _seed_local_parquet(tmp_path, *names):
         tables[n] = {"hash": "h", "rows": 0, "size_bytes": 0}
     from cli.config import save_sync_state
 
-    save_sync_state({"tables": tables, "last_sync": "2026-01-01T00:00:00+00:00"})
+    save_sync_state({"tables": tables, "last_sync": "2026-01-01T00:00:00+00:00"}, workspace=tmp_path)
 
 
 def test_run_pull_prunes_local_parquet_when_table_leaves_typed_stack(
@@ -632,7 +635,7 @@ def test_run_pull_prunes_local_parquet_when_table_leaves_typed_stack(
 
     from cli.config import get_sync_state
 
-    synced = get_sync_state()["tables"]
+    synced = get_sync_state(workspace=tmp_path)["tables"]
     assert "tbl1" in synced
     assert "tbl2" not in synced, "pruned table's sync_state row must be removed"
     assert result.tables_removed == 1
@@ -802,3 +805,146 @@ def test_run_pull_prune_preserves_user_base_table(tmp_path, monkeypatch):
     assert "my_scratch" in base_tables, "user BASE TABLE must survive prune"
     assert rows == [(1,)]
     assert not any(e.get("table") == "my_scratch" for e in result.errors), "no error recorded for the user base table"
+
+
+# ---------------------------------------------------------------------------
+# #1311 — sync_state is workspace-scoped: two workspaces on the same machine
+# must not share one download-hash record.
+# ---------------------------------------------------------------------------
+
+
+def test_run_pull_workspace_state_does_not_leak_across_workspaces(tmp_path, monkeypatch):
+    """A second workspace on the same machine must not inherit the first
+    workspace's fresh hash record and wrongly skip its own stale parquet's
+    re-download.
+
+    Repro: both workspaces already have an independent, up-to-date-as-of-
+    "v1" scoped state AND a matching on-disk parquet (two prior,
+    already-migrated pulls). The server bumps the table to "v2". Workspace A
+    pulls first and updates its OWN state. Under the pre-#1311 machine-global
+    file, workspace B's `run_pull` would then see A's already-fresh "v2"
+    record, match it against the server's "v2", and skip its own download —
+    despite B's on-disk parquet still holding "v1" bytes. Scoped state means
+    B's own record is untouched by A's write, so B correctly re-downloads.
+    """
+    from cli.config import get_sync_state, save_sync_state
+
+    ws_a = tmp_path / "workspace_a"
+    ws_b = tmp_path / "workspace_b"
+
+    for ws in (ws_a, ws_b):
+        pq = ws / "server" / "parquet"
+        pq.mkdir(parents=True)
+        (pq / "tbl1.parquet").write_bytes(b"OLD-V1" + b"\x00" * 50)
+        save_sync_state(
+            {
+                "tables": {"tbl1": {"hash": "v1", "rows": 0, "size_bytes": 0}},
+                "last_sync": "2026-01-01T00:00:00+00:00",
+            },
+            workspace=ws,
+        )
+
+    manifest = {"tables": {"tbl1": {"hash": "v2", "rows": 0, "size_bytes": 0}}}
+    canned_memory = {"mandatory": [], "approved": []}
+
+    def _api_get(path, *args, **kwargs):
+        resp = MagicMock()
+        resp.status_code = 200
+        if path == "/api/sync/manifest":
+            resp.json.return_value = manifest
+        elif path == "/api/memory/bundle":
+            resp.json.return_value = canned_memory
+        resp.raise_for_status = lambda: None
+        return resp
+
+    downloaded: list[str] = []
+
+    def _stream_download(path, target_path, progress_callback=None):
+        from pathlib import Path as _P
+
+        downloaded.append(str(target_path))
+        _P(target_path).write_bytes(b"NEW-V2" + b"\x00" * 50)
+        return 56
+
+    monkeypatch.setattr("cli.lib.pull.api_get", _api_get, raising=False)
+    monkeypatch.setattr("cli.lib.pull.stream_download", _stream_download, raising=False)
+    monkeypatch.setattr("cli.lib.pull._is_valid_parquet", lambda p: True, raising=False)
+    monkeypatch.setattr("cli.lib.pull._file_md5", lambda p: "v2", raising=False)
+
+    result_a = run_pull(server_url="http://x", token="t", workspace=ws_a)
+    assert result_a.tables_updated == 1
+    assert len(downloaded) == 1
+
+    result_b = run_pull(server_url="http://x", token="t", workspace=ws_b)
+    assert result_b.tables_updated == 1, (
+        "workspace B must re-download tbl1 independently of workspace A's already-fresh state — "
+        f"got tables_updated={result_b.tables_updated}, downloads so far={downloaded}"
+    )
+    assert len(downloaded) == 2
+
+    assert get_sync_state(workspace=ws_a)["tables"]["tbl1"]["hash"] == "v2"
+    assert get_sync_state(workspace=ws_b)["tables"]["tbl1"]["hash"] == "v2"
+
+
+# ---------------------------------------------------------------------------
+# #1325 — a table the v49 stack sync fetches for the FIRST time must already
+# be queryable by the time `run_pull` returns, not one pull cycle later.
+# ---------------------------------------------------------------------------
+
+
+def test_run_pull_direct_table_is_queryable_in_the_same_pull(tmp_path, monkeypatch):
+    """Regression for step ordering: `_rebuild_duckdb_views` used to run
+    BEFORE the v49 stack sync populated `.claude/data/`, so a table synced
+    for the first time by a given `agnes pull` stayed unqueryable until the
+    NEXT pull. The stack sync must run first."""
+    manifest = {
+        "tables": {},
+        "direct_tables": [_typed_table("orders")],
+        "data_packages": [],
+        "memory_domains": [],
+    }
+
+    def _api_get(path, *args, **kwargs):
+        resp = MagicMock()
+        resp.status_code = 200
+        if path == "/api/sync/manifest":
+            resp.json.return_value = manifest
+        elif path == "/api/memory/bundle":
+            resp.json.return_value = {"mandatory": [], "approved": []}
+        else:
+            resp.json.return_value = {}
+        resp.raise_for_status = lambda: None
+        return resp
+
+    def _stream_download(path, target_path, progress_callback=None):
+        # Real parquet content (unlike `_PARQUET`'s PAR1-bracketed zero
+        # bytes elsewhere in this file) — CREATE VIEW needs a real,
+        # bindable footer to prove the view actually resolves.
+        import duckdb as _duckdb
+        from pathlib import Path as _P
+
+        _P(target_path).parent.mkdir(parents=True, exist_ok=True)
+        c = _duckdb.connect()
+        try:
+            c.execute(f"COPY (SELECT 42 AS answer) TO '{target_path}' (FORMAT PARQUET)")
+        finally:
+            c.close()
+
+    monkeypatch.setattr("cli.lib.pull.api_get", _api_get, raising=False)
+    monkeypatch.setattr("cli.lib.pull.stream_download", _stream_download, raising=False)
+    monkeypatch.setattr("cli.lib.pull._file_md5", lambda p: "h", raising=False)
+
+    run_pull(server_url="http://x", token="t", workspace=tmp_path)
+
+    ref = tmp_path / ".claude" / "data" / "_direct" / "orders.parquet"
+    assert ref.exists(), "stack sync must have fetched the direct table"
+
+    import duckdb
+
+    conn = duckdb.connect(str(tmp_path / "user" / "duckdb" / "analytics.duckdb"))
+    try:
+        assert conn.execute("SELECT answer FROM orders").fetchone()[0] == 42, (
+            "a table synced by THIS pull's stack sync must already be queryable when run_pull returns"
+        )
+    finally:
+        conn.close()

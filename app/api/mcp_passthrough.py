@@ -35,10 +35,12 @@ from app.api.mcp_policy import (
     MutatingNotAllowed,
     PerUserCredentialMissing,
     RateLimited,
+    SourceUrlRefused,
     caller_authority,
     connection_scope_ids,
     enforce_passthrough_access,
     enforce_per_user_credential,
+    enforce_source_url_runtime_policy,
     redact_response,
 )
 from app.auth.access import _user_group_ids
@@ -201,6 +203,47 @@ async def invoke_passthrough_tool(
     source = sources_repo.get(tool["source_id"])
     if source is None or not source.get("enabled", True):
         raise HTTPException(status_code=409, detail="upstream MCP source missing or disabled")
+
+    # Runtime twin of the admin-time url policy (#1216), behind
+    # mcp.source_url_runtime_enforce (default off). Refuses a credentialed
+    # dial to a url the CURRENT policy would refuse, even on a row enabled
+    # before the policy — or this switch — existed. Shared with the SSE /
+    # Streamable-HTTP transport closures (app/api/mcp/tools_generator) via one
+    # helper so the two seams cannot drift apart.
+    try:
+        enforce_source_url_runtime_policy(source)
+    except SourceUrlRefused as exc:
+        # The operator-routing facts (reason / admin report / switch) go to an
+        # ADMIN caller and to the log; a non-admin gets the friendly sentence
+        # only. ``exc.reason`` embeds the source's literal network address
+        # (``address_in_blocked_range: 169.254.169.254``), and the sibling
+        # analyst-reachable url-policy gate deliberately withholds exactly
+        # that (``app/api/mcp_user_secrets.py``, per the rbac reviewer on
+        # #1204): this must not become the first place a non-admin learns a
+        # source's address. The pre-existing 502 branch below does surface the
+        # upstream url, but that is a different question (an upstream that
+        # answered) and is not a reason to widen this one (Devin Review on
+        # PR #1301).
+        logger.warning(
+            "mcp passthrough refused for source %s: url failed the runtime policy (%s)",
+            source.get("id"),
+            exc.reason,
+        )
+        detail: Dict[str, Any] = {
+            "error": "mcp_source_url_refused",
+            "message": (
+                str(exc)
+                if authority.is_admin
+                else (
+                    f"{source.get('name') or source.get('id')} is not configured correctly. Ask an admin to check it."
+                )
+            ),
+        }
+        if authority.is_admin:
+            detail["reason"] = exc.reason
+            detail["admin_report"] = exc.admin_report_hint
+            detail["switch"] = exc.switch
+        raise HTTPException(status_code=409, detail=detail) from exc
 
     # Fail-closed guard for per-user sources — shared with the SSE / Streamable
     # transport closures (app/api/mcp/tools_generator) so the pre-forward guard

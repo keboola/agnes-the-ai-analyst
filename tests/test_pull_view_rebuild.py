@@ -2,6 +2,7 @@
 (directory of parts) over a hive glob, while single-file tables keep their
 stem view. Real parquet parts, so read_parquet actually resolves them.
 """
+
 from __future__ import annotations
 
 import duckdb
@@ -76,8 +77,10 @@ def test_staging_dir_is_ignored(tmp_path):
 
     conn = _analytics(tmp_path)
     try:
-        names = {r[0] for r in conn.execute(
-            "SELECT table_name FROM information_schema.tables WHERE table_type='VIEW'").fetchall()}
+        names = {
+            r[0]
+            for r in conn.execute("SELECT table_name FROM information_schema.tables WHERE table_type='VIEW'").fetchall()
+        }
         assert "account" in names
         assert not any(n.startswith(".staging") for n in names)
     finally:
@@ -99,6 +102,7 @@ def test_flat_partitioned_layout_builds_queryable_view(tmp_path):
         assert conn.execute("SELECT count(*) FROM cost").fetchone()[0] == 10
     finally:
         conn.close()
+
 
 # ---------------------------------------------------------------------------
 # Local snapshots must survive the rebuild.
@@ -180,9 +184,7 @@ def test_snapshot_does_not_shadow_a_user_base_table(tmp_path):
     conn = _analytics(tmp_path)
     try:
         assert conn.execute("SELECT count(*) FROM scratch").fetchone()[0] == 1
-        kind = conn.execute(
-            "SELECT table_type FROM information_schema.tables WHERE table_name='scratch'"
-        ).fetchone()[0]
+        kind = conn.execute("SELECT table_type FROM information_schema.tables WHERE table_name='scratch'").fetchone()[0]
         assert kind == "BASE TABLE"
     finally:
         conn.close()
@@ -217,8 +219,7 @@ def test_corrupt_snapshot_is_skipped_without_aborting_the_rebuild(tmp_path):
     try:
         assert conn.execute("SELECT count(*) FROM account").fetchone()[0] == 3
         assert conn.execute("SELECT count(*) FROM good").fetchone()[0] == 5
-        names = {r[0] for r in conn.execute(
-            "SELECT table_name FROM information_schema.tables").fetchall()}
+        names = {r[0] for r in conn.execute("SELECT table_name FROM information_schema.tables").fetchall()}
         assert "broken" not in names
     finally:
         conn.close()
@@ -236,8 +237,10 @@ def test_meta_sidecar_is_not_mistaken_for_a_snapshot(tmp_path):
 
     conn = _analytics(tmp_path)
     try:
-        names = {r[0] for r in conn.execute(
-            "SELECT table_name FROM information_schema.tables WHERE table_type='VIEW'").fetchall()}
+        names = {
+            r[0]
+            for r in conn.execute("SELECT table_name FROM information_schema.tables WHERE table_type='VIEW'").fetchall()
+        }
         assert names == {"cz_recent"}
     finally:
         conn.close()
@@ -467,3 +470,214 @@ def test_mcp_pull_response_carries_withheld_snapshot_names():
 
     src = inspect.getsource(srv)
     assert '"snapshot_views_blocked"' in src, "MCP pull response drops the withheld names"
+
+
+# ---------------------------------------------------------------------------
+# #1325 — the stack-sync tree (`.claude/data/_direct/` +
+# `.claude/data/<package_slug>/`, written by step 8 / `cli/lib/pull_sync.py`)
+# must get DuckDB views too, named after the reference FILENAME (the
+# analyst-facing table name), never the content-addressed
+# `_shared/<table_id>.parquet` stem.
+# ---------------------------------------------------------------------------
+
+
+def _stack_dir(workspace):
+    return workspace / ".claude" / "data"
+
+
+def test_direct_table_gets_a_view(tmp_path):
+    pq = tmp_path / "server" / "parquet"
+    _write_parquet(_stack_dir(tmp_path) / "_direct" / "orders.parquet", 3)
+
+    _rebuild_duckdb_views(tmp_path, pq)
+
+    conn = _analytics(tmp_path)
+    try:
+        assert conn.execute("SELECT count(*) FROM orders").fetchone()[0] == 3
+    finally:
+        conn.close()
+
+
+def test_package_table_gets_a_view(tmp_path):
+    pq = tmp_path / "server" / "parquet"
+    _write_parquet(_stack_dir(tmp_path) / "sales_pkg" / "customers.parquet", 5)
+
+    _rebuild_duckdb_views(tmp_path, pq)
+
+    conn = _analytics(tmp_path)
+    try:
+        assert conn.execute("SELECT count(*) FROM customers").fetchone()[0] == 5
+    finally:
+        conn.close()
+
+
+def test_two_packages_referencing_same_table_register_once(tmp_path):
+    """Two packages ship the SAME table (same name, same content) — the
+    view must be registered once, not double-created or errored on."""
+    pq = tmp_path / "server" / "parquet"
+    data = _stack_dir(tmp_path)
+    _write_parquet(data / "pkg_a" / "orders.parquet", 4)
+    _write_parquet(data / "pkg_b" / "orders.parquet", 4)
+
+    _rebuild_duckdb_views(tmp_path, pq)
+
+    conn = _analytics(tmp_path)
+    try:
+        names = [
+            r[0]
+            for r in conn.execute(
+                "SELECT table_name FROM information_schema.tables WHERE table_name='orders'"
+            ).fetchall()
+        ]
+        assert names == ["orders"], f"expected exactly one 'orders' registration, got {names}"
+        assert conn.execute("SELECT count(*) FROM orders").fetchone()[0] == 4
+    finally:
+        conn.close()
+
+
+def test_server_parquet_wins_precedence_over_stack_tree(tmp_path):
+    """A table reachable from BOTH trees: `server/parquet/` (the
+    long-standing path) wins, and the stack-tree copy is silently skipped —
+    never a duplicate, never flip-flopping between the two on successive
+    pulls."""
+    pq = tmp_path / "server" / "parquet"
+    _write_parquet(pq / "orders.parquet", 3)
+    _write_parquet(_stack_dir(tmp_path) / "_direct" / "orders.parquet", 99)
+
+    _rebuild_duckdb_views(tmp_path, pq)
+
+    conn = _analytics(tmp_path)
+    try:
+        assert conn.execute("SELECT count(*) FROM orders").fetchone()[0] == 3, (
+            "server/parquet/ must win a same-name collision with the stack tree"
+        )
+    finally:
+        conn.close()
+
+    # Stable across a second rebuild too — not flip-flopping run to run.
+    _rebuild_duckdb_views(tmp_path, pq)
+    conn = _analytics(tmp_path)
+    try:
+        assert conn.execute("SELECT count(*) FROM orders").fetchone()[0] == 3
+    finally:
+        conn.close()
+
+
+def test_shared_dir_itself_is_never_registered_as_a_view(tmp_path):
+    """`_shared/<table_id>.parquet` is the content-addressed store the
+    reference trees point INTO — it carries no analyst-facing name and must
+    never be walked directly for view registration."""
+    pq = tmp_path / "server" / "parquet"
+    pq.mkdir(parents=True, exist_ok=True)
+    _write_parquet(_stack_dir(tmp_path) / "_shared" / "tbl_orders.parquet", 7)
+
+    _rebuild_duckdb_views(tmp_path, pq)
+
+    conn = _analytics(tmp_path)
+    try:
+        names = {r[0] for r in conn.execute("SELECT table_name FROM information_schema.tables").fetchall()}
+        assert "tbl_orders" not in names
+        assert names == set(), f"a bare _shared parquet with no reference must register nothing, got {names}"
+    finally:
+        conn.close()
+
+
+def test_stack_view_survives_a_second_rebuild(tmp_path):
+    pq = tmp_path / "server" / "parquet"
+    _write_parquet(_stack_dir(tmp_path) / "_direct" / "orders.parquet", 9)
+
+    _rebuild_duckdb_views(tmp_path, pq)
+    _rebuild_duckdb_views(tmp_path, pq)
+
+    conn = _analytics(tmp_path)
+    try:
+        assert conn.execute("SELECT count(*) FROM orders").fetchone()[0] == 9
+    finally:
+        conn.close()
+
+
+def test_stack_reference_does_not_shadow_a_user_base_table(tmp_path):
+    """Same guard the `parquet_dir` loop already honors."""
+    pq = tmp_path / "server" / "parquet"
+    pq.mkdir(parents=True, exist_ok=True)
+    _write_parquet(_stack_dir(tmp_path) / "_direct" / "scratch.parquet", 7)
+
+    db_path = tmp_path / "user" / "duckdb" / "analytics.duckdb"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = duckdb.connect(str(db_path))
+    try:
+        conn.execute("CREATE TABLE scratch AS SELECT 1 AS id")
+    finally:
+        conn.close()
+
+    _rebuild_duckdb_views(tmp_path, pq)
+
+    conn = _analytics(tmp_path)
+    try:
+        assert conn.execute("SELECT count(*) FROM scratch").fetchone()[0] == 1
+        kind = conn.execute("SELECT table_type FROM information_schema.tables WHERE table_name='scratch'").fetchone()[0]
+        assert kind == "BASE TABLE"
+    finally:
+        conn.close()
+
+
+def test_corrupt_stack_reference_is_skipped_without_aborting_the_rebuild(tmp_path):
+    """A truncated reference must not cost the analyst their other views —
+    same tolerance as a corrupt `agnes snapshot create` file."""
+    pq = tmp_path / "server" / "parquet"
+    data = _stack_dir(tmp_path)
+    broken = data / "_direct" / "broken.parquet"
+    broken.parent.mkdir(parents=True, exist_ok=True)
+    broken.write_bytes(b"not a parquet file")
+    _write_parquet(data / "_direct" / "good.parquet", 5)
+
+    _rebuild_duckdb_views(tmp_path, pq)
+
+    conn = _analytics(tmp_path)
+    try:
+        assert conn.execute("SELECT count(*) FROM good").fetchone()[0] == 5
+        names = {r[0] for r in conn.execute("SELECT table_name FROM information_schema.tables").fetchall()}
+        assert "broken" not in names
+    finally:
+        conn.close()
+
+
+def test_missing_stack_tree_is_a_no_op(tmp_path):
+    """Most workspaces have never synced through the v49 stack (pre-#1325
+    server, or a workspace that hasn't pulled since upgrading)."""
+    pq = tmp_path / "server" / "parquet"
+    _write_parquet(pq / "account.parquet", 2)
+
+    _rebuild_duckdb_views(tmp_path, pq)
+
+    conn = _analytics(tmp_path)
+    try:
+        assert conn.execute("SELECT count(*) FROM account").fetchone()[0] == 2
+    finally:
+        conn.close()
+
+
+def test_nasty_package_slug_and_table_name_are_quoted_safely(tmp_path):
+    """Both path segments in `.claude/data/<slug>/<name>.parquet` reach this
+    code from a filename on disk, not the (already-sanitized) manifest —
+    the slug is only ever used as a filesystem path component (never SQL),
+    but a hostile-looking table NAME must reach `CREATE VIEW` correctly
+    quoted rather than as a bare f-string identifier (security playbook F1:
+    a literal embedded `"` must not break out of the quoted identifier)."""
+    pq = tmp_path / "server" / "parquet"
+    nasty_slug = 'pkg"; DROP TABLE account; --'
+    nasty_name = 'weird"name'
+    _write_parquet(_stack_dir(tmp_path) / nasty_slug / f"{nasty_name}.parquet", 6)
+
+    _rebuild_duckdb_views(tmp_path, pq)
+
+    conn = _analytics(tmp_path)
+    try:
+        names = {r[0] for r in conn.execute("SELECT table_name FROM information_schema.tables").fetchall()}
+        assert nasty_name in names
+
+        from src.sql_ident import quote_ident
+
+        assert conn.execute(f"SELECT count(*) FROM {quote_ident(nasty_name)}").fetchone()[0] == 6
+    finally:
+        conn.close()

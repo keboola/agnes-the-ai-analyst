@@ -184,6 +184,12 @@ services:
       # while actually running --profile apps gets a safe 401, not a
       # silent auth bypass.
       - APPS_RUNNER_TOKEN=${APPS_RUNNER_TOKEN:-}
+      # HTTP timeout for this sidecar's Docker daemon calls. Listed explicitly
+      # because this service has NO `env_file: .env` — unlike `app`, it sees
+      # only what is named here, so a value an operator puts in .env would
+      # otherwise never reach the process and the knob would be dead. Empty
+      # when unset, which the code reads as "use the default" (600s).
+      - APPS_RUNNER_DOCKER_TIMEOUT=${APPS_RUNNER_DOCKER_TIMEOUT:-}
       - APPS_RUNNER_IMAGE_PREFIX=${APPS_RUNNER_IMAGE_PREFIX:-keboolapublic.azurecr.io/data-app-python-js}
       # Image-prefix allowlist for the chat-sandbox half of the API
       # (/sandboxes/*, used when chat.provider=docker). Separate from the
@@ -240,6 +246,26 @@ services:
     restart: unless-stopped
     mem_limit: 128m
     cpus: 0.25
+    # A dead proxy is fail-CLOSED, not fail-open: `agnes-apps-internal` is
+    # `internal: true` and is the sandboxes' only network, so nothing gets
+    # out. But nothing SURFACED it either — the process could exit and stay
+    # down while every sandbox silently lost egress (#1250). This is a TCP
+    # connect against the listener, not an HTTP GET: the proxy speaks raw
+    # CONNECT/absolute-form and serves no health path, so a request probe
+    # would report a healthy proxy as unhealthy. Port is read from
+    # EGRESS_LISTEN so the probe cannot drift from the bind.
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import os,socket;p=os.environ.get('EGRESS_LISTEN','0.0.0.0:3128').rpartition(':')[2];socket.create_connection(('127.0.0.1',int(p) if p.isdigit() else 3128),timeout=3).close()",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   telegram-bot:
     build: .

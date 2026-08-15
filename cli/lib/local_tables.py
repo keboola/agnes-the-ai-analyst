@@ -7,19 +7,30 @@ two would rightly treat a disagreement as a bug in one of them. The rule
 lived only in `cli/commands/diagnose.py`; `status` grew a second copy, which
 is what this module removes.
 
-Two trees hold parquets, and only ONE of them is locally queryable:
+Parquets live in three places, and one of them is never directly queryable:
 
 - ``<workspace>/server/parquet/`` — the legacy flat flow. The DuckDB view
-  rebuild (`cli/lib/pull.py::_rebuild_duckdb_views`) walks exactly this
-  directory, so a table here is what `agnes query --local` can resolve.
-- ``<workspace>/.claude/data/_shared/`` — the canonical store written by
-  the per-type stack sync, i.e. step 8 of ``agnes pull`` (called the
-  ``v49 unified stack`` in older code comments). Nothing in the tree
-  registers views over it, so a table present only here is on disk but NOT
-  locally queryable — verified against a live workspace: 37 parquets in
-  `_shared`, zero corresponding views, and `agnes query --local` on one of
-  them failing with a DuckDB catalog error while the default server-side
-  scope answered fine.
+  rebuild (`cli/lib/pull.py::_rebuild_duckdb_views`) walks this directory
+  FIRST, so a table here is what `agnes query --local` resolves, and it
+  wins any name collision against the tree below (the long-standing path).
+- ``<workspace>/.claude/data/_direct/`` and ``<workspace>/.claude/data/
+  <package_slug>/`` — reference files (symlink / hardlink / copy) the
+  per-type stack sync writes, i.e. step 8 of ``agnes pull`` (called the
+  ``v49 unified stack`` in older code comments). The reference FILENAME is
+  the analyst-facing table name. `_rebuild_duckdb_views` also registers one
+  view per name here (#1325, via `stack_reference_files` below), so a
+  table reachable only from this tree is queryable too — `status` and the
+  view rebuild share this module's model of the tree precisely so they
+  cannot drift on what counts.
+- ``<workspace>/.claude/data/_shared/`` — the canonical, content-addressed
+  store the two reference trees above point INTO, keyed by
+  ``table_registry.id`` rather than name. Never walked directly for view
+  registration — it carries no analyst-facing name — so a `_shared` entry
+  with no reference pointing at it (a broken sync, or one captured
+  mid-write) is still not locally queryable. Pre-#1325, verified against a
+  live workspace: 37 parquets in `_shared`, zero corresponding views, and
+  `agnes query --local` on one of them failing with a DuckDB catalog error
+  while the default server-side scope answered fine.
 
 Keep the two counts distinct rather than summing them — a single number
 either hides real bytes on disk or promises data `--local` cannot reach.
@@ -30,7 +41,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-_SHARED_SUBPATH = (".claude", "data", "_shared")
+_SHARED_DIRNAME = "_shared"
+_SHARED_SUBPATH = (".claude", "data", _SHARED_DIRNAME)
 
 
 def local_table_names(parquet_dir: Path) -> set[str]:
@@ -146,16 +158,75 @@ def shared_store_stems(workspace: Path) -> set[str]:
     return {p.stem for p in shared.glob("*.parquet")}
 
 
+def stack_reference_files(workspace: Path) -> dict[str, Path]:
+    """``{table_name: reference_path}`` for every table reachable from the
+    stack-sync tree: ``.claude/data/_direct/`` and every
+    ``.claude/data/<package_slug>/`` (``_shared/`` itself excluded — it is
+    the content-addressed store the references point INTO, and carries no
+    analyst-facing name).
+
+    The reference FILENAME is already the name: `cli/lib/pull_sync.py`
+    writes `_direct/<name>.parquet` / `<package_slug>/<name>.parquet` keyed
+    by the manifest's ``name`` field (through ``_safe_segment``), unlike
+    `_shared/<table_id>.parquet`, which is keyed by the registry id — so the
+    stem of a reference file needs no lookup (via `shared_id_to_name`) to
+    resolve to the analyst-facing name; it already IS that name.
+
+    Two packages carrying the same table produce two identically-named
+    reference files — both pointing (by symlink, hardlink, or copy) at the
+    same `_shared/<id>.parquet` — collapsed here to ONE entry per name so a
+    caller registering one DuckDB view per key never double-registers
+    (`cli/lib/pull.py::_register_stack_views`, #1325). Deterministic on a
+    same-name collision (sorted directory walk, first entry wins) — safe
+    because a same-name collision is, by construction, the same underlying
+    table referenced twice.
+
+    Missing/unreadable trees degrade to an empty mapping rather than raise —
+    most workspaces predate the stack sync entirely, or haven't subscribed
+    to anything yet.
+    """
+    refs: dict[str, Path] = {}
+    data_dir = workspace / ".claude" / "data"
+    if not data_dir.is_dir():
+        return refs
+    try:
+        subdirs = list(data_dir.iterdir())
+    except OSError:
+        return refs
+    for sub in sorted(subdirs, key=lambda p: p.name):
+        if sub.name == _SHARED_DIRNAME or not sub.is_dir():
+            continue
+        try:
+            entries = list(sub.glob("*.parquet"))
+        except OSError:
+            continue
+        for entry in sorted(entries, key=lambda p: p.name):
+            if not entry.is_file():
+                continue
+            refs.setdefault(entry.stem, entry)
+    return refs
+
+
 def count_local_tables(workspace: Path) -> tuple[int, int]:
     """``(queryable, downloaded_without_view)`` for this workspace.
 
-    ``queryable`` counts tables the DuckDB view rebuild exposes, so it is what
-    `agnes query --local` can resolve. ``downloaded_without_view`` counts
-    tables sitting in the stack-sync store with no counterpart in the
-    queryable set — real bytes on disk that `--local` cannot reach today.
+    ``queryable`` counts tables the DuckDB view rebuild exposes: every name
+    under ``server/parquet/`` PLUS every `stack_reference_files` name not
+    already covered by one of those — mirroring `_rebuild_duckdb_views`'s
+    own precedence (#1325), where `server/parquet/` (the long-standing path)
+    wins a same-table collision and is therefore never double-counted here
+    either. ``downloaded_without_view`` counts tables sitting in the
+    stack-sync store (`_shared/`) with no counterpart in the queryable set —
+    real bytes on disk that `--local` still cannot reach (e.g. a `_shared`
+    parquet with no `_direct`/package reference pointing at it).
     """
     queryable = local_table_names(workspace / "server" / "parquet")
     queryable_keys = {table_key(n) for n in queryable}
+
+    stack_names = stack_reference_files(workspace)
+    extra_stack_names = {n for n in stack_names if table_key(n) not in queryable_keys}
+    queryable_keys |= {table_key(n) for n in extra_stack_names}
+
     id_to_name = shared_id_to_name(workspace)
 
     unregistered = set()
@@ -165,4 +236,4 @@ def count_local_tables(workspace: Path) -> tuple[int, int]:
         name = id_to_name.get(stem)
         if table_key(name if name is not None else stem) not in queryable_keys:
             unregistered.add(stem)
-    return len(queryable), len(unregistered)
+    return len(queryable) + len(extra_stack_names), len(unregistered)

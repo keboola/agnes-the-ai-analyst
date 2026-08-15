@@ -427,6 +427,137 @@ def test_invoke_per_user_no_secret_403_carries_web_deep_link(seeded_app, monkeyp
     mock.assert_not_called()
 
 
+# ── source url runtime-policy gate (#1216 part 2) ──────────────────────────
+
+
+def _seed_http_passthrough_tool(
+    *,
+    source_id: str = "src_url_rest",
+    tool_id: str = "url-rest.lookup",
+    exposed_name: str = "lookup",
+    url: str = "https://mcp.vendor.example/mcp",
+    analyst_id: str = "analyst1",
+) -> None:
+    """Seed an http-transport source + one passthrough tool granted to the
+    analyst's group, for exercising the url-policy runtime gate over REST."""
+    conn = get_system_db()
+    sources = MCPSourceRepository(conn)
+    tools = ToolRegistryRepository(conn)
+    groups = UserGroupsRepository(conn)
+    members = UserGroupMembersRepository(conn)
+
+    sources.upsert(id=source_id, name=source_id, transport="http", url=url, auth_method="bearer")
+    tools.upsert(
+        tool_id=tool_id,
+        source_id=source_id,
+        original_name="lookup",
+        exposed_name=exposed_name,
+        mode=PASSTHROUGH,
+        description="REST url policy runtime gate test",
+    )
+    grp = groups.create(name=f"grp-{tool_id}", description=None)
+    tools.add_grant(tool_id, grp["id"])
+    members.add_member(analyst_id, grp["id"], source="system_seed")
+    conn.close()
+
+
+def test_invoke_switch_off_by_default_refused_url_still_forwards(seeded_app):
+    """Pin the default: ``mcp.source_url_runtime_enforce`` is OFF, so an
+    already-registered source whose url the CURRENT policy would refuse keeps
+    forwarding — the #1216 gap, unchanged until an admin opts in."""
+    _seed_http_passthrough_tool(url="http://169.254.169.254/mcp")
+    client = seeded_app["client"]
+    with _patch_upstream_call(text="ok") as mock:
+        r = client.post(
+            "/api/mcp/passthrough/tools/url-rest.lookup/call",
+            headers={"Authorization": f"Bearer {seeded_app['analyst_token']}"},
+            json={"arguments": {}},
+        )
+    assert r.status_code == 200, r.text
+    mock.assert_awaited_once()
+
+
+def test_invoke_switch_on_refused_url_returns_409_and_does_not_forward(seeded_app, monkeypatch):
+    import app.instance_config as ic
+
+    monkeypatch.setattr(ic, "get_mcp_source_url_runtime_enforce", lambda: True)
+    _seed_http_passthrough_tool(
+        source_id="src_url_rest_refused",
+        tool_id="url-rest.refused",
+        exposed_name="refused",
+        url="http://169.254.169.254/mcp",
+    )
+    client = seeded_app["client"]
+    with _patch_upstream_call(text="LEAK") as mock:
+        r = client.post(
+            "/api/mcp/passthrough/tools/url-rest.refused/call",
+            headers={"Authorization": f"Bearer {seeded_app['analyst_token']}"},
+            json={"arguments": {}},
+        )
+    assert r.status_code == 409, r.text
+    detail = r.json()["detail"]
+    assert detail["error"] == "mcp_source_url_refused"
+    # A NON-ADMIN gets the friendly sentence only: the verdict embeds the
+    # source's literal address, which the sibling analyst-reachable gate
+    # (mcp_user_secrets) deliberately withholds -- this must not become the
+    # first place a non-admin learns it (Devin Review on PR #1301).
+    assert "Ask an admin" in detail["message"]
+    assert "169.254.169.254" not in r.text
+    assert "blocked_range" not in r.text
+    assert "reason" not in detail and "admin_report" not in detail and "switch" not in detail
+    mock.assert_not_called()
+
+
+def test_invoke_switch_on_refused_url_gives_an_admin_the_routing_facts(seeded_app, monkeypatch):
+    """The operator-routing facts (reason / admin report / switch) still reach
+    an ADMIN caller — withholding them from everyone would leave the operator
+    with a dead tool call and no pointer (Devin Review on PR #1301)."""
+    import app.instance_config as ic
+
+    monkeypatch.setattr(ic, "get_mcp_source_url_runtime_enforce", lambda: True)
+    _seed_http_passthrough_tool(
+        source_id="src_url_rest_refused_admin",
+        tool_id="url-rest.refused-admin",
+        exposed_name="refused_admin",
+        url="http://169.254.169.254/mcp",
+    )
+    client = seeded_app["client"]
+    with _patch_upstream_call(text="LEAK") as mock:
+        r = client.post(
+            "/api/mcp/passthrough/tools/url-rest.refused-admin/call",
+            headers={"Authorization": f"Bearer {seeded_app['admin_token']}"},
+            json={"arguments": {}},
+        )
+    assert r.status_code == 409, r.text
+    detail = r.json()["detail"]
+    assert detail["error"] == "mcp_source_url_refused"
+    assert "blocked_range" in detail["reason"]
+    assert "would_refuse" in detail["admin_report"]
+    assert detail["switch"] == "mcp.source_url_runtime_enforce"
+    mock.assert_not_called()
+
+
+def test_invoke_switch_on_clean_url_still_forwards(seeded_app, monkeypatch):
+    import app.instance_config as ic
+
+    monkeypatch.setattr(ic, "get_mcp_source_url_runtime_enforce", lambda: True)
+    _seed_http_passthrough_tool(
+        source_id="src_url_rest_clean",
+        tool_id="url-rest.clean",
+        exposed_name="clean",
+        url="https://mcp.vendor.example/mcp",
+    )
+    client = seeded_app["client"]
+    with _patch_upstream_call(text="ok") as mock:
+        r = client.post(
+            "/api/mcp/passthrough/tools/url-rest.clean/call",
+            headers={"Authorization": f"Bearer {seeded_app['analyst_token']}"},
+            json={"arguments": {}},
+        )
+    assert r.status_code == 200, r.text
+    mock.assert_awaited_once()
+
+
 def _list_names(caller_id, seed_analyst="analyst1"):
     """Register the seeded passthrough tools on a bare FastMCP, install the
     grant filter with a fixed caller, and return the tool names tools/list

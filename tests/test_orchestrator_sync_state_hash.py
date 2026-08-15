@@ -7,6 +7,7 @@ Keboola local-mode table fails with `hash mismatch: expected … got …`.
 """
 
 import hashlib
+import logging
 from unittest.mock import patch
 
 import duckdb
@@ -273,3 +274,125 @@ def test_update_sync_state_single_file_still_has_no_parts(system_db_path, parque
     finally:
         conn.close()
     assert state["parts"] is None
+
+
+# ---------------------------------------------------------------------------
+# Both-layouts collision (#1339): a flat `<table>.parquet` file AND a
+# `<table>/` partition directory present at the same time. The flat file
+# silently wins today — unchanged by this fix (precedence + stale-sibling
+# cleanup are open human decisions, see the TODO(#1339) in the source) — but
+# until now the collision was invisible: the manifest kept advertising the
+# flat file's (possibly stale) hash with nothing to say a fresher directory
+# sat right beside it. This must be loud, not silent.
+# ---------------------------------------------------------------------------
+
+
+def _write_both_layouts(tmp_path):
+    """Flat `orders.parquet` + a sibling `orders/` partition directory."""
+    extracts = tmp_path / "extracts" / "keboola" / "data"
+    extracts.mkdir(parents=True)
+    flat_bytes = b"PAR1" + b"stale" * 50 + b"PAR1"
+    pq_path = extracts / "orders.parquet"
+    pq_path.write_bytes(flat_bytes)
+    table_dir = extracts / "orders"
+    table_dir.mkdir()
+    (table_dir / "2025_11.parquet").write_bytes(b"fresh-partitioned-bytes")
+    return pq_path, table_dir, flat_bytes
+
+
+def test_both_layouts_collision_logs_error_naming_both_paths_and_table(system_db_path, tmp_path, caplog):
+    pq_path, table_dir, _ = _write_both_layouts(tmp_path)
+
+    with caplog.at_level(logging.ERROR, logger="src.orchestrator"):
+        _run_update(
+            system_db_path,
+            meta_rows=[("orders", 100, pq_path.stat().st_size, "local")],
+            data_dir=tmp_path,
+        )
+
+    collision_records = [
+        r
+        for r in caplog.records
+        if r.levelname == "ERROR"
+        and "orders" in r.getMessage()
+        and str(pq_path) in r.getMessage()
+        and str(table_dir) in r.getMessage()
+    ]
+    assert collision_records, (
+        "expected an ERROR log naming the table id and BOTH concrete paths; "
+        f"got: {[r.getMessage() for r in caplog.records]}"
+    )
+
+
+def test_both_layouts_collision_flags_sync_state_but_keeps_flat_hash(system_db_path, tmp_path):
+    """The served bytes must stay byte-for-byte identical to the flat-only
+    case (the flat file still wins) — only the flagging is new."""
+    pq_path, table_dir, flat_bytes = _write_both_layouts(tmp_path)
+
+    _run_update(
+        system_db_path,
+        meta_rows=[("orders", 100, pq_path.stat().st_size, "local")],
+        data_dir=tmp_path,
+    )
+
+    conn = duckdb.connect(str(system_db_path))
+    try:
+        state = SyncStateRepository(conn).get_table_state("orders")
+    finally:
+        conn.close()
+
+    assert state is not None
+    # Bytes served: identical to the flat-only case — precedence unchanged.
+    assert state["hash"] == hashlib.md5(flat_bytes).hexdigest()
+    assert state["parts"] is None
+    assert state["rows"] == 100
+    # No longer invisible: flagged via the existing sync_state error
+    # mechanism (the same set_error() `GET /api/admin/registry` already
+    # surfaces as `last_sync_error`).
+    assert state["status"] == "error"
+    assert str(pq_path) in (state["error"] or "")
+    assert str(table_dir) in (state["error"] or "")
+
+
+def test_flat_only_layout_is_not_flagged_as_a_collision(system_db_path, parquet_with_known_md5, tmp_path, caplog):
+    """Regression pin: the ordinary single-file case must keep behaving
+    exactly as before — no ERROR log, no sync_state error flip."""
+    pq_path, expected_md5 = parquet_with_known_md5
+    with caplog.at_level(logging.ERROR, logger="src.orchestrator"):
+        _run_update(
+            system_db_path,
+            meta_rows=[("orders", 100, pq_path.stat().st_size, "local")],
+            data_dir=tmp_path,
+        )
+
+    assert not [r for r in caplog.records if r.levelname == "ERROR" and "orders" in r.getMessage()]
+
+    conn = duckdb.connect(str(system_db_path))
+    try:
+        state = SyncStateRepository(conn).get_table_state("orders")
+    finally:
+        conn.close()
+    assert state["hash"] == expected_md5
+    assert state["status"] == "ok"
+    assert not state.get("error")
+
+
+def test_dir_only_layout_is_not_flagged_as_a_collision(system_db_path, tmp_path, caplog):
+    """Regression pin: the ordinary partitioned-only case (no flat sibling)
+    must keep behaving exactly as before either."""
+    tdir = tmp_path / "extracts" / "keboola" / "data" / "orders" / "month=2026-06"
+    tdir.mkdir(parents=True)
+    (tdir / "data.parquet").write_bytes(b"PAR1" + b"y" * 512 + b"PAR1")
+
+    with caplog.at_level(logging.ERROR, logger="src.orchestrator"):
+        _run_update(system_db_path, meta_rows=[("orders", 50, 0, "local")], data_dir=tmp_path)
+
+    assert not [r for r in caplog.records if r.levelname == "ERROR" and "orders" in r.getMessage()]
+
+    conn = duckdb.connect(str(system_db_path))
+    try:
+        state = SyncStateRepository(conn).get_table_state("orders")
+    finally:
+        conn.close()
+    assert state["status"] == "ok"
+    assert not state.get("error")
