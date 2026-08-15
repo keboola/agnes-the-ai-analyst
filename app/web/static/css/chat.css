@@ -1458,6 +1458,57 @@ pre.code-block-wrap code .hljs-deletion {
   outline-offset: var(--ds-focus-outline-offset);
 }
 
+/* System notes — turn-stopping events (budget stop, error, cancel) rendered
+   IN the transcript, where the reader scrolls back, not only the status bar. */
+.cloud-chat-system-note {
+  margin: 8px auto;
+  padding: 6px 14px;
+  /* --radius-md (style-custom.css), like the toast sibling below:
+     --ds-radius-md does not exist in the token set, and a var() to an
+     undefined property with no fallback voids the declaration (radius 0). */
+  border-radius: var(--radius-md);
+  font-size: 0.85rem;
+  text-align: center;
+  max-width: 70%;
+  border: 1px solid var(--ds-accent-warn-line);
+  background: var(--ds-accent-warn-bg);
+  color: var(--ds-accent-warn-ink);
+}
+.cloud-chat-system-note.is-error {
+  border-color: var(--ds-accent-danger-line);
+  background: var(--ds-accent-danger-bg);
+  color: var(--ds-accent-danger-ink);
+}
+
+/* Next-action chips — the model's suggested follow-ups, lifted out of the
+   ```next_actions trailer and rendered under the latest answer only. */
+.cloud-chat-next-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+.cloud-chat-next-action {
+  border: 1px solid var(--ds-border);
+  background: var(--ds-surface);
+  color: var(--ds-text-primary);
+  /* --ds-radius-btn, not -pill: pill is badge language; these are labelled
+     buttons (design-system shape rule). */
+  border-radius: var(--ds-radius-btn);
+  padding: 4px 12px;
+  font-size: 0.85rem;
+  cursor: pointer;
+  text-align: left;
+}
+.cloud-chat-next-action:hover {
+  border-color: var(--ds-primary);
+  color: var(--ds-primary);
+}
+.cloud-chat-next-action:focus-visible {
+  outline: var(--ds-focus-outline);
+  outline-offset: var(--ds-focus-outline-offset);
+}
+
 .cloud-chat-capabilities-footer {
   margin-top: var(--space-1);
   padding-top: var(--space-4);
