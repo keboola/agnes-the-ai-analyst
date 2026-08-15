@@ -751,7 +751,7 @@ def run_pull(
                 f"{', '.join(repr(t) for t in unsafe_tids[:5])}",
                 file=_sys.stderr,
             )
-        local_state = get_sync_state()
+        local_state = get_sync_state(workspace)
         local_tables = local_state.get("tables", {})
         # Which ids resolved LOCALLY as of the previous pull, captured before
         # the prune below mutates the dict. This is the only honest answer to
@@ -816,13 +816,13 @@ def run_pull(
         # The parquet-existence check is load-bearing: a stale `sync_state.json`
         # entry (hash matches server) is NOT proof the file is on disk. The
         # file can disappear between runs — manual rm, disk corruption, an
-        # operator nuking `server/parquet/` during cleanup, a different
-        # workspace sharing the same `~/.config/agnes/sync_state.json`
-        # (TODO(workspace-scoped-sync-state) below) writing one workspace's
-        # parquets while another reads sync_state and assumes "I already
-        # have these." Without the existence guard, `agnes pull` would skip
-        # the download and the downstream DuckDB view rebuild fails on a
-        # missing file. Hash-equal-but-file-missing → force re-download.
+        # operator nuking `server/parquet/` during cleanup, or (#1311) the
+        # one-time legacy->workspace state migration seeding this workspace's
+        # hash from another workspace's last write before either of them had
+        # its own scoped state. Without the existence guard, `agnes pull`
+        # would skip the download and the downstream DuckDB view rebuild
+        # fails on a missing file. Hash-equal-but-file-missing → force
+        # re-download.
         to_download: list[str] = []
         partitioned_tids: list[str] = []
         non_remote_total = 0
@@ -1258,23 +1258,16 @@ def run_pull(
         except Exception as exc:
             result.errors.append({"stage": "knowledge_digests", "error": str(exc)})
 
-        # 5. Persist sync state (only on real runs).
-        # TODO(workspace-scoped-sync-state): currently saved to
-        # ~/.config/agnes/sync_state.json (per legacy sync.py behavior).
-        # Two workspaces sharing one user account share this state.
-        # Future: scope to <workspace>/.agnes/sync_state.json so workspace
-        # bootstrap leaves no residue outside <workspace>/.
+        # 5. Persist sync state (only on real runs). Workspace-scoped
+        # (#1311) — `<workspace>/.claude/agnes/sync_state.json` — so two
+        # workspaces on the same machine no longer share one hash record;
+        # see `cli.config.get_sync_state`/`save_sync_state` for the
+        # migration from the legacy machine-global file.
         local_state["tables"] = local_tables
         local_state["last_sync"] = datetime.now(timezone.utc).isoformat()
-        save_sync_state(local_state)
+        save_sync_state(local_state, workspace)
 
-        # 6. Rebuild DuckDB views — unconditional. The DB file is the
-        # load-bearing artifact for downstream readers.
-        result.snapshot_views_blocked = _rebuild_duckdb_views(
-            workspace, parquet_dir, blocked_names=blocked_snapshot_names
-        )
-
-        # 7. Fetch corporate-memory bundle and lazily write
+        # 6. Fetch corporate-memory bundle and lazily write
         # `.claude/rules/km_*.md`. Best-effort: a server outage on this
         # endpoint must not fail the whole pull.
         try:
@@ -1283,12 +1276,16 @@ def run_pull(
         except Exception as exc:
             result.errors.append({"stage": "memory_bundle", "error": str(exc)})
 
-        # 8. v49 stack sync — per-type loop into ``~/.claude/data/`` and
-        # ``~/.claude/memory/`` with reference-counted dedup. Runs only
-        # when the manifest carries the v49 fields (older servers /
-        # backward-compat workspaces are untouched). Best-effort:
-        # failure here records under ``result.errors`` but doesn't abort
-        # the rest of the pull.
+        # 7. v49 stack sync — per-type loop into ``<workspace>/.claude/data/``
+        # and ``<workspace>/.claude/memory/`` with reference-counted dedup.
+        # Runs only when the manifest carries the v49 fields (older servers /
+        # backward-compat workspaces are untouched). Best-effort: failure
+        # here records under ``result.errors`` but doesn't abort the rest of
+        # the pull. MUST run before step 8's view rebuild (#1325): the
+        # rebuild now also registers views over this tree, so a table synced
+        # for the FIRST time by this very call needs its reference file on
+        # disk before the rebuild walks it, or it stays unqueryable until
+        # the next `agnes pull`.
         if any(k in manifest for k in ("direct_tables", "data_packages", "memory_domains")):
             try:
                 result.stack_sync = _run_stack_sync_from_manifest(
@@ -1299,6 +1296,16 @@ def run_pull(
                 )
             except Exception as exc:
                 result.errors.append({"stage": "stack_sync", "error": str(exc)})
+
+        # 8. Rebuild DuckDB views — unconditional. The DB file is the
+        # load-bearing artifact for downstream readers. Runs LAST (after
+        # step 7) so a table the stack sync just fetched already has its
+        # reference file on disk when `_rebuild_duckdb_views` walks
+        # `.claude/data/` (#1325) — running this any earlier would leave a
+        # freshly-subscribed table unqueryable for one whole pull cycle.
+        result.snapshot_views_blocked = _rebuild_duckdb_views(
+            workspace, parquet_dir, blocked_names=blocked_snapshot_names
+        )
 
     result.duration_s = time.monotonic() - started
 
@@ -1700,6 +1707,17 @@ def _rebuild_duckdb_views(workspace: Path, parquet_dir: Path, blocked_names: set
     expect the file to exist. The parquet rebuild loop is a no-op when
     `parquet_dir` is missing.
 
+    Three sources are registered, in this precedence order (a later source
+    yields to a name an earlier one already took):
+
+    1. `parquet_dir` (`<workspace>/server/parquet/`) — the legacy flat flow.
+    2. The stack-sync tree (`<workspace>/.claude/data/_direct/` +
+       `<workspace>/.claude/data/<package_slug>/`, written by step 8 /
+       `cli/lib/pull_sync.py`) — see `_register_stack_views` (#1325).
+    3. `agnes snapshot create` output (`_register_snapshot_views`) — always
+       last, so a registered table of either kind above always wins a name
+       collision with a snapshot.
+
     `blocked_names` (#1129 review) are table ids the analyst is no longer
     authorized for, or that turned `server_only`. A snapshot must not take
     such a name; see `_register_snapshot_views`. Defaults to None so callers
@@ -1779,6 +1797,18 @@ def _rebuild_duckdb_views(workspace: Path, parquet_dir: Path, blocked_names: set
                     except duckdb.Error:
                         continue
 
+        # Stack-sync tree (#1325) — `parquet_dir` views are in place, so
+        # re-derive what's actually registered (BASE TABLEs from before the
+        # rebuild + the views the loop above just created) rather than reuse
+        # `existing_tables`, which still only holds the pre-rebuild BASE
+        # TABLEs. That fresh set is `claimed`: a name already in it is
+        # `server/parquet/`'s (or a user table's) and the stack tree yields.
+        try:
+            claimed = {row[0] for row in conn.execute("SELECT table_name FROM information_schema.tables").fetchall()}
+        except Exception:
+            claimed = set(existing_tables)
+        _register_stack_views(conn, workspace, claimed)
+
         # Workspace-local uploaded tables (chat "+" upload → register_as_table):
         # a self-contained `uploads/extract.duckdb` holds materialized tables.
         # ATTACH it read-only and copy each table into analytics.duckdb so
@@ -1813,6 +1843,55 @@ def _rebuild_duckdb_views(workspace: Path, parquet_dir: Path, blocked_names: set
         return _register_snapshot_views(conn, workspace, blocked_names)
     finally:
         conn.close()
+
+
+def _register_stack_views(conn, workspace: Path, claimed: set[str]) -> None:
+    """Register DuckDB views over the stack-sync tree (#1325).
+
+    `_rebuild_duckdb_views` used to walk only `parquet_dir`
+    (`<workspace>/server/parquet/`), so a table `agnes pull` landed via the
+    v49 stack sync (`cli/lib/pull_sync.py`, step 8 — `.claude/data/_direct/`
+    + `.claude/data/<package_slug>/`, reference files into the
+    content-addressed `.claude/data/_shared/`) sat on disk with no view:
+    `cli/lib/local_tables.py`'s module docstring and `agnes status`'s
+    "downloaded (no local view)" count both documented the gap this closes.
+
+    One view per analyst-facing table NAME
+    (`cli/lib/local_tables.py::stack_reference_files`) — the reference
+    FILENAME, never the content-addressed `_shared/<table_id>.parquet` stem
+    (`_shared` itself is never walked directly; it carries no name). Two
+    packages referencing the same table share one name and are collapsed to
+    a single registration by that helper, so this loop never double-creates
+    a view.
+
+    `claimed` already holds every name `server/parquet/` (or a pre-existing
+    user BASE TABLE) took in this same rebuild — `server/parquet/` is the
+    long-standing path, so a same-name collision is left to it rather than
+    shadowed or flip-flopped between the two on successive pulls. Mutated in
+    place as this loop registers names, so a corrupt/invalid reference is
+    simply skipped (never aborts the rebuild), mirroring the `parquet_dir`
+    loop above.
+
+    `view_name` is quoted via `quote_ident` before reaching SQL: it comes
+    from a filename on disk, not the (already-sanitized) manifest — nothing
+    stops a stray file, a pre-sanitization-era sync, or manual tampering
+    from putting an unsafe name there.
+    """
+    import duckdb  # noqa: F401  (duckdb.Error below)
+
+    from cli.lib.local_tables import stack_reference_files
+
+    for view_name, ref_path in sorted(stack_reference_files(workspace).items()):
+        if view_name in claimed:
+            continue
+        if not _is_valid_parquet(ref_path):
+            continue
+        abs_path = str(ref_path.resolve()).replace("'", "''")
+        try:
+            conn.execute(f"CREATE VIEW {quote_ident(view_name)} AS SELECT * FROM read_parquet('{abs_path}')")
+        except duckdb.Error:
+            continue
+        claimed.add(view_name)
 
 
 def _quote_ident(name: str) -> str:
