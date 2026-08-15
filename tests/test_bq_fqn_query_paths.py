@@ -241,6 +241,141 @@ class TestRewriterKeywordNamedTableDoesNotCorruptSql:
 
 
 # ---------------------------------------------------------------------------
+# Issue #1322 follow-up (Devin review on PR #1331): the ``(?!\\s+by\\b)``
+# suppression above only covers the two-word ``<KEYWORD> BY`` clauses, and
+# only when nothing but plain whitespace separates the two words. Every other
+# reserved keyword a table can be named after — ``all``, ``on``, ``as``,
+# ``and``, ``select``, ``limit``, ``distinct``, … — still had its keyword
+# occurrences substituted with a backticked BQ path.
+#
+# The rewriter now anchors the substitution of a RESERVED-KEYWORD-named table
+# to table-reference positions (preceded by FROM / JOIN / a FROM-list comma,
+# comments and newlines allowed in between). Non-keyword names keep the
+# documented substitute-everywhere behaviour.
+# ---------------------------------------------------------------------------
+
+
+class TestRewriterKeywordNamedTableIsOnlyRewrittenInTableRefPositions:
+    """One registered table, named after a reserved keyword; the SQL uses
+    that keyword in its keyword role somewhere else. Only the FROM/JOIN
+    occurrence may be substituted."""
+
+    @pytest.mark.parametrize(
+        "name,sql,expected",
+        [
+            # Devin's comment-between-the-words case: `\s+by` cannot see
+            # across a block comment, so the old guard let ORDER through.
+            (
+                "order",
+                "SELECT x FROM order ORDER /* tie-break */ BY x",
+                "SELECT x FROM `proj.ds.tbl` ORDER /* tie-break */ BY x",
+            ),
+            # …nor across a line comment.
+            (
+                "order",
+                "SELECT x FROM order ORDER\n-- tie-break\nBY x",
+                "SELECT x FROM `proj.ds.tbl` ORDER\n-- tie-break\nBY x",
+            ),
+            # Every keyword the two-word guard never covered at all.
+            (
+                "all",
+                "SELECT * FROM all UNION ALL SELECT * FROM all",
+                "SELECT * FROM `proj.ds.tbl` UNION ALL SELECT * FROM `proj.ds.tbl`",
+            ),
+            (
+                "select",
+                "SELECT a FROM select",
+                "SELECT a FROM `proj.ds.tbl`",
+            ),
+            (
+                "on",
+                "SELECT * FROM t JOIN on ON t.a = on.a",
+                "SELECT * FROM t JOIN `proj.ds.tbl` ON t.a = on.a",
+            ),
+            (
+                "limit",
+                "SELECT * FROM limit LIMIT 10",
+                "SELECT * FROM `proj.ds.tbl` LIMIT 10",
+            ),
+            (
+                "distinct",
+                "SELECT DISTINCT a FROM distinct",
+                "SELECT DISTINCT a FROM `proj.ds.tbl`",
+            ),
+            (
+                "as",
+                "SELECT a AS b FROM as",
+                "SELECT a AS b FROM `proj.ds.tbl`",
+            ),
+            (
+                "and",
+                "SELECT * FROM and WHERE a = 1 AND b = 2",
+                "SELECT * FROM `proj.ds.tbl` WHERE a = 1 AND b = 2",
+            ),
+            (
+                "group",
+                "SELECT a, COUNT(*) FROM group GROUP BY ALL",
+                "SELECT a, COUNT(*) FROM `proj.ds.tbl` GROUP BY ALL",
+            ),
+        ],
+    )
+    def test_keyword_role_occurrences_are_left_alone(self, name, sql, expected):
+        assert _rewrite_bq_table_refs_to_native(sql, [(name, "ds", "tbl")], "proj") == expected
+
+    def test_from_list_comma_position_still_rewrites(self):
+        """An old-style comma cross-join is a table-reference position too —
+        anchoring must not under-rewrite it (a surviving bare name would
+        reach BQ as an unknown table)."""
+        sql = _rewrite_bq_table_refs_to_native(
+            "SELECT * FROM other, order WHERE other.id = order.id",
+            [("order", "ds", "tbl")],
+            "proj",
+        )
+
+        assert sql == "SELECT * FROM other, `proj.ds.tbl` WHERE other.id = order.id"
+
+    def test_comment_between_from_and_keyword_name_still_rewrites(self):
+        """Comments are allowed between the FROM/JOIN token and the name."""
+        sql = _rewrite_bq_table_refs_to_native(
+            "SELECT * FROM /* the fact table */ order",
+            [("order", "ds", "tbl")],
+            "proj",
+        )
+
+        assert sql == "SELECT * FROM /* the fact table */ `proj.ds.tbl`"
+
+    def test_non_keyword_name_keeps_substitute_everywhere_behaviour(self):
+        """Scope guard: the positional anchor applies ONLY to names that are
+        reserved SQL keywords. A normal name keeps the long-standing
+        documented behaviour (rewritten wherever the word appears), so this
+        change cannot regress the working path."""
+        sql = _rewrite_bq_table_refs_to_native(
+            "SELECT orders FROM orders WHERE orders > 1",
+            [("orders", "ds", "tbl")],
+            "proj",
+        )
+
+        assert sql == "SELECT `proj.ds.tbl` FROM `proj.ds.tbl` WHERE `proj.ds.tbl` > 1"
+
+    def test_keyword_and_normal_names_share_one_pass(self):
+        """Both classes go through the SAME single-pass alternation, so the
+        freshly-inserted backticked text is never re-scanned — the
+        project-ID-contains-name corruption the single-pass design fixed
+        must not come back via the keyword branch (project id here contains
+        the registered keyword name ``order``)."""
+        sql = _rewrite_bq_table_refs_to_native(
+            "SELECT o.id FROM order o JOIN events e ON o.id = e.id ORDER BY e.ts",
+            [("order", "sales", "orders_tbl"), ("events", "ev", "events_tbl")],
+            "my-order-project",
+        )
+
+        assert sql == (
+            "SELECT o.id FROM `my-order-project.sales.orders_tbl` o "
+            "JOIN `my-order-project.ev.events_tbl` e ON o.id = e.id ORDER BY e.ts"
+        )
+
+
+# ---------------------------------------------------------------------------
 # The collection sites must actually populate the override from ``bq_fqn``.
 # A helper that accepts the 4-tuple is inert until callers emit it.
 # ---------------------------------------------------------------------------
