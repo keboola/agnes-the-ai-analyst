@@ -10,6 +10,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- **Caddy-fronted instances: a partitioned table's per-part download can no longer be answered with the whole table's parquet.** The static `file_server` fast path claimed `/api/data/{id}/download` with a path-only matcher, which cannot see the query string — so a `?part=` fetch matched the whole-table rule, whose every candidate is the single-file `<table_id>.parquet`. Part requests now go to the app instead. Access control and the audit trail are unchanged (`download_table` re-checks authorization, enforces the distribution gate, and records the `part` in its audit row). Operators need do nothing beyond upgrading.
+
+- **A table left with BOTH a flat parquet and a partition directory now warns on every rebuild.** This state silently freezes distribution: the flat file wins, so the manifest advertises the table as single-file hashed from the *stale* parquet, `agnes pull` downloads it, the md5 matches, and the pull reports success — while analysts keep receiving pre-conversion data indefinitely and the server's own view reads the fresh partitions. Nothing surfaced it before. Nothing removes the stale sibling either (a Keboola table flipped to `sync_strategy: partitioned` leaves the old `<table>.parquet` behind, and the client-side stale-layout cleanup has no server equivalent), so the warning names both paths and tells the operator to delete the flat one. **This release only reports the condition — it does not yet change which layout wins, in the orchestrator or on the `/api/v2/schema` and `/api/v2/scan` read paths (#1339).**
+
+- **`agnes pull` now retries a bad part download on partitioned tables instead of failing the whole table.** Single-file tables have had bounded retry+backoff on a corrupt download since #596/#626; the per-part sync path added later fetched each part exactly once, so the first part whose bytes didn't match its manifest md5 — one blip on one month — aborted the sync for the entire table and discarded every part already staged in that run. Partitioned tables (the Jira month-partitioned streams: `issues`, `attachments`, `changelog`, `comments`, `issuelinks`, `remote_links`) now get the same budget as a single-file table, on both failure kinds a flaky transfer can produce (hash mismatch and transport error), with the rejected attempt's bytes cleared from staging before each retry. The all-or-nothing swap is unchanged: a part that still fails after its last attempt leaves the prior table directory fully intact. Note this covers transfers that can succeed on a re-read — a part the server *rewrote* after the manifest was built mismatches identically on every attempt and self-heals on the next pull against a fresh manifest.
+
 ## [0.83.21] - 2026-08-15
 
 ### Internal
