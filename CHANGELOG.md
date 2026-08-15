@@ -12,6 +12,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [0.83.23] - 2026-08-15
 
+### Added
+
+- **The admin MCP source page says when the shared secret was last rotated, and who has connected their own.** The vault card reported only "Vault secret set" / "No secret", so an admin auditing a rotation had no way to tell a fresh secret from a two-year-old one; it now carries the same `(since …)` stamp the per-user panel on that page already used. Alongside it, a per-user coverage card lists which users have set their own credential and when — `list_for_source` existed but was called only from delete/purge cleanup, so "who is actually connected?" was unanswerable from the UI. Identity and timestamp only; no secret value is ever exposed, and the read rides the existing admin-gated detail route (#466).
+
 ### Fixed
 
 - **Contradiction scanning found different candidates on Postgres than on DuckDB.** The PG repo's `find_contradiction_candidates` still matched the scalar `knowledge_items.domain` that v49 replaced with a first-class domain entity — every other domain filter in that same repo had already moved to the `knowledge_item_domains` junction. Because `replace_domains_for_item` does not maintain the scalar, a moved item stayed a contradiction candidate under the domain it LEFT and was never judged under the one it JOINED: a real contradiction was reported on DuckDB and silently missed on Postgres, on a correctness scanner. The query now reads the junction like its sibling, and an unknown slug returns empty on both backends instead of falling back to an unfiltered scan. Pinned by a cross-engine contract test that moves an item through the public API and asserts both backends agree — verified to fail on PG without the fix.
