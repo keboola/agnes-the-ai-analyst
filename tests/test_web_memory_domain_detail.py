@@ -100,10 +100,11 @@ class TestMemoryDomainDetail:
         assert resp.status_code == 200
         body = resp.text
         assert "Ops" in body
-        # Item title + back link present.
+        # Item title present.
         assert "Ops runbook" in body
-        # Topnav (default) layout → standalone memory page is the browse home.
-        assert 'href="/corporate-memory"' in body
+        # The back link points at the Library's Memory band on every instance —
+        # /corporate-memory redirects there — and is owned by
+        # test_back_link_targets_the_library_under_rail below.
 
     def test_back_link_targets_the_library_under_rail(self, seeded_app, monkeypatch):
         # Under rail /corporate-memory REDIRECTS to the Library's Memory band

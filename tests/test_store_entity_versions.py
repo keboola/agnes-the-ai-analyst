@@ -513,8 +513,11 @@ class TestEditPage:
             cookies=owner_cookies,
         )
         assert r.status_code == 200
-        assert "versions-card" in r.text
-        assert "Versions (1)" in r.text
+        # Version history renders through `detail.version_timeline` under the
+        # default paper look (`.versions-card` was the blue-theme card), so the
+        # marker is the timeline plus the version label itself.
+        assert "detail-timeline" in r.text
+        assert "v1 · current" in r.text
 
     def test_versions_card_hidden_for_non_owner(self, web_client):
         owner_id, owner_cookies = _create_user(web_client, "vowner2@x.com")
@@ -948,8 +951,13 @@ class TestEditPageBanner:
             cookies=owner_cookies,
         )
         assert r.status_code == 200
-        # Edit button should reflect the in-flight review (locked).
-        assert "review in flight" in r.text or "Edit (review in flight)" in r.text
+        # Edit must reflect the in-flight review (locked). The blue theme spells
+        # it in the button label; the default paper look disables the store-menu
+        # row and puts the reason in its title.
+        assert (
+            "review in flight" in r.text
+            or "Wait for the in-flight review to finish before editing." in r.text
+        )
 
 
 class TestAuditLogPerVersion:

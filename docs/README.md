@@ -19,6 +19,7 @@ Using the platform to analyze data.
 - [`HOWTO/`](HOWTO/) — task-oriented cookbook (querying, snapshots, common workflows)
 - [`DATA_SOURCES.md`](DATA_SOURCES.md) — data source connectors (Keboola, BigQuery, CSV) and how tables surface
 - [`metrics/`](metrics/) — canonical business-metric definitions (YAML)
+- [`semantic-layer.md`](semantic-layer.md) — Apache Ossie documents as the canonical semantic layer: sources, adapters, ownership, export
 - [`HEADLESS_USAGE.md`](HEADLESS_USAGE.md) — PAT auth for CI / headless clients
 - [`../clients/macos/README.md`](../clients/macos/README.md) — Marketplace-first
   macOS desktop MVP with local CLI-path/version health

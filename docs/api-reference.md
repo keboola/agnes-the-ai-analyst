@@ -1066,6 +1066,44 @@ semantic layer routinely describes more of a project than an instance registers.
 CLI: `agnes admin semantic-layer coverage [--json]`. MCP:
 `admin_semantic_layer_coverage`.
 
+### `/api/admin/semantic-models` and `/api/semantic-models` — Open semantic-layer contract
+
+Admin CRUD over canonical Apache Ossie semantic-model documents, plus a
+public, resource-gated export and search surface. The stored `document` is
+the source of truth — export returns it byte-for-byte, never re-serialized,
+so comments and key order survive.
+
+- /api/admin/semantic-models
+- /api/admin/semantic-models/{model_id}
+- /api/admin/semantic-sources
+- /api/admin/semantic-sources/{source_id}
+- /api/admin/semantic-sources/{source_id}/sync
+- /api/semantic-models/search
+- /api/semantic-models/{slug}.yaml
+
+`POST /api/admin/semantic-models` validates the pasted document against the
+vendored Ossie schema (422 with the schema errors on failure) and stores it
+as a hand-authored (`source='manual'`) model, keyed by the document's own
+model name. A model whose `source` is anything else (imported by a
+registered `semantic-source`) refuses edits through `PUT` with 409
+`source_owned`, naming the source to edit it at instead — the next sync
+would otherwise silently revert the change. `POST
+.../semantic-sources/{id}/sync` fetches and imports one source now; a
+failed fetch imports nothing and is recorded on the source, never mistaken
+for "upstream went empty".
+
+`GET /api/semantic-models/{slug}.yaml` (export) and `GET
+/api/semantic-models/search` are any-authenticated-user, gated instead on
+the linked Data Package's grant (`data_package_semantic_models`) — a model
+rides the same visibility as the package(s) it belongs to; admins always
+see everything. A model with no linked package is admin-only until an
+admin links it.
+
+CLI: `agnes admin semantic-model list/show/import/export/validate` (the
+last runs entirely offline — no server, no token) and `agnes admin
+semantic-source add/list/sync`. MCP: `semantic_model_search`,
+`semantic_model_get`.
+
 ### `/api/admin/run-*` — Background job triggers
 
 - /api/admin/run-blocked-purge

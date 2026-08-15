@@ -108,43 +108,18 @@ def test_classic_mode_does_not_get_the_local_copy_wording():
     assert router_mod._resolve_in_stack_is_local(False) is False
 
 
-def test_the_frozen_memory_twin_carries_the_wording_fix_too():
-    """Freezing forks a page permanently.
-
-    `corporate_memory_legacy.html` was snapshotted from the pre-#1206 page, so
-    without this it would render the old wording on an instance running classic
-    chrome WITH auto-membership — a supported combination — while its live twin
-    renders the new one. The fix is flag-driven, so carrying it costs nothing
-    in classic: the projection omits the flag there and the old wording stands.
-    """
-    legacy = (TEMPLATES / "corporate_memory_legacy.html").read_text(encoding="utf-8")
-    assert "card.dataset.inStackIsLocal === '1'" in legacy
-    assert "'Local copy queued' : 'Local copy removed'" in legacy
-
-
-def test_the_js_twin_matches_the_macro():
-    """`catalog.html` re-labels cards client-side after an add/remove. Left on
-    the old strings it would undo the fix on the first click."""
-    text = (TEMPLATES / "catalog_legacy.html").read_text(encoding="utf-8")
-    assert "'Downloaded'" in text
-    assert "'Remove local copy' : 'Download locally'" in text
-    assert 'data-filter="in_stack">Downloaded<' in text, "the filter chip still reads 'In stack'"
-
-
 # ---------------------------------------------------------------------------
 # What a REMOVAL means also follows the flag, not just what the button says
 # ---------------------------------------------------------------------------
 
 # Every page that renders the `_stack_card` macro over a projection which can
-# set `in_stack_is_local`. `catalog.html` became `catalog_legacy.html` when the
-# classic page was frozen, and the classic memory page gained a frozen twin —
-# freezing forks a page permanently, so a fix that reaches only one half of a
-# pair silently reverts itself on whichever chrome renders the other.
-_STACK_PAGES = (
-    "catalog_legacy.html",
-    "corporate_memory.html",
-    "corporate_memory_legacy.html",
-)
+# set `in_stack_is_local`. `catalog_legacy.html` and `corporate_memory_legacy.html`
+# (the frozen pre-redesign twins this comment used to name) were retired in
+# Wave 0 legacy retirement (2026-08); the redesigned Catalog
+# (`catalog_unified.html`) doesn't carry this inline JS at all — it renders
+# cards via the shared macro without a client-side re-labeling step — so only
+# the live memory page remains in scope here.
+_STACK_PAGES = ("corporate_memory.html",)
 
 
 def test_the_macro_hands_the_flag_to_the_js():
@@ -156,8 +131,7 @@ def test_the_macro_hands_the_flag_to_the_js():
     """
     macro = (TEMPLATES / "macros" / "_stack_card.html").read_text(encoding="utf-8")
     assert "data-in-stack-is-local=" in macro, (
-        "the card must expose `in_stack_is_local` as a data attribute — the JS "
-        "decides what a removal means from it"
+        "the card must expose `in_stack_is_local` as a data attribute — the JS decides what a removal means from it"
     )
 
 
@@ -177,12 +151,9 @@ def test_removal_keeps_the_card_when_in_stack_means_local_copy():
         assert "card.dataset.inStackIsLocal === '1'" in text, (
             f"{page}: `_applyStackChange` must read the flag before deciding what a removal does"
         )
-        assert "if (inStackIsLocal) {" in text, (
-            f"{page}: the My Stack removal branch must be gated on the flag"
-        )
+        assert "if (inStackIsLocal) {" in text, f"{page}: the My Stack removal branch must be gated on the flag"
         assert "if (myEl && !inStackIsLocal) {" in text, (
-            f"{page}: the My Stack tab count must not move under local-copy semantics — "
-            "membership is what it counts"
+            f"{page}: the My Stack tab count must not move under local-copy semantics — membership is what it counts"
         )
 
 

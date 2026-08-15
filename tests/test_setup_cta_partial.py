@@ -71,28 +71,12 @@ _LAUNCH_STEP_MARKERS = (
 )
 
 
-def test_dashboard_includes_setup_cta_partial(fresh_db):
-    """Pre-existing dashboard CTA still renders after the JS extraction."""
-    from src.db import get_system_db, close_system_db
-
-    conn = get_system_db()
-    try:
-        _, sess = _make_user_and_session(conn)
-    finally:
-        conn.close()
-        close_system_db()
-
-    c = _client()
-    resp = c.get("/dashboard", cookies={"access_token": sess})
-    assert resp.status_code == 200
-    _assert_partial_present(resp.text)
-    # Dashboard's own CTA chrome still here too. Button label was
-    # standardised across consumers to the canonical action wording
-    # documented in the partial.
-    assert 'id="setupClaudeBtn"' in resp.text
-    assert "Copy install script to clipboard" in resp.text
-
-
+# `test_dashboard_includes_setup_cta_partial` was here. /dashboard was one of
+# two pages including the shared setup-CTA partial; Wave 0 (2026-08) turned it
+# into an unconditional redirect and deleted dashboard.html, so it has no body
+# to include anything. The partial's own contract is unchanged and still
+# covered by the /home consumer below (and by /install, via
+# tests/test_welcome_template_api.py).
 def test_home_not_onboarded_includes_setup_cta_partial(fresh_db):
     """The new /home wiring renders the same partial markers as dashboard."""
     from src.db import get_system_db, close_system_db

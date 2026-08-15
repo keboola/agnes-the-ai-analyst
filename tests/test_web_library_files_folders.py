@@ -853,10 +853,12 @@ def test_file_detail_uses_the_shared_detail_scaffold(seeded_app):
     assert "detail-hero" in text
     assert "detail-section" in text
     assert "detail-hero--compact" in text  # library item pages use the compact header
-    # Presents the file: facts as detail rows, sharing as its own section.
-    assert "detail-rows" in text
-    assert ">Details<" in text
-    assert ">Sharing<" in text
+    # Presents the file. Under the editorial (paper) layout — the default since
+    # Wave 0, 2026-08 — the FACTS move to the rail as a lookup and the main
+    # column carries the two things worth a sentence; the blue layout keeps
+    # them as the ">Details<" / ">Sharing<" cards this used to assert.
+    assert ">How sharing works here<" in text
+    assert ">Indexing<" in text
     # Neither an ask box nor an upload zone.
     assert "Ask this file" not in text
     assert "Add files" not in text

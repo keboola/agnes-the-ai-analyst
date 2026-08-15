@@ -45,8 +45,9 @@ Real pattern: `app/web/router.py` `admin_users_page` (~`:2409`).
 ## Visual standard
 
 Read `references/design-system.md` before styling anything — tokens
-(`--ds-*`), theme switch (`paper`), chrome layouts (topnav/rail), and
-the accent vocabularies (brand vs kind vs assistant vs status) are
+(`--ds-*`), theme switch (`paper` default | `blue` still supported), the
+rail chrome (the only layout — topnav was retired in Wave 0, 2026-08),
+and the accent vocabularies (brand vs kind vs assistant vs status) are
 binding for all UI work.
 
 ## CSS rules (enforced by `tests/test_design_system_contract.py`)
@@ -65,11 +66,16 @@ Use canonical classes (`.btn`, `.btn-primary`, `.search-input`, `.data-table`,
 2. Create the template (extend `base_page.html`) + the route.
 3. Green both.
 4. **Wire an inbound link — a route is not a shipped page.** Pick one:
-   admin page → the Admin mega-menu column in
-   `app/web/templates/_app_header.html`; per-user page → the user dropdown in
-   the same file; a fallback/secondary surface → a contextual link from the
-   page that owns the job. Add a Cmd/Ctrl-K entry in `_app_scripts.html` too,
-   and a guard test pinning the link (`tests/test_web_nav_agents.py`,
+   admin page → register it in `app/web/admin_nav.py`, the single inventory
+   for the `/admin` sidebar (`_admin_tabs.html` / `_admin_nav.html`) — the
+   rail itself carries just one plain `Admin` link to `/admin`
+   (`app/web/templates/_app_rail.html`), no flyout, no `<details>`, no
+   sub-rows; `tests/test_web_admin_nav.py` fails the build if a new
+   `require_admin`, template-rendering route has no entry there; per-user
+   page → the user dropdown in `_app_rail.html` (`.app-user-menu`); a
+   fallback/secondary surface → a contextual link from the page that owns
+   the job. Add a Cmd/Ctrl-K entry in `_app_scripts.html` too, and a guard
+   test pinning the link (`tests/test_web_nav_agents.py`,
    `tests/test_web_nav_me_connections.py`) — three pages have shipped
    URL-only so far, each found by audit rather than by a user.
 

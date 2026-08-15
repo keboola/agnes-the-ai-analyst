@@ -2,7 +2,7 @@
    have no nav and no toasts, so the helpers aren't reachable there).
    Two responsibilities for now:
    - wireDropdown: open/close + click-outside + Escape for the user menu and
-     the Admin nav dropdown. Used by _app_header.html.
+     the Admin nav dropdown. Used by _app_rail.html.
    - More helpers (window.appToast, etc.) added later as the design system
      primitives need JS sidecars. */
 (function () {
@@ -195,7 +195,7 @@
     }
 
     // Theme toggle (Light / Dark / System) — the segmented control in the user
-    // menu (_app_header.html). The pre-paint resolver in _theme_resolve.html owns
+    // menu (_app_rail.html). The pre-paint resolver in _theme_resolve.html owns
     // theme application + the single OS listener and exposes window.__agnesTheme;
     // this just drives it from clicks/keys and reflects the active choice. Clicks
     // stop propagation so the user menu (wired above) stays open while switching.
@@ -248,11 +248,13 @@
     window.appUI = { wireDropdown: wireDropdown };
     window.appToast = appToast;
 
-    // Auto-wire the dropdowns + theme toggle shipped from _app_header.html.
+    // Auto-wire the dropdowns + theme toggle shipped by the nav chrome
+    // (_app_rail.html). adminMenuTrigger/navMoreTrigger were the topnav's
+    // mega-menu + overflow menu (retired, Wave 0 2026-08) — the rail has no
+    // matching elements, so those two calls are permanently no-ops now;
+    // left in place since wireDropdown() already guards a missing trigger.
     function init() {
         wireDropdown("userMenuTrigger", "userMenuPanel");
-        // Admin is a first-class header entry (mega-menu), no longer buried in
-        // the user menu. The primary nav carries a "More" overflow menu.
         wireDropdown("adminMenuTrigger", "adminMenuPanel");
         wireDropdown("navMoreTrigger", "navMorePanel");
         initPriorityNav();

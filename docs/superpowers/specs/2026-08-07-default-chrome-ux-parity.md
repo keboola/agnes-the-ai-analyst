@@ -59,8 +59,10 @@ redesign experience for opted-in instances**.
   legacy path** so retired UI cannot resurface on the redesign.
 - **Both directions pinned.** Every parity surface has tests asserting the
   legacy markers on default AND the redesign markers under the opt-in
-  (`TestDefaultContentParity`, `TestDetailPageParity`, and per-surface
-  siblings). Redesign-anatomy tests opt in explicitly via env fixtures.
+  (`TestDefaultContentParity` — renamed `TestRedesignedPageContracts` when
+  Wave 0, 2026-08 retired the legacy side it used to pin against —
+  `TestDetailPageParity`, and per-surface siblings). Redesign-anatomy tests
+  opt in explicitly via env fixtures.
 - **Semantics fork behind an instance flag, not a chrome check.** Server-side
   behavior (stack membership) must not read UI configuration: it gets its own
   feature flag, resolved through the standard `feature_enabled` convention.
@@ -200,7 +202,8 @@ promoted into the frozen-copy pattern later without redesign changes.
 
 ## Verification
 
-- Full parity guard battery (`TestDefaultContentParity`,
+- Full parity guard battery (`TestDefaultContentParity` — see the naming
+  note above; renamed `TestRedesignedPageContracts` post-Wave-0 —
   `TestDetailPageParity`, per-surface classes, `LEGACY_FROZEN` closed-set
   guards, emoji ratchet, design-system contract) on every PR.
 - Dual-mode stack contract suite (wave 1) on both DB backends.

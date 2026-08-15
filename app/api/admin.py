@@ -688,14 +688,20 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
         # `app/instance_config.py::get_experience()` via `switch_value`.
         "experience": {
             "kind": "select",
-            "options": ["classic", "redesign"],
-            "default": "classic",
+            "options": ["redesign"],
+            "default": "redesign",
             "hint": (
-                "One-line redesign adoption preset. `redesign` changes the "
-                "DEFAULTS of the coupled knobs — ui_layout → rail, theme → "
-                "paper, features.stack_auto_membership → on; any per-knob "
-                "setting still wins. `classic` (the default) is byte-for-byte "
-                "the pre-redesign experience."
+                "One-line redesign adoption preset — retired as a choice; "
+                "`redesign` is the only option and the default. Changes the "
+                "DEFAULTS of theme → paper and features.stack_auto_membership "
+                "→ on; either can still be overridden per-knob. ui_layout is "
+                "NOT one of those overridable knobs any more — the rail "
+                "chrome is hard-wired (Wave 0, 2026-08); a configured "
+                "instance.ui_layout is ignored (logged as a startup warning), "
+                "not honored. Kept only so an existing "
+                "`instance.experience` yaml/env value doesn't error; any "
+                "other value (including the old `classic`) falls back to "
+                "this default."
             ),
         },
         # UI theme — flips `<html data-theme="...">` so the
@@ -1852,13 +1858,16 @@ def _feature_flags_inventory() -> List[Dict[str, Any]]:
             "value_label": get_experience(),
             "effective": get_experience() == "redesign",
             "source": exp_source,
-            "default": "classic",
+            "default": "redesign",
             "env_var": "AGNES_INSTANCE_EXPERIENCE",
             "description": (
-                "Experience preset (classic|redesign). Changes only the DEFAULTS "
-                "of the coupled knobs — instance.ui_layout, instance.theme, "
-                "features.stack_auto_membership — any per-knob env/yaml setting "
-                "still wins."
+                "Experience preset — retired as a choice; `redesign` is the only "
+                "option and the default. Changes the DEFAULTS of "
+                "instance.theme and features.stack_auto_membership — either can "
+                "still be overridden per-knob. instance.ui_layout is NOT one of "
+                "those overridable knobs any more: the rail chrome is "
+                "hard-wired (Wave 0, 2026-08), so a configured value is ignored "
+                "with a startup warning instead of being honored."
             ),
             "effect": "live",
             "editable": True,

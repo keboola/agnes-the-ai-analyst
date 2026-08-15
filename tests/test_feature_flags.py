@@ -337,17 +337,20 @@ class TestServerConfigFeatureFlagsInventory:
 
     def test_known_fields_defaults_follow_the_preset(self, seeded_app, monkeypatch):
         """The EDITABLE registry must render the preset-implied default for
-        unset preset-coupled fields — a static literal there means a redesign
+        unset preset-coupled fields — a static literal there means an
         instance sees the stack switch OFF / theme `blue` and a routine
-        "Save section" silently persists the classic values over the preset
-        (Devin Review on #1199)."""
+        "Save section" silently persists a value the runtime doesn't
+        actually use (Devin Review on #1199). `redesign` is the default now
+        (classic retired), so this holds whether the preset is left unset or
+        set explicitly — neither should ever surface the registry's raw
+        pre-redesign literals (`stack_auto_membership: False`, `theme: blue`)."""
         c = seeded_app["client"]
         token = seeded_app["admin_token"]
 
         monkeypatch.delenv("AGNES_INSTANCE_EXPERIENCE", raising=False)
         kf = c.get("/api/admin/server-config", headers=_auth(token)).json()["known_fields"]
-        assert kf["features"]["stack_auto_membership"]["default"] is False
-        assert kf["instance"]["theme"]["default"] == "blue"
+        assert kf["features"]["stack_auto_membership"]["default"] is True
+        assert kf["instance"]["theme"]["default"] == "paper"
 
         monkeypatch.setenv("AGNES_INSTANCE_EXPERIENCE", "redesign")
         kf = c.get("/api/admin/server-config", headers=_auth(token)).json()["known_fields"]

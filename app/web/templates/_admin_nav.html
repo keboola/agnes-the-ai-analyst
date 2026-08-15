@@ -44,17 +44,19 @@
    `default(false)` so a context that somehow lacks it hides the row rather
    than raising. #}
 {% set _nav_flags = {'can_studio': can_studio | default(false)} %}
-{# The rail chrome and the topnav chrome give this column different jobs, and
-   the head is the one place that shows. Under `rail` the column is the primary
-   navigation of the page and the rail beside it is a glyph strip, so the head
-   is a page-level heading that also answers "which instance am I changing".
-   Under `topnav` — still the DEFAULT layout, and one whose look must not shift
-   under existing instances (tests/test_ui_layout_theme.py) — the head stays the
-   quiet uppercase label it has always been, and the "Back to the app" row stays
-   with it. One inventory, one component, one conditional. #}
-{% set _rail_chrome = (ui_layout | default('topnav')) == 'rail' %}
+{# The head is a page-level heading that also answers "which instance am I
+   changing": under the rail this column is the primary navigation of the page
+   and the rail beside it is a glyph strip.
+
+   This used to be one conditional on `ui_layout`, with a quieter topnav form.
+   Wave 0 (2026-08) retired the topnav chrome AND dropped the `ui_layout`
+   template-context key — which left `ui_layout | default('topnav')` resolving
+   to 'topnav' on every render, so the rail form silently switched itself OFF
+   everywhere: no instance chip, and the retired "Back to the app" row came
+   back pointing at /dashboard, which is a redirect now. Unconditional, so
+   there is no undefined name left to read the wrong answer from. #}
 <aside class="admin-nav" aria-label="Admin sections" data-admin-nav data-active-section="{{ _active_section_key or '' }}">
-    <div class="admin-nav__head{% if _rail_chrome %} admin-nav__head--mode{% endif %}">
+    <div class="admin-nav__head admin-nav__head--mode">
         {# A LABEL, not a link. It used to be the only way back to the hub,
            which asked a small uppercase column heading to do a navigation job
            nobody reads it as offering — the hub is the `admin_nav_home` row
@@ -64,24 +66,18 @@
            screen — as `version · updated` in the shared page footer
            (`_footer.html`; a fixed bottom-right stamp before that), i.e. as build
            metadata, three levels of hierarchy below the question an operator with more than
-           one deployment is actually asking before they touch a grant. Rail only:
-           under topnav this row is the quiet uppercase label described above, and
-           a chip beside it would be a visual change to the default chrome. #}
-        {% if _rail_chrome and instance_name %}
+           one deployment is actually asking before they touch a grant. #}
+        {% if instance_name %}
         <span class="admin-nav__instance" title="{{ instance_name }}">{{ instance_name }}</span>
         {% endif %}
     </div>
-    {# "← Back to the app" is TOPNAV-ONLY now. It existed because the rail
-       collapses to its icon strip on /admin, which made leaving the area a hunt
-       for a 56px glyph — but the strip is a complete set of destinations now
-       (New chat · Chats · Library · Agents, each with an icon; see the contract
-       note at the top of `_app_rail.html`), so the row duplicated the wordmark
-       and three neighbours. Under topnav there is no rail at all and the header's
-       own links are above the fold, so it is equally redundant there — but
-       removing it would change the default chrome, which this pass does not do. #}
-    {% if not _rail_chrome %}
-    <a class="admin-nav__link admin-nav__link--back" href="/dashboard">← Back to the app</a>
-    {% endif %}
+    {# No "← Back to the app" row. It existed because the rail collapses to its
+       icon strip on /admin, which made leaving the area a hunt for a 56px glyph
+       — but the strip is a complete set of destinations now (New chat · Chats ·
+       Library · Agents, each with an icon; see the contract note at the top of
+       `_app_rail.html`), so the row duplicated the wordmark and three
+       neighbours. It survived as a topnav-only branch until Wave 0 (2026-08)
+       retired that chrome. #}
     {# No Admin/Agnes mode switch here. It shipped as a two-segment control on
        the theory that the pressed segment answers "which of the two products am
        I in" — but the column already answers that three times over (the heading

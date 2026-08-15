@@ -50,9 +50,10 @@ class TestAdminLintPage:
         assert "Audit now" in body
         assert "This skill body is unusually large." in body
         # base_ds chrome actually rendered (the _chrome_ctx regression guard):
-        # the shared app header/nav and a real stylesheet href must be present.
-        assert "app-header" in body
-        assert "app-nav-link" in body
+        # the shared nav and a real stylesheet href must be present. The
+        # markers are the rail's since Wave 0 (2026-08) retired the topnav.
+        assert 'class="rail' in body
+        assert "rail-i" in body
         assert ".css" in body
 
     def test_dismissed_finding_hidden_by_default(self, web_client):  # noqa: F811

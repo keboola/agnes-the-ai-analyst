@@ -404,6 +404,7 @@ from app.api.attachments import router as attachments_router
 from app.api.jira_webhooks import router as jira_webhooks_router
 from app.api.metrics import router as metrics_router
 from app.api.glossary import router as glossary_router
+from app.api.semantic_models import router as semantic_models_router
 from app.api.metadata import router as metadata_router
 from app.api.query_hybrid import router as query_hybrid_router
 from app.api.cli_artifacts import router as cli_artifacts_router
@@ -2385,6 +2386,22 @@ def create_app() -> FastAPI:
     except Exception as e:
         logger.warning(f"Could not load instance config: {e}")
 
+    # Warm the two retired-knob resolvers (`ui_layout`, `experience`) so their
+    # one-time warnings land in the BOOT log, which is where an operator
+    # upgrading a deployment looks and what CONFIGURATION.md /
+    # instance.yaml.example promise ("a one-time startup warning").
+    # `_warn_once` fires on first call; without this the first call was
+    # whatever request happened to render a page first, so the warning appeared
+    # minutes later, interleaved with traffic — or never, on an instance nobody
+    # opened. Both resolvers must be called: each owns its own warning.
+    try:
+        from app.instance_config import get_experience, get_ui_layout
+
+        get_ui_layout()
+        get_experience()
+    except Exception as e:  # a warning must never be able to stop a boot
+        logger.debug(f"Could not warm retired-knob resolvers: {e}")
+
     # Configure confidence scoring from instance config (corporate_memory.confidence section)
     try:
         from app.instance_config import get_corporate_memory_config
@@ -2533,6 +2550,7 @@ def create_app() -> FastAPI:
     app.include_router(jira_webhooks_router)
     app.include_router(metrics_router)
     app.include_router(glossary_router)
+    app.include_router(semantic_models_router)
     app.include_router(metadata_router)
     app.include_router(query_hybrid_router)
     app.include_router(cli_artifacts_router)
@@ -2833,7 +2851,7 @@ def create_app() -> FastAPI:
         """Render error.html with the same chrome (header, theme, static_url)
         as any other web route. Reuses ``_build_context`` so the page picks up
         ConfigProxy, theme overrides, session user, and ``static_url`` /
-        ``url_for`` helpers — without these, base.html + _app_header.html
+        ``url_for`` helpers — without these, base.html + _app_rail.html
         silently render empty header/stylesheets."""
         from app.logging_config import request_id_var
         from app.web.router import templates as _web_templates, _build_context

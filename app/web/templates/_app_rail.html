@@ -1,6 +1,7 @@
-{# Left-rail navigation — the "rail" ui_layout (instance.ui_layout /
-   AGNES_UI_LAYOUT=rail). Renders INSTEAD of _app_header.html via the
-   switch in base_ds.html; topnav instances never load this partial.
+{# Left-rail navigation — the ONLY structural chrome. The topnav chrome
+   (`_app_header.html`) was retired in Wave 0 (2026-08), so `base_ds.html`
+   and `base.html` both include this partial unconditionally and there is no
+   layout switch left to read.
 
    IA: the rail is TWO fixed zones with the conversation list between them.
    Top — New chat and Chats, then the caller's conversations in two collapsible
@@ -23,12 +24,11 @@
    a destination. The Studio dropdown and the Marketplace entry have both
    been retired from the rail; /catalog and the Skill/Plugin builders remain
    live routes, reached from the Library header's "+ Add" menu (its "Browse"
-   entries are the rail's ONLY way in — the rail renders no global search box,
-   so a route missing from both the rail and that menu is unreachable;
+   entries, and the global search box at the top of this column, are the ways
+   in — a route missing from the rail, that menu AND search is unreachable;
    tests/test_web_nav_user_parity.py guards the set). Memory and Data apps
    fold into the Library outright: /corporate-memory and /apps 302 to its
-   sections under rail (REDIRECTED_UNDER_RAIL in the same guard). The topnav
-   chrome keeps its flat link row — this IA applies only to the rail layout.
+   sections (REDIRECTED_UNDER_RAIL in the same guard).
 
    My Stack is retired too (#1088), not merely unlinked: /stack now 302s to
    /library?stack=in_stack (the "In stack only" toggle arriving pressed)
@@ -42,15 +42,17 @@
    there is no cross-link to add. Coverage lives in
    tests/test_ui_layout_theme.py and tests/test_web_admin_nav.py instead.
 
-   Mirrors _app_header.html in behavior contract:
+   Carries over from the retired topnav chrome:
      - same auth gating (session.user), chat grant gating (can_chat),
        admin gating (session.user.is_admin);
      - same feature gates on shared destinations (can_agent_profiles,
        data_apps_enabled()) + is-active rules;
-     - same element ids for JS wiring (#userMenu*, #themeToggle) — app.js
-       works unchanged. global_search.js is loaded but idle: the rail
-       renders no #global-search input (by design — page-local search
-       boxes instead), and the script self-guards on the missing id.
+     - same element ids for the JS the two chromes shared (#userMenu*,
+       #themeToggle, and #global-search/#globalSearchResults) — app.js and
+       global_search.js work unchanged. The search box was the one piece
+       that did NOT carry over when the rail was first built; it is back
+       (above Zone 1), because with no second chrome there was nothing else
+       searching across tables, knowledge and documents.
    Styles live in app/web/static/css/rail.css (.rail-* prefix),
    activated by html[data-ui-layout="rail"]. #}
 {% import "macros/_agnes_orb.html" as agnes_orb %}
@@ -158,6 +160,48 @@
     {% set _on_library = _path.startswith('/library') or _path == '/artefacts'
                          or _path == '/catalog/semantics' %}
     {% set _on_agents = _path == '/agents' %}
+
+    {# ── Global search — one box across tables, curated knowledge, and
+       uploaded documents (GET /api/knowledge/search; wiring in
+       app/web/static/js/global_search.js, which binds on the two ids below).
+
+       It shipped on the retired topnav chrome and was NOT carried over when
+       the rail was first built, on the reasoning that page-local search boxes
+       would cover it. With the rail the ONLY chrome (Wave 0, 2026-08), that
+       stopped being a trade-off and became a hole: a page-local box can only
+       search the page you already found, so nothing crossed the three content
+       kinds any more and /catalog's grid filter was the closest thing left.
+       Restored here with the SAME ids and the same endpoint — only the styling
+       is new (`.rail-search-*`, rail.css).
+
+       Above Zone 1 on purpose: it is the one control that is about the whole
+       instance rather than about a destination, and it must not sit inside
+       `.rail-history`, the one region collapse hides. Fixed height, so
+       neither zone moves when the conversation list grows.
+
+       Not a hotkey target — Cmd/Ctrl-K is the chat/admin command palette. #}
+    <div class="rail-search" id="globalSearchWrap">
+        <svg class="rail-search-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <circle cx="11" cy="11" r="6.5" stroke="currentColor" stroke-width="1.7"/>
+            <path d="M16 16l4.5 4.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+        </svg>
+        <input type="search"
+               id="global-search"
+               class="rail-search-input"
+               role="combobox"
+               aria-expanded="false"
+               aria-haspopup="listbox"
+               aria-controls="globalSearchResults"
+               aria-autocomplete="list"
+               autocomplete="off"
+               spellcheck="false"
+               placeholder="Search data, knowledge, documents…">
+        <div class="rail-search-panel"
+             id="globalSearchResults"
+             role="listbox"
+             aria-label="Search results"
+             hidden></div>
+    </div>
 
     {# ── Zone 1 (top): New chat + the recent conversations under it ──────
        The whole zone is chat-gated: without a grant there is no New chat row

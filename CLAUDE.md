@@ -92,6 +92,28 @@ Extractors with `query_mode='remote'` tables include a `_remote_attach` table in
 
 Deeper architecture notes: [`docs/architecture.md`](docs/architecture.md).
 
+### Semantic layer (Apache Ossie documents)
+
+A semantic model — datasets, per-column fields, relationships, metrics and
+`ai_context` — is stored whole as an [Apache Ossie](https://ossie.apache.org/)
+document in `semantic_models`, validated against a vendored, pinned JSON
+Schema. `metric_definitions`, `glossary_terms` and `column_metadata` are
+**projections** of that document and regenerable from it; the document is the
+owner. Sources (`semantic_sources`) feed it over three transports — git clone,
+upload, or an existing connection — each through an adapter whose entire
+contract is `extract(config) -> list[str]` returning documents as text. Adapters
+never write to the database, which is what makes a new source format additive.
+Provenance is `(source, source_ref)` and a sync prunes only within its own; a
+model owned by a source is read-only through the API (`409 source_owned`) so a
+scheduled sync cannot silently revert a downstream edit. Reference:
+[`docs/semantic-layer.md`](docs/semantic-layer.md). Design:
+[`docs/superpowers/specs/2026-08-13-open-semantic-layer-contract-design.md`](docs/superpowers/specs/2026-08-13-open-semantic-layer-contract-design.md).
+
+Note the neighbour: `src/semantic_validation.py` is a **query** validator (does
+a SQL statement obey a document's constraints and dialects);
+`src/semantic/document_validation.py` is a **document** validator (does a
+document conform to the schema). Different concerns, adjacent names.
+
 ### Agent profiles & agent-as-API
 
 Named, scoped agents layered over a user's own stack — CRUD/scope/PAT issuance
@@ -349,7 +371,7 @@ Per-instance offering is narrowed by `auth.providers` (see `config/instance.yaml
 ### Web pages
 HTML dashboard pages use the design-system **page shell** (#367/#482): `{% extends "base_page.html" %}` (gradient hero + `{% block toolbar %}` + `{% block page %}`) or `{% extends "base_ds.html" %}` (everything else; body in `{% block content %}`). **Never `base.html`** — it is legacy. The base auto-imports the `ds.*` macros (no `{% import "_components.html" %}`), sets theme/favicon/nav/global-JS, and provides the canonical `.container`; page CSS goes in `{% block head_extra %}`, never inline in the body. Contract guards in `tests/test_design_system_contract.py` reject `.container:has()` opt-outs, bare `:root{}`, raw `#hex`, and `var(--primary)` (use `var(--ds-primary)`). Full step-by-step recipe: [`docs/architecture.md`](docs/architecture.md) → *Extending the Platform → New Web Page*.
 
-**Visual standard (binding for ALL UI work):** `.claude/skills/agnes-conventions/references/design-system.md` — `--ds-*` tokens only, theme switch via `data-theme` (`blue` default, `paper` = the issue-#896 prototype look), chrome layout via `data-ui-layout` (`topnav` default, `rail` = left sidebar). Visual changes ship as opt-in scoped theme/skin blocks; the default look of existing instances never changes (guarded by `tests/test_ui_layout_theme.py`).
+**Visual standard (binding for ALL UI work):** `.claude/skills/agnes-conventions/references/design-system.md` — `--ds-*` tokens only, theme switch via `data-theme` (`paper` default since Wave 0, 2026-08 — the issue-#896 prototype look; `blue`/`navy`/`dark`/`auto` remain fully supported and an explicit theme choice always wins), chrome via `data-ui-layout` (hard-wired to `"rail"` — the topnav chrome was retired in the same wave; a configured `instance.ui_layout`/`AGNES_UI_LAYOUT` is tolerated but inert, ignored with a one-time startup warning). A NEW theme value still ships as its own opt-in scoped block, never by mutating an existing theme's block (guarded by `tests/test_ui_layout_theme.py`).
 
 ### Hosted Data Apps
 `src/data_apps/` (registry + spec builders) + `services/apps_runner/` (the sidecar that alone holds the Docker socket) host user web apps next to the data — off by default (`data_apps.enabled`), compose profile `apps`. See [`docs/architecture.md`](docs/architecture.md#hosted-data-apps) and [`docs/superpowers/specs/2026-07-21-data-apps-design.md`](docs/superpowers/specs/2026-07-21-data-apps-design.md).

@@ -399,7 +399,12 @@ def test_detail_page_still_locks_a_genuinely_quarantined_entity(web_client: Test
     r = web_client.get(f"/marketplace/flea/{entity_id}", cookies=owner_cookies)
     assert r.status_code == 200, r.text
     assert 'id="owner-archive-btn"' not in r.text
-    assert "Delete (locked — quarantined)" in r.text
+    # Blue spells the lock in the label; paper (the default) disables the
+    # store-menu row and states the reason in its title.
+    assert (
+        "Delete (locked — quarantined)" in r.text
+        or "Submission is quarantined. Only an admin can delete it." in r.text
+    )
 
 
 def test_detail_installable_agrees_with_the_install_endpoint(web_client: TestClient):

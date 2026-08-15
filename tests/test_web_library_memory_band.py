@@ -135,7 +135,11 @@ def test_classic_self_subscription_is_removable_not_locked(seeded_app, monkeypat
     self-subscription — the lock is driven by droppability, and this row IS
     droppable. Real confusion: a user added a domain, read the lock as
     'required by admin', and found the removable truth only on /catalog."""
-    monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+    # Self-subscription only exists under the classic subscribe model; under
+    # auto-membership (the default since Wave 0, 2026-08) the grant IS the
+    # membership and the row is locked by design —
+    # test_auto_membership_grant_stays_locked below is that case.
+    monkeypatch.setenv("AGNES_STACK_AUTO_MEMBERSHIP", "0")
     dom = _make_domain("lib-selfsub", "Lib SelfSub")
     _make_item("lib_selfsub_1", "Note", dom)
     _grant_domain("Everyone", dom, users=["analyst1"])

@@ -40,6 +40,24 @@ _last_good_config: Optional[dict] = None
 # — not wired up there yet.
 _static_config_error: Optional[str] = None
 
+# Keys already warned about once this process — see `_warn_once`. Process
+# lifetime, like `_loaded_once` above: a retired config value should log a
+# single line at boot, not spam every request that calls the resolver.
+_warned_once_keys: set[str] = set()
+
+
+def _warn_once(key: str, message: str) -> None:
+    """Log ``message`` via the module logger the first time this process
+    sees ``key``; every later call with the same ``key`` is a no-op.
+
+    Used by resolvers for retired config values (e.g. :func:`get_ui_layout`)
+    so a stale ``instance.yaml``/env setting produces one clear warning
+    instead of flooding the log on every request."""
+    if key in _warned_once_keys:
+        return
+    _warned_once_keys.add(key)
+    logger.warning(message)
+
 
 def get_static_config_error() -> Optional[str]:
     """Reason the static ``instance.yaml`` failed to load, or ``None``.
@@ -528,23 +546,42 @@ def get_gws_oauth_credentials() -> dict:
 
 
 def get_experience() -> str:
-    """One-line adoption preset (spec 2026-08-07-default-chrome-ux-parity):
-    ``classic`` | ``redesign``.
+    """One-line adoption preset (spec 2026-08-07-default-chrome-ux-parity).
 
-    Changes only the DEFAULTS the experience-coupled knobs fall back to
-    (chrome layout, theme, stack membership mode, trust markers); any
-    per-knob env/yaml setting still wins, and each knob's own resolution
-    order is unchanged. ``classic`` — or an absent/unrecognised value — is
-    byte-for-byte the pre-redesign experience, so a routine upgrade changes
-    nothing an operator did not opt into.
+    Retired as a choice in Wave 0 (2026-08, spec
+    2026-08-13-grounded-analyst-workspace-design): ``redesign`` is the only
+    option and the default. The old ``classic`` value — or any other
+    unrecognised value — resolves to ``redesign`` via the ``experience``
+    switch's ``on_invalid="default"``, so an older instance.yaml with
+    ``experience: classic`` still boots without error; it no longer changes
+    any behavior.
+
+    Still changes only the DEFAULTS the remaining experience-coupled knobs
+    fall back to (theme, stack membership mode); any per-knob env/yaml
+    setting still wins, and each knob's own resolution order is unchanged.
+    Chrome layout is no longer part of the coupling — :func:`get_ui_layout`
+    hard-wires the rail chrome unconditionally, independent of this preset.
 
     Resolution: ``AGNES_INSTANCE_EXPERIENCE`` env > ``instance.experience``
-    in instance.yaml > ``"classic"`` — delegated to the ``experience`` entry
+    in instance.yaml > ``"redesign"`` — delegated to the ``experience`` entry
     in :data:`app.switches.SWITCHES` (kind ``select``,
     ``on_invalid="default"``), so the preset rides the same registry every
     operator switch is derived from instead of a hand-rolled lookup pair.
     """
     from app.switches import switch_value
+
+    # Warn on a retired value, the same way :func:`get_ui_layout` does. The
+    # switch's own `on_invalid="default"` resolves `classic` silently — which
+    # is right for BOOTING (an old instance.yaml must not fail) but wrong for
+    # telling the operator, who otherwise gets no signal anywhere that the
+    # line in their config stopped meaning anything. Read raw rather than
+    # through the switch, since the switch has already normalised it away.
+    raw = os.environ.get("AGNES_INSTANCE_EXPERIENCE") or get_value("instance", "experience")
+    if isinstance(raw, str) and raw.strip() and raw.strip().lower() != "redesign":
+        _warn_once(
+            "experience",
+            f"instance.experience={raw!r} is retired; the redesign experience is always on",
+        )
 
     return switch_value("experience")
 
@@ -556,15 +593,19 @@ PRESET_COUPLED_FLAGS: frozenset[str] = frozenset({"stack_auto_membership"})
 
 
 def preset_knob_default(name: str) -> str:
-    """Preset-implied default for the experience-coupled STRING knobs
-    (``theme`` / ``ui_layout``) — the single source of the preset mapping,
-    shared by the runtime getters and the ``/admin/server-config``
-    known-fields resolver (so the editable panel can never render a default
-    the runtime doesn't use — Devin Review on #1199)."""
+    """Preset-implied default for the experience-coupled STRING knobs — the
+    single source of the preset mapping, shared by the runtime getters and
+    the ``/admin/server-config`` known-fields resolver (so the editable
+    panel can never render a default the runtime doesn't use — Devin Review
+    on #1199).
+
+    ``theme`` is the only knob left here: ``ui_layout`` used to be
+    preset-coupled too, but Wave 0 (2026-08) hard-wired the rail chrome —
+    :func:`get_ui_layout` always returns ``"rail"`` unconditionally now, so
+    there is no preset-implied default left to resolve for it."""
     redesign = get_experience() == "redesign"
     return {
         "theme": "paper" if redesign else "blue",
-        "ui_layout": "rail" if redesign else "topnav",
     }[name]
 
 
@@ -591,12 +632,15 @@ def preset_flag_default(name: str) -> bool:
 def get_stack_auto_membership() -> bool:
     """Stack membership mode (spec 2026-08-07-default-chrome-ux-parity).
 
-    ``False`` (the classic default): membership is the subscribe model —
-    ``required ∪ (subscribed ∩ available)`` — exactly the pre-redesign
-    behavior, including the grant-downgrade subscription fan-out.
-    ``True``: auto-membership — every granted resource is in the stack the
-    moment it's granted; subscribe/unsubscribe only control the local copy.
-    The ``redesign`` experience preset flips the default to ``True``.
+    ``True`` (the default since Wave 0, 2026-08 — the ``redesign``
+    experience preset, now the only preset, implies this): auto-membership
+    — every granted resource is in the stack the moment it's granted;
+    subscribe/unsubscribe only control the local copy.
+    ``False`` (the classic value — still a fully-supported explicit
+    opt-out, and it always wins over the default): membership is the
+    subscribe model — ``required ∪ (subscribed ∩ available)`` — exactly the
+    pre-redesign behavior, including the grant-downgrade subscription
+    fan-out.
     """
     return feature_enabled(
         "features",
@@ -612,8 +656,15 @@ def get_instance_theme() -> str:
     (`--ds-*`) flips between palettes without touching markup.
 
     Values:
-      - ``blue``   — current default. Brand-blue hero gradient,
-                     blue CTAs, translucent-white eyebrow.
+      - ``paper``  — prototype-derived light look (issue #896), the
+                     default since Wave 0 (2026-08): warm paper canvas,
+                     white panels, emerald accent, pill CTAs; see
+                     ``[data-theme="paper"]`` in ``design-tokens.css``.
+                     Renders on the rail chrome (see :func:`get_ui_layout`,
+                     the only chrome there is now).
+      - ``blue``   — pre-redesign palette: brand-blue hero gradient,
+                     blue CTAs, translucent-white eyebrow. Still fully
+                     supported; set explicitly to opt out of ``paper``.
       - ``navy``   — darker palette opted into via server config.
                      Dark navy hero gradient, mint-green CTAs +
                      eyebrow accents.
@@ -623,17 +674,12 @@ def get_instance_theme() -> str:
       - ``auto``   — light by default, flips to the ``dark`` palette
                      when the user's OS prefers dark (resolved
                      client-side in ``_theme_resolve.html``).
-      - ``paper``  — prototype-derived light look (issue #896): warm
-                     paper canvas, white panels, emerald accent,
-                     pill CTAs; see ``[data-theme="paper"]`` in
-                     ``design-tokens.css``. Pairs with the ``rail``
-                     UI layout (see :func:`get_ui_layout`) but works
-                     with the classic top-nav too.
 
-    Resolution: ``AGNES_INSTANCE_THEME`` env var
-    (Terraform-friendly) > ``instance.theme`` in instance.yaml >
-    default ``"blue"``. Unrecognised values fall back to ``"blue"``
-    so a typo doesn't silently break every page.
+    Resolution: ``AGNES_INSTANCE_THEME`` env var (Terraform-friendly) >
+    ``instance.theme`` in instance.yaml > the ``experience`` preset's
+    implied default (``"paper"`` — see :func:`get_experience`).
+    Unrecognised values fall back to that same preset-implied default so a
+    typo doesn't silently break every page.
     """
     # Preset-implied default (spec 2026-08-07): the `redesign` experience
     # defaults to paper; explicit env/yaml always wins.
@@ -650,35 +696,15 @@ def get_instance_theme() -> str:
 
 
 def get_ui_layout() -> str:
-    """Structural chrome layout for web pages — independent of the
-    color theme so existing instances keep their exact chrome.
-
-    Values:
-      - ``topnav`` — current default: horizontal ``_app_header.html``
-                     bar above the page container. Existing instances
-                     see zero change.
-      - ``rail``   — fixed left sidebar navigation
-                     (``_app_rail.html``): logo, primary destinations,
-                     admin section, user menu at the bottom. The
-                     content shell gains ``body.layout-rail`` and a
-                     left padding equal to the rail width.
-
-    Resolution: ``AGNES_UI_LAYOUT`` env var > ``instance.ui_layout``
-    in instance.yaml > default ``"topnav"``. Unrecognised values fall
-    back to ``"topnav"`` so a typo doesn't strip the navigation.
-    """
-    # Preset-implied default (spec 2026-08-07): the `redesign` experience
-    # defaults to rail; explicit env/yaml always wins.
-    preset_default = preset_knob_default("ui_layout")
-    raw = os.environ.get("AGNES_UI_LAYOUT")
-    if raw is None:
-        raw = get_value("instance", "ui_layout", default=preset_default)
-    if not isinstance(raw, str):
-        return preset_default
-    value = raw.strip().lower()
-    if value not in ("topnav", "rail"):
-        return preset_default
-    return value
+    """Structural chrome layout — always ``"rail"`` since the classic
+    topnav chrome was retired (Wave 0, 2026-08). The function stays so
+    template context + config surface keep one source of truth; a
+    configured ``AGNES_UI_LAYOUT``/``instance.ui_layout`` is ignored
+    (warned once) rather than an error, so old instance.yaml files boot."""
+    raw = os.environ.get("AGNES_UI_LAYOUT") or get_value("instance", "ui_layout")
+    if raw and raw != "rail":
+        _warn_once("ui_layout", f"instance.ui_layout={raw!r} is retired; rail chrome is always on")
+    return "rail"
 
 
 def get_home_automode_visibility() -> bool:
@@ -849,10 +875,10 @@ def get_instance_brand_short() -> str:
 
 
 def get_instance_logo_svg() -> str:
-    """Raw inline ``<svg>`` markup rendered into the header brand slot
-    (``_app_header.html``). When non-empty, replaces the text brand in
-    the header — typical use is a lockup that already contains the
-    brand wordmark. When empty, the header falls back to
+    """Raw inline ``<svg>`` markup rendered into the nav brand slot
+    (``_app_rail.html``). When non-empty, replaces the text brand in
+    the nav — typical use is a lockup that already contains the
+    brand wordmark. When empty, the nav falls back to
     :func:`get_instance_name` as text.
 
     Resolution: ``AGNES_INSTANCE_LOGO_SVG`` env > ``instance.logo_svg``

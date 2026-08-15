@@ -1413,7 +1413,11 @@ def test_v116_table_registry_access_policy_columns(tmp_path):
     db_path = tmp_path / "system.duckdb"
     conn = duckdb.connect(str(db_path))
     _ensure_schema(conn)
-    assert SCHEMA_VERSION == 116
+    # `>=`, matching this file's own convention (see the v80 check above): the
+    # claim under test is that a fresh install carries the v116 columns, not
+    # that the ladder stops at 116. An equality here fails on every later
+    # migration for reasons having nothing to do with access policies.
+    assert SCHEMA_VERSION >= 116
     assert get_schema_version(conn) == SCHEMA_VERSION
 
     cols = {r[1] for r in conn.execute("PRAGMA table_info('table_registry')").fetchall()}

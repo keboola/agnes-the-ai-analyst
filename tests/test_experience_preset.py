@@ -1,10 +1,15 @@
-"""The `instance.experience` preset (spec 2026-08-07-default-chrome-ux-parity).
+"""The `instance.experience` preset (spec 2026-08-07-default-chrome-ux-parity;
+`classic` retired in the Wave 0 legacy-retirement — see `app/switches.py`).
 
-One line flips the DEFAULTS of every experience-coupled knob; any per-knob
-env/yaml setting still wins, and per-knob resolution order is unchanged
-(`env(knob) > yaml(knob) > preset-implied default > built-in default`).
-`classic` — or an absent/invalid key — must be byte-for-byte the
-pre-redesign experience.
+`redesign` is now the only option and the default; per-knob env/yaml still
+wins over the preset-implied default for `theme` and `stack_auto_membership`
+(resolution order unchanged: `env(knob) > yaml(knob) > preset-implied default
+> built-in default`). `ui_layout` is the one exception: Wave 0 (2026-08) also
+hard-wired the rail chrome, so `get_ui_layout()` always returns `"rail"` —
+no knob, preset, or default can produce anything else (see
+`app/instance_config.py::get_ui_layout`). An absent `experience` value, or
+any invalid one (including the retired `classic`), resolves to `redesign`
+via `on_invalid="default"`.
 """
 
 from __future__ import annotations
@@ -28,8 +33,8 @@ def _clean_env(monkeypatch):
 
 
 class TestExperienceResolution:
-    def test_default_is_classic(self):
-        assert ic.get_experience() == "classic"
+    def test_default_is_redesign(self):
+        assert ic.get_experience() == "redesign"
 
     def test_yaml_sets_redesign(self, monkeypatch):
         monkeypatch.setattr(
@@ -37,23 +42,29 @@ class TestExperienceResolution:
         )
         assert ic.get_experience() == "redesign"
 
-    def test_env_wins_over_yaml(self, monkeypatch):
-        monkeypatch.setattr(
-            ic, "get_value", lambda *keys, default=None: "redesign" if keys == ("instance", "experience") else default
-        )
-        monkeypatch.setenv("AGNES_INSTANCE_EXPERIENCE", "classic")
-        assert ic.get_experience() == "classic"
+    # `test_env_wins_over_yaml` removed: it relied on `classic` being a
+    # second *valid* value so env and yaml could disagree; with
+    # options=("redesign",), setting the env var to "classic" is now just an
+    # invalid value that falls back to the default (which happens to be
+    # "redesign" too), so the assertion could no longer distinguish
+    # "env won" from "env was ignored and the default applied". The
+    # underlying env > yaml > default precedence is still covered generically
+    # by tests/test_switches.py::TestSwitchValueResolution::test_env_wins_over_yaml
+    # (exercised against a switch with two real options).
 
-    def test_invalid_value_falls_back_to_classic(self, monkeypatch):
+    def test_invalid_value_falls_back_to_redesign(self, monkeypatch):
         monkeypatch.setenv("AGNES_INSTANCE_EXPERIENCE", "fancy")
-        assert ic.get_experience() == "classic"
+        assert ic.get_experience() == "redesign"
 
 
 class TestPresetImpliedDefaults:
-    def test_classic_defaults_are_the_pre_redesign_world(self):
-        assert ic.get_ui_layout() == "topnav"
-        assert ic.get_instance_theme() == "blue"
-        assert ic.get_stack_auto_membership() is False
+    def test_default_experience_is_the_redesign_world(self):
+        """With no `instance.experience` override at all, the coupled knobs
+        resolve to the redesign values — `redesign` is the default now, not
+        an opt-in (Wave 0 legacy retirement)."""
+        assert ic.get_ui_layout() == "rail"
+        assert ic.get_instance_theme() == "paper"
+        assert ic.get_stack_auto_membership() is True
 
     def test_redesign_preset_flips_the_defaults(self, monkeypatch):
         monkeypatch.setenv("AGNES_INSTANCE_EXPERIENCE", "redesign")
@@ -72,15 +83,22 @@ class TestPresetImpliedDefaults:
         assert ic.preset_flag_default("library_show_unverified_trust") is False
 
     def test_per_knob_setting_beats_the_preset(self, monkeypatch):
+        """Per-knob env/yaml still wins over the preset for `theme` and
+        `stack_auto_membership`. `ui_layout` is the one knob this no longer
+        applies to: Wave 0 (2026-08) hard-wired the rail chrome, so a
+        configured `AGNES_UI_LAYOUT=topnav` is ignored rather than honored —
+        asserted here alongside the knobs that still respect it."""
         monkeypatch.setenv("AGNES_INSTANCE_EXPERIENCE", "redesign")
         monkeypatch.setenv("AGNES_UI_LAYOUT", "topnav")
         monkeypatch.setenv("AGNES_INSTANCE_THEME", "blue")
         monkeypatch.setenv("AGNES_STACK_AUTO_MEMBERSHIP", "0")
-        assert ic.get_ui_layout() == "topnav"
+        assert ic.get_ui_layout() == "rail"
         assert ic.get_instance_theme() == "blue"
         assert ic.get_stack_auto_membership() is False
 
-    def test_per_knob_setting_beats_classic_too(self, monkeypatch):
+    def test_per_knob_setting_wins_without_the_preset_set(self, monkeypatch):
+        """Was `..._beats_classic_too`, from when `classic` was a preset a knob
+        could out-rank. There is no `classic` any more — the name outlived it."""
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         monkeypatch.setenv("AGNES_STACK_AUTO_MEMBERSHIP", "1")
         assert ic.get_ui_layout() == "rail"
@@ -122,14 +140,15 @@ class TestStackAutoMembershipFlag:
 
 
 def test_the_preset_itself_resolves_its_panel_default(monkeypatch):
-    """An env-set preset must not be reported as `classic` by the panel.
+    """The panel-rendered default for `instance.experience` must track the
+    CURRENT resolved preset, not a hardcoded literal — whether that value is
+    reached via an explicit env override or (now that `redesign` is the only
+    option) via the plain default.
 
     `collectSection` posts every rendered leaf, so whatever the panel shows
-    for an UNSET key is what a routine "Save section" persists. Rendering the
-    static `classic` on an `AGNES_INSTANCE_EXPERIENCE=redesign` instance wrote
-    `instance.experience: classic` into the overlay — harmless while the env
-    var is present (env wins) and a silent revert of the entire preset the day
-    it is dropped (Devin on #1199).
+    for an UNSET key is what a routine "Save section" persists. A static
+    literal here would silently rewrite `instance.experience` to a value the
+    runtime doesn't actually use (Devin Review on #1199).
     """
     import app.instance_config as ic
     from app.api.admin import _known_fields_resolved
@@ -140,37 +159,63 @@ def test_the_preset_itself_resolves_its_panel_default(monkeypatch):
 
     monkeypatch.delenv("AGNES_INSTANCE_EXPERIENCE", raising=False)
     ic.reset_cache()
-    assert _known_fields_resolved()["instance"]["experience"]["default"] == "classic"
+    assert _known_fields_resolved()["instance"]["experience"]["default"] == "redesign"
 
 
-def test_every_preset_coupled_knob_in_the_registry_is_resolved(monkeypatch):
-    """The durable half: assert the COUPLING TABLE, not three literals.
+# `test_every_preset_coupled_knob_in_the_registry_is_resolved` removed: it
+# looped `for preset in ("classic", "redesign")`, setting
+# `AGNES_INSTANCE_EXPERIENCE` to each and asserting the resolved panel
+# defaults *differ* between them. With `classic` retired, setting the env var
+# to "classic" is no longer a distinct valid state — `on_invalid="default"`
+# resolves it to "redesign" too, so both loop iterations now produce the same
+# values and the differ-assertion (`seen["classic"][key] != seen["redesign"][key]`)
+# fails by construction, not because of a real regression. The coupling table
+# itself (theme -> paper, ui_layout -> rail, stack_auto_membership -> True)
+# is still exercised by `test_default_experience_is_the_redesign_world` above
+# and by `test_redesign_preset_flips_the_defaults` below.
 
-    The resolver has now been extended three times, each time because one
-    coupled knob had been missed. Rather than trusting the next enumeration,
-    walk `preset_knob_default` / `preset_flag_default` — the single source of
-    the mapping — and require that any coupled key which the panel actually
-    renders differs between the two presets.
+
+class TestRetiredKnobsWarnAtBoot:
+    """CONFIGURATION.md, instance.yaml.example and the design-system reference
+    all promise "a one-time startup warning" for a configured `ui_layout`.
+
+    `_warn_once` fires on the FIRST call to the resolver, which — without a
+    deliberate warm — was whatever request happened to render a page first. The
+    warning then landed minutes into the log interleaved with traffic, or never
+    at all on an instance nobody opened, while three documents told the operator
+    to look at boot. `create_app()` calls the resolvers so the promise holds.
+
+    Both retired knobs warn. `experience` did not at first: its switch resolves
+    `classic` to `redesign` via `on_invalid="default"`, which is right for
+    BOOTING an old instance.yaml but left the operator with no signal anywhere
+    that the line had stopped meaning anything.
     """
-    import app.instance_config as ic
-    from app.api.admin import _KNOWN_FIELDS, _known_fields_resolved
 
-    coupled = [("instance", "theme"), ("instance", "ui_layout"), ("features", "stack_auto_membership")]
-    coupled = [(s, k) for s, k in coupled if "default" in _KNOWN_FIELDS.get(s, {}).get(k, {})]
-    assert coupled, "the coupling table drifted — no coupled knob is rendered at all"
+    def test_retired_knobs_warn_during_create_app(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "topnav")
+        monkeypatch.setenv("AGNES_INSTANCE_EXPERIENCE", "classic")
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TESTING", "1")
+        monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-key-min-32-characters!!")
+        for d in ("state", "analytics", "extracts"):
+            (tmp_path / d).mkdir(exist_ok=True)
 
-    seen = {}
-    for preset in ("classic", "redesign"):
-        monkeypatch.setenv("AGNES_INSTANCE_EXPERIENCE", preset)
-        ic.reset_cache()
-        fields = _known_fields_resolved()
-        seen[preset] = {(s, k): fields[s][k]["default"] for s, k in coupled}
-        seen[preset][("instance", "experience")] = fields["instance"]["experience"]["default"]
-    monkeypatch.delenv("AGNES_INSTANCE_EXPERIENCE", raising=False)
-    ic.reset_cache()
+        ic._warned_once_keys.clear()
+        seen: list[tuple[str, str]] = []
+        real = ic._warn_once
+        monkeypatch.setattr(ic, "_warn_once", lambda k, m: (seen.append((k, m)), real(k, m))[1])
 
-    for key in seen["classic"]:
-        assert seen["classic"][key] != seen["redesign"][key], (
-            f"{key[0]}.{key[1]} renders the same panel default under both presets — "
-            "it is preset-coupled at runtime but static in the registry"
+        from src.db import close_system_db
+
+        close_system_db()
+        from app.main import create_app
+
+        create_app()
+        close_system_db()
+
+        keys = {k for k, _ in seen}
+        assert "ui_layout" in keys, f"no boot warning for the retired ui_layout; saw {seen}"
+        assert "experience" in keys, (
+            f"no boot warning for the retired experience preset — `classic` resolves to "
+            f"`redesign` silently, so without this the operator gets no signal at all; saw {seen}"
         )

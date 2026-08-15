@@ -2,15 +2,12 @@
 
 {% block title %}News — {{ instance_name or "AI Harness" }}{% endblock %}
 
-{% block head_extra %}
-<script>
-// Tag the body so the chrome rules above apply only on /news. The
-// author-content rules in style-custom.css are global by design.
-document.addEventListener('DOMContentLoaded', function () {
-    document.body.classList.add('news-page');
-});
-</script>
-{% endblock %}
+{# Tags the body so the `body.news-page` chrome rules in style-custom.css apply
+   only on /news; the author-content rules there are global by design. Rendered
+   server-side rather than added from a DOMContentLoaded handler — those rules
+   change the container's gutters, so applying them after first paint shifted
+   the page by the difference. #}
+{% block body_attrs %}class="news-page"{% endblock %}
 
 {% block content %}
 <div class="news-card">

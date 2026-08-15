@@ -18,6 +18,8 @@ from cli.commands.admin_jobs import admin_jobs_app
 from cli.commands.admin_mcp import mcp_app as admin_mcp_app
 from cli.commands.admin_memory_domain import admin_memory_domain_app
 from cli.commands.admin_semantic_layer import admin_semantic_layer_app
+from cli.commands.admin_semantic_model import admin_semantic_model_app
+from cli.commands.admin_semantic_source import admin_semantic_source_app
 from cli.commands.admin_skills import admin_skills_app
 from cli.commands.admin_metrics import admin_metrics_app
 from cli.commands.db import db_app as admin_db_app
@@ -59,6 +61,8 @@ admin_app.add_typer(admin_digest_app, name="digest", help="Maintained digest CRU
 admin_app.add_typer(admin_db_app, name="db", help="Manage app-state DB backend (DuckDB / Postgres)")
 admin_app.add_typer(admin_mcp_app, name="mcp", help="Universal MCP source + tool admin")
 admin_app.add_typer(admin_semantic_layer_app, name="semantic-layer", help="Keboola semantic-layer import status")
+admin_app.add_typer(admin_semantic_model_app, name="semantic-model", help="Semantic-model CRUD (Ossie documents)")
+admin_app.add_typer(admin_semantic_source_app, name="semantic-source", help="Semantic-source sync configuration")
 admin_app.add_typer(
     admin_connection_app, name="connection", help="Named source-connection CRUD (multi-project Keboola)"
 )

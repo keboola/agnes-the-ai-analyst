@@ -73,6 +73,8 @@ __all__ = [
     # Config / templates / tokens
     "metric_repo",
     "glossary_repo",
+    "semantic_model_repo",
+    "semantic_source_repo",
     "claude_md_template_repo",
     "welcome_template_repo",
     "news_template_repo",
@@ -266,6 +268,14 @@ _REGISTRY: dict[str, dict[str, tuple[str, str]]] = {
     "glossary": {
         DUCKDB: ("src.repositories.glossary", "GlossaryRepository"),
         PG: ("src.repositories.glossary_pg", "GlossaryPgRepository"),
+    },
+    "semantic_model": {
+        DUCKDB: ("src.repositories.semantic_models", "SemanticModelsRepository"),
+        PG: ("src.repositories.semantic_models_pg", "SemanticModelsPgRepository"),
+    },
+    "semantic_source": {
+        DUCKDB: ("src.repositories.semantic_sources", "SemanticSourcesRepository"),
+        PG: ("src.repositories.semantic_sources_pg", "SemanticSourcesPgRepository"),
     },
     "claude_md_template": {
         DUCKDB: ("src.repositories.claude_md_template", "ClaudeMdTemplateRepository"),
@@ -511,11 +521,8 @@ _REGISTRY: dict[str, dict[str, tuple[str, str]]] = {
         DUCKDB: ("src.repositories.data_apps", "DataAppsRepository"),
         PG: ("src.repositories.data_apps_pg", "DataAppsPgRepository"),
     },
-    # Agent profiles + agent-as-API (v100)
-    "agents": {
-        DUCKDB: ("src.repositories.agents", "AgentsRepository"),
-        PG: ("src.repositories.agents_pg", "AgentsPgRepository"),
-    },
+    # "agents" (agent registry v103 + agent profiles/agent-as-API v100 share
+    # the same table/repo pair) is registered once above.
     "llm_usage": {
         DUCKDB: ("src.repositories.llm_usage", "LlmUsageRepository"),
         PG: ("src.repositories.llm_usage_pg", "LlmUsagePgRepository"),
@@ -597,6 +604,14 @@ def metric_repo() -> Any:
 
 def glossary_repo() -> Any:
     return _build("glossary")
+
+
+def semantic_model_repo() -> Any:
+    return _build("semantic_model")
+
+
+def semantic_source_repo() -> Any:
+    return _build("semantic_source")
 
 
 def claude_md_template_repo() -> Any:
@@ -813,7 +828,8 @@ def corpus_files_repo() -> Any:
 
 
 def agents_repo() -> Any:
-    """Agent registry (v103) — server-side agent definitions."""
+    """Agent registry (v103) — server-side agent definitions; also backs
+    agent profiles + agent-as-API (v100), which share the same table/repo."""
     return _build("agents")
 
 
@@ -839,11 +855,6 @@ def jobs_repo() -> Any:
 # data apps (hosted user web apps registry)
 def data_apps_repo() -> Any:
     return _build("data_apps")
-
-
-# Agent profiles + agent-as-API (v100)
-def agents_repo() -> Any:
-    return _build("agents")
 
 
 def llm_usage_repo() -> Any:
