@@ -49,11 +49,6 @@ DYNAMIC_CHROME_LINKS = {
 # Live user-facing pages deliberately absent from the chrome. Each needs a
 # reason; an entry without one is drift, not a decision.
 KNOWN_UNLINKED = {
-    # /stack is UNLINKED, not resolved (TODO #1088 in _app_rail.html): /library
-    # already renders every kind it does, from the same StackResolver.browse()
-    # call, and its "In stack only" toggle reproduces the page's purpose. The
-    # open work is to RETIRE /stack (302 → /library), not to link it here.
-    "/stack": "superseded by /library; slated for retirement per #1088",
     # Reached from the page whose job it is: /how-it-works owns "connect an AI
     # client", and the token flow is its fallback, not a second nav entry.
     "/mcp-connect": "cross-linked from /how-it-works; a nav row would duplicate it",
@@ -66,6 +61,13 @@ KNOWN_UNLINKED = {
 REDIRECTED_UNDER_RAIL = {
     "/corporate-memory": "/library?section=memory_domain",
     "/apps": "/library?section=files",
+    # /stack was carried here as a KNOWN_UNLINKED entry whose own reason said
+    # the open work was to RETIRE it (302 → /library), not to link it. #1088
+    # did exactly that, so the exemption moves to the set that proves the
+    # claim: /library already renders every kind My Stack did, off the same
+    # StackResolver.browse() call, and `?stack=in_stack` is the toggle that
+    # answers the question the page existed to answer.
+    "/stack": "/library?stack=in_stack",
 }
 
 _ROUTE_RE = re.compile(r'@router\.get\("(/[^"{}]*)"[^)]*response_class=HTMLResponse')
