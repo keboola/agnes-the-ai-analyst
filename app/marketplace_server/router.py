@@ -1,12 +1,24 @@
 """FastAPI router for the aggregated marketplace endpoint.
 
-Two GET routes:
-  - /marketplace/info   → JSON summary (diagnostic / admin)
-  - /marketplace.zip    → ZIP download with ETag / If-None-Match
+Three GET routes:
+  - /marketplace/info                    → JSON summary (diagnostic / admin / UI package list)
+  - /marketplace.zip                     → ZIP download with ETag / If-None-Match
+  - /marketplace/cowork/{name}.zip       → single plugin repackaged for Cowork upload
 
 Both gated by the existing `get_current_user` dependency (Bearer PAT or cookie).
 The git smart-HTTP channel lives in git_router.py and is mounted separately
 because it needs raw WSGI I/O that FastAPI doesn't model natively.
+
+Every handler here is a plain ``def``, deliberately: their bodies are pure
+blocking work — walking plugin trees, SHA-256 hashing every file, reading
+hundreds of MB and running ZIP_DEFLATED — with not a single ``await``. As
+``async def`` they ran that work directly on the single uvicorn event loop,
+so one large-plugin build froze the whole process (health checks, every
+other user, and the download itself when queued behind another build) for
+the build's duration — observed as a Cowork package download that hangs on
+instances with a big plugin. Plain ``def`` makes FastAPI run them in the
+anyio thread pool (PR #188's event-loop offload convention; pinned by
+``tests/test_event_loop_offload_guard.py``).
 """
 
 from __future__ import annotations
@@ -28,7 +40,7 @@ router = APIRouter(tags=["marketplace"])
 
 
 @router.get("/marketplace/info")
-async def marketplace_info(
+def marketplace_info(
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ) -> JSONResponse:
@@ -37,7 +49,7 @@ async def marketplace_info(
 
 
 @router.get("/marketplace.zip")
-async def marketplace_zip(
+def marketplace_zip(
     request: Request,
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
@@ -62,7 +74,7 @@ async def marketplace_zip(
 
 
 @router.get("/marketplace/cowork/{prefixed_name}.zip")
-async def cowork_plugin_zip(
+def cowork_plugin_zip(
     prefixed_name: str,
     request: Request,
     user: dict = Depends(get_current_user),
