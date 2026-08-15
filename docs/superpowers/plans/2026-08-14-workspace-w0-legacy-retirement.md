@@ -165,7 +165,7 @@ class TestRedesignIsTheOnlyExperience:
         html = web_client.get("/library", cookies=admin_cookie).text
         assert 'data-ui-layout="rail"' in html
         assert 'class="rail"' in html          # _app_rail.html rendered
-        assert "_app_header" not in html
+        assert 'class="app-header"' not in html   # the marker the deleted header rendered; "_app_header" alone is a tautology
 
     def test_topnav_value_is_inert(self, web_client, admin_cookie, monkeypatch):
         monkeypatch.setenv("AGNES_UI_LAYOUT", "topnav")
