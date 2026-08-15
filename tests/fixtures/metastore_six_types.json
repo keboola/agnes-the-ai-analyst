@@ -1,0 +1,165 @@
+{
+  "_comment": "Metastore item shapes below are the live-verified wire shapes recorded in docs/superpowers/specs/2026-07-15-keboola-semantic-layer-importer-design.md and docs/superpowers/specs/2026-07-17-keboola-relationship-metrics-design.md, keyed by item type the way GET /repository/{type} returns them server-side (unfiltered across models; MetastoreClient.list_items filters client-side on attributes.modelUUID). Table/model/project identifiers here are fabricated placeholders, not a real project.",
+  "semantic-model": [
+    {
+      "type": "semantic-model",
+      "id": "aaaaaaaa-0000-0000-0000-000000000001",
+      "attributes": {
+        "name": "orders_model",
+        "sqlDialect": "SNOWFLAKE",
+        "description": "Core order metrics and dimensions."
+      }
+    },
+    {
+      "type": "semantic-model",
+      "id": "bbbbbbbb-0000-0000-0000-000000000002",
+      "attributes": {
+        "name": "customers_model",
+        "sqlDialect": "SNOWFLAKE"
+      }
+    }
+  ],
+  "semantic-dataset": [
+    {
+      "type": "semantic-dataset",
+      "id": "d1",
+      "attributes": {
+        "name": "orders",
+        "tableId": "in.c-example_source.orders",
+        "fqn": "\"EXAMPLE_DB\".\"in.c-example_source\".\"orders\"",
+        "modelUUID": "aaaaaaaa-0000-0000-0000-000000000001",
+        "description": "Order line items.",
+        "grain": "One row per order",
+        "primaryKey": ["order_id"],
+        "fields": [
+          {
+            "name": "order_id",
+            "type": "INTEGER",
+            "role": "dimension",
+            "description": "Primary key of the order."
+          },
+          {
+            "name": "order_date",
+            "type": "DATE",
+            "role": "time",
+            "description": "Date the order was placed."
+          },
+          {
+            "name": "amount",
+            "type": "NUMERIC",
+            "role": "measure"
+          }
+        ],
+        "ai": {
+          "synonyms": ["sales", "purchases"],
+          "hints": ["Join via customer_id"],
+          "warnings": ["Excludes refunds"],
+          "keywords": ["orders", "revenue"]
+        }
+      }
+    },
+    {
+      "type": "semantic-dataset",
+      "id": "d2",
+      "attributes": {
+        "name": "customers",
+        "tableId": "in.c-example_source.customers",
+        "modelUUID": "bbbbbbbb-0000-0000-0000-000000000002",
+        "fields": [
+          {
+            "name": "customer_id",
+            "type": "INTEGER",
+            "role": "dimension"
+          }
+        ]
+      }
+    }
+  ],
+  "semantic-metric": [
+    {
+      "type": "semantic-metric",
+      "id": "m1",
+      "attributes": {
+        "name": "total_revenue",
+        "sql": "SUM(\"amount\")",
+        "dataset": "in.c-example_source.orders",
+        "modelUUID": "aaaaaaaa-0000-0000-0000-000000000001",
+        "description": "Total revenue across all orders."
+      }
+    },
+    {
+      "type": "semantic-metric",
+      "id": "m2",
+      "attributes": {
+        "name": "customer_count",
+        "sql": "COUNT(*)",
+        "dataset": "in.c-example_source.customers",
+        "modelUUID": "bbbbbbbb-0000-0000-0000-000000000002"
+      }
+    }
+  ],
+  "semantic-constraint": [
+    {
+      "type": "semantic-constraint",
+      "id": "c1",
+      "attributes": {
+        "name": "revenue_non_negative",
+        "constraintType": "inequality",
+        "rule": "value >= 0",
+        "metrics": ["total_revenue"],
+        "severity": "warning",
+        "modelUUID": "aaaaaaaa-0000-0000-0000-000000000001"
+      }
+    }
+  ],
+  "semantic-relationship": [
+    {
+      "type": "semantic-relationship",
+      "id": "r1",
+      "attributes": {
+        "name": "orders_to_customers",
+        "from": "in.c-example_source.orders",
+        "to": "in.c-example_source.customers",
+        "on": "o.\"customer_id\" = c.\"customer_id\"",
+        "type": "left",
+        "modelUUID": "aaaaaaaa-0000-0000-0000-000000000001"
+      }
+    },
+    {
+      "type": "semantic-relationship",
+      "id": "r2",
+      "attributes": {
+        "name": "orders_to_warehouses",
+        "from": "in.c-example_source.orders",
+        "to": "in.c-example_source.warehouses",
+        "on": "o.\"warehouse_id\" = w.\"warehouse_id\"",
+        "type": "inner",
+        "modelUUID": "aaaaaaaa-0000-0000-0000-000000000001"
+      }
+    },
+    {
+      "type": "semantic-relationship",
+      "id": "r3",
+      "attributes": {
+        "name": "orders_to_regions",
+        "from": "in.c-example_source.regions",
+        "to": "in.c-example_source.orders",
+        "on": "r.\"region_id\" = o.\"region_id\"",
+        "type": "left",
+        "modelUUID": "aaaaaaaa-0000-0000-0000-000000000001"
+      }
+    }
+  ],
+  "semantic-glossary": [
+    {
+      "type": "semantic-glossary",
+      "id": "g1",
+      "attributes": {
+        "term": "Monthly Recurring Revenue",
+        "definition": "Revenue normalized to a monthly recurring basis.",
+        "seeAlso": ["total_revenue"],
+        "modelUUID": "aaaaaaaa-0000-0000-0000-000000000001"
+      }
+    }
+  ]
+}

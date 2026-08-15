@@ -39,6 +39,14 @@ def _metric_item(name, sql, dataset, model_uuid="model-1"):
     }
 
 
+def _dataset_item(table_id="in.c-example_source.orders", name="orders", model_uuid="model-1"):
+    return {
+        "type": "semantic-dataset",
+        "id": f"ds-{table_id}",
+        "attributes": {"name": name, "tableId": table_id, "modelUUID": model_uuid},
+    }
+
+
 class TestSyncSemanticLayer:
     def test_creates_metrics_from_metastore(self, e2e_env):
         from connectors.keboola.semantic_layer import sync_semantic_layer
@@ -1792,3 +1800,83 @@ def test_legacy_connection_slot_path_also_gets_the_mismatch_guard(e2e_env):
     assert result["status"] == "error"
     assert result["code"] == "project_mismatch"
     assert "9999" in result["error"] and "1234" in result["error"]
+
+
+class TestSyncComposesOssieDocuments:
+    """`_sync_one_source` additionally composes an Ossie document per model
+    (connectors/keboola/semantic_ossie.py::KeboolaMetastoreAdapter) and
+    imports it via `import_documents`, right after the model_uuids guard and
+    BEFORE the pre-existing flat metric_definitions/glossary_terms writes
+    below it — every other test in this file already pins that the flat
+    writes are unaffected; these two check the additive delegation itself.
+    """
+
+    def test_populates_semantic_models_alongside_the_flat_tables(self, e2e_env):
+        from connectors.keboola.semantic_layer import sync_semantic_layer
+        from src.repositories import metric_repo, semantic_model_repo
+
+        _register_keboola_table("in.c-example_source", "orders", "crm_orders")
+
+        fake_storage = MagicMock()
+        fake_storage.verify_token.return_value = {"isMasterToken": True}
+
+        fake_metastore = MagicMock()
+        fake_metastore.list_items.side_effect = lambda item_type, model_uuid=None: {
+            "semantic-model": [_model_item()],
+            "semantic-dataset": [_dataset_item()],
+            "semantic-metric": [_metric_item("total_revenue", 'SUM("amount")', "in.c-example_source.orders")],
+            "semantic-constraint": [],
+            "semantic-relationship": [],
+            "semantic-glossary": [],
+        }[item_type]
+
+        with (
+            patch("connectors.keboola.storage_api.KeboolaStorageClient", return_value=fake_storage),
+            patch("connectors.keboola.metastore_client.MetastoreClient", return_value=fake_metastore),
+        ):
+            result = sync_semantic_layer(keboola_url="https://connection.keboola.com", keboola_token="master-tok")
+
+        assert result["status"] == "ok"
+        assert metric_repo().get("keboola/model-1/total_revenue") is not None
+
+        model = semantic_model_repo().get_by_slug("core")
+        assert model is not None
+        assert model["source"] == "keboola_metastore"
+        assert model["status"] == "valid"
+        assert model["document_json"]["semantic_model"][0]["datasets"][0]["name"] == "orders"
+
+    def test_a_broken_ossie_composition_does_not_break_the_flat_sync(self, e2e_env, monkeypatch):
+        """The composition call is wrapped defensively (see the comment at
+        its call site in `_sync_one_source`): a bug in it must never regress
+        the flat sync this function has always done."""
+        from connectors.keboola.semantic_layer import sync_semantic_layer
+        from src.repositories import metric_repo
+
+        _register_keboola_table("in.c-example_source", "orders", "crm_orders")
+
+        fake_storage = MagicMock()
+        fake_storage.verify_token.return_value = {"isMasterToken": True}
+
+        fake_metastore = MagicMock()
+        fake_metastore.list_items.side_effect = lambda item_type, model_uuid=None: {
+            "semantic-model": [_model_item()],
+            "semantic-dataset": [_dataset_item()],
+            "semantic-metric": [_metric_item("total_revenue", 'SUM("amount")', "in.c-example_source.orders")],
+            "semantic-constraint": [],
+            "semantic-relationship": [],
+            "semantic-glossary": [],
+        }[item_type]
+
+        def _boom(self, config):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr("connectors.keboola.semantic_ossie.KeboolaMetastoreAdapter.extract", _boom)
+
+        with (
+            patch("connectors.keboola.storage_api.KeboolaStorageClient", return_value=fake_storage),
+            patch("connectors.keboola.metastore_client.MetastoreClient", return_value=fake_metastore),
+        ):
+            result = sync_semantic_layer(keboola_url="https://connection.keboola.com", keboola_token="master-tok")
+
+        assert result["status"] == "ok"
+        assert metric_repo().get("keboola/model-1/total_revenue") is not None

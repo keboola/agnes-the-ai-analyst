@@ -43,3 +43,7 @@ def get_adapter(name: str) -> SemanticAdapter:
 from src.semantic.adapters.native import NativeAdapter  # noqa: E402
 
 register_adapter("native", NativeAdapter())
+
+from connectors.keboola.semantic_ossie import KeboolaMetastoreAdapter  # noqa: E402
+
+register_adapter("keboola_metastore", KeboolaMetastoreAdapter())
