@@ -82,7 +82,6 @@ class TestResolvers:
         assert get_ui_layout() == "rail"
 
     def test_ui_layout_env_rail(self, monkeypatch):
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         assert get_ui_layout() == "rail"
 
     def test_ui_layout_typo_falls_back(self, monkeypatch):
@@ -135,38 +134,25 @@ class TestResolvers:
         assert get_experience() == "redesign"
 
 
-class TestDefaultChromeUnchanged:
-    """Existing instances (no opt-in config) must keep today's chrome."""
+class TestRedesignIsTheOnlyExperience:
+    """The redesign contract this wave installs: rail is unconditional, and
+    a configured ``topnav``/``classic`` value is tolerated but inert — no
+    default-parity guard survives it (Wave 0, 2026-08 legacy retirement).
+    Replaces ``TestDefaultChromeUnchanged`` and the
+    ``TestDefaultContentParity``/``TestDetailPageParity`` topnav-vs-rail
+    pairs, whose entire premise (a second, classic chrome existing to keep
+    parity with) this wave retires."""
 
-    def test_default_renders_topnav_not_rail(self, web_client, admin_cookie, monkeypatch):
-        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
-        monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
-        resp = web_client.get("/dashboard", cookies=admin_cookie)
-        assert resp.status_code == 200
-        assert 'class="app-header"' in resp.text
-        assert 'class="rail"' not in resp.text
-        assert 'data-ui-layout="topnav"' in resp.text
-        assert 'data-theme="blue"' in resp.text
+    def test_default_renders_rail_chrome(self, web_client, admin_cookie):
+        html = web_client.get("/library", cookies=admin_cookie).text
+        assert 'data-ui-layout="rail"' in html
+        assert 'class="rail"' in html  # _app_rail.html rendered
+        assert "_app_header" not in html
 
-    def test_default_footer_is_config_copyright_not_keboola(self, web_client, admin_cookie, monkeypatch):
-        """Default (blue/topnav) instances keep the config-driven copyright
-        footer; the Keboola-branded credit ships only under the opt-in
-        redesign (paper/rail). Regression guard for the #896 footer leak."""
-        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
-        monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
-        resp = web_client.get("/dashboard", cookies=admin_cookie)
-        assert resp.status_code == 200
-        assert "AI Harness" in resp.text
-        assert "<b>Keboola</b>" not in resp.text
-
-    def test_default_favicon_is_svg_not_orb(self, web_client, admin_cookie, monkeypatch):
-        """Default instances keep the original SVG favicon; the orb PNG is
-        redesign-only."""
-        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
-        monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
-        resp = web_client.get("/dashboard", cookies=admin_cookie)
-        assert "favicon.svg" in resp.text
-        assert "img/agnes-orb.png" not in resp.text
+    def test_topnav_value_is_inert(self, web_client, admin_cookie, monkeypatch):
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "topnav")
+        html = web_client.get("/library", cookies=admin_cookie).text
+        assert 'data-ui-layout="rail"' in html
 
 
 class TestRailBodyClearance:
@@ -181,7 +167,6 @@ class TestRailBodyClearance:
     def test_pre_auth_page_carries_no_rail(self, web_client, monkeypatch):
         """The premise of the fix: on a logged-out page the rail is absent
         while the layout attribute is still stamped."""
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         resp = web_client.get("/login/password")
         assert resp.status_code == 200
         assert 'data-ui-layout="rail"' in resp.text, "layout attribute should still be stamped"
@@ -211,7 +196,6 @@ class TestRailOptIn:
         # Probe a real rail landing surface (/stack). /dashboard is no longer a
         # rail render target — it 302s to /chat or /stack (see
         # TestDashboardLandingRedirect).
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         resp = web_client.get("/stack", cookies=admin_cookie)
         assert resp.status_code == 200
         assert 'class="rail"' in resp.text
@@ -222,7 +206,6 @@ class TestRailOptIn:
         """Rail must carry the two-zone IA (Library + Agents as the bottom
         zone's flat destinations) and the same JS/id contract as the header:
         user menu, theme toggle."""
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         resp = web_client.get("/stack", cookies=admin_cookie)
         text = resp.text
         for anchor in (
@@ -260,7 +243,6 @@ class TestRailOptIn:
         route, it is simply not a primary destination any more. Asserted against
         the rail chrome slice, not the whole document: this probes the /stack
         page itself, whose body legitimately mentions the stack throughout."""
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         text = web_client.get("/stack", cookies=admin_cookie).text
         nav = text.split('<nav class="rail"', 1)[1].split("</nav>", 1)[0]
         assert 'href="/stack"' not in nav
@@ -283,7 +265,6 @@ class TestRailOptIn:
         everything is in the Stack or nothing is, both cases where filtering is
         a no-op. Asserting its presence outright would just pin the fixture's
         membership mix, so this asserts the equivalence instead."""
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         resp = web_client.get("/library", cookies=admin_cookie)
         assert resp.status_code == 200
         text = resp.text
@@ -326,7 +307,6 @@ class TestRailOptIn:
         engine must leave it out of the Filter badge count and the chip row;
         those two exclusions are the whole reason the move is not a regression
         in discoverability."""
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         text = web_client.get("/library", cookies=admin_cookie).text
         assert "control: '#lib-stack-toggle'" in text
 
@@ -346,7 +326,6 @@ class TestRailOptIn:
         header's "+ Add" menu) and a non-interactive "Corporate Memory builder"
         concept label. Both the trigger markup and the dead .rail-studio-*
         styling must be gone, not merely hidden."""
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         text = web_client.get("/stack", cookies=admin_cookie).text
         assert "rail-studio" not in text
         assert ">Studio<" not in text
@@ -381,7 +360,6 @@ class TestRailOptIn:
         """Under the rail layout /catalog is the unified browse surface
         (kind tabs over one grid); /stack is the unified personal
         collection."""
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         resp = web_client.get("/catalog", cookies=admin_cookie)
         assert resp.status_code == 200
         for anchor in (
@@ -424,7 +402,6 @@ class TestRailOptIn:
         /artefacts. It carries the item count, the "+ Upload" affordance, the
         share dialog, and a "Data apps coming soon" badge on the Files band for
         the not-yet-built kind that will ship into that section."""
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         resp = web_client.get("/library", cookies=admin_cookie)
         assert resp.status_code == 200
         text = resp.text
@@ -478,7 +455,6 @@ class TestRailOptIn:
     def test_artefacts_redirects_to_library(self, web_client, admin_cookie, monkeypatch):
         """/artefacts was renamed to /library and redirects there, so old links,
         bookmarks and the onboarding tour keep working."""
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         resp = web_client.get("/artefacts", cookies=admin_cookie, follow_redirects=False)
         assert resp.status_code == 307
         assert resp.headers["location"] == "/library"
@@ -489,7 +465,6 @@ class TestRailOptIn:
         capabilities hydration off everything available to the caller. Agent
         definitions persist SERVER-SIDE in the v103 agents registry, so they
         follow the user across devices and can be shared from the Library."""
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         resp = web_client.get("/agents", cookies=admin_cookie)
         assert resp.status_code == 200
         text = resp.text
@@ -537,7 +512,6 @@ class TestRailOptIn:
         builder on a fresh agent, and `?open=<id>` (the Library's agent cards)
         opens that agent. Without this the page always rendered the LIST and
         both deep links silently dead-ended one click short of the builder."""
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         resp = web_client.get("/agents", cookies=admin_cookie)
         assert resp.status_code == 200
         text = resp.text
@@ -560,7 +534,6 @@ class TestRailOptIn:
         its DELETE /api/agents/{id} handler, and — unlike the list card —
         confirms first, because here it is one button away from a primary
         action on the config the caller is looking at."""
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         resp = web_client.get("/agents", cookies=admin_cookie)
         assert resp.status_code == 200
         text = resp.text
@@ -577,7 +550,6 @@ class TestRailOptIn:
     def test_agents_page_has_no_default_agent_card(self, web_client, admin_cookie, monkeypatch):
         """/agents lists the caller's OWN agents only — the always-on baseline
         assistant is not a card here (it is configured from /stack)."""
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         resp = web_client.get("/agents", cookies=admin_cookie)
         assert resp.status_code == 200
         text = resp.text
@@ -589,18 +561,8 @@ class TestRailOptIn:
         assert "No agents yet" in text
 
     def test_agents_page_requires_auth(self, web_client, monkeypatch):
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         resp = web_client.get("/agents", follow_redirects=False)
         assert resp.status_code in (302, 303, 307, 401, 403)
-
-    def test_topnav_catalog_keeps_classic_page(self, web_client, admin_cookie, monkeypatch):
-        """Default layout must keep the classic catalog.html — the
-        unified page is rail-only."""
-        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
-        resp = web_client.get("/catalog", cookies=admin_cookie)
-        assert resp.status_code == 200
-        assert 'class="uc-kindtabs"' not in resp.text
-        assert "stack-tabs" in resp.text
 
     def test_paper_theme_stamped(self, web_client, admin_cookie, monkeypatch):
         monkeypatch.setenv("AGNES_INSTANCE_THEME", "paper")
@@ -639,7 +601,6 @@ class TestRailChatHistory:
         web_client.app.state.chat_config = SimpleNamespace(enabled=True)
 
     def test_rail_renders_history_section(self, web_client, admin_cookie, monkeypatch):
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         self._enable_chat(web_client, monkeypatch)
         # Probe a NON-chat rail page — the history must render everywhere.
         resp = web_client.get("/stack", cookies=admin_cookie)
@@ -680,7 +641,6 @@ class TestRailChatHistory:
         "Finish setup · N/5" text row (and, before that, the "Your journey"
         checklist inline at the bottom of the chat list): a row in a column of
         rows is easy to read past."""
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         self._enable_chat(web_client, monkeypatch)
         resp = web_client.get("/stack", cookies=admin_cookie)
         assert resp.status_code == 200
@@ -728,7 +688,6 @@ class TestRailChatHistory:
         """Subtle blue (the DS's informational family, NOT the brand primary —
         that stays reserved for the active destination), and gone entirely at
         5/5."""
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         css = web_client.get("/static/css/rail.css").text
         btn = css.split('html[data-ui-layout="rail"] .rail-getstarted-btn {', 1)[1].split("}", 1)[0]
         assert "background: var(--ds-accent-info-bg)" in btn
@@ -745,7 +704,6 @@ class TestRailChatHistory:
     def test_onboarding_card_title_and_progress_are_js_driven(self, web_client, admin_cookie, monkeypatch):
         """ "Set up Agnes" until the first step lands, "Continue setup" after —
         and the bar width follows the same count."""
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         js = web_client.get("/static/js/chat_onboarding.js").text
         body = js.split("function updateGetStartedIndicator(", 1)[1].split("\n}", 1)[0]
         assert 'done > 0 ? "Continue setup" : "Set up Agnes"' in body
@@ -766,7 +724,6 @@ class TestRailChatHistory:
         profile's; the default chrome serves the frozen pre-redesign page
         (spec 2026-08-07 wave 2), whose classic panel has no disclosure.
         """
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         resp = web_client.get("/me/profile", cookies=admin_cookie)
         assert resp.status_code == 200
         marker = 'id="new-token-btn"'
@@ -779,7 +736,6 @@ class TestRailChatHistory:
         """The way back once the Finish setup row has retired itself at 5/5: the
         row's own "Start over" goes with it, so the profile menu — the one thing
         pinned to the rail in every state — carries the entry."""
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         self._enable_chat(web_client, monkeypatch)
         rail = (
             web_client.get("/stack", cookies=admin_cookie).text.split('<nav class="rail"', 1)[1].split("</nav>", 1)[0]
@@ -800,7 +756,6 @@ class TestRailChatHistory:
 
     def test_restart_onboarding_entry_is_chat_gated(self, web_client, admin_cookie, monkeypatch):
         """No chat grant → no onboarding row and nothing to restart."""
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         resp = web_client.get("/stack", cookies=admin_cookie)
         assert 'id="rail-restart-onboarding"' not in resp.text
 
@@ -811,7 +766,6 @@ class TestRailChatHistory:
         chronological feed — and as sibling groups in one list they could only be
         told apart by a header that scrolled away, with neither one closable. So:
         a section each, Pinned first, each with a disclosure and its own list."""
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         self._enable_chat(web_client, monkeypatch)
         text = web_client.get("/stack", cookies=admin_cookie).text
         rail = text.split('<nav class="rail"', 1)[1].split("</nav>", 1)[0]
@@ -855,7 +809,6 @@ class TestRailChatHistory:
         active conversation and the neutral wash marks hovering an actual row, so
         a header that filled on hover would read as a selectable row. Ink is the
         one channel still free, so hover spends that."""
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         css = web_client.get("/static/css/rail.css").text
 
         def block_for(selector):
@@ -902,7 +855,6 @@ class TestRailChatHistory:
         Conditional on the rail styling date headers at all: whether a capped
         feed is short enough to need no date labels is a separate call, and this
         guard is about the hierarchy that applies whenever they DO render."""
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         css = web_client.get("/static/css/rail.css").text
         selector = 'html[data-ui-layout="rail"] .rail-history .cloud-chat-list-group-header {'
         if selector not in css:
@@ -920,7 +872,6 @@ class TestRailChatHistory:
         The open state survives navigation: a disclosure that forgets what you
         did to it on every page load reads as broken, and the choice ("I live in
         my pins") is about how the caller works, not about the page they're on."""
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         js = web_client.get("/static/js/rail_history.js").text
         assert "agnes.rail.chatsec." in js, "the open state must be persisted per section"
         assert "localStorage.setItem" in js and "localStorage.getItem" in js
@@ -938,7 +889,6 @@ class TestRailChatHistory:
         """No chat reachability → no history section, no New chat item, no
         Finish setup row, no loader (matches the "Chat slot only when
         reachable" contract)."""
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         # Chat is disabled by default in tests, so can_chat is False.
         resp = web_client.get("/stack", cookies=admin_cookie)
         assert resp.status_code == 200
@@ -971,7 +921,6 @@ class TestRailTwoZones:
         return text.split('<nav class="rail"', 1)[1].split("</nav>", 1)[0]
 
     def test_zone_order(self, web_client, admin_cookie, monkeypatch):
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         self._enable_chat(web_client, monkeypatch)
         rail = self._rail(web_client, admin_cookie)
         sequence = [
@@ -996,7 +945,6 @@ class TestRailTwoZones:
         """Admin carries the divider; Library/Agents and the recents do not —
         the two zones are separated by the scroll region between them, not by
         rule lines. Pinned in CSS because that is where the dividers live."""
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         css = web_client.get("/static/css/rail.css").text
 
         def block_for(selector):
@@ -1023,7 +971,6 @@ class TestRailTwoZones:
         hover took the accent while New chat still had it (a hovered row looked
         selected). Active wins the accent because it is persistent wayfinding;
         hover only has to be perceptible, since the pointer is already there."""
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         css = web_client.get("/static/css/rail.css").text
 
         def block_for(selector):
@@ -1065,7 +1012,6 @@ class TestRailTwoZones:
         `:hover` selectors — meaning the open chat would visibly lose its accent
         exactly when you reached for it. The nav rows and Admin links tie on
         specificity, so source order already protects them."""
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         css = web_client.get("/static/css/rail.css").text
         for selector in (
             'html[data-ui-layout="rail"] .rail-history .cloud-chat-list li[data-id].is-active:hover',
@@ -1102,7 +1048,6 @@ class TestRailTwoZones:
 
         Asserted as an absence, so a fourth variant cannot land without
         confronting `test_accent_marks_where_you_are_and_nothing_else`."""
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         self._enable_chat(web_client, monkeypatch)
         rail = self._rail(web_client, admin_cookie)
         # It carries the ORDINARY row class and its bare glyph, like every
@@ -1127,7 +1072,6 @@ class TestRailTwoZones:
     def test_rows_share_one_height(self, web_client, admin_cookie, monkeypatch):
         """Consistent row heights across the ladder: nav rows, conversation
         rows and the profile row all size off `--rail-row-h`."""
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         css = web_client.get("/static/css/rail.css").text
         assert "--rail-row-h:" in css
         for selector in (
@@ -1148,7 +1092,6 @@ class TestRailTwoZones:
         ourselves); this one hands the long tail to a page built for it. So the
         contract is: a cap, and a LINK — never a second state of this list. The
         two-state machinery stays retired in CSS and in JS."""
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         css = web_client.get("/static/css/rail.css").text
         body = css.split('html[data-ui-layout="rail"] .rail-history-body {', 1)[1].split("}", 1)[0]
         assert "flex: 1 1 0" in body
@@ -1186,7 +1129,6 @@ class TestRailAdminSubitems:
         return text.split('<nav class="rail"', 1)[1].split("</nav>", 1)[0]
 
     def test_areas_are_subitem_rows_with_flyouts(self, web_client, admin_cookie, monkeypatch):
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         rail = self._rail(web_client, admin_cookie)
         # Seven areas, each a subitem row + its own flyout.
         assert rail.count('class="rail-admin-sub"') == 7
@@ -1229,7 +1171,6 @@ class TestRailAdminSubitems:
         { content-visibility: hidden }` in Chrome, which an author `display`
         rule cannot override — a hover-revealed panel inside one never appears.
         The area row must stay a plain <button>."""
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         rail = self._rail(web_client, admin_cookie)
         assert '<button type="button" class="rail-admin-sub-row' in rail
         assert '<details class="rail-admin-sub"' not in rail
@@ -1243,7 +1184,6 @@ class TestRailAdminSubitems:
     def test_flyout_is_positioned_not_inline(self, web_client, admin_cookie, monkeypatch):
         """The whole point: an area's links cost the column no height, and are
         revealed by hover AND focus (the latter covers click + keyboard)."""
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         css = web_client.get("/static/css/rail.css").text
         block = css.split('html[data-ui-layout="rail"] .rail-admin-flyout {', 1)[1].split("}", 1)[0]
         assert "position: absolute" in block
@@ -1258,7 +1198,6 @@ class TestRailAdminSubitems:
         """On an admin page: the LINK takes the primary tint (`is-active`), and
         its area row only gets the quiet `has-active` trace — the active
         destination stays the one tinted row."""
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         resp = web_client.get("/admin/tables", cookies=admin_cookie)
         assert resp.status_code == 200
         rail = resp.text.split('<nav class="rail"', 1)[1].split("</nav>", 1)[0]
@@ -1277,25 +1216,13 @@ class TestRailAdminSubitems:
 
 
 class TestDashboardLandingRedirect:
-    """Layout-aware /dashboard split. Topnav instances must be byte-for-byte
-    unchanged — the legacy table-inventory dashboard.html still renders
-    there. Under the rail, the Dashboard IS Chat's pre-conversation state
-    (chat.html's rail empty state, see TestRailDashboard), so /dashboard
-    302s to /chat for chat-granted users; grant-less users keep the 302 to
-    My Stack (the page exists to start Agnes conversations, so without a
-    grant it would be a dead shell)."""
-
-    def test_topnav_dashboard_still_renders(self, web_client, admin_cookie, monkeypatch):
-        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
-        resp = web_client.get("/dashboard", cookies=admin_cookie, follow_redirects=False)
-        assert resp.status_code == 200
-        assert 'data-ui-layout="topnav"' in resp.text
-        # The rail dashboard's markup/assets must never leak into topnav.
-        assert 'class="rdb"' not in resp.text
-        assert "chat_dashboard" not in resp.text
+    """The Dashboard IS Chat's pre-conversation state (chat.html's rail empty
+    state, see TestRailDashboard), so /dashboard 302s to /chat for
+    chat-granted users; grant-less users keep the 302 to My Stack (the page
+    exists to start Agnes conversations, so without a grant it would be a
+    dead shell)."""
 
     def test_rail_dashboard_redirects_to_chat_with_grant(self, web_client, admin_cookie, monkeypatch):
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         import app.auth.access as access
 
         monkeypatch.setattr(access, "has_explicit_grant", lambda *a, **k: True)
@@ -1308,7 +1235,6 @@ class TestDashboardLandingRedirect:
         """The grant-less landing is the Library, not My Stack: /stack is no
         longer a rail destination (#1088), so landing there would strand the
         caller on a page the rail neither links to nor highlights."""
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         # Chat is disabled by default in tests, so can_chat is False.
         resp = web_client.get("/dashboard", cookies=admin_cookie, follow_redirects=False)
         assert resp.status_code == 302
@@ -1316,7 +1242,6 @@ class TestDashboardLandingRedirect:
 
     def test_ask_is_retired(self, web_client, admin_cookie, monkeypatch):
         """The /ask hero is retired — it 302s to / rather than rendering."""
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         resp = web_client.get("/ask", cookies=admin_cookie, follow_redirects=False)
         assert resp.status_code == 302
         assert resp.headers["location"] == "/"
@@ -1340,17 +1265,17 @@ class TestRailDashboard:
         """`#chat-capabilities` must not keep the base rule's `overflow-y: auto`
         under the rail.
 
-        The base `.cloud-chat-capabilities` rule is written for the topnav empty
-        state, where the panel holds the capability cards inside a bounded
-        (`flex: 0 1 auto`) column and legitimately scrolls. The rail dashboard
-        reuses the same element for two lines at natural height — the trust
-        caption and the "Ask … anything" heading — where the inherited value can
-        only do harm: the block's height lands on a fraction, Chrome resolves
-        that to ~0.5px of scrollable overflow, and `auto` paints a scrollbar for
-        it. It rendered as a ~59px grey thumb floating inside the page (the
-        panel is the 1280px --rdb-col, not the full width), appearing and
-        disappearing with the viewport width as the heading's clamp() moved the
-        fraction around.
+        The base `.cloud-chat-capabilities` rule was written for the retired
+        topnav empty state, where the panel held the capability cards inside a
+        bounded (`flex: 0 1 auto`) column and legitimately scrolled. The rail
+        dashboard reuses the same element for two lines at natural height —
+        the trust caption and the "Ask … anything" heading — where the
+        inherited value can only do harm: the block's height lands on a
+        fraction, Chrome resolves that to ~0.5px of scrollable overflow, and
+        `auto` paints a scrollbar for it. It rendered as a ~59px grey thumb
+        floating inside the page (the panel is the 1280px --rdb-col, not the
+        full width), appearing and disappearing with the viewport width as
+        the heading's clamp() moved the fraction around.
 
         Sub-pixel overflow is invisible to `scrollHeight - clientHeight` (it
         rounds to 0), so nothing downstream would catch a regression here.
@@ -1367,15 +1292,7 @@ class TestRailDashboard:
             "sub-pixel scrollbar on the caption/heading block is back"
         )
 
-        # The other half of the contract: the topnav empty state is untouched.
-        # Its panel is a real scroller and must stay one.
-        assert "overflow-y: auto" in block(".cloud-chat-capabilities"), (
-            "the topnav capability panel lost its scroll — default chrome must "
-            "not change (see TestDefaultContentParity)"
-        )
-
     def test_rail_chat_renders_dashboard_empty_state(self, web_client, admin_cookie, monkeypatch):
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         self._enable_chat(web_client, monkeypatch)
         resp = web_client.get("/chat", cookies=admin_cookie, follow_redirects=False)
         assert resp.status_code == 200
@@ -1442,7 +1359,6 @@ class TestRailDashboard:
         """One Suggested-next-actions section below the composer: list +
         loading + empty-state elements are all server-rendered (js toggles
         them), and there are no department/role tabs."""
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         self._enable_chat(web_client, monkeypatch)
         resp = web_client.get("/chat", cookies=admin_cookie)
         assert resp.status_code == 200
@@ -1453,23 +1369,11 @@ class TestRailDashboard:
         # js/chat_dashboard.js drives the list through chat.js's one flow.
         assert "js/chat_dashboard.js" not in text  # loaded via chat.js import, not a script tag
 
-    def test_topnav_chat_keeps_classic_empty_state(self, web_client, admin_cookie, monkeypatch):
-        """The dashboard empty state is rail-only — topnav /chat keeps the
-        classic capability cards, byte-for-byte."""
-        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
-        self._enable_chat(web_client, monkeypatch)
-        resp = web_client.get("/chat", cookies=admin_cookie)
-        assert resp.status_code == 200
-        assert "What can I help you with?" in resp.text
-        assert 'id="rdb-tasks"' not in resp.text
-        assert "chat_dashboard" not in resp.text
-
     def test_rail_nav_new_chat_is_the_single_chat_entry(self, web_client, admin_cookie, monkeypatch):
         """There is no separate Dashboard nav item — /dashboard is just Chat's
         pre-conversation state, so it and New chat pointed at the same surface.
         New chat is the single chat entry point; the only /dashboard href left
         is the rail logo (href = home_route, default /dashboard)."""
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         self._enable_chat(web_client, monkeypatch)
         resp = web_client.get("/stack", cookies=admin_cookie)
         assert resp.status_code == 200
@@ -1485,7 +1389,6 @@ class TestRailDashboard:
         """New chat carries the `.on` active state (folded over from the retired
         Dashboard item) exactly while the pre-conversation state is showing —
         /chat with no session deep link."""
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         self._enable_chat(web_client, monkeypatch)
         # Empty /chat → New chat is active.
         resp = web_client.get("/chat", cookies=admin_cookie)
@@ -1502,20 +1405,10 @@ class TestRailDashboard:
         """Without a chat grant the chat slot renders nothing; the only
         /dashboard href left is the logo (whose route bounces grant-less
         callers to /stack)."""
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         resp = web_client.get("/stack", cookies=admin_cookie)
         assert resp.status_code == 200
         assert 'id="new-chat"' not in resp.text
         assert resp.text.count('href="/dashboard"') == 1
-
-    def test_topnav_nav_untouched(self, web_client, admin_cookie, monkeypatch):
-        """The topnav chrome gains no Dashboard-first IA — its header link
-        row is unchanged."""
-        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
-        resp = web_client.get("/dashboard", cookies=admin_cookie)
-        assert resp.status_code == 200
-        assert 'class="app-header"' in resp.text
-        assert 'class="rail"' not in resp.text
 
 
 class TestProfileNotifications:
@@ -1523,7 +1416,6 @@ class TestProfileNotifications:
     account page (/me/profile), where they belong. Rendered on both layouts."""
 
     def test_profile_renders_notifications_section(self, web_client, admin_cookie, monkeypatch):
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         resp = web_client.get("/me/profile", cookies=admin_cookie)
         assert resp.status_code == 200
         assert "Notifications" in resp.text
@@ -1542,7 +1434,6 @@ class TestStackWorkspace:
     def test_stack_has_no_status_strip_below_table(self, web_client, admin_cookie, monkeypatch):
         """The workspace stat strip that used to sit below the inventory has
         been removed — the page ends at the groups."""
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         resp = web_client.get("/stack", cookies=admin_cookie)
         assert resp.status_code == 200
         assert 'class="stk-stats"' not in resp.text
@@ -1553,7 +1444,6 @@ class TestStackWorkspace:
         Artefacts) with column headers and two collapsible <tbody> groups —
         Required, then Added by you — a dominant search field, and a small
         secondary sort control. No Added/Status columns, no download wording."""
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         resp = web_client.get("/stack", cookies=admin_cookie)
         assert resp.status_code == 200
         text = resp.text
@@ -1593,7 +1483,6 @@ class TestStackWorkspace:
         """A required-tier grant clusters in the Required group, rendered into
         the required tbody with the subtle Required badge and NO overflow
         (remove) affordance — required resources cannot be removed."""
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         import uuid
 
         from src.db import get_system_db
@@ -1651,7 +1540,6 @@ class TestCatalogRecommendations:
         on /catalog. It lives on My Stack. Materializing (subscribing) it
         must not pull it back into the Catalog — it still shows only on My
         Stack."""
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         import uuid
 
         from src.db import get_system_db
@@ -1797,13 +1685,14 @@ class TestPaperThemeAssets:
 
 
 class TestSharedDetailLayout:
-    """One editorial layout for every resource type, opt-in.
+    """One editorial layout for every resource type.
 
-    Under the redesign a detail page is: a header on the page ground (no
-    gradient slab, no nested frosted panel), a resource-type badge beside
-    the title, and a two-column shell with a sticky right rail. Default
-    instances must still get the legacy gradient hero + stacked cards, which
-    is the half of this that is a regression guard rather than a feature."""
+    A detail page is: a header on the page ground (no gradient slab, no
+    nested frosted panel), a resource-type badge beside the title, and a
+    two-column shell with a sticky right rail. (Wave 0, 2026-08 legacy
+    retirement, deleted the frozen pre-redesign ``*_legacy.html`` copies this
+    class used to guard against leaking onto a default instance — there is
+    only this layout now.)"""
 
     @staticmethod
     def _package(slug: str = "detail-layout-pkg") -> str:
@@ -1850,24 +1739,6 @@ class TestSharedDetailLayout:
             assert 'class="ds-trust' not in resp.text, (
                 f"{path} leaked the paper-only trust marker into the default theme"
             )
-
-    def test_default_instance_gets_neither_shell_nor_badge(self, web_client, admin_cookie, monkeypatch):
-        """The whole layout is gated: a default instance renders the TRUE
-        pre-redesign page (the frozen ``catalog_package_detail_legacy.html``
-        served by ``_detail_template`` — see TestDetailPageParity), not the
-        redesigned template's blue variant it briefly got."""
-        monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
-        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
-        self._package("blue-detail-pkg")
-        text = web_client.get("/catalog/p/blue-detail-pkg", cookies=admin_cookie).text
-        assert "detail-cols" not in text, "the two-column shell must not reach default instances"
-        assert "detail-aside" not in text
-        assert 'class="detail-type"' not in text
-        assert 'class="detail-side__rows"' not in text, "rail content must not append itself as extra sections"
-        assert "detail-hero" not in text, "redesigned scaffold markup must not reach default instances"
-        # …and the pre-redesign page's own anatomy still renders.
-        assert 'class="pkg-hero"' in text
-        assert 'class="back-link"' in text
 
     def test_overflow_menu_holds_the_secondary_action(self, web_client, admin_cookie, monkeypatch):
         """One prominent action per header; the admin errand moves into the
@@ -1965,8 +1836,9 @@ class TestDetailPageTemplateIsShared:
       2. a page opts out of the panels container language, so it renders
          borderless sections beside another page's panels.
 
-    The blue half is the regression guard: none of it may reach a default
-    instance, whose page is a contract.
+    (Wave 0, 2026-08 legacy retirement, deleted the frozen pre-redesign
+    ``*_legacy.html`` copies this class used to guard against leaking onto a
+    default instance — there is only this template now.)
     """
 
     # (path-builder key, the type badge the header must print)
@@ -2014,28 +1886,6 @@ class TestDetailPageTemplateIsShared:
         assert 'id="hero-icon"' in text
         assert 'id="details-list"' in text
 
-    def test_the_marketplace_pages_keep_the_legacy_page_on_a_default_instance(
-        self, web_client, admin_cookie, monkeypatch
-    ):
-        """The whole redesign is gated. A default instance renders the TRUE
-        pre-redesign page (the frozen ``*_legacy.html`` copy served by
-        ``_detail_template`` — see TestDetailPageParity), not the redesigned
-        template's blue variant it briefly got: none of the shared-scaffold
-        anatomy, and none of the restyled hero-panel markup either."""
-        monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
-        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
-        text = web_client.get("/marketplace/curated/agnes-builtin/agnes-analyst", cookies=admin_cookie).text
-        assert "detail--panels" not in text
-        assert "detail-cols" not in text, "the two-column shell must not reach default instances"
-        assert "detail-aside" not in text
-        assert 'class="detail-type"' not in text
-        assert "detail-hero--paneled" not in text, "restyled hero markup must not reach default instances"
-        # The pre-redesign page's own anatomy — including the async hydration
-        # hooks, which predate the redesign — still renders.
-        assert 'id="lead-text"' in text
-        assert 'id="details-list"' in text
-        assert 'id="hero-name"' in text
-
     def test_shared_concepts_use_one_component_each(self):
         """Sharing, versions, the admin ladder and 'what is inside this' are
         defined once in the scaffold. A page that re-specifies one of them
@@ -2062,44 +1912,27 @@ class TestDetailPageTemplateIsShared:
 
 
 class TestDefaultContentParity:
-    """Topnav keeps the pre-redesign PAGES, not just the chrome.
+    """The redesigned surfaces the topnav/classic chrome used to keep a
+    parity twin for (Wave 0, 2026-08 legacy retirement, deleted that twin —
+    ``library_legacy.html``, ``marketplace_legacy.html``, the classic /chat
+    composer/sidebar/tour, ``profile_legacy.html``, ``me_activity_legacy.html``,
+    ``agents_legacy.html``, ``me_cowork_legacy.html`` are all gone, and
+    ``/catalog`` collapsed onto ``catalog_unified.html`` unconditionally).
+    What remains is what every instance renders now:
 
-    The catalog already does this (classic ``catalog.html`` on topnav,
-    ``catalog_unified.html`` under rail); these tests extend the same
-    contract to the other surfaces the redesign rewrote in place, so a
-    default instance's upgrade changes nothing it renders:
-
-    - ``/library``: the legacy "Your collections" page vs the unified Library
-    - ``/marketplace``: the two-shelf Curated/Flea page vs one Browse shelf
-    - ``/chat``: no composer "+" upload menu, no journey checklist, no
-      conversation row menu, no auto-launched tour outside the rail layout
+    - ``/library``: the unified Library (``id="lib-search"``)
+    - ``/marketplace``: one Browse shelf
+    - ``/chat``: the composer "+" upload menu, the journey checklist, the
+      conversation row menu, the (non-legacy) tour
     """
 
-    def test_topnav_library_is_the_legacy_collections_page(self, web_client, admin_cookie, monkeypatch):
-        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
-        monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
-        resp = web_client.get("/library", cookies=admin_cookie)
-        assert resp.status_code == 200
-        assert "Your collections" in resp.text, "topnav /library must stay the legacy collections page"
-        assert 'id="lib-search"' not in resp.text, "unified Library toolbar leaked into topnav"
-
     def test_rail_library_is_the_unified_library(self, web_client, admin_cookie, monkeypatch):
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         resp = web_client.get("/library", cookies=admin_cookie)
         assert resp.status_code == 200
         assert 'id="lib-search"' in resp.text
         assert "Your collections" not in resp.text
 
-    def test_topnav_marketplace_keeps_the_curated_and_flea_shelves(self, web_client, admin_cookie, monkeypatch):
-        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
-        monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
-        resp = web_client.get("/marketplace", cookies=admin_cookie)
-        assert resp.status_code == 200
-        assert 'data-tab="flea"' in resp.text, "topnav /marketplace must keep the Curated/Flea tab split"
-        assert "data-count-browse" not in resp.text, "unified Browse shelf leaked into topnav"
-
     def test_rail_marketplace_is_one_browse_shelf(self, web_client, admin_cookie, monkeypatch):
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         resp = web_client.get("/marketplace", cookies=admin_cookie)
         assert resp.status_code == 200
         assert "data-count-browse" in resp.text
@@ -2131,37 +1964,11 @@ class TestDefaultContentParity:
             conn.close()
         return web_client.get("/chat", cookies=admin_cookie)
 
-    def test_topnav_chat_has_no_upload_menu_journey_or_row_menu(self, web_client, admin_cookie, monkeypatch):
-        """The redesign's chat additions are rail-only. A topnav instance's
-        composer, sidebar and conversation rows read exactly as before."""
-        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
-        monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
-        resp = self._chat(web_client, admin_cookie)
-        assert resp.status_code == 200
-        # Positive anchors first: prove the REAL chat page rendered (a future
-        # redirect away from topnav /chat must not turn the negatives vacuous),
-        # and pin the classic composer shape.
-        assert 'id="chat-input"' in resp.text
-        assert 'rows="2"' in resp.text, "topnav composer keeps the classic two-row textarea"
-        assert 'id="chat-plus-menu"' not in resp.text, "composer + upload menu leaked into topnav"
-        assert 'id="chat-journey"' not in resp.text, "journey checklist leaked into topnav"
-        assert "chat_row_menu.js" not in resp.text, "conversation row menu leaked into topnav"
-        assert 'id="chat-copy-transcript"' not in resp.text, "copy-transcript action leaked into topnav"
-        # Structural, not just this one id: `cloud-chat-thread-action` is the
-        # shared class every thread-header action button carries (it is what
-        # the positioning/pill CSS keys off), so this also catches a FUTURE
-        # ungated addition to the header that a hand-listed id check would
-        # miss until someone remembered to extend this list.
-        assert "cloud-chat-thread-action" not in resp.text, (
-            "a thread-header action button leaked into topnav — gate it behind ui_layout == 'rail'"
-        )
-
     def test_rail_chat_keeps_upload_menu_journey_and_row_menu(self, web_client, admin_cookie, monkeypatch):
         """Under rail the additions stay: the composer "+" menu and the row
         menu in the page, the journey checklist as the rail's own
         ``railGetStarted`` card (chat.html's ``#chat-journey`` div is the
         TOPNAV sidebar's slot — rail never renders it)."""
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         resp = self._chat(web_client, admin_cookie)
         assert resp.status_code == 200
         assert 'id="chat-plus-menu"' in resp.text
@@ -2169,158 +1976,32 @@ class TestDefaultContentParity:
         assert "chat_row_menu.js" in resp.text
         assert 'id="chat-copy-transcript"' in resp.text
 
-    def test_topnav_composer_grid_keeps_two_columns(self):
-        """The redesign widened `.cloud-chat-form`'s grid to three columns for
-        the rail composer's leading "+" button. On topnav that button no
-        longer renders, and a 3-column grid with two children drops the
-        textarea into the content-sized `auto` column — a visibly narrower
-        input (caught by the screenshot audit). The BASE rule is the topnav
-        contract: two columns, exactly as before the redesign; rail lays its
-        composer out with its own flex rules and never reads this grid."""
-        from pathlib import Path
-
-        css = Path("app/web/static/css/chat.css").read_text()
-        import re
-
-        m = re.search(r"^\.cloud-chat-form \{(.*?)^\}", css, re.S | re.M)
-        assert m, "base .cloud-chat-form rule missing"
-        assert "grid-template-columns: 1fr auto;" in m.group(1), (
-            "base composer grid must stay two-column (textarea + actions) — "
-            'rail-only columns belong under html[data-ui-layout="rail"]'
-        )
-
-    def test_chat_onboarding_module_is_rail_gated(self):
-        """chat.js statically imports chat_onboarding.js, so the module loads
-        on every chrome — the gate has to live in its behavior. Pin the seam:
-        the module reads ``data-ui-layout`` off the root element and its boot
-        path early-returns off the rail, so topnav gets no journey fetch, no
-        greeting bubbles, and no auto-launched coach-mark tour."""
-        from pathlib import Path
-
-        src = Path("app/web/static/js/chat_onboarding.js").read_text()
-        assert 'dataset.uiLayout === "rail"' in src, (
-            "chat_onboarding.js must derive IS_RAIL from the chrome layout attribute"
-        )
-        # Both boot paths (initChatOnboarding + mountJourneyPanel) must
-        # early-return off the rail — a name surviving in a comment is not a
-        # gate, so pin the return statements themselves.
-        assert len(re.findall(r"if \(!IS_RAIL\) return", src)) >= 2, (
-            "both chat_onboarding.js boot paths must early-return when the chrome is not rail"
-        )
-
-    # ── Wave 2 (spec 2026-08-07-default-chrome-ux-parity): the page rewrites
-    # that were never layout-gated, both directions pinned per surface. ──
-
-    def test_topnav_profile_is_the_legacy_page(self, web_client, admin_cookie, monkeypatch):
-        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
-        monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
-        resp = web_client.get("/me/profile", cookies=admin_cookie)
-        assert resp.status_code == 200
-        assert 'id="pf-name-edit"' not in resp.text, "redesigned profile leaked into topnav"
+    # ── Wave 2 (spec 2026-08-07-default-chrome-ux-parity): the page rewrites. ──
 
     def test_rail_profile_is_the_redesigned_page(self, web_client, admin_cookie, monkeypatch):
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         resp = web_client.get("/me/profile", cookies=admin_cookie)
         assert resp.status_code == 200
         assert 'id="pf-name-edit"' in resp.text
 
-    def test_topnav_activity_is_the_legacy_page(self, web_client, admin_cookie, monkeypatch):
-        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
-        monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
-        resp = web_client.get("/me/activity", cookies=admin_cookie)
-        assert resp.status_code == 200
-        assert "Sessions, token usage, data access, and sync activity" in resp.text, (
-            "topnav /me/activity must keep the legacy hero subtitle"
-        )
-
     def test_rail_activity_is_the_redesigned_page(self, web_client, admin_cookie, monkeypatch):
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         resp = web_client.get("/me/activity", cookies=admin_cookie)
         assert resp.status_code == 200
         assert "Sessions, token usage, data access, and sync activity" not in resp.text
 
-    def test_topnav_agents_is_the_legacy_management_page(self, web_client, admin_cookie, monkeypatch):
-        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
-        monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
-        resp = web_client.get("/agents", cookies=admin_cookie)
-        assert resp.status_code == 200
-        assert 'id="ag-builder-view"' not in resp.text, "rail agents builder leaked into topnav"
-
     def test_rail_agents_is_the_builder(self, web_client, admin_cookie, monkeypatch):
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         resp = web_client.get("/agents", cookies=admin_cookie)
         assert resp.status_code == 200
         assert 'id="ag-builder-view"' in resp.text
 
-    def test_topnav_ai_connector_renders_the_legacy_page(self, web_client, admin_cookie, monkeypatch):
-        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
-        monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
-        resp = web_client.get("/me/ai-connector", cookies=admin_cookie, follow_redirects=False)
-        assert resp.status_code == 200, "topnav /me/ai-connector must render, not redirect"
-        assert "/mcp-connect" in resp.text, "legacy page must keep the token-fallback link"
-
     def test_rail_ai_connector_stays_consolidated(self, web_client, admin_cookie, monkeypatch):
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         resp = web_client.get("/me/ai-connector", cookies=admin_cookie, follow_redirects=False)
         assert resp.status_code == 302
         assert resp.headers["location"] == "/how-it-works#connect"
-
-    def test_topnav_user_menu_has_ai_connector_row(self, web_client, admin_cookie, monkeypatch):
-        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
-        monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
-        resp = web_client.get("/me/profile", cookies=admin_cookie)
-        assert ">AI Connector<" in resp.text, "default chrome must keep the AI Connector menu row"
-        assert "Learn how it works" not in resp.text
-
-    def test_paper_user_menu_keeps_the_redesign_wording(self, web_client, admin_cookie, monkeypatch):
-        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
-        monkeypatch.setenv("AGNES_INSTANCE_THEME", "paper")
-        resp = web_client.get("/me/profile", cookies=admin_cookie)
-        assert "Learn how it works" in resp.text
-        assert ">AI Connector<" not in resp.text
-
-    def test_topnav_ships_the_legacy_tour(self, web_client, admin_cookie, monkeypatch):
-        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
-        monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
-        resp = web_client.get("/me/profile", cookies=admin_cookie)
-        assert 'id="agnesTour"' in resp.text, "default chrome must ship the legacy tour overlay"
-        assert "tour_legacy.js" in resp.text
-        assert "data-tour-start" in resp.text, "header must keep the (?) tour launcher"
 
     def test_rail_does_not_ship_the_legacy_tour(self, web_client, admin_cookie, monkeypatch):
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         resp = web_client.get("/me/profile", cookies=admin_cookie)
         assert 'id="agnesTour"' not in resp.text
         assert "tour_legacy.js" not in resp.text
-
-    def test_paper_topnav_does_not_ship_the_legacy_tour(self, web_client, admin_cookie, monkeypatch):
-        """The overlay must key on the same condition as its header launcher
-        (`not is_paper()`) — shipped without the launcher, the intro modal
-        auto-pops once with no way to ever reopen it (Devin Review on #1200)."""
-        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
-        monkeypatch.setenv("AGNES_INSTANCE_THEME", "paper")
-        resp = web_client.get("/me/profile", cookies=admin_cookie)
-        assert 'id="agnesTour"' not in resp.text
-        assert "tour_legacy.js" not in resp.text
-        assert "data-tour-start" not in resp.text
-
-    def test_paper_topnav_ai_connector_stays_consolidated(self, web_client, admin_cookie, monkeypatch):
-        """The route keys on the same opt-in expression as the user-menu row:
-        under paper-on-topnav the menu says "Learn how it works", so a
-        bookmark or /me/mcp alias hop must not resurrect the standalone
-        page (Devin Review on #1200)."""
-        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
-        monkeypatch.setenv("AGNES_INSTANCE_THEME", "paper")
-        resp = web_client.get("/me/ai-connector", cookies=admin_cookie, follow_redirects=False)
-        assert resp.status_code == 302
-        assert resp.headers["location"] == "/how-it-works#connect"
-
-    def test_topnav_chat_welcome_cards_are_the_frozen_copy(self, web_client, admin_cookie, monkeypatch):
-        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
-        monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
-        resp = self._chat(web_client, admin_cookie)
-        assert "I'm the Agnes data agent." in resp.text, "topnav chat must keep the pre-redesign welcome-card copy"
-        assert "📊 Your data" in resp.text, "pre-redesign card icons (emoji) must survive on topnav"
 
 
 class TestDetailPageParity:
@@ -2332,10 +2013,11 @@ class TestDetailPageParity:
     legacy retirement (2026-08) — every render site now serves the
     redesigned template unconditionally. The unit test on the old switch and
     the closed-set static sweep over the seven frozen copies went with them.
-    What remains: the live render pairs for the two cheaply-seedable pages
-    (collection + catalog table), whose topnav-side assertions are tracked as
-    a pre-existing default-pinned-expectation gap (see
-    ``TestDefaultContentParity``), not something this class re-derives — and
+    What remains: for the two cheaply-seedable pages (collection + catalog
+    table), a live-render check that the shared ``detail-page`` template is
+    what actually renders and the retired legacy layout does not leak back
+    in — no "topnav" branch to compare against any more, just the one
+    template every instance serves — and
     ``test_the_live_detail_page_keeps_the_invariant`` below, which is NOT
     legacy-chrome leftover: rail-only chrome means these live templates are
     what every instance renders now, so the three prior production
@@ -2380,17 +2062,19 @@ class TestDetailPageParity:
         assert r.status_code == 201, r.text
         return r.json()
 
-    def test_topnav_library_detail_is_legacy(self, web_client, admin_cookie, monkeypatch):
-        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
-        monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
+    def test_library_detail_renders_the_shared_detail_page(self, web_client, admin_cookie):
+        """No layout knob left to flip — rail is the only chrome (Wave 0,
+        2026-08 legacy retirement) — so every collection detail page renders
+        through the shared ``detail-page`` anatomy (``macros/_detail.html``),
+        never the retired ``lib-sec`` layout ``library_detail_legacy.html``
+        used to serve."""
         col = self._seed_collection(web_client, admin_cookie, "Parity Files")
         resp = web_client.get(f"/library/{col['slug']}", cookies=admin_cookie)
         assert resp.status_code == 200
-        assert 'class="lib-sec"' in resp.text, "topnav must render the legacy collection detail"
-        assert 'class="detail-page"' not in resp.text, "redesigned detail anatomy leaked into topnav"
+        assert 'class="detail-page"' in resp.text, "the shared detail template must render"
+        assert 'class="lib-sec"' not in resp.text, "the retired legacy collection layout must not leak back in"
 
     def test_rail_library_detail_is_redesigned(self, web_client, admin_cookie, monkeypatch):
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         col = self._seed_collection(web_client, admin_cookie, "Parity Files Rail")
         resp = web_client.get(f"/library/{col['slug']}", cookies=admin_cookie)
         assert resp.status_code == 200
@@ -2409,17 +2093,18 @@ class TestDetailPageParity:
             query_mode="local",
         )
 
-    def test_topnav_catalog_table_detail_is_legacy(self, web_client, admin_cookie, monkeypatch):
-        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
-        monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
+    def test_catalog_table_detail_renders_the_shared_detail_page(self, web_client, admin_cookie):
+        """Same guard as above, for the catalog table detail page — the
+        retired legacy layout keyed its back-link off ``td-back``;
+        ``catalog_table_detail_legacy.html`` is gone, so it must not
+        reappear."""
         self._seed_table("parity_table")
         resp = web_client.get("/catalog/t/parity_table", cookies=admin_cookie)
         assert resp.status_code == 200
-        assert "td-back" in resp.text, "topnav must render the legacy table detail"
-        assert 'class="detail-page"' not in resp.text
+        assert 'class="detail-page"' in resp.text, "the shared detail template must render"
+        assert "td-back" not in resp.text, "the retired legacy table-detail layout must not leak back in"
 
     def test_rail_catalog_table_detail_is_redesigned(self, web_client, admin_cookie, monkeypatch):
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         self._seed_table("parity_table_rail")
         resp = web_client.get("/catalog/t/parity_table_rail", cookies=admin_cookie)
         assert resp.status_code == 200
