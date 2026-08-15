@@ -245,8 +245,20 @@ def _configured_base_url() -> str:
     base = stack_url()
     if not base:
         raise KeboolaVerifyError("not_configured", "No Keboola stack URL configured")
-    if configured_project_id() is None and not multi_project_active():
+    pid = configured_project_id()
+    if pid is None and not multi_project_active():
         raise KeboolaVerifyError("not_configured", "auth.keboola.project_id is not configured")
+    if pid == "*" and not multi_project_active():
+        # The wildcard only means something under an active discovery mode.
+        # Left behind after the mode is turned off, it would otherwise reach
+        # project_matches("*", …), which fails EVERY token as
+        # project_mismatch — a misleading verdict for what is a
+        # configuration problem (Devin Review on this PR, seventh round).
+        raise KeboolaVerifyError(
+            "not_configured",
+            'auth.keboola.project_id is "*" but no multi-project mode is active — '
+            "set a concrete project id or enable auth.keboola.multi_project_mode",
+        )
     return base
 
 

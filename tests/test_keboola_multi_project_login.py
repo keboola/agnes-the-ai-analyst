@@ -70,6 +70,17 @@ class TestWildcardVerifyGates:
             kv._configured_base_url()
         assert err.value.reason == "not_configured"
 
+    def test_leftover_wildcard_without_active_mode_is_not_configured(self, monkeypatch):
+        """project_id '*' with the mode turned off must self-describe as a
+        configuration problem — not fail every token as project_mismatch."""
+        monkeypatch.setattr(kv, "stack_url", lambda: "https://connection.example.com")
+        monkeypatch.setattr(kv, "multi_project_active", lambda: False)
+        monkeypatch.setattr(kv, "configured_project_id", lambda: "*")
+        with pytest.raises(kv.KeboolaVerifyError) as err:
+            kv._configured_base_url()
+        assert err.value.reason == "not_configured"
+        assert "multi_project_mode" in err.value.detail
+
 
 class TestModeResolution:
     def test_default_is_disabled_and_inactive(self):

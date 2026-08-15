@@ -241,6 +241,13 @@ def apply_tool_grants(connection_id: str, group_id: str, role: str) -> int:
     granted = 0
     admin_like = role == ADMIN_ROLE
     for tool in registry.list_for_source(derived_source_id(connection_id)):
+        if not tool.get("enabled", True):
+            # Grant narrow, like the admin grant-all endpoint: a disabled row
+            # is invisible to the agent, so granting it writes an access
+            # decision nobody can see the effect of — and re-enabling the
+            # tool later would make it reachable for this group without
+            # anyone granting again (Devin Review on this PR, seventh round).
+            continue
         if admin_like or not tool.get("mutating"):
             registry.add_grant(tool["tool_id"], group_id)
             granted += 1

@@ -536,6 +536,33 @@ class TestGrantPolicy:
         assert ro_gid not in registry.grants_for_tool(write_tool)
         assert _kbc_memberships("u2") == {"kbc-516-readonly"}
 
+    def test_disabled_tools_are_never_granted(self, env, pat_mocks):
+        """Grant narrow, like the admin grant-all endpoint: a disabled tool
+        row must not receive a grant — re-enabling it later would expose it
+        to the group without anyone granting again."""
+        from src.keboola_chat_tools import derived_source_id, derived_tool_id
+        from src.repositories import tool_registry_repo, user_groups_repo
+        from src.repositories.tool_registry import PASSTHROUGH
+
+        projects = [P("516", "Agnes - test", "admin")]
+        summary = kprov.provision_projects(env["user"], projects, projects, "at-1")
+        connection_id = summary.outcomes[0].connection_id
+        registry, read_tool, _ = self._register_tools(connection_id)
+        off_tool = derived_tool_id(connection_id, "dangerous_but_off")
+        tool_registry_repo().upsert(
+            tool_id=off_tool,
+            source_id=derived_source_id(connection_id),
+            original_name="dangerous_but_off",
+            exposed_name="kbc_x_dangerous_but_off",
+            mode=PASSTHROUGH,
+            mutating=False,
+            enabled=False,
+        )
+        kprov.provision_projects(env["user"], projects, projects, "at-2")
+        admin_gid = user_groups_repo().get_by_name("kbc-516-admin")["id"]
+        assert admin_gid in registry.grants_for_tool(read_tool)
+        assert admin_gid not in registry.grants_for_tool(off_tool)
+
     def test_connection_with_registered_tools_is_not_re_enabled(self, env, pat_mocks):
         projects = [P("516", "Agnes - test", "admin")]
         summary = kprov.provision_projects(env["user"], projects, projects, "at-1")
