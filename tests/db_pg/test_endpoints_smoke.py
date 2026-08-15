@@ -2590,3 +2590,96 @@ def test_every_route_is_covered_or_excluded():
         "(remove them from the class COVERED_ROUTES set): "
         f"{stale}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Semantic layer  (canonical Ossie document store + its sources)
+# ---------------------------------------------------------------------------
+
+
+_SEMANTIC_DOC = (
+    "version: '0.2.0.dev0'\n"
+    "semantic_model:\n"
+    "  - name: smoke_model\n"
+    "    datasets:\n"
+    "      - name: orders\n"
+    "        source: db.public.orders\n"
+)
+
+
+class TestSemanticLayerSmoke:
+    COVERED_ROUTES = {
+        "GET /api/admin/semantic-models",
+        "POST /api/admin/semantic-models",
+        "GET /api/admin/semantic-models/{model_id}",
+        "PUT /api/admin/semantic-models/{model_id}",
+        "DELETE /api/admin/semantic-models/{model_id}",
+        "GET /api/admin/semantic-sources",
+        "POST /api/admin/semantic-sources",
+        "GET /api/admin/semantic-sources/{source_id}",
+        "PUT /api/admin/semantic-sources/{source_id}",
+        "DELETE /api/admin/semantic-sources/{source_id}",
+        "POST /api/admin/semantic-sources/{source_id}/sync",
+        "GET /api/semantic-models/search",
+        "GET /api/semantic-models/{slug}.yaml",
+    }
+
+    def test_model_crud_and_export(self, seeded_app_both):
+        c = seeded_app_both["client"]
+        h = _admin_headers(seeded_app_both)
+
+        created = c.post("/api/admin/semantic-models", json={"document": _SEMANTIC_DOC}, headers=h)
+        assert created.status_code == 201
+        model_id = created.json()["id"]
+
+        assert c.get("/api/admin/semantic-models", headers=h).status_code == 200
+        assert c.get(f"/api/admin/semantic-models/{model_id}", headers=h).status_code == 200
+
+        # A hand-authored model stays editable; a source-owned one would 409.
+        assert (
+            c.put(
+                f"/api/admin/semantic-models/{model_id}",
+                json={"description": "smoke"},
+                headers=h,
+            ).status_code
+            == 200
+        )
+
+        exported = c.get("/api/semantic-models/smoke_model.yaml", headers=h)
+        assert exported.status_code == 200
+        assert exported.text == _SEMANTIC_DOC
+
+        assert c.get("/api/semantic-models/search?q=smoke", headers=h).status_code == 200
+        assert c.delete(f"/api/admin/semantic-models/{model_id}", headers=h).status_code == 204
+
+    def test_source_crud_and_sync(self, seeded_app_both):
+        c = seeded_app_both["client"]
+        h = _admin_headers(seeded_app_both)
+
+        # `upload` kind so the sync needs no network and no clone.
+        created = c.post(
+            "/api/admin/semantic-sources",
+            json={
+                "kind": "upload",
+                "name": "smoke source",
+                "adapter": "native",
+                "config": {"documents": [_SEMANTIC_DOC]},
+            },
+            headers=h,
+        )
+        assert created.status_code == 201
+        source_id = created.json()["id"]
+
+        assert c.get("/api/admin/semantic-sources", headers=h).status_code == 200
+        assert c.get(f"/api/admin/semantic-sources/{source_id}", headers=h).status_code == 200
+        assert (
+            c.put(
+                f"/api/admin/semantic-sources/{source_id}",
+                json={"name": "renamed"},
+                headers=h,
+            ).status_code
+            == 200
+        )
+
+        assert c.post(f"/api/admin/semantic-sources/{source_id}/sync", headers=h).status_code == 200
+        assert c.delete(f"/api/admin/semantic-sources/{source_id}", headers=h).status_code == 204
