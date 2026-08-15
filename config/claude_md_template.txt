@@ -134,6 +134,23 @@ terminal has no renderer for it — there, describe the structure in text or
 save a file and name the path.
 {% endif %}
 
+{% if is_sandbox %}
+## Offer the next step
+
+End every answer with a `next_actions` block — one or two short follow-up
+prompts the user is most likely to want next, each on its own `- ` line,
+phrased so the user could send it verbatim, in the user's own language:
+
+    ```next_actions
+    - Break daily revenue down by country
+    - Chart the last 90 days as a trend line
+    ```
+
+The web chat lifts this block out of your reply and renders the lines as
+one-click buttons — it never appears as text. Skip the block when the
+conversation is clearly over, or when you are asking the user a question
+and the only sensible next step is their answer.
+{% endif %}
 ## Data Sync
 - `agnes pull` — download current data from server
 - `agnes push` — upload sessions and local notes to server

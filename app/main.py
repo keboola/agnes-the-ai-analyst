@@ -908,6 +908,19 @@ async def lifespan(app):
     except Exception:
         pass  # never block startup on a logging convenience
 
+    # Validate auth.providers at boot so an all-unknown value (a typo in
+    # instance.yaml / AGNES_AUTH_PROVIDERS) surfaces its error in the startup
+    # log, not only lazily on the first /auth request. configured_allowlist()
+    # logs the error itself and fails open (all providers) so a bad value can
+    # never lock the instance out; the admin API rejects the same value at
+    # set-time. Fail-soft — a config-read hiccup must not block startup.
+    try:
+        from app.auth.provider_registry import configured_allowlist
+
+        configured_allowlist()
+    except Exception:
+        pass
+
     # Bump anyio's default thread pool size from 40 → AGNES_THREADPOOL_SIZE
     # (default 200). FastAPI auto-runs every plain `def` route handler AND
     # every plain `def` dependency in this pool — the Tier 1 endpoints
@@ -1814,6 +1827,16 @@ async def lifespan(app):
             usage_accumulator.flush()
         except Exception:
             logger.exception("llm_usage accumulator flush failed during shutdown (non-fatal)")
+        # Warm stdio MCP sessions are child processes owned by keeper tasks on
+        # THIS loop. Closing them here lets each anyio task group unwind and
+        # terminate its subprocess while the loop is still running, instead of
+        # leaving them to be reaped when this process dies.
+        try:
+            from connectors.mcp.session_pool import close_all as close_mcp_sessions
+
+            await close_mcp_sessions()
+        except Exception:
+            logger.exception("MCP session pool close failed during shutdown (non-fatal)")
         from src.db import close_analytics_db, close_operational_db, close_system_db
 
         close_system_db()
@@ -1954,6 +1977,7 @@ def create_app() -> FastAPI:
         # REDUCES privilege — see the module docstring.
         from app.auth.elevation import (
             ELEVATION_COOKIE,
+            request_is_noninteractive,
             reset_for_request,
             resolve_from_cookie,
             set_paused_for_request,
@@ -1962,10 +1986,17 @@ def create_app() -> FastAPI:
         token = set_paused_for_request(
             resolve_from_cookie(
                 request.cookies.get(ELEVATION_COOKIE),
-                # Bearer callers (CLI/PAT/service tokens) have no cookie jar
-                # to re-elevate with — the instance-wide default must not
-                # apply to them (an explicit paused cookie still would).
-                bearer_auth=request.headers.get("authorization", "").lower().startswith("bearer "),
+                # Non-interactive callers (Bearer CLI/PAT/service tokens, or a
+                # sole X-StorageApi-Token header) have no cookie jar to
+                # re-elevate with, so the instance-wide default must not apply
+                # (an explicit paused cookie still would). A request carrying a
+                # session cookie stays interactive even if it also sends the
+                # header — see request_is_noninteractive (Devin review #1288).
+                bearer_auth=request_is_noninteractive(
+                    authorization=request.headers.get("authorization", ""),
+                    has_session_cookie=bool(request.cookies.get("access_token")),
+                    has_sapi_header=bool(request.headers.get("x-storageapi-token")),
+                ),
             )
         )
         try:
@@ -2459,12 +2490,14 @@ def create_app() -> FastAPI:
     from app.auth.providers.google import router as google_auth_router
     from app.auth.providers.password import router as password_auth_router
     from app.auth.providers.email import router as email_auth_router
+    from app.auth.providers.keboola import router as keboola_auth_router
 
     # API routers
     app.include_router(auth_router)
     app.include_router(google_auth_router)
     app.include_router(password_auth_router)
     app.include_router(email_auth_router)  # Always register, check availability per-request
+    app.include_router(keboola_auth_router)  # Always register, availability + allowlist per-request
     app.include_router(health_router)
 
     from app.api import health_probes

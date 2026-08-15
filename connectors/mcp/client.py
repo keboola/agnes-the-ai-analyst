@@ -2,8 +2,10 @@
 
 Wraps the official ``mcp`` Python SDK with a small uniform interface used by
 ``extractor.py`` (materialize) and ``app/api/mcp/passthrough.py`` (live).
-Per-call connect/disconnect for POC simplicity — a connection pool can be
-layered later for high-frequency passthrough.
+``stdio`` sessions are pooled by default — a warm subprocess is reused across
+calls (see ``connectors/mcp/session_pool.py``; switch ``mcp_session_pool`` to
+go back to a process per call). ``http``/``sse`` stay per-call connect/
+disconnect — they have no spawn to amortize.
 
 Supports three transports:
 
@@ -664,6 +666,27 @@ async def _open_session(
                 env_extra[secret_env] = token
 
         params = StdioServerParameters(command=command, args=list(args), env=env_extra or None)
+        # Reuse a warm subprocess when one matches this exact launch spec.
+        # The upstream's own import tree, not our launcher, is what costs ~6s
+        # per call — see connectors/mcp/session_pool.py for the measurement and
+        # for why the pool key includes the resolved secret.
+        from connectors.mcp import session_pool
+
+        if session_pool.pool_enabled():
+            # A per_user source must never share a warm process between two
+            # users: resolved credentials are not proof of identity (two
+            # users with no stored secret — or an identical value — build
+            # the same launch spec), and the upstream process can retain
+            # per-session state. Salting the pool key with the caller makes
+            # the isolation structural. The caller-less scheduled path
+            # (materialize, ``caller_user_id=None``) is a single identity
+            # and stays unsalted.
+            key_salt = ""
+            if (source.get("scope") or "shared").lower() == "per_user" and caller_user_id:
+                key_salt = f"user:{caller_user_id}"
+            async with session_pool.get_pool().acquire(params, key_salt=key_salt) as session:
+                yield session
+            return
         async with stdio_client(params) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()

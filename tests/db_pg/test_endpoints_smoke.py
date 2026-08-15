@@ -1846,6 +1846,10 @@ KNOWN_UNTESTED = {
     # Google OAuth — requires live credentials
     "GET /auth/google/login",
     "GET /auth/google/callback",
+    # Keboola OAuth — redirects to an external OAuth server; behaviour
+    # covered by tests/test_keboola_oauth_provider.py
+    "GET /auth/keboola/login",
+    "GET /auth/keboola/callback",
     # Telegram webhook — live external service
     "POST /api/telegram/webhook",
     # Jira webhooks — live external service
@@ -2096,6 +2100,7 @@ KNOWN_UNTESTED = {
     "GET /auth/password/reset",
     "GET /auth/password/setup",
     "POST /auth/email/send-link",
+    "POST /auth/email/send-link/web",
     "POST /auth/email/verify",
     "POST /auth/password/login/web",
     "POST /auth/password/reset",

@@ -340,7 +340,10 @@ New connector = `connectors/<name>/extractor.py` producing `extract.duckdb + dat
 Auth providers in `app/auth/` (FastAPI-based):
 - **Google**: OAuth via Google (Workspace group memberships pulled at sign-in — see [`docs/auth-groups.md`](docs/auth-groups.md) for the GCP setup checklist + the `security` label gotcha)
 - **Email**: magic link (itsdangerous token)
+- **Keboola**: OAuth via the Keboola stack (project-bound; optional `X-StorageApi-Token` header auth for existing users, switch-gated)
 - **Desktop**: JWT for API
+
+Per-instance offering is narrowed by `auth.providers` (see `config/instance.yaml.example`).
 
 ### Web pages
 HTML dashboard pages use the design-system **page shell** (#367/#482): `{% extends "base_page.html" %}` (gradient hero + `{% block toolbar %}` + `{% block page %}`) or `{% extends "base_ds.html" %}` (everything else; body in `{% block content %}`). **Never `base.html`** — it is legacy. The base auto-imports the `ds.*` macros (no `{% import "_components.html" %}`), sets theme/favicon/nav/global-JS, and provides the canonical `.container`; page CSS goes in `{% block head_extra %}`, never inline in the body. Contract guards in `tests/test_design_system_contract.py` reject `.container:has()` opt-outs, bare `:root{}`, raw `#hex`, and `var(--primary)` (use `var(--ds-primary)`). Full step-by-step recipe: [`docs/architecture.md`](docs/architecture.md) → *Extending the Platform → New Web Page*.
