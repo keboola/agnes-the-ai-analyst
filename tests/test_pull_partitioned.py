@@ -4,12 +4,10 @@ parts under `server/parquet/{tid}/`; only changed parts are fetched
 (incremental), the swap is all-or-nothing, and parts dropped server-side
 are pruned locally.
 """
+
 from __future__ import annotations
 
 import hashlib
-from pathlib import Path
-
-import pytest
 
 from cli.lib.pull import _diff_parts, _sync_partitioned_table
 
@@ -19,6 +17,7 @@ def _sp(path, b):
 
 
 # --- _diff_parts -----------------------------------------------------------
+
 
 def test_diff_parts_fresh_fetches_all(tmp_path):
     server = [_sp("month=2026-06/data.parquet", b"a"), _sp("month=2026-07/data.parquet", b"bb")]
@@ -34,8 +33,10 @@ def test_diff_parts_incremental_fetches_only_changed(tmp_path):
     (tdir / "month=2026-07").mkdir(parents=True)
     (tdir / "month=2026-07" / "data.parquet").write_bytes(b"old")
     server = [_sp("month=2026-06/data.parquet", b"a"), _sp("month=2026-07/data.parquet", b"NEW")]
-    local = {"month=2026-06/data.parquet": hashlib.md5(b"a").hexdigest(),
-             "month=2026-07/data.parquet": hashlib.md5(b"old").hexdigest()}
+    local = {
+        "month=2026-06/data.parquet": hashlib.md5(b"a").hexdigest(),
+        "month=2026-07/data.parquet": hashlib.md5(b"old").hexdigest(),
+    }
     fetch, prune = _diff_parts(server, local, tdir)
     assert {p["path"] for p in fetch} == {"month=2026-07/data.parquet"}  # only changed month
     assert prune == set()
@@ -61,10 +62,13 @@ def test_diff_parts_prunes_dropped_month(tmp_path):
 
 # --- _sync_partitioned_table ----------------------------------------------
 
+
 def _fetcher(parts_bytes):
     """Return a fetch_part(relpath, dest) that writes the known bytes."""
+
     def fetch_part(relpath, dest):
         dest.write_bytes(parts_bytes[relpath])
+
     return fetch_part
 
 
@@ -73,14 +77,22 @@ def test_sync_partitioned_fresh_download(tmp_path):
     server = [_sp("month=2026-06/data.parquet", b6), _sp("month=2026-07/data.parquet", b7)]
     rollup = "ROLLUP123"
     entry, changed, err = _sync_partitioned_table(
-        "issues", server, {}, tmp_path, _fetcher({
-            "month=2026-06/data.parquet": b6, "month=2026-07/data.parquet": b7}), rollup, rows=42)
+        "issues",
+        server,
+        {},
+        tmp_path,
+        _fetcher({"month=2026-06/data.parquet": b6, "month=2026-07/data.parquet": b7}),
+        rollup,
+        rows=42,
+    )
     assert err is None
     assert changed is True
     assert (tmp_path / "issues" / "month=2026-06" / "data.parquet").read_bytes() == b6
     assert (tmp_path / "issues" / "month=2026-07" / "data.parquet").read_bytes() == b7
-    assert entry["parts"] == {"month=2026-06/data.parquet": server[0]["hash"],
-                              "month=2026-07/data.parquet": server[1]["hash"]}
+    assert entry["parts"] == {
+        "month=2026-06/data.parquet": server[0]["hash"],
+        "month=2026-07/data.parquet": server[1]["hash"],
+    }
     assert entry["hash"] == rollup
     assert entry["size_bytes"] == len(b6) + len(b7)
     assert entry["rows"] == 42
@@ -95,8 +107,8 @@ def test_sync_partitioned_all_or_nothing_on_hash_mismatch(tmp_path):
     server = [_sp("month=2026-06/data.parquet", b"correct")]
     # fetcher writes WRONG bytes → hash mismatch
     entry, changed, err = _sync_partitioned_table(
-        "issues", server, {}, tmp_path,
-        _fetcher({"month=2026-06/data.parquet": b"CORRUPT"}), "R", rows=1)
+        "issues", server, {}, tmp_path, _fetcher({"month=2026-06/data.parquet": b"CORRUPT"}), "R", rows=1
+    )
     assert entry is None and "mismatch" in err
     assert changed is False
     # prior data untouched; the bad part never promoted
@@ -114,16 +126,18 @@ def test_sync_partitioned_incremental_and_prune(tmp_path):
     b6 = b"keep"
     b7 = b"new-july"
     server = [_sp("month=2026-06/data.parquet", b6), _sp("month=2026-07/data.parquet", b7)]
-    local = {"month=2026-06/data.parquet": hashlib.md5(b6).hexdigest(),
-             "month=2026-05/data.parquet": hashlib.md5(b"drop-me").hexdigest()}
+    local = {
+        "month=2026-06/data.parquet": hashlib.md5(b6).hexdigest(),
+        "month=2026-05/data.parquet": hashlib.md5(b"drop-me").hexdigest(),
+    }
     entry, changed, err = _sync_partitioned_table(
-        "issues", server, local, tmp_path,
-        _fetcher({"month=2026-07/data.parquet": b7}), "R", rows=2)
+        "issues", server, local, tmp_path, _fetcher({"month=2026-07/data.parquet": b7}), "R", rows=2
+    )
     assert err is None
     assert changed is True
     assert (tdir / "month=2026-06" / "data.parquet").read_bytes() == b6  # kept
     assert (tdir / "month=2026-07" / "data.parquet").read_bytes() == b7  # fetched
-    assert not (tdir / "month=2026-05" / "data.parquet").exists()        # pruned
+    assert not (tdir / "month=2026-05" / "data.parquet").exists()  # pruned
     assert set(entry["parts"]) == {"month=2026-06/data.parquet", "month=2026-07/data.parquet"}
 
 
@@ -138,8 +152,7 @@ def test_sync_partitioned_noop_reports_not_changed(tmp_path):
     server = [_sp("month=2026-06/data.parquet", b)]
     local = {"month=2026-06/data.parquet": hashlib.md5(b).hexdigest()}
 
-    entry, changed, err = _sync_partitioned_table(
-        "issues", server, local, tmp_path, _fetcher({}), "R", rows=1)
+    entry, changed, err = _sync_partitioned_table("issues", server, local, tmp_path, _fetcher({}), "R", rows=1)
     assert err is None
     assert changed is False
     assert entry is not None  # still returns the current state entry
@@ -158,8 +171,7 @@ def test_sync_partitioned_download_error_is_returned_not_raised(tmp_path):
     def boom(relpath, dest):
         raise ConnectionError("network blip")
 
-    entry, changed, err = _sync_partitioned_table(
-        "issues", server, {}, tmp_path, boom, "R", rows=1)
+    entry, changed, err = _sync_partitioned_table("issues", server, {}, tmp_path, boom, "R", rows=1)
     assert entry is None
     assert changed is False
     assert err is not None and "network blip" in err
@@ -172,13 +184,14 @@ def test_drop_stale_layout_removes_flat_when_now_partitioned(tmp_path):
     {tid}.parquet must be removed so the view build can't resurrect it
     (Devin re-review: layout-switch stale data)."""
     from cli.lib.pull import _drop_stale_layout
+
     (tmp_path / "issues.parquet").write_bytes(b"stale-single")
     (tmp_path / "issues" / "month=2026-06").mkdir(parents=True)
     (tmp_path / "issues" / "month=2026-06" / "data.parquet").write_bytes(b"new")
 
     _drop_stale_layout(tmp_path, "issues", partitioned=True)
 
-    assert not (tmp_path / "issues.parquet").exists()          # stale flat gone
+    assert not (tmp_path / "issues.parquet").exists()  # stale flat gone
     assert (tmp_path / "issues" / "month=2026-06" / "data.parquet").exists()  # dir kept
 
 
@@ -186,11 +199,12 @@ def test_drop_stale_layout_removes_dir_when_now_single_file(tmp_path):
     """A table that switched partitioned -> single-file: the stale {tid}/
     directory must be removed."""
     from cli.lib.pull import _drop_stale_layout
+
     (tmp_path / "issues" / "month=2026-06").mkdir(parents=True)
     (tmp_path / "issues" / "month=2026-06" / "data.parquet").write_bytes(b"stale-parts")
     (tmp_path / "issues.parquet").write_bytes(b"new-single")
 
     _drop_stale_layout(tmp_path, "issues", partitioned=False)
 
-    assert not (tmp_path / "issues").exists()                  # stale dir gone
+    assert not (tmp_path / "issues").exists()  # stale dir gone
     assert (tmp_path / "issues.parquet").read_bytes() == b"new-single"  # file kept

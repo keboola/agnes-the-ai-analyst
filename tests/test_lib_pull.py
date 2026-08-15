@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from cli.lib.pull import run_pull, PullResult
+from cli.lib.pull import PullResult, run_pull
 
 
 @pytest.fixture(autouse=True)
@@ -44,14 +44,12 @@ def test_run_pull_empty_manifest_no_parquet_dir(tmp_path, fake_server):
     result = run_pull(server_url="http://x", token="t", workspace=tmp_path)
     assert isinstance(result, PullResult)
     assert result.tables_updated == 0
-    assert not (tmp_path / "server" / "parquet").exists(), \
-        "lazy mkdir: empty manifest must not create server/parquet/"
+    assert not (tmp_path / "server" / "parquet").exists(), "lazy mkdir: empty manifest must not create server/parquet/"
 
 
 def test_run_pull_empty_memory_no_rules_dir(tmp_path, fake_server):
     run_pull(server_url="http://x", token="t", workspace=tmp_path)
-    assert not (tmp_path / ".claude" / "rules").exists(), \
-        "lazy mkdir: empty bundle must not create .claude/rules/"
+    assert not (tmp_path / ".claude" / "rules").exists(), "lazy mkdir: empty bundle must not create .claude/rules/"
 
 
 def test_run_pull_creates_duckdb_unconditionally(tmp_path, fake_server):
@@ -80,6 +78,7 @@ def test_run_pull_with_one_table(tmp_path, monkeypatch):
     def _stream_download(path, target_path, progress_callback=None):
         # Simulate writing parquet file to disk (caller has already mkdir'd).
         from pathlib import Path as _P
+
         _P(target_path).write_bytes(parquet_bytes)
         return len(parquet_bytes)
 
@@ -97,7 +96,8 @@ def test_run_pull_with_one_table(tmp_path, monkeypatch):
 
 
 def test_run_pull_redownloads_when_parquet_missing_despite_matching_hash(
-    tmp_path, monkeypatch,
+    tmp_path,
+    monkeypatch,
 ):
     """Regression: hash-equal-but-file-missing must re-download.
 
@@ -110,9 +110,7 @@ def test_run_pull_redownloads_when_parquet_missing_despite_matching_hash(
     would fail on a missing file. Now the existence check forces a
     re-download even when the hash equality says "you have this."
     """
-    canned_manifest = {
-        "tables": {"tbl1": {"hash": "abc", "rows": 0, "size_bytes": 0}}
-    }
+    canned_manifest = {"tables": {"tbl1": {"hash": "abc", "rows": 0, "size_bytes": 0}}}
     canned_memory = {"mandatory": [], "approved": []}
     parquet_bytes = b"PAR1" + b"\x00" * 1000 + b"PAR1"
 
@@ -130,6 +128,7 @@ def test_run_pull_redownloads_when_parquet_missing_despite_matching_hash(
 
     def _stream_download(path, target_path, progress_callback=None):
         from pathlib import Path as _P
+
         download_calls["count"] += 1
         _P(target_path).write_bytes(parquet_bytes)
         return len(parquet_bytes)
@@ -143,10 +142,13 @@ def test_run_pull_redownloads_when_parquet_missing_despite_matching_hash(
     # but DON'T put a parquet on disk. Pre-fix this combo would short-circuit
     # the download.
     from cli.config import save_sync_state
-    save_sync_state({
-        "tables": {"tbl1": {"hash": "abc", "rows": 0, "size_bytes": 0}},
-        "last_sync": "2026-01-01T00:00:00+00:00",
-    })
+
+    save_sync_state(
+        {
+            "tables": {"tbl1": {"hash": "abc", "rows": 0, "size_bytes": 0}},
+            "last_sync": "2026-01-01T00:00:00+00:00",
+        }
+    )
 
     target_parquet = tmp_path / "server" / "parquet" / "tbl1.parquet"
     assert not target_parquet.exists(), "fixture precondition: parquet absent"
@@ -154,22 +156,20 @@ def test_run_pull_redownloads_when_parquet_missing_despite_matching_hash(
     result = run_pull(server_url="http://x", token="t", workspace=tmp_path)
 
     assert download_calls["count"] == 1, (
-        "hash-equal-but-file-missing must trigger a re-download — "
-        f"got {download_calls['count']} download calls"
+        f"hash-equal-but-file-missing must trigger a re-download — got {download_calls['count']} download calls"
     )
     assert target_parquet.exists(), "parquet must be on disk after re-download"
     assert result.tables_updated == 1
 
 
 def test_run_pull_skips_download_when_hash_matches_and_file_present(
-    tmp_path, monkeypatch,
+    tmp_path,
+    monkeypatch,
 ):
     """Counterpart: when sync_state agrees with server AND the parquet
     actually exists, the download is correctly skipped — that's the
     fast-path the existence check must NOT regress."""
-    canned_manifest = {
-        "tables": {"tbl1": {"hash": "abc", "rows": 0, "size_bytes": 0}}
-    }
+    canned_manifest = {"tables": {"tbl1": {"hash": "abc", "rows": 0, "size_bytes": 0}}}
     canned_memory = {"mandatory": [], "approved": []}
 
     def _api_get(path, *args, **kwargs):
@@ -193,10 +193,13 @@ def test_run_pull_skips_download_when_hash_matches_and_file_present(
 
     # Seed both sync_state AND the parquet on disk.
     from cli.config import save_sync_state
-    save_sync_state({
-        "tables": {"tbl1": {"hash": "abc", "rows": 0, "size_bytes": 0}},
-        "last_sync": "2026-01-01T00:00:00+00:00",
-    })
+
+    save_sync_state(
+        {
+            "tables": {"tbl1": {"hash": "abc", "rows": 0, "size_bytes": 0}},
+            "last_sync": "2026-01-01T00:00:00+00:00",
+        }
+    )
     parquet_dir = tmp_path / "server" / "parquet"
     parquet_dir.mkdir(parents=True)
     (parquet_dir / "tbl1.parquet").write_bytes(b"PAR1" + b"\x00" * 100 + b"PAR1")
@@ -204,21 +207,19 @@ def test_run_pull_skips_download_when_hash_matches_and_file_present(
     result = run_pull(server_url="http://x", token="t", workspace=tmp_path)
 
     assert download_calls["count"] == 0, (
-        "hash equal AND file present must skip the download — "
-        f"got {download_calls['count']} unwanted downloads"
+        f"hash equal AND file present must skip the download — got {download_calls['count']} unwanted downloads"
     )
     assert result.tables_updated == 0
 
 
 def test_download_one_retries_on_hash_mismatch_then_succeeds(
-    tmp_path, monkeypatch,
+    tmp_path,
+    monkeypatch,
 ):
     """#596 (a): the first download yields md5 != manifest hash, the second
     yields the matching hash. `_download_one`'s bounded retry loop must
     re-download and land the parquet — tables_updated == 1, no error."""
-    canned_manifest = {
-        "tables": {"tbl1": {"hash": "good", "rows": 0, "size_bytes": 0}}
-    }
+    canned_manifest = {"tables": {"tbl1": {"hash": "good", "rows": 0, "size_bytes": 0}}}
     canned_memory = {"mandatory": [], "approved": []}
     parquet_bytes = b"PAR1" + b"\x00" * 1000 + b"PAR1"
 
@@ -236,6 +237,7 @@ def test_download_one_retries_on_hash_mismatch_then_succeeds(
 
     def _stream_download(path, target_path, progress_callback=None):
         from pathlib import Path as _P
+
         download_calls["count"] += 1
         _P(target_path).write_bytes(parquet_bytes)
         return len(parquet_bytes)
@@ -280,22 +282,20 @@ def test_textual_progress_reset_zeroes_failed_attempt_bytes():
     from cli.lib.pull import _TextualProgress
 
     tp = _TextualProgress(
-        stream=io.StringIO(), total_files=1, file_sizes={"tbl1": 100},
+        stream=io.StringIO(),
+        total_files=1,
+        file_sizes={"tbl1": 100},
     )
     tp.advance("tbl1", 100)  # attempt 0: full download, fails verification
-    tp.reset("tbl1")         # retry starts clean
+    tp.reset("tbl1")  # retry starts clean
     tp.advance("tbl1", 60)
-    assert tp._bytes["tbl1"] == 60, (
-        "retry bytes must not stack on top of the failed attempt's"
-    )
+    assert tp._bytes["tbl1"] == 60, "retry bytes must not stack on top of the failed attempt's"
 
 
 def test_download_retry_resets_progress_between_attempts(tmp_path, monkeypatch):
     """#626 review: the retry loop must invoke the progress reset before
     re-downloading, so each attempt reports at most the file's size."""
-    canned_manifest = {
-        "tables": {"tbl1": {"hash": "good", "rows": 0, "size_bytes": 1008}}
-    }
+    canned_manifest = {"tables": {"tbl1": {"hash": "good", "rows": 0, "size_bytes": 1008}}}
     canned_memory = {"mandatory": [], "approved": []}
     parquet_bytes = b"PAR1" + b"\x00" * 1000 + b"PAR1"
 
@@ -311,6 +311,7 @@ def test_download_retry_resets_progress_between_attempts(tmp_path, monkeypatch):
 
     def _stream_download(path, target_path, progress_callback=None):
         from pathlib import Path as _P
+
         if progress_callback is not None:
             progress_callback(len(parquet_bytes))
         _P(target_path).write_bytes(parquet_bytes)
@@ -339,10 +340,14 @@ def test_download_retry_resets_progress_between_attempts(tmp_path, monkeypatch):
 
     monkeypatch.setattr("cli.lib.pull.api_get", _api_get, raising=False)
     monkeypatch.setattr(
-        "cli.lib.pull.stream_download", _stream_download, raising=False,
+        "cli.lib.pull.stream_download",
+        _stream_download,
+        raising=False,
     )
     monkeypatch.setattr(
-        "cli.lib.pull._is_valid_parquet", lambda p: True, raising=False,
+        "cli.lib.pull._is_valid_parquet",
+        lambda p: True,
+        raising=False,
     )
     monkeypatch.setattr("cli.lib.pull._file_md5", _file_md5, raising=False)
     monkeypatch.setattr("cli.lib.pull.time.sleep", lambda s: None, raising=False)
@@ -350,23 +355,26 @@ def test_download_retry_resets_progress_between_attempts(tmp_path, monkeypatch):
     # _TextualProgress (pytest's captured stderr is already non-TTY, but
     # being explicit keeps the test honest under -s).
     import sys as _sys
+
     monkeypatch.setattr(_sys.stderr, "isatty", lambda: False)
     monkeypatch.setattr("cli.lib.pull._TextualProgress", _SpyTextual)
 
     result = run_pull(
-        server_url="http://x", token="t", workspace=tmp_path,
+        server_url="http://x",
+        token="t",
+        workspace=tmp_path,
         show_progress=True,
     )
 
     assert result.tables_updated == 1
     assert resets["count"] == 1, (
-        "exactly one retry happened, so the progress must be reset exactly "
-        f"once — got {resets['count']}"
+        f"exactly one retry happened, so the progress must be reset exactly once — got {resets['count']}"
     )
 
 
 def test_download_one_preserves_old_file_on_persistent_hash_mismatch(
-    tmp_path, monkeypatch,
+    tmp_path,
+    monkeypatch,
 ):
     """#596 (b): every download attempt yields a mismatching md5 AND a prior
     good `<tid>.parquet` is already on disk. After run_pull the OLD file must
@@ -382,14 +390,15 @@ def test_download_one_preserves_old_file_on_persistent_hash_mismatch(
     target = pq_dir / "tbl1.parquet"
     target.write_bytes(old_bytes)
     from cli.config import save_sync_state
-    save_sync_state({
-        "tables": {"tbl1": {"hash": "oldhash", "rows": 0, "size_bytes": 0}},
-        "last_sync": "2026-01-01T00:00:00+00:00",
-    })
 
-    canned_manifest = {
-        "tables": {"tbl1": {"hash": "serverhash", "rows": 0, "size_bytes": 0}}
-    }
+    save_sync_state(
+        {
+            "tables": {"tbl1": {"hash": "oldhash", "rows": 0, "size_bytes": 0}},
+            "last_sync": "2026-01-01T00:00:00+00:00",
+        }
+    )
+
+    canned_manifest = {"tables": {"tbl1": {"hash": "serverhash", "rows": 0, "size_bytes": 0}}}
     canned_memory = {"mandatory": [], "approved": []}
 
     def _api_get(path, *args, **kwargs):
@@ -405,9 +414,9 @@ def test_download_one_preserves_old_file_on_persistent_hash_mismatch(
     def _stream_download(path, target_path, progress_callback=None):
         # Always writes to the SIDECAR (the verify.tmp), never the real target.
         from pathlib import Path as _P
+
         assert target_path.endswith(".verify.tmp"), (
-            "download must land in the sidecar, not the live target — "
-            f"got {target_path}"
+            f"download must land in the sidecar, not the live target — got {target_path}"
         )
         _P(target_path).write_bytes(new_bytes)
         return len(new_bytes)
@@ -425,9 +434,7 @@ def test_download_one_preserves_old_file_on_persistent_hash_mismatch(
     assert target.read_bytes() == old_bytes, "prior good bytes must be intact (unchanged)"
     assert not (pq_dir / "tbl1.parquet.verify.tmp").exists(), "sidecar must be cleaned up"
     assert result.tables_updated == 0
-    assert any(e.get("table") == "tbl1" for e in result.errors), (
-        "persistent mismatch must be recorded in result.errors"
-    )
+    assert any(e.get("table") == "tbl1" for e in result.errors), "persistent mismatch must be recorded in result.errors"
 
 
 def test_download_one_legacy_no_hash_path_unchanged(tmp_path, monkeypatch):
@@ -453,6 +460,7 @@ def test_download_one_legacy_no_hash_path_unchanged(tmp_path, monkeypatch):
 
     def _stream_download(path, target_path, progress_callback=None):
         from pathlib import Path as _P
+
         _P(target_path).write_bytes(good)
         return len(good)
 
@@ -512,6 +520,7 @@ def _patch_pull_io(monkeypatch, manifest, *, download_calls=None):
     """Wire api_get (manifest + empty memory bundle) and a stream_download that
     writes real PAR1-bracketed bytes. _is_valid_parquet/_file_md5 are stubbed so
     hash verification passes for any entry whose hash is 'h'."""
+
     def _api_get(path, *args, **kwargs):
         resp = MagicMock()
         resp.status_code = 200
@@ -526,6 +535,7 @@ def _patch_pull_io(monkeypatch, manifest, *, download_calls=None):
 
     def _stream_download(path, target_path, progress_callback=None):
         from pathlib import Path as _P
+
         if download_calls is not None:
             download_calls.append(path)
         _P(target_path).write_bytes(_PARQUET)
@@ -547,11 +557,13 @@ def _seed_local_parquet(tmp_path, *names):
         (pq_dir / f"{n}.parquet").write_bytes(_PARQUET)
         tables[n] = {"hash": "h", "rows": 0, "size_bytes": 0}
     from cli.config import save_sync_state
+
     save_sync_state({"tables": tables, "last_sync": "2026-01-01T00:00:00+00:00"})
 
 
 def test_run_pull_prunes_local_parquet_when_table_leaves_typed_stack(
-    tmp_path, monkeypatch,
+    tmp_path,
+    monkeypatch,
 ):
     """tbl1 + tbl2 both previously downloaded; the manifest's flat `tables`
     still lists both (admin over-list) but data_packages[].tables[] lists ONLY
@@ -576,6 +588,7 @@ def test_run_pull_prunes_local_parquet_when_table_leaves_typed_stack(
     assert (pq_dir / "tbl1.parquet").exists(), "authorized tbl1 must remain"
 
     from cli.config import get_sync_state
+
     synced = get_sync_state()["tables"]
     assert "tbl1" in synced
     assert "tbl2" not in synced, "pruned table's sync_state row must be removed"
@@ -590,12 +603,11 @@ def test_run_pull_drops_duckdb_view_for_pruned_table(tmp_path, monkeypatch):
     # the surviving file (the fake PAR1-bracketed bytes used elsewhere are
     # structurally invalid and DuckDB would skip the view).
     import duckdb
+
     pq_dir = tmp_path / "server" / "parquet"
     for n in ("tbl1", "tbl2"):
         c = duckdb.connect()
-        c.execute(
-            f"COPY (SELECT 1 AS x) TO '{pq_dir / (n + '.parquet')}' (FORMAT PARQUET)"
-        )
+        c.execute(f"COPY (SELECT 1 AS x) TO '{pq_dir / (n + '.parquet')}' (FORMAT PARQUET)")
         c.close()
     manifest = {
         "tables": {
@@ -616,8 +628,7 @@ def test_run_pull_drops_duckdb_view_for_pruned_table(tmp_path, monkeypatch):
         views = {
             row[0]
             for row in conn.execute(
-                "SELECT table_name FROM information_schema.tables "
-                "WHERE table_type='VIEW'"
+                "SELECT table_name FROM information_schema.tables WHERE table_type='VIEW'"
             ).fetchall()
         }
     finally:
@@ -627,7 +638,8 @@ def test_run_pull_drops_duckdb_view_for_pruned_table(tmp_path, monkeypatch):
 
 
 def test_run_pull_download_set_ignores_admin_overlisted_flat_tables(
-    tmp_path, monkeypatch,
+    tmp_path,
+    monkeypatch,
 ):
     """The flat `tables` dict carries tbl_extra (admin god-mode over-list) that
     is absent from every typed section. It must never be downloaded, and no
@@ -648,15 +660,14 @@ def test_run_pull_download_set_ignores_admin_overlisted_flat_tables(
 
     pq_dir = tmp_path / "server" / "parquet"
     assert (pq_dir / "tbl_keep.parquet").exists()
-    assert not (pq_dir / "tbl_extra.parquet").exists(), \
-        "admin-overlisted flat table must not be downloaded"
-    assert not any("tbl_extra" in p for p in downloads), \
-        "no stream_download call may target tbl_extra"
+    assert not (pq_dir / "tbl_extra.parquet").exists(), "admin-overlisted flat table must not be downloaded"
+    assert not any("tbl_extra" in p for p in downloads), "no stream_download call may target tbl_extra"
     assert any("tbl_keep" in p for p in downloads)
 
 
 def test_run_pull_legacy_server_without_typed_sections_no_prune(
-    tmp_path, monkeypatch,
+    tmp_path,
+    monkeypatch,
 ):
     """Pre-v49 manifest: ONLY a flat `tables` dict, no typed keys. An on-disk
     parquet for a table absent from the flat dict must NOT be pruned (legacy
@@ -672,14 +683,14 @@ def test_run_pull_legacy_server_without_typed_sections_no_prune(
     result = run_pull(server_url="http://x", token="t", workspace=tmp_path)
 
     pq_dir = tmp_path / "server" / "parquet"
-    assert (pq_dir / "tbl_orphan.parquet").exists(), \
-        "pre-v49 fallback must not prune local parquets"
+    assert (pq_dir / "tbl_orphan.parquet").exists(), "pre-v49 fallback must not prune local parquets"
     assert (pq_dir / "tbl_flat.parquet").exists(), "flat-dict table still downloads"
     assert result.tables_removed == 0
 
 
 def test_run_pull_memory_domains_only_manifest_does_not_prune(
-    tmp_path, monkeypatch,
+    tmp_path,
+    monkeypatch,
 ):
     """#594 guard: a manifest carrying ONLY ``memory_domains`` (no
     ``data_packages`` / ``direct_tables``) must NOT build an empty authorized
@@ -698,10 +709,10 @@ def test_run_pull_memory_domains_only_manifest_does_not_prune(
     result = run_pull(server_url="http://x", token="t", workspace=tmp_path)
 
     pq_dir = tmp_path / "server" / "parquet"
-    assert (pq_dir / "tbl_existing.parquet").exists(), \
-        "memory_domains-only manifest must not prune a listed table"
-    assert (pq_dir / "tbl_orphan.parquet").exists(), \
+    assert (pq_dir / "tbl_existing.parquet").exists(), "memory_domains-only manifest must not prune a listed table"
+    assert (pq_dir / "tbl_orphan.parquet").exists(), (
         "#594: memory_domains-only manifest must not prune an on-disk orphan"
+    )
     assert result.tables_removed == 0
 
 
@@ -710,6 +721,7 @@ def test_run_pull_prune_preserves_user_base_table(tmp_path, monkeypatch):
     unlinks an orphaned parquet; no error is recorded for the base table."""
     # Pre-create a user BASE TABLE.
     import duckdb
+
     db = tmp_path / "user" / "duckdb" / "analytics.duckdb"
     db.parent.mkdir(parents=True, exist_ok=True)
     conn = duckdb.connect(str(db))
@@ -738,8 +750,7 @@ def test_run_pull_prune_preserves_user_base_table(tmp_path, monkeypatch):
         base_tables = {
             row[0]
             for row in conn.execute(
-                "SELECT table_name FROM information_schema.tables "
-                "WHERE table_type='BASE TABLE'"
+                "SELECT table_name FROM information_schema.tables WHERE table_type='BASE TABLE'"
             ).fetchall()
         }
         rows = conn.execute("SELECT x FROM my_scratch").fetchall()
@@ -747,6 +758,4 @@ def test_run_pull_prune_preserves_user_base_table(tmp_path, monkeypatch):
         conn.close()
     assert "my_scratch" in base_tables, "user BASE TABLE must survive prune"
     assert rows == [(1,)]
-    assert not any(
-        e.get("table") == "my_scratch" for e in result.errors
-    ), "no error recorded for the user base table"
+    assert not any(e.get("table") == "my_scratch" for e in result.errors), "no error recorded for the user base table"

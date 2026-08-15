@@ -5,6 +5,7 @@ the manifest's hash for that table. If the orchestrator stores a
 fingerprint (mtime+size) or a truncated MD5, every `agnes pull` of a
 Keboola local-mode table fails with `hash mismatch: expected … got …`.
 """
+
 import hashlib
 from unittest.mock import patch
 
@@ -25,8 +26,12 @@ def system_db_path(tmp_path):
     try:
         _ensure_schema(conn)
         TableRegistryRepository(conn).register(
-            id="orders", name="orders", source_type="keboola",
-            bucket="in.c-crm", source_table="orders", query_mode="local",
+            id="orders",
+            name="orders",
+            source_type="keboola",
+            bucket="in.c-crm",
+            source_table="orders",
+            query_mode="local",
             description="",
         )
     finally:
@@ -49,22 +54,23 @@ def parquet_with_known_md5(tmp_path):
 def _run_update(system_db_path, meta_rows, data_dir):
     """Helper: invoke `_update_sync_state` with `get_system_db` redirected
     at our test DB and `_get_extracts_dir` redirected at our temp tree."""
+
     def fake_get_system_db():
         return duckdb.connect(str(system_db_path))
 
     # The orchestrator now writes sync_state through the repo factory, which
     # binds get_system_db at src.repositories import time — patch both the
     # source and the factory's binding so the redirect takes effect.
-    with patch("src.db.get_system_db", side_effect=fake_get_system_db), \
-         patch("src.repositories.get_system_db", side_effect=fake_get_system_db), \
-         patch("src.orchestrator._get_extracts_dir", return_value=data_dir / "extracts"):
+    with (
+        patch("src.db.get_system_db", side_effect=fake_get_system_db),
+        patch("src.repositories.get_system_db", side_effect=fake_get_system_db),
+        patch("src.orchestrator._get_extracts_dir", return_value=data_dir / "extracts"),
+    ):
         orch = SyncOrchestrator.__new__(SyncOrchestrator)
         orch._update_sync_state(meta_rows=meta_rows, source_name="keboola")
 
 
-def test_update_sync_state_stores_content_md5(
-    system_db_path, parquet_with_known_md5, tmp_path
-):
+def test_update_sync_state_stores_content_md5(system_db_path, parquet_with_known_md5, tmp_path):
     """The hash written into sync_state must equal MD5 of the parquet's
     raw bytes, full 32 hex chars — same shape as the CLI's `_md5_file`."""
     pq_path, expected_md5 = parquet_with_known_md5
@@ -89,9 +95,7 @@ def test_update_sync_state_stores_content_md5(
     assert len(stored) == 32, "full hex MD5, not truncated"
 
 
-def test_update_sync_state_empty_hash_when_parquet_missing(
-    system_db_path, tmp_path
-):
+def test_update_sync_state_empty_hash_when_parquet_missing(system_db_path, tmp_path):
     """If the parquet isn't on disk (race / failed extract), store empty
     string rather than crashing or writing a stale hash."""
     (tmp_path / "extracts" / "keboola" / "data").mkdir(parents=True)
@@ -118,7 +122,7 @@ def test_update_sync_state_empty_hash_when_parquet_missing(
 # today (no single `{table}.parquet` for the single-file path to find).
 # ---------------------------------------------------------------------------
 
-from src.orchestrator import _hash_table_parts, _parts_rollup_hash  # noqa: E402
+from src.orchestrator import _hash_table_parts, _parts_rollup_hash
 
 
 def test_hash_table_parts_hive_layout(tmp_path):
@@ -194,9 +198,7 @@ def test_update_sync_state_stores_parts_for_partitioned_table(system_db_path, tm
     assert state["file_size_bytes"] == len(b)
 
 
-def test_update_sync_state_single_file_still_has_no_parts(
-    system_db_path, parquet_with_known_md5, tmp_path
-):
+def test_update_sync_state_single_file_still_has_no_parts(system_db_path, parquet_with_known_md5, tmp_path):
     """Backward-compat: a single-file table writes parts=None (NULL)."""
     pq_path, _ = parquet_with_known_md5
     _run_update(
