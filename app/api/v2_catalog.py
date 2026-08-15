@@ -279,6 +279,16 @@ def invalidate_for_table(table_id: str, *, _publish: bool = True) -> None:
 
     _table_rows_cache.clear()
     v2_schema._schema_cache.invalidate(table_id)
+    # A POLICIED table's schema is cached per caller identity, under
+    # `f"{table_id}|policy:{policy_cache_identity(...)!r}"` (table access
+    # policies §9) — keys the exact-key `invalidate` above can never match.
+    # Without this the caller kept the PRE-edit column list for the full
+    # hour of `_schema_cache`'s TTL after an admin hid a column, and
+    # `/api/v2/scan`'s where/select validator (same payload, via
+    # `_resolve_schema`) went on treating the hidden column as
+    # referenceable. The delimiter is part of the prefix so a table named
+    # `orders` doesn't evict `orders_archive`'s entries.
+    v2_schema._schema_cache.invalidate_prefix(f"{table_id}|")
     # Sample cache key is `f"{table_id}|{n}"`; clearing the whole sample
     # cache is heavier than precise invalidation, but registry-change
     # frequency (handful per day on a typical instance) doesn't justify
@@ -335,6 +345,28 @@ def build_catalog(conn: duckdb.DuckDBPyConnection, user: dict) -> dict:
         if not (allowed is None or r["id"] in allowed):
             continue
         hint = _hint_for_row(r, bq_cache_index)
+        # Table access policies (§11): `where_examples` / `partition_by` /
+        # `clustered_by` are column-NAME-shaped hints sourced from
+        # `hint["known_columns"]` — the UNFILTERED `bq_metadata_cache`, a
+        # scheduler read of the physical table, independent of any policy
+        # attached later. An EXCLUDE'd column could still surface here (a
+        # WHERE-clause suggestion, a partitioning hint) even though Task 9's
+        # effective_schema already hides it on every other schema surface.
+        #
+        # `allowed is None` mirrors `policied_relation`'s own admin-bypass
+        # check — `get_accessible_tables` applies the SAME
+        # `is_user_admin(...) and _credential_surface(...) == "all"` test
+        # (src/rbac.py) — so this reuses data already computed above rather
+        # than a second `policied_relation` resolve per row. Deliberately
+        # SUPPRESSION, not full effective-schema derivation: this module's
+        # own docstring states its design goal as never calling BQ / staying
+        # cheap per request for the whole (~100+ row) listing, and a live
+        # `policied_relation` + `effective_schema` DESCRIBE per
+        # policied-remote row would break that. Row count / size_bytes /
+        # entity_type stay unfiltered — same §10.1 aggregate-metadata
+        # precedent as the row-count badge (an unfiltered COUNT is
+        # accepted; column-shaped CONTENT is not).
+        policy_restricted = bool(r.get("access_policy_sql")) and allowed is not None
         visible.append(
             {
                 "id": r["id"],
@@ -349,9 +381,8 @@ def build_catalog(conn: duckdb.DuckDBPyConnection, user: dict) -> dict:
                 # free-text description.
                 "server_only": bool(r.get("server_only")),
                 "sql_flavor": _flavor_for(r.get("source_type") or ""),
-                "where_examples": _examples_for(
-                    r.get("source_type") or "",
-                    hint.get("known_columns"),
+                "where_examples": (
+                    [] if policy_restricted else _examples_for(r.get("source_type") or "", hint.get("known_columns"))
                 ),
                 "fetch_via": _fetch_hint(
                     r["id"],
@@ -361,8 +392,8 @@ def build_catalog(conn: duckdb.DuckDBPyConnection, user: dict) -> dict:
                 "rough_size_hint": hint.get("rough_size_hint"),
                 "rows": hint.get("rows"),
                 "size_bytes": hint.get("size_bytes"),
-                "partition_by": hint.get("partition_by"),
-                "clustered_by": hint.get("clustered_by") or [],
+                "partition_by": None if policy_restricted else hint.get("partition_by"),
+                "clustered_by": [] if policy_restricted else (hint.get("clustered_by") or []),
                 "entity_type": hint.get("entity_type"),
                 "metadata_freshness": hint.get("metadata_freshness"),
             }

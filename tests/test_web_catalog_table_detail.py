@@ -166,3 +166,101 @@ class TestCatalogTableDetail:
         # still renders (degraded, empty parent_packages) → 200 (not 500).
         resp = c.get(f"/catalog/t/{table_id}", headers=_auth(seeded_app["admin_token"]))
         assert resp.status_code == 200
+
+
+# ── table access policies (design doc §11; plan Task 13) ───────────────────
+#
+# Pre-fix, this route leaked in two ways: (a) the profile-derived column
+# list (`profile_repo().get(table_id)["columns"]`) is UNFILTERED raw schema
+# — computed once at sync time, independent of any policy attached later —
+# so a non-admin saw an EXCLUDE'd column's NAME in "What's inside"; (b) the
+# schema FALLBACK (when no profile row exists) called `build_schema_uncached`
+# directly, which by its own docstring skips both RBAC and the Task 9
+# effective-schema override. Both are closed by one `effective_schema(...)`
+# filter applied after either source populates `columns`.
+
+
+def _seed_profile(table_id: str, columns: list[dict]) -> None:
+    from src.db import get_system_db
+    from src.repositories.profiles import ProfileRepository
+
+    conn = get_system_db()
+    try:
+        ProfileRepository(conn).save(table_id, {"columns": columns, "row_count": 999})
+    finally:
+        conn.close()
+
+
+# Reused fixture: a `server_only` "invoices" table carrying the design doc's
+# canonical `SELECT * EXCLUDE (national_id), md5(email) AS email FROM invoices
+# WHERE list_contains($user_groups, cost_center)` policy, plus a non-policied
+# "products" sibling, `finance_user`/`finance_token` granted both via a data
+# package (satisfying this route's OWN package-grant RBAC gate, not just the
+# stack check the resolver uses).
+from tests.test_access_policy_effective_schema import policied_invoices  # noqa: F401,E402
+
+
+class TestCatalogTableDetailAccessPolicy:
+    """The "What's inside" columns section only renders in the redesign
+    template (``catalog_table_detail.html``, rail layout / paper theme) —
+    the frozen legacy template dropped that section entirely (see its own
+    comment, "PATCH endpoint + columns query still exist for tools that
+    read direct API callers"). ``AGNES_UI_LAYOUT=rail`` forces the redesign
+    template so these tests exercise real rendered markup rather than
+    asserting against a section the default chrome never shows at all.
+    """
+
+    def test_non_admin_hides_excluded_column_from_profile_derived_list(self, policied_invoices, monkeypatch):  # noqa: F811
+        """(a) — the common real-world case: a stored `table_profiles` row
+        exists (every synced table gets one), so the profile-derived branch
+        runs, not the schema fallback. Pre-fix this rendered `national_id`
+        unconditionally; the sample values ("N-1"/"N-2") were never rendered
+        even pre-fix (this route only ever extracted name/type/nullable),
+        so their absence is a defensive regression guard, not a pre/post-fix
+        delta by itself — the column NAME's absence is the real assertion.
+        """
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        _seed_profile(
+            "invoices",
+            [
+                {"name": "id", "type": "VARCHAR", "nullable": True, "sample_values": ["1", "2"]},
+                {"name": "national_id", "type": "VARCHAR", "nullable": True, "sample_values": ["N-1", "N-2"]},
+                {"name": "cost_center", "type": "VARCHAR", "nullable": True, "sample_values": ["Finance"]},
+                {"name": "amount", "type": "VARCHAR", "nullable": True, "sample_values": ["100"]},
+            ],
+        )
+        c = policied_invoices["client"]
+        resp = c.get("/catalog/t/invoices", headers=_auth(policied_invoices["finance_token"]))
+        assert resp.status_code == 200, resp.text
+        assert "national_id" not in resp.text
+        assert "N-1" not in resp.text
+        # A confirmed-visible column must still render — proves the whole
+        # section wasn't just blanked out.
+        assert "cost_center" in resp.text
+
+    def test_admin_still_sees_the_excluded_column(self, policied_invoices, monkeypatch):  # noqa: F811
+        """Admin/no-policy unchanged (§12) — the raw column list stays
+        authoritative for an admin caller."""
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        _seed_profile(
+            "invoices",
+            [
+                {"name": "id", "type": "VARCHAR", "nullable": True},
+                {"name": "national_id", "type": "VARCHAR", "nullable": True},
+                {"name": "cost_center", "type": "VARCHAR", "nullable": True},
+            ],
+        )
+        c = policied_invoices["client"]
+        resp = c.get("/catalog/t/invoices", headers=_auth(policied_invoices["admin_token"]))
+        assert resp.status_code == 200, resp.text
+        assert "national_id" in resp.text
+
+    def test_non_policied_sibling_is_unaffected(self, policied_invoices, monkeypatch):  # noqa: F811
+        """The inert case: a table with no access_policy_sql renders exactly
+        as before — no effective_schema call, no filtering."""
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        _seed_profile("products", [{"name": "id", "type": "VARCHAR"}, {"name": "sku", "type": "VARCHAR"}])
+        c = policied_invoices["client"]
+        resp = c.get("/catalog/t/products", headers=_auth(policied_invoices["finance_token"]))
+        assert resp.status_code == 200, resp.text
+        assert "sku" in resp.text

@@ -1,6 +1,7 @@
 """POST /api/v2/scan and POST /api/v2/scan/estimate (spec §3.4 + §3.5)."""
 
 from __future__ import annotations
+import json
 import logging
 import re
 import time
@@ -17,6 +18,15 @@ from src.db import _open_duckdb
 from app.instance_config import get_value
 from src.audit_helpers import identity_for_audit, client_kind_from_user
 from src.rbac import can_access_table
+from src.access_policy import (
+    PolicyError,
+    PolicyIdentityUnresolvable,
+    assert_unique_output_columns,
+    policied_from_sql,
+    policied_relation,
+    policy_fingerprint,
+    row_scope_payload,
+)
 from app.api.where_validator import (
     safe_where_predicate,
     WhereValidationError,
@@ -202,6 +212,13 @@ def _build_bq_sql(
 
     select_sql = ", ".join(f"`{c}`" for c in req.select) if req.select else "*"
     table_ref = f"`{project_id}.{bucket}.{src_table}`"
+    # Task 10/13: BigQuery policy enforcement is not wired into this SQL
+    # builder itself yet — it still builds the raw, unfiltered query (used
+    # by both `estimate()` and `run_scan()`). `estimate()` never returns row
+    # content (a byte/row/cost NUMBER only), so it stays as-is; `run_scan()`
+    # guards its OWN call site (see the Task 13 comment there) so a policied
+    # table's non-admin caller never reaches this builder in the first
+    # place.
     sql = f"SELECT {select_sql} FROM {table_ref}"
     if safe_where:
         sql += f" WHERE {safe_where}"
@@ -441,13 +458,23 @@ def run_scan(
             raise ValueError("from_query is mutually exclusive with select/where/order_by/limit")
         from app.api.query import run_remote_select_to_arrow
 
+        # Task 11 (§10): `policy_info` reports back which tables (if any)
+        # this raw SELECT touched a policy on -- `run_remote_select_to_arrow`
+        # has no response envelope of its own to carry it. Folded into the
+        # caller's own `job_info` so `scan_endpoint` builds the
+        # `X-Agnes-Row-Scope` header the same way for both branches of
+        # `run_scan`.
+        policy_info: dict = {}
         table = run_remote_select_to_arrow(
             conn,
             user,
             raw_request["from_query"],
             bq=bq,
             quota=quota,
+            policy_info=policy_info,
         )
+        if job_info is not None and policy_info.get("policied_table_ids"):
+            job_info["policied_table_ids"] = policy_info["policied_table_ids"]
         return arrow_to_ipc_bytes_capped(table, _max_result_bytes())
 
     req = ScanRequest(**raw_request)
@@ -506,10 +533,58 @@ def run_scan(
             parquet = resolve_local_parquet_glob(req.table_id, source_type)
             if parquet is None:
                 raise FileNotFoundError(req.table_id)
+
+            # Table access policies (§5): this connection is a throwaway
+            # :memory: DB with nothing but the parquet attached — no
+            # analytics catalog, so the policy body's own `FROM <name>` has
+            # nothing to bind against unless we wrap it. The inert (not
+            # policied) branch below stays byte-identical to the
+            # pre-existing code.
+            try:
+                relation = policied_relation(req.table_id, user)
+            except PolicyIdentityUnresolvable:
+                raise HTTPException(status_code=403, detail={"reason": "policy_identity_unresolvable"})
+            except PolicyError as exc:
+                raise HTTPException(status_code=500, detail={"reason": "policy_error", "table": exc.table_id})
+            # Task 11 (§10): report through job_info, the same out-param
+            # _run_bq_scan already uses for BQ job metadata, so scan_endpoint
+            # builds the X-Agnes-Row-Scope header from one place regardless
+            # of which branch of run_scan actually ran.
+            if relation.policied and job_info is not None:
+                job_info["policied_table_ids"] = [relation.table_id]
+
             local = _open_duckdb(":memory:")
             try:
                 projection = ", ".join(quote_ident(c) for c in req.select) if req.select else "*"
-                sql = f"SELECT {projection} FROM {LOCAL_PARQUET_READ_EXPR}"
+                if relation.policied:
+                    # The parquet path is server-resolved, never user
+                    # input, so it is safe to splice as an escaped literal
+                    # — it must NOT be a `?` placeholder: the policy binds
+                    # named `$user_*` parameters, and DuckDB refuses to mix
+                    # positional and named parameters in one statement.
+                    escaped_parquet = parquet.replace("'", "''")
+                    from_sql = policied_from_sql(
+                        relation,
+                        table_name=row["name"],
+                        source_sql=f"read_parquet('{escaped_parquet}', union_by_name=true, hive_partitioning=true)",
+                    )
+                    # Read-path guard (§17): a masking policy that re-derives a
+                    # column `*` still emits yields duplicate output names and
+                    # leaks the plaintext copy. DESCRIBE the policy relation
+                    # ITSELF (not the outer `SELECT * FROM (...)`, whose binder
+                    # silently renames the second dup to `_1`, hiding it).
+                    try:
+                        _out_cols = [
+                            r[0] for r in local.execute(f"DESCRIBE {from_sql}", dict(relation.params)).fetchall()
+                        ]
+                        assert_unique_output_columns(_out_cols, relation.table_id)
+                    except PolicyError as exc:
+                        raise HTTPException(status_code=500, detail={"reason": "policy_error", "table": exc.table_id})
+                    sql = f"SELECT {projection} FROM {from_sql}"
+                    bind_params: dict | list = dict(relation.params)
+                else:
+                    sql = f"SELECT {projection} FROM {LOCAL_PARQUET_READ_EXPR}"
+                    bind_params = [parquet]
                 if safe_where:
                     sql += f" WHERE {safe_where}"
                 if req.order_by:
@@ -517,7 +592,7 @@ def run_scan(
                 if req.limit:
                     sql += f" LIMIT {int(req.limit)}"
                 try:
-                    table = local.execute(sql, [parquet]).arrow()
+                    table = local.execute(sql, bind_params).arrow()
                 except duckdb.InvalidInputException:
                     # Corrupt/unreadable parquet ("No magic bytes found…").
                     # duckdb files it under ProgrammingError, but it is an
@@ -539,6 +614,36 @@ def run_scan(
             finally:
                 local.close()
         else:
+            if bool(row.get("access_policy_sql")):
+                # Task 13 (§8 ratchet): this branch pushes the scan straight
+                # to BigQuery via `_build_bq_sql`/`_run_bq_scan` -- Task 10
+                # only wired `policied_relation(dialect="bigquery")` into
+                # `/api/query`'s AST-rewrite path, never into this
+                # table_id-shaped surface's live-BQ branch (`_build_bq_sql`'s
+                # own comment already flagged this), so unguarded it would
+                # hand back the RAW, unfiltered physical table -- select/
+                # where/order_by are validated against the (COVERED)
+                # effective schema above, but that only stops REQUESTING an
+                # EXCLUDE'd column by name, not ROW filtering, and an
+                # implicit `SELECT *` would still return every column. Fail
+                # closed (§17) exactly like the local-parquet branch's own
+                # `policied_relation` failure handling just above. Admin
+                # bypass preserved via `policied_relation` itself, not a
+                # bare `access_policy_sql` check.
+                #
+                # TODO(follow-up): same as `app/api/v2_sample.py`'s BQ
+                # branch -- wire via `policied_relation(dialect="bigquery")`
+                # + the BQ jobs API (`run_bq_query_to_arrow`) instead of the
+                # `_run_bq_scan` push-down, once this endpoint's cost/quota/
+                # label semantics are worked out for that execution path.
+                try:
+                    bq_relation = policied_relation(req.table_id, user)
+                except PolicyIdentityUnresolvable:
+                    raise HTTPException(status_code=403, detail={"reason": "policy_identity_unresolvable"})
+                except PolicyError as exc:
+                    raise HTTPException(status_code=500, detail={"reason": "policy_error", "table": exc.table_id})
+                if bq_relation.policied:
+                    raise HTTPException(status_code=500, detail={"reason": "policy_error", "table": req.table_id})
             bq_sql = _build_bq_sql(row, bq.projects.data, req, safe_where=safe_where)
             table, bq_job_info = _run_bq_scan(bq, bq_sql, user=user)
             if job_info is not None:
@@ -597,7 +702,60 @@ def scan_endpoint(
             )
         except Exception:
             logger.exception("audit_log write failed for snapshot.create; continuing")
-        return Response(content=ipc, media_type=CONTENT_TYPE)
+        # Task 11 (§10): this endpoint returns raw Arrow IPC bytes -- no JSON
+        # body to carry `row_scope` -- so disclose via a response header
+        # instead, built from whichever branch of `run_scan` populated
+        # `job_info["policied_table_ids"]`. `json.dumps` default
+        # `ensure_ascii=True` keeps the em dash in the note ASCII/Latin-1
+        # safe, which raw HTTP header encoding requires (Starlette encodes
+        # header values as latin-1).
+        response_headers: dict[str, str] = {}
+        policied_ids = job_info.get("policied_table_ids")
+        row_scope = row_scope_payload(policied_ids)
+        if row_scope is not None:
+            response_headers["X-Agnes-Row-Scope"] = json.dumps(row_scope)
+        # Table access policies §3.4/§10.3 (plan Task 18): the snapshot
+        # policy fingerprint -- present only when the read touched EXACTLY
+        # one policied table, mirroring `SnapshotMeta.table_id`'s own
+        # single-table shape. A `from_query` scan that joined two-or-more
+        # policied tables has no single well-defined fingerprint to stamp
+        # -- a documented gap, not a silent one: `agnes pull` simply has
+        # nothing to compare for that snapshot and never blocks it on
+        # policy drift.
+        #
+        # `X-Agnes-Policy-Table-Id` names WHICH table that fingerprint
+        # belongs to, and is what makes the fingerprint usable at all on
+        # the `from_query` branch: `SnapshotMeta.table_id` is the snapshot
+        # NAME the caller passed positionally there (`agnes snapshot create
+        # <name> --from-query …`, and every `agnes query --remote
+        # --auto-snapshot`), never a registry id, so `agnes pull` has
+        # nothing to look the current fingerprint up by. Without it the
+        # manifest lookup resolves to None on every pull, `None != <hash>`
+        # reads as "stale", and the snapshot is withheld permanently with
+        # no recovery. Sent together with the fingerprint whenever the id
+        # is header-safe: a registry id is derived from the table name and
+        # is not charset-restricted, and Starlette encodes raw header
+        # values as latin-1, so an id outside that range would 500 the
+        # whole response. `X-Agnes-Row-Scope` above sidesteps the same
+        # hazard via `json.dumps`' ASCII escaping; here the header is a
+        # bare id by design, so skip it instead -- the puller then falls
+        # back to `SnapshotMeta.table_id` exactly as it did before this
+        # header existed, which never blocks a snapshot it cannot resolve.
+        if policied_ids and len(policied_ids) == 1:
+            fingerprint = policy_fingerprint(policied_ids[0], user)
+            if fingerprint:
+                response_headers["X-Agnes-Policy-Fingerprint"] = fingerprint
+                policied_id = str(policied_ids[0])
+                try:
+                    policied_id.encode("latin-1")
+                except UnicodeEncodeError:
+                    logger.warning(
+                        "policy table id %r is not header-safe; omitting X-Agnes-Policy-Table-Id",
+                        policied_id,
+                    )
+                else:
+                    response_headers["X-Agnes-Policy-Table-Id"] = policied_id
+        return Response(content=ipc, media_type=CONTENT_TYPE, headers=response_headers or None)
     except HTTPException as exc:
         # `run_remote_select_to_arrow` (from_query mode, #616) raises
         # HTTPException directly for RBAC / SELECT-only / registry

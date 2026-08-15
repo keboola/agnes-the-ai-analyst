@@ -143,8 +143,8 @@ def test_real_fetch_prints_warning_but_still_succeeds(tmp_path, monkeypatch):
     _prep_local_db(tmp_path)
 
     with patch(
-        "cli.commands.snapshot.api_post_arrow",
-        side_effect=lambda p, payload: pa.table({"x": [1]}),
+        "cli.commands.snapshot.api_post_arrow_with_headers",
+        side_effect=lambda p, payload: (pa.table({"x": [1]}), {}),
     ):
         result = CliRunner().invoke(snapshot_app, ["create", "big_remote", "--as", "s1", "--no-estimate"])
 
@@ -168,8 +168,8 @@ def test_auto_snapshot_from_query_path_is_silent(tmp_path, monkeypatch):
     _prep_local_db(tmp_path)
 
     with patch(
-        "cli.commands.snapshot.api_post_arrow",
-        side_effect=lambda p, payload: pa.table({"x": [1]}),
+        "cli.commands.snapshot.api_post_arrow_with_headers",
+        side_effect=lambda p, payload: (pa.table({"x": [1]}), {}),
     ):
         result = CliRunner().invoke(
             snapshot_app,
