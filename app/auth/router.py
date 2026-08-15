@@ -13,6 +13,7 @@ from argon2.exceptions import VerifyMismatchError
 from app.auth.jwt import create_access_token
 from app.auth.access import is_user_admin
 from app.auth.dependencies import _get_db, get_current_user
+from app.auth.provider_registry import require_provider
 from app.auth.rate_limit import limiter as _rate_limiter
 from src.db import SYSTEM_ADMIN_GROUP
 
@@ -67,14 +68,27 @@ def _audit(user_id: str, action: str, result: str | None = None) -> None:
         pass  # Audit failure must not block auth
 
 
-@router.post("/token", response_model=TokenResponse)
+@router.post(
+    "/token",
+    response_model=TokenResponse,
+    dependencies=[Depends(require_provider("password"))],
+)
 @_rate_limiter.limit("10/minute")
 async def create_token(
     request: Request,
     body: TokenRequest,
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Issue a JWT token. Requires password authentication."""
+    """Issue a JWT token. Requires password authentication.
+
+    Gated by the ``password`` provider allowlist entry (route-level
+    ``Depends`` rather than an inline check) — the body is a JSON Pydantic
+    model, and FastAPI resolves body validation together with dependencies
+    in ``solve_dependencies()``; an inline guard as the first line of the
+    function never runs when the body fails to parse (e.g. a form-encoded
+    POST), so an excluded provider would 422 instead of 404. The
+    dependency raises before body validation gets a chance to.
+    """
     repo = users_repo()
     user = repo.get_by_email(body.email)
     if not user:

@@ -65,7 +65,7 @@ from pydantic import BaseModel
 from sqlalchemy import exc as sa_exc
 
 from app.auth.access import can_access, is_user_admin, require_admin
-from app.auth.dependencies import _get_db, get_current_user
+from app.auth.dependencies import _get_db, get_current_user, reject_keboola_header_credential
 from app.auth.jwt import create_access_token
 from app.auth.pat_resolver import DATA_APP_PREVIEW_SCOPE_PREFIX
 from app.instance_config import feature_enabled, get_data_apps_config, get_public_url
@@ -1129,7 +1129,7 @@ async def set_data_app_description(
     return _serialize(_get_row_or_404(slug))
 
 
-@router.post("", status_code=201)
+@router.post("", status_code=201, dependencies=[Depends(reject_keboola_header_credential)])
 async def create_data_app(
     payload: CreateDataAppRequest,
     user: dict = Depends(get_current_user),
@@ -1220,7 +1220,7 @@ async def get_data_app(slug: str, user: dict = Depends(get_current_user)):
     return out
 
 
-@router.post("/{slug}/deploy")
+@router.post("/{slug}/deploy", dependencies=[Depends(reject_keboola_header_credential)])
 async def deploy_data_app(
     slug: str,
     payload: DeployRequest,
@@ -1287,7 +1287,7 @@ async def deploy_data_app(
         release_op_lease(slug, holder)
 
 
-@router.post("/{slug}/git-credential")
+@router.post("/{slug}/git-credential", dependencies=[Depends(reject_keboola_header_credential)])
 async def mint_git_credential(
     slug: str,
     user: dict = Depends(get_current_user),
@@ -1307,7 +1307,7 @@ async def mint_git_credential(
     return {"git_clone_url": url}
 
 
-@router.post("/{slug}/preview-grant")
+@router.post("/{slug}/preview-grant", dependencies=[Depends(reject_keboola_header_credential)])
 async def create_preview_grant(
     slug: str,
     user: dict = Depends(get_current_user),
@@ -1353,7 +1353,7 @@ async def create_preview_grant(
     return resp
 
 
-@router.post("/{slug}/drafts", status_code=201)
+@router.post("/{slug}/drafts", status_code=201, dependencies=[Depends(reject_keboola_header_credential)])
 async def create_draft(
     slug: str,
     payload: CreateDraftRequest,

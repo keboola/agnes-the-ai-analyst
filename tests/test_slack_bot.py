@@ -121,6 +121,33 @@ def test_slack_sink_forwards_assistant_message(monkeypatch):
     assert sent == [("D1", "1.1", "hello")]
 
 
+def test_slack_sink_strips_both_wire_trailers(monkeypatch):
+    """The sandbox prompt mandates two machine-readable trailers on every
+    answer — ```sources (chips on the web) and ```next_actions (one-click
+    buttons on the web). Slack renders neither, so a reply must carry
+    neither: it would just be a fenced block of wire format under every
+    answer."""
+    import asyncio
+    from services.slack_bot import sink as sink_mod
+
+    sent: list[tuple[str, str, str]] = []
+
+    async def fake_send(ch, ts, text):
+        sent.append((ch, ts, text))
+
+    monkeypatch.setattr(sink_mod, "send_thread_reply", fake_send)
+
+    content = "Revenue was 4.2M.\n\n```sources\ntable: orders\n```\n\n```next_actions\n- Break it down by country\n```"
+
+    async def _run():
+        bridge = sink_mod.SlackSinkBridge(channel="D1", thread_ts="1.1")
+        await bridge.send_json({"type": "assistant_message", "content": content})
+        await bridge.close()
+
+    asyncio.run(_run())
+    assert sent == [("D1", "1.1", "Revenue was 4.2M.")]
+
+
 def test_slack_sink_nudges_to_the_web_for_an_unattended_approval(monkeypatch):
     """Slack renders no approve/deny card, so an unattended approval_request
     posts the reason plus the Continue-on-web button — otherwise the turn
@@ -247,10 +274,9 @@ def _build_slack_app_state():
     `list_live()`, `create_session()`, `attach()`, `send_user_message()`.
     """
     from types import SimpleNamespace
-    from unittest.mock import AsyncMock
 
     from app.chat.persistence import ChatRepository
-    from app.chat.types import ChatSession, Surface
+    from app.chat.types import ChatSession
     from datetime import datetime, timezone
 
     conn = get_system_db()
@@ -647,7 +673,7 @@ class _FakeMgr:
         return self._live
 
     async def create_session(self, **kw):
-        from app.chat.types import ChatSession, Surface
+        from app.chat.types import ChatSession
         from datetime import datetime
 
         sess = ChatSession(

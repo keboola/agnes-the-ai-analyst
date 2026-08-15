@@ -155,6 +155,23 @@ class TestEmailAuth:
         assert resp.status_code == 200
         assert "If this email" in resp.json()["message"]
 
+    def test_send_link_web_registered(self, client, monkeypatch):
+        """Web-form variant renders the 'check your email' page (the door
+        that /login/email now points at) instead of JSON. The POST refuses
+        without a mail transport (is_available reads env per call), so one
+        is configured here; no email is ever sent."""
+        monkeypatch.setenv("SMTP_HOST", "smtp.test.invalid")
+        resp = client.post("/auth/email/send-link/web", data={"email": "ml@test.com"})
+        assert resp.status_code == 200
+        assert "Check Your Email" in resp.text
+
+    def test_send_link_web_unregistered(self, client, monkeypatch):
+        """Anti-enumeration: an unknown email gets the identical sent page."""
+        monkeypatch.setenv("SMTP_HOST", "smtp.test.invalid")
+        resp = client.post("/auth/email/send-link/web", data={"email": "nobody@test.com"})
+        assert resp.status_code == 200
+        assert "Check Your Email" in resp.text
+
     def test_verify_invalid_token(self, client):
         resp = client.post(
             "/auth/email/verify",
@@ -682,6 +699,50 @@ class TestGoogleCallbackGroupSync:
             ]
         finally:
             conn.close()
+
+
+class TestMagicLinkNextRedirect:
+    """The click-through verify lands the user on the page they originally
+    asked for (?next), sanitized — not always the home route (Devin #1288)."""
+
+    def _seed(self, email, user_id, token):
+        from datetime import datetime, timezone
+        from src.db import get_system_db
+        from src.repositories.users import UserRepository
+
+        conn = get_system_db()
+        repo = UserRepository(conn)
+        repo.create(id=user_id, email=email, name="Next User")
+        repo.update(id=user_id, reset_token=hash_token(token), reset_token_created=datetime.now(timezone.utc))
+        conn.close()
+
+    def test_verify_redirects_to_sanitized_next(self, client):
+        self._seed("next-good@test.com", "next-good", "tok-next-good")
+        resp = client.get(
+            "/auth/email/verify?email=next-good@test.com&token=tok-next-good&next=/catalog",
+            follow_redirects=False,
+        )
+        assert resp.status_code == 302
+        assert resp.headers["location"] == "/catalog"
+
+    def test_verify_rejects_open_redirect_next(self, client):
+        self._seed("next-evil@test.com", "next-evil", "tok-next-evil")
+        resp = client.get(
+            "/auth/email/verify?email=next-evil@test.com&token=tok-next-evil&next=//evil.example/",
+            follow_redirects=False,
+        )
+        assert resp.status_code == 302
+        # Falls back to the home route; the hostile host never appears.
+        assert "evil.example" not in resp.headers["location"]
+
+    def test_verify_without_next_lands_on_home(self, client):
+        self._seed("next-none@test.com", "next-none", "tok-next-none")
+        resp = client.get(
+            "/auth/email/verify?email=next-none@test.com&token=tok-next-none",
+            follow_redirects=False,
+        )
+        assert resp.status_code == 302
+        assert resp.headers["location"].startswith("/")
 
 
 class TestEmailMagicLinkTTL:

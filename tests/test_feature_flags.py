@@ -98,6 +98,7 @@ class TestFeatureFlagsRegistry:
             "mcp_source_url_strict",
             "mcp_connector_ui",
             "agent_profiles",
+            "keboola_token_header",
         }
 
     def test_every_entry_resolves(self, monkeypatch):
@@ -242,6 +243,7 @@ class TestServerConfigFeatureFlagsInventory:
             "mcp_source_url_strict",
             "mcp_connector_ui",
             "agent_profiles",
+            "keboola_token_header",
         }
         # The experience preset leads as a string-valued informational row.
         assert flags[0]["name"] == "instance.experience"

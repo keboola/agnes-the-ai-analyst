@@ -65,7 +65,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from app.auth.dependencies import _get_db, get_current_user
+from app.auth.dependencies import _get_db, get_current_user, reject_keboola_header_credential
 from app.auth.jwt import create_access_token
 from src.repositories import (
     access_token_repo,
@@ -1415,7 +1415,11 @@ class SetupTokenItem(BaseModel):
 # (PR #188 convention; pinned by tests/test_event_loop_offload_guard.py).
 
 
-@user_router.post("/cowork-bundle", status_code=200)
+@user_router.post(
+    "/cowork-bundle",
+    status_code=200,
+    dependencies=[Depends(reject_keboola_header_credential)],
+)
 def generate_bundle(
     request: Request,
     user: dict = Depends(get_current_user),
