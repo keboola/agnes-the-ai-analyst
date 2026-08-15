@@ -67,6 +67,8 @@ Working on the Agnes codebase.
 - [`testing/`](testing/) — test plans (clean-analyst bootstrap, VM test)
 - [`marketplace.md`](marketplace.md) — Claude Code marketplace ingestion + re-serving internals
 - [`global-distribution.md`](global-distribution.md) — Agnes skills + data in every repository (user-scope layer, remote MCP, fleet managed settings)
+- [`superpowers/specs/2026-08-15-agnes-desktop-agent-cockpit-prd.md`](superpowers/specs/2026-08-15-agnes-desktop-agent-cockpit-prd.md) — PRD: developer-first desktop cockpit, agent-as-code, inspectable runs, and managed local sandbox
+- [`superpowers/plans/2026-08-15-macos-desktop-mvp-v2.md`](superpowers/plans/2026-08-15-macos-desktop-mvp-v2.md) — implementation plan: CLI-backed Agent Runs cockpit, structured AG-UI inspection, and request-scoped process lifecycle
 - [`superpowers/specs/2026-07-21-agent-profiles-and-agent-api-design.md`](superpowers/specs/2026-07-21-agent-profiles-and-agent-api-design.md) — design: agent profiles + agent-as-API (sessions, memory, webhooks, budgets)
 - [`superpowers/specs/2026-07-21-data-apps-design.md`](superpowers/specs/2026-07-21-data-apps-design.md) — design: hosted data apps (push-to-deploy, apps-runner sidecar)
 - [`STORE_GUARDRAILS.md`](STORE_GUARDRAILS.md) — flea-market upload guardrails (static checks + LLM review)

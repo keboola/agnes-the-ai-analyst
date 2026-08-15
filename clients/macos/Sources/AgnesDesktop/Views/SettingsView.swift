@@ -65,7 +65,7 @@ struct SettingsView: View {
           Task { await model.refreshMarketplace() }
         }
         .buttonStyle(AgnesPrimaryButtonStyle())
-        .disabled(model.hasActiveCLICommand)
+        .disabled(model.hasActiveMarketplaceCommand)
       }
 
       if let path = model.resolvedExecutablePath {
@@ -109,7 +109,7 @@ struct SettingsView: View {
         Image(systemName: "person.crop.circle.badge.exclamationmark")
           .foregroundStyle(AgnesTheme.action)
         Text(
-          "Agent-profile discovery is intentionally web-only for PAT sessions. That is why Ask uses a manual agent slug instead of running agnes agent list. Marketplace browsing is fully available through the CLI."
+          "Agent-profile management is intentionally web-only for PAT sessions. Agent Runs therefore uses a manual slug and never calls agnes agent list. A PAT-safe runtime inventory is tracked in CLI issue #1344."
         )
         .font(.caption)
         .foregroundStyle(AgnesTheme.textSecondary)
@@ -134,6 +134,7 @@ struct SettingsView: View {
         command("agnes my-stack show --json")
         command("agnes marketplace add <item-id>")
         command("agnes marketplace remove <item-id>")
+        command("agnes agent usage <slug> --json")
         command("agnes chat --agent <slug> --once <prompt> --json")
       }
     }
