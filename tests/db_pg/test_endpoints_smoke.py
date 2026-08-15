@@ -767,6 +767,7 @@ class TestAdminRegistrySmoke:
         "POST /api/admin/register-table",
         "PUT /api/admin/registry/{table_id}",
         "DELETE /api/admin/registry/{table_id}",
+        "POST /api/admin/registry/{table_id}/policy/preview",
         "GET /api/admin/discover-tables",
         "POST /api/admin/configure",
         "GET /api/admin/metadata/{table_id}",
@@ -827,6 +828,38 @@ class TestAdminRegistrySmoke:
 
         rd = seeded_app_both["client"].delete(f"/api/admin/registry/{table_id}", headers=h)
         assert rd.status_code == 204
+
+    def test_registry_policy_preview(self, seeded_app_both):
+        """Table access policies (Task 14) — the route reads through the
+        factory-backed repos (table_registry_repo/users_repo/
+        user_group_members_repo/audit_repo) on both backends. The table is
+        never synced, so a real analytics-DB read for rows_total/rows_visible
+        legitimately 422s (`policy_preview_failed`) on top of the never-synced
+        table's `DESCRIBE` failure -- the smoke assertion only cares that the
+        route is reachable and behaves identically on DuckDB and Postgres,
+        same tolerance `test_register_precheck`/`test_discover_tables` above
+        already use for other state-dependent endpoints in this class."""
+        h = _admin_headers(seeded_app_both)
+        rc = seeded_app_both["client"].post(
+            "/api/admin/register-table",
+            json={
+                "name": "policy_preview_smoke",
+                "source_type": "keboola",
+                "bucket": "in.c-smoke",
+                "source_table": "orders",
+                "query_mode": "local",
+            },
+            headers=h,
+        )
+        assert rc.status_code == 201
+        table_id = rc.json()["id"]
+
+        r = seeded_app_both["client"].post(
+            f"/api/admin/registry/{table_id}/policy/preview",
+            json={"sql": "SELECT * FROM policy_preview_smoke", "as_groups": ["Everyone"]},
+            headers=h,
+        )
+        assert r.status_code in (200, 422), r.text
 
     def test_discover_tables(self, seeded_app_both):
         r = seeded_app_both["client"].get("/api/admin/discover-tables", headers=_admin_headers(seeded_app_both))

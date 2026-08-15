@@ -26,8 +26,8 @@ class SnapshotMeta:
     where: Optional[str]
     limit: Optional[int]
     order_by: Optional[list[str]]
-    fetched_at: str               # ISO 8601 UTC
-    effective_as_of: str          # ISO 8601 UTC, server-side eval time
+    fetched_at: str  # ISO 8601 UTC
+    effective_as_of: str  # ISO 8601 UTC, server-side eval time
     rows: int
     bytes_local: int
     estimated_scan_bytes_at_fetch: int
@@ -38,6 +38,25 @@ class SnapshotMeta:
     # before TTL existed (no `expires_at` key) still deserializes via
     # `SnapshotMeta(**data)`.
     expires_at: Optional[str] = None
+    # Table access policies §3.4/§10.3 (plan Task 18): the
+    # `X-Agnes-Policy-Fingerprint` value `/api/v2/scan` returned when this
+    # snapshot was fetched -- `sha256(access_policy_sql + '|' +
+    # repr(sorted(caller_group_names)))`, or None when the source table
+    # carried no policy (or the fetch ran as the admin bypass). `agnes pull`
+    # recomputes the CURRENT fingerprint from the manifest and withholds
+    # this snapshot's view once the two disagree. Also MUST stay LAST with
+    # a default, same reason as `expires_at` above -- a `meta.json` written
+    # before this feature existed has no such key.
+    policy_fingerprint: Optional[str] = None
+    # The registry id of the policied table `policy_fingerprint` was
+    # computed for -- the `X-Agnes-Policy-Table-Id` header `/api/v2/scan`
+    # sends alongside the fingerprint. Needed because `table_id` above is
+    # NOT a registry id on the `--from-query` path (it is the snapshot name
+    # the caller passed positionally), so `agnes pull` would otherwise have
+    # no key to look the CURRENT fingerprint up by in the manifest, read
+    # back `None`, and withhold the snapshot forever. Same LAST-with-a-
+    # default rule as the two fields above.
+    policy_table_id: Optional[str] = None
 
 
 def _meta_path(snap_dir: Path, name: str) -> Path:
@@ -77,9 +96,11 @@ def delete_snapshot(snap_dir: Path, name: str) -> bool:
     meta = _meta_path(snap_dir, name)
     removed = False
     if parquet.exists():
-        parquet.unlink(); removed = True
+        parquet.unlink()
+        removed = True
     if meta.exists():
-        meta.unlink(); removed = True
+        meta.unlink()
+        removed = True
     return removed
 
 

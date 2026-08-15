@@ -56,8 +56,10 @@ _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 # data_packages.publisher_kind (the stored trust axis that retired the
 # render-time-derived `curated` badge), 115 one-time reclassification of
 # pre-existing governance-created agents from `draft` to `ready` (see
-# `_v114_to_v115`).
-SCHEMA_VERSION = 115
+# `_v114_to_v115`), 116 table_registry access-policy columns —
+# access_policy_sql/note/updated_at/updated_by + policy_mapping, the storage
+# for one SQL row/column-filtering policy per table (see `_v115_to_v116`).
+SCHEMA_VERSION = 116
 
 # v96: data_apps registry (hosted user web apps). Extracted as a shared
 # module-level constant so the fresh-install DDL (appended to
@@ -493,7 +495,20 @@ CREATE TABLE IF NOT EXISTS table_registry (
     server_only   BOOLEAN DEFAULT false,
     -- v79: nullable FK to source_connections.id. NULL = use the default
     -- connection for the row's source_type (backwards-compatible).
-    connection_id VARCHAR
+    connection_id VARCHAR,
+    -- v116: table access policies. One SQL policy per table, substituted
+    -- for the table on every server-side read when access_policies.enabled
+    -- is on. access_policy_sql IS NULL = no policy, unchanged behavior.
+    -- access_policy_note is the admin-facing "why" (mandatory at the API
+    -- layer when a policy is set; not enforced by this DDL).
+    -- access_policy_updated_at/_by are last-edit convenience columns —
+    -- audit_log remains authoritative. policy_mapping marks this table as
+    -- referenceable from another table's policy body (mapping tables).
+    access_policy_sql VARCHAR,
+    access_policy_note VARCHAR,
+    access_policy_updated_at TIMESTAMP,
+    access_policy_updated_by VARCHAR,
+    policy_mapping BOOLEAN DEFAULT false
 );
 
 CREATE TABLE IF NOT EXISTS source_connections (
@@ -7242,6 +7257,40 @@ def _v114_to_v115(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("UPDATE schema_version SET version = 115")
 
 
+def _v115_to_v116(conn: duckdb.DuckDBPyConnection) -> None:
+    """v115→v116: table access-policy columns on ``table_registry``.
+
+    Five additive, nullable columns backing the table access policies
+    feature
+    (``docs/superpowers/specs/2026-08-11-table-access-policies-design.md``
+    §4): one SQL policy per table, substituted for that table on every
+    server-side read to filter rows and mask columns by the caller's
+    identity. ``access_policy_sql IS NULL`` means "no policy" and every
+    enforcement path short-circuits to today's unfiltered behavior — this
+    step alone changes no runtime behavior.
+
+    - ``access_policy_sql``: the policy ``SELECT``, DuckDB dialect.
+    - ``access_policy_note``: admin-facing "why" (mandatory at the API
+      layer when a policy is set; not enforced by this DDL).
+    - ``access_policy_updated_at`` / ``access_policy_updated_by``: last-edit
+      convenience columns; ``audit_log`` remains authoritative.
+    - ``policy_mapping``: marks this table as referenceable from another
+      table's policy body (mapping tables, e.g. a user→cost-center map).
+      Defaults ``false`` so no existing table is retroactively eligible.
+
+    Idempotent ADD COLUMN IF NOT EXISTS — safe on fresh and upgrade paths.
+    """
+    for ddl in (
+        "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS access_policy_sql VARCHAR",
+        "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS access_policy_note VARCHAR",
+        "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS access_policy_updated_at TIMESTAMP",
+        "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS access_policy_updated_by VARCHAR",
+        "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS policy_mapping BOOLEAN DEFAULT false",
+    ):
+        conn.execute(ddl)
+    conn.execute("UPDATE schema_version SET version = 116")
+
+
 def _add_store_entity_trust_columns(conn: duckdb.DuckDBPyConnection) -> None:
     """The v111 column DDL on its own, with no version stamp.
 
@@ -8267,6 +8316,9 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # from draft to ready. No-op on fresh installs — no agents exist
             # yet to reclassify.
             _v114_to_v115(conn)
+            # v115→v116: table_registry access-policy columns. No-op on
+            # fresh installs — _SYSTEM_SCHEMA already declares the columns.
+            _v115_to_v116(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -8550,6 +8602,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v113_to_v114(conn)
             if current < 115:
                 _v114_to_v115(conn)
+            if current < 116:
+                _v115_to_v116(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],
