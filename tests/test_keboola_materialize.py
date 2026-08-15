@@ -744,6 +744,187 @@ def test_consolidation_conn_applies_memory_and_thread_caps():
         conn.close()
 
 
+# ---- parquet-writer row-group bound -------------------------------------
+#
+# DuckDB buffers a whole row group before flushing it. The default (122,880
+# rows) assumes narrow rows; a document-shaped table (one column holding whole
+# conversation transcripts) needs gigabytes for a single group and raises
+# OutOfMemoryException mid-COPY no matter how well the scan side streams —
+# which is what left six materialized tables permanently unsynced on a live
+# instance. Every COPY-to-parquet in this module must therefore carry an
+# explicit bound.
+#
+# These assert the observable *output shape* (row-group count of the written
+# parquet) rather than the SQL text, so a regression that keeps the option but
+# stops it taking effect still fails. The module's byte target is monkeypatched
+# down so the fixtures stay small and the suite stays fast.
+
+
+def _write_wide_parquet(dest: Path, *, n_rows: int = 400, cell_bytes: int = 4096) -> None:
+    """Parquet shaped like a conversation dump: an id plus one very wide,
+    high-entropy text column (unique per row so neither snappy nor DuckDB's
+    string dictionary can collapse it, which is what makes the writer buffer
+    genuinely large)."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    safe = str(dest).replace("'", "''")
+    conn = duckdb.connect()
+    try:
+        conn.execute(
+            f"COPY (SELECT i::BIGINT AS id, "
+            f"repeat(md5(i::VARCHAR), {max(1, cell_bytes // 32)}) AS body "
+            f"FROM range({n_rows}) t(i)) TO '{safe}' (FORMAT PARQUET, COMPRESSION SNAPPY)"
+        )
+    finally:
+        conn.close()
+
+
+def _row_groups(path: Path) -> int:
+    import pyarrow.parquet as pq
+
+    return pq.read_metadata(str(path)).num_row_groups
+
+
+@pytest.fixture
+def small_row_group_target(monkeypatch):
+    """Shrink the module's row-group byte target so a MiB-scale fixture
+    exercises the same code path a GiB-scale production table does.
+
+    Deliberately leaves ``_ROW_GROUP_MIN_ROWS`` alone: DuckDB flushes on
+    2048-row chunk boundaries, so patching the floor below that would make
+    these tests assert behaviour the writer cannot actually deliver.
+    """
+    monkeypatch.setattr(kbe, "_ROW_GROUP_TARGET_BYTES", 8 * 1024 * 1024)
+    monkeypatch.setattr(kbe, "_ROW_GROUP_TARGET_BYTES_SQL", "8MB")
+
+
+def test_row_group_rows_for_derives_count_from_footer(tmp_path):
+    """The derived row count must track the source's real row width, since
+    the order-preserving retype COPY cannot use the byte-denominated knob."""
+    src = tmp_path / "wide.parquet"
+    _write_wide_parquet(src, n_rows=2000, cell_bytes=4096)
+
+    rows = kbe._row_group_rows_for(src)
+
+    assert kbe._ROW_GROUP_MIN_ROWS <= rows <= kbe._ROW_GROUP_MAX_ROWS
+
+    # One group of `rows` rows should land near the byte target. Compare
+    # against the source's *measured* average row width (parquet overhead and
+    # the id column put it above the nominal cell size), allowing a 10% band.
+    import pyarrow.parquet as pq
+
+    md = pq.read_metadata(str(src))
+    uncompressed = sum(
+        md.row_group(g).column(c).total_uncompressed_size
+        for g in range(md.num_row_groups)
+        for c in range(md.row_group(g).num_columns)
+    )
+    avg_row = uncompressed / md.num_rows
+    assert 0.9 <= (rows * avg_row) / kbe._ROW_GROUP_TARGET_BYTES <= 1.1, (rows, avg_row)
+
+
+def test_row_group_rows_for_narrow_table_keeps_duckdb_default(tmp_path):
+    """A narrow table must not be penalised — the bound exists for wide rows
+    and has to stay neutral everywhere else."""
+    src = tmp_path / "narrow.parquet"
+    _write_parquet(src, n_rows=50)
+
+    assert kbe._row_group_rows_for(src) == kbe._ROW_GROUP_MAX_ROWS
+
+
+def test_row_group_rows_for_degrades_to_default_on_unreadable_source(tmp_path):
+    """A memory guardrail must never turn into a hard failure of the sync."""
+    bogus = tmp_path / "not-a-parquet.parquet"
+    bogus.write_bytes(b"definitely not parquet")
+
+    assert kbe._row_group_rows_for(bogus) == kbe._ROW_GROUP_MAX_ROWS
+
+
+def test_sliced_consolidation_bounds_writer_row_groups(tmp_path, small_row_group_target):
+    """The sliced-parquet consolidation COPY must chunk its output. Unbounded,
+    this is the exact statement that OOM'd in production."""
+
+    def fake_prepare(table_id, *, export_filter=None, export_timeout=None):
+        return {
+            "job_id": 1,
+            "file_id": 2,
+            "rows": 6000,
+            "file_info": {"id": 2, "url": "https://fake/manifest", "isSliced": True},
+            "file_type": "parquet",
+        }
+
+    def fake_download_slices(file_info, dest_dir):
+        dest_dir = Path(dest_dir)
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        paths = []
+        for i in range(2):
+            p = dest_dir / f"slice-{i:05d}"
+            _write_wide_parquet(p, n_rows=3000, cell_bytes=4096)
+            paths.append(p)
+        return paths
+
+    client = MagicMock()
+    client.prepare_export.side_effect = fake_prepare
+    client.download_file_slices.side_effect = fake_download_slices
+
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+
+    result = kbe.materialize_query(
+        table_id="wide_table",
+        bucket="in.c-x",
+        source_table="t",
+        source_query=None,
+        storage_client=client,
+        output_dir=output_dir,
+    )
+
+    final = output_dir / "wide_table.parquet"
+    assert result["rows"] == 6000
+    # ~24 MiB of body text against an 8 MiB target. 6000 rows is far under
+    # DuckDB's 122,880-row default, so an unbounded writer emits exactly one
+    # group and this assertion is what fails.
+    assert _row_groups(final) > 1, "consolidation wrote one unbounded row group"
+
+
+def test_retype_bounds_writer_row_groups_and_keeps_md5_stable(tmp_path, small_row_group_target):
+    """The retype COPY re-enables insertion order for MD5 stability, so it
+    needs the row-count bound instead of the byte one — and must not lose the
+    stability it re-enabled insertion order to get."""
+    import pyarrow as pa
+
+    def build() -> bytes:
+        src = tmp_path / "retype-me.parquet"
+        if src.exists():
+            src.unlink()
+        _write_wide_parquet(src, n_rows=6000, cell_bytes=4096)
+        # Force a cast so the retype does not short-circuit on "no casts".
+        target = pa.schema([pa.field("id", pa.int32()), pa.field("body", pa.string())])
+        kbe._retype_parquet_streaming(src, target)
+        assert _row_groups(src) > 1, "retype wrote one unbounded row group"
+        return hashlib.md5(src.read_bytes()).hexdigest()
+
+    assert build() == build(), "retype output is no longer byte-stable for identical input"
+
+
+def test_consolidation_conn_spills_under_agnes_temp_dir(tmp_path, monkeypatch):
+    """Spill must land on the volume the Keboola scratch root already points
+    at, not DuckDB's default `.tmp` relative to cwd — which in the shipped
+    image is /app, the container overlay on the boot disk."""
+    monkeypatch.setenv("AGNES_TEMP_DIR", str(tmp_path / "scratch"))
+
+    conn = kbe._open_consolidation_conn()
+    try:
+        temp_dir = conn.execute("SELECT current_setting('temp_directory')").fetchone()[0]
+        assert str(tmp_path / "scratch") in temp_dir, temp_dir
+
+        max_temp = conn.execute("SELECT current_setting('max_temp_directory_size')").fetchone()[0]
+        # DuckDB's own default is "90% of available disk space" — anything
+        # naming a concrete size proves the cap was applied.
+        assert "%" not in max_temp, max_temp
+    finally:
+        conn.close()
+
+
 # ---- typed-parquet fix for the native-parquet path (2026-07-15) -----------
 #
 # Verified live: Storage API's Snowflake UNLOAD serves every column as
@@ -1110,7 +1291,7 @@ class TestEveryBucketSourceTableCompositionIsNormalized:
     # not exist (Devin Review on #1189).
     _COMPOSITION_RE = (
         r'\{[a-z_.\[\]"\x27]*bucket[a-z_.\[\]"\x27]*\}\.\{[a-z_.\[\]"\x27]*(source_table|table)[a-z_.\[\]"\x27]*\}'
-        r'|bucket[^\n]{0,40}\}\.\{[^\n]{0,40}source_table'
+        r"|bucket[^\n]{0,40}\}\.\{[^\n]{0,40}source_table"
     )
 
     def _hits(self):
@@ -1167,8 +1348,7 @@ class TestEveryBucketSourceTableCompositionIsNormalized:
         assert not unaccounted, (
             "bucket + source_table composed without normalize_source_table nearby — a "
             "legacy wizard row doubles the bucket prefix here. Route it through the helper, "
-            "or add its path to _EXEMPT with the reason it is not a Keboola tableId:\n"
-            + "\n".join(unaccounted)
+            "or add its path to _EXEMPT with the reason it is not a Keboola tableId:\n" + "\n".join(unaccounted)
         )
 
     def test_no_stale_exemption(self):
