@@ -483,6 +483,26 @@ class TestAutoProvision:
         # The empty-slot rule then lands the token on the canonical row.
         assert connection_secrets_repo().get("!rival") == "pat-99"
 
+    def test_unexpected_error_in_one_project_does_not_abort_the_rest(self, env, pat_mocks, monkeypatch):
+        """Per-project best-effort is the module's stated contract: whatever
+        slips past the inner guards is recorded on THAT project's outcome
+        and the loop continues — and removals are suppressed, since the
+        failed project's group may be missing from the desired set."""
+        real = kprov._mint_and_store_tokens
+
+        def boom(connection, project, *args, **kwargs):
+            if project.id == "516":
+                raise RuntimeError("db exploded")
+            return real(connection, project, *args, **kwargs)
+
+        monkeypatch.setattr(kprov, "_mint_and_store_tokens", boom)
+        projects = [P("516", "Agnes - test", "admin"), P("7", "Beta", "readOnly")]
+        summary = kprov.provision_projects(env["user"], projects, projects, "at-1")
+        by_id = {o.project_id: o for o in summary.outcomes}
+        assert by_id["516"].error == "unexpected_error"
+        assert by_id["7"].token_stored is True
+        assert summary.membership_removals_safe is False
+
     def test_vault_unconfigured_skips_connections_but_syncs_membership(self, env, pat_mocks, monkeypatch):
         monkeypatch.setattr("app.secrets_vault.can_store_secrets", lambda: False)
         projects = [P("516", "Agnes - test", "admin")]

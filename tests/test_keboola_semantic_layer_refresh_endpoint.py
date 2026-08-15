@@ -391,3 +391,50 @@ def test_coverage_endpoint_requires_admin(seeded_app):
     c = seeded_app["client"]
     r = c.get("/api/admin/semantic-layer/coverage")
     assert r.status_code in (401, 403), r.text
+
+
+class TestBackgroundRefreshSingleFlight:
+    """The login-provisioning tail shares the endpoint's single-flight guard;
+    a concurrent second caller must SKIP, never queue a duplicate run — and
+    the claim must clear even when the sync raises."""
+
+    def test_second_concurrent_caller_skips(self, monkeypatch):
+        import asyncio
+
+        import app.api.keboola_semantic_layer_refresh as kslr
+
+        calls = []
+
+        def fake_sync():
+            calls.append(1)
+            return {"status": "ok"}
+
+        monkeypatch.setattr(kslr, "sync_semantic_layer", fake_sync)
+
+        async def run_two():
+            await asyncio.gather(
+                kslr.run_semantic_layer_refresh_background(trigger="login-a"),
+                kslr.run_semantic_layer_refresh_background(trigger="login-b"),
+            )
+
+        asyncio.run(run_two())
+        assert len(calls) == 1
+
+    def test_claim_clears_after_a_failed_run(self, monkeypatch):
+        import asyncio
+
+        import app.api.keboola_semantic_layer_refresh as kslr
+
+        calls = []
+
+        def flaky_sync():
+            calls.append(1)
+            if len(calls) == 1:
+                raise RuntimeError("upstream exploded")
+            return {"status": "ok"}
+
+        monkeypatch.setattr(kslr, "sync_semantic_layer", flaky_sync)
+        asyncio.run(kslr.run_semantic_layer_refresh_background(trigger="first"))
+        asyncio.run(kslr.run_semantic_layer_refresh_background(trigger="second"))
+        assert len(calls) == 2
+        assert kslr._refresh_claimed is False

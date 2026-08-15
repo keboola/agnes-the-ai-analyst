@@ -670,9 +670,20 @@ def _provision_one(
     #   off-switch is an admin decision; auto-granting (or re-enabling) from
     #   a login would widen access the admin deliberately cut.
     login_provisioned_row = (connection.get("config") or {}).get("provisioned_by") == "keboola_login"
-    source_row = mcp_sources_repo().get(derived_source_id(connection["id"]))
+    try:
+        source_row = mcp_sources_repo().get(derived_source_id(connection["id"]))
+        has_tools = bool(tool_registry_repo().list_for_source(derived_source_id(connection["id"])))
+    except Exception:
+        # Per-project best-effort: a failed inspection read must not abort
+        # the remaining projects. Defaulting to the hands-off branch (no
+        # grants, no enable this pass) is the safe reading of "unknown".
+        logger.warning(
+            "keboola auto-provision: could not inspect the chat-tools state of connection %s",
+            connection["id"],
+            exc_info=True,
+        )
+        return outcome
     source_live = source_row is not None and source_row.get("enabled") is not False
-    has_tools = bool(tool_registry_repo().list_for_source(derived_source_id(connection["id"])))
     if outcome.group_id is not None:
         if source_live and has_tools:
             try:
@@ -772,14 +783,27 @@ def provision_projects(
 
     provisioned_ids = set()
     for project in to_provision:
-        outcome = _provision_one(
-            project,
-            user=user,
-            access_token=access_token,
-            stack_url=stack_url,
-            vault_ok=vault_ok,
-            summary=summary,
-        )
+        try:
+            outcome = _provision_one(
+                project,
+                user=user,
+                access_token=access_token,
+                stack_url=stack_url,
+                vault_ok=vault_ok,
+                summary=summary,
+            )
+        except Exception:
+            # The last line of the per-project isolation the module
+            # docstring promises: whatever slipped past the inner guards is
+            # recorded on THIS project's outcome and the loop continues —
+            # one hiccup must not abandon the remaining projects, nor turn a
+            # select-mode import into a 500 after partial work (Devin
+            # Review on this PR, eighth round).
+            logger.warning("keboola auto-provision: project %s failed unexpectedly", project.id, exc_info=True)
+            outcome = ProjectOutcome(
+                project_id=project.id, project_name=project.name, role=project.role, error="unexpected_error"
+            )
+            summary.membership_removals_safe = False  # its group may be missing from the desired set
         summary.outcomes.append(outcome)
         provisioned_ids.add(project.id)
         if outcome.group_id:
@@ -790,15 +814,15 @@ def provision_projects(
     for project in all_discovered:
         if project.id in provisioned_ids:
             continue
-        if _find_connection(stack_url, project.id) is None:
-            continue
         try:
+            if _find_connection(stack_url, project.id) is None:
+                continue
             group = _ensure_group(project)
             summary.desired_group_ids.append(group["id"])
         except Exception:
             summary.membership_removals_safe = False  # incomplete desired set — see the dataclass note
             logger.warning(
-                "keboola auto-provision: could not ensure group for connected project %s",
+                "keboola auto-provision: could not resolve membership for connected project %s",
                 project.id,
                 exc_info=True,
             )
