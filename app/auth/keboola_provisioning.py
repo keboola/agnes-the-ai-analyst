@@ -209,6 +209,20 @@ def _may_write_secret(connection: Dict[str, Any], user_email: str, *, slot_key: 
     EMPTY slot filled: auto-provisioning must never overwrite a credential a
     human placed, but filling a hole makes an admin-created, token-less row
     start working after one login.
+
+    The fill deliberately records NO provenance (no ``user_email``, no
+    marker): an admin-created row's credential lifecycle stays the admin's.
+    The named trade: should the machine-filled PAT later die, the
+    dead-credential repair in ``_mint_and_store_tokens`` cannot fire for it
+    (the row is not login-provisioned), so the connection stays broken until
+    the admin acts — storing a token by hand, or deleting the dead secret,
+    which empties the slot and re-arms this fill for the very next login. A
+    provenance marker would let the repair reach it, but the marker would
+    outlive the credential it described: the admin secret endpoint knows
+    nothing of it, so an admin hand-storing a replacement would leave a
+    stale claim that later hands a user's login replacement rights over the
+    admin's own (dead) credential — the exact overwrite the ownership rule
+    exists to prevent (Devin Review on this PR, seventeenth round).
     """
     config = connection.get("config") or {}
     owner = (config.get("user_email") or "").strip().lower()
@@ -385,7 +399,11 @@ def _mint_and_store_tokens(
         # keeps every user of the project broken until an admin notices —
         # so any allowed user's login may replace it, re-owning the row
         # (Devin Review on this PR, third round). Never on an inconclusive
-        # verdict: a network blip must not transfer a row's owner.
+        # verdict: a network blip must not transfer a row's owner. And
+        # deliberately ONLY rows this flow created: a machine-FILLED slot on
+        # an admin-created row stays the admin's to fix — see
+        # ``_may_write_secret`` for why a provenance marker there would be
+        # worse than the gap (seventeenth round).
         repairing = True
         may_storage = True
 
