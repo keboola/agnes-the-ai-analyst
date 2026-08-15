@@ -344,3 +344,81 @@ class TestBuildCoworkZip:
         # The two colliding dirs survive as distinct directories.
         skill_dirs = {n.rsplit("/", 1)[0] for n in skill_arcs}
         assert {"skills/dyn-id", "skills/dyn-id-1"} <= skill_dirs, skill_dirs
+
+
+# ─────────────────────────── get_cowork_zip single-flight ──────────────────
+#
+# The router handler runs in the anyio thread pool (event-loop offload — the
+# Cowork-package-download-hang fix), so two concurrent downloads of the same
+# plugin really can race. Single-flight means: one build, everyone serves the
+# cached result.
+
+
+class TestGetCoworkZipSingleFlight:
+    def _plugin(self, version="v1"):
+        return {"prefixed_name": "mkt-big", "version": version}
+
+    def test_concurrent_same_key_builds_once(self, monkeypatch):
+        import threading
+
+        cp.invalidate_cache()
+        calls: list[str] = []
+        release = threading.Event()
+        first_build_entered = threading.Event()
+
+        def slow_build(plugin):
+            calls.append(plugin["prefixed_name"])
+            first_build_entered.set()
+            assert release.wait(timeout=5), "test deadlock: release never set"
+            return (b"zipbytes", "etag123")
+
+        monkeypatch.setattr(cp, "build_cowork_zip", slow_build)
+
+        results: list[tuple[bytes, str]] = []
+        t1 = threading.Thread(target=lambda: results.append(cp.get_cowork_zip(self._plugin())))
+        t1.start()
+        # Only start the second request once the first is INSIDE the build —
+        # without the single-flight lock it would miss the (still empty)
+        # cache and run a second build, making len(calls) == 2 below.
+        assert first_build_entered.wait(timeout=5)
+        t2 = threading.Thread(target=lambda: results.append(cp.get_cowork_zip(self._plugin())))
+        t2.start()
+        release.set()
+        t1.join(timeout=10)
+        t2.join(timeout=10)
+        assert not t1.is_alive() and not t2.is_alive()
+
+        assert results == [(b"zipbytes", "etag123"), (b"zipbytes", "etag123")]
+        assert calls == ["mkt-big"], f"expected exactly one build, got {calls}"
+        cp.invalidate_cache()
+
+    def test_failed_build_is_not_cached(self, monkeypatch):
+        import pytest
+
+        cp.invalidate_cache()
+        calls: list[int] = []
+
+        def flaky_build(plugin):
+            calls.append(1)
+            if len(calls) == 1:
+                raise cp.CoworkZipError("plugin exceeds caps")
+            return (b"ok", "e2")
+
+        monkeypatch.setattr(cp, "build_cowork_zip", flaky_build)
+        plugin = {"prefixed_name": "mkt-flaky", "version": "v1"}
+        with pytest.raises(cp.CoworkZipError):
+            cp.get_cowork_zip(plugin)
+        # The failure released the build lock and cached nothing — the next
+        # request re-attempts and succeeds.
+        assert cp.get_cowork_zip(plugin) == (b"ok", "e2")
+        assert len(calls) == 2
+        cp.invalidate_cache()
+
+    def test_unkeyed_plugin_builds_directly(self, monkeypatch):
+        cp.invalidate_cache()
+        calls: list[int] = []
+        monkeypatch.setattr(cp, "build_cowork_zip", lambda p: (calls.append(1), (b"z", "e"))[1])
+        assert cp.get_cowork_zip({"prefixed_name": "", "version": ""}) == (b"z", "e")
+        assert cp.get_cowork_zip({}) == (b"z", "e")
+        assert len(calls) == 2  # no identity → no cache, every call builds
+        cp.invalidate_cache()

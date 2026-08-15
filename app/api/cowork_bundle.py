@@ -1406,6 +1406,13 @@ class SetupTokenItem(BaseModel):
 
 
 # ── endpoints ─────────────────────────────────────────────────────────────────
+#
+# All handlers below are plain ``def`` (not ``async def``): none contains an
+# ``await`` — their bodies are blocking DB reads plus, for generate_bundle,
+# reading every granted marketplace skill/agent off disk and building a ZIP
+# in memory. Plain ``def`` makes FastAPI offload them to the anyio thread
+# pool so a slow bundle build can't freeze the single uvicorn event loop
+# (PR #188 convention; pinned by tests/test_event_loop_offload_guard.py).
 
 
 @user_router.post(
@@ -1413,7 +1420,7 @@ class SetupTokenItem(BaseModel):
     status_code=200,
     dependencies=[Depends(reject_keboola_header_credential)],
 )
-async def generate_bundle(
+def generate_bundle(
     request: Request,
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
@@ -1507,7 +1514,7 @@ async def generate_bundle(
 
 
 @user_router.get("/setup-tokens", response_model=List[SetupTokenItem])
-async def list_setup_tokens(
+def list_setup_tokens(
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
@@ -1524,7 +1531,7 @@ async def list_setup_tokens(
 
 
 @user_router.delete("/setup-tokens/{token_id}", status_code=204)
-async def revoke_setup_token(
+def revoke_setup_token(
     token_id: str,
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
@@ -1540,7 +1547,7 @@ async def revoke_setup_token(
 
 
 @auth_router.post("/exchange-setup-token", response_model=ExchangeResponse)
-async def exchange_setup_token(
+def exchange_setup_token(
     payload: ExchangeRequest,
     request: Request,
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
