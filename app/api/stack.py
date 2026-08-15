@@ -9,12 +9,14 @@ Three user-facing endpoints under ``/api/stack``:
 
 Stack resolution is delegated to ``app/services/stack_resolver.py``, whose
 semantics fork on ``features.stack_auto_membership`` (spec
-2026-08-07-default-chrome-ux-parity). Classic — the default: membership is
-the subscribe model (required ∪ subscribed-available); subscribing JOINS the
-stack, unsubscribing leaves it, and every member is materialized (downloaded
-by ``agnes pull``). Auto-membership — opt-in: every grant is a member
+2026-08-07-default-chrome-ux-parity; flipped to default-on in Wave 0,
+2026-08). Auto-membership — the default: every grant is a member
 (required ∪ available); subscribing only requests a LOCAL COPY of an
-available resource, flagged via ``materialized``. The endpoint contract
+available resource, flagged via ``materialized``. Classic — explicit
+opt-out (``features.stack_auto_membership: false``): membership is the
+subscribe model (required ∪ subscribed-available); subscribing JOINS the
+stack, unsubscribing leaves it, and every member is materialized (downloaded
+by ``agnes pull``). The endpoint contract
 (payload fields, status codes) is identical in both modes. The resolver
 raises HTTPException directly for the two business-rule errors
 (``already_required`` on subscribe, ``cannot_remove_required`` on
@@ -120,13 +122,13 @@ async def list_stack(
 ):
     """Return the user's effective stack for the given resource type.
 
-    Classic (the default): effective stack = required grants plus the
-    ``available`` grants the caller subscribed to; every member is
-    ``materialized`` (downloaded by `agnes pull`). Auto-membership (opt-in
-    via ``features.stack_auto_membership``): every grant on the caller's
-    groups is a member, no subscription needed — ``materialized`` then flags
-    which ones are also kept as a local copy (always true for required, true
-    for available only once subscribed).
+    Auto-membership (the default): every grant on the caller's groups is a
+    member, no subscription needed — ``materialized`` then flags which ones
+    are also kept as a local copy (always true for required, true for
+    available only once subscribed). Classic (explicit opt-out via
+    ``features.stack_auto_membership: false``): effective stack = required
+    grants plus the ``available`` grants the caller subscribed to; every
+    member is ``materialized`` (downloaded by `agnes pull`).
     """
     _reject_co_session(user)
     rt = _validate_type(type)
@@ -155,12 +157,13 @@ async def browse_stack(
     """List every resource of ``type`` the caller could see (RBAC-granted).
 
     The full candidate set (issue #621), independent of membership mode.
-    Classic (the default): ``in_stack`` marks the members (required or
-    subscribed) and the rest are addable via ``POST /api/stack/subscribe``.
-    Auto-membership (opt-in): every granted item is ``in_stack: true`` and
-    the scope equals ``GET /api/stack``; ``materialized`` then tells an
+    Auto-membership (the default): every granted item is ``in_stack: true``
+    and the scope equals ``GET /api/stack``; ``materialized`` then tells an
     analyst's Claude what is already downloaded locally vs. only server-side
-    queryable.
+    queryable. Classic (explicit opt-out via
+    ``features.stack_auto_membership: false``): ``in_stack`` marks the
+    members (required or subscribed) and the rest are addable via
+    ``POST /api/stack/subscribe``.
 
     Scoped per-user by ``StackResolver.browse`` (group grants only), so the
     only authorization gate is authentication — no extra RBAC dependency.
@@ -189,11 +192,12 @@ async def subscribe(
     payload: SubscribeRequest,
     user: dict = Depends(get_current_user),
 ):
-    """Subscribe to an ``available`` resource. Classic (the default): this
-    ADDS the resource to the caller's stack. Auto-membership (opt-in): the
-    resource is already in the stack, so this only requests a downloaded
-    local copy. Refuses if the resource is required (always in the stack and
-    downloaded automatically — clients shouldn't bother)."""
+    """Subscribe to an ``available`` resource. Auto-membership (the
+    default): the resource is already in the stack, so this only requests a
+    downloaded local copy. Classic (explicit opt-out via
+    ``features.stack_auto_membership: false``): this ADDS the resource to
+    the caller's stack. Refuses if the resource is required (always in the
+    stack and downloaded automatically — clients shouldn't bother)."""
     _reject_co_session(user)
     rt = _validate_type(payload.resource_type)
     # The user must have *some* grant on the resource — otherwise this is a
@@ -226,10 +230,11 @@ async def unsubscribe(
     resource_id: str,
     user: dict = Depends(get_current_user),
 ):
-    """Unsubscribe from an ``available`` resource. Classic (the default):
-    this REMOVES the resource from the caller's stack. Auto-membership
-    (opt-in): the resource stays in the stack (still queryable server-side),
-    only the downloaded local copy is dropped. Returns 400
+    """Unsubscribe from an ``available`` resource. Auto-membership (the
+    default): the resource stays in the stack (still queryable
+    server-side), only the downloaded local copy is dropped. Classic
+    (explicit opt-out via ``features.stack_auto_membership: false``): this
+    REMOVES the resource from the caller's stack. Returns 400
     ``cannot_remove_required`` when the resource is required for any of the
     user's groups (required is always in the stack and downloaded, no
     opt-out).

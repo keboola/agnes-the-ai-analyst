@@ -10687,7 +10687,7 @@
   "info": {
     "description": "Self-hosted AI harness: governed data access, skills marketplace, corporate memory, and agent workspaces",
     "title": "AI Harness",
-    "version": "0.83.19"
+    "version": "0.83.14"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -17071,7 +17071,7 @@
         ]
       },
       "put": {
-        "description": "Update the ``requirement`` enum on an existing grant.\n\nThe ``required \u2192 available`` downgrade path depends on the stack\nmembership mode (``features.stack_auto_membership``, spec\n2026-08-07-default-chrome-ux-parity). Classic (the default): membership\nis the subscribe model, so the downgrade eagerly fans out\n``user_stack_subscriptions`` rows to the group's members \u2014 the\npre-redesign v49 behavior \u2014 or they would silently lose the resource.\nAuto-membership: both ``required`` and ``available`` are automatically in\nevery granted user's stack (``StackResolver.stack``), so the downgrade\nonly lifts the \"always downloaded locally\" guarantee and no row is\nwritten.\n\n``marketplace_plugin`` grants are the one remaining exception: plugin\nvisibility is resolved by ``resolve_user_marketplace`` off\n``user_plugin_optouts``, a separate (opt-out, not opt-in) mechanism\noutside the StackResolver's auto-membership \u2014 so a ``required \u2192\navailable`` downgrade there still fans out eagerly to keep every group\nmember's served set from silently shrinking.",
+        "description": "Update the ``requirement`` enum on an existing grant.\n\nThe ``required \u2192 available`` downgrade path depends on the stack\nmembership mode (``features.stack_auto_membership``, spec\n2026-08-07-default-chrome-ux-parity; flipped to default-on in Wave 0,\n2026-08). Auto-membership (the default): both ``required`` and\n``available`` are automatically in every granted user's stack\n(``StackResolver.stack``), so the downgrade only lifts the \"always\ndownloaded locally\" guarantee and no row is written. Classic (explicit\nopt-out via ``features.stack_auto_membership: false``): membership is\nthe subscribe model, so the downgrade eagerly fans out\n``user_stack_subscriptions`` rows to the group's members \u2014 the\npre-redesign v49 behavior \u2014 or they would silently lose the resource.\n\n``marketplace_plugin`` grants are the one remaining exception: plugin\nvisibility is resolved by ``resolve_user_marketplace`` off\n``user_plugin_optouts``, a separate (opt-out, not opt-in) mechanism\noutside the StackResolver's auto-membership \u2014 so a ``required \u2192\navailable`` downgrade there still fans out eagerly to keep every group\nmember's served set from silently shrinking.",
         "operationId": "update_grant_requirement_api_admin_grants__grant_id__put",
         "parameters": [
           {
@@ -40989,7 +40989,7 @@
     },
     "/api/stack": {
       "get": {
-        "description": "Return the user's effective stack for the given resource type.\n\nClassic (the default): effective stack = required grants plus the\n``available`` grants the caller subscribed to; every member is\n``materialized`` (downloaded by `agnes pull`). Auto-membership (opt-in\nvia ``features.stack_auto_membership``): every grant on the caller's\ngroups is a member, no subscription needed \u2014 ``materialized`` then flags\nwhich ones are also kept as a local copy (always true for required, true\nfor available only once subscribed).",
+        "description": "Return the user's effective stack for the given resource type.\n\nAuto-membership (the default): every grant on the caller's groups is a\nmember, no subscription needed \u2014 ``materialized`` then flags which ones\nare also kept as a local copy (always true for required, true for\navailable only once subscribed). Classic (explicit opt-out via\n``features.stack_auto_membership: false``): effective stack = required\ngrants plus the ``available`` grants the caller subscribed to; every\nmember is ``materialized`` (downloaded by `agnes pull`).",
         "operationId": "list_stack_api_stack_get",
         "parameters": [
           {
@@ -41225,7 +41225,7 @@
     },
     "/api/stack/browse": {
       "get": {
-        "description": "List every resource of ``type`` the caller could see (RBAC-granted).\n\nThe full candidate set (issue #621), independent of membership mode.\nClassic (the default): ``in_stack`` marks the members (required or\nsubscribed) and the rest are addable via ``POST /api/stack/subscribe``.\nAuto-membership (opt-in): every granted item is ``in_stack: true`` and\nthe scope equals ``GET /api/stack``; ``materialized`` then tells an\nanalyst's Claude what is already downloaded locally vs. only server-side\nqueryable.\n\nScoped per-user by ``StackResolver.browse`` (group grants only), so the\nonly authorization gate is authentication \u2014 no extra RBAC dependency.",
+        "description": "List every resource of ``type`` the caller could see (RBAC-granted).\n\nThe full candidate set (issue #621), independent of membership mode.\nAuto-membership (the default): every granted item is ``in_stack: true``\nand the scope equals ``GET /api/stack``; ``materialized`` then tells an\nanalyst's Claude what is already downloaded locally vs. only server-side\nqueryable. Classic (explicit opt-out via\n``features.stack_auto_membership: false``): ``in_stack`` marks the\nmembers (required or subscribed) and the rest are addable via\n``POST /api/stack/subscribe``.\n\nScoped per-user by ``StackResolver.browse`` (group grants only), so the\nonly authorization gate is authentication \u2014 no extra RBAC dependency.",
         "operationId": "browse_stack_api_stack_browse_get",
         "parameters": [
           {
@@ -41288,7 +41288,7 @@
     },
     "/api/stack/subscribe": {
       "post": {
-        "description": "Subscribe to an ``available`` resource. Classic (the default): this\nADDS the resource to the caller's stack. Auto-membership (opt-in): the\nresource is already in the stack, so this only requests a downloaded\nlocal copy. Refuses if the resource is required (always in the stack and\ndownloaded automatically \u2014 clients shouldn't bother).",
+        "description": "Subscribe to an ``available`` resource. Auto-membership (the\ndefault): the resource is already in the stack, so this only requests a\ndownloaded local copy. Classic (explicit opt-out via\n``features.stack_auto_membership: false``): this ADDS the resource to\nthe caller's stack. Refuses if the resource is required (always in the\nstack and downloaded automatically \u2014 clients shouldn't bother).",
         "operationId": "subscribe_api_stack_subscribe_post",
         "parameters": [
           {
@@ -41352,7 +41352,7 @@
     },
     "/api/stack/subscription/{resource_type}/{resource_id}": {
       "delete": {
-        "description": "Unsubscribe from an ``available`` resource. Classic (the default):\nthis REMOVES the resource from the caller's stack. Auto-membership\n(opt-in): the resource stays in the stack (still queryable server-side),\nonly the downloaded local copy is dropped. Returns 400\n``cannot_remove_required`` when the resource is required for any of the\nuser's groups (required is always in the stack and downloaded, no\nopt-out).\n\nReturns 204 No Content on success \u2014 DELETE idempotency convention\nenforced by the API design rules test.",
+        "description": "Unsubscribe from an ``available`` resource. Auto-membership (the\ndefault): the resource stays in the stack (still queryable\nserver-side), only the downloaded local copy is dropped. Classic\n(explicit opt-out via ``features.stack_auto_membership: false``): this\nREMOVES the resource from the caller's stack. Returns 400\n``cannot_remove_required`` when the resource is required for any of the\nuser's groups (required is always in the stack and downloaded, no\nopt-out).\n\nReturns 204 No Content on success \u2014 DELETE idempotency convention\nenforced by the API design rules test.",
         "operationId": "unsubscribe_api_stack_subscription__resource_type___resource_id__delete",
         "parameters": [
           {
