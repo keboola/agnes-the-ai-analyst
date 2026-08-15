@@ -7,6 +7,13 @@ for a short TTL. These endpoints let the signed-in user see that discovery
 and import a chosen subset; the import runs the same provisioning core the
 ``auto`` mode uses at login (``app.auth.keboola_provisioning``).
 
+Import gates CONNECTING a project to the instance (minting + vaulting its
+credential), not membership: a discovered project someone else already
+connected reads ``imported: true`` and the caller's role-group membership
+syncs for it at login — membership mirrors upstream access (the project is
+in their own role-filtered discovery), which is what keeps re-login sync
+working for admin-connected projects too.
+
 Surface (session/JWT user auth — each caller only ever sees and imports
 their OWN discovery; POST-to-collection = "connect these discovered
 projects", keeping the URL verb-free per the API design rules):
