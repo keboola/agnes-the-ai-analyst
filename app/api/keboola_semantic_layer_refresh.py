@@ -32,6 +32,14 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _refresh_lock = asyncio.Lock()
+# Claimed SYNCHRONOUSLY (no await between check and set) before either caller
+# touches the lock. `_refresh_lock.locked()` alone leaves the skip decision
+# and the acquisition as two steps; the uncontended asyncio.Lock.acquire fast
+# path happens not to yield between them on CPython, but that is an
+# implementation detail, and a second caller passing the check would QUEUE a
+# full duplicate sync instead of skipping (Devin Review on PR #1328). The
+# flag flip is atomic on the single event loop by construction.
+_refresh_claimed = False
 # In-flight tracking (`run_id`/`started_at`, cleared once a run finishes) plus
 # the LAST COMPLETED run's summary (`last_completed_at`/`last_status`/
 # `last_result`), so an admin who hasn't synced yet — or whose last sync
@@ -89,6 +97,52 @@ def _record_completion(status: str, result: Any) -> None:
     _refresh_state["last_result"] = result
 
 
+async def run_semantic_layer_refresh_background(*, trigger: str) -> None:
+    """Fire the same guarded sync the admin endpoint owns, for background
+    callers (the Keboola multi-project login provisions master tokens and
+    wants the metrics live without an admin click). Shares the single-flight
+    lock and the status dict, so the admin UI shows these runs too. Skips
+    silently when a run is already in flight — the next login or the
+    scheduler catches up — and never raises. The skip decision and the slot
+    acquisition are one atomic step (see ``_refresh_claimed``)."""
+    global _refresh_claimed
+    if _refresh_claimed or _refresh_lock.locked():
+        logger.info("keboola semantic layer refresh (%s): already running, skipped", trigger)
+        return
+    _refresh_claimed = True
+    try:
+        async with _refresh_lock:
+            run_id = uuid.uuid4().hex[:8]
+            _refresh_state["run_id"] = run_id
+            _refresh_state["started_at"] = datetime.now(timezone.utc).isoformat()
+            try:
+                result = await asyncio.to_thread(sync_semantic_layer)
+            except Exception as e:  # noqa: BLE001 — background: record, never raise
+                _record_completion("error", str(e))
+                logger.warning("keboola semantic layer refresh (%s) failed: %s", trigger, e)
+                return
+            finally:
+                _refresh_state["run_id"] = None
+                _refresh_state["started_at"] = None
+            if result.get("status") == "error":
+                _record_completion("error", result.get("error", "Keboola semantic layer sync failed"))
+                logger.warning(
+                    "keboola semantic layer refresh (%s) reported an error: %s", trigger, result.get("error")
+                )
+                return
+            _record_completion("ok", result)
+            logger.info(
+                "keboola semantic layer refresh (%s): run_id=%s created_or_updated=%s pruned=%s sources=%s",
+                trigger,
+                run_id,
+                result.get("created_or_updated"),
+                result.get("pruned"),
+                len(result.get("sources") or []),
+            )
+    finally:
+        _refresh_claimed = False
+
+
 @router.post("/api/admin/run-keboola-semantic-layer-refresh")
 async def run_keboola_semantic_layer_refresh(
     user: dict = Depends(require_admin),
@@ -102,7 +156,8 @@ async def run_keboola_semantic_layer_refresh(
     Storage/Metastore API refuses (4xx). 502 only when the upstream is
     unreachable or answers 5xx.
     """
-    if _refresh_lock.locked():
+    global _refresh_claimed
+    if _refresh_claimed or _refresh_lock.locked():
         raise HTTPException(
             status_code=409,
             detail={
@@ -113,37 +168,41 @@ async def run_keboola_semantic_layer_refresh(
             },
         )
 
-    async with _refresh_lock:
-        run_id = uuid.uuid4().hex[:8]
-        started_at = datetime.now(timezone.utc).isoformat()
-        _refresh_state["run_id"] = run_id
-        _refresh_state["started_at"] = started_at
-        try:
-            result = await asyncio.to_thread(sync_semantic_layer)
-        except MasterTokenRequiredError as e:
-            _record_completion("error", str(e))
-            raise HTTPException(status_code=400, detail=str(e))
-        except Exception as e:
-            _record_completion("error", str(e))
-            raise
-        else:
-            # sync_semantic_layer() reports config/upstream failures (missing
-            # credentials, Storage/Metastore API errors) as a returned
-            # {"status": "error"} dict rather than an exception — those must
-            # be recorded and surfaced the same way as the exception paths
-            # above, or the admin UI shows a false "OK" after a failed sync.
-            if result.get("status") == "error":
-                message = result.get("error", "Keboola semantic layer sync failed")
-                _record_completion("error", message)
-                # Only a real upstream failure is a Bad Gateway. "Nothing is
-                # configured yet" and "Keboola refused this token" are the
-                # admin's to fix, and answering 502 for them reads as an Agnes
-                # outage — the exact misdiagnosis this endpoint kept causing.
-                raise HTTPException(status_code=_status_for_error_code(result.get("code")), detail=message)
-            _record_completion("ok", result)
-        finally:
-            _refresh_state["run_id"] = None
-            _refresh_state["started_at"] = None
+    _refresh_claimed = True
+    try:
+        async with _refresh_lock:
+            run_id = uuid.uuid4().hex[:8]
+            started_at = datetime.now(timezone.utc).isoformat()
+            _refresh_state["run_id"] = run_id
+            _refresh_state["started_at"] = started_at
+            try:
+                result = await asyncio.to_thread(sync_semantic_layer)
+            except MasterTokenRequiredError as e:
+                _record_completion("error", str(e))
+                raise HTTPException(status_code=400, detail=str(e))
+            except Exception as e:
+                _record_completion("error", str(e))
+                raise
+            else:
+                # sync_semantic_layer() reports config/upstream failures (missing
+                # credentials, Storage/Metastore API errors) as a returned
+                # {"status": "error"} dict rather than an exception — those must
+                # be recorded and surfaced the same way as the exception paths
+                # above, or the admin UI shows a false "OK" after a failed sync.
+                if result.get("status") == "error":
+                    message = result.get("error", "Keboola semantic layer sync failed")
+                    _record_completion("error", message)
+                    # Only a real upstream failure is a Bad Gateway. "Nothing is
+                    # configured yet" and "Keboola refused this token" are the
+                    # admin's to fix, and answering 502 for them reads as an Agnes
+                    # outage — the exact misdiagnosis this endpoint kept causing.
+                    raise HTTPException(status_code=_status_for_error_code(result.get("code")), detail=message)
+                _record_completion("ok", result)
+            finally:
+                _refresh_state["run_id"] = None
+                _refresh_state["started_at"] = None
+    finally:
+        _refresh_claimed = False
 
     logger.info(
         "keboola semantic layer refresh: run_id=%s status=%s created_or_updated=%s "

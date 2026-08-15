@@ -93,6 +93,37 @@ class TestAuthSmoke:
         assert "access_token" in r.json()
 
 
+class TestKeboolaLoginProjectsSmoke:
+    """Select-mode Keboola project import surface. Depth per this file's
+    contract: status + top-level shape. The default mode is ``disabled``,
+    so the GET answers an empty discovery and the POST refuses with the
+    mode conflict — deterministic on both backends with no Keboola config."""
+
+    COVERED_ROUTES = {
+        "GET /api/auth/keboola/projects",
+        "POST /api/auth/keboola/projects",
+    }
+
+    def test_projects_listing_default_mode(self, seeded_app_both):
+        r = seeded_app_both["client"].get("/api/auth/keboola/projects", headers=_analyst_headers(seeded_app_both))
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["mode"] == "disabled"
+        assert body["discovery_available"] is False
+        assert body["projects"] == []
+
+    def test_projects_listing_requires_auth(self, seeded_app_both):
+        assert seeded_app_both["client"].get("/api/auth/keboola/projects").status_code == 401
+
+    def test_import_outside_select_mode_conflicts(self, seeded_app_both):
+        r = seeded_app_both["client"].post(
+            "/api/auth/keboola/projects",
+            json={"project_ids": ["1"]},
+            headers=_analyst_headers(seeded_app_both),
+        )
+        assert r.status_code == 409, r.text
+
+
 class TestCliAuthRescopeSmoke:
     """v106 — the `agnes init --as-admin` opt-up endpoint."""
 
@@ -2305,6 +2336,18 @@ KNOWN_UNTESTED = {
     # contract test needed (no new repo methods/migration). Behaviour
     # covered in tests/test_keboola_semantic_layer_refresh_endpoint.py.
     "POST /api/admin/run-keboola-semantic-layer-refresh",
+    # Databricks semantic layer (Unity Catalog metric views) sync — same
+    # shape as the Keboola sibling above: scheduler-driven admin maintenance
+    # op, no new repo methods/migration. Behaviour covered in
+    # tests/test_databricks_semantic_layer_refresh_endpoint.py.
+    # The handler never touches the backend switch itself; the repo calls its
+    # sync drives (metric_repo().create/find_by_name/list/delete, incl. the
+    # source_ref kwarg) are already parity-proven on both backends by
+    # tests/db_pg/test_config_pg.py::test_metric_source_ref_roundtrip and
+    # tests/db_pg/test_ported_methods_contract.py::test_metrics_yaml_reconcile_prunes_on_both_backends
+    # — cited here so this exclusion is self-verifying rather than resting on
+    # "nothing new here".
+    "POST /api/admin/run-databricks-semantic-layer-refresh",
     # K3 local knowledge packaging (#798) — scheduler-driven admin maintenance
     # op, mirrors run-corporate-memory. No dual-backend contract test needed
     # (no new repo methods/migration; state.json lives on disk). Behaviour

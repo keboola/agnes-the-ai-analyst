@@ -1,0 +1,951 @@
+"""Login-time multi-project provisioning: connections, vault slots, groups,
+membership diffing, grant policy, and the select-mode stash — against real
+repositories (DuckDB backend), with the upstream PAT mint + verify faked.
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import datetime, timedelta, timezone
+
+import pytest
+from cryptography.fernet import Fernet
+
+from app.auth import keboola_provisioning as kprov
+from app.auth.providers import keboola_projects as kp
+from app.auth.providers import keboola_verify as kv
+from connectors.keboola.storage_api import KeboolaStorageClient
+
+STACK = "https://connection.example.com"
+
+# Projects whose minted PAT verifies as a MASTER token in the fakes below.
+MASTER_PROJECTS = {"516"}
+
+
+def P(pid: str, name: str = "", role: str = "admin") -> kp.DiscoveredProject:
+    return kp.DiscoveredProject(id=pid, name=name or f"Project {pid}", role=role)
+
+
+@pytest.fixture
+def env(e2e_env, monkeypatch):
+    """Schema-initialized system DB + a signed-in user + a working vault."""
+    monkeypatch.setenv("AGNES_VAULT_KEY", Fernet.generate_key().decode())
+    from app.secrets_vault import _reset_ephemeral_key_for_tests
+
+    _reset_ephemeral_key_for_tests()
+    monkeypatch.setattr(kv, "stack_url", lambda: STACK)
+    # Wildcard instance (project_id "*"): the select-mode stash re-filter
+    # runs the instance gates, and without this the pinned-project branch
+    # would drop every stashed project.
+    monkeypatch.setattr(kv, "is_wildcard_project", lambda: True)
+    # The example stack host doesn't resolve; the SSRF gate has its own
+    # tests — stub it permissive, same pattern as tests/test_keboola_verify.py.
+    monkeypatch.setattr("app.api.admin._validate_url_not_private", lambda url, field_name="url": None)
+    from src.db import get_system_db
+
+    get_system_db().close()  # runs schema init + system-group seeding
+    from src.repositories import users_repo
+
+    users_repo().create(id="u1", email="jane@example.com", name="Jane")
+    return {"user": users_repo().get_by_email("jane@example.com")}
+
+
+@pytest.fixture
+def pat_mocks(monkeypatch):
+    """Fake the two upstream calls: PAT mint returns ``pat-{project_id}``,
+    and any ``pat-*`` token's verify reports that project as owner (master
+    token only for MASTER_PROJECTS). ``pat_mocks`` records every mint as
+    ``(project_id, read_only)`` — order and COUNT matter (a re-login must
+    reuse, not re-mint)."""
+    minted: list[tuple[str, bool]] = []
+
+    def fake_exchange(access_token, project_id, *, read_only):
+        minted.append((project_id, read_only))
+        return f"pat-{project_id}"
+
+    monkeypatch.setattr(kp, "exchange_project_pat", fake_exchange)
+
+    def fake_verify(self):
+        pid = self.token.split("-", 1)[1]
+        return {
+            "isMasterToken": pid in MASTER_PROJECTS,
+            "owner": {"id": int(pid), "name": f"Project {pid}"},
+        }
+
+    monkeypatch.setattr(KeboolaStorageClient, "verify_token", fake_verify)
+    return minted
+
+
+def _connection_for(pid: str):
+    from src.repositories import source_connections_repo
+
+    for row in source_connections_repo().list(source_type="keboola"):
+        if str((row.get("config") or {}).get("project_id")) == str(pid):
+            return row
+    return None
+
+
+def _kbc_memberships(user_id: str):
+    from src.repositories import user_group_members_repo
+
+    return {
+        row["name"]
+        for row in user_group_members_repo().list_groups_with_meta_for_user(user_id)
+        if row.get("source") == kprov.MEMBERSHIP_SOURCE
+    }
+
+
+class TestAutoProvision:
+    def test_fresh_login_provisions_everything(self, env, pat_mocks):
+        from src.repositories import connection_secrets_repo, user_groups_repo
+
+        projects = [P("516", "Agnes - test", "admin"), P("7", "Beta", "readOnly")]
+        summary = kprov.provision_projects(env["user"], projects, projects, "at-1")
+
+        assert [o.error for o in summary.outcomes] == [None, None]
+        for pid in ("516", "7"):
+            row = _connection_for(pid)
+            assert row is not None, pid
+            config = row["config"]
+            assert config["stack_url"] == STACK
+            assert config["user_email"] == "jane@example.com"
+            assert connection_secrets_repo().get(row["id"]) == f"pat-{pid}"
+
+        # Admin's PAT is writable; everyone else's read-only.
+        assert pat_mocks == [("516", False), ("7", True)]
+
+        # Master slot only where the minted token verified as master.
+        from app.api.admin_source_connections import master_secret_key
+
+        assert connection_secrets_repo().has(master_secret_key(_connection_for("516")["id"]))
+        assert not connection_secrets_repo().has(master_secret_key(_connection_for("7")["id"]))
+        assert summary.semantic_sync_needed is True
+
+        # Role groups exist and the user's keboola_sync memberships match.
+        assert user_groups_repo().get_by_name("kbc-516-admin") is not None
+        assert user_groups_repo().get_by_name("kbc-7-readonly") is not None
+        assert _kbc_memberships("u1") == {"kbc-516-admin", "kbc-7-readonly"}
+        assert summary.memberships_added == 2 and summary.memberships_removed == 0
+
+        # No derived MCP source yet → chat tools deferred to the background.
+        created_ids = {o.connection_id for o in summary.outcomes}
+        assert set(summary.connections_needing_chat_tools) == created_ids
+
+    def test_relogin_is_idempotent_and_reuses_tokens(self, env, pat_mocks):
+        """A re-login must not create duplicates — and must not mint fresh
+        PATs either: every mint leaves the superseded, still-valid token
+        orphaned upstream, where nothing can revoke it (Devin Review on
+        this PR). A stored token that still verifies is reused."""
+        from src.repositories import connection_secrets_repo, source_connections_repo
+
+        projects = [P("516", "Agnes - test", "admin"), P("7", "Beta", "readOnly")]
+        first = kprov.provision_projects(env["user"], projects, projects, "at-1")
+        second = kprov.provision_projects(env["user"], projects, projects, "at-2")
+
+        assert len(source_connections_repo().list(source_type="keboola")) == 2
+        assert {o.connection_id for o in first.outcomes} == {o.connection_id for o in second.outcomes}
+        assert second.memberships_added == 0 and second.memberships_removed == 0
+        assert not any(o.connection_created for o in second.outcomes)
+        # Only the FIRST login minted; the second reused the stored tokens.
+        assert pat_mocks == [("516", False), ("7", True)]
+        assert all(o.token_reused for o in second.outcomes)
+        for outcome in second.outcomes:
+            assert connection_secrets_repo().get(outcome.connection_id) == f"pat-{outcome.project_id}"
+
+    def test_stale_stored_token_is_replaced_by_a_fresh_mint(self, env, pat_mocks, monkeypatch):
+        """When the stored token no longer verifies (revoked upstream), the
+        re-login mints a replacement instead of reusing the dead one."""
+        from src.repositories import connection_secrets_repo
+
+        projects = [P("516", "Agnes - test", "admin")]
+        kprov.provision_projects(env["user"], projects, projects, "at-1")
+
+        real_verify = KeboolaStorageClient.verify_token
+
+        def dead_stored(self):
+            if self.token == "pat-516":
+                from connectors.keboola.storage_api import StorageApiError
+
+                raise StorageApiError("token was revoked", status=401)
+            return real_verify(self)
+
+        # The replacement mint must produce a distinguishable token.
+        monkeypatch.setattr(kp, "exchange_project_pat", lambda tok, pid, *, read_only: f"pat-{pid}-fresh")
+
+        def fresh_verify(self):
+            if self.token == "pat-516":
+                from connectors.keboola.storage_api import StorageApiError
+
+                raise StorageApiError("token was revoked", status=401)
+            pid = self.token.split("-")[1]
+            return {"isMasterToken": pid in MASTER_PROJECTS, "owner": {"id": int(pid), "name": "P"}}
+
+        monkeypatch.setattr(KeboolaStorageClient, "verify_token", fresh_verify)
+        summary = kprov.provision_projects(env["user"], projects, projects, "at-2")
+        assert summary.outcomes[0].token_stored is True
+        assert summary.outcomes[0].token_reused is False
+        assert connection_secrets_repo().get(summary.outcomes[0].connection_id) == "pat-516-fresh"
+
+    def test_lost_project_removes_membership_but_keeps_the_connection(self, env, pat_mocks):
+        both = [P("516", "Agnes - test", "admin"), P("7", "Beta", "readOnly")]
+        kprov.provision_projects(env["user"], both, both, "at-1")
+        only_a = [P("516", "Agnes - test", "admin")]
+        summary = kprov.provision_projects(env["user"], only_a, only_a, "at-2")
+
+        assert _kbc_memberships("u1") == {"kbc-516-admin"}
+        assert summary.memberships_removed == 1
+        # The connection (and its credential) survives — other users may
+        # still hold the project; membership is the per-user revocation.
+        assert _connection_for("7") is not None
+
+    def test_role_change_swaps_the_group(self, env, pat_mocks):
+        admin = [P("516", "Agnes - test", "admin")]
+        kprov.provision_projects(env["user"], admin, admin, "at-1")
+        demoted = [P("516", "Agnes - test", "readOnly")]
+        kprov.provision_projects(env["user"], demoted, demoted, "at-2")
+        assert _kbc_memberships("u1") == {"kbc-516-readonly"}
+
+    def test_admin_placed_credential_is_never_overwritten(self, env, pat_mocks):
+        from src.repositories import connection_secrets_repo, source_connections_repo
+
+        source_connections_repo().create(
+            id="admin-conn",
+            name="Admin managed",
+            source_type="keboola",
+            config={"stack_url": STACK, "project_id": "99", "project_name": "Admin project"},
+        )
+        connection_secrets_repo().upsert("admin-conn", "admin-token")
+
+        projects = [P("99", "Admin project", "admin")]
+        summary = kprov.provision_projects(env["user"], projects, projects, "at-1")
+
+        assert connection_secrets_repo().get("admin-conn") == "admin-token"
+        outcome = summary.outcomes[0]
+        assert outcome.connection_id == "admin-conn"
+        assert outcome.connection_created is False
+        assert outcome.token_stored is False
+        # The admin row keeps its identity — no user_email adopted.
+        assert "user_email" not in (source_connections_repo().get("admin-conn")["config"] or {})
+
+    def test_empty_slot_on_admin_row_is_filled(self, env, pat_mocks):
+        from src.repositories import connection_secrets_repo, source_connections_repo
+
+        source_connections_repo().create(
+            id="bare-conn",
+            name="Admin managed bare",
+            source_type="keboola",
+            config={"stack_url": STACK, "project_id": "99"},
+        )
+        projects = [P("99", "Admin project", "admin")]
+        summary = kprov.provision_projects(env["user"], projects, projects, "at-1")
+        assert connection_secrets_repo().get("bare-conn") == "pat-99"
+        assert summary.outcomes[0].token_stored is True
+
+    def test_mismatched_pat_is_refused(self, env, pat_mocks, monkeypatch):
+        from src.repositories import connection_secrets_repo
+
+        def wrong_owner(self):
+            return {"isMasterToken": True, "owner": {"id": 999, "name": "Somebody else"}}
+
+        monkeypatch.setattr(KeboolaStorageClient, "verify_token", wrong_owner)
+        projects = [P("516", "Agnes - test", "admin")]
+        summary = kprov.provision_projects(env["user"], projects, projects, "at-1")
+        outcome = summary.outcomes[0]
+        assert outcome.error == "pat_project_mismatch"
+        assert outcome.token_stored is False
+        assert not connection_secrets_repo().has(outcome.connection_id)
+
+    def test_one_project_failing_does_not_block_the_rest(self, env, pat_mocks, monkeypatch):
+        def flaky_exchange(access_token, project_id, *, read_only):
+            if project_id == "7":
+                raise kp.KeboolaProjectApiError("pat_exchange_denied")
+            return f"pat-{project_id}"
+
+        monkeypatch.setattr(kp, "exchange_project_pat", flaky_exchange)
+        projects = [P("516", "Agnes - test", "admin"), P("7", "Beta", "readOnly")]
+        summary = kprov.provision_projects(env["user"], projects, projects, "at-1")
+        by_id = {o.project_id: o for o in summary.outcomes}
+        assert by_id["516"].token_stored is True
+        assert by_id["7"].error == "pat_exchange: pat_exchange_denied"
+        # Membership still reflects BOTH projects — upstream access exists.
+        assert _kbc_memberships("u1") == {"kbc-516-admin", "kbc-7-readonly"}
+
+    def test_non_master_admin_mint_happens_once_not_per_login(self, env, pat_mocks):
+        """Project 88's PAT exchange never yields a master token. The first
+        login mints (and records the verdict on the connection); every later
+        login REUSES — without the record, the master chase re-minted one
+        orphaned PAT per sign-in forever (Devin Review on this PR)."""
+        from src.repositories import source_connections_repo
+
+        projects = [P("88", "No master here", "admin")]
+        first = kprov.provision_projects(env["user"], projects, projects, "at-1")
+        assert first.outcomes[0].token_stored is True
+        assert first.outcomes[0].master_token_stored is False
+        row = source_connections_repo().get(first.outcomes[0].connection_id)
+        assert row["config"].get("pat_master_unobtainable") is True
+
+        second = kprov.provision_projects(env["user"], projects, projects, "at-2")
+        assert pat_mocks == [("88", False)]  # exactly ONE mint across both logins
+        assert second.outcomes[0].token_reused is True
+
+    def test_dead_token_on_login_provisioned_row_is_repaired_by_another_user(self, env, pat_mocks, monkeypatch):
+        """The owner's PAT died (revoked / owner lost the project). Another
+        allowed user's login replaces it and re-owns the row — the ownership
+        rule protects human-stored credentials, not dead machine-minted ones
+        (Devin Review on this PR)."""
+        from src.repositories import connection_secrets_repo, source_connections_repo, users_repo
+
+        projects = [P("516", "Agnes - test", "admin")]
+        first = kprov.provision_projects(env["user"], projects, projects, "at-1")
+        connection_id = first.outcomes[0].connection_id
+
+        users_repo().create(id="u2", email="bob@example.com", name="Bob")
+        bob = users_repo().get_by_email("bob@example.com")
+
+        def dead_old_token(self):
+            if self.token == "pat-516":
+                from connectors.keboola.storage_api import StorageApiError
+
+                raise StorageApiError("token was revoked", status=401)
+            pid = self.token.split("-")[1]
+            return {"isMasterToken": pid in MASTER_PROJECTS, "owner": {"id": int(pid), "name": "P"}}
+
+        monkeypatch.setattr(KeboolaStorageClient, "verify_token", dead_old_token)
+        monkeypatch.setattr(kp, "exchange_project_pat", lambda tok, pid, *, read_only: f"pat-{pid}-fresh")
+
+        summary = kprov.provision_projects(bob, projects, projects, "at-2")
+        outcome = summary.outcomes[0]
+        assert outcome.connection_id == connection_id
+        assert outcome.token_stored is True
+        assert connection_secrets_repo().get(connection_id) == "pat-516-fresh"
+        # Rotation rights follow the live credential.
+        assert source_connections_repo().get(connection_id)["config"]["user_email"] == "bob@example.com"
+        # The master slot held the SAME dead PAT (a login mirrors one token
+        # into both slots) — the repair reclaims it too, or the semantic
+        # layer would keep failing on the dead master indefinitely.
+        from app.api.admin_source_connections import master_secret_key
+
+        assert connection_secrets_repo().get(master_secret_key(connection_id)) == "pat-516-fresh"
+
+    def test_repair_with_non_master_fresh_removes_the_dead_master(self, env, pat_mocks, monkeypatch):
+        """When the repair's fresh PAT is NOT a master token, the known-dead
+        master credential is removed rather than left failing the semantic
+        layer — the sync then skips the project (the documented non-master
+        posture) instead of erroring on it."""
+        from app.api.admin_source_connections import master_secret_key
+        from src.repositories import connection_secrets_repo, users_repo
+
+        projects = [P("516", "Agnes - test", "admin")]
+        first = kprov.provision_projects(env["user"], projects, projects, "at-1")
+        connection_id = first.outcomes[0].connection_id
+        assert connection_secrets_repo().has(master_secret_key(connection_id))
+
+        users_repo().create(id="u2", email="bob@example.com", name="Bob")
+        bob = users_repo().get_by_email("bob@example.com")
+
+        def old_dead_fresh_not_master(self):
+            if self.token == "pat-516":
+                from connectors.keboola.storage_api import StorageApiError
+
+                raise StorageApiError("token was revoked", status=401)
+            return {"isMasterToken": False, "owner": {"id": 516, "name": "P"}}
+
+        monkeypatch.setattr(KeboolaStorageClient, "verify_token", old_dead_fresh_not_master)
+        monkeypatch.setattr(kp, "exchange_project_pat", lambda tok, pid, *, read_only: f"pat-{pid}-fresh")
+
+        summary = kprov.provision_projects(bob, projects, projects, "at-2")
+        assert summary.outcomes[0].token_stored is True
+        assert connection_secrets_repo().get(connection_id) == "pat-516-fresh"
+        assert not connection_secrets_repo().has(master_secret_key(connection_id))
+
+    def test_admin_assigned_membership_is_not_recounted_as_added(self, env, pat_mocks):
+        """A pair the admin assigned by hand stays the admin's — and the
+        report must not claim it as freshly added on every sign-in: the
+        add would be an ON CONFLICT no-op, so counting it inflated
+        `memberships_added` forever (Devin Review on this PR, eighteenth
+        round)."""
+        from src.repositories import user_group_members_repo, user_groups_repo
+
+        projects = [P("516", "Agnes - test", "admin")]
+        group = user_groups_repo().ensure("kbc-516-admin", created_by="admin@example.com")
+        user_group_members_repo().add_member(
+            user_id="u1", group_id=group["id"], source="admin", added_by="admin@example.com"
+        )
+
+        summary = kprov.provision_projects(env["user"], projects, projects, "at-1")
+        assert summary.memberships_added == 0
+        rows = {r["group_id"]: r for r in user_group_members_repo().list_groups_with_meta_for_user("u1")}
+        assert rows[group["id"]]["source"] == "admin"
+
+        second = kprov.provision_projects(env["user"], projects, projects, "at-2")
+        assert second.memberships_added == 0
+
+    def test_failed_mint_defers_neither_grants_nor_enable_until_a_token_lands(self, env, pat_mocks, monkeypatch):
+        """The two background lists ride ONE decision: a connection with no
+        storable credential is neither enqueued for the chat-tools enable nor
+        given a deferred grant (which the tail would silently filter out —
+        recorded-but-dropped state; Devin Review on this PR, twelfth round).
+        The next login with a working mint records both together."""
+
+        def broken_exchange(tok, pid, *, read_only):
+            raise kp.KeboolaProjectApiError("pat_mint_failed", "upstream said no")
+
+        monkeypatch.setattr(kp, "exchange_project_pat", broken_exchange)
+        projects = [P("516", "Agnes - test", "admin")]
+        summary = kprov.provision_projects(env["user"], projects, projects, "at-1")
+        assert summary.outcomes[0].error == "pat_exchange: pat_mint_failed"
+        assert summary.deferred_grants == []
+        assert summary.connections_needing_chat_tools == []
+
+        monkeypatch.setattr(kp, "exchange_project_pat", lambda tok, pid, *, read_only: f"pat-{pid}")
+        second = kprov.provision_projects(env["user"], projects, projects, "at-2")
+        assert second.outcomes[0].token_stored is True
+        connection_id = second.outcomes[0].connection_id
+        assert second.connections_needing_chat_tools == [connection_id]
+        assert [g["connection_id"] for g in second.deferred_grants] == [connection_id]
+
+    def test_owners_own_relogin_removes_the_dead_master_when_fresh_is_not_master(self, env, pat_mocks, monkeypatch):
+        """The OWNER walking the same revocation is not a `repairing` login
+        (their storage slot is already writable), but the dead mirror in the
+        master slot must be cleaned exactly the same way — left in place it
+        keeps the semantic layer erroring on this project after every login,
+        and the reuse fast-path never re-examines it (Devin Review on this
+        PR, eleventh round). With the fresh mint non-master the slot is
+        removed (sync skips the project, the documented posture) and the
+        non-master verdict is recorded so no later login orphans more PATs."""
+        from app.api.admin_source_connections import master_secret_key
+        from src.repositories import connection_secrets_repo, source_connections_repo
+
+        projects = [P("516", "Agnes - test", "admin")]
+        first = kprov.provision_projects(env["user"], projects, projects, "at-1")
+        connection_id = first.outcomes[0].connection_id
+        assert connection_secrets_repo().get(master_secret_key(connection_id)) == "pat-516"
+
+        def old_dead_fresh_not_master(self):
+            if self.token == "pat-516":
+                from connectors.keboola.storage_api import StorageApiError
+
+                raise StorageApiError("token was revoked", status=401)
+            return {"isMasterToken": False, "owner": {"id": 516, "name": "P"}}
+
+        fresh_mints: list[str] = []
+
+        def fresh_mint(tok, pid, *, read_only):
+            fresh_mints.append(pid)
+            return f"pat-{pid}-fresh"
+
+        monkeypatch.setattr(KeboolaStorageClient, "verify_token", old_dead_fresh_not_master)
+        monkeypatch.setattr(kp, "exchange_project_pat", fresh_mint)
+
+        summary = kprov.provision_projects(env["user"], projects, projects, "at-2")
+        assert summary.outcomes[0].token_stored is True
+        assert fresh_mints == ["516"]
+        assert connection_secrets_repo().get(connection_id) == "pat-516-fresh"
+        assert not connection_secrets_repo().has(master_secret_key(connection_id))
+        config = source_connections_repo().get(connection_id)["config"]
+        assert config.get("pat_master_unobtainable") is True
+
+        # Login 3: healthy stored token + recorded verdict ⇒ pure reuse — no
+        # further mint, master slot stays absent.
+        def fresh_ok(self):
+            return {"isMasterToken": False, "owner": {"id": 516, "name": "P"}}
+
+        monkeypatch.setattr(KeboolaStorageClient, "verify_token", fresh_ok)
+        third = kprov.provision_projects(env["user"], projects, projects, "at-3")
+        assert third.outcomes[0].token_reused is True
+        assert fresh_mints == ["516"]
+        assert not connection_secrets_repo().has(master_secret_key(connection_id))
+
+    def test_owners_relogin_never_touches_a_hand_stored_master(self, env, pat_mocks, monkeypatch):
+        """Value-equality is the guard: when the master slot holds a DIFFERENT
+        credential than the dead storage token (an admin pasted one by hand),
+        the owner's replacement login rotates the storage slot and leaves the
+        human-stored master exactly as it is."""
+        from app.api.admin_source_connections import master_secret_key
+        from src.repositories import connection_secrets_repo
+
+        projects = [P("516", "Agnes - test", "admin")]
+        first = kprov.provision_projects(env["user"], projects, projects, "at-1")
+        connection_id = first.outcomes[0].connection_id
+        connection_secrets_repo().upsert(master_secret_key(connection_id), "human-master")
+
+        def old_dead_fresh_not_master(self):
+            if self.token == "pat-516":
+                from connectors.keboola.storage_api import StorageApiError
+
+                raise StorageApiError("token was revoked", status=401)
+            return {"isMasterToken": False, "owner": {"id": 516, "name": "P"}}
+
+        monkeypatch.setattr(KeboolaStorageClient, "verify_token", old_dead_fresh_not_master)
+        monkeypatch.setattr(kp, "exchange_project_pat", lambda tok, pid, *, read_only: f"pat-{pid}-fresh")
+
+        summary = kprov.provision_projects(env["user"], projects, projects, "at-2")
+        assert summary.outcomes[0].token_stored is True
+        assert connection_secrets_repo().get(connection_id) == "pat-516-fresh"
+        assert connection_secrets_repo().get(master_secret_key(connection_id)) == "human-master"
+
+    def test_transient_verify_failure_keeps_the_stored_token(self, env, pat_mocks, monkeypatch):
+        """A 5xx/timeout on the stored-token verify is NOT a dead credential:
+        no mint (each one is an unrevocable upstream orphan), no config
+        change, no repair — the next login re-checks."""
+        from src.repositories import connection_secrets_repo, source_connections_repo, users_repo
+
+        projects = [P("516", "Agnes - test", "admin")]
+        first = kprov.provision_projects(env["user"], projects, projects, "at-1")
+        connection_id = first.outcomes[0].connection_id
+
+        def outage(self):
+            from connectors.keboola.storage_api import StorageApiError
+
+            raise StorageApiError("bad gateway", status=502)
+
+        monkeypatch.setattr(KeboolaStorageClient, "verify_token", outage)
+        for user_key in ("u1", "bob"):
+            if user_key == "bob":
+                users_repo().create(id="u2", email="bob@example.com", name="Bob")
+                actor = users_repo().get_by_email("bob@example.com")
+            else:
+                actor = env["user"]
+            summary = kprov.provision_projects(actor, projects, projects, f"at-{user_key}")
+            assert summary.outcomes[0].error is None
+        # Exactly the first login's mint — the outage minted nothing.
+        assert pat_mocks == [("516", False)]
+        assert connection_secrets_repo().get(connection_id) == "pat-516"
+        # And no ownership transfer over a network blip.
+        assert source_connections_repo().get(connection_id)["config"]["user_email"] == "jane@example.com"
+
+    def test_admin_created_row_never_gets_auto_chat_tools(self, env, pat_mocks):
+        """Filling an admin-created row's empty token slot must not also
+        enable chat tools for it — 'never enabled' on an admin-managed row
+        is the admin's posture exactly like the off-switch is."""
+        from src.repositories import source_connections_repo
+
+        source_connections_repo().create(
+            id="bare-conn",
+            name="Admin managed bare",
+            source_type="keboola",
+            config={"stack_url": STACK, "project_id": "99"},
+        )
+        projects = [P("99", "Admin project", "admin")]
+        summary = kprov.provision_projects(env["user"], projects, projects, "at-1")
+        assert summary.outcomes[0].token_stored is True  # the empty slot fills…
+        assert summary.connections_needing_chat_tools == []  # …but tools stay the admin's call
+        assert summary.deferred_grants == []
+
+    def test_healthy_foreign_row_is_left_alone(self, env, pat_mocks):
+        """Another user's login on a healthy row someone else provisioned
+        neither rotates the credential nor mints anything."""
+        from src.repositories import connection_secrets_repo, users_repo
+
+        projects = [P("516", "Agnes - test", "admin")]
+        first = kprov.provision_projects(env["user"], projects, projects, "at-1")
+        connection_id = first.outcomes[0].connection_id
+        assert pat_mocks == [("516", False)]
+
+        users_repo().create(id="u2", email="bob@example.com", name="Bob")
+        bob = users_repo().get_by_email("bob@example.com")
+        summary = kprov.provision_projects(bob, projects, projects, "at-2")
+        assert pat_mocks == [("516", False)]  # no second mint
+        assert summary.outcomes[0].token_stored is False
+        assert connection_secrets_repo().get(connection_id) == "pat-516"
+        # Bob still gets his membership.
+        assert _kbc_memberships("u2") == {"kbc-516-admin"}
+
+        # Even with the master slot EMPTY, a foreign healthy row mints
+        # nothing: a non-master answer would have no slot to land in — a
+        # freshly minted credential stored nowhere (Devin Review, 4th round).
+        from app.api.admin_source_connections import master_secret_key
+
+        connection_secrets_repo().delete(master_secret_key(connection_id))
+        kprov.provision_projects(bob, projects, projects, "at-3")
+        assert pat_mocks == [("516", False)]  # still exactly one mint ever
+
+    def test_group_ensure_hiccup_never_strips_membership(self, env, pat_mocks, monkeypatch):
+        """A transient failure while ensuring a role group leaves the desired
+        set incomplete — the sync may add, but must NOT remove memberships
+        the user still holds upstream (Devin Review on this PR)."""
+        both = [P("516", "Agnes - test", "admin"), P("7", "Beta", "readOnly")]
+        kprov.provision_projects(env["user"], both, both, "at-1")
+        assert _kbc_memberships("u1") == {"kbc-516-admin", "kbc-7-readonly"}
+
+        def flaky_ensure(project):
+            raise RuntimeError("db hiccup")
+
+        monkeypatch.setattr(kprov, "_ensure_group", flaky_ensure)
+        summary = kprov.provision_projects(env["user"], both, both, "at-2")
+        assert summary.membership_removals_safe is False
+        assert summary.memberships_removed == 0
+        assert _kbc_memberships("u1") == {"kbc-516-admin", "kbc-7-readonly"}
+
+    def test_concurrent_create_race_reconciles_to_one_connection(self, env, pat_mocks, monkeypatch):
+        """Two logins can both miss the find and both insert (no unique
+        constraint on the project identity — Devin Review on this PR): the
+        loser deletes its own fresh row and adopts the canonical one."""
+        from src.repositories import connection_secrets_repo, source_connections_repo
+
+        # The rival row that "the other login" inserted inside our race
+        # window. Id sorts before any uuid4 hex, so it is the canonical row.
+        source_connections_repo().create(
+            id="!rival",
+            name="Rival copy",
+            source_type="keboola",
+            config={"stack_url": STACK, "project_id": "99", "project_name": "Raced project"},
+        )
+        # Simulate the window: the initial find sees nothing…
+        monkeypatch.setattr(kprov, "_find_connection", lambda stack, pid: None)
+        projects = [P("99", "Raced project", "admin")]
+        summary = kprov.provision_projects(env["user"], projects, projects, "at-1")
+
+        # …but the post-create reconcile collapses back to the rival row.
+        outcome = summary.outcomes[0]
+        assert outcome.connection_id == "!rival"
+        assert outcome.connection_created is False
+        rows = [
+            row
+            for row in source_connections_repo().list(source_type="keboola")
+            if str((row.get("config") or {}).get("project_id")) == "99"
+        ]
+        assert len(rows) == 1 and rows[0]["id"] == "!rival"
+        # The empty-slot rule then lands the token on the canonical row.
+        assert connection_secrets_repo().get("!rival") == "pat-99"
+
+    def test_unexpected_error_in_one_project_does_not_abort_the_rest(self, env, pat_mocks, monkeypatch):
+        """Per-project best-effort is the module's stated contract: whatever
+        slips past the inner guards is recorded on THAT project's outcome
+        and the loop continues — and removals are suppressed, since the
+        failed project's group may be missing from the desired set."""
+        real = kprov._mint_and_store_tokens
+
+        def boom(connection, project, *args, **kwargs):
+            if project.id == "516":
+                raise RuntimeError("db exploded")
+            return real(connection, project, *args, **kwargs)
+
+        monkeypatch.setattr(kprov, "_mint_and_store_tokens", boom)
+        projects = [P("516", "Agnes - test", "admin"), P("7", "Beta", "readOnly")]
+        summary = kprov.provision_projects(env["user"], projects, projects, "at-1")
+        by_id = {o.project_id: o for o in summary.outcomes}
+        assert by_id["516"].error == "unexpected_error"
+        assert by_id["7"].token_stored is True
+        assert summary.membership_removals_safe is False
+
+    def test_vault_unconfigured_skips_connections_but_syncs_membership(self, env, pat_mocks, monkeypatch):
+        monkeypatch.setattr("app.secrets_vault.can_store_secrets", lambda: False)
+        projects = [P("516", "Agnes - test", "admin")]
+        summary = kprov.provision_projects(env["user"], projects, projects, "at-1")
+        assert summary.outcomes[0].error == "vault_key_not_configured"
+        assert _connection_for("516") is None
+        assert _kbc_memberships("u1") == {"kbc-516-admin"}
+
+
+class TestGrantPolicy:
+    def _register_tools(self, connection_id: str):
+        from src.keboola_chat_tools import build_stdio_spec, derived_source_id, derived_tool_id
+        from src.repositories import mcp_sources_repo, tool_registry_repo
+        from src.repositories.tool_registry import PASSTHROUGH
+
+        spec = build_stdio_spec(connection_id=connection_id, connection_name="X", stack_url=STACK)
+        mcp_sources_repo().upsert(**spec)
+        registry = tool_registry_repo()
+        for name, mutating in (("query_data", False), ("create_bucket", True)):
+            registry.upsert(
+                tool_id=derived_tool_id(connection_id, name),
+                source_id=derived_source_id(connection_id),
+                original_name=name,
+                exposed_name=f"kbc_x_{name}",
+                mode=PASSTHROUGH,
+                mutating=mutating,
+            )
+        return registry, derived_tool_id(connection_id, "query_data"), derived_tool_id(connection_id, "create_bucket")
+
+    def test_admin_gets_all_tools_readonly_only_nonmutating(self, env, pat_mocks):
+        from src.repositories import user_groups_repo, users_repo
+
+        projects = [P("516", "Agnes - test", "admin")]
+        summary = kprov.provision_projects(env["user"], projects, projects, "at-1")
+        connection_id = summary.outcomes[0].connection_id
+        registry, read_tool, write_tool = self._register_tools(connection_id)
+
+        # Re-login now that tools exist: the admin group is granted inline.
+        kprov.provision_projects(env["user"], projects, projects, "at-2")
+        admin_gid = user_groups_repo().get_by_name("kbc-516-admin")["id"]
+        assert admin_gid in registry.grants_for_tool(read_tool)
+        assert admin_gid in registry.grants_for_tool(write_tool)
+
+        # A second, read-only user of the same project gets only read tools.
+        users_repo().create(id="u2", email="bob@example.com", name="Bob")
+        bob = users_repo().get_by_email("bob@example.com")
+        ro = [P("516", "Agnes - test", "readOnly")]
+        kprov.provision_projects(bob, ro, ro, "at-3")
+        ro_gid = user_groups_repo().get_by_name("kbc-516-readonly")["id"]
+        assert ro_gid in registry.grants_for_tool(read_tool)
+        assert ro_gid not in registry.grants_for_tool(write_tool)
+        assert _kbc_memberships("u2") == {"kbc-516-readonly"}
+
+    def test_disabled_tools_are_never_granted(self, env, pat_mocks):
+        """Grant narrow, like the admin grant-all endpoint: a disabled tool
+        row must not receive a grant — re-enabling it later would expose it
+        to the group without anyone granting again."""
+        from src.keboola_chat_tools import derived_source_id, derived_tool_id
+        from src.repositories import tool_registry_repo, user_groups_repo
+        from src.repositories.tool_registry import PASSTHROUGH
+
+        projects = [P("516", "Agnes - test", "admin")]
+        summary = kprov.provision_projects(env["user"], projects, projects, "at-1")
+        connection_id = summary.outcomes[0].connection_id
+        registry, read_tool, _ = self._register_tools(connection_id)
+        off_tool = derived_tool_id(connection_id, "dangerous_but_off")
+        tool_registry_repo().upsert(
+            tool_id=off_tool,
+            source_id=derived_source_id(connection_id),
+            original_name="dangerous_but_off",
+            exposed_name="kbc_x_dangerous_but_off",
+            mode=PASSTHROUGH,
+            mutating=False,
+            enabled=False,
+        )
+        kprov.provision_projects(env["user"], projects, projects, "at-2")
+        admin_gid = user_groups_repo().get_by_name("kbc-516-admin")["id"]
+        assert admin_gid in registry.grants_for_tool(read_tool)
+        assert admin_gid not in registry.grants_for_tool(off_tool)
+
+    def test_connection_with_registered_tools_is_not_re_enabled(self, env, pat_mocks):
+        projects = [P("516", "Agnes - test", "admin")]
+        summary = kprov.provision_projects(env["user"], projects, projects, "at-1")
+        self._register_tools(summary.outcomes[0].connection_id)
+        again = kprov.provision_projects(env["user"], projects, projects, "at-2")
+        assert again.connections_needing_chat_tools == []
+
+    def test_admin_disabled_source_is_left_alone(self, env, pat_mocks):
+        """A derived source the admin switched OFF is neither re-enabled nor
+        granted from a login — the off-switch is an admin decision."""
+        from src.keboola_chat_tools import derived_source_id
+        from src.repositories import mcp_sources_repo, user_groups_repo
+
+        projects = [P("516", "Agnes - test", "admin")]
+        summary = kprov.provision_projects(env["user"], projects, projects, "at-1")
+        connection_id = summary.outcomes[0].connection_id
+        registry, read_tool, _ = self._register_tools(connection_id)
+        source = mcp_sources_repo().get(derived_source_id(connection_id))
+        mcp_sources_repo().upsert(
+            **{k: v for k, v in {**source, "enabled": False}.items() if k not in ("created_at", "updated_at")}
+        )
+
+        again = kprov.provision_projects(env["user"], projects, projects, "at-2")
+        assert again.connections_needing_chat_tools == []
+        assert again.deferred_grants == []
+        admin_gid = user_groups_repo().get_by_name("kbc-516-admin")["id"]
+        assert admin_gid not in registry.grants_for_tool(read_tool)
+
+
+class TestFinishLoginProvisioning:
+    """The background tail: chat-tools enable per connection (failures
+    isolated), deferred grants only after a successful enable, and the
+    semantic-layer refresh under the shared guard."""
+
+    def _run(self, summary):
+        import asyncio
+
+        asyncio.run(kprov.finish_login_provisioning(summary))
+
+    def test_enables_grants_and_syncs(self, monkeypatch):
+        import app.api.admin_source_connections as asc
+        import app.api.keboola_semantic_layer_refresh as kslr
+
+        enabled, granted, synced = [], [], []
+
+        async def fake_enable(connection_id, _user=None):
+            enabled.append(connection_id)
+            return {"tools_registered": 2}
+
+        monkeypatch.setattr(asc, "enable_chat_tools", fake_enable)
+        monkeypatch.setattr(kprov, "apply_tool_grants", lambda cid, gid, role: granted.append((cid, gid, role)))
+
+        async def fake_sync(*, trigger):
+            synced.append(trigger)
+
+        monkeypatch.setattr(kslr, "run_semantic_layer_refresh_background", fake_sync)
+
+        summary = kprov.ProvisionSummary(
+            connections_needing_chat_tools=["c1"],
+            deferred_grants=[{"connection_id": "c1", "group_id": "g1", "role": "admin"}],
+            semantic_sync_needed=True,
+        )
+        self._run(summary)
+        assert enabled == ["c1"]
+        assert granted == [("c1", "g1", "admin")]
+        assert synced == ["keboola-login"]
+
+    def test_one_enable_failing_does_not_stop_the_rest(self, monkeypatch):
+        import app.api.admin_source_connections as asc
+        import app.api.keboola_semantic_layer_refresh as kslr
+        from fastapi import HTTPException
+
+        enabled, granted = [], []
+
+        async def flaky_enable(connection_id, _user=None):
+            if connection_id == "c1":
+                raise HTTPException(status_code=502, detail="upstream download failed")
+            enabled.append(connection_id)
+            return {"tools_registered": 1}
+
+        monkeypatch.setattr(asc, "enable_chat_tools", flaky_enable)
+        monkeypatch.setattr(kprov, "apply_tool_grants", lambda cid, gid, role: granted.append(cid))
+
+        async def fake_sync(*, trigger):
+            pass
+
+        monkeypatch.setattr(kslr, "run_semantic_layer_refresh_background", fake_sync)
+
+        summary = kprov.ProvisionSummary(
+            connections_needing_chat_tools=["c1", "c2"],
+            deferred_grants=[
+                {"connection_id": "c1", "group_id": "g1", "role": "admin"},
+                {"connection_id": "c2", "group_id": "g2", "role": "readOnly"},
+            ],
+        )
+        self._run(summary)
+        assert enabled == ["c2"]
+        # No grants for the connection whose tools never registered.
+        assert granted == ["c2"]
+
+
+class TestSelectModeStash:
+    def test_store_load_roundtrip_and_import(self, env, pat_mocks):
+        projects = [P("516", "Agnes - test", "admin"), P("7", "Beta", "readOnly")]
+        assert kprov.store_pending_discovery(env["user"], projects, "at-1") is True
+        blob = kprov.load_pending_discovery("u1")
+        assert blob is not None
+        assert {p["id"] for p in blob["projects"]} == {"516", "7"}
+
+        summary = kprov.provision_selected(env["user"], ["516"])
+        assert [o.project_id for o in summary.outcomes] == ["516"]
+        assert _connection_for("516") is not None
+        assert _connection_for("7") is None
+        assert _kbc_memberships("u1") == {"kbc-516-admin"}
+        # The stash survives an import — the user may import more later.
+        assert kprov.load_pending_discovery("u1") is not None
+
+    def test_import_unknown_project_is_refused(self, env, pat_mocks):
+        kprov.store_pending_discovery(env["user"], [P("516")], "at-1")
+        with pytest.raises(kprov.DiscoveryStateError) as err:
+            kprov.provision_selected(env["user"], ["999"])
+        assert err.value.reason == "unknown_project"
+
+    def test_import_without_discovery_is_expired(self, env):
+        with pytest.raises(kprov.DiscoveryStateError) as err:
+            kprov.provision_selected(env["user"], ["516"])
+        assert err.value.reason == "discovery_expired"
+
+    def test_expired_stash_is_deleted_on_load(self, env):
+        from src.repositories import per_user_secrets_repo
+
+        stale = {
+            "v": 1,
+            "access_token": "at-old",
+            "stack_url": STACK,
+            "stored_at": (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat(),
+            "projects": [{"id": "516", "name": "A", "role": "admin"}],
+        }
+        per_user_secrets_repo().upsert(kprov.PENDING_DISCOVERY_SOURCE_ID, "u1", json.dumps(stale))
+        assert kprov.load_pending_discovery("u1") is None
+        assert per_user_secrets_repo().get(kprov.PENDING_DISCOVERY_SOURCE_ID, "u1") is None
+
+    def test_stack_change_inside_the_ttl_invalidates_the_stash(self, env, monkeypatch):
+        """The stash's access token belongs to the stack the sign-in happened
+        on — re-pointing auth.keboola.stack_url inside the TTL must expire
+        the stash (listing stops offering it, import says sign in again)
+        instead of minting PATs on the wrong stack (Devin Review on this PR,
+        fourteenth round)."""
+        from src.repositories import per_user_secrets_repo
+
+        projects = [P("516", "Agnes - test", "admin")]
+        assert kprov.store_pending_discovery(env["user"], projects, "at-1") is True
+        monkeypatch.setattr(kv, "stack_url", lambda: "https://elsewhere.example.com")
+
+        assert kprov.load_pending_discovery("u1") is None
+        assert per_user_secrets_repo().get(kprov.PENDING_DISCOVERY_SOURCE_ID, "u1") is None
+        with pytest.raises(kprov.DiscoveryStateError) as err:
+            kprov.provision_selected(env["user"], ["516"])
+        assert err.value.reason == "discovery_expired"
+
+    def test_import_refilters_against_the_current_gates(self, env, pat_mocks, monkeypatch):
+        """Roles narrowed INSIDE the stash's TTL must bite at import time:
+        the stashed grant must not outlive the config that granted it."""
+        projects = [P("516", "Agnes - test", "admin"), P("7", "Beta", "readOnly")]
+        kprov.store_pending_discovery(env["user"], projects, "at-1")
+        monkeypatch.setattr(kv, "allowed_roles", lambda: ["admin"])
+
+        with pytest.raises(kprov.DiscoveryStateError) as err:
+            kprov.provision_selected(env["user"], ["7"])
+        assert err.value.reason == "unknown_project"
+        # The still-allowed project imports fine.
+        summary = kprov.provision_selected(env["user"], ["516"])
+        assert [o.project_id for o in summary.outcomes] == ["516"]
+
+    def test_relogin_membership_sync_covers_connected_projects_only(self, env, pat_mocks):
+        # Import one of two, then a later select-mode login (provision
+        # nothing) keeps the imported project's membership and drops nothing.
+        projects = [P("516", "Agnes - test", "admin"), P("7", "Beta", "readOnly")]
+        kprov.store_pending_discovery(env["user"], projects, "at-1")
+        kprov.provision_selected(env["user"], ["516"])
+
+        summary = kprov.provision_projects(env["user"], [], projects, "at-2")
+        assert summary.outcomes == []
+        assert _kbc_memberships("u1") == {"kbc-516-admin"}
+
+
+class TestDefaultConnectionFallback:
+    """Auto-provisioned rows must not displace an admin's connection as the
+    semantic layer's effective default (Devin Review, ninth round): the
+    no-``is_default``-flagged fallback is name-ordered, and login rows are
+    named after Keboola projects, so one could otherwise sort first."""
+
+    def _admin_connection(self, name: str = "Zebra corp", **kwargs):
+        from uuid import uuid4
+
+        from src.repositories import source_connections_repo
+
+        connection_id = str(uuid4())
+        source_connections_repo().create(
+            id=connection_id,
+            name=name,
+            source_type="keboola",
+            config={"stack_url": STACK},
+            created_by="admin@example.com",
+            **kwargs,
+        )
+        return connection_id
+
+    def test_admin_row_beats_earlier_sorting_login_row(self, env, pat_mocks):
+        from connectors.keboola.semantic_layer import _default_keboola_connection
+
+        admin_id = self._admin_connection("Zebra corp")
+        projects = [P("516", "Agnes - test", "admin")]  # sorts before "Zebra corp"
+        kprov.provision_projects(env["user"], projects, projects, "at-1")
+
+        picked = _default_keboola_connection()
+        assert picked is not None and picked["id"] == admin_id
+
+    def test_explicit_default_flag_still_wins(self, env, pat_mocks):
+        from src.repositories import source_connections_repo
+
+        from connectors.keboola.semantic_layer import _default_keboola_connection
+
+        self._admin_connection("Zebra corp")
+        projects = [P("516", "Agnes - test", "admin")]
+        kprov.provision_projects(env["user"], projects, projects, "at-1")
+        login_row = _connection_for("516")
+        source_connections_repo().update(login_row["id"], is_default=True)
+
+        picked = _default_keboola_connection()
+        assert picked is not None and picked["id"] == login_row["id"]
+
+    def test_pure_auto_instance_keeps_name_ordered_fallback(self, env, pat_mocks):
+        from connectors.keboola.semantic_layer import _default_keboola_connection
+
+        projects = [P("516", "Beta project", "admin"), P("7", "Alpha project", "readOnly")]
+        kprov.provision_projects(env["user"], projects, projects, "at-1")
+
+        picked = _default_keboola_connection()
+        assert picked is not None and picked["id"] == _connection_for("7")["id"]
