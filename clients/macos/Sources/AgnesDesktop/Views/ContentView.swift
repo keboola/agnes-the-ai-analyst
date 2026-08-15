@@ -12,7 +12,7 @@ struct ContentView: View {
         switch model.selectedDestination {
         case .marketplace:
           MarketplaceView(model: model)
-        case .ask:
+        case .runs:
           ChatWorkspaceView(model: model)
         case .settings:
           SettingsView(model: model)
@@ -48,7 +48,7 @@ private struct AgnesSidebar: View {
 
       VStack(spacing: 4) {
         destinationButton(.marketplace)
-        destinationButton(.ask)
+        destinationButton(.runs)
       }
       .padding(.horizontal, 10)
 
@@ -98,6 +98,10 @@ private struct AgnesSidebar: View {
         Spacer()
         if destination == .marketplace, model.marketplaceTotal > 0 {
           Text("\(model.marketplaceTotal)")
+            .font(.caption.monospacedDigit())
+            .foregroundStyle(AgnesTheme.textMuted)
+        } else if destination == .runs, !model.runs.isEmpty {
+          Text("\(model.runs.count)")
             .font(.caption.monospacedDigit())
             .foregroundStyle(AgnesTheme.textMuted)
         }

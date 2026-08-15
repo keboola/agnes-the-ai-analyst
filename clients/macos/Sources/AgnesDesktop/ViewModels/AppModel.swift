@@ -4,7 +4,7 @@ import Foundation
 final class AppModel: ObservableObject {
   enum Destination: String, CaseIterable, Identifiable {
     case marketplace
-    case ask
+    case runs
     case settings
 
     var id: String { rawValue }
@@ -12,7 +12,7 @@ final class AppModel: ObservableObject {
     var title: String {
       switch self {
       case .marketplace: "Marketplace"
-      case .ask: "Ask Agnes"
+      case .runs: "Agent Runs"
       case .settings: "Settings"
       }
     }
@@ -20,10 +20,18 @@ final class AppModel: ObservableObject {
     var systemImage: String {
       switch self {
       case .marketplace: "storefront"
-      case .ask: "sparkles"
+      case .runs: "terminal"
       case .settings: "gearshape"
       }
     }
+  }
+
+  enum RunInspectorTab: String, CaseIterable, Identifiable {
+    case run = "Run"
+    case agent = "Agent"
+    case events = "Events"
+
+    var id: String { rawValue }
   }
 
   enum CLIStatus: Equatable {
@@ -48,10 +56,7 @@ final class AppModel: ObservableObject {
     case plugins
 
     var id: String { rawValue }
-
-    var title: String {
-      rawValue.capitalized
-    }
+    var title: String { rawValue.capitalized }
 
     var cliValue: MarketplaceItemType? {
       switch self {
@@ -103,9 +108,14 @@ final class AppModel: ObservableObject {
   @Published var agentSlug: String {
     didSet {
       UserDefaults.standard.set(agentSlug, forKey: Self.agentSlugKey)
+      if oldValue != agentSlug {
+        agentUsage = nil
+        agentUsageError = nil
+      }
     }
   }
   @Published var prompt = ""
+  @Published var runInspectorTab: RunInspectorTab = .run
 
   @Published private(set) var cliStatus: CLIStatus = .idle
   @Published var marketplaceQuery = ""
@@ -126,16 +136,20 @@ final class AppModel: ObservableObject {
   @Published private(set) var isLoadingMarketplaceDetail = false
   @Published private(set) var isChangingMarketplaceStack = false
 
-  @Published private(set) var result: AskResult?
-  @Published private(set) var askError: String?
-  @Published private(set) var isAsking = false
-  @Published private(set) var isStopping = false
+  @Published private(set) var runs: [AgentRunRecord] = []
+  @Published var selectedRunID: UUID?
+  @Published private(set) var isRunningAgent = false
+  @Published private(set) var isStoppingAgent = false
+  @Published private(set) var agentUsage: AgentUsage?
+  @Published private(set) var agentUsageError: String?
+  @Published private(set) var isLoadingAgentUsage = false
 
   private static let executablePathKey = "agnesExecutablePath"
   private static let agentSlugKey = "agnesAgentSlug"
   private let cli: any AgnesCLIProviding
   private var executableURL: URL?
-  private var askTask: Task<Void, Never>?
+  private var activeRequestID: UUID?
+  private var runTask: Task<Void, Never>?
 
   init(cli: any AgnesCLIProviding = AgnesCLIClient()) {
     self.cli = cli
@@ -144,49 +158,77 @@ final class AppModel: ObservableObject {
   }
 
   var visibleMarketplaceItems: [MarketplaceItem] {
-    switch marketplaceShelf {
-    case .browse:
-      marketplaceItems
-    case .stack:
-      marketplaceStackItems
-    }
+    marketplaceShelf == .browse ? marketplaceItems : marketplaceStackItems
   }
 
-  var installedMarketplaceCount: Int {
-    marketplaceStackItems.count
-  }
-
-  var marketplaceActionMessage: String? {
-    marketplaceActionOutcome?.message
-  }
+  var installedMarketplaceCount: Int { marketplaceStackItems.count }
+  var marketplaceActionMessage: String? { marketplaceActionOutcome?.message }
 
   /// Each shelf owns its own request and error state. A failed Stack refresh
   /// must not obscure a usable Browse result (and vice versa).
   var marketplaceError: String? {
-    switch marketplaceShelf {
-    case .browse: marketplaceBrowseError
-    case .stack: marketplaceStackError
-    }
+    marketplaceShelf == .browse ? marketplaceBrowseError : marketplaceStackError
   }
 
-  var resolvedExecutablePath: String? {
-    executableURL?.path
+  var resolvedExecutablePath: String? { executableURL?.path }
+
+  var cliVersion: String? {
+    guard case .ready(let version) = cliStatus else { return nil }
+    return version
   }
 
-  var canAsk: Bool {
+  var selectedRun: AgentRunRecord? {
+    guard let selectedRunID else { return runs.first }
+    return runs.first(where: { $0.id == selectedRunID })
+  }
+
+  var activeRun: AgentRunRecord? {
+    guard let activeRequestID else { return nil }
+    return runs.first(where: { $0.id == activeRequestID })
+  }
+
+  var canRun: Bool {
     executableURL != nil
       && !agentSlug.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
       && !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-      && !hasActiveCLICommand
+      && !isRunningAgent
+  }
+
+  var hasActiveMarketplaceCommand: Bool {
+    isRefreshingMarketplace || isLoadingMarketplaceDetail || isChangingMarketplaceStack
   }
 
   var hasActiveCLICommand: Bool {
-    isRefreshingMarketplace || isLoadingMarketplaceDetail || isChangingMarketplaceStack
-      || isAsking || isStopping
+    hasActiveMarketplaceCommand || isRunningAgent || isStoppingAgent || isLoadingAgentUsage
+  }
+
+  var agentRuntimeContract: String {
+    let slug = agentSlug.trimmingCharacters(in: .whitespacesAndNewlines)
+    let payload: [String: Any] = [
+      "agent": ["slug": slug.isEmpty ? "<agent-slug>" : slug],
+      "transport": [
+        "executable": resolvedExecutablePath ?? "agnes",
+        "mode": "isolated-one-shot",
+        "format": "ag-ui-event-array",
+      ],
+      "invocation": [
+        "arguments": ["chat", "--agent", slug.isEmpty ? "<agent-slug>" : slug, "--once", "<prompt>", "--json"]
+      ],
+      "limitations": [
+        "session_cleanup_is_best_effort_after_run",
+        "no_agent_discovery_with_pat",
+        "events_available_after_process_exit",
+      ],
+    ]
+    guard let data = try? JSONSerialization.data(
+      withJSONObject: payload,
+      options: [.prettyPrinted, .sortedKeys]
+    ) else { return "{}" }
+    return String(decoding: data, as: UTF8.self)
   }
 
   func bootstrap() async {
-    guard !hasActiveCLICommand else { return }
+    guard !hasActiveMarketplaceCommand else { return }
 
     isRefreshingMarketplace = true
     marketplaceActionOutcome = nil
@@ -203,11 +245,10 @@ final class AppModel: ObservableObject {
   }
 
   func refreshMarketplace() async {
-    guard !hasActiveCLICommand else { return }
+    guard !hasActiveMarketplaceCommand else { return }
 
     isRefreshingMarketplace = true
     marketplaceActionOutcome = nil
-    cliStatus = .checking
     defer { isRefreshingMarketplace = false }
 
     let shelf = marketplaceShelf
@@ -225,7 +266,7 @@ final class AppModel: ObservableObject {
   }
 
   func presentMarketplaceItem(_ item: MarketplaceItem) {
-    guard !hasActiveCLICommand else { return }
+    guard !hasActiveMarketplaceCommand else { return }
     marketplaceActionOutcome = nil
     presentedMarketplaceItem = item
     marketplaceDetail = nil
@@ -238,7 +279,6 @@ final class AppModel: ObservableObject {
       !isLoadingMarketplaceDetail,
       !isRefreshingMarketplace,
       !isChangingMarketplaceStack,
-      !isAsking,
       let executable = executableURL,
       let item = presentedMarketplaceItem
     else { return }
@@ -266,7 +306,7 @@ final class AppModel: ObservableObject {
 
   func setPresentedMarketplaceItemInstalled(_ installed: Bool) async {
     guard
-      !hasActiveCLICommand,
+      !hasActiveMarketplaceCommand,
       let executable = executableURL,
       let item = presentedMarketplaceItem,
       let detail = marketplaceDetail,
@@ -304,63 +344,118 @@ final class AppModel: ObservableObject {
     marketplaceActionOutcome = nil
   }
 
-  func submitPrompt() {
-    guard canAsk, let executable = executableURL else { return }
+  func submitRun() {
+    guard canRun, let executable = executableURL else { return }
 
     let slug = agentSlug.trimmingCharacters(in: .whitespacesAndNewlines)
     let text = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
-    askError = nil
-    result = nil
-    isAsking = true
-    isStopping = false
+    let requestID = UUID()
+    let record = AgentRunRecord(
+      id: requestID,
+      agentSlug: slug,
+      prompt: text,
+      startedAt: Date(),
+      finishedAt: nil,
+      state: .running,
+      result: nil,
+      errorMessage: nil
+    )
 
-    askTask = Task { [weak self, cli] in
+    runs.insert(record, at: 0)
+    selectedRunID = requestID
+    runInspectorTab = .run
+    activeRequestID = requestID
+    isRunningAgent = true
+    isStoppingAgent = false
+    prompt = ""
+
+    runTask = Task { [weak self, cli] in
       guard let self else { return }
-      defer {
-        self.isAsking = false
-        self.isStopping = false
-        self.askTask = nil
-      }
 
       do {
-        let response = try await cli.ask(
+        let result = try await cli.runAgent(
           executable: executable,
+          requestID: requestID,
           agentSlug: slug,
           prompt: text
         )
-        if self.isStopping {
-          self.askError = "Request stopped."
+        if self.isStoppingAgent {
+          self.finishRun(
+            requestID,
+            state: .stopped,
+            result: result,
+            errorMessage: "Run stopped by you."
+          )
         } else {
-          self.result = response
+          let state: AgentRunRecord.State
+          switch result.outcome {
+          case .completed: state = .completed
+          case .failed: state = .failed
+          case .truncated: state = .truncated
+          }
+          self.finishRun(
+            requestID,
+            state: state,
+            result: result,
+            errorMessage: result.errorMessage
+          )
         }
       } catch {
-        self.askError =
-          self.isStopping
-          ? "Request stopped."
-          : "Agnes could not complete the request: \(error.localizedDescription)"
+        self.finishRun(
+          requestID,
+          state: self.isStoppingAgent ? .stopped : .failed,
+          result: nil,
+          errorMessage: self.isStoppingAgent
+            ? "Run stopped by you."
+            : "Agnes CLI could not complete the run: \(error.localizedDescription)"
+        )
       }
+
+      if self.activeRequestID == requestID {
+        self.activeRequestID = nil
+      }
+      self.isRunningAgent = false
+      self.isStoppingAgent = false
+      self.runTask = nil
+
+      // Usage is an independent CLI read. A slow usage endpoint must not make
+      // a completed run look active or leave its Stop button enabled.
+      await self.refreshAgentUsage(for: slug, executable: executable)
     }
   }
 
-  func stopRequest() {
-    guard isAsking, !isStopping else { return }
-    isStopping = true
-    cli.cancel()
+  func stopRun() {
+    guard let requestID = activeRequestID, isRunningAgent, !isStoppingAgent else { return }
+    isStoppingAgent = true
+    cli.cancel(requestID: requestID)
+  }
+
+  func selectRun(_ id: UUID) {
+    guard runs.contains(where: { $0.id == id }) else { return }
+    selectedRunID = id
+    runInspectorTab = .run
+  }
+
+  func clearRuns() {
+    guard !isRunningAgent else { return }
+    runs = []
+    selectedRunID = nil
+    runInspectorTab = .agent
+  }
+
+  func refreshAgentUsage() async {
+    guard let executable = executableURL else { return }
+    let slug = agentSlug.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !slug.isEmpty else { return }
+    await refreshAgentUsage(for: slug, executable: executable)
   }
 
   func cancelForTermination() {
-    guard hasActiveCLICommand else { return }
-    if isAsking {
-      isStopping = true
+    if let activeRequestID {
+      isStoppingAgent = true
+      cli.cancel(requestID: activeRequestID)
     }
-    cli.cancel()
-  }
-
-  func clearAsk() {
-    guard !isAsking else { return }
-    prompt = ""
-    result = nil
-    askError = nil
+    cli.cancelAll()
   }
 
   private var normalizedMarketplaceQuery: String? {
@@ -387,8 +482,8 @@ final class AppModel: ObservableObject {
     presentedMarketplaceItem = nil
     marketplaceDetail = nil
     marketplaceDetailError = nil
-    result = nil
-    askError = nil
+    agentUsage = nil
+    agentUsageError = nil
   }
 
   private var cliUnavailableMessage: String {
@@ -463,6 +558,37 @@ final class AppModel: ObservableObject {
       $0.id == current.id
     }) {
       presentedMarketplaceItem = updated
+    }
+  }
+
+  private func finishRun(
+    _ id: UUID,
+    state: AgentRunRecord.State,
+    result: AgentRunResult?,
+    errorMessage: String?
+  ) {
+    guard let index = runs.firstIndex(where: { $0.id == id }) else { return }
+    runs[index].finishedAt = Date()
+    runs[index].state = state
+    runs[index].result = result
+    runs[index].errorMessage = errorMessage
+  }
+
+  private func refreshAgentUsage(for slug: String, executable: URL) async {
+    guard !isLoadingAgentUsage else { return }
+    isLoadingAgentUsage = true
+    agentUsageError = nil
+    defer { isLoadingAgentUsage = false }
+
+    do {
+      let usage = try await cli.agentUsage(executable: executable, agentSlug: slug)
+      if agentSlug.trimmingCharacters(in: .whitespacesAndNewlines) == slug {
+        agentUsage = usage
+      }
+    } catch {
+      if agentSlug.trimmingCharacters(in: .whitespacesAndNewlines) == slug {
+        agentUsageError = error.localizedDescription
+      }
     }
   }
 }

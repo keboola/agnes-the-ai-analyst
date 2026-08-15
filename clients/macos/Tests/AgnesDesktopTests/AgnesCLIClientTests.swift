@@ -352,7 +352,7 @@ final class AgnesCLIClientTests: XCTestCase {
     }
   }
 
-  func testAskKeepsHostileLookingPromptAsOneArgument() async throws {
+  func testRunAgentKeepsHostileLookingPromptAsOneArgument() async throws {
     let prompt = "hello; rm -rf / $(whoami) && echo pwned"
     let events = """
       [
@@ -366,9 +366,16 @@ final class AgnesCLIClientTests: XCTestCase {
     ])
     let client = AgnesCLIClient(runner: runner)
 
-    let result = try await client.ask(executable: executable, agentSlug: "sales", prompt: prompt)
+    let requestID = UUID()
+    let result = try await client.runAgent(
+      executable: executable,
+      requestID: requestID,
+      agentSlug: "sales",
+      prompt: prompt
+    )
 
     XCTAssertEqual(result.answer, "Safe answer")
+    XCTAssertEqual(result.outcome, .completed)
     let invocations = runner.capturedInvocations()
     XCTAssertEqual(
       invocations.first?.arguments,
@@ -378,36 +385,164 @@ final class AgnesCLIClientTests: XCTestCase {
     XCTAssertEqual(invocations.first?.arguments.count, 6)
   }
 
-  func testAskRejectsNonZeroExitWithoutAttemptingToParseOutput() async {
+  func testRunAgentRejectsNonzeroInvalidJSONOutput() async {
     let runner = StubRunner(outputs: [
       .success(.init(exitCode: 2, standardOutput: "not json", standardError: "not logged in"))
     ])
     let client = AgnesCLIClient(runner: runner)
 
     await assertThrowsErrorAsync(
-      try await client.ask(executable: executable, agentSlug: "sales", prompt: "hi")
+      try await client.runAgent(
+        executable: executable,
+        requestID: UUID(),
+        agentSlug: "sales",
+        prompt: "hi"
+      )
     ) { error in
       XCTAssertEqual(
         error as? AgnesCLIError, .commandFailed(exitCode: 2, standardError: "not logged in"))
     }
   }
 
-  func testCancelForwardsToTheActiveProcessRunner() async throws {
+  func testCancelForwardsOnlyTheRequestedProcessID() async throws {
     let runner = BlockingRunner()
     let client = AgnesCLIClient(runner: runner)
-    let ask = Task {
-      try await client.ask(executable: self.executable, agentSlug: "sales", prompt: "hi")
+    let requestID = UUID()
+    let run = Task {
+      try await client.runAgent(
+        executable: self.executable,
+        requestID: requestID,
+        agentSlug: "sales",
+        prompt: "hi"
+      )
     }
     await runner.waitUntilStarted()
 
-    client.cancel()
+    client.cancel(requestID: UUID())
+    XCTAssertEqual(runner.capturedCancelCount(), 0)
+    client.cancel(requestID: requestID)
 
-    await assertThrowsErrorAsync(try await ask.value) { error in
+    await assertThrowsErrorAsync(try await run.value) { error in
       XCTAssertEqual(
         error as? AgnesCLIError, .commandFailed(exitCode: 130, standardError: "cancelled"))
     }
     let cancelCount = runner.capturedCancelCount()
     XCTAssertEqual(cancelCount, 1)
+  }
+
+  func testAgentUsageUsesStableJSONCommandAndDecodesBudget() async throws {
+    let body = """
+      {
+        "period": "2026-08",
+        "agent_slug": "sales",
+        "input_tokens": 120,
+        "output_tokens": 80,
+        "cache_read_tokens": 40,
+        "cache_creation_tokens": 10,
+        "total_tokens": 250,
+        "budget_limit": 1000,
+        "budget_remaining": 750
+      }
+      """
+    let runner = StubRunner(outputs: [
+      .success(.init(exitCode: 0, standardOutput: body, standardError: ""))
+    ])
+    let client = AgnesCLIClient(runner: runner)
+
+    let usage = try await client.agentUsage(executable: executable, agentSlug: "sales")
+
+    XCTAssertEqual(
+      runner.capturedInvocations().first?.arguments,
+      ["agent", "usage", "sales", "--json"]
+    )
+    XCTAssertEqual(usage.totalTokens, 250)
+    XCTAssertEqual(usage.budgetRemaining, 750)
+  }
+
+  func testRunAgentSurfacesBoundedOutputAsTruncated() async throws {
+    let runner = StubRunner(outputs: [
+      .success(
+        .init(
+          exitCode: 0,
+          standardOutput: #"[{"type":"TEXT_MESSAGE_CONTENT","delta":"partial"}"#,
+          standardError: "",
+          standardOutputTruncated: true
+        ))
+    ])
+    let client = AgnesCLIClient(runner: runner)
+
+    let result = try await client.runAgent(
+      executable: executable,
+      requestID: UUID(),
+      agentSlug: "sales",
+      prompt: "hi"
+    )
+
+    XCTAssertEqual(result.outcome, .truncated)
+    XCTAssertTrue(result.errorMessage?.contains("safety limit") == true)
+    XCTAssertTrue(result.rawEventsJSON.contains("TEXT_MESSAGE_CONTENT"))
+  }
+
+  func testSystemRunnerDrainsButRetainsOnlyConfiguredOutputLimit() async throws {
+    let runner = SystemAgnesCLIProcessRunner(
+      standardOutputLimit: 8,
+      standardErrorLimit: 8
+    )
+
+    let output = try await runner.run(
+      requestID: UUID(),
+      executable: URL(fileURLWithPath: "/usr/bin/printf"),
+      arguments: ["123456789012"],
+      environment: [:]
+    )
+
+    XCTAssertEqual(output.exitCode, 0)
+    XCTAssertEqual(output.standardOutput, "12345678")
+    XCTAssertTrue(output.standardOutputTruncated)
+    XCTAssertFalse(output.standardErrorTruncated)
+  }
+
+  func testSystemRunnerCancellationBeforeProcessStartIsNotLost() async throws {
+    let runner = SystemAgnesCLIProcessRunner()
+    let requestID = UUID()
+    runner.cancel(requestID: requestID)
+
+    let output = try await runner.run(
+      requestID: requestID,
+      executable: URL(fileURLWithPath: "/bin/sleep"),
+      arguments: ["5"],
+      environment: [:]
+    )
+
+    XCTAssertNotEqual(output.exitCode, 0)
+  }
+
+  func testSystemRunnerCanCancelOneConcurrentChildWithoutStoppingAnother() async throws {
+    let runner = SystemAgnesCLIProcessRunner()
+    let slowID = UUID()
+    let fastID = UUID()
+    let slow = Task {
+      try await runner.run(
+        requestID: slowID,
+        executable: URL(fileURLWithPath: "/bin/sleep"),
+        arguments: ["5"],
+        environment: [:]
+      )
+    }
+
+    try await Task.sleep(for: .milliseconds(50))
+    let fast = try await runner.run(
+      requestID: fastID,
+      executable: URL(fileURLWithPath: "/usr/bin/printf"),
+      arguments: ["still-running"],
+      environment: [:]
+    )
+    runner.cancel(requestID: slowID)
+    let cancelled = try await slow.value
+
+    XCTAssertEqual(fast.exitCode, 0)
+    XCTAssertEqual(fast.standardOutput, "still-running")
+    XCTAssertNotEqual(cancelled.exitCode, 0)
   }
 }
 
@@ -423,10 +558,16 @@ final class AgnesCLIOutputParserTests: XCTestCase {
       ]
       """
 
+    let result = try AgnesCLIOutputParser.parseAgentRun(text)
+
+    XCTAssertEqual(result.outcome, .completed)
+    XCTAssertEqual(result.answer, "Hello world")
+    XCTAssertEqual(result.toolNames, ["agnes_query"])
     XCTAssertEqual(
-      try AgnesCLIOutputParser.parseAsk(text),
-      AskResult(answer: "Hello world", toolNames: ["agnes_query"])
+      result.notableEvents.map(\.type),
+      ["RUN_STARTED", "TOOL_CALL_START", "RUN_FINISHED"]
     )
+    XCTAssertTrue(result.rawEventsJSON.contains(#""type" : "TOOL_CALL_START""#))
   }
 
   func testParserFallsBackToFinalContentWhenNoVisibleDeltaArrived() throws {
@@ -438,10 +579,10 @@ final class AgnesCLIOutputParserTests: XCTestCase {
       ]
       """
 
-    XCTAssertEqual(
-      try AgnesCLIOutputParser.parseAsk(text),
-      AskResult(answer: "Final answer", toolNames: [])
-    )
+    let result = try AgnesCLIOutputParser.parseAgentRun(text)
+
+    XCTAssertEqual(result.answer, "Final answer")
+    XCTAssertTrue(result.toolNames.isEmpty)
   }
 
   func testParserStripsOnlyACompleteTrailingNextActionsBlock() throws {
@@ -452,10 +593,10 @@ final class AgnesCLIOutputParserTests: XCTestCase {
       ]
       """
 
-    XCTAssertEqual(try AgnesCLIOutputParser.parseAsk(text).answer, "Answer.")
+    XCTAssertEqual(try AgnesCLIOutputParser.parseAgentRun(text).answer, "Answer.")
   }
 
-  func testParserRejectsRunErrorAndPreservesPartialAnswer() {
+  func testParserReturnsStructuredRunErrorAndPreservesPartialAnswer() throws {
     let text = """
       [
         {"type":"TEXT_MESSAGE_CONTENT","delta":"Partial"},
@@ -464,15 +605,14 @@ final class AgnesCLIOutputParserTests: XCTestCase {
       ]
       """
 
-    XCTAssertThrowsError(try AgnesCLIOutputParser.parseAsk(text)) { error in
-      XCTAssertEqual(
-        error as? AgnesCLIError,
-        .runFailed(message: "tool failed", partialAnswer: "Partial")
-      )
-    }
+    let result = try AgnesCLIOutputParser.parseAgentRun(text)
+
+    XCTAssertEqual(result.outcome, .failed)
+    XCTAssertEqual(result.errorMessage, "tool failed")
+    XCTAssertEqual(result.answer, "Partial")
   }
 
-  func testAskPreservesRunErrorFromValidNonzeroJSONOutput() async {
+  func testRunAgentPreservesStructuredRunErrorFromValidNonzeroJSONOutput() async throws {
     let events = """
       [
         {"type":"TEXT_MESSAGE_CONTENT","delta":"Partial"},
@@ -484,28 +624,28 @@ final class AgnesCLIOutputParserTests: XCTestCase {
     ])
     let client = AgnesCLIClient(runner: runner)
 
-    await assertThrowsErrorAsync(
-      try await client.ask(
-        executable: URL(fileURLWithPath: "/tmp/agnes"),
-        agentSlug: "sales",
-        prompt: "hi"
-      )
-    ) { error in
-      XCTAssertEqual(
-        error as? AgnesCLIError,
-        .runFailed(message: "tool failed", partialAnswer: "Partial")
-      )
-    }
+    let result = try await client.runAgent(
+      executable: URL(fileURLWithPath: "/tmp/agnes"),
+      requestID: UUID(),
+      agentSlug: "sales",
+      prompt: "hi"
+    )
+
+    XCTAssertEqual(result.outcome, .failed)
+    XCTAssertEqual(result.errorMessage, "tool failed")
+    XCTAssertEqual(result.answer, "Partial")
   }
 
-  func testParserRejectsMissingRunFinished() {
+  func testParserMarksMissingTerminalEventAsTruncated() throws {
     let text = """
       [{"type":"TEXT_MESSAGE_CONTENT","delta":"Partial"}]
       """
 
-    XCTAssertThrowsError(try AgnesCLIOutputParser.parseAsk(text)) { error in
-      XCTAssertEqual(error as? AgnesCLIError, .truncatedStream(partialAnswer: "Partial"))
-    }
+    let result = try AgnesCLIOutputParser.parseAgentRun(text)
+
+    XCTAssertEqual(result.outcome, .truncated)
+    XCTAssertEqual(result.answer, "Partial")
+    XCTAssertNotNil(result.errorMessage)
   }
 }
 
@@ -586,6 +726,7 @@ private final class StubRunner: AgnesCLIProcessRunning, @unchecked Sendable {
   }
 
   func run(
+    requestID: UUID,
     executable: URL,
     arguments: [String],
     environment: [String: String]
@@ -597,7 +738,9 @@ private final class StubRunner: AgnesCLIProcessRunning, @unchecked Sendable {
     return try next.get()
   }
 
-  func cancel() {}
+  func cancel(requestID: UUID) {}
+
+  func cancelAll() {}
 
   func capturedInvocations() -> [Invocation] {
     lock.withLock { invocations }
@@ -608,10 +751,12 @@ private final class BlockingRunner: AgnesCLIProcessRunning, @unchecked Sendable 
   private let lock = NSLock()
   private var continuation: CheckedContinuation<AgnesCLIProcessOutput, Never>?
   private var cancelCount = 0
+  private var activeRequestID: UUID?
   private var started = false
   private var startWaiters: [CheckedContinuation<Void, Never>] = []
 
   func run(
+    requestID: UUID,
     executable: URL,
     arguments: [String],
     environment: [String: String]
@@ -619,6 +764,7 @@ private final class BlockingRunner: AgnesCLIProcessRunning, @unchecked Sendable 
     return await withCheckedContinuation { continuation in
       let waiters = lock.withLock {
         self.continuation = continuation
+        activeRequestID = requestID
         started = true
         let waiters = startWaiters
         startWaiters.removeAll()
@@ -630,15 +776,24 @@ private final class BlockingRunner: AgnesCLIProcessRunning, @unchecked Sendable 
     }
   }
 
-  func cancel() {
-    let continuation = lock.withLock {
+  func cancel(requestID: UUID) {
+    let continuation: CheckedContinuation<AgnesCLIProcessOutput, Never>? = lock.withLock {
+      guard activeRequestID == requestID else { return nil }
       cancelCount += 1
       let continuation = self.continuation
       self.continuation = nil
+      activeRequestID = nil
       return continuation
     }
     continuation?.resume(
       returning: .init(exitCode: 130, standardOutput: "", standardError: "cancelled"))
+  }
+
+  func cancelAll() {
+    let requestID = lock.withLock { activeRequestID }
+    if let requestID {
+      cancel(requestID: requestID)
+    }
   }
 
   func waitUntilStarted() async {

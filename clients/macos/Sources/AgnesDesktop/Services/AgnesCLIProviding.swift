@@ -18,15 +18,21 @@ public protocol AgnesCLIProviding: Sendable {
   func marketplaceDetail(executable: URL, itemID: String) async throws -> MarketplaceDetail
   func addMarketplaceItem(executable: URL, itemID: String) async throws -> String
   func removeMarketplaceItem(executable: URL, itemID: String) async throws -> String
-  func ask(executable: URL, agentSlug: String, prompt: String) async throws -> AskResult
-  func cancel()
+  func agentUsage(executable: URL, agentSlug: String) async throws -> AgentUsage
+  func runAgent(
+    executable: URL,
+    requestID: UUID,
+    agentSlug: String,
+    prompt: String
+  ) async throws -> AgentRunResult
+  func cancel(requestID: UUID)
+  func cancelAll()
 }
 
 public enum AgnesCLIError: Error, LocalizedError, Equatable, Sendable {
   case commandFailed(exitCode: Int32, standardError: String)
   case invalidJSON(String)
-  case runFailed(message: String, partialAnswer: String?)
-  case truncatedStream(partialAnswer: String?)
+  case outputLimitExceeded(stream: String, limitBytes: Int)
 
   public var errorDescription: String? {
     switch self {
@@ -37,17 +43,9 @@ public enum AgnesCLIError: Error, LocalizedError, Equatable, Sendable {
         : "Agnes CLI exited with status \(exitCode): \(detail)"
     case .invalidJSON(let message):
       return "Agnes CLI returned invalid JSON: \(message)"
-    case .runFailed(let message, let partialAnswer):
-      guard let partialAnswer, !partialAnswer.isEmpty else {
-        return "Agent run failed: \(message)"
-      }
-      return "Agent run failed: \(message)\n\nPartial answer:\n\(partialAnswer)"
-    case .truncatedStream(let partialAnswer):
-      guard let partialAnswer, !partialAnswer.isEmpty else {
-        return "The agent stream ended without a completion event."
-      }
+    case .outputLimitExceeded(let stream, let limitBytes):
       return
-        "The agent stream ended without a completion event.\n\nPartial answer:\n\(partialAnswer)"
+        "Agnes CLI \(stream) exceeded the desktop safety limit of \(limitBytes.formatted()) bytes."
     }
   }
 }
@@ -119,8 +117,22 @@ public final class AgnesCLIClient: AgnesCLIProviding, @unchecked Sendable {
     return output.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)
   }
 
-  public func ask(executable: URL, agentSlug: String, prompt: String) async throws -> AskResult {
+  public func agentUsage(executable: URL, agentSlug: String) async throws -> AgentUsage {
+    let output = try await run(
+      executable: executable,
+      arguments: ["agent", "usage", agentSlug, "--json"]
+    )
+    return try AgnesCLIOutputParser.parseAgentUsage(output.standardOutput)
+  }
+
+  public func runAgent(
+    executable: URL,
+    requestID: UUID,
+    agentSlug: String,
+    prompt: String
+  ) async throws -> AgentRunResult {
     let output = try await runner.run(
+      requestID: requestID,
       executable: executable,
       arguments: ["chat", "--agent", agentSlug, "--once", prompt, "--json"],
       environment: [
@@ -128,37 +140,53 @@ public final class AgnesCLIClient: AgnesCLIProviding, @unchecked Sendable {
         "AGNES_NO_UPDATE_CHECK": "1",
       ]
     )
+    if output.standardOutputTruncated {
+      return AgentRunResult(
+        outcome: .truncated,
+        answer: "",
+        events: [],
+        rawEventsJSON: output.standardOutput,
+        errorMessage: AgnesCLIError.outputLimitExceeded(
+          stream: "standard output",
+          limitBytes: SystemAgnesCLIProcessRunner.defaultStandardOutputLimit
+        ).localizedDescription
+      )
+    }
+    if output.standardErrorTruncated {
+      throw AgnesCLIError.outputLimitExceeded(
+        stream: "standard error",
+        limitBytes: SystemAgnesCLIProcessRunner.defaultStandardErrorLimit
+      )
+    }
     do {
-      let result = try AgnesCLIOutputParser.parseAsk(output.standardOutput)
-      guard output.exitCode == 0 else {
+      let result = try AgnesCLIOutputParser.parseAgentRun(output.standardOutput)
+      if output.exitCode != 0, result.outcome == .completed {
         throw AgnesCLIError.commandFailed(
           exitCode: output.exitCode,
           standardError: output.standardError
         )
       }
       return result
-    } catch let error as AgnesCLIError {
-      // The CLI uses a non-zero exit for RUN_ERROR or a truncated
-      // stream. Keep those structured diagnostics and partial answer.
-      switch error {
-      case .runFailed, .truncatedStream:
-        throw error
-      case .commandFailed, .invalidJSON:
-        guard output.exitCode != 0 else { throw error }
-        throw AgnesCLIError.commandFailed(
-          exitCode: output.exitCode,
-          standardError: output.standardError
-        )
-      }
+    } catch {
+      guard output.exitCode != 0 else { throw error }
+      throw AgnesCLIError.commandFailed(
+        exitCode: output.exitCode,
+        standardError: output.standardError
+      )
     }
   }
 
-  public func cancel() {
-    runner.cancel()
+  public func cancel(requestID: UUID) {
+    runner.cancel(requestID: requestID)
+  }
+
+  public func cancelAll() {
+    runner.cancelAll()
   }
 
   private func run(executable: URL, arguments: [String]) async throws -> AgnesCLIProcessOutput {
     let output = try await runner.run(
+      requestID: UUID(),
       executable: executable,
       arguments: arguments,
       environment: [
@@ -166,6 +194,18 @@ public final class AgnesCLIClient: AgnesCLIProviding, @unchecked Sendable {
         "AGNES_NO_UPDATE_CHECK": "1",
       ]
     )
+    if output.standardOutputTruncated {
+      throw AgnesCLIError.outputLimitExceeded(
+        stream: "standard output",
+        limitBytes: SystemAgnesCLIProcessRunner.defaultStandardOutputLimit
+      )
+    }
+    if output.standardErrorTruncated {
+      throw AgnesCLIError.outputLimitExceeded(
+        stream: "standard error",
+        limitBytes: SystemAgnesCLIProcessRunner.defaultStandardErrorLimit
+      )
+    }
     guard output.exitCode == 0 else {
       throw AgnesCLIError.commandFailed(
         exitCode: output.exitCode,
@@ -180,15 +220,33 @@ struct AgnesCLIProcessOutput: Sendable {
   let exitCode: Int32
   let standardOutput: String
   let standardError: String
+  let standardOutputTruncated: Bool
+  let standardErrorTruncated: Bool
+
+  init(
+    exitCode: Int32,
+    standardOutput: String,
+    standardError: String,
+    standardOutputTruncated: Bool = false,
+    standardErrorTruncated: Bool = false
+  ) {
+    self.exitCode = exitCode
+    self.standardOutput = standardOutput
+    self.standardError = standardError
+    self.standardOutputTruncated = standardOutputTruncated
+    self.standardErrorTruncated = standardErrorTruncated
+  }
 }
 
 protocol AgnesCLIProcessRunning: Sendable {
   func run(
+    requestID: UUID,
     executable: URL,
     arguments: [String],
     environment: [String: String]
   ) async throws -> AgnesCLIProcessOutput
-  func cancel()
+  func cancel(requestID: UUID)
+  func cancelAll()
 }
 
 enum AgnesCLIOutputParser {
@@ -216,11 +274,20 @@ enum AgnesCLIOutputParser {
     }
   }
 
-  static func parseAsk(_ text: String) throws -> AskResult {
-    let events: [[String: Any]]
+  static func parseAgentUsage(_ text: String) throws -> AgentUsage {
     do {
-      guard let parsed = try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [[String: Any]]
-      else {
+      return try JSONDecoder().decode(AgentUsage.self, from: Data(text.utf8))
+    } catch {
+      throw AgnesCLIError.invalidJSON(error.localizedDescription)
+    }
+  }
+
+  static func parseAgentRun(_ text: String) throws -> AgentRunResult {
+    let events: [[String: Any]]
+    let parsedObject: Any
+    do {
+      parsedObject = try JSONSerialization.jsonObject(with: Data(text.utf8))
+      guard let parsed = parsedObject as? [[String: Any]] else {
         throw AgnesCLIError.invalidJSON("expected an array of AG-UI events")
       }
       events = parsed
@@ -232,12 +299,12 @@ enum AgnesCLIOutputParser {
 
     var deltas = ""
     var finalContent: String?
-    var toolNames: [String] = []
     var runError: String?
     var finished = false
+    var inspectedEvents: [AgentRunEvent] = []
 
-    for event in events {
-      guard let type = event["type"] as? String else { continue }
+    for (offset, event) in events.enumerated() {
+      let type = (event["type"] as? String) ?? "UNKNOWN"
       switch type {
       case "TEXT_MESSAGE_CONTENT":
         if let delta = event["delta"] as? String {
@@ -247,17 +314,14 @@ enum AgnesCLIOutputParser {
         if let content = event["content"] as? String, !content.isEmpty {
           finalContent = content
         }
-      case "TOOL_CALL_START":
-        if let name = event["name"] as? String, !name.isEmpty {
-          toolNames.append(name)
-        }
       case "RUN_ERROR":
         runError = (event["message"] as? String) ?? "run error"
       case "RUN_FINISHED":
         finished = true
       default:
-        continue
+        break
       }
+      inspectedEvents.append(inspectedEvent(sequence: offset + 1, type: type, event: event))
     }
 
     let rawAnswer =
@@ -266,16 +330,99 @@ enum AgnesCLIOutputParser {
       : deltas
     let answer = stripCompleteNextActionsTrailer(from: rawAnswer)
 
+    let outcome: AgentRunOutcome
+    let errorMessage: String?
     if let runError {
-      throw AgnesCLIError.runFailed(
-        message: runError,
-        partialAnswer: answer.isEmpty ? nil : answer
+      outcome = .failed
+      errorMessage = runError
+    } else if finished {
+      outcome = .completed
+      errorMessage = nil
+    } else {
+      outcome = .truncated
+      errorMessage = "The event stream ended without RUN_FINISHED or RUN_ERROR."
+    }
+
+    return AgentRunResult(
+      outcome: outcome,
+      answer: answer,
+      events: inspectedEvents,
+      rawEventsJSON: prettyJSON(parsedObject),
+      errorMessage: errorMessage
+    )
+  }
+
+  private static func inspectedEvent(
+    sequence: Int,
+    type: String,
+    event: [String: Any]
+  ) -> AgentRunEvent {
+    let title: String
+    let detail: String?
+
+    switch type {
+    case "RUN_STARTED":
+      title = "Run started"
+      detail = nil
+    case "TEXT_MESSAGE_CONTENT":
+      title = "Answer streamed"
+      detail = compact(event["delta"])
+    case "TEXT_MESSAGE_END":
+      title = "Answer completed"
+      if let content = event["content"] as? String {
+        detail = "\(content.count) characters"
+      } else {
+        detail = nil
+      }
+    case "TOOL_CALL_START":
+      title = "Tool call"
+      detail = compact(event["name"]) ?? "tool"
+    case "TOOL_CALL_END":
+      title = "Tool result"
+      detail = compact(event["result"])
+    case "RUN_FINISHED":
+      title = "Run finished"
+      detail = nil
+    case "RUN_ERROR":
+      title = "Run error"
+      detail = compact(event["message"]) ?? "Unknown run error"
+    default:
+      title = type.replacingOccurrences(of: "_", with: " ").capitalized
+      detail = nil
+    }
+
+    return AgentRunEvent(
+      sequence: sequence,
+      type: type,
+      title: title,
+      detail: detail,
+      rawJSON: prettyJSON(event)
+    )
+  }
+
+  private static func compact(_ value: Any?) -> String? {
+    guard let value else { return nil }
+    let raw: String
+    if let string = value as? String {
+      raw = string
+    } else {
+      raw = prettyJSON(value).replacingOccurrences(of: "\n", with: " ")
+    }
+    let collapsed = raw.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    guard !collapsed.isEmpty else { return nil }
+    return collapsed.count > 220 ? String(collapsed.prefix(217)) + "…" : collapsed
+  }
+
+  private static func prettyJSON(_ value: Any) -> String {
+    guard JSONSerialization.isValidJSONObject(value),
+      let data = try? JSONSerialization.data(
+        withJSONObject: value,
+        options: [.prettyPrinted, .sortedKeys]
       )
+    else {
+      return String(describing: value)
     }
-    guard finished else {
-      throw AgnesCLIError.truncatedStream(partialAnswer: answer.isEmpty ? nil : answer)
-    }
-    return AskResult(answer: answer, toolNames: toolNames)
+    return String(decoding: data, as: UTF8.self)
   }
 
   /// Removes only a complete *trailing* next_actions fenced block. An
