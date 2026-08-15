@@ -402,13 +402,15 @@ def build_metric_row(
 def _default_keboola_connection() -> Optional[dict]:
     """The Keboola ``source_connections`` row that acts as "the default one":
     the row flagged ``is_default``, or — when none is flagged — the first
-    Keboola connection.
+    Keboola connection, with admin-created rows preferred over
+    login-auto-provisioned ones.
 
     Shared by credential resolution, the multi-source ordering (default
     connection syncs first) and NULL-``source_ref`` adoption (only the default
     connection adopts legacy, unstamped rows), so all three agree on which
     connection is "the default".
     """
+    from app.auth.keboola_provisioning import LOGIN_PROVISIONED_BY
     from src.repositories import source_connections_repo
 
     conns_repo = source_connections_repo()
@@ -416,7 +418,17 @@ def _default_keboola_connection() -> Optional[dict]:
     if conn is not None:
         return conn
     candidates = conns_repo.list(source_type="keboola")
-    return candidates[0] if candidates else None
+    # ``list`` orders by name, and the multi-project login flow names each
+    # auto-provisioned row after its Keboola project — without this
+    # preference a user's project whose name happens to sort first would
+    # silently become the effective default on any instance that never
+    # flagged one, redirecting credential resolution and legacy-row
+    # adoption to a connection the admin never chose (Devin Review on
+    # PR #1328, ninth round). Auto rows only qualify when nothing
+    # admin-created exists.
+    admin_created = [c for c in candidates if (c.get("config") or {}).get("provisioned_by") != LOGIN_PROVISIONED_BY]
+    pool = admin_created or candidates
+    return pool[0] if pool else None
 
 
 def _resolve_keboola_credentials(

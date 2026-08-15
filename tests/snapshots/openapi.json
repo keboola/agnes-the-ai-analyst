@@ -4078,6 +4078,22 @@
         "title": "HybridQueryRequest",
         "type": "object"
       },
+      "ImportBody": {
+        "properties": {
+          "project_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Project Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "project_ids"
+        ],
+        "title": "ImportBody",
+        "type": "object"
+      },
       "ImportBundleResponse": {
         "properties": {
           "errors": {
@@ -10687,7 +10703,7 @@
   "info": {
     "description": "Self-hosted AI harness: governed data access, skills marketplace, corporate memory, and agent workspaces",
     "title": "AI Harness",
-    "version": "0.83.20"
+    "version": "0.83.18"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -29055,6 +29071,130 @@
         "summary": "Exchange Setup Token",
         "tags": [
           "cowork"
+        ]
+      }
+    },
+    "/api/auth/keboola/projects": {
+      "get": {
+        "description": "The caller's pending Keboola project discovery, if any.\n\n``discovery_available`` is False when the instance is not in ``select``\nmode (the login didn't run a user-driven discovery \u2014 and a stash left\nover from before an operator flipped the mode must not be offered, or\nthis listing would show projects whose import answers 409\n``not_select_mode``), when the stash expired (TTL \u2014 sign in with Keboola\nagain to refresh), or when the vault key is unconfigured.",
+        "operationId": "list_discovered_projects_api_auth_keboola_projects_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Discovered Projects Api Auth Keboola Projects Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Discovered Projects",
+        "tags": [
+          "auth"
+        ]
+      },
+      "post": {
+        "description": "Provision the selected subset of the caller's discovered projects.\n\n409 ``not_select_mode`` outside select mode (``auto`` imports at login;\n``disabled`` never discovers). 409 ``discovery_expired`` when there is\nno live stash \u2014 sign in with Keboola again. 400 for ids that were never\ndiscovered. Per-project failures are reported in the response, not as an\nHTTP error; the slow tail (chat-tools introspection, semantic-layer\nrefresh) continues as a background task after the response.",
+        "operationId": "import_discovered_projects_api_auth_keboola_projects_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Import Discovered Projects Api Auth Keboola Projects Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Import Discovered Projects",
+        "tags": [
+          "auth"
         ]
       }
     },
