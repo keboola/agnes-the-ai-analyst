@@ -2326,98 +2326,17 @@ class TestDefaultContentParity:
 class TestDetailPageParity:
     """The redesign restructured seven DETAIL templates in place (the
     kind-coloured hero + columns anatomy from ``macros/_detail.html``).
-    Topnav keeps the pre-redesign pages — same contract as
-    ``TestDefaultContentParity``, extended to the detail level: every render
-    site resolves through ``_detail_template()``, which serves
-    ``<name>_legacy.html`` (a frozen pre-redesign copy) off the rail.
 
-    Layered: a unit test on the switch, a closed-set static sweep proving all
-    seven pairs are wired (no bare literal left behind), and live render
-    pairs for the two cheaply-seedable pages (collection + catalog table).
+    The ``_detail_template()`` switch and the frozen ``<name>_legacy.html``
+    copies it served on a default (topnav) instance were removed in Wave 0
+    legacy retirement (2026-08) — every render site now serves the
+    redesigned template unconditionally. The unit test on the old switch and
+    the closed-set static sweep over the seven frozen copies went with them;
+    what remains are the live render pairs for the two cheaply-seedable pages
+    (collection + catalog table), whose topnav-side assertions are tracked as
+    a pre-existing default-pinned-expectation gap (see
+    ``TestDefaultContentParity``), not something this class re-derives.
     """
-
-    DETAIL_TEMPLATES = (
-        "catalog_table_detail",
-        "catalog_package_detail",
-        "catalog_recipe_detail",
-        "marketplace_plugin_detail",
-        "marketplace_item_detail",
-        "library_detail",
-        "memory_domain_detail",
-    )
-
-    def test_detail_template_switch_resolves_by_redesign_opt_in(self, monkeypatch):
-        """Same condition as the base templates' chrome gate: rail OR paper
-        opts into the redesigned detail anatomy; a default instance gets the
-        frozen pre-redesign page."""
-        from app.web.router import _detail_template
-
-        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
-        monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
-        assert _detail_template("catalog_table_detail") == "catalog_table_detail_legacy.html"
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
-        assert _detail_template("catalog_table_detail") == "catalog_table_detail.html"
-        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
-        monkeypatch.setenv("AGNES_INSTANCE_THEME", "paper")
-        assert _detail_template("catalog_table_detail") == "catalog_table_detail.html"
-
-    #: Behaviours that must hold on BOTH halves of a frozen pair, as the token
-    #: that implements them. Freezing a copy forks the page permanently, so a
-    #: fix that lands on the redesigned template alone silently reverts itself
-    #: for every default instance — which is what happened when this branch met
-    #: #1177/#1178 in main: the copies were snapshotted before those fixes, so
-    #: the author of a Private entity lost Archive AND install on the default
-    #: look while the redesign kept both (Devin Review on #1195).
-    #:
-    #: A token list rather than a diff: the two halves are SUPPOSED to differ
-    #: (that is the whole point of the freeze), so only the load-bearing
-    #: predicates can be asserted equal. Add a row whenever a fix has to reach
-    #: both.
-    FORKED_PAIR_INVARIANTS = (
-        (
-            "marketplace_plugin_detail",
-            "own_private",
-            "#1177 — the author's own Private row sits at 'hidden' and must stay deletable",
-        ),
-        ("marketplace_item_detail", "own_private", "#1177 — same gate on the skill/agent page"),
-        (
-            "marketplace_plugin_detail",
-            "d.installable !== true",
-            "#1178 — install is gated on the server-resolved flag, not on the status alone",
-        ),
-        ("marketplace_item_detail", "d.installable !== true", "#1178 — same gate on the skill/agent page"),
-        (
-            "library_detail",
-            "/f/",
-            "the per-file page's only entry point on a default instance — without it, "
-            "`/library/<slug>/f/<id>` is reachable only by typing the URL",
-        ),
-    )
-
-    @pytest.mark.parametrize("base,token,why", FORKED_PAIR_INVARIANTS)
-    def test_frozen_copy_carries_the_same_invariant(self, base, token, why):
-        from pathlib import Path
-
-        live = Path(f"app/web/templates/{base}.html").read_text()
-        legacy = Path(f"app/web/templates/{base}_legacy.html").read_text()
-
-        assert token in live, f"premise moved — {token!r} is no longer in {base}.html ({why})"
-        assert token in legacy, (
-            f"{base}_legacy.html is missing {token!r} — {why}. A default instance renders the "
-            "frozen copy, so a fix applied only to the redesigned template reverts itself there."
-        )
-
-    def test_every_detail_render_site_is_switched(self):
-        """No render site may keep the bare redesigned template literal — a
-        new call site that bypasses the switch reintroduces the redesign on
-        topnav silently."""
-        from pathlib import Path
-
-        src = Path("app/web/router.py").read_text()
-        for name in self.DETAIL_TEMPLATES:
-            assert Path(f"app/web/templates/{name}_legacy.html").exists(), f"{name}_legacy.html missing"
-            assert f'_detail_template("{name}")' in src, f"{name} render not switched"
-            assert f'"{name}.html"' not in src, f"bare {name}.html literal left in router"
 
     def _seed_collection(self, web_client, admin_cookie, name):
         r = web_client.post("/api/collections", json={"name": name}, cookies=admin_cookie)

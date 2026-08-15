@@ -52,13 +52,11 @@ class TestElevationPausedGetsItsAction:
         )
 
 
-#: `/me/profile` renders one of two templates depending on chrome
-#: (`app/web/router.py`: rail -> the redesigned page, topnav -> the frozen
-#: pre-redesign copy). An anchor added to only one is a dead link on the
-#: other — and topnav is the DEFAULT, so a guard that checks the redesigned
-#: page alone passes while most instances get nothing. Devin Review caught
-#: exactly that on this PR.
-PROFILE_TEMPLATES = ("profile.html", "profile_legacy.html")
+#: `/me/profile` renders a single template (`app/web/router.py`) since the
+#: frozen pre-redesign `profile_legacy.html` was retired (Wave 0 legacy
+#: retirement, 2026-08). Kept as a tuple + the guard below so a future
+#: chrome variant can't silently reintroduce an unchecked template.
+PROFILE_TEMPLATES = ("profile.html",)
 
 
 def _template(name: str) -> str:

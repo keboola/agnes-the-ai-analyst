@@ -31,32 +31,11 @@ _EMOJI = re.compile("[\U0001f000-\U0001faff\U00002705\U000026a0\U0000fe0f]")
 ALLOWLIST: set[str] = set()
 
 
-# Frozen byte-for-byte copies of the pre-redesign pages, kept so a default
-# topnav instance renders exactly what it rendered before the redesign
-# (tests/test_ui_layout_theme.py::TestDefaultContentParity). They may not
-# drift — including cosmetic emoji sweeps — and they retire together with the
-# topnav chrome. A CLOSED set on purpose: a new template cannot dodge the ban
-# by taking a `_legacy` name (test_legacy_exemption_is_a_closed_set).
-LEGACY_FROZEN: set[str] = {
-    "library_legacy.html",
-    "marketplace_legacy.html",
-    "catalog_table_detail_legacy.html",
-    "catalog_package_detail_legacy.html",
-    "catalog_recipe_detail_legacy.html",
-    "marketplace_plugin_detail_legacy.html",
-    "marketplace_item_detail_legacy.html",
-    "library_detail_legacy.html",
-    "memory_domain_detail_legacy.html",
-    "catalog_legacy.html",
-    "corporate_memory_legacy.html",
-    "profile_legacy.html",
-    "me_activity_legacy.html",
-    "agents_legacy.html",
-    "me_cowork_legacy.html",
-    "_tour_legacy.html",
-    "_profile_tokens_legacy.html",
-    "_profile_troubleshooting_legacy.html",
-}
+# Formerly held the frozen byte-for-byte copies of the pre-redesign pages —
+# retired along with the topnav chrome (Wave 0 legacy retirement, 2026-08).
+# Empty, not deleted: `test_legacy_exemption_is_a_closed_set` below still
+# guards that a `_legacy` name can't dodge the ban by reappearing unreviewed.
+LEGACY_FROZEN: set[str] = set()
 
 
 def _in_scope(rel: str) -> bool:
