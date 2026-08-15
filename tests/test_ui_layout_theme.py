@@ -156,7 +156,7 @@ class TestResolvers:
         # The "no credit" half needs the YAML layer isolated too, or this fails
         # only for developers whose own config/instance.yaml sets one.
         monkeypatch.setattr(ic, "_instance_config", {})
-        resp = web_client.get("/dashboard", cookies=admin_cookie)
+        resp = web_client.get("/library", cookies=admin_cookie)
         assert resp.status_code == 200
         assert 'class="site-footer' in resp.text
         assert "<b>Keboola</b>" not in resp.text
@@ -437,9 +437,14 @@ class TestRailOptIn:
         # The retired /ask hero (#896) is gone: no rail nav item points at it,
         # and the Chat slot renders only when cloud-chat is actually reachable.
         assert 'href="/ask"' not in text
-        # The in-rail global search box was removed — search no longer lives in
-        # the sidebar chrome.
-        assert 'id="global-search"' not in text
+        # Global search IS in the rail. It shipped only in the topnav chrome
+        # and was left out when the rail was first built, on the reasoning
+        # that page-local boxes would cover it; retiring the topnav turned
+        # that into a hole (nothing crossed tables / knowledge / documents),
+        # so Wave 0 (2026-08) restored it above Zone 1 with the same two ids
+        # global_search.js binds on.
+        assert 'id="global-search"' in text
+        assert 'id="globalSearchResults"' in text
 
     def test_rail_catalog_renders_unified_page(self, web_client, admin_cookie, monkeypatch):
         """Under the rail layout /catalog is the unified browse surface
@@ -651,7 +656,7 @@ class TestRailOptIn:
 
     def test_paper_theme_stamped(self, web_client, admin_cookie, monkeypatch):
         monkeypatch.setenv("AGNES_INSTANCE_THEME", "paper")
-        resp = web_client.get("/dashboard", cookies=admin_cookie)
+        resp = web_client.get("/library", cookies=admin_cookie)
         assert resp.status_code == 200
         assert 'data-theme="paper"' in resp.text
 
@@ -662,7 +667,7 @@ class TestRailOptIn:
         neutral product mark — stays redesign-only."""
         monkeypatch.setenv("AGNES_INSTANCE_THEME", "paper")
         monkeypatch.setenv("AGNES_INSTANCE_COPYRIGHT", "Acme Corp")
-        resp = web_client.get("/dashboard", cookies=admin_cookie)
+        resp = web_client.get("/library", cookies=admin_cookie)
         assert resp.status_code == 200
         assert "Deployed by Acme Corp" in resp.text
         assert "<b>Keboola</b>" not in resp.text

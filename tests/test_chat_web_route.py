@@ -94,7 +94,9 @@ def test_chat_route_html(api_client: TestClient, logged_in_user):
     # Page must go through _build_context so the Agnes chrome renders —
     # otherwise the four base stylesheets get empty href= and the nav
     # block short-circuits on `{% if session.user %}`. Pin both.
-    assert 'class="app-header"' in r.text
+    # The chrome is the rail since Wave 0 (2026-08); `class="app-header"` was
+    # the retired topnav's marker.
+    assert 'class="rail"' in r.text
     assert "/static/style-custom.css" in r.text
     assert 'class="chat-page-body"' in r.text
 
@@ -274,11 +276,13 @@ def test_studio_page_keeps_chat_nav_tab(api_client: TestClient, logged_in_user):
     """
     r = api_client.get("/admin/studio")
     assert r.status_code == 200
-    # Chat nav tab present (the thing that regressed) …
-    assert 'data-tour="nav-chat"' in r.text
+    # Chat destination present (the thing that regressed) …
+    # `data-tour` anchors went with the guided tour and the topnav chrome in
+    # Wave 0 (2026-08); the rail's rows are matched on their href.
     assert 'href="/chat"' in r.text
-    # … alongside the Studio tab, proving we didn't just render a bare page.
-    assert 'data-tour="nav-studio"' in r.text
+    # … alongside the rail's own rows, proving we didn't just render a bare
+    # page with no chrome at all.
+    assert 'href="/library"' in r.text
     # And the header carries a real brand object, not the 'Data Analyst Portal'
     # fallback that a missing ``config`` produced on _chrome_ctx pages.
     assert "Data Analyst Portal" not in r.text
