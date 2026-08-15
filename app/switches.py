@@ -200,8 +200,9 @@ SWITCHES: tuple[Switch, ...] = (
             "yaml/env values of `instance.experience` don't error — any value other than "
             "`redesign` (including the old `classic`) falls back to the default via "
             '`on_invalid="default"`. Still changes only the DEFAULTS of the coupled knobs '
-            "(instance.ui_layout → rail, instance.theme → paper, "
-            "features.stack_auto_membership → true); any per-knob env/yaml setting still wins."
+            "(instance.theme → paper, features.stack_auto_membership → true); any per-knob "
+            "env/yaml setting still wins. Chrome layout is NOT among them — the rail is "
+            "unconditional, independent of this preset."
         ),
     ),
     Switch(
