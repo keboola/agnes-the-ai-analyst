@@ -208,3 +208,15 @@ class SemanticModelsPgRepository:
                 .all()
             )
         return [self._decode_row(dict(r)) for r in rows]
+
+    def list_packages_for_model(self, model_id: str) -> List[str]:
+        """Data package ids ``model_id`` is linked to — the reverse of
+        ``list_for_package``. See the DuckDB sibling for why this exists."""
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                sa.text(
+                    "SELECT package_id FROM data_package_semantic_models WHERE model_id = :model ORDER BY package_id"
+                ),
+                {"model": model_id},
+            ).all()
+        return [r[0] for r in rows]

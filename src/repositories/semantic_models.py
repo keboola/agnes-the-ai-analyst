@@ -161,3 +161,16 @@ class SemanticModelsRepository:
             [package_id],
         ).fetchall()
         return [self._decode(r) for r in rows]
+
+    def list_packages_for_model(self, model_id: str) -> List[str]:
+        """Data package ids ``model_id`` is linked to — the reverse of
+        ``list_for_package``. Not part of the original Task 3 interface: added
+        for the export/search RBAC gate (Task 10), which must answer "which
+        packages grant access to this model", not "which models does this
+        package grant" — the direction ``list_for_package`` already covers.
+        """
+        rows = self.conn.execute(
+            "SELECT package_id FROM data_package_semantic_models WHERE model_id = ? ORDER BY package_id",
+            [model_id],
+        ).fetchall()
+        return [r[0] for r in rows]

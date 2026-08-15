@@ -124,3 +124,18 @@ def test_package_links(repo):
     assert len(repo.list_for_package("pkg1")) == 1
     repo.unlink_package("pkg1", "m1")
     assert repo.list_for_package("pkg1") == []
+
+
+def test_list_packages_for_model_is_the_reverse_lookup(repo):
+    """The export/search RBAC gate (Task 10) needs "which packages grant
+    access to this model" — the reverse of list_for_package, which answers
+    "which models does this package grant"."""
+    _upsert(repo, id="m1", slug="retail")
+    assert repo.list_packages_for_model("m1") == []
+
+    repo.link_package("pkg1", "m1")
+    repo.link_package("pkg2", "m1")
+    assert repo.list_packages_for_model("m1") == ["pkg1", "pkg2"]
+
+    repo.unlink_package("pkg1", "m1")
+    assert repo.list_packages_for_model("m1") == ["pkg2"]

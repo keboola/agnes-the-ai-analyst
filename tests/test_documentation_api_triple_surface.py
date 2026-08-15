@@ -80,6 +80,11 @@ _COHORT: dict[str, tuple[str, str]] = {
         "admin semantic-layer coverage",
         "admin_semantic_layer_coverage",
     ),
+    # Open semantic-layer contract (Task 10/11/12) — public, resource-gated
+    # export of one canonical Ossie document. `semantic_model_get` reads
+    # this same endpoint (wraps its raw YAML text into a dict); `agnes admin
+    # semantic-model export` is the CLI counterpart.
+    "/api/semantic-models/{slug}.yaml": ("admin semantic-model export", "semantic_model_get"),
     # Contributed-skill triple-surface (GET list + DELETE; POST contribute is _EXEMPT below).
     "/api/admin/contributed-skills": ("admin skill list", "list_contributed_skills"),
     "/api/admin/contributed-skills/{name}": ("admin skill delete", "delete_contributed_skill"),
@@ -322,6 +327,36 @@ _SOURCE_CONNECTIONS_CRUD_REASON = (
     "GET/PUT/DELETE /{id} and PUT/DELETE /{id}/secret and POST /{id}/test are "
     "reachable via `agnes admin connection add/remove/test`; the list path carries "
     "the triple-surface contract in _COHORT"
+)
+_SEMANTIC_MODELS_ADMIN_REASON = (
+    "admin CRUD over the canonical Ossie semantic-model registry (open "
+    "semantic-layer contract, Task 10) — creating/renaming/deleting a "
+    "hand-authored document is an admin action. Reachable via `agnes admin "
+    "semantic-model list/show/import`; no MCP analogue by design — an "
+    "agent's read path is `semantic_model_search`/`semantic_model_get` "
+    "(paired with the public, resource-gated export endpoint in _COHORT "
+    "above), not the admin corpus-management surface, mirroring the "
+    "/api/admin/data-packages and /api/admin/metrics admin-CRUD precedent."
+)
+_SEMANTIC_SOURCES_ADMIN_REASON = (
+    "admin CRUD + manual sync-trigger over registered semantic-layer sync "
+    "sources (git/upload/connection), open semantic-layer contract Task 10 "
+    "— configuring where documents come from, and triggering a fetch, are "
+    "admin actions. Reachable via `agnes admin semantic-source add/list/"
+    "sync`; no MCP analogue by design, mirroring the "
+    "_SOURCE_CONNECTIONS_CRUD_REASON precedent above (an agent-invokable "
+    "tool that can point this server at an arbitrary git remote or upload "
+    "payload and trigger a fetch is a credential/config surface, not a "
+    "read tool)."
+)
+_SEMANTIC_MODELS_SEARCH_REASON = (
+    "public, resource-gated substring search over semantic models — has an "
+    "MCP tool (`semantic_model_search`) but no dedicated CLI subcommand: "
+    "`agnes admin semantic-model list` covers interactive listing via the "
+    "admin endpoint instead. Mirrors the /api/glossary + /api/glossary/"
+    "search split (list has no MCP tool; search is the agent-facing path) "
+    "in the opposite direction — here the admin list, not the search, is "
+    "the one without an MCP pairing."
 )
 _BROKER_REASON = (
     "chat sandbox secret broker (2026-07-14 incident hardening) — internal "
@@ -650,6 +685,16 @@ _EXEMPT: dict[str, str] = {
         "keboola-only browse-and-register primitive with no analyst CLI/MCP analogue; "
         "`agnes admin register-table` already covers the actual registration step"
     ),
+    # Open semantic-layer contract (Task 10) — admin CRUD over the
+    # semantic-model registry and its sync sources. The public,
+    # resource-gated export endpoint carries the triple-surface contract in
+    # _COHORT above.
+    "/api/admin/semantic-models": _SEMANTIC_MODELS_ADMIN_REASON,
+    "/api/admin/semantic-models/{model_id}": _SEMANTIC_MODELS_ADMIN_REASON,
+    "/api/admin/semantic-sources": _SEMANTIC_SOURCES_ADMIN_REASON,
+    "/api/admin/semantic-sources/{source_id}": _SEMANTIC_SOURCES_ADMIN_REASON,
+    "/api/admin/semantic-sources/{source_id}/sync": _SEMANTIC_SOURCES_ADMIN_REASON,
+    "/api/semantic-models/search": _SEMANTIC_MODELS_SEARCH_REASON,
     "/api/attachments/{source}/{attachment_id}/download": (
         "connector-catalogued attachment binary download (Jira first) — one-shot "
         "fetch by id consumed by `agnes attachment get`; binary byte-stream with "
