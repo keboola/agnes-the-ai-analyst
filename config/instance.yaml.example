@@ -257,6 +257,14 @@ auth:
   # project_id: "*" (or unset) the login trust boundary becomes "reaches at
   # least one allowed-role project"; a concrete project_id keeps the
   # single-project gate and narrows discovery to that project.
+  #
+  # WILDCARD ON A SHARED STACK: a Keboola role is per-project, and every
+  # user is admin of their own project — so on a multi-tenant stack the
+  # wildcard admits ANY user of the stack, even with allowed_roles:
+  # [admin]. allowed_roles narrows WHICH OF A USER'S PROJECTS take part,
+  # never which organization may sign in. Use "*" only on a dedicated
+  # (single-organization) stack; on a shared stack pin a concrete
+  # project_id.
   # keboola:
   #   client_id: "${KEBOOLA_OAUTH_CLIENT_ID}"
   #   client_secret: "${KEBOOLA_OAUTH_CLIENT_SECRET}"

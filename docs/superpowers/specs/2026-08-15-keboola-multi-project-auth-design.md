@@ -23,6 +23,15 @@ therefore **fails closed**: an introspect failure or an empty filtered list
 rejects the login. Provisioning, by contrast, is per-project best-effort and
 never blocks a login that passed its gates.
 
+The wildcard boundary is deliberately **stack-shaped, not organization-shaped**:
+a Keboola role is per-project and every user is admin of their own project, so
+on a shared multi-tenant stack the wildcard admits any user of the stack
+regardless of `allowed_roles` — the roles filter narrows which of a user's
+projects take part, never which organization may sign in. The wildcard is for
+dedicated (single-organization) stacks; a shared stack pins a concrete
+`project_id`. Documented as a CAUTION in `config/instance.yaml.example`, the
+switch description and `docs/feature-flags.md` (Devin Review, tenth round).
+
 ## Platform APIs (OAuth host; real but publicly undocumented — parsed defensively)
 
 - `GET /v1/auth/token/introspect` (Bearer access token) →

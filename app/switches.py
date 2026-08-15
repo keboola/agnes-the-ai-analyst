@@ -328,7 +328,11 @@ SWITCHES: tuple[Switch, ...] = (
             "such a wildcard instance the widening applies to BOTH active modes (select and "
             "auto) and — when allow_token_header is also on — to X-StorageApi-Token API auth "
             "too: an existing user's master token from any project on the stack "
-            "authenticates."
+            "authenticates. CAUTION: a Keboola role is per-project and every user is admin "
+            "of their own project, so on a shared multi-tenant stack the wildcard admits ANY "
+            "user of the stack regardless of allowed_roles (which narrows projects, not "
+            "organizations) — reserve the wildcard for dedicated single-organization stacks "
+            "and pin a concrete project_id on shared ones."
         ),
     ),
     Switch(
