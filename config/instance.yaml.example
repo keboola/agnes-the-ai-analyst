@@ -244,14 +244,29 @@ auth:
   # client. Membership in project_id is the trust boundary: ANYONE that
   # project admits (including guest/readOnly collaborators) can sign in and
   # self-provision unless allowed_roles narrows it.
+  #
+  # Multi-project mode (multi_project_mode: select|auto) discovers every
+  # project the signing-in user can reach (introspect on the OAuth host,
+  # narrowed by allowed_roles) and — in 'auto' — connects them without any
+  # hand-copied tokens: a project-scoped PAT is minted per project and
+  # vaulted (needs AGNES_VAULT_KEY), a source connection + chat tools are
+  # provisioned, the user's kbc-<project>-<role> group memberships are
+  # synced on every login, and the semantic layer refreshes for projects
+  # whose minted token is a master token. 'select' stores the discovery for
+  # a user-driven import via /api/auth/keboola/projects instead. With
+  # project_id: "*" (or unset) the login trust boundary becomes "reaches at
+  # least one allowed-role project"; a concrete project_id keeps the
+  # single-project gate and narrows discovery to that project.
   # keboola:
   #   client_id: "${KEBOOLA_OAUTH_CLIENT_ID}"
   #   client_secret: "${KEBOOLA_OAUTH_CLIENT_SECRET}"
   #   stack_url: ""                 # default: data_source.keboola.stack_url
   #   oauth_host: ""                # default: stack_url (OAuth lives on the connection host)
-  #   project_id: ""                # REQUIRED — tokens from other projects are rejected
+  #   project_id: ""                # REQUIRED unless multi_project_mode is select/auto;
+  #                                 # "*" = any project (multi-project wildcard)
   #   allowed_roles: []             # e.g. [admin, share]; empty/unset = any project role
   #   allow_token_header: false     # X-StorageApi-Token API auth; see docs/feature-flags.md
+  #   multi_project_mode: disabled  # disabled | select | auto; see docs/feature-flags.md
 
 # --- Security (optional) ---
 # security:

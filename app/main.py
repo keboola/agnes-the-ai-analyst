@@ -2498,6 +2498,9 @@ def create_app() -> FastAPI:
     app.include_router(password_auth_router)
     app.include_router(email_auth_router)  # Always register, check availability per-request
     app.include_router(keboola_auth_router)  # Always register, availability + allowlist per-request
+    from app.api.keboola_login_projects import router as keboola_login_projects_router
+
+    app.include_router(keboola_login_projects_router)  # select-mode project import (same allowlist gate)
     app.include_router(health_router)
 
     from app.api import health_probes

@@ -300,6 +300,32 @@ SWITCHES: tuple[Switch, ...] = (
         ),
     ),
     Switch(
+        name="keboola_multi_project_mode",
+        config_keys=("auth", "keboola", "multi_project_mode"),
+        env_var="AGNES_KEBOOLA_MULTI_PROJECT_MODE",
+        kind="select",
+        options=("disabled", "select", "auto"),
+        default="disabled",
+        effect="live",
+        category="operations",
+        editable=True,
+        description=(
+            "What a Keboola OAuth sign-in does with the OTHER projects the user can reach. "
+            "'disabled' (default): the original single-project behavior — the login is gated "
+            "on auth.keboola.project_id and nothing is provisioned (a 'single' value from "
+            "older configs falls back here, same behavior). 'select': Agnes discovers the "
+            "user's projects at login (introspect on the OAuth host, narrowed by "
+            "allowed_roles) and stores the list for a user-driven import via "
+            "/api/auth/keboola/projects. 'auto': trusted auto-provisioning — every allowed "
+            "project is connected on each login (project-scoped PAT minted and vaulted, "
+            "source connection + chat tools created, kbc-<project>-<role> group membership "
+            "synced, semantic layer refreshed where the token is a master token). With "
+            "auth.keboola.project_id set to '*' (or unset) the login gate itself widens to "
+            "'any project the introspect lists with an allowed role'; a concrete project_id "
+            "keeps the single-project gate and narrows discovery to that project."
+        ),
+    ),
+    Switch(
         name="mcp_connector_ui",
         config_keys=("mcp", "connector_ui_enabled"),
         env_var="AGNES_MCP_CONNECTOR_UI_ENABLED",

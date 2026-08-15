@@ -13,11 +13,14 @@ import logging
 from authlib.integrations.starlette_client import OAuth
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import RedirectResponse
+from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 
+from app.auth import keboola_provisioning as kprov
 from app.auth._common import safe_next_path
 from app.auth.jwt import SESSION_COOKIE_MAX_AGE_SECONDS, create_access_token
 from app.auth.provider_registry import require_provider
+from app.auth.providers import keboola_projects as kp
 from app.auth.providers import keboola_verify as kv
 from app.auth.provisioning import UserDeactivatedError, ensure_user
 
@@ -55,8 +58,15 @@ _ERROR_CODE_BY_REASON = {
 
 
 def is_available() -> bool:
-    """Config-completeness only — the allowlist is a separate layer (spec)."""
-    return bool(kv.client_id() and kv.client_secret() and kv.configured_project_id() and kv.stack_url())
+    """Config-completeness only — the allowlist is a separate layer (spec).
+
+    A discovery mode (``auth.keboola.multi_project_mode`` = auto/select)
+    stands in for the project binding: the wildcard instance is complete
+    without a concrete ``project_id``.
+    """
+    if not (kv.client_id() and kv.client_secret() and kv.stack_url()):
+        return False
+    return bool(kv.configured_project_id() or kv.multi_project_active())
 
 
 def _oauth_client():
@@ -140,6 +150,25 @@ async def keboola_callback(request: Request):
             logger.info("Keboola login rejected: %s", exc.reason)
             code = _ERROR_CODE_BY_REASON.get(exc.reason, "keboola_oauth_failed")
             return RedirectResponse(url=f"/login?error={code}", status_code=302)
+        # Multi-project discovery (auto/select modes). Under the wildcard
+        # gate this IS the trust boundary — "member of at least one
+        # allowed-role project" — so a discovery failure or an empty result
+        # fails the login closed. With a concrete project_id the
+        # single-project verify above already enforced the boundary, and
+        # discovery only feeds provisioning: there it fails soft.
+        discovery: list[kp.DiscoveredProject] | None = None
+        if kv.multi_project_active():
+            try:
+                discovery = await run_in_threadpool(kp.discover_allowed_projects, access_token)
+            except kp.KeboolaProjectApiError as exc:
+                logger.warning("Keboola login project discovery failed: %s", exc.reason)
+                if kv.is_wildcard_project():
+                    return RedirectResponse(url="/login?error=keboola_oauth_failed", status_code=302)
+                discovery = None
+            if discovery is not None and not discovery and kv.is_wildcard_project():
+                logger.info("Keboola login rejected: no project with an allowed role")
+                return RedirectResponse(url="/login?error=keboola_not_permitted", status_code=302)
+
         try:
             user = await run_in_threadpool(
                 ensure_user, identity.email, identity.name, source="auth.keboola:first-signin"
@@ -147,13 +176,36 @@ async def keboola_callback(request: Request):
         except UserDeactivatedError:
             return RedirectResponse(url="/login?error=deactivated", status_code=302)
 
+        # Provisioning never blocks a login that already passed its gates:
+        # PAT minting + connection/group writes run per-project fail-soft in
+        # the threadpool; the slow tail (chat-tools MCP introspection,
+        # semantic-layer refresh) rides a post-response background task.
+        provisioning_tail: BackgroundTask | None = None
+        if discovery:
+            mode = kv.multi_project_mode()
+            try:
+                if mode == "auto":
+                    summary = await run_in_threadpool(
+                        kprov.provision_projects, user, discovery, discovery, access_token
+                    )
+                    if summary.connections_needing_chat_tools or summary.semantic_sync_needed:
+                        provisioning_tail = BackgroundTask(kprov.finish_login_provisioning, summary)
+                elif mode == "select":
+                    # Membership stays synced for already-imported projects;
+                    # the rest wait for the user's import decision against
+                    # the stashed discovery (/api/auth/keboola/projects).
+                    await run_in_threadpool(kprov.provision_projects, user, [], discovery, access_token)
+                    await run_in_threadpool(kprov.store_pending_discovery, user, discovery, access_token)
+            except Exception:  # noqa: BLE001 — deliberately soft: the login itself is good
+                logger.warning("Keboola login provisioning failed; login proceeds", exc_info=True)
+
         jwt_token = create_access_token(user["id"], user["email"])
         target = safe_next_path(request.session.pop("login_next", None))
 
         from app.auth.public_url import cookie_secure
         from app.instance_config import session_cookie_domain
 
-        response = RedirectResponse(url=target, status_code=302)
+        response = RedirectResponse(url=target, status_code=302, background=provisioning_tail)
         response.set_cookie(
             key="access_token",
             value=jwt_token,

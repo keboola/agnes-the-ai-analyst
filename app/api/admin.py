@@ -536,6 +536,16 @@ def _flag_default_path(config_keys: tuple[str, ...], fallback: bool) -> bool:
     return fallback
 
 
+def _switch_default_path(config_keys: tuple[str, ...], fallback: Any) -> Any:
+    """`_flag_default_path` without the bool coercion — for `select`-kind
+    switches (e.g. `auth.keboola.multi_project_mode`), whose registry default
+    is a string the panel must render verbatim, not a truthiness."""
+    for s in SWITCHES:
+        if s.config_keys == config_keys:
+            return s.default
+    return fallback
+
+
 _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
     # Both sections became editable alongside `mcp`; declaring their booleans
     # here is what makes the panel render a switch instead of a free-text field,
@@ -894,7 +904,9 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
                     "hint": (
                         "Keboola project this instance is bound to — tokens from any "
                         "other project are rejected. Required for both the OAuth "
-                        "login and the token-header auth."
+                        "login and the token-header auth, unless multi_project_mode "
+                        "is select/auto — there '*' (or empty) means any project the "
+                        "sign-in's introspect lists with an allowed role."
                     ),
                 },
                 "client_id": {
@@ -930,6 +942,21 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
                         "users only, never provisions). Off by default: a plain "
                         "Storage token carries no interactive factor, so this "
                         "bypasses any MFA/SSO enforced on web logins. See "
+                        "docs/feature-flags.md."
+                    ),
+                },
+                "multi_project_mode": {
+                    "kind": "select",
+                    "options": ["disabled", "select", "auto"],
+                    "default": _switch_default_path(("auth", "keboola", "multi_project_mode"), "disabled"),
+                    "hint": (
+                        "What a Keboola sign-in does with the user's OTHER projects. "
+                        "disabled = the single-project login only. select = discover "
+                        "at login, the user imports chosen projects via "
+                        "/api/auth/keboola/projects. auto = every allowed project is "
+                        "connected on each login (PAT minted + vaulted, connection + "
+                        "chat tools, kbc-<project>-<role> membership sync, semantic "
+                        "layer for master tokens). Needs AGNES_VAULT_KEY. See "
                         "docs/feature-flags.md."
                     ),
                 },

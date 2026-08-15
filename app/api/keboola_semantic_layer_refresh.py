@@ -89,6 +89,44 @@ def _record_completion(status: str, result: Any) -> None:
     _refresh_state["last_result"] = result
 
 
+async def run_semantic_layer_refresh_background(*, trigger: str) -> None:
+    """Fire the same guarded sync the admin endpoint owns, for background
+    callers (the Keboola multi-project login provisions master tokens and
+    wants the metrics live without an admin click). Shares the single-flight
+    lock and the status dict, so the admin UI shows these runs too. Skips
+    silently when a run is already in flight — the next login or the
+    scheduler catches up — and never raises."""
+    if _refresh_lock.locked():
+        logger.info("keboola semantic layer refresh (%s): already running, skipped", trigger)
+        return
+    async with _refresh_lock:
+        run_id = uuid.uuid4().hex[:8]
+        _refresh_state["run_id"] = run_id
+        _refresh_state["started_at"] = datetime.now(timezone.utc).isoformat()
+        try:
+            result = await asyncio.to_thread(sync_semantic_layer)
+        except Exception as e:  # noqa: BLE001 — background: record, never raise
+            _record_completion("error", str(e))
+            logger.warning("keboola semantic layer refresh (%s) failed: %s", trigger, e)
+            return
+        finally:
+            _refresh_state["run_id"] = None
+            _refresh_state["started_at"] = None
+        if result.get("status") == "error":
+            _record_completion("error", result.get("error", "Keboola semantic layer sync failed"))
+            logger.warning("keboola semantic layer refresh (%s) reported an error: %s", trigger, result.get("error"))
+            return
+        _record_completion("ok", result)
+        logger.info(
+            "keboola semantic layer refresh (%s): run_id=%s created_or_updated=%s pruned=%s sources=%s",
+            trigger,
+            run_id,
+            result.get("created_or_updated"),
+            result.get("pruned"),
+            len(result.get("sources") or []),
+        )
+
+
 @router.post("/api/admin/run-keboola-semantic-layer-refresh")
 async def run_keboola_semantic_layer_refresh(
     user: dict = Depends(require_admin),
