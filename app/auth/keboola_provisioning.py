@@ -696,6 +696,16 @@ def _provision_one(
         )
         return outcome
     source_live = source_row is not None and source_row.get("enabled") is not False
+    # One decision feeds BOTH background lists: a deferred grant is recorded
+    # only for a connection that is also enqueued for the chat-tools enable.
+    # Without a storable credential the source cannot be enabled, its tools
+    # never register, and a grant recorded anyway would be dead weight the
+    # tail filters out — recorded-but-dropped state that reads like a lost
+    # permission (Devin Review on this PR, twelfth round). The next login
+    # re-derives grant + enable together once the credential lands.
+    enqueue_enable = (
+        source_row is None and login_provisioned_row and (outcome.token_stored or _has_storage_token(connection["id"]))
+    )
     if outcome.group_id is not None:
         if source_live and has_tools:
             try:
@@ -706,11 +716,11 @@ def _provision_one(
                     connection["id"],
                     exc_info=True,
                 )
-        elif source_row is None and login_provisioned_row:
+        elif enqueue_enable:
             summary.deferred_grants.append(
                 {"connection_id": connection["id"], "group_id": outcome.group_id, "role": project.role}
             )
-    if source_row is None and login_provisioned_row and (outcome.token_stored or _has_storage_token(connection["id"])):
+    if enqueue_enable:
         summary.connections_needing_chat_tools.append(connection["id"])
     return outcome
 

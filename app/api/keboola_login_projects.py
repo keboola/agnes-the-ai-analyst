@@ -60,11 +60,16 @@ class ImportBody(BaseModel):
 async def list_discovered_projects(user: dict = Depends(get_current_user)) -> Dict[str, Any]:
     """The caller's pending Keboola project discovery, if any.
 
-    ``discovery_available`` is False when the login didn't run discovery
-    (mode ``disabled``/``auto``), when the stash expired (TTL — sign in with
-    Keboola again to refresh), or when the vault key is unconfigured.
+    ``discovery_available`` is False when the instance is not in ``select``
+    mode (the login didn't run a user-driven discovery — and a stash left
+    over from before an operator flipped the mode must not be offered, or
+    this listing would show projects whose import answers 409
+    ``not_select_mode``), when the stash expired (TTL — sign in with Keboola
+    again to refresh), or when the vault key is unconfigured.
     """
     mode = kv.multi_project_mode()
+    if mode != "select":
+        return {"mode": mode, "discovery_available": False, "projects": []}
     blob = await run_in_threadpool(kprov.load_pending_discovery, str(user.get("id")))
 
     def _annotate() -> List[Dict[str, Any]]:

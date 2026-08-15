@@ -358,6 +358,30 @@ class TestAutoProvision:
         assert connection_secrets_repo().get(connection_id) == "pat-516-fresh"
         assert not connection_secrets_repo().has(master_secret_key(connection_id))
 
+    def test_failed_mint_defers_neither_grants_nor_enable_until_a_token_lands(self, env, pat_mocks, monkeypatch):
+        """The two background lists ride ONE decision: a connection with no
+        storable credential is neither enqueued for the chat-tools enable nor
+        given a deferred grant (which the tail would silently filter out —
+        recorded-but-dropped state; Devin Review on this PR, twelfth round).
+        The next login with a working mint records both together."""
+
+        def broken_exchange(tok, pid, *, read_only):
+            raise kp.KeboolaProjectApiError("pat_mint_failed", "upstream said no")
+
+        monkeypatch.setattr(kp, "exchange_project_pat", broken_exchange)
+        projects = [P("516", "Agnes - test", "admin")]
+        summary = kprov.provision_projects(env["user"], projects, projects, "at-1")
+        assert summary.outcomes[0].error == "pat_exchange: pat_mint_failed"
+        assert summary.deferred_grants == []
+        assert summary.connections_needing_chat_tools == []
+
+        monkeypatch.setattr(kp, "exchange_project_pat", lambda tok, pid, *, read_only: f"pat-{pid}")
+        second = kprov.provision_projects(env["user"], projects, projects, "at-2")
+        assert second.outcomes[0].token_stored is True
+        connection_id = second.outcomes[0].connection_id
+        assert second.connections_needing_chat_tools == [connection_id]
+        assert [g["connection_id"] for g in second.deferred_grants] == [connection_id]
+
     def test_owners_own_relogin_removes_the_dead_master_when_fresh_is_not_master(self, env, pat_mocks, monkeypatch):
         """The OWNER walking the same revocation is not a `repairing` login
         (their storage slot is already writable), but the dead mirror in the

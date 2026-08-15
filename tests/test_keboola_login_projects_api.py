@@ -81,6 +81,25 @@ class TestListDiscoveredProjects:
         resp = select_env["client"].get(BASE, headers=_auth(select_env["analyst_token"]))
         assert resp.json()["discovery_available"] is False
 
+    def test_stash_is_not_offered_after_the_mode_leaves_select(self, select_env, monkeypatch):
+        """An operator flipping the mode away from `select` mid-TTL must not
+        leave a window where the listing offers projects whose import answers
+        409 not_select_mode — the two endpoints agree on the gate."""
+        from src.repositories import users_repo
+
+        analyst = users_repo().get_by_email("analyst@test.com")
+        kprov.store_pending_discovery(analyst, [kp.DiscoveredProject(id="516", name="A", role="admin")], "at-1")
+        monkeypatch.setattr(kv, "multi_project_mode", lambda: "auto")
+
+        resp = select_env["client"].get(BASE, headers=_auth(select_env["analyst_token"]))
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body == {"mode": "auto", "discovery_available": False, "projects": []}
+        post = select_env["client"].post(
+            BASE, json={"project_ids": ["516"]}, headers=_auth(select_env["analyst_token"])
+        )
+        assert post.status_code == 409
+
 
 class TestImportDiscoveredProjects:
     def test_import_provisions_the_selection(self, select_env):
