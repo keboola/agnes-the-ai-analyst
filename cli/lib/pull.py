@@ -32,11 +32,11 @@ import os
 import re
 import shutil
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Iterator
 
 import httpx
 
@@ -174,6 +174,14 @@ def _safe_manifest_tables(raw: dict) -> tuple[dict, list[str]]:
 # even a persistent mismatch never leaves the table missing from disk.
 _DOWNLOAD_RETRIES = 2
 _DOWNLOAD_RETRY_BACKOFFS_S = (0.5, 1.0)
+
+
+def _retry_backoff(attempt: int) -> float:
+    """Seconds to wait before re-attempting a failed download. Clamps to the
+    tail of the schedule so `_DOWNLOAD_RETRIES` can be raised (or monkeypatched
+    in tests) without having to extend `_DOWNLOAD_RETRY_BACKOFFS_S` in step."""
+    return _DOWNLOAD_RETRY_BACKOFFS_S[min(attempt, len(_DOWNLOAD_RETRY_BACKOFFS_S) - 1)]
+
 
 # WF-4 (wave 2H) — direct-to-object-storage fetch of a manifest `signed_url`.
 # Bounded connect/read timeouts so a stalled object-store endpoint doesn't
@@ -632,6 +640,73 @@ def _drop_stale_layout(parquet_dir: Path, tid: str, *, partitioned: bool) -> Non
             shutil.rmtree(stale_dir, ignore_errors=True)
 
 
+def _fetch_part_with_retry(fetch_part, relpath: str, dest: Path, expected: str) -> str | None:
+    """Fetch ONE part into ``dest`` and md5-verify it, retrying a bad fetch on
+    the same bounded budget ``_download_one`` gives a single-file table
+    (``_DOWNLOAD_RETRIES`` extra attempts, ``_DOWNLOAD_RETRY_BACKOFFS_S``
+    between them). Returns ``None`` on success, else the last error string.
+
+    Exists for parity with `_download_one` (#596/#626): the partitioned path
+    added later fetched each part exactly once, so one bad part aborted the
+    whole table's sync.
+
+    Both failure kinds retry, matching `_download_one`: a transport error and a
+    hash mismatch are equally plausible symptoms of one flaky transfer, and the
+    caller cannot tell them apart anyway.
+
+    No empty-hash PAR1 fallback, unlike `_verify_and_promote`: the server
+    derives every part hash from file content in `_hash_table_parts`, so an
+    empty ``expected`` is a malformed manifest and should fail loudly rather
+    than downgrade to a structural check. Verified parts are staged, not
+    promoted — the all-or-nothing swap lives in the caller.
+
+    Note this sits ON TOP of `stream_download`'s own transient-error retries,
+    so a persistently failing part now costs up to (its attempts x these) round
+    trips, serially, before the table gives up.
+
+    Two consecutive reads yielding the SAME wrong hash stop the loop early: the
+    server is serving stable bytes that simply are not the ones the manifest
+    describes, and re-reading identical bytes a third time cannot change that.
+    This is the common case in practice, not a micro-optimization — a part
+    rewritten server-side without `sync_state` being re-hashed (a backfill
+    running between rebuilds) publishes a hash that no longer matches anything
+    on disk, and stays that way until the next rebuild. Retrying a plain "hash
+    mismatch" reads like corruption and sends people hunting a transfer bug, so
+    that case gets its own message naming the real cause.
+    """
+    last_err: str | None = None
+    prev_got: str | None = None
+    for attempt in range(_DOWNLOAD_RETRIES + 1):
+        try:
+            fetch_part(relpath, dest)
+            got = _file_md5(dest)
+            if got == expected:
+                return None
+            if got == prev_got:
+                # Deterministic: same bytes, twice. Not a transfer problem.
+                dest.unlink(missing_ok=True)
+                return (
+                    f"part {relpath} hash mismatch: expected {expected[:12]}, got {got[:12]} "
+                    f"— identical on {attempt + 1} reads, so the server's bytes are stable and "
+                    f"the published hash is stale. A transfer retry cannot fix this; the source "
+                    f"needs a rebuild to re-hash it."
+                )
+            prev_got = got
+            # Truncated like `_verify_and_promote`'s message — same failure,
+            # same shape, whichever layout the table happens to use.
+            last_err = f"part {relpath} hash mismatch: expected {expected[:12]}, got {got[:12]}"
+        except Exception as exc:
+            # Transport errors keep the full budget: unlike a stable hash, a
+            # second connection failure is not evidence the third will fail.
+            last_err = f"part {relpath} fetch failed: {exc}"
+        # Never leave a rejected part's bytes in staging: the next attempt must
+        # not be able to verify a stale file if its fetch dies before writing.
+        dest.unlink(missing_ok=True)
+        if attempt < _DOWNLOAD_RETRIES:
+            time.sleep(_retry_backoff(attempt))
+    return last_err
+
+
 def _sync_partitioned_table(
     tid: str,
     server_parts: list[dict],
@@ -646,8 +721,10 @@ def _sync_partitioned_table(
     Staged-then-swapped: changed parts are fetched into a staging dir and
     md5-verified there; only when EVERY fetched part verifies are they moved
     into the table dir (unchanged parts stay put) and server-dropped parts
-    pruned. On any fetch/verify failure nothing is moved — the prior table dir
-    is left intact. The per-part moves themselves are not one atomic unit, so a
+    pruned. Each part is fetched through ``_fetch_part_with_retry``; only when
+    a part fails every attempt does the table abort, moving nothing and leaving
+    the prior table dir intact. The per-part moves themselves are not one
+    atomic unit, so a
     process crash *during* the swap can leave a mix of old/new parts; that is
     self-healing — ``local_tables`` is only updated on success, so the next
     pull re-detects and re-syncs the affected parts.
@@ -669,10 +746,9 @@ def _sync_partitioned_table(
             relpath, expected = part["path"], part["hash"]
             dest = staging / relpath
             dest.parent.mkdir(parents=True, exist_ok=True)
-            fetch_part(relpath, dest)
-            got = _file_md5(dest)
-            if got != expected:
-                return None, False, f"part {relpath} hash mismatch: expected {expected} got {got}"
+            err = _fetch_part_with_retry(fetch_part, relpath, dest, expected)
+            if err is not None:
+                return None, False, err
             staged[relpath] = dest
         # Every fetched part verified → promote atomically, then prune.
         for relpath, dest in staged.items():
@@ -692,11 +768,13 @@ def _sync_partitioned_table(
             None,
         )
     except Exception as exc:
-        # A transport/IO error (e.g. `stream_download` network blip) or a
-        # promote/prune failure must be RETURNED as a per-table error, not
-        # raised — otherwise one flaky partitioned table would abort the whole
-        # pull and discard tables that already downloaded fine. All-or-nothing
-        # still holds: nothing was promoted, the prior table dir is intact.
+        # Staging/promote/prune IO failures land here; per-part fetch errors do
+        # not (`_fetch_part_with_retry` catches those to retry them, and returns
+        # the last one). Either way the failure must be RETURNED as a per-table
+        # error, not raised — otherwise one flaky partitioned table would abort
+        # the whole pull and discard tables that already downloaded fine.
+        # All-or-nothing still holds: nothing was promoted, the prior table dir
+        # is intact.
         return None, False, f"partitioned sync failed: {exc}"
     finally:
         if staging.exists():
@@ -758,7 +836,7 @@ def run_pull(
                 f"{', '.join(repr(t) for t in unsafe_tids[:5])}",
                 file=_sys.stderr,
             )
-        local_state = get_sync_state()
+        local_state = get_sync_state(workspace)
         local_tables = local_state.get("tables", {})
         # Which ids resolved LOCALLY as of the previous pull, captured before
         # the prune below mutates the dict. This is the only honest answer to
@@ -823,13 +901,13 @@ def run_pull(
         # The parquet-existence check is load-bearing: a stale `sync_state.json`
         # entry (hash matches server) is NOT proof the file is on disk. The
         # file can disappear between runs — manual rm, disk corruption, an
-        # operator nuking `server/parquet/` during cleanup, a different
-        # workspace sharing the same `~/.config/agnes/sync_state.json`
-        # (TODO(workspace-scoped-sync-state) below) writing one workspace's
-        # parquets while another reads sync_state and assumes "I already
-        # have these." Without the existence guard, `agnes pull` would skip
-        # the download and the downstream DuckDB view rebuild fails on a
-        # missing file. Hash-equal-but-file-missing → force re-download.
+        # operator nuking `server/parquet/` during cleanup, or (#1311) the
+        # one-time legacy->workspace state migration seeding this workspace's
+        # hash from another workspace's last write before either of them had
+        # its own scoped state. Without the existence guard, `agnes pull`
+        # would skip the download and the downstream DuckDB view rebuild
+        # fails on a missing file. Hash-equal-but-file-missing → force
+        # re-download.
         to_download: list[str] = []
         partitioned_tids: list[str] = []
         non_remote_total = 0
@@ -1265,18 +1343,62 @@ def run_pull(
         except Exception as exc:
             result.errors.append({"stage": "knowledge_digests", "error": str(exc)})
 
-        # 5. Persist sync state (only on real runs).
-        # TODO(workspace-scoped-sync-state): currently saved to
-        # ~/.config/agnes/sync_state.json (per legacy sync.py behavior).
-        # Two workspaces sharing one user account share this state.
-        # Future: scope to <workspace>/.agnes/sync_state.json so workspace
-        # bootstrap leaves no residue outside <workspace>/.
+        # 5. Persist sync state (only on real runs). Workspace-scoped
+        # (#1311) — `<workspace>/.claude/agnes/sync_state.json` — so two
+        # workspaces on the same machine no longer share one hash record;
+        # see `cli.config.get_sync_state`/`save_sync_state` for the
+        # migration from the legacy machine-global file.
         local_state["tables"] = local_tables
-        local_state["last_sync"] = datetime.now(timezone.utc).isoformat()
-        save_sync_state(local_state)
+        local_state["last_sync"] = datetime.now(UTC).isoformat()
+        save_sync_state(local_state, workspace)
 
-        # 6. Rebuild DuckDB views — unconditional. The DB file is the
-        # load-bearing artifact for downstream readers.
+        # 6. Fetch corporate-memory bundle and lazily write
+        # `.claude/rules/km_*.md`. Best-effort: a server outage on this
+        # endpoint must not fail the whole pull.
+        try:
+            written = _fetch_and_write_rules(workspace)
+            result.rules_count = written
+        except Exception as exc:
+            result.errors.append({"stage": "memory_bundle", "error": str(exc)})
+
+        # 6b. Table access policies (§10 item 4): write/prune
+        # `.claude/rules/access_policies.md` naming every policied table in
+        # the analyst's stack -- the one link in the disclosure chain that
+        # reaches an agent's context BEFORE it writes a query. Sourced from
+        # the manifest already fetched in step 1, no extra round-trip.
+        # Best-effort, same posture as the memory bundle above.
+        try:
+            result.access_policy_tables = _write_access_policy_rules(manifest, workspace)
+        except Exception as exc:
+            result.errors.append({"stage": "access_policy_rules", "error": str(exc)})
+
+        # 7. v49 stack sync — per-type loop into ``<workspace>/.claude/data/``
+        # and ``<workspace>/.claude/memory/`` with reference-counted dedup.
+        # Runs only when the manifest carries the v49 fields (older servers /
+        # backward-compat workspaces are untouched). Best-effort: failure
+        # here records under ``result.errors`` but doesn't abort the rest of
+        # the pull. MUST run before step 8's view rebuild (#1325): the
+        # rebuild now also registers views over this tree, so a table synced
+        # for the FIRST time by this very call needs its reference file on
+        # disk before the rebuild walks it, or it stays unqueryable until
+        # the next `agnes pull`.
+        if any(k in manifest for k in ("direct_tables", "data_packages", "memory_domains")):
+            try:
+                result.stack_sync = _run_stack_sync_from_manifest(
+                    manifest,
+                    workspace,
+                    skip_materialize=skip_materialize,
+                    show_progress=show_progress,
+                )
+            except Exception as exc:
+                result.errors.append({"stage": "stack_sync", "error": str(exc)})
+
+        # 8. Rebuild DuckDB views — unconditional. The DB file is the
+        # load-bearing artifact for downstream readers. Runs LAST (after
+        # step 7) so a table the stack sync just fetched already has its
+        # reference file on disk when `_rebuild_duckdb_views` walks
+        # `.claude/data/` (#1325) — running this any earlier would leave a
+        # freshly-subscribed table unqueryable for one whole pull cycle.
         #
         # Table access policies (§3.4, §10.3): a local snapshot whose
         # stored `policy_fingerprint` no longer matches the fingerprint the
@@ -1297,38 +1419,6 @@ def run_pull(
             blocked_names=blocked_snapshot_names | _stale_policy_snapshot_names(workspace, manifest),
         )
 
-        # 7. Fetch corporate-memory bundle and lazily write
-        # `.claude/rules/km_*.md`. Best-effort: a server outage on this
-        # endpoint must not fail the whole pull.
-        try:
-            written = _fetch_and_write_rules(workspace)
-            result.rules_count = written
-        except Exception as exc:
-            result.errors.append({"stage": "memory_bundle", "error": str(exc)})
-
-        # 7b. Table access policies (§10 item 4): write/prune
-        # `.claude/rules/access_policies.md` naming every policied table in
-        # the analyst's stack -- the one link in the disclosure chain that
-        # reaches an agent's context BEFORE it writes a query. Sourced from
-        # the manifest already fetched in step 1, no extra round-trip.
-        # Best-effort, same posture as the memory bundle above.
-        try:
-            result.access_policy_tables = _write_access_policy_rules(manifest, workspace)
-        except Exception as exc:
-            result.errors.append({"stage": "access_policy_rules", "error": str(exc)})
-
-        # 8. v49 stack sync — per-type loop into ``~/.claude/data/`` and
-        # ``~/.claude/memory/`` with reference-counted dedup. Runs only
-        # when the manifest carries the v49 fields (older servers /
-        # backward-compat workspaces are untouched). Best-effort:
-        # failure here records under ``result.errors`` but doesn't abort
-        # the rest of the pull.
-        if any(k in manifest for k in ("direct_tables", "data_packages", "memory_domains")):
-            try:
-                result.stack_sync = _run_stack_sync_from_manifest(manifest, workspace)
-            except Exception as exc:
-                result.errors.append({"stage": "stack_sync", "error": str(exc)})
-
     result.duration_s = time.monotonic() - started
 
     # 9. Pull-confirm telemetry — fire-and-forget POST so the server can
@@ -1341,19 +1431,78 @@ def run_pull(
     return result
 
 
-def _run_stack_sync_from_manifest(manifest: dict, workspace: Path):
+def _run_stack_sync_from_manifest(
+    manifest: dict,
+    workspace: Path,
+    *,
+    skip_materialize: bool = False,
+    show_progress: bool = False,
+):
     """Build a ``pull_sync.PullStackOptions`` from the manifest payload
     and invoke ``run_stack_sync``. The local sync root is the
     ``<workspace>/.claude/`` dir so the stack-sync artifacts live next
     to the existing ``<workspace>/.claude/rules/`` / ``<workspace>/.claude/
     settings.json`` tree (workspace-scoped, not user-home, matching
-    Section 5.3 of the spec for analyst workspaces)."""
+    Section 5.3 of the spec for analyst workspaces).
+
+    ``skip_materialize`` (#1304) mirrors the flag `run_pull` already
+    honors in its step-4 flat-``tables`` download loop — threaded through
+    to ``PullStackOptions`` so a ``query_mode='materialized'`` row in the
+    typed ``data_packages``/``direct_tables`` sections is skipped here
+    too, not just in the legacy dict.
+
+    ``show_progress`` (#1308) gates a per-table stderr line emitted
+    before/after each real fetch — same quiet-mode contract as step 4
+    (``run_pull`` passes through the same value it derived from
+    ``--quiet``/``--json``). Also wires `stream_download`'s
+    `progress_callback` so the reported size reflects bytes actually
+    transferred rather than only the manifest's declared size.
+    """
     from cli.lib.pull_sync import PullStackOptions, run_stack_sync
 
     local_root = workspace / ".claude"
 
+    # id -> declared size, purely for the human-readable progress line
+    # below. Best-effort: falls back to "0 B" for a row with no
+    # `size_bytes`, or when `target.stem` (the shared-store filename,
+    # derived from `_safe_segment(table_id)`) doesn't line up with the
+    # raw id here — display-only, never used as a lookup/cache key.
+    sizes_by_id: dict[str, int] = {}
+    for t in manifest.get("direct_tables") or []:
+        tid = t.get("id")
+        if tid:
+            sizes_by_id[tid] = int(t.get("size_bytes") or 0)
+    for pkg in manifest.get("data_packages") or []:
+        for t in pkg.get("tables") or []:
+            tid = t.get("id")
+            if tid:
+                sizes_by_id[tid] = int(t.get("size_bytes") or 0)
+
     def _fetcher(url: str, target: Path) -> None:
-        stream_download(url, str(target))
+        import sys as _sys
+
+        tid = target.stem
+        if show_progress:
+            size = sizes_by_id.get(tid, 0)
+            label = f" ({_TextualProgress._fmt_bytes(size)})" if size else ""
+            _sys.stderr.write(f"stack sync: fetching {tid}{label}...\n")
+            _sys.stderr.flush()
+
+        started = time.monotonic()
+        downloaded = 0
+
+        def _cb(n: int) -> None:
+            nonlocal downloaded
+            downloaded += n
+
+        stream_download(url, str(target), progress_callback=_cb if show_progress else None)
+
+        if show_progress:
+            duration = max(0.001, time.monotonic() - started)
+            _sys.stderr.write(
+                f"stack sync: {tid} done ({_TextualProgress._fmt_bytes(downloaded)} in {duration:.1f}s)\n"
+            )
+            _sys.stderr.flush()
 
     def _bundle_fetcher(slug: str) -> bytes:
         resp = api_get("/api/memory/bundle", params={"domain": slug})
@@ -1366,11 +1515,12 @@ def _run_stack_sync_from_manifest(manifest: dict, workspace: Path):
         fetcher=_fetcher,
         md5_of=_file_md5,
         bundle_fetcher=_bundle_fetcher,
+        skip_materialize=skip_materialize,
     )
     return run_stack_sync(opts)
 
 
-def _emit_pull_confirm(server_url: str, token: str, result: "PullResult") -> None:
+def _emit_pull_confirm(server_url: str, token: str, result: PullResult) -> None:
     """POST /api/sync/pull-confirm with the per-type aggregate counts.
 
     Fire-and-forget — the parent already swallows exceptions but the
@@ -1423,7 +1573,7 @@ def _file_md5(path: Path) -> str:
     return h.hexdigest()
 
 
-def _sync_knowledge_artifacts(manifest: dict, workspace: Path, local_state: dict, result: "PullResult") -> None:
+def _sync_knowledge_artifacts(manifest: dict, workspace: Path, local_state: dict, result: PullResult) -> None:
     """K3 (#798): download/verify/promote/prune per-collection knowledge.duckdb.
 
     Same lifecycle as parquets: sidecar download -> md5 verify -> os.replace
@@ -1519,7 +1669,7 @@ def _digest_to_md(body: dict) -> str:
     return "\n".join(lines)
 
 
-def _sync_knowledge_digests(manifest: dict, workspace: Path, local_state: dict, result: "PullResult") -> None:
+def _sync_knowledge_digests(manifest: dict, workspace: Path, local_state: dict, result: PullResult) -> None:
     """K4 (#799): write/prune maintained digests as `.claude/rules/ka_<slug>.md`.
 
     Same delivery channel as the corporate-memory `km_*.md` bundle — the
@@ -1564,12 +1714,7 @@ def _sync_knowledge_digests(manifest: dict, workspace: Path, local_state: dict, 
         # claimed `ka_*.md` gets the header; for already-synced digests it did
         # not.)
         cached = known.get(did, {})
-        if (
-            md5
-            and cached.get("md5") == md5
-            and cached.get("render") == _DIGEST_RENDER_VERSION
-            and target.exists()
-        ):
+        if md5 and cached.get("md5") == md5 and cached.get("render") == _DIGEST_RENDER_VERSION and target.exists():
             continue  # hash-equal, same template, file present
         try:
             resp = api_get(entry.get("url") or f"/api/knowledge/digests/{did}/content")
@@ -1614,13 +1759,13 @@ def _is_valid_parquet(path: Path) -> bool:
 
 def _blocked_snapshot_names(
     server_tables: dict,
-    authorized_names: "set[str] | None",
-    server_only_names: "set[str]",
+    authorized_names: set[str] | None,
+    server_only_names: set[str],
     *,
-    previously_local: "set[str]",
-    still_local: "set[str]",
-    remembered: "set[str]",
-) -> "set[str]":
+    previously_local: set[str],
+    still_local: set[str],
+    remembered: set[str],
+) -> set[str]:
     """Names a snapshot view must NOT take, remembered across pulls.
 
     ``agnes snapshot create <table>`` with no ``--as`` writes
@@ -1761,6 +1906,17 @@ def _rebuild_duckdb_views(workspace: Path, parquet_dir: Path, blocked_names: set
     expect the file to exist. The parquet rebuild loop is a no-op when
     `parquet_dir` is missing.
 
+    Three sources are registered, in this precedence order (a later source
+    yields to a name an earlier one already took):
+
+    1. `parquet_dir` (`<workspace>/server/parquet/`) — the legacy flat flow.
+    2. The stack-sync tree (`<workspace>/.claude/data/_direct/` +
+       `<workspace>/.claude/data/<package_slug>/`, written by step 8 /
+       `cli/lib/pull_sync.py`) — see `_register_stack_views` (#1325).
+    3. `agnes snapshot create` output (`_register_snapshot_views`) — always
+       last, so a registered table of either kind above always wins a name
+       collision with a snapshot.
+
     `blocked_names` (#1129 review) are table ids the analyst is no longer
     authorized for, or that turned `server_only`. A snapshot must not take
     such a name; see `_register_snapshot_views`. Defaults to None so callers
@@ -1769,7 +1925,7 @@ def _rebuild_duckdb_views(workspace: Path, parquet_dir: Path, blocked_names: set
     Returns the snapshot view names withheld for that reason — empty on every
     ordinary pull.
     """
-    import duckdb  # noqa: F401  (kept for the duckdb.Error path below)
+    import duckdb
 
     from src.duckdb_conn import _open_duckdb
 
@@ -1840,6 +1996,18 @@ def _rebuild_duckdb_views(workspace: Path, parquet_dir: Path, blocked_names: set
                     except duckdb.Error:
                         continue
 
+        # Stack-sync tree (#1325) — `parquet_dir` views are in place, so
+        # re-derive what's actually registered (BASE TABLEs from before the
+        # rebuild + the views the loop above just created) rather than reuse
+        # `existing_tables`, which still only holds the pre-rebuild BASE
+        # TABLEs. That fresh set is `claimed`: a name already in it is
+        # `server/parquet/`'s (or a user table's) and the stack tree yields.
+        try:
+            claimed = {row[0] for row in conn.execute("SELECT table_name FROM information_schema.tables").fetchall()}
+        except Exception:
+            claimed = set(existing_tables)
+        _register_stack_views(conn, workspace, claimed)
+
         # Workspace-local uploaded tables (chat "+" upload → register_as_table):
         # a self-contained `uploads/extract.duckdb` holds materialized tables.
         # ATTACH it read-only and copy each table into analytics.duckdb so
@@ -1876,6 +2044,55 @@ def _rebuild_duckdb_views(workspace: Path, parquet_dir: Path, blocked_names: set
         conn.close()
 
 
+def _register_stack_views(conn, workspace: Path, claimed: set[str]) -> None:
+    """Register DuckDB views over the stack-sync tree (#1325).
+
+    `_rebuild_duckdb_views` used to walk only `parquet_dir`
+    (`<workspace>/server/parquet/`), so a table `agnes pull` landed via the
+    v49 stack sync (`cli/lib/pull_sync.py`, step 8 — `.claude/data/_direct/`
+    + `.claude/data/<package_slug>/`, reference files into the
+    content-addressed `.claude/data/_shared/`) sat on disk with no view:
+    `cli/lib/local_tables.py`'s module docstring and `agnes status`'s
+    "downloaded (no local view)" count both documented the gap this closes.
+
+    One view per analyst-facing table NAME
+    (`cli/lib/local_tables.py::stack_reference_files`) — the reference
+    FILENAME, never the content-addressed `_shared/<table_id>.parquet` stem
+    (`_shared` itself is never walked directly; it carries no name). Two
+    packages referencing the same table share one name and are collapsed to
+    a single registration by that helper, so this loop never double-creates
+    a view.
+
+    `claimed` already holds every name `server/parquet/` (or a pre-existing
+    user BASE TABLE) took in this same rebuild — `server/parquet/` is the
+    long-standing path, so a same-name collision is left to it rather than
+    shadowed or flip-flopped between the two on successive pulls. Mutated in
+    place as this loop registers names, so a corrupt/invalid reference is
+    simply skipped (never aborts the rebuild), mirroring the `parquet_dir`
+    loop above.
+
+    `view_name` is quoted via `quote_ident` before reaching SQL: it comes
+    from a filename on disk, not the (already-sanitized) manifest — nothing
+    stops a stray file, a pre-sanitization-era sync, or manual tampering
+    from putting an unsafe name there.
+    """
+    import duckdb  # noqa: F401  (duckdb.Error below)
+
+    from cli.lib.local_tables import stack_reference_files
+
+    for view_name, ref_path in sorted(stack_reference_files(workspace).items()):
+        if view_name in claimed:
+            continue
+        if not _is_valid_parquet(ref_path):
+            continue
+        abs_path = str(ref_path.resolve()).replace("'", "''")
+        try:
+            conn.execute(f"CREATE VIEW {quote_ident(view_name)} AS SELECT * FROM read_parquet('{abs_path}')")
+        except duckdb.Error:
+            continue
+        claimed.add(view_name)
+
+
 def _quote_ident(name: str) -> str:
     """Quote a SQL identifier, doubling embedded double-quotes.
 
@@ -1909,7 +2126,7 @@ def _register_snapshot_views(conn, workspace: Path, blocked_names: set[str] | No
     parquet is left on disk and stays reachable through its snapshot path;
     only the bare id stops resolving. Returns the names withheld.
     """
-    import duckdb  # noqa: F401  (duckdb.Error below)
+    import duckdb
 
     withheld: list[str] = []
     snapshots_dir = workspace / "user" / "snapshots"

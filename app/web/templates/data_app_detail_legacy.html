@@ -33,6 +33,15 @@
         {% endif %}
       </span>
     </div>
+    {# See the same block in data_app_detail.html: the runner's recorded
+       failure reason, which every surface stored and none displayed. This is
+       the copy a DEFAULT instance renders, so it has to land here too. #}
+    {% if app.state_detail %}
+    <div class="info-item">
+      <span class="label">Error</span>
+      <span class="value" id="dda-state-detail">{{ app.state_detail }}</span>
+    </div>
+    {% endif %}
     <div class="info-item">
       <span class="label">{% if app.kind == 'linked' %}Source{% else %}Owner{% endif %}</span>
       <span class="value">{% if app.kind == 'linked' %}Keboola{% else %}{{ app.owner_email }}{% endif %}</span>

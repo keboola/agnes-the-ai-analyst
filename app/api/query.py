@@ -1964,8 +1964,15 @@ def _bq_guardrail_inputs(
             # Forbidden-table loop above will have rejected the request
             # before we get here. Defensive skip.
             continue
-        pattern = r"\b" + re.escape(str(name).lower()) + r"\b"
-        if re.search(pattern, sql_lower_masked):
+        # Issue #1322: a bare `\bname\b` match also fires on the keyword
+        # half of ORDER BY / GROUP BY / PARTITION BY when a registered
+        # table is named after one of those keywords (e.g. `order`), which
+        # then corrupts the rewriter's substitution downstream. Reuse the
+        # same compiled pattern the RBAC name guards use — it already
+        # suppresses a name immediately followed by " by" via a negative
+        # lookahead, since no real reference can occupy that position
+        # (DuckDB/BQ both reject a bare `by` as an identifier).
+        if _name_reference_re(str(name).lower()).search(sql_lower_masked):
             key = (bucket.lower(), source_table.lower())
             if key not in seen_paths:
                 seen_paths.add(key)
@@ -2125,6 +2132,44 @@ def _bq_guardrail_inputs(
     return dry_run, name_lookups, None
 
 
+# Reserved SQL keywords a registered table may legally be named after — the
+# register-table id rule is `[a-z_][a-z0-9_]*`, which admits every word below.
+# Union of BigQuery's reserved-keyword list and the DuckDB-only words that can
+# appear bare in a SELECT (ASOF/ANTI/SEMI/POSITIONAL joins, PIVOT/UNPIVOT,
+# QUALIFY, SAMPLE, …). Membership only ever NARROWS where a name is
+# substituted (see `_rewrite_bq_table_refs_to_native`), so over-inclusion is
+# the safe direction; a missing word merely leaves that name on the legacy
+# substitute-everywhere path.
+_SQL_RESERVED_NAMES = frozenset(
+    """
+    all and anti any array as asc asof at between by case cast collate columns
+    contains create cross cube current default define desc distinct else end
+    enum escape except exclude exists extract false fetch following for from
+    full glob group grouping groups hash having if ignore ilike in inner
+    intersect interval into is join lateral left like limit lookup map merge
+    natural new no not null nulls of offset on or order outer over pivot
+    positional preceding proto qualify range recursive replace respect right
+    rollup rows sample select semi set similar some struct table tablesample
+    then to treat true unbounded union unnest unpivot using values when where
+    window with within
+    """.split()
+)
+
+# A bare table name can only follow one of these tokens in a SELECT-only
+# statement: `FROM x`, `… JOIN x`, or `FROM a, x` (old-style comma join).
+# Anchored with `\Z` and applied to the text PRECEDING a candidate match, so
+# it answers "is this occurrence in a table-reference position?".
+#
+# Whitespace and SQL comments may sit between the token and the name. Written
+# with single-character `\s` (not `\s+`) inside the outer `*` so the
+# alternation has no nested quantifier to backtrack over — the SQL here is
+# analyst-supplied, and the security playbook requires linear-time regexes.
+_TABLE_REF_PREFIX_RE = re.compile(
+    r"(?:\bfrom\b|\bjoin\b|,)(?:\s|/\*(?:[^*]|\*(?!/))*\*/|--[^\n]*\n)*\Z",
+    re.IGNORECASE,
+)
+
+
 def _rewrite_bq_table_refs_to_native(
     sql: str,
     name_lookups: list,
@@ -2166,6 +2211,21 @@ def _rewrite_bq_table_refs_to_native(
     the CTE as unreferenced (legal) and the rewriter's caller deals with
     the consequence — over-estimation for dry-run, fall-through-to-ATTACH
     via BQ parse error for execution.
+
+    TODO(durable fix): the residual cases above — string literals, CTE
+    shadowing, and a non-keyword name that collides with a *column* name
+    (`SELECT revenue FROM revenue` rewrites all three occurrences) — all
+    come from the same root cause: this is a regex over unparsed SQL, so it
+    cannot tell an identifier's role apart. `_sql_referenced_names` already
+    asks DuckDB's own parser (`json_serialize_sql`) which names are
+    `BASE_TABLE` references and is the right oracle here too, but it hands
+    back a *set of names*, not source positions, so position-accurate
+    rewriting needs more than a call swap: either a placeholder
+    substitution round-tripped through `json_deserialize_sql` (which
+    reformats the statement and drops comments) or a real tokenizer. It
+    also declines on backtick-quoted BQ paths — first-class input on this
+    path — so the regex must survive as the fallback either way. Left as a
+    design task rather than smuggled into the keyword fix below.
     """
     out = sql
 
@@ -2204,11 +2264,46 @@ def _rewrite_bq_table_refs_to_native(
         # left-to-right and stops at the first match — pinning longest
         # entries to the front preserves the prefix-collision invariant
         # exercised by test_rewrite_helper_longer_name_wins_over_prefix.
+        #
+        # Issue #1322: append the same `(?!\s+by\b)` suppression
+        # `_name_reference_re` uses for the RBAC name guards. Without it, a
+        # registered name that happens to be a SQL keyword (e.g. `order`)
+        # also matches the keyword half of ORDER BY / GROUP BY / PARTITION
+        # BY, and re.sub replaces THAT occurrence too — e.g. `FROM order
+        # ORDER BY x` corrupts to ``FROM `proj.ds.tbl` `proj.ds.tbl` BY x``.
+        # A name genuinely used as a table/alias is never immediately
+        # followed by " by" (DuckDB/BQ both reject a bare `by` there), so
+        # the suppression only ever silences the false keyword match.
+        #
+        # Devin review on PR #1331: `(?!\s+by\b)` covers only the two-word
+        # `<KEYWORD> BY` clauses, and only when nothing but plain whitespace
+        # separates the words — `ORDER /*c*/ BY` slips through, and so does
+        # every other keyword a table can be named after (`all` in `UNION
+        # ALL`, `on` in a JOIN condition, `as`, `and`, `limit`, `distinct`,
+        # `select`, …). `_name_repl` below therefore anchors any RESERVED-
+        # KEYWORD-named entry to a table-reference position, which is the
+        # property that actually distinguishes the two roles.
         sorted_names = sorted(name_to_target.keys(), key=len, reverse=True)
-        pattern = r"\b(" + "|".join(re.escape(n) for n in sorted_names) + r")\b"
+        pattern = r"\b(" + "|".join(re.escape(n) for n in sorted_names) + r")\b(?!\s+by\b)"
 
         def _name_repl(m: re.Match) -> str:
-            return name_to_target[m.group(1).lower()]
+            matched = m.group(1)
+            # Keyword-named tables only substitute where a table reference
+            # can actually stand (after FROM / JOIN / a FROM-list comma).
+            # Deliberately scoped to reserved words rather than applied to
+            # every name: for a keyword name the status quo is corruption,
+            # so a missed position degrades to the correct-but-slower
+            # ATTACH-catalog fallback; for an ordinary name the
+            # substitute-everywhere behaviour documented above works today
+            # and must not be narrowed on the strength of this enumeration.
+            #
+            # The check runs inside the replacement callback, NOT as a second
+            # re.sub pass, so pass 1 stays single-pass — a second pass would
+            # re-scan the backticked text this one inserts and reintroduce
+            # the project-ID-contains-name corruption.
+            if matched.lower() in _SQL_RESERVED_NAMES and not _TABLE_REF_PREFIX_RE.search(m.string[: m.start(1)]):
+                return matched
+            return name_to_target[matched.lower()]
 
         # `re.split` with a captured group returns: [outside, backtick,
         # outside, backtick, …]. Even indices are outside-backtick chunks
@@ -2377,8 +2472,15 @@ def _bq_remote_execution_plan(
             # single-project assumption. Bail out completely so we don't
             # mix rewritten and non-rewritten BQ paths in one query.
             return user_sql, False, None, None
-        pattern = r"\b" + re.escape(str(name).lower()) + r"\b"
-        if re.search(pattern, sql_lower_masked):
+        # Issue #1322: a bare `\bname\b` match also fires on the keyword
+        # half of ORDER BY / GROUP BY / PARTITION BY when a registered
+        # table is named after one of those keywords (e.g. `order`), which
+        # then corrupts the rewriter's substitution downstream. Reuse the
+        # same compiled pattern the RBAC name guards use — it already
+        # suppresses a name immediately followed by " by" via a negative
+        # lookahead, since no real reference can occupy that position
+        # (DuckDB/BQ both reject a bare `by` as an identifier).
+        if _name_reference_re(str(name).lower()).search(sql_lower_masked):
             key = (bucket.lower(), source_table.lower())
             if key not in seen_paths:
                 seen_paths.add(key)
@@ -2426,7 +2528,11 @@ def _bq_remote_execution_plan(
             # Same name registered both BQ-remote and local? Pathological;
             # skip as a safety measure.
             return user_sql, False, None, None
-        if re.search(r"\b" + re.escape(name_lc) + r"\b", sql_lower_masked):
+        # Issue #1322: same keyword-collision suppression as the bare-name
+        # pass above — a local-mode table named e.g. `order` must not make
+        # every BQ query containing an innocent `ORDER BY` fall back to the
+        # slower ATTACH-catalog path.
+        if _name_reference_re(name_lc).search(sql_lower_masked):
             logger.info(
                 "rewrite_skip_cross_source: user SQL references both "
                 "BQ-remote and local-mode tables; falling back to "

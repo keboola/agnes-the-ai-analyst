@@ -207,6 +207,11 @@ def pull(
         typer.echo(
             json.dumps(
                 {
+                    # #1312 — which workspace this pull actually targeted
+                    # (resolved above from --workspace / AGNES_LOCAL_DIR /
+                    # cwd / the anchored workspace_root), so a scripted
+                    # caller doesn't have to re-derive it.
+                    "workspace": str(workspace),
                     "tables_updated": result.tables_updated,
                     "tables_removed": result.tables_removed,
                     "parquets_total": result.parquets_total,
@@ -264,6 +269,14 @@ def pull(
             # choice), not a hidden exit 0 that hides data loss.
             raise typer.Exit(1)
         return
+
+    # #1312 — name which workspace this pull actually refreshed. Resolution
+    # falls through several layers (--workspace / AGNES_LOCAL_DIR / cwd / the
+    # anchored workspace_root — see `cli/lib/workspace_resolve.py`), so a
+    # silent success gives no confirmation the analyst is looking at, e.g.,
+    # a different repo's workspace. Gated on `quiet` like the rest of this
+    # block (the --json payload above carries the same value instead).
+    typer.echo(f"Workspace: {workspace}")
 
     # Surface tables_removed alongside tables_updated so an operator who
     # dropped a data package from their stack sees the prune count in the

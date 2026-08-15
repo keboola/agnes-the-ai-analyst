@@ -1124,6 +1124,20 @@ semantic-source add/list/sync`. MCP: `semantic_model_search`,
 
 - /api/auth/exchange-setup-token
 
+### `/api/auth/keboola` — Keboola multi-project login (select mode)
+
+A `multi_project_mode: select` Keboola sign-in stashes the discovered
+projects (vault-encrypted, 15-minute TTL) for a user-driven import; these
+endpoints serve and act on the caller's OWN stash (session/JWT auth).
+`GET /projects` lists the discovery with an `imported` flag per project;
+`POST /projects` (POST-to-collection — connect these discovered projects)
+provisions the selected ids through the same core
+the `auto` mode runs at login (PAT mint + vault, connection, chat tools,
+`kbc-<project>-<role>` membership). REST-only by design — see the standing
+credential-provisioning exemption in CONTRIBUTING.md.
+
+- /api/auth/keboola/projects
+
 ### `/api/catalog` — Public catalog
 
 - /api/catalog/metrics/{metric_path}
@@ -1257,8 +1271,15 @@ by-slug surface but keep their grants for a lossless re-link.
 `agnes-live` branch, mints a fresh PAT scoped to `data-app:<slug>` (revoking
 the previous one), decrypts the app's stored secrets, builds the runtime
 `config.json` + container spec, and hands both to the `apps-runner` sidecar.
-A dead/erroring sidecar sets the app's state to `error` and returns 502
-`runner_unavailable`. `POST /reap-idle` is `require_admin`-gated (the
+A failed runner call sets the app's state to `error` (with the runner's own
+message in `state_detail`, which the detail response carries) and returns 502.
+The two causes are reported apart, because they send an operator to different
+places: `runner_unavailable` means the sidecar never answered — it is down,
+unreachable, or slower than the client timeout — while `runner_error: <code>`
+means it answered and named the problem (`image_not_found`,
+`image_not_allowed`, `bad_runner_token`, `docker_error: …`). Collapsing the
+second into the first blames a healthy, responding process; `GET /{slug}/logs`
+reports the same pair the same way. `POST /reap-idle` is `require_admin`-gated (the
 scheduler's shared-secret token resolves to a synthetic Admin user) and
 stops any `running` app idle longer than its own `idle_timeout_s`.
 

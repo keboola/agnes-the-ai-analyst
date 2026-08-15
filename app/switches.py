@@ -289,7 +289,9 @@ SWITCHES: tuple[Switch, ...] = (
         description=(
             "Accept a Keboola Storage API token in the X-StorageApi-Token header as API "
             "authentication. The token is verified against the configured stack per request "
-            "(60s cache), must be a master token for the bound project, and maps only to an "
+            "(60s cache), must be a master token for the bound project (on a wildcard "
+            "multi-project instance — project_id '*'/unset with multi_project_mode "
+            "select/auto — for ANY project on the stack), and maps only to an "
             "EXISTING user — it never provisions accounts. Off by default: a plain Storage "
             "token carries no interactive factor, so enabling this bypasses any MFA/SSO the "
             "organization enforces on web logins. It also grants that user's full Agnes "
@@ -297,6 +299,62 @@ SWITCHES: tuple[Switch, ...] = (
             "endpoints are reachable with the token — the narrowing is on the data-read "
             "surface (credential_surface='stack'), not the admin gate. Credential-minting "
             "endpoints (PAT/MCP/agent/data-app) are blocked regardless."
+        ),
+    ),
+    Switch(
+        name="keboola_multi_project_mode",
+        config_keys=("auth", "keboola", "multi_project_mode"),
+        env_var="AGNES_KEBOOLA_MULTI_PROJECT_MODE",
+        kind="select",
+        options=("disabled", "select", "auto"),
+        default="disabled",
+        effect="live",
+        category="operations",
+        editable=True,
+        description=(
+            "What a Keboola OAuth sign-in does with the OTHER projects the user can reach. "
+            "'disabled' (default): the original single-project behavior — the login is gated "
+            "on auth.keboola.project_id and nothing is provisioned (a 'single' value from "
+            "older configs falls back here, same behavior). 'select': Agnes discovers the "
+            "user's projects at login (introspect on the OAuth host, narrowed by "
+            "allowed_roles) and stores the list for a user-driven import via "
+            "/api/auth/keboola/projects. 'auto': trusted auto-provisioning — every allowed "
+            "project is connected on each login (project-scoped PAT minted and vaulted, "
+            "source connection + chat tools created, kbc-<project>-<role> group membership "
+            "synced, semantic layer refreshed where the token is a master token). With "
+            "auth.keboola.project_id set to '*' (or unset) the login gate itself widens to "
+            "'any project the introspect lists with an allowed role'; a concrete project_id "
+            "keeps the single-project gate and narrows discovery to that project. NOTE: on "
+            "such a wildcard instance the widening applies to BOTH active modes (select and "
+            "auto) and — when allow_token_header is also on — to X-StorageApi-Token API auth "
+            "too: an existing user's master token from any project on the stack "
+            "authenticates. CAUTION: a Keboola role is per-project and every user is admin "
+            "of their own project, so on a shared multi-tenant stack the wildcard admits ANY "
+            "user of the stack regardless of allowed_roles (which narrows projects, not "
+            "organizations) — reserve the wildcard for dedicated single-organization stacks "
+            "and pin a concrete project_id on shared ones."
+        ),
+    ),
+    Switch(
+        name="mcp_source_url_runtime_enforce",
+        config_keys=("mcp", "source_url_runtime_enforce"),
+        env_var="AGNES_MCP_SOURCE_URL_RUNTIME_ENFORCE",
+        kind="bool",
+        default=False,
+        effect="live",
+        category="operations",
+        editable=True,
+        description=(
+            "Enforce the DNS-free half of the MCP source url policy (scheme + "
+            "literal-IP checks) at the two runtime forward seams too, not only when a "
+            "source is configured (#1216). Off by default: a source that is enabled "
+            "and was registered before this policy existed, or before "
+            "`mcp.source_url_strict` was turned on, keeps forwarding exactly as it "
+            "does today. BEFORE turning this on, review the `url_policy_verdict` "
+            "column on the admin MCP source list (GET /api/admin/mcp-sources or "
+            "`agnes admin mcp source list`) for any `would_refuse` row and fix its "
+            "url first — this switch converts each one from a silent warning into a "
+            "refused call the next time that tool is invoked, with no other notice."
         ),
     ),
     Switch(

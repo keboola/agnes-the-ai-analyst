@@ -72,12 +72,41 @@ _ERROR_MESSAGES = {
 }
 
 
+# A 502 has two very different halves. `runner_unavailable` (above) means the
+# sidecar never answered. `runner_error: <code>` means it did, and named the
+# problem — so the code is the lead and must always survive into the output;
+# these only append the next step. Unmapped codes still print bare rather than
+# being swallowed.
+_RUNNER_ERROR_PREFIX = "runner_error: "
+_RUNNER_HINTS = {
+    "image_not_found": (
+        "the runner could not get the runtime image. On a host that has never run a data app"
+        " this is usually a cold ~1.3 GB pull that outran the timeout — retry (the partial pull"
+        " resumes), or pre-pull the image on the host."
+    ),
+    "image_not_allowed": (
+        "the runtime image isn't on the runner's allowlist — check data_apps.runtime_image"
+        " against APPS_RUNNER_IMAGE_PREFIX on the server."
+    ),
+    "bad_runner_token": (
+        "the server and the runner disagree about their shared token — check APPS_RUNNER_TOKEN"
+        " matches for both, and that the runner was recreated (not just restarted) after it"
+        " last changed."
+    ),
+    "not_found": "the runner has no container for this app — deploy it first.",
+}
+
+
 def _detail(resp) -> str:
     try:
         body = resp.json()
     except Exception:
         return resp.text
     detail = body.get("detail", "") if isinstance(body, dict) else str(body)
+    if isinstance(detail, str) and detail.startswith(_RUNNER_ERROR_PREFIX):
+        code = detail[len(_RUNNER_ERROR_PREFIX) :]
+        hint = _RUNNER_HINTS.get(code)
+        return f"{code} — {hint}" if hint else detail
     return _ERROR_MESSAGES.get(detail, detail or resp.text)
 
 
@@ -177,6 +206,13 @@ def show_app(
     if a.get("kind"):
         typer.echo(f"Kind:        {a['kind']}")
     typer.echo(f"State:       {a.get('state', '')}")
+    # A failed deploy/stop records WHY in `state_detail` (the runner's own
+    # words, via `_handle_runner_failure`), and the REST detail response has
+    # carried it all along — but no surface printed it, so the one recorded
+    # explanation was invisible everywhere and operators were left guessing
+    # from a bare `error`.
+    if a.get("state_detail"):
+        typer.echo(f"Detail:      {a['state_detail']}")
     typer.echo(f"URL:         {a.get('url', '')}")
     # effective_description = admin-pinned override where present, synced text
     # otherwise — same value every other surface (list, web, MCP) shows.

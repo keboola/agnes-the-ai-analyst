@@ -1,8 +1,11 @@
 """Shared utilities for the FastAPI application."""
 
 import hashlib
+import logging
 import os
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 def get_data_dir() -> Path:
@@ -221,9 +224,31 @@ def resolve_local_parquet_glob(table_id: str, source_type: str | None = None) ->
     unresolved here published a size hint for a table that `/api/v2/schema` and
     `/api/v2/scan` then 404-ed on — an agent reading the catalog concluded the
     table was queryable when it was not (Devin Review on #1198).
+
+    #1339: a table can ALSO have both a flat `<table_id>.parquet` file and a
+    sibling `<table_id>/` partition directory at once — the sibling of the
+    "directory holding both layouts" case documented in the loop below, one
+    level up. The flat file wins here too (unchanged), but that collision is
+    now logged at ERROR — see the check right after `single` resolves.
+    TODO(#1339): flipping the precedence, or deleting the stale sibling, are
+    open human decisions this fix does not make.
     """
     single = resolve_local_parquet(table_id, source_type)
     if single is not None:
+        # One cheap `is_dir()` check — no glob — so this stays cheap on a hot
+        # read path. `single`'s own directory is where a colliding partition
+        # directory for the same table_id would live.
+        sibling_dir = single.parent / table_id
+        if sibling_dir.is_dir():
+            logger.error(
+                "Table %r has BOTH a flat parquet (%s) and a partition "
+                "directory (%s) — serving the flat file (precedence "
+                "unchanged), which may be stale relative to the partitioned "
+                "data. See #1339.",
+                table_id,
+                single,
+                sibling_dir,
+            )
         return str(single)
     for d in _partition_dir_candidates(table_id, source_type):
         # Flat first, recursive only as a fallback — NOT interchangeable with an

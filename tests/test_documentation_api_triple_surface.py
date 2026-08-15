@@ -554,7 +554,17 @@ _MCP_SOURCE_GRANT_REASON = (
     "seam, and this one widens by the whole source at once"
 )
 
+_KEBOOLA_LOGIN_PROJECTS_REASON = (
+    "select-mode Keboola project import — a continuation of the browser OAuth "
+    "login, bound to a short-TTL vaulted stash of that login's access token. "
+    "The CLI has no OAuth login to continue, and MCP exposure is ruled out by "
+    "CONTRIBUTING.md → 'Standing exemption — admin credential-provisioning "
+    "writes': the import mints + vaults upstream project credentials, exactly "
+    "the privilege-escalation seam that paragraph names"
+)
+
 _EXEMPT: dict[str, str] = {
+    "/api/auth/keboola/projects": _KEBOOLA_LOGIN_PROJECTS_REASON,
     "/api/me/display-name": (
         "self-service display-name edit (issue #1036) — UI-only affordance on "
         "/profile; a one-field personal profile edit with no CLI/MCP analogue"

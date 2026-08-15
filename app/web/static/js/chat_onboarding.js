@@ -1090,7 +1090,10 @@ async function maybeHandleAddCommand(text) {
   }
   await patchJourney({ stack_setup_done: true });
   hooks.renderAssistant(
-    `Added **${escapeHtml(target.name || target.id)}** to your Stack ✓ — it's live now, and visible under [My Stack](/stack).`,
+    // /library?stack=in_stack, not /stack — the Stack page is retired
+    // (#1088); the Library's "In stack only" toggle arrives pressed on
+    // that deep link and reads the same StackResolver.browse() rows.
+    `Added **${escapeHtml(target.name || target.id)}** to your Stack ✓ — it's live now, and visible under [My Stack](/library?stack=in_stack).`,
   );
   return true;
 }

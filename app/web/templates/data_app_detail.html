@@ -92,6 +92,17 @@
         {% endif %}
       </span>
     </div>
+    {# A failed deploy/stop records the runner's own words in state_detail. It
+       was stored and returned by the API all along but never rendered, so the
+       page showed a bare `error` and the operator had nothing to go on — the
+       Logs pane 502s in exactly this situation, which is what made it a dead
+       end. Shown only when there is something to say. #}
+    {% if app.state_detail %}
+    <div class="dda-fact">
+      <span class="label">Error</span>
+      <span class="value" id="dda-state-detail">{{ app.state_detail }}</span>
+    </div>
+    {% endif %}
     <div class="dda-fact">
       <span class="label">{% if app.kind == 'linked' %}Source{% else %}Owner{% endif %}</span>
       <span class="value">{% if app.kind == 'linked' %}Keboola{% else %}{{ app.owner_email }}{% endif %}</span>
@@ -172,13 +183,13 @@
       });
       if (!r.ok) {
         const err = await r.json().catch(() => ({}));
-        alert("Failed: " + (err.detail || r.status));
+        await alertModal("Failed: " + (err.detail || r.status));
         return;
       }
       const body = await r.json();
       descEl.textContent = body.effective_description || "—";
     } catch (e) {
-      alert("Network error: " + e.message);
+      await alertModal("Network error: " + e.message);
     }
   });
 })();
@@ -216,14 +227,14 @@
       });
       if (!r.ok) {
         const err = await r.json().catch(() => ({}));
-        alert("Failed: " + (err.detail || r.status));
+        await alertModal("Failed: " + (err.detail || r.status));
         btn.disabled = false;
         btn.textContent = prev;
         return;
       }
       location.reload();
     } catch (e) {
-      alert("Network error: " + e.message);
+      await alertModal("Network error: " + e.message);
       btn.disabled = false;
       btn.textContent = prev;
     }
