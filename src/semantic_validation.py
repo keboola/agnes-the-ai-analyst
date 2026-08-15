@@ -371,7 +371,16 @@ def _declared_dialects(metric: dict[str, Any]) -> list[str]:
     dialects = expression.get("dialects") or []
     if not isinstance(dialects, list):
         return []
-    return [str(d["dialect"]) for d in dialects if isinstance(d, dict) and d.get("dialect")]
+    # An entry must carry BOTH a label and an expression body: a label-only
+    # entry has no fragment to compose, so counting it would claim the metric
+    # runs on that engine when nothing can be built for it — and, for the
+    # target engine, would hold locally_executable at True with nothing behind
+    # it (Devin Review on PR #1319, round 7).
+    return [
+        str(d["dialect"])
+        for d in dialects
+        if isinstance(d, dict) and d.get("dialect") and str(d.get("expression") or "").strip()
+    ]
 
 
 def _canonical_dialect(dialect: str) -> str:
@@ -399,6 +408,25 @@ def _used_metric_dialects(document: dict[str, Any], used_metrics: list[str]) -> 
             continue
         per_metric.append(_declared_dialects(metric))
     return per_metric
+
+
+def _declares_unusable_expression(metric: dict[str, Any]) -> bool:
+    """True when a metric declares ``dialects[]`` entries but not one of them
+    carries an expression body.
+
+    Such a metric composes on NO engine, so it must not read the same as one
+    that declares no expression block at all (which stays unflagged — it may
+    be defined elsewhere). Without this, dropping label-only entries would
+    turn "declares an engine we cannot use" into silence, flipping
+    ``locally_executable`` from False to True (Devin Review on PR #1327).
+    """
+    expression = metric.get("expression")
+    if not isinstance(expression, dict):
+        return False
+    dialects = expression.get("dialects")
+    if not isinstance(dialects, list) or not dialects:
+        return False
+    return not _declared_dialects(metric)
 
 
 def _mixed_dialect_warning(declared: list[str], metric_dialect_lists: list[list[str]]) -> str | None:
@@ -441,9 +469,10 @@ def check_dialects(
     ``sql_dialects`` is de-duplicated case-insensitively (first-seen display
     form wins). ``locally_executable`` is ``False`` when a used metric
     declares expressions but none of them target ``target_engine`` or
-    ``ANSI_SQL`` (usable on any target -- see ``_UNIVERSAL_DIALECT``). A
-    metric with no expressions at all is not flagged here -- nothing to
-    conflict with.
+    ``ANSI_SQL`` (usable on any target -- see ``_UNIVERSAL_DIALECT``), and
+    also when it declares ``dialects[]`` entries of which none carries an
+    expression body (nothing composes anywhere). A metric with no expression
+    block at all is not flagged here -- nothing to conflict with.
     """
     document = document if isinstance(document, dict) else {}
     target = (target_engine or "duckdb").strip().lower()
@@ -462,6 +491,17 @@ def check_dialects(
                 declared.append(dialect)
         if metric_dialects and not any(_canonical_dialect(d) in usable for d in metric_dialects):
             locally_executable = False
+
+    # A used metric that declares dialect entries none of which carry a body
+    # composes nowhere; it reaches this point with an EMPTY dialect list, so
+    # the loop above cannot see it (Devin Review on PR #1327).
+    used = {str(m).casefold() for m in (used_metrics or [])}
+    for metric in document.get("metrics") or []:
+        if not isinstance(metric, dict) or not metric.get("name"):
+            continue
+        if str(metric["name"]).casefold() in used and _declares_unusable_expression(metric):
+            locally_executable = False
+            break
 
     return {
         "sql_dialects": declared,

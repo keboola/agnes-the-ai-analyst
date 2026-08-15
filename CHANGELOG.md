@@ -20,6 +20,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **The Keboola metastore import no longer discards most of what it fetches.** It already read all six object types and then flattened them into two tables, dropping per-column `fields[]` and their descriptions, keyword metadata, relationships beyond one narrow single-JOIN case, and the model's declared SQL dialect. It now also composes a full Ossie document per model into `semantic_models`, alongside the existing flat sync, which is unchanged.
 - **Two documents in one import that declare the same model name are reported instead of silently collapsing.** A row's id derives from the model name, so the later document overwrote the earlier one while the report counted both as written — in a git-backed source that took only a copied file. The first occurrence wins and the duplicate is reported as invalid.
 - **A grant on a semantic model now grants something.** `semantic_model` is offered as a grantable resource type on `/admin/access`, but the access check read Data-Package-linked grants only, so an admin could create the grant, see it succeed, and give away nothing. Direct grants now layer under the package path, the way per-table grants already do.
+## [0.83.21] - 2026-08-15
+
+### Internal
+
+- Semantic-layer validator: a `dialects[]` entry now needs both a label and a non-empty `expression` body to count as declared, and a metric whose entries all lack a body is reported as not locally executable. A label-only entry has no fragment to compose, so counting it claimed a metric ran on that engine with nothing behind it — while simply dropping such entries turned "declares an engine we cannot use" into silence, holding `locally_executable` at `True` for a metric that composes on no engine at all. Both are the silent-wrong-answer that flag exists to prevent. A metric with no expression block at all stays unflagged. Follow-up to #1319, found by review after that PR merged.
 
 ## [0.83.20] - 2026-08-15
 
