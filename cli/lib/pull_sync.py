@@ -302,8 +302,21 @@ def _server_table_url(t: dict) -> str:
     return ""
 
 
-def _server_table_skip(t: dict, *, skip_materialize: bool = False) -> bool:
-    """Tables the per-type stack sync must skip:
+def _server_table_skip(t: dict, *, skip_materialize: bool = False) -> Optional[str]:
+    """Tables the per-type stack sync must not fetch — returns the skip
+    reason (``"remote"`` / ``"server_only"`` / ``"materialized"`` /
+    ``"parts"``) or ``None``.
+
+    The reason matters to callers because the to_delete loops only prune
+    names absent from the server list: a table that is still listed but
+    newly withheld ("remote"/"server_only"/"parts") must have its
+    previously synced reference pruned at the skip site, while
+    "materialized" is an analyst-side fetch opt-out
+    (``--skip-materialize``) whose state row must be carried forward so
+    the local copy stays tracked for a later pull to update or prune.
+    Skipped rows without a prior state row need neither.
+
+    Reasons in detail:
 
     - remote-mode: no parquet at all (the master DuckDB ATTACH resolves
       them on demand);
@@ -326,13 +339,16 @@ def _server_table_skip(t: dict, *, skip_materialize: bool = False) -> bool:
       ``server/parquet/{id}/`` instead. Without this skip, a partitioned
       table in a data package / direct-tables list 404s on
       ``/api/data/{id}/download`` (no single file exists)."""
-    if (t.get("query_mode") or "").lower() == "remote":
-        return True
+    mode = (t.get("query_mode") or "").lower()
+    if mode == "remote":
+        return "remote"
     if t.get("server_only"):
-        return True
-    if skip_materialize and (t.get("query_mode") or "").lower() == "materialized":
-        return True
-    return bool(t.get("parts"))
+        return "server_only"
+    if skip_materialize and mode == "materialized":
+        return "materialized"
+    if t.get("parts"):
+        return "parts"
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -416,6 +432,27 @@ def _delete_table_reference(
             logger.warning("could not unlink orphan shared %s", shared_path)
 
 
+def _drop_tracked_reference(
+    prev: dict,
+    *,
+    default_ref: Path,
+    local_data_dir: Path,
+) -> None:
+    """Delete the on-disk reference a previous sync's state row points at
+    (falling back to the conventional path for rows that predate
+    ``ref_path``), and the shared parquet once no references remain."""
+    ref_path = Path(prev.get("ref_path") or default_ref)
+    shared = Path(prev.get("shared_path") or "")
+    if not shared.exists() and prev.get("table_id"):
+        shared = _shared_path(local_data_dir, prev["table_id"])
+    _delete_table_reference(
+        ref_path=ref_path,
+        shared_path=shared,
+        local_data_dir=local_data_dir,
+        strategy=prev.get("strategy"),
+    )
+
+
 def sync_direct_tables(
     *,
     server_tables: List[dict],
@@ -445,7 +482,30 @@ def sync_direct_tables(
 
     # to_add ∪ to_update
     for name, table in server_names.items():
-        if _server_table_skip(table, skip_materialize=skip_materialize):
+        skip_reason = _server_table_skip(table, skip_materialize=skip_materialize)
+        if skip_reason:
+            prev_row = prev_state.get(name)
+            if prev_row is None:
+                continue
+            if skip_reason == "materialized":
+                # --skip-materialize is a fetch opt-out, not an unsubscribe:
+                # keep the state row so the copy stays tracked and a later
+                # pull without the flag can still update or prune it.
+                new_state[name] = prev_row
+                continue
+            # Still listed by the server but newly withheld from local
+            # distribution (server_only / remote / parts). The to_delete
+            # loop below can't catch this — it only prunes names absent
+            # from the server list — and dropping the state row without
+            # deleting would orphan the copy on disk with no handle left
+            # to ever remove it. Prune here, mirroring step 4's
+            # server_only prune in cli/lib/pull.py.
+            _drop_tracked_reference(
+                prev_row,
+                default_ref=direct_dir / f"{name}.parquet",
+                local_data_dir=local_data_dir,
+            )
+            report.removed += 1
             continue
         dest = direct_dir / f"{name}.parquet"
         prev = prev_state.get(name)
@@ -474,15 +534,10 @@ def sync_direct_tables(
     # to_delete = previous − server
     for name in prev_names - set(server_names):
         prev = prev_state.get(name) or {}
-        ref_path = Path(prev.get("ref_path") or (direct_dir / f"{name}.parquet"))
-        shared = Path(prev.get("shared_path") or "")
-        if not shared.exists() and prev.get("table_id"):
-            shared = _shared_path(local_data_dir, prev["table_id"])
-        _delete_table_reference(
-            ref_path=ref_path,
-            shared_path=shared,
+        _drop_tracked_reference(
+            prev,
+            default_ref=direct_dir / f"{name}.parquet",
             local_data_dir=local_data_dir,
-            strategy=prev.get("strategy"),
         )
         report.removed += 1
 
@@ -521,7 +576,24 @@ def sync_data_packages(
         new_pkg_state: Dict[str, Any] = {}
 
         for name, table in server_table_by_name.items():
-            if _server_table_skip(table, skip_materialize=skip_materialize):
+            skip_reason = _server_table_skip(table, skip_materialize=skip_materialize)
+            if skip_reason:
+                prev_row = prev_pkg.get(name)
+                if prev_row is None:
+                    continue
+                if skip_reason == "materialized":
+                    # Fetch opt-out, not an unsubscribe — keep the row
+                    # tracked (see sync_direct_tables).
+                    new_pkg_state[name] = prev_row
+                    continue
+                # Newly withheld while still listed — prune the previously
+                # synced reference (see sync_direct_tables).
+                _drop_tracked_reference(
+                    prev_row,
+                    default_ref=pkg_dir / f"{name}.parquet",
+                    local_data_dir=local_data_dir,
+                )
+                report.removed += 1
                 continue
             dest = pkg_dir / f"{name}.parquet"
             prev = prev_pkg.get(name)
@@ -549,16 +621,10 @@ def sync_data_packages(
 
         # Tables in prev but not server → drop references
         for name in set(prev_pkg) - set(server_table_by_name):
-            prev = prev_pkg.get(name) or {}
-            ref_path = Path(prev.get("ref_path") or (pkg_dir / f"{name}.parquet"))
-            shared = Path(prev.get("shared_path") or "")
-            if not shared.exists() and prev.get("table_id"):
-                shared = _shared_path(local_data_dir, prev["table_id"])
-            _delete_table_reference(
-                ref_path=ref_path,
-                shared_path=shared,
+            _drop_tracked_reference(
+                prev_pkg.get(name) or {},
+                default_ref=pkg_dir / f"{name}.parquet",
                 local_data_dir=local_data_dir,
-                strategy=prev.get("strategy"),
             )
             report.removed += 1
 
@@ -570,15 +636,10 @@ def sync_data_packages(
         prev_pkg = prev_state.get(slug) or {}
         pkg_dir = local_data_dir / slug
         for name, prev in prev_pkg.items():
-            ref_path = Path(prev.get("ref_path") or (pkg_dir / f"{name}.parquet"))
-            shared = Path(prev.get("shared_path") or "")
-            if not shared.exists() and prev.get("table_id"):
-                shared = _shared_path(local_data_dir, prev["table_id"])
-            _delete_table_reference(
-                ref_path=ref_path,
-                shared_path=shared,
+            _drop_tracked_reference(
+                prev,
+                default_ref=pkg_dir / f"{name}.parquet",
                 local_data_dir=local_data_dir,
-                strategy=prev.get("strategy"),
             )
             report.removed += 1
         # Drop the (now-empty) package dir.
