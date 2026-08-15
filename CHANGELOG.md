@@ -10,6 +10,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- **Databricks connector — SQL-warehouse materialization + Unity Catalog semantic layer.** New `source_type=databricks` for `table_registry` rows (phase 1: `query_mode='materialized'` only; `local`/`remote` are rejected at register time). The scheduler's materialized pass runs each row's SQL on the configured Databricks SQL warehouse over the Statement Execution API (plain REST + Arrow result stream, no Databricks SDK; presigned result links are fetched without the workspace token) and writes the parquet under `extracts/databricks/data/`, riding the standard manifest + `agnes pull` distribution. Register with custom SQL — including `MEASURE()` queries over metric views — or with `bucket`+`source_table` and the server generates the full-table dump from `data_source.databricks.catalog` (dotted bucket `catalog.schema` overrides per row). Cost guardrail `data_source.databricks.max_bytes_per_materialize` (default 10 GiB, `0` disables) caps the statement **result** size via the API's `byte_limit` — the Statement Execution API has no dry-run primitive, and a truncated result is rejected, never written; `statement_timeout_seconds` (default 900) cancels a wedged statement on the warehouse. Alongside the data path, `POST /api/admin/run-databricks-semantic-layer-refresh` (scheduler default every 6 h, `SCHEDULER_DATABRICKS_SEMANTIC_LAYER_REFRESH_INTERVAL`) syncs the workspace's Unity Catalog **metric views** into `metric_definitions` — one metric per declared measure, stamped `source='databricks_semantic_layer'` + `source_ref=<workspace host>` with a writer-scoped prune (mirrors the Keboola semantic-layer sync: other writers' rows and name-ownership are never touched, and a zero-measure fetch skips the prune instead of wiping). Configuration lives under `data_source.databricks.*` (instance.yaml + `/admin/server-config`); the token comes from `DATABRICKS_TOKEN` env/vault, never YAML.
+
+## [0.83.21] - 2026-08-15
+
 ## [0.83.23] - 2026-08-15
 
 ### Added

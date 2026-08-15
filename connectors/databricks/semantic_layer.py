@@ -1,0 +1,378 @@
+"""Databricks Unity Catalog semantic layer → Agnes ``metric_definitions``.
+
+Unity Catalog *metric views* are Databricks's semantic layer: YAML-defined
+first-class catalog objects declaring a source, dimensions and measures,
+queried with the ``MEASURE()`` aggregate — which only Databricks compute can
+evaluate. This module mirrors those definitions into Agnes's business-metric
+registry so agents discover them through the standard rails
+(``agnes catalog --metrics``) instead of inventing their own calculations,
+with each stored ``sql`` written to run server-side on the warehouse (via a
+``query_mode='materialized'`` row or a future remote passthrough).
+
+Shape mirrors ``connectors/keboola/semantic_layer.py`` (the working
+precedent for a connector-driven metrics sync):
+
+- every row is stamped ``source='databricks_semantic_layer'`` +
+  ``source_ref=<workspace host>``, and the prune only ever touches rows
+  inside that (writer, ref) scope — manual/yaml/keboola rows are untouchable
+  by construction;
+- name ownership is sticky: a metric name already held by another writer is
+  skipped (counted, never shadowed);
+- an upstream fetch that yields zero usable measures while rows exist skips
+  the prune and logs loudly instead of wiping the registry.
+
+Discovery runs on the warehouse itself: ``information_schema.tables``
+filtered to ``table_type = 'METRIC_VIEW'`` per configured catalog, then
+``SHOW CREATE TABLE`` per view, whose statement embeds the YAML body between
+``$$`` delimiters (``CREATE VIEW … WITH METRICS LANGUAGE YAML AS $$ … $$``).
+An unrecognized table_type vocabulary or YAML shape degrades to counted
+skips / an empty run — never to a prune.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import re
+from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlsplit
+
+import yaml
+
+from connectors.databricks.client import (
+    DatabricksApiError,
+    DatabricksStatementClient,
+)
+
+logger = logging.getLogger(__name__)
+
+SOURCE_LABEL = "databricks_semantic_layer"
+
+_COUNTER_KEYS = (
+    "created_or_updated",
+    "pruned",
+    "metric_views_seen",
+    "skipped_unparseable",
+    "skipped_conflict",
+)
+
+# YAML body between $$ delimiters in SHOW CREATE TABLE output. Non-greedy,
+# DOTALL — the YAML itself cannot contain a bare `$$` (Databricks would have
+# rejected the CREATE), so the first closing delimiter is the right one.
+_YAML_BODY_RE = re.compile(r"\$\$(.*?)\$\$", re.DOTALL)
+
+
+def _empty_counters() -> Dict[str, int]:
+    return {key: 0 for key in _COUNTER_KEYS}
+
+
+def _error_result(message: str, code: str) -> Dict[str, Any]:
+    return {"status": "error", "error": message, "code": code, **_empty_counters()}
+
+
+# ---------------------------------------------------------------------------
+# configuration
+# ---------------------------------------------------------------------------
+
+
+def resolve_databricks_settings() -> Optional[Dict[str, Any]]:
+    """Read the instance's Databricks settings; ``None`` when unconfigured.
+
+    ``data_source.databricks.{host, warehouse_id, catalog}`` from the
+    effective instance.yaml (admin-overlay aware), token from the env var
+    named by ``token_env`` (default ``DATABRICKS_TOKEN``) with the vault
+    (``datasource_secret``) as fallback — the same resolution order the
+    Keboola materialized path uses.
+    """
+    from app.instance_config import get_value
+
+    host = get_value("data_source", "databricks", "host", default="") or ""
+    warehouse_id = get_value("data_source", "databricks", "warehouse_id", default="") or ""
+    catalog = get_value("data_source", "databricks", "catalog", default="") or ""
+    token_env = get_value("data_source", "databricks", "token_env", default="DATABRICKS_TOKEN") or "DATABRICKS_TOKEN"
+    token = os.environ.get(token_env, "")
+    if not token:
+        try:
+            from app.datasource_secrets import datasource_secret
+
+            token = datasource_secret("DATABRICKS_TOKEN") or ""
+        except Exception:  # pragma: no cover - vault optional in dev contexts
+            token = ""
+    if not (host and warehouse_id and token):
+        return None
+    catalogs = get_value("data_source", "databricks", "semantic_layer_catalogs", default=None)
+    if isinstance(catalogs, str):
+        catalogs = [c.strip() for c in catalogs.split(",") if c.strip()]
+    if not catalogs:
+        catalogs = [catalog] if catalog else []
+    return {
+        "host": host,
+        "warehouse_id": warehouse_id,
+        "catalog": catalog,
+        "catalogs": catalogs,
+        "token": token,
+    }
+
+
+def _source_ref_for_host(host: str) -> str:
+    """Stable per-workspace provenance label: the workspace hostname."""
+    parts = urlsplit(host if "://" in host else f"https://{host}")
+    return parts.hostname or host
+
+
+# ---------------------------------------------------------------------------
+# metric-view parsing
+# ---------------------------------------------------------------------------
+
+
+def extract_yaml_from_create(create_stmt: str) -> Optional[str]:
+    """Pull the YAML body out of a ``SHOW CREATE TABLE`` statement for a
+    metric view (``… WITH METRICS LANGUAGE YAML AS $$ <yaml> $$``)."""
+    if not create_stmt:
+        return None
+    m = _YAML_BODY_RE.search(create_stmt)
+    if not m:
+        return None
+    body = m.group(1).strip()
+    return body or None
+
+
+def _quote_dbx_ident(name: str) -> str:
+    """Backtick-quote a Databricks identifier (doubling embedded backticks)."""
+    return "`" + name.replace("`", "``") + "`"
+
+
+def build_metric_rows(
+    catalog: str,
+    schema: str,
+    view: str,
+    view_comment: str,
+    yaml_text: str,
+    *,
+    source_ref: str,
+) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    """Map one metric view's YAML definition to metric_definitions row dicts —
+    one Agnes metric per declared measure.
+
+    Returns ``(rows, None)`` on success or ``([], skip_reason)`` when the
+    YAML cannot be interpreted (``skip_reason`` feeds the
+    ``skipped_unparseable`` counter).
+    """
+    try:
+        spec = yaml.safe_load(yaml_text)
+    except yaml.YAMLError as e:
+        return [], f"yaml_error: {e}"
+    if not isinstance(spec, dict):
+        return [], "yaml_not_a_mapping"
+
+    measures = spec.get("measures") or []
+    if not isinstance(measures, list) or not measures:
+        return [], "no_measures"
+    raw_dimensions = spec.get("dimensions") or []
+    dimension_names = [str(d.get("name")) for d in raw_dimensions if isinstance(d, dict) and d.get("name")]
+
+    fqn = f"{catalog}.{schema}.{view}"
+    quoted_fqn = f"{_quote_dbx_ident(catalog)}.{_quote_dbx_ident(schema)}.{_quote_dbx_ident(view)}"
+    rows: List[Dict[str, Any]] = []
+    for measure in measures:
+        if not isinstance(measure, dict):
+            continue
+        name = measure.get("name")
+        if not name or not isinstance(name, str):
+            continue
+        description = str(measure.get("description") or measure.get("comment") or "") or view_comment or ""
+        expression = str(measure.get("expr") or "")
+        sql = f"SELECT MEASURE({_quote_dbx_ident(name)}) FROM {quoted_fqn}"
+        row: Dict[str, Any] = {
+            "id": f"databricks/{fqn}/{name}",
+            "name": name,
+            "display_name": name,
+            "category": "databricks",
+            "description": description,
+            "expression": expression,
+            "sql": sql,
+            "source": SOURCE_LABEL,
+            "notes": [
+                f"Unity Catalog metric view {fqn} (source_type=databricks, workspace {source_ref}).",
+                "MEASURE() only evaluates on a Databricks SQL warehouse — run this "
+                "server-side (a query_mode='materialized' row, or adapt the "
+                "materialized row's source_query); group by any listed dimension: "
+                f"SELECT <dimension>, MEASURE({_quote_dbx_ident(name)}) FROM {quoted_fqn} GROUP BY 1.",
+            ],
+        }
+        if dimension_names:
+            row["dimensions"] = dimension_names
+        rows.append(row)
+    if not rows:
+        return [], "no_usable_measures"
+    return rows, None
+
+
+# ---------------------------------------------------------------------------
+# scope / prune
+# ---------------------------------------------------------------------------
+
+
+def _in_scope(row: Dict[str, Any], scope_refs: set) -> bool:
+    """True when an existing metric row belongs to this sync's prune scope:
+    written by this connector AND stamped with this workspace's ref. Rows
+    from other writers (manual, yaml_import, keboola_semantic_layer) or other
+    workspaces are untouchable — orphaned-but-intact beats silently deleted."""
+    if row.get("source") != SOURCE_LABEL:
+        return False
+    return row.get("source_ref") in scope_refs
+
+
+def _is_owned_by_source(existing: Optional[Dict[str, Any]], incoming_id: str, scope_refs: set) -> bool:
+    """May this sync write a row under a name ``existing`` already holds?
+    Ownership tracks the prune scope — the rows a source may delete are
+    exactly the rows it may overwrite; any other writer keeps its name."""
+    if existing is None:
+        return True
+    if existing.get("id") == incoming_id:
+        return _in_scope(existing, scope_refs)
+    return _in_scope(existing, scope_refs)
+
+
+# ---------------------------------------------------------------------------
+# sync
+# ---------------------------------------------------------------------------
+
+
+def _list_metric_views(client: DatabricksStatementClient, catalog: str) -> List[Tuple[str, str, str, str]]:
+    """Enumerate metric views in one catalog as
+    ``(catalog, schema, name, comment)`` tuples, privilege-filtered by the
+    warehouse's own information_schema."""
+    sql = (
+        "SELECT table_catalog, table_schema, table_name, comment "
+        f"FROM {_quote_dbx_ident(catalog)}.information_schema.tables "
+        "WHERE table_type = 'METRIC_VIEW'"
+    )
+    _columns, rows = client.execute_rows(sql)
+    out: List[Tuple[str, str, str, str]] = []
+    for row in rows:
+        if not row or len(row) < 3 or not row[0] or not row[1] or not row[2]:
+            continue
+        comment = row[3] if len(row) > 3 and row[3] else ""
+        out.append((str(row[0]), str(row[1]), str(row[2]), str(comment)))
+    return out
+
+
+def sync_semantic_layer(client: Optional[DatabricksStatementClient] = None) -> Dict[str, Any]:
+    """Sync the configured workspace's metric views into metric_definitions.
+
+    Pass ``client`` to override construction (tests, future named
+    connections); by default the instance's ``data_source.databricks``
+    settings + ``DATABRICKS_TOKEN`` are used. Returns a counters dict shaped
+    like the Keboola sync result (``status`` + counter keys), with error
+    codes the refresh endpoint maps to HTTP statuses.
+    """
+    settings = resolve_databricks_settings()
+    if settings is None:
+        return _error_result(
+            "Databricks is not configured — set data_source.databricks.host + "
+            "warehouse_id (instance.yaml or /admin/server-config) and the "
+            "DATABRICKS_TOKEN env var / vault secret.",
+            "credentials_not_configured",
+        )
+    if not settings["catalogs"]:
+        return _error_result(
+            "data_source.databricks.catalog (or semantic_layer_catalogs) is not set — "
+            "the sync needs at least one catalog to enumerate metric views from.",
+            "credentials_not_configured",
+        )
+
+    if client is None:
+        client = DatabricksStatementClient(
+            host=settings["host"],
+            token=settings["token"],
+            warehouse_id=settings["warehouse_id"],
+        )
+    source_ref = _source_ref_for_host(settings["host"])
+    scope_refs = {source_ref}
+
+    from src.repositories import metric_repo
+
+    repo = metric_repo()
+    counters = _empty_counters()
+    seen_ids: set = set()
+    retained_ids: set = set()
+    claimed_names: set = set()
+
+    try:
+        views: List[Tuple[str, str, str, str]] = []
+        for cat in settings["catalogs"]:
+            views.extend(_list_metric_views(client, cat))
+
+        counters["metric_views_seen"] = len(views)
+
+        for catalog, schema, view, comment in views:
+            fqn_quoted = f"{_quote_dbx_ident(catalog)}.{_quote_dbx_ident(schema)}.{_quote_dbx_ident(view)}"
+            try:
+                _cols, create_rows = client.execute_rows(f"SHOW CREATE TABLE {fqn_quoted}")
+            except DatabricksApiError as e:
+                logger.warning(
+                    "Databricks semantic layer: SHOW CREATE TABLE failed for %s.%s.%s: %s", catalog, schema, view, e
+                )
+                counters["skipped_unparseable"] += 1
+                continue
+            create_stmt = str(create_rows[0][0]) if create_rows and create_rows[0] else ""
+            yaml_text = extract_yaml_from_create(create_stmt)
+            if not yaml_text:
+                logger.warning(
+                    "Databricks semantic layer: no YAML body found in SHOW CREATE TABLE for %s.%s.%s — skipping",
+                    catalog,
+                    schema,
+                    view,
+                )
+                counters["skipped_unparseable"] += 1
+                continue
+            rows, skip_reason = build_metric_rows(catalog, schema, view, comment, yaml_text, source_ref=source_ref)
+            if skip_reason is not None:
+                logger.warning(
+                    "Databricks semantic layer: metric view %s.%s.%s skipped (%s)",
+                    catalog,
+                    schema,
+                    view,
+                    skip_reason,
+                )
+                counters["skipped_unparseable"] += 1
+                continue
+            for row in rows:
+                if row["name"] in claimed_names or not _is_owned_by_source(
+                    repo.find_by_name(row["name"]), row["id"], scope_refs
+                ):
+                    logger.warning(
+                        "Databricks semantic metric %r already exists under a different owner; skipping",
+                        row["name"],
+                    )
+                    counters["skipped_conflict"] += 1
+                    retained_ids.add(row["id"])
+                    continue
+                repo.create(**row, source_ref=source_ref)
+                seen_ids.add(row["id"])
+                claimed_names.add(row["name"])
+                counters["created_or_updated"] += 1
+    except DatabricksApiError as e:
+        code = "upstream_client_error" if (e.status is not None and 400 <= e.status < 500) else "upstream_error"
+        return _error_result(str(e), code)
+
+    existing = [m for m in repo.list() if _in_scope(m, scope_refs)]
+    if not seen_ids and existing:
+        # Zero usable measures while rows exist — a vocabulary/shape drift
+        # upstream is far likelier than "every metric view was deleted".
+        # Mirror the Keboola guard: skip the prune, log loudly.
+        logger.warning(
+            "Databricks semantic layer: upstream returned zero usable measures "
+            "while %d existing rows are present for workspace %s; skipping prune "
+            "to avoid a full wipe. Existing rows retained.",
+            len(existing),
+            source_ref,
+        )
+    else:
+        for m in existing:
+            if m["id"] not in seen_ids and m["id"] not in retained_ids:
+                repo.delete(m["id"])
+                counters["pruned"] += 1
+
+    return {"status": "ok", "source_ref": source_ref, **counters}
