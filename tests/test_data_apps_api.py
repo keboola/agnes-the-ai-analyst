@@ -631,7 +631,50 @@ class TestDeploy:
         monkeypatch.setattr(data_apps_api, "_runner", lambda: _ErrRunner())
         r = client_as_user.post("/api/data-apps/sapp/deploy", json={})
         assert r.status_code == 502
-        assert r.json()["detail"] == "runner_unavailable"
+        # The sidecar ANSWERED — saying "unavailable" sends the operator to
+        # look at a process that is in fact healthy. Carry its own words.
+        assert r.json()["detail"] == "runner_error: boom"
+
+    def test_runner_error_surfaces_the_runner_detail_verbatim(
+        self, client_as_user, monkeypatch, seeded_repo_with_commit
+    ):
+        """The real incident: a cold 1.3 GB image pull blew docker-py's
+        timeout, the retried create raised ImageNotFound, and the runner
+        answered 400 `image_not_found` — which the app reported as
+        `runner_unavailable`, sending the investigation at a healthy sidecar.
+        The runner's own code must reach the caller."""
+        import app.api.data_apps as data_apps_api
+
+        class _ImageMissingRunner:
+            def up(self, slug, spec, config_json):
+                raise RunnerError(400, "image_not_found")
+
+        monkeypatch.setattr(data_apps_api, "_runner", lambda: _ImageMissingRunner())
+        r = client_as_user.post("/api/data-apps/sapp/deploy", json={})
+        assert r.status_code == 502
+        assert r.json()["detail"] == "runner_error: image_not_found"
+
+        # ...and the same words must be readable afterwards off the detail
+        # endpoint, which is where a returning operator actually looks.
+        detail = client_as_user.get("/api/data-apps/sapp").json()
+        assert detail["state"] == "error"
+        assert detail["state_detail"] == "image_not_found"
+
+    def test_logs_distinguishes_answered_runner_from_dead_one(
+        self, client_as_user, monkeypatch, seeded_repo_with_commit
+    ):
+        """`GET /logs` collapsed both failure modes too, so the one button an
+        operator presses next reported the sidecar as down whatever happened."""
+        import app.api.data_apps as data_apps_api
+
+        class _NoContainerRunner:
+            def logs(self, slug, tail=200):
+                raise RunnerError(404, "not_found")
+
+        monkeypatch.setattr(data_apps_api, "_runner", lambda: _NoContainerRunner())
+        r = client_as_user.get("/api/data-apps/sapp/logs")
+        assert r.status_code == 502
+        assert r.json()["detail"] == "runner_error: not_found"
 
     def test_deploy_runner_down_rolls_back_new_token(
         self, client_as_user, fake_runner, seeded_repo_with_commit, monkeypatch

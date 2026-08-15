@@ -10,6 +10,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+
+- **The first data-app deploy on any host failed, and blamed the wrong thing for it.** The runtime image (~1.3 GB) is not a compose service, so neither the startup script's `docker compose pull` nor the auto-upgrade tick ever fetched it — the first deploy pulled it synchronously inside the apps-runner's `containers.run`. docker-py caps daemon calls at 60 s, so the pull was torn down mid-stream (`failed to cleanup "extract-…"` / `Error deleting lease` in the daemon log) and the retried `create` raised `ImageNotFound`: a deploy failing over an image that was merely still downloading. Both hosting paths now pre-pull it — the startup script so a fresh VM is warm before anyone can click Deploy, `agnes-auto-upgrade.sh` so a `runtime_image` bump lands on the next tick and a pruned host re-warms itself. Both best-effort: a registry hiccup degrades to a slow first deploy, never a failed boot. The cold path that still slips through now gets a pull-sized budget on both ends of the hop (`APPS_RUNNER_DOCKER_TIMEOUT`, `APPS_RUNNER_UP_TIMEOUT`, 600 s each) — they have to move together, or the failure just relocates from the daemon call to the HTTP call.
+
+- **A 502 from the data-app runner said `runner_unavailable` even when the runner had answered.** `RunnerUnavailable` (nothing answered) and `RunnerError` (the sidecar answered, naming the problem) were collapsed into one string and the sidecar's own diagnosis was discarded — twice now that has sent an investigation at a healthy, responding process, the second time past a `GET /logs` that reported the same word for its own unrelated 404. They are reported apart now: `runner_unavailable` keeps its literal meaning, and an answered failure returns `runner_error: <code>` carrying the runner's word (`image_not_found`, `image_not_allowed`, `bad_runner_token`, `docker_error: …`), with `agnes app deploy/logs` turning the known codes into a next step without dropping the code itself.
+
+- **The recorded reason a data app failed was never shown anywhere.** A failed deploy or stop has always stored the runner's message in `state_detail`, and the REST detail response has always returned it — but no surface rendered it, so a failed deploy left a bare `error` badge and the operator with nothing. Both halves of the frozen detail-page pair now show it (a fix on the redesigned template alone would have reverted itself on every default instance), and `agnes app show` prints it.
+
+- **`apps-runner` was missing from the host-mount overlay.** It kept the base `data:` named volume while every other service binds the host `/data`, so on Terraform-deployed instances the sidecar and the app disagreed about where `${DATA_DIR}/apps/<slug>` is. Data-app containers still started — `_resolve_host_path` translates whatever mount it finds — but `_rmtree_config_dir` looked for each app's `config.json` on the app's disk, missed the sidecar's copy, and swallowed the `FileNotFoundError` by design: the file holds that app's service JWT in plaintext and outlived every delete. A ratchet now fails any future `data:`-mounting service that has no host-mount override.
+
+
 ## [0.83.20] - 2026-08-15
 
 ### Fixed

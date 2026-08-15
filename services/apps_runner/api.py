@@ -18,10 +18,28 @@ from fastapi import Body, FastAPI, Header, HTTPException
 app = FastAPI(title="agnes-apps-runner", docs_url=None, redoc_url=None)
 
 
+# docker-py defaults every daemon call to a 60 s HTTP timeout. That is fine
+# for the calls this sidecar mostly makes (inspect/stop/logs) but not for
+# `containers.run`, which pulls the image inline when it is missing locally:
+# the runtime image is ~1.3 GB, so on a host that has never run a data app
+# those 60 s have to cover the whole fetch. When they ran out the daemon tore
+# the pull down ("failed to cleanup extract-…", "Error deleting lease") and
+# docker-py's retried `create` raised ImageNotFound — so the sidecar reported
+# a missing image for what was really a truncated download. Pre-pulling the
+# runtime image (startup script + agnes-auto-upgrade) is the actual fix; this
+# is the backstop, tunable because link speed is a per-deployment fact.
+_DOCKER_TIMEOUT_ENV = "APPS_RUNNER_DOCKER_TIMEOUT"
+_DOCKER_TIMEOUT_DEFAULT = 600
+
+
 def _docker():
     import docker
 
-    return docker.from_env()
+    try:
+        timeout = int(os.environ.get(_DOCKER_TIMEOUT_ENV, "") or _DOCKER_TIMEOUT_DEFAULT)
+    except ValueError:
+        timeout = _DOCKER_TIMEOUT_DEFAULT
+    return docker.from_env(timeout=timeout)
 
 
 def _check_token(x_runner_token: str | None) -> None:
