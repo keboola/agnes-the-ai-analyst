@@ -844,6 +844,27 @@ def _handle_runner_failure(repo, app_id: str, exc: Exception) -> None:
     repo.set_state(app_id, "error", str(detail))
 
 
+def _runner_http_error(exc: Exception) -> HTTPException:
+    """Map a runner-call failure to the 502 the caller sees, WITHOUT
+    flattening the two very different causes into one word.
+
+    ``RunnerUnavailable`` means the transport failed — the sidecar is down,
+    unreachable, or slower than the client timeout. ``runner_unavailable``
+    is then literally true and the operator should go look at the process.
+
+    ``RunnerError`` means the sidecar answered, with its own diagnosis
+    (``image_not_found``, ``image_not_allowed``, ``bad_runner_token``,
+    ``docker_error: ...``). Reporting *that* as "unavailable" is a lie that
+    has now cost two investigations: both times a healthy, responding
+    sidecar was blamed while its actual answer — which named the problem
+    outright — was discarded here. Pass its words through instead.
+    """
+    if isinstance(exc, RunnerError):
+        detail = getattr(exc, "detail", None) or str(exc)
+        return HTTPException(status_code=502, detail=f"runner_error: {detail}")
+    return HTTPException(status_code=502, detail="runner_unavailable")
+
+
 class OwnerNotFoundError(Exception):
     """Raised by :func:`redeploy_current` when ``app_row['owner_user_id']``
     no longer resolves to a live user row. Distinct from ``ValueError``
@@ -1275,8 +1296,11 @@ async def deploy_data_app(
             raise HTTPException(status_code=409, detail="parent_not_found")
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
-        except (RunnerUnavailable, RunnerError):
-            raise HTTPException(status_code=502, detail="runner_unavailable")
+        except (RunnerUnavailable, RunnerError) as exc:
+            # `redeploy_current` already recorded state=error + state_detail
+            # via `_handle_runner_failure`; this only decides what the caller
+            # of THIS request is told.
+            raise _runner_http_error(exc)
 
         repo.record_deploy(row["id"], sha)
         repo.set_state(row["id"], "running")
@@ -1535,7 +1559,7 @@ async def stop_data_app(
             _runner().stop(slug, mode="recreate")
         except (RunnerUnavailable, RunnerError) as exc:
             _handle_runner_failure(repo, row["id"], exc)
-            raise HTTPException(status_code=502, detail="runner_unavailable")
+            raise _runner_http_error(exc)
 
         repo.set_state(row["id"], "stopped")
         # Spec §8/§10: an explicit stop revokes the service token — unlike
@@ -1681,8 +1705,8 @@ async def get_data_app_logs(slug: str, tail: int = 200, user: dict = Depends(get
 
     try:
         logs = _runner().logs(slug, tail=tail)
-    except (RunnerUnavailable, RunnerError):
-        raise HTTPException(status_code=502, detail="runner_unavailable")
+    except (RunnerUnavailable, RunnerError) as exc:
+        raise _runner_http_error(exc)
     return {"logs": logs}
 
 

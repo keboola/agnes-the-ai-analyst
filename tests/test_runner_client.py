@@ -94,3 +94,52 @@ def test_logs_url_construction():
     assert seen["method"] == "GET"
     assert seen["url"].endswith("/apps/myapp/logs?tail=500")
     assert result == "output"
+
+
+def _capture_timeouts(fn):
+    """Run ``fn`` with ``httpx.Client`` replaced by a recorder, returning the
+    ``timeout=`` each construction was handed. The real constructor is bound
+    BEFORE patching — reaching for ``httpx.Client`` inside the stub would find
+    the stub itself."""
+    import src.data_apps.runner_client as mod
+
+    real_client = httpx.Client
+    seen = []
+
+    def _recorder(**kwargs):
+        seen.append(kwargs.get("timeout"))
+        kwargs["transport"] = httpx.MockTransport(lambda r: httpx.Response(200, json={}))
+        return real_client(**kwargs)
+
+    mod.httpx.Client = _recorder
+    try:
+        fn()
+    finally:
+        mod.httpx.Client = real_client
+    return seen
+
+
+def test_up_gets_a_pull_sized_timeout_the_other_calls_do_not():
+    """`up` is the only call that can trigger a cold image pull.
+
+    The runtime image is ~1.3 GB; on a VM that has never run a data app the
+    daemon fetches it inside this one request. A 60 s budget aborts that pull
+    mid-stream, docker-py's retried `create` then raises ImageNotFound, and
+    the deploy fails with a message about an image that is merely slow to
+    arrive. The read budget for `up` must be minutes, not seconds — while the
+    cheap calls (status/stop/logs) stay short so a genuinely wedged sidecar
+    is still detected quickly.
+    """
+    c = RunnerClient(base_url="http://runner", token="tok")
+    up_timeout, status_timeout = _capture_timeouts(lambda: (c.up("s", {}, {}), c.status("s")))
+
+    assert up_timeout >= 300, f"up must survive a cold 1.3 GB pull; got {up_timeout}s"
+    assert status_timeout < up_timeout, "cheap calls must not inherit the pull-sized budget"
+
+
+def test_up_timeout_is_operator_tunable(monkeypatch):
+    """Link speed varies per deployment, so the budget cannot be a constant
+    only we can change."""
+    monkeypatch.setenv("APPS_RUNNER_UP_TIMEOUT", "900")
+    c = RunnerClient(base_url="http://runner", token="tok")
+    assert _capture_timeouts(lambda: c.up("s", {}, {}))[0] == 900
