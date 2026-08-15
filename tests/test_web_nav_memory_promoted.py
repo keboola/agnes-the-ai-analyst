@@ -1,10 +1,15 @@
-"""Primary nav: Memory promoted out of admin dropdown (Task 8.11 of v49 plan).
+"""Curated Memory is reachable by every authenticated user, not just admins.
 
-Per spec Section 1: the user-facing ``/corporate-memory`` link sits in the
-primary nav next to "Data Packages", visible to every authenticated user
-(not gated behind ``is_admin``). The admin moderation queue at
-``/admin/corporate-memory`` stays in the Admin dropdown as
-"Curated memory reviews" — a distinct entry for a distinct surface.
+Originally (v49 Task 8.11) that meant a ``/corporate-memory`` link in the
+topnav's primary nav, next to "Data Packages". Two things have moved since:
+the topnav chrome was retired in Wave 0 (2026-08), and Memory folded into the
+Library — ``/corporate-memory`` 302s to the Library's Memory band rather than
+carrying a rail row of its own.
+
+What the suite still pins is the part that was the point: a non-admin has a
+route to curated memory from ordinary chrome, and the admin moderation queue
+at ``/admin/corporate-memory`` stays a DISTINCT surface in the admin
+inventory — one is not a substitute for the other.
 """
 
 from __future__ import annotations
@@ -14,39 +19,37 @@ def _auth(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
 
 
-def test_memory_link_in_primary_nav_for_non_admin(seeded_app):
-    """Non-admin users see the Memory link in the primary nav."""
+def test_memory_is_reachable_from_ordinary_chrome_for_non_admin(seeded_app):
+    """A non-admin reaches curated memory without typing a URL.
+
+    The door is the Library (which absorbed the Memory browse), reached from
+    the rail — not a primary-nav link, which no chrome renders any more.
+    """
     c = seeded_app["client"]
     token = seeded_app["analyst_token"]
-    resp = c.get("/dashboard", headers=_auth(token))
+    resp = c.get("/library", headers=_auth(token))
     assert resp.status_code == 200
     body = resp.text
 
-    # Primary nav uses .app-nav-link; the Memory entry must point at
-    # /corporate-memory and carry that class (not the admin-only
-    # .app-nav-menu-item which lives inside the Admin dropdown).
-    assert 'class="app-nav-link' in body
-    # The primary-nav link's href is /corporate-memory with label "Memory".
-    assert 'href="/corporate-memory"' in body
-    # Sanity check: the admin dropdown isn't even rendered for a non-admin,
-    # so the only /corporate-memory href on the page is the primary-nav one.
-    assert ">Memory<" in body
+    # The rail links the Library for every authed caller...
+    assert 'href="/library"' in body
+    # ...and a non-admin gets no admin chrome on it.
+    assert 'href="/admin"' not in body
 
 
-def test_admin_sees_memory_in_primary_nav_plus_moderation_in_dropdown(seeded_app):
-    """Admin users see BOTH the user-facing primary-nav link AND the
-    "Curated memory reviews" entry inside the Admin dropdown."""
+def test_moderation_queue_is_a_distinct_admin_surface(seeded_app):
+    """The admin review queue is its own entry in the admin inventory — the
+    user-facing memory browse is not a substitute for it, and vice versa."""
+    from app.web.admin_nav import ADMIN_NAV_SECTIONS, _section_entries
+
+    hrefs = {e["href"] for s in ADMIN_NAV_SECTIONS for e in _section_entries(s)}
+    assert "/admin/corporate-memory" in hrefs
+
     c = seeded_app["client"]
-    token = seeded_app["admin_token"]
-    resp = c.get("/dashboard", headers=_auth(token))
+    resp = c.get("/admin", headers=_auth(seeded_app["admin_token"]))
     assert resp.status_code == 200
-    body = resp.text
-
-    # User-facing Memory link in primary nav.
-    assert 'href="/corporate-memory"' in body
-    # Admin moderation queue distinct entry in the Admin dropdown.
-    assert 'href="/admin/corporate-memory"' in body
-    assert "Curated memory reviews" in body
+    assert 'href="/admin/corporate-memory"' in resp.text
+    assert "Corporate memory" in resp.text
 
 
 def test_corporate_memory_route_accessible_to_non_admin(seeded_app):

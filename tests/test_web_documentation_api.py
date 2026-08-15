@@ -33,17 +33,21 @@ def test_api_guide_renders_for_non_admin(seeded_app):
     assert "Running version" in body
 
 
-def test_documentation_section_in_admin_menu(seeded_app):
-    """The Admin mega-menu carries a Documentation section linking guide +
-    Swagger + ReDoc (a column group in the header's admin mega-menu)."""
+def test_documentation_section_in_admin_nav(seeded_app):
+    """The admin sidebar carries a Documentation footer group linking guide +
+    Swagger + ReDoc.
+
+    Was the topnav Admin mega-menu (`#adminMenuPanel`), rendered off
+    /dashboard. Both are gone since Wave 0 (2026-08): the admin inventory
+    lives once in `app/web/admin_nav.py` (ADMIN_NAV_DOCS) and renders as the
+    sidebar on every /admin/* page."""
     client = seeded_app["client"]
-    r = client.get("/dashboard", headers=_auth(seeded_app["admin_token"]))
+    r = client.get("/admin", headers=_auth(seeded_app["admin_token"]))
     assert r.status_code == 200
     body = r.text
-    # Documentation is a section within the admin mega-menu panel.
-    assert 'id="adminMenuPanel"' in body
-    assert ">Documentation<" in body
+    # The group is labelled "API docs" in the sidebar (it was "Documentation"
+    # as a mega-menu column).
+    assert "API docs" in body
     assert 'href="/documentation/api"' in body
-    assert ">API Guide<" in body
     assert 'href="/docs"' in body
     assert 'href="/redoc"' in body

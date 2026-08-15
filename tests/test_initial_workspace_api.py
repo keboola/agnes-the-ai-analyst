@@ -916,17 +916,26 @@ def test_server_config_still_renders_after_iw_relocation(web_client):
     assert "/admin/initial-workspace" in r.text
 
 
-def test_nav_header_has_initial_workspace_link():
-    """The Agent Experience nav group must link the new page (content
-    assertion on the partial — it renders inside every authed page).
+def test_nav_has_initial_workspace_link():
+    """The Agent Experience nav group must link the new page.
 
-    Retargeted to ``_app_rail.html`` — rail is the only chrome since Wave 0
-    (2026-08 legacy retirement); ``_app_header.html`` is deleted."""
-    from pathlib import Path
+    Read off ``app/web/admin_nav.py``, which is where the admin inventory
+    lives. It used to be a substring assertion on ``_app_rail.html`` (and
+    before that ``_app_header.html``), back when each chrome carried its own
+    hand-written copy of the admin menu. Both copies are gone: the rail now
+    carries ONE ``/admin`` destination and every ``/admin/*`` page renders the
+    admin sidebar off this single inventory, so the inventory is the only
+    place the link can be missing from.
+    """
+    from app.web.admin_nav import ADMIN_NAV_OFFNAV, ADMIN_NAV_SECTIONS, _section_entries
 
-    text = Path("app/web/templates/_app_rail.html").read_text(encoding="utf-8")
-    assert "'href': '/admin/initial-workspace'" in text
-    assert "/admin/initial-workspace" in text  # also in the _admin_active set
+    hrefs = {e["href"] for s in ADMIN_NAV_SECTIONS for e in _section_entries(s)}
+    hrefs |= {s["href"] for s in ADMIN_NAV_SECTIONS if s.get("href")}
+    hrefs |= {e["href"] for e in ADMIN_NAV_OFFNAV}
+    assert "/admin/initial-workspace" in hrefs, (
+        "/admin/initial-workspace is not in the admin nav inventory — the page would be "
+        "reachable only by typing the URL"
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -25,7 +25,6 @@ from app.instance_config import (
     FEATURE_FLAGS,
     get_instance_name,
     get_instance_subtitle,
-    get_datasets,
     get_theme,
     get_corporate_memory_config,
     get_home_route,
@@ -65,7 +64,6 @@ from src.repositories import (
     store_entities_repo,
     store_lint_repo,
     store_submissions_repo,
-    sync_settings_repo,
     sync_state_repo,
     table_registry_repo,
     usage_repo,
@@ -1103,91 +1101,39 @@ def _compute_data_stats() -> dict:
 async def dashboard(
     request: Request,
     user: dict = Depends(get_current_user),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    # Layout-aware dashboard split. Under the rail chrome the Dashboard IS
-    # Chat's pre-conversation state: /chat with no active conversation
-    # renders the Agnes-centric dashboard (greeting, composer, activity
-    # panels, guided task starters — see chat.html's rail empty-state
-    # blocks), so /dashboard 302s there and the two surfaces can never
-    # drift apart. Topnav falls straight through to the historical
-    # table-inventory render below — byte-for-byte unchanged.
-    #
-    # `can_chat` mirrors the rail nav's own predicate exactly (see
-    # _build_context: chat enabled AND has_explicit_grant) so the LANDING and
-    # the NAV agree. The dashboard exists to start Agnes conversations, so
-    # without a chat grant it would be a dead shell — those users 302 to the
-    # Library instead. That landing used to be My Stack, but /stack is no
-    # longer a rail destination (#1088), so grant-less callers would have
-    # landed on a surface the rail neither links to nor highlights, with the
-    # rail logo (href = home_route = /dashboard) bouncing them right back to
-    # it. The Library is the nearest thing to a data-estate home that IS in
-    # the nav. has_explicit_grant is stricter than /chat's own can_access
-    # guard, so the /chat redirect is loop-safe. 302 (not 308) so a later
-    # layout/grant flip isn't cached permanently by the browser.
-    if get_ui_layout() == "rail":
-        from app.auth.access import has_explicit_grant
-        from app.resource_types import ResourceType
+    """/dashboard is a redirect, not a page.
 
-        chat_cfg = getattr(request.app.state, "chat_config", None)
-        can_chat = bool(
-            chat_cfg and chat_cfg.enabled and has_explicit_grant(user["id"], ResourceType.CHAT.value, "chat")
-        )
-        return RedirectResponse(url="/chat" if can_chat else "/library", status_code=302)
+    The Dashboard IS Chat's pre-conversation state: /chat with no active
+    conversation renders the greeting, composer, activity panels and guided
+    task starters (chat.html's empty-state blocks), so this 302s there and the
+    two surfaces can never drift apart.
 
-    sync_repo = sync_state_repo()
-    settings_repo = sync_settings_repo()
+    It used to fall through to a historical table-inventory render for the
+    topnav chrome. That chrome was retired in Wave 0 (2026-08), which made the
+    layout test above it unconditionally true and the 53-line body below it
+    unreachable; both are gone, along with the `dashboard.html` template that
+    had no other renderer.
 
-    all_states = sync_repo.get_all_states()
-    enabled_datasets = settings_repo.get_enabled_datasets(user["id"])
-    datasets = get_datasets()
+    `can_chat` mirrors the rail nav's own predicate exactly (see
+    _build_context: chat enabled AND has_explicit_grant) so the LANDING and
+    the NAV agree. The dashboard exists to start Agnes conversations, so
+    without a chat grant it would be a dead shell — those users 302 to the
+    Library instead. That landing used to be My Stack, but /stack is no
+    longer a rail destination (#1088), so grant-less callers would have
+    landed on a surface the rail neither links to nor highlights, with the
+    rail logo (href = home_route = /dashboard) bouncing them right back to
+    it. The Library is the nearest thing to a data-estate home that IS in
+    the nav. has_explicit_grant is stricter than /chat's own can_access
+    guard, so the /chat redirect is loop-safe. 302 (not 308) so a later
+    grant flip isn't cached permanently by the browser.
+    """
+    from app.auth.access import has_explicit_grant
+    from app.resource_types import ResourceType
 
-    # Headline stats — shared with /stack via _compute_data_stats() so the
-    # two surfaces can't drift. Internal source_type tables (agnes_*) live
-    # in their own card on /catalog and are excluded from the counter.
-    data_stats = _compute_data_stats()
-    total_tables = data_stats["total_tables"]
-    total_rows = data_stats["total_rows"]
-
-    # Build user_info object expected by dashboard template
-    is_admin = is_user_admin(user["id"], conn)
-
-    class UserInfo:
-        def __init__(self):
-            self.exists = True
-            self.is_admin = is_admin
-            # Legacy fields kept so existing templates don't blow up — admin is
-            # implicitly analyst/privileged, non-admins are not. Granular roles
-            # collapsed in v12.
-            self.is_analyst = is_admin
-            self.is_privileged = is_admin
-            self.username = user.get("email", "").split("@")[0]
-            self.home_dir = ""
-            self.groups = []
-
-    ctx = _build_context(
-        request,
-        user=user,
-        conn=conn,
-        user_info=UserInfo(),
-        username=user.get("email", "").split("@")[0],
-        total_tables=total_tables,
-        total_rows=total_rows,
-        sync_states=all_states,
-        enabled_datasets=enabled_datasets,
-        datasets=datasets,
-        account_status="active",
-        account_details=None,
-        telegram_status={"linked": False},
-        data_stats=data_stats,
-        categories=[],
-        metrics_data=[],
-        desktop_status={"linked": False},
-        activity_summary={"total_sessions": 0, "total_queries": 0},
-        knowledge_stats={"total": 0, "approved": 0},
-        user_knowledge_stats={"authored": 0, "votes_given": 0},
-    )
-    return templates.TemplateResponse(request, "dashboard.html", ctx)
+    chat_cfg = getattr(request.app.state, "chat_config", None)
+    can_chat = bool(chat_cfg and chat_cfg.enabled and has_explicit_grant(user["id"], ResourceType.CHAT.value, "chat"))
+    return RedirectResponse(url="/chat" if can_chat else "/library", status_code=302)
 
 
 def _time_of_day_greeting(hour: int | None = None) -> str:

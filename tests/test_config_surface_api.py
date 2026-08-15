@@ -135,6 +135,32 @@ class TestConfigSurfaceSourceResolution:
         # In the test environment with no yaml and no env override, source=default.
         assert knob["source"] in ("default", "yaml")
 
+    def test_theme_on_a_clean_instance_reports_source_default(self, seeded_app):
+        """The catalogued `default` must be what the resolver actually returns
+        when nothing is configured.
+
+        `_source_for` infers `yaml` from `current_value != default`, so a stale
+        default doesn't just mislabel one field — it makes a clean instance
+        claim someone deliberately configured the theme. This endpoint is what
+        the operator tooling reads, so that claim gets repeated as fact.
+
+        Pinned strictly (`== "default"`), unlike the home_route test above
+        which tolerates either: the whole point here is that the two agree.
+        """
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        env_clean = {k: v for k, v in os.environ.items() if k != "AGNES_INSTANCE_THEME"}
+        with patch.dict("os.environ", env_clean, clear=True):
+            resp = c.get("/api/admin/config-surface", headers=_auth(token))
+        data = resp.json()
+        knob = next((k for k in data["knobs"] if k["resolver"] == "get_instance_theme"), None)
+        assert knob is not None
+        assert knob["current_value"] == knob["default"], (
+            f"catalogued default {knob['default']!r} is not what get_instance_theme() "
+            f"returns on a clean instance ({knob['current_value']!r})"
+        )
+        assert knob["source"] == "default"
+
     def test_source_is_env_when_env_var_set(self, seeded_app):
         """When AGNES_HOME_ROUTE is set, source=env and current_value matches."""
         c = seeded_app["client"]
