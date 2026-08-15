@@ -24,7 +24,13 @@ _UP_TIMEOUT_ENV = "APPS_RUNNER_UP_TIMEOUT"
 _UP_TIMEOUT_DEFAULT = 600.0
 
 
-def _up_timeout() -> float:
+def up_timeout() -> float:
+    """The read budget for ``up``, in seconds.
+
+    Public because it is not only this client's business: the per-app op
+    lease in ``app/api/data_apps.py`` derives its TTL from this value so the
+    lease always outlives the deploy it serializes.
+    """
     try:
         return float(os.environ.get(_UP_TIMEOUT_ENV, "") or _UP_TIMEOUT_DEFAULT)
     except ValueError:
@@ -78,7 +84,7 @@ class RunnerClient:
         return self._request(
             "POST",
             f"/apps/{slug}/up",
-            timeout=_up_timeout(),
+            timeout=up_timeout(),
             json={"spec": spec, "config_json": config_json},
         )
 

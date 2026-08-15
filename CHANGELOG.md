@@ -10,6 +10,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- **A data-app deploy could freeze the entire server for up to ten minutes.** Giving `runner.up` a pull-sized budget (600 s, so a cold ~1.3 GB image pull isn't cut off mid-stream) turned an existing latent problem into a severe one: `POST /{slug}/deploy` is an `async def` handler that called the synchronous `redeploy_current` inline, so that whole budget was spent **on the single uvicorn event loop** — no `/api/health`, no sign-in, every other user's request queued behind one operator's first deploy on a cold host. Every runner-sidecar call reached from a handler in `app/api/data_apps.py` now goes through `run_in_threadpool`, the way the ingress proxy's wake path (`_run_wake_fn`/`_trigger_wake`) always has: deploy, stop, delete (including the shared draft teardown), logs, `/readiness` — which the holding page polls on a cadence — and the scheduler's reap-idle sweep.
+
+- **The per-app operation lease expired mid-deploy.** `dataapp:op:{slug}` is what stops two concurrent deploy/stop/delete/wake calls from racing the apps-runner's unlocked check-then-act and landing two containers on one name; its TTL was a flat 120 s, chosen when every runner call was capped at 60 s. Against the new 600 s `up` budget it lapsed while the deploy was still running and let exactly that race through — and the wake path never releases the lease explicitly at all, relying on the TTL alone. The TTL is now derived from the runner client's `up` budget (`up_timeout() + 60 s`), so it also follows an operator's `APPS_RUNNER_UP_TIMEOUT` instead of silently falling behind it.
+
+### Internal
+
+- **Upgrade note on the apps-runner host-mount change** (`docker-compose.host-mount.yml`): moving the sidecar off the `data:` named volume strands each already-deployed app's `apps/<slug>/config.json` in the old volume, beyond `_rmtree_config_dir`'s reach. Running containers are unaffected and the next deploy of each app relocates it; the file documents the one-line cleanup for the stranded copies.
+
 ## [0.83.21] - 2026-08-15
 
 ### Fixed

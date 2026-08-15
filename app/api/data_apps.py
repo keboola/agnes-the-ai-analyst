@@ -72,7 +72,7 @@ from app.instance_config import feature_enabled, get_data_apps_config, get_publi
 from app.resource_types import ResourceType
 from app.secrets_vault import VaultKeyNotConfiguredError, decrypt_secret, encrypt_secret
 from src.data_apps.git_repos import fast_forward_live, init_app_repo
-from src.data_apps.runner_client import RunnerClient, RunnerError, RunnerUnavailable
+from src.data_apps.runner_client import RunnerClient, RunnerError, RunnerUnavailable, up_timeout
 from src.data_apps.spec import AGNES_INTERNAL_URL, RESERVED_SLUGS, SLUG_RE, build_config_json, build_container_spec
 from src.repositories import access_token_repo, audit_repo, data_apps_repo, users_repo
 
@@ -207,9 +207,33 @@ def _release_create_lease(lease_name: str, holder: str) -> None:
 # again inside `redeploy_current` would be a self-deadlock (`lease_acquire`
 # is not reentrant for the same holder, see `CoordinationBackend`'s
 # docstring).
-_OP_LEASE_TTL_S = 120
+#
+# The TTL is DERIVED from the runner client's `up` budget rather than being a
+# flat number of its own: the lease has to outlive the longest operation it
+# serializes, or it stops serializing anything. A cold host pulls the ~1.3 GB
+# runtime image inside `runner.up()` — budgeted at `up_timeout()` (600 s by
+# default, `APPS_RUNNER_UP_TIMEOUT` for slower links) — so a flat 120 s lease
+# would lapse mid-deploy and let a concurrent deploy/stop/delete/wake in on
+# exactly the app whose container is still being created: the unlocked
+# check-then-act race in `services/apps_runner/api.py::up()` that this lease
+# exists to prevent. The wake path (`_trigger_wake`) never releases the lease
+# explicitly at all — it relies on the TTL alone — so an under-sized TTL is
+# not merely a narrow window there but the whole guarantee.
+#
+# The margin covers everything `deploy_data_app` does around the runner call
+# (token mint, spec build, state writes) inside the same lease.
+_OP_LEASE_MARGIN_S = 60.0
 _OP_LEASE_RETRIES = 3
 _OP_LEASE_RETRY_DELAY_S = 0.1
+
+
+def op_lease_ttl_s() -> float:
+    """TTL for `dataapp:op:{slug}`, always above the runner's `up` budget.
+
+    Read at acquire time (not import time) so an operator's
+    `APPS_RUNNER_UP_TIMEOUT` is honored without a code change.
+    """
+    return up_timeout() + _OP_LEASE_MARGIN_S
 
 
 def _op_lease_name(slug: str) -> str:
@@ -237,7 +261,7 @@ def try_acquire_op_lease(slug: str) -> tuple[bool, str]:
 
     holder = default_holder_id()
     try:
-        acquired = coordination().lease_acquire(_op_lease_name(slug), holder, ttl_s=_OP_LEASE_TTL_S)
+        acquired = coordination().lease_acquire(_op_lease_name(slug), holder, ttl_s=op_lease_ttl_s())
     except CoordinationUnavailable:
         return True, holder
     return acquired, holder
@@ -260,7 +284,7 @@ def require_op_lease(slug: str) -> str:
     (a concurrent deploy/stop request, or an in-flight wake). The retries
     only smooth over near-simultaneous requests about to release on their
     own — a genuinely in-flight operation (e.g. a wake's backgrounded
-    redeploy, held for up to `_OP_LEASE_TTL_S`) is expected to make the
+    redeploy, held for up to `op_lease_ttl_s()`) is expected to make the
     caller retry later, not block the request for the full TTL.
 
     Returns the holder id to pass to `release_op_lease` in a `finally`.
@@ -1289,7 +1313,15 @@ async def deploy_data_app(
                 raise HTTPException(status_code=400, detail=str(exc))
 
         try:
-            redeploy_current(row)
+            # OFF the event loop. `redeploy_current` ends in a synchronous
+            # httpx call to the runner sidecar budgeted at `up_timeout()`
+            # (600 s by default, for a cold ~1.3 GB image pull). Called inline
+            # from this `async def`, one first-deploy-on-a-cold-host would
+            # freeze the single uvicorn event loop for that whole window —
+            # no /api/health, no sign-in, every other request queued behind
+            # an image download. `_run_wake_fn` in `data_apps_proxy.py`
+            # already offloads the very same callable for the wake path.
+            await run_in_threadpool(redeploy_current, row)
         except OwnerNotFoundError:
             raise HTTPException(status_code=500, detail="owner_not_found")
         except DraftParentMissingError:
@@ -1465,7 +1497,7 @@ async def create_draft(
     return {"id": draft_id, "slug": draft_slug, "branch": payload.branch, "git_clone_url": git_url}
 
 
-def _teardown_draft(repo, parent_slug: str, draft: dict, conn: duckdb.DuckDBPyConnection, actor_id: str) -> None:
+async def _teardown_draft(repo, parent_slug: str, draft: dict, conn: duckdb.DuckDBPyConnection, actor_id: str) -> None:
     """Shared draft-teardown body: best-effort container stop, service-token
     revoke, draft-branch delete on the PARENT repo, registry row delete,
     and config-dir cleanup. Used by both ``delete_draft`` (single draft) and
@@ -1480,11 +1512,15 @@ def _teardown_draft(repo, parent_slug: str, draft: dict, conn: duckdb.DuckDBPyCo
     for the draft could race ``runner.up()`` against this teardown's
     ``runner.stop()``, the exact unlocked check-then-act corruption the
     lease exists to prevent (see CHANGELOG 0.76.23).
+
+    ``async`` only so the runner call can be offloaded — both call sites are
+    already `async def` handlers, and a blocking sidecar call left inline
+    there runs on the single event loop.
     """
     draft_slug = draft["slug"]
     holder = require_op_lease(draft_slug)
     try:
-        _runner().stop(draft_slug, mode="recreate")
+        await run_in_threadpool(_runner().stop, draft_slug, "recreate")
     except (RunnerUnavailable, RunnerError):
         logger.warning("_teardown_draft: runner stop failed for %s (continuing)", draft_slug)
     finally:
@@ -1536,7 +1572,7 @@ async def delete_draft(
     if not draft.get("is_draft") or draft.get("parent_app_id") != parent["id"]:
         raise HTTPException(status_code=400, detail="not_a_draft")
 
-    _teardown_draft(repo, slug, draft, conn, user["id"])
+    await _teardown_draft(repo, slug, draft, conn, user["id"])
 
 
 @router.post("/{slug}/stop")
@@ -1556,7 +1592,7 @@ async def stop_data_app(
     try:
         repo = data_apps_repo()
         try:
-            _runner().stop(slug, mode="recreate")
+            await run_in_threadpool(_runner().stop, slug, "recreate")
         except (RunnerUnavailable, RunnerError) as exc:
             _handle_runner_failure(repo, row["id"], exc)
             raise _runner_http_error(exc)
@@ -1639,7 +1675,7 @@ async def delete_data_app(
     # Drafts live on the parent's repo and have their own containers/branches;
     # tear them down first so deleting a prod app can't strand them.
     for draft in repo.list_drafts(row["id"]):
-        _teardown_draft(repo, slug, draft, conn, user["id"])
+        await _teardown_draft(repo, slug, draft, conn, user["id"])
 
     holder = require_op_lease(slug)
     try:
@@ -1647,7 +1683,7 @@ async def delete_data_app(
         # (there'd otherwise be no way to remove an app whose container host is
         # gone).
         try:
-            _runner().stop(slug, mode="recreate")
+            await run_in_threadpool(_runner().stop, slug, "recreate")
         except (RunnerUnavailable, RunnerError):
             logger.warning("delete_data_app: runner stop failed for %s (continuing)", slug)
 
@@ -1704,7 +1740,7 @@ async def get_data_app_logs(slug: str, tail: int = 200, user: dict = Depends(get
     _reject_linked(row)
 
     try:
-        logs = _runner().logs(slug, tail=tail)
+        logs = await run_in_threadpool(_runner().logs, slug, tail)
     except (RunnerUnavailable, RunnerError) as exc:
         raise _runner_http_error(exc)
     return {"logs": logs}
@@ -1849,7 +1885,11 @@ async def get_data_app_readiness(slug: str, request: Request, response: Response
     ready = False
     if state in ("running", "deploying"):
         try:
-            status = _runner().status(slug)
+            # Offloaded like every other sidecar call: this endpoint is the
+            # one the holding page polls on a cadence, so a slow-to-answer
+            # runner would otherwise stall the loop once per poll, per waking
+            # app.
+            status = await run_in_threadpool(_runner().status, slug)
             ready = bool(status.get("ready"))
         except (RunnerUnavailable, RunnerError):
             ready = False
@@ -1910,7 +1950,7 @@ async def reap_idle_data_apps(
             logger.info("reap-idle: skipping %s — another operation is in flight", row["slug"])
             continue
         try:
-            _runner().stop(row["slug"], mode=row.get("sleep_mode") or "recreate")
+            await run_in_threadpool(_runner().stop, row["slug"], row.get("sleep_mode") or "recreate")
         except (RunnerUnavailable, RunnerError) as exc:
             detail = getattr(exc, "detail", None) or str(exc)
             repo.set_state(row["id"], "error", f"reap-idle stop failed: {detail}")
@@ -1938,7 +1978,7 @@ async def reap_idle_data_apps(
             continue
         ready = False
         try:
-            status = _runner().status(row["slug"])
+            status = await run_in_threadpool(_runner().status, row["slug"])
             ready = bool(status.get("ready"))
         except (RunnerUnavailable, RunnerError) as exc:
             logger.warning("reap-idle: status check failed for %s: %s", row["slug"], exc)

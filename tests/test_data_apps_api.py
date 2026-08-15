@@ -173,30 +173,58 @@ def admin_client(api_env):
     return _Wrapped()
 
 
+def _on_event_loop() -> bool:
+    """True when the caller is executing on the asyncio event-loop thread.
+
+    ``asyncio.get_running_loop()`` only succeeds inside a running loop's own
+    thread; from an anyio worker thread (where ``run_in_threadpool`` puts a
+    blocking callable) it raises ``RuntimeError``. That makes it a precise,
+    non-flaky probe for "did this blocking runner call execute ON the single
+    uvicorn event loop" — see ``TestRunnerCallsAreOffloaded``.
+    """
+    import asyncio
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
+
+
 class _FakeRunner:
     def __init__(self):
         self.up_calls = []
         self.stop_calls = []
         self.logs_calls = []
+        # (method, ran_on_event_loop) for every call — see `_on_event_loop`.
+        self.thread_checks = []
         self._status = {"container": "running", "ready": True}
 
     def up(self, slug, spec, config_json):
+        self.thread_checks.append(("up", _on_event_loop()))
         self.up_calls.append((slug, spec, config_json))
         return {"container": "running", "ready": True}
 
     def stop(self, slug, mode="recreate"):
+        self.thread_checks.append(("stop", _on_event_loop()))
         self.stop_calls.append((slug, mode))
         return {"container": "stopped", "ready": False}
 
     def resume(self, slug):
+        self.thread_checks.append(("resume", _on_event_loop()))
         return {"container": "running", "ready": True}
 
     def status(self, slug):
+        self.thread_checks.append(("status", _on_event_loop()))
         return self._status
 
     def logs(self, slug, tail=200):
+        self.thread_checks.append(("logs", _on_event_loop()))
         self.logs_calls.append((slug, tail))
         return "log line 1\nlog line 2\n"
+
+    def on_loop(self) -> list[str]:
+        return [name for name, on_loop in self.thread_checks if on_loop]
 
 
 class _DeadRunner:
@@ -1671,3 +1699,137 @@ class TestDrafts:
         finally:
             conn.close()
         assert (d["slug"], "recreate") in fake_runner.stop_calls
+
+
+class TestRunnerCallsAreOffloaded:
+    """Every runner-sidecar call reached from an ``async def`` handler must run
+    in the thread pool, never inline on the event loop.
+
+    Agnes serves everything from one uvicorn process with one event loop. The
+    runner client is synchronous ``httpx`` — and since the cold-image-pull fix
+    its ``up`` budget is 600 s (``_UP_TIMEOUT_DEFAULT``, tunable via
+    ``APPS_RUNNER_UP_TIMEOUT``). Called inline from ``async def
+    deploy_data_app``, one first-deploy-on-a-cold-host would freeze the whole
+    process for up to ten minutes: no ``/api/health``, no sign-in, every other
+    user's request queued behind an image download. The cheap calls
+    (stop/status/logs, 60 s) are the same bug class an order of magnitude
+    smaller — and ``/readiness`` is polled on a cadence by every holding page.
+
+    ``app/api/data_apps_proxy.py`` already got this right for the wake path
+    (``_run_wake_fn``/``_trigger_wake`` both go through ``run_in_threadpool``);
+    these pin the control-plane half. Same convention as
+    ``tests/test_event_loop_offload_guard.py``.
+    """
+
+    def test_deploy_does_not_run_runner_up_on_the_event_loop(
+        self, client_as_user, fake_runner, seeded_repo_with_commit
+    ):
+        r = client_as_user.post("/api/data-apps/sapp/deploy", json={})
+        assert r.status_code == 200, r.text
+        assert fake_runner.up_calls
+        assert fake_runner.on_loop() == []
+
+    def test_stop_does_not_run_runner_stop_on_the_event_loop(
+        self, client_as_user, fake_runner, seeded_repo_with_commit
+    ):
+        client_as_user.post("/api/data-apps/sapp/deploy", json={})
+        fake_runner.thread_checks.clear()
+        r = client_as_user.post("/api/data-apps/sapp/stop")
+        assert r.status_code == 200, r.text
+        assert fake_runner.stop_calls
+        assert fake_runner.on_loop() == []
+
+    def test_logs_does_not_run_runner_logs_on_the_event_loop(
+        self, client_as_user, fake_runner, seeded_repo_with_commit
+    ):
+        r = client_as_user.get("/api/data-apps/sapp/logs")
+        assert r.status_code == 200, r.text
+        assert fake_runner.logs_calls
+        assert fake_runner.on_loop() == []
+
+    def test_readiness_does_not_run_runner_status_on_the_event_loop(
+        self, client_as_user, fake_runner, seeded_repo_with_commit
+    ):
+        client_as_user.post("/api/data-apps/sapp/deploy", json={})
+        fake_runner.thread_checks.clear()
+        r = client_as_user.get("/api/data-apps/sapp/readiness")
+        assert r.status_code == 200, r.text
+        assert [name for name, _ in fake_runner.thread_checks] == ["status"]
+        assert fake_runner.on_loop() == []
+
+    def test_delete_does_not_run_runner_stop_on_the_event_loop(
+        self, client_as_user, fake_runner, seeded_repo_with_commit
+    ):
+        """Covers the draft cascade too — ``_teardown_draft`` is shared with
+        ``DELETE /{slug}/drafts/{draft_slug}`` and calls ``runner.stop``."""
+        client_as_user.post("/api/data-apps/sapp/drafts", json={"branch": "init"})
+        fake_runner.thread_checks.clear()
+        r = client_as_user.delete("/api/data-apps/sapp")
+        assert r.status_code == 204, r.text
+        assert fake_runner.stop_calls
+        assert fake_runner.on_loop() == []
+
+    def test_draft_delete_does_not_run_runner_stop_on_the_event_loop(
+        self, client_as_user, fake_runner, seeded_repo_with_commit
+    ):
+        d = client_as_user.post("/api/data-apps/sapp/drafts", json={"branch": "init"}).json()
+        fake_runner.thread_checks.clear()
+        r = client_as_user.delete(f"/api/data-apps/sapp/drafts/{d['slug']}")
+        assert r.status_code == 204, r.text
+        assert fake_runner.stop_calls
+        assert fake_runner.on_loop() == []
+
+    def test_reap_idle_does_not_run_runner_calls_on_the_event_loop(
+        self, admin_client, fake_runner, running_idle_app, stale_deploying_app
+    ):
+        r = admin_client.post("/api/data-apps/reap-idle")
+        assert r.status_code == 200, r.text
+        assert fake_runner.stop_calls
+        assert fake_runner.on_loop() == []
+
+
+class TestOpLeaseCoversTheUpTimeout:
+    """The per-slug ``dataapp:op:{slug}`` lease must outlive the longest
+    operation it serializes.
+
+    The lease is what stops two concurrent deploy/stop/delete/wake calls from
+    racing ``services/apps_runner/api.py::up()``'s unlocked check-then-act
+    (get old container -> remove -> run new) and landing two containers on the
+    same name. A flat 120 s TTL was fine when every runner call was capped at
+    60 s; with ``up`` now budgeted at 600 s for a cold image pull, the lease
+    would expire mid-deploy and let exactly the concurrent operation it exists
+    to prevent through — and the wake path (``_trigger_wake``) never releases
+    it explicitly at all, relying on the TTL alone.
+    """
+
+    def test_ttl_exceeds_the_up_timeout(self):
+        from app.api.data_apps import op_lease_ttl_s
+        from src.data_apps.runner_client import up_timeout
+
+        assert op_lease_ttl_s() > up_timeout()
+
+    def test_ttl_follows_a_tuned_up_timeout(self, monkeypatch):
+        """An operator on a slow link raises ``APPS_RUNNER_UP_TIMEOUT``; the
+        lease has to move with it or the guarantee silently lapses again."""
+        from app.api.data_apps import op_lease_ttl_s
+        from src.data_apps.runner_client import up_timeout
+
+        monkeypatch.setenv("APPS_RUNNER_UP_TIMEOUT", "1800")
+        assert up_timeout() == 1800.0
+        assert op_lease_ttl_s() > 1800.0
+
+    def test_acquired_lease_uses_the_derived_ttl(self, api_env, monkeypatch):
+        """Not just computed — actually handed to ``lease_acquire``."""
+        import app.api.data_apps as data_apps_api
+
+        seen: list[float] = []
+
+        class _Coord:
+            def lease_acquire(self, name, holder, ttl_s):
+                seen.append(ttl_s)
+                return True
+
+        monkeypatch.setattr("app.coordination.factory.coordination", lambda: _Coord())
+        acquired, _holder = data_apps_api.try_acquire_op_lease("sapp")
+        assert acquired
+        assert seen == [data_apps_api.op_lease_ttl_s()]

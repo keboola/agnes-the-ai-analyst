@@ -114,6 +114,23 @@ services:
   # hits FileNotFoundError, swallows it by design, and the credential file
   # stays behind on every Terraform-deployed VM.
   #
+  # UPGRADE NOTE for an instance that already ran `--profile apps` under this
+  # overlay: this moves the sidecar's `${DATA_DIR}` from the Docker-managed
+  # `data:` volume to the host `/data`, so each already-deployed app's
+  # `apps/<slug>/config.json` — the file whose plaintext service JWT motivates
+  # this change — stays behind in the OLD volume, now referenced by nothing
+  # and out of `_rmtree_config_dir`'s reach for good. Running containers are
+  # unaffected (they keep the bind they were created with); the next deploy
+  # of each app writes its config under the host path and from then on delete
+  # cleans up correctly. To clear the stranded copies, after recreating the
+  # stack:
+  #
+  #   docker run --rm -v <project>_data:/old alpine sh -c 'rm -rf /old/apps'
+  #
+  # Revoke-on-delete already happened server-side, so a JWT left in an
+  # orphaned file is dead for any app that was deleted; the live ones are
+  # simply duplicated until their next deploy.
+  #
   # The docker socket mount must be restated: `!override` replaces the whole
   # list, and without the socket the sidecar has no daemon at all.
   apps-runner:
