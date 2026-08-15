@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import os
 import time
 from io import BytesIO
 from pathlib import Path
@@ -993,6 +994,33 @@ class TestSweepOrphanedScratch:
         removed = sweep_orphaned_scratch(root=str(tmp_path), max_age_seconds=3600)
         assert removed == 1
         assert not old.exists()
+
+    def test_removes_old_duckdb_spill_dirs(self, tmp_path):
+        """The per-connection DuckDB spill dirs the consolidation connections
+        point ``temp_directory`` at (``kbc-spill-*``, see
+        ``connectors/keboola/extractor.py:_open_consolidation_conn``) orphan on
+        the same hard kill — DuckDB removes the directory itself only on a
+        clean close — and are swept by the same pass. Without this the spill
+        (capped at 10 GB per connection) sits on the data disk forever."""
+        d = tmp_path / f"{sapi.SPILL_DIR_PREFIX}4242-deadbeef"
+        d.mkdir()
+        (d / "duckdb_temp_storage_DEFAULT-0.tmp").write_bytes(b"\0" * 1024)
+        old = time.time() - 7200
+        os.utime(d, (old, old))
+
+        removed = sweep_orphaned_scratch(root=str(tmp_path), max_age_seconds=3600)
+        assert removed == 1
+        assert not d.exists()
+
+    def test_keeps_fresh_duckdb_spill_dir(self, tmp_path):
+        """A spill dir younger than the threshold belongs to a live
+        consolidation — DuckDB is still reading blocks back out of it."""
+        d = tmp_path / f"{sapi.SPILL_DIR_PREFIX}4242-c0ffee"
+        d.mkdir()
+        (d / "duckdb_temp_storage_DEFAULT-0.tmp").write_bytes(b"\0" * 1024)
+
+        assert sweep_orphaned_scratch(root=str(tmp_path), max_age_seconds=3600) == 0
+        assert d.exists()
 
     def test_keeps_fresh_scratch_dir(self, tmp_path):
         """A dir younger than the threshold may belong to a concurrent
