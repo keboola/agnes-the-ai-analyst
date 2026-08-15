@@ -1105,32 +1105,33 @@ async def dashboard(
     request: Request,
     user: dict = Depends(get_current_user),
 ):
-    """/dashboard is a redirect, not a page.
-
-    The Dashboard IS Chat's pre-conversation state: /chat with no active
-    conversation renders the greeting, composer, activity panels and guided
-    task starters (chat.html's empty-state blocks), so this 302s there and the
-    two surfaces can never drift apart.
-
-    It used to fall through to a historical table-inventory render for the
-    topnav chrome. That chrome was retired in Wave 0 (2026-08), which made the
-    layout test above it unconditionally true and the 53-line body below it
-    unreachable; both are gone, along with the `dashboard.html` template that
-    had no other renderer.
-
-    `can_chat` mirrors the rail nav's own predicate exactly (see
-    _build_context: chat enabled AND has_explicit_grant) so the LANDING and
-    the NAV agree. The dashboard exists to start Agnes conversations, so
-    without a chat grant it would be a dead shell — those users 302 to the
-    Library instead. That landing used to be My Stack, but /stack is no
-    longer a rail destination (#1088), so grant-less callers would have
-    landed on a surface the rail neither links to nor highlights, with the
-    rail logo (href = home_route = /dashboard) bouncing them right back to
-    it. The Library is the nearest thing to a data-estate home that IS in
-    the nav. has_explicit_grant is stricter than /chat's own can_access
-    guard, so the /chat redirect is loop-safe. 302 (not 308) so a later
-    grant flip isn't cached permanently by the browser.
-    """
+    # A REDIRECT, not a page. Deliberately a comment and not a docstring: a
+    # handler docstring becomes the endpoint's public OpenAPI `description`
+    # (tests/snapshots/openapi.json), and this is internal rationale.
+    #
+    # The Dashboard IS Chat's pre-conversation state — /chat with no active
+    # conversation renders the greeting, composer, activity panels and guided
+    # task starters (chat.html's empty-state blocks) — so this 302s there and
+    # the two surfaces can never drift apart.
+    #
+    # It used to fall through to a historical table-inventory render for the
+    # topnav chrome. That chrome was retired in Wave 0 (2026-08), which made
+    # the layout test above it unconditionally true and the 53-line body below
+    # it unreachable; both are gone, along with the `dashboard.html` template
+    # that had no other renderer.
+    #
+    # `can_chat` mirrors the rail nav's own predicate exactly (see
+    # _build_context: chat enabled AND has_explicit_grant) so the LANDING and
+    # the NAV agree. The dashboard exists to start Agnes conversations, so
+    # without a chat grant it would be a dead shell — those users 302 to the
+    # Library instead. That landing used to be My Stack, but /stack is no
+    # longer a rail destination (#1088), so grant-less callers would have
+    # landed on a surface the rail neither links to nor highlights, with the
+    # rail logo (href = home_route = /dashboard) bouncing them right back to
+    # it. The Library is the nearest thing to a data-estate home that IS in
+    # the nav. has_explicit_grant is stricter than /chat's own can_access
+    # guard, so the /chat redirect is loop-safe. 302 (not 308) so a later
+    # grant flip isn't cached permanently by the browser.
     from app.auth.access import has_explicit_grant
     from app.resource_types import ResourceType
 
