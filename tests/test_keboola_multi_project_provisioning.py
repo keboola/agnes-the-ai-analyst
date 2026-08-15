@@ -358,6 +358,54 @@ class TestAutoProvision:
         assert connection_secrets_repo().get(connection_id) == "pat-516-fresh"
         assert not connection_secrets_repo().has(master_secret_key(connection_id))
 
+    def test_transient_verify_failure_keeps_the_stored_token(self, env, pat_mocks, monkeypatch):
+        """A 5xx/timeout on the stored-token verify is NOT a dead credential:
+        no mint (each one is an unrevocable upstream orphan), no config
+        change, no repair — the next login re-checks."""
+        from src.repositories import connection_secrets_repo, source_connections_repo, users_repo
+
+        projects = [P("516", "Agnes - test", "admin")]
+        first = kprov.provision_projects(env["user"], projects, projects, "at-1")
+        connection_id = first.outcomes[0].connection_id
+
+        def outage(self):
+            from connectors.keboola.storage_api import StorageApiError
+
+            raise StorageApiError("bad gateway", status=502)
+
+        monkeypatch.setattr(KeboolaStorageClient, "verify_token", outage)
+        for user_key in ("u1", "bob"):
+            if user_key == "bob":
+                users_repo().create(id="u2", email="bob@example.com", name="Bob")
+                actor = users_repo().get_by_email("bob@example.com")
+            else:
+                actor = env["user"]
+            summary = kprov.provision_projects(actor, projects, projects, f"at-{user_key}")
+            assert summary.outcomes[0].error is None
+        # Exactly the first login's mint — the outage minted nothing.
+        assert pat_mocks == [("516", False)]
+        assert connection_secrets_repo().get(connection_id) == "pat-516"
+        # And no ownership transfer over a network blip.
+        assert source_connections_repo().get(connection_id)["config"]["user_email"] == "jane@example.com"
+
+    def test_admin_created_row_never_gets_auto_chat_tools(self, env, pat_mocks):
+        """Filling an admin-created row's empty token slot must not also
+        enable chat tools for it — 'never enabled' on an admin-managed row
+        is the admin's posture exactly like the off-switch is."""
+        from src.repositories import source_connections_repo
+
+        source_connections_repo().create(
+            id="bare-conn",
+            name="Admin managed bare",
+            source_type="keboola",
+            config={"stack_url": STACK, "project_id": "99"},
+        )
+        projects = [P("99", "Admin project", "admin")]
+        summary = kprov.provision_projects(env["user"], projects, projects, "at-1")
+        assert summary.outcomes[0].token_stored is True  # the empty slot fills…
+        assert summary.connections_needing_chat_tools == []  # …but tools stay the admin's call
+        assert summary.deferred_grants == []
+
     def test_healthy_foreign_row_is_left_alone(self, env, pat_mocks):
         """Another user's login on a healthy row someone else provisioned
         neither rotates the credential nor mints anything."""

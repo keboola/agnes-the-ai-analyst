@@ -247,14 +247,25 @@ def apply_tool_grants(connection_id: str, group_id: str, role: str) -> int:
     return granted
 
 
-def _verify_project_token(stack_url: str, token: str) -> Optional[Dict[str, Any]]:
-    """``/tokens/verify`` payload for ``token``, or None on any failure
-    (logged redacted — never the token, never a proxy-echoed body).
+def _verify_project_token(stack_url: str, token: str) -> tuple[Optional[Dict[str, Any]], str]:
+    """``(payload, verdict)`` for ``token`` against ``/tokens/verify``.
 
-    Validate-at-use, same bar as ``keboola_verify._fetch_verify``: https only
-    plus the shared SSRF validator, re-checked immediately before the
-    outbound call — a config edit or DNS rebind between store and use must
-    not point a token-carrying request at a private address.
+    ``verdict`` separates the two failure meanings a caller must never
+    conflate (Devin Review on this PR, sixth round):
+
+    - ``"ok"`` — the stack answered; ``payload`` is the verify body.
+    - ``"refused"`` — the stack AUTHORITATIVELY rejected the token
+      (400/401/403). Only this counts as a dead credential.
+    - ``"unknown"`` — the question could not be asked or answered (network
+      failure, timeout, 429/5xx, or the https/SSRF gate refusing the
+      target). A healthy credential must survive an outage: treating this
+      as "dead" minted unrevocable replacement PATs per sign-in and could
+      even transfer a row's recorded owner over a network blip.
+
+    Logged redacted — never the token, never a proxy-echoed body.
+    Validate-at-use, same bar as ``keboola_verify._fetch_verify``: https
+    only plus the shared SSRF validator, re-checked immediately before the
+    outbound call.
     """
     import requests as _requests
     from fastapi import HTTPException
@@ -263,20 +274,26 @@ def _verify_project_token(stack_url: str, token: str) -> Optional[Dict[str, Any]
 
     if not str(stack_url or "").lower().startswith("https://"):
         logger.warning("keboola auto-provision: refusing token verify — stack_url must be https")
-        return None
+        return None, "unknown"
     from app.api.admin import _validate_url_not_private
 
     try:
         _validate_url_not_private(stack_url, "auth.keboola.stack_url")
     except HTTPException as exc:
         logger.warning("keboola auto-provision: refusing token verify — %s", exc.detail)
-        return None
+        return None, "unknown"
     client = KeboolaStorageClient(url=stack_url, token=token)
     try:
-        return client.verify_token()
-    except (StorageApiError, _requests.RequestException) as exc:
-        logger.info("keboola auto-provision: token verify failed: %s", client._redact(exc))
-        return None
+        return client.verify_token(), "ok"
+    except StorageApiError as exc:
+        if getattr(exc, "status", None) in (400, 401, 403):
+            logger.info("keboola auto-provision: token refused by the stack: %s", client._redact(exc))
+            return None, "refused"
+        logger.info("keboola auto-provision: token verify inconclusive: %s", client._redact(exc))
+        return None, "unknown"
+    except _requests.RequestException as exc:
+        logger.info("keboola auto-provision: token verify unreachable: %s", client._redact(exc))
+        return None, "unknown"
 
 
 def _mint_and_store_tokens(
@@ -336,18 +353,26 @@ def _mint_and_store_tokens(
             stored = secrets.get(connection_id) if secrets.has(connection_id) else None
         except Exception:
             stored = None
-    stored_info = _verify_project_token(stack_url, stored) if stored else None
+    stored_info: Optional[Dict[str, Any]] = None
+    stored_verdict = "unknown"
+    if stored:
+        stored_info, stored_verdict = _verify_project_token(stack_url, stored)
     stored_id, _ = project_identity(stored_info) if stored_info is not None else (None, "")
-    stored_valid = stored_info is not None and stored_id is not None and str(stored_id) == str(project.id)
+    stored_valid = stored_verdict == "ok" and stored_id is not None and str(stored_id) == str(project.id)
+    # Dead means an AUTHORITATIVE verdict only: refused outright, or verified
+    # as a different project. An "unknown" (outage, 429/5xx, SSRF gate)
+    # proves nothing about the credential.
+    stored_dead = stored is not None and (stored_verdict == "refused" or (stored_verdict == "ok" and not stored_valid))
 
     repairing = False
-    if not may_storage and login_provisioned and stored and not stored_valid:
+    if not may_storage and login_provisioned and stored_dead:
         # The row was created by this flow, but its owner's PAT is dead
         # (revoked upstream, owner lost the project). The ownership rule
         # protects HUMAN-stored credentials; a dead machine-minted one only
         # keeps every user of the project broken until an admin notices —
         # so any allowed user's login may replace it, re-owning the row
-        # (Devin Review on this PR, third round).
+        # (Devin Review on this PR, third round). Never on an inconclusive
+        # verdict: a network blip must not transfer a row's owner.
         repairing = True
         may_storage = True
 
@@ -360,6 +385,19 @@ def _mint_and_store_tokens(
         # Review on this PR, fourth round). The master slot still fills on
         # the OWNER's own login (their reuse/mint path may store both slots),
         # or by an admin storing one via the secret endpoint.
+        return
+
+    if stored is not None and not stored_valid and not stored_dead:
+        # The stack could not answer about the stored token. Minting a
+        # replacement over a possibly-healthy credential would orphan it
+        # upstream for nothing (and during an outage the fresh PAT's own
+        # verify fails too) — keep everything as it is; the next login
+        # re-checks. (Devin Review on this PR, sixth round.)
+        logger.info(
+            "keboola auto-provision: stack inconclusive about the stored token of project %s — "
+            "keeping it, no mint this login",
+            project.id,
+        )
         return
 
     if may_storage and stored_valid and not repairing:
@@ -393,8 +431,8 @@ def _mint_and_store_tokens(
         logger.warning("keboola auto-provision: PAT mint failed for project %s: %s", project.id, exc.reason)
         return
 
-    info = _verify_project_token(stack_url, pat)
-    if info is None:
+    info, mint_verdict = _verify_project_token(stack_url, pat)
+    if info is None or mint_verdict != "ok":
         outcome.error = "pat_verify_failed"
         logger.warning("keboola auto-provision: minted PAT for project %s failed verify", project.id)
         return
@@ -609,14 +647,22 @@ def _provision_one(
     elif not outcome.error:
         outcome.error = "vault_key_not_configured"
 
-    # Chat tools. Three states, three behaviors:
-    # - live source with registered tools → the role group's grants right now;
-    # - no derived source at all + a usable token → defer to the background
-    #   enable (MCP introspection is far too slow for a login) with the
-    #   grants to apply once its tools register;
+    # Chat tools. Four states, four behaviors:
+    # - live source with registered tools → the role group's grants right
+    #   now (an enabled source is the admin's deliberate exposure; under an
+    #   active discovery mode role-based grants to it are the feature);
+    # - no derived source on a row THIS FLOW created → defer to the
+    #   background enable (MCP introspection is far too slow for a login)
+    #   with the grants to apply once its tools register;
+    # - no derived source on an ADMIN-created row → hands off. "Never
+    #   enabled" on a row the admin manages is the admin's posture exactly
+    #   like the off-switch is — a login filling the row's empty token slot
+    #   must not also copy that credential into the MCP vault and expose the
+    #   project's tools (Devin Review on this PR, sixth round);
     # - source present but DISABLED (or tool-less) → hands off entirely. The
     #   off-switch is an admin decision; auto-granting (or re-enabling) from
     #   a login would widen access the admin deliberately cut.
+    login_provisioned_row = (connection.get("config") or {}).get("provisioned_by") == "keboola_login"
     source_row = mcp_sources_repo().get(derived_source_id(connection["id"]))
     source_live = source_row is not None and source_row.get("enabled") is not False
     has_tools = bool(tool_registry_repo().list_for_source(derived_source_id(connection["id"])))
@@ -630,11 +676,11 @@ def _provision_one(
                     connection["id"],
                     exc_info=True,
                 )
-        elif source_row is None:
+        elif source_row is None and login_provisioned_row:
             summary.deferred_grants.append(
                 {"connection_id": connection["id"], "group_id": outcome.group_id, "role": project.role}
             )
-    if source_row is None and (outcome.token_stored or _has_storage_token(connection["id"])):
+    if source_row is None and login_provisioned_row and (outcome.token_stored or _has_storage_token(connection["id"])):
         summary.connections_needing_chat_tools.append(connection["id"])
     return outcome
 
