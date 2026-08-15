@@ -101,9 +101,8 @@ def test_chat_route_html(api_client: TestClient, logged_in_user):
 
 def test_chat_route_composer_renders_without_legacy_welcome_cards(api_client: TestClient, logged_in_user):
     """chat.html is single-surface now (no more ``ui_layout`` branching): the
-    composer form always renders, and the frozen pre-redesign capability
-    cards (``_chat_welcome_cards_legacy.html``, deleted alongside the
-    topnav chrome) never do."""
+    composer form always renders, and the frozen pre-redesign capability-cards
+    partial (deleted alongside the topnav chrome) never does."""
     r = api_client.get("/chat")
     assert r.status_code == 200
     assert 'id="chat-form"' in r.text
