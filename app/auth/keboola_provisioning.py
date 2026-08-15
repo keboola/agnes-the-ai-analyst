@@ -495,14 +495,20 @@ def _mint_and_store_tokens(
             new_config["project_name"] = fresh_name
 
     reclaimed_dead_master = False
-    if repairing and not may_master and stored:
-        # A login mirrors ONE minted PAT into both slots, so the dead
-        # storage credential usually sits in the master slot too — and
-        # leaving it there keeps the semantic-layer sync failing on this
-        # project long after data access is repaired (Devin Review on this
-        # PR, fifth round). Reclaim it with the repair by VALUE equality
+    if stored_dead and stored:
+        # A login mirrors ONE minted PAT into both slots, so a dead storage
+        # credential usually sits in the master slot too — and leaving it
+        # there keeps the semantic-layer sync failing on this project long
+        # after data access is repaired (Devin Review on this PR, fifth
+        # round). This runs on EVERY dead-credential replacement, not just
+        # the foreign-repair path: the row's own owner re-signing in after a
+        # revocation walks the same mirror, and gating on `repairing` left
+        # their dead master in place forever once the fresh mint came back
+        # non-master (eleventh round). Identify the mirror by VALUE equality
         # against the known-dead token — no extra round-trip, and a master
-        # an admin pasted by hand (a different value) is never touched.
+        # an admin pasted by hand (a different value) is never touched. On
+        # the foreign path the match also confers the master-slot write
+        # right the repairing user otherwise lacks.
         try:
             master_stored = secrets.get(master_secret_key(connection_id))
         except Exception:

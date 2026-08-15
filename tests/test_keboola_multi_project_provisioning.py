@@ -358,6 +358,86 @@ class TestAutoProvision:
         assert connection_secrets_repo().get(connection_id) == "pat-516-fresh"
         assert not connection_secrets_repo().has(master_secret_key(connection_id))
 
+    def test_owners_own_relogin_removes_the_dead_master_when_fresh_is_not_master(self, env, pat_mocks, monkeypatch):
+        """The OWNER walking the same revocation is not a `repairing` login
+        (their storage slot is already writable), but the dead mirror in the
+        master slot must be cleaned exactly the same way — left in place it
+        keeps the semantic layer erroring on this project after every login,
+        and the reuse fast-path never re-examines it (Devin Review on this
+        PR, eleventh round). With the fresh mint non-master the slot is
+        removed (sync skips the project, the documented posture) and the
+        non-master verdict is recorded so no later login orphans more PATs."""
+        from app.api.admin_source_connections import master_secret_key
+        from src.repositories import connection_secrets_repo, source_connections_repo
+
+        projects = [P("516", "Agnes - test", "admin")]
+        first = kprov.provision_projects(env["user"], projects, projects, "at-1")
+        connection_id = first.outcomes[0].connection_id
+        assert connection_secrets_repo().get(master_secret_key(connection_id)) == "pat-516"
+
+        def old_dead_fresh_not_master(self):
+            if self.token == "pat-516":
+                from connectors.keboola.storage_api import StorageApiError
+
+                raise StorageApiError("token was revoked", status=401)
+            return {"isMasterToken": False, "owner": {"id": 516, "name": "P"}}
+
+        fresh_mints: list[str] = []
+
+        def fresh_mint(tok, pid, *, read_only):
+            fresh_mints.append(pid)
+            return f"pat-{pid}-fresh"
+
+        monkeypatch.setattr(KeboolaStorageClient, "verify_token", old_dead_fresh_not_master)
+        monkeypatch.setattr(kp, "exchange_project_pat", fresh_mint)
+
+        summary = kprov.provision_projects(env["user"], projects, projects, "at-2")
+        assert summary.outcomes[0].token_stored is True
+        assert fresh_mints == ["516"]
+        assert connection_secrets_repo().get(connection_id) == "pat-516-fresh"
+        assert not connection_secrets_repo().has(master_secret_key(connection_id))
+        config = source_connections_repo().get(connection_id)["config"]
+        assert config.get("pat_master_unobtainable") is True
+
+        # Login 3: healthy stored token + recorded verdict ⇒ pure reuse — no
+        # further mint, master slot stays absent.
+        def fresh_ok(self):
+            return {"isMasterToken": False, "owner": {"id": 516, "name": "P"}}
+
+        monkeypatch.setattr(KeboolaStorageClient, "verify_token", fresh_ok)
+        third = kprov.provision_projects(env["user"], projects, projects, "at-3")
+        assert third.outcomes[0].token_reused is True
+        assert fresh_mints == ["516"]
+        assert not connection_secrets_repo().has(master_secret_key(connection_id))
+
+    def test_owners_relogin_never_touches_a_hand_stored_master(self, env, pat_mocks, monkeypatch):
+        """Value-equality is the guard: when the master slot holds a DIFFERENT
+        credential than the dead storage token (an admin pasted one by hand),
+        the owner's replacement login rotates the storage slot and leaves the
+        human-stored master exactly as it is."""
+        from app.api.admin_source_connections import master_secret_key
+        from src.repositories import connection_secrets_repo
+
+        projects = [P("516", "Agnes - test", "admin")]
+        first = kprov.provision_projects(env["user"], projects, projects, "at-1")
+        connection_id = first.outcomes[0].connection_id
+        connection_secrets_repo().upsert(master_secret_key(connection_id), "human-master")
+
+        def old_dead_fresh_not_master(self):
+            if self.token == "pat-516":
+                from connectors.keboola.storage_api import StorageApiError
+
+                raise StorageApiError("token was revoked", status=401)
+            return {"isMasterToken": False, "owner": {"id": 516, "name": "P"}}
+
+        monkeypatch.setattr(KeboolaStorageClient, "verify_token", old_dead_fresh_not_master)
+        monkeypatch.setattr(kp, "exchange_project_pat", lambda tok, pid, *, read_only: f"pat-{pid}-fresh")
+
+        summary = kprov.provision_projects(env["user"], projects, projects, "at-2")
+        assert summary.outcomes[0].token_stored is True
+        assert connection_secrets_repo().get(connection_id) == "pat-516-fresh"
+        assert connection_secrets_repo().get(master_secret_key(connection_id)) == "human-master"
+
     def test_transient_verify_failure_keeps_the_stored_token(self, env, pat_mocks, monkeypatch):
         """A 5xx/timeout on the stored-token verify is NOT a dead credential:
         no mint (each one is an unrevocable upstream orphan), no config
