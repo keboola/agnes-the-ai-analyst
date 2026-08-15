@@ -2272,6 +2272,11 @@ KNOWN_UNTESTED = {
     # contract test needed (no new repo methods/migration). Behaviour
     # covered in tests/test_keboola_semantic_layer_refresh_endpoint.py.
     "POST /api/admin/run-keboola-semantic-layer-refresh",
+    # Databricks semantic layer (Unity Catalog metric views) sync — same
+    # shape as the Keboola sibling above: scheduler-driven admin maintenance
+    # op, no new repo methods/migration. Behaviour covered in
+    # tests/test_databricks_semantic_layer_refresh_endpoint.py.
+    "POST /api/admin/run-databricks-semantic-layer-refresh",
     # K3 local knowledge packaging (#798) — scheduler-driven admin maintenance
     # op, mirrors run-corporate-memory. No dual-backend contract test needed
     # (no new repo methods/migration; state.json lives on disk). Behaviour
