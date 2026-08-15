@@ -758,6 +758,11 @@ _EXEMPT: dict[str, str] = {
         "admin/scheduler maintenance op, mirrors the run-bq-metadata-refresh / "
         "run-knowledge-digests exemptions; no analyst CLI/MCP analogue"
     ),
+    "/api/admin/run-databricks-semantic-layer-refresh": (
+        "scheduler-driven Databricks semantic layer (Unity Catalog metric "
+        "views) sync trigger — admin/scheduler maintenance op, mirrors the "
+        "run-keboola-semantic-layer-refresh exemption; no analyst CLI/MCP analogue"
+    ),
     "/api/chat/journey": (
         "chat-driven onboarding backend foundation — internal state read/write "
         "for the in-chat onboarding UI (a follow-up task), self-scoped to the "

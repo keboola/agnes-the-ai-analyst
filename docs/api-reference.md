@@ -1109,6 +1109,7 @@ semantic-source add/list/sync`. MCP: `semantic_model_search`,
 - /api/admin/run-blocked-purge
 - /api/admin/run-bq-metadata-refresh
 - /api/admin/run-corporate-memory
+- /api/admin/run-databricks-semantic-layer-refresh
 - /api/admin/run-jira-consistency-check
 - /api/admin/run-jira-sla-poll
 - /api/admin/run-keboola-semantic-layer-refresh

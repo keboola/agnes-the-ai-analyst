@@ -151,6 +151,34 @@ def _materialize_table(
     )
 
 
+def _materialize_databricks_table(
+    *,
+    table_id: str,
+    row: dict,
+    client,
+    catalog: str,
+    output_dir: str,
+    max_bytes: Optional[int],
+    statement_timeout_s: Optional[float] = None,
+) -> dict:
+    """Thin wrapper around `connectors.databricks.extractor.materialize_query`
+    so the trigger pass can be unit-tested by patching this seam without a
+    live warehouse — same role `_materialize_table` plays for BQ."""
+    from connectors.databricks.extractor import materialize_query
+
+    return materialize_query(
+        table_id=table_id,
+        client=client,
+        output_dir=output_dir,
+        source_query=row.get("source_query"),
+        catalog=catalog,
+        bucket=row.get("bucket"),
+        source_table=row.get("source_table"),
+        max_bytes=max_bytes,
+        statement_timeout_s=statement_timeout_s,
+    )
+
+
 def _is_permanent_upstream_error(exc: Exception) -> bool:
     """True when retrying the table can never succeed — the upstream object
     is gone (Keboola Storage ``storage.tables.notFound`` → HTTP 404, e.g. a
@@ -195,6 +223,10 @@ def _run_materialized_pass(
     optionally cost-guarded by ``max_bytes_per_materialize``.
     Keboola rows go through KeboolaAccess + ATTACH-and-COPY, no
     guardrail (extension has no dry-run primitive).
+    Databricks rows go through the Statement Execution API client
+    (``connectors/databricks``), result-size-capped by
+    ``data_source.databricks.max_bytes_per_materialize`` (the API's
+    byte_limit — no dry-run primitive exists there either).
 
     Returns:
         ``{"materialized": [ids], "skipped": [ids], "errors": [{table, error}]}``
@@ -219,6 +251,7 @@ def _run_materialized_pass(
 
     bq_output_dir = str(Path(_get_data_dir()) / "extracts" / "bigquery")
     kb_output_dir = Path(_get_data_dir()) / "extracts" / "keboola" / "data"
+    dbx_output_dir = str(Path(_get_data_dir()) / "extracts" / "databricks")
 
     # Sentinel: max_bytes <= 0 (or None) disables the guardrail. `get_value()`
     # treats YAML `null` as "missing" → returns the default; operators must use
@@ -265,6 +298,53 @@ def _run_materialized_pass(
         )
         t = 900.0
     bq_fetch_timeout_s = t if t > 0 else None
+
+    # Databricks guardrails. No dry-run primitive exists on the Statement
+    # Execution API, so the cap bounds the RESULT size via the API's
+    # byte_limit (manifest flagged `truncated` past it → MaterializeBudgetError
+    # in the extractor), not the scanned bytes the way BQ's dry-run does.
+    raw_dbx_max = get_value(
+        "data_source",
+        "databricks",
+        "max_bytes_per_materialize",
+        default=10 * 2**30,
+    )
+    try:
+        n = int(raw_dbx_max) if raw_dbx_max is not None else 0
+    except (TypeError, ValueError):
+        logger.warning(
+            "data_source.databricks.max_bytes_per_materialize is not numeric "
+            "(%r); cost guardrail disabled. Set an integer or 0 to disable.",
+            raw_dbx_max,
+        )
+        n = 0
+    dbx_max_bytes = n if n > 0 else None
+
+    # Client-side deadline on the statement poll loop — a wedged warehouse
+    # statement is cancelled and surfaced instead of holding the pass.
+    raw_dbx_timeout = get_value(
+        "data_source",
+        "databricks",
+        "statement_timeout_seconds",
+        default=900,
+    )
+    try:
+        t = float(raw_dbx_timeout) if raw_dbx_timeout is not None else 900.0
+    except (TypeError, ValueError):
+        logger.warning(
+            "data_source.databricks.statement_timeout_seconds is not numeric "
+            "(%r); using the 900s default. Set a number of seconds or 0 to disable.",
+            raw_dbx_timeout,
+        )
+        t = 900.0
+    dbx_statement_timeout_s = t if t > 0 else None
+
+    # Lazily-built Databricks client — one per pass, first databricks row
+    # constructs it; a misconfigured instance yields per-row errors instead
+    # of failing the whole pass (mirrors the Keboola client cache below).
+    databricks_client = None
+    databricks_client_error: Optional[str] = None
+    databricks_catalog = ""
 
     registry = table_registry_repo()
     state = sync_state_repo()
@@ -445,6 +525,45 @@ def _run_materialized_pass(
                     "hash": kb_stats["md5"],
                     "query_mode": "materialized",
                 }
+            elif row_source_type == "databricks":
+                if databricks_client is None and databricks_client_error is None:
+                    from connectors.databricks.semantic_layer import (
+                        resolve_databricks_settings,
+                    )
+
+                    settings = resolve_databricks_settings()
+                    if settings is None:
+                        databricks_client_error = (
+                            "Databricks not configured for materialized path "
+                            "(data_source.databricks.host + warehouse_id + "
+                            "DATABRICKS_TOKEN env/vault secret)"
+                        )
+                    else:
+                        from connectors.databricks.client import (
+                            DatabricksStatementClient,
+                        )
+
+                        try:
+                            databricks_client = DatabricksStatementClient(
+                                host=settings["host"],
+                                token=settings["token"],
+                                warehouse_id=settings["warehouse_id"],
+                            )
+                            databricks_catalog = settings.get("catalog") or ""
+                        except ValueError as e:
+                            databricks_client_error = f"Databricks client init failed: {e}"
+                if databricks_client is None:
+                    summary["errors"].append({"table": ref_name, "error": databricks_client_error})
+                    continue
+                stats = _materialize_databricks_table(
+                    table_id=ref_name,
+                    row=row,
+                    client=databricks_client,
+                    catalog=databricks_catalog,
+                    output_dir=dbx_output_dir,
+                    max_bytes=dbx_max_bytes,
+                    statement_timeout_s=dbx_statement_timeout_s,
+                )
             else:
                 summary["errors"].append(
                     {
@@ -505,7 +624,12 @@ def _run_materialized_pass(
         # reason the stats dict didn't carry it (defensive).
         parquet_hash = stats.get("hash")
         if not parquet_hash:
-            output_dir_for_hash = bq_output_dir if row_source_type == "bigquery" else str(kb_output_dir.parent)
+            if row_source_type == "bigquery":
+                output_dir_for_hash = bq_output_dir
+            elif row_source_type == "databricks":
+                output_dir_for_hash = dbx_output_dir
+            else:
+                output_dir_for_hash = str(kb_output_dir.parent)
             parquet_path = Path(output_dir_for_hash) / "data" / f"{ref_name}.parquet"
             parquet_hash = _file_hash(parquet_path)
         # `update_sync` resets `status='ok'` / `error=NULL` on the upsert

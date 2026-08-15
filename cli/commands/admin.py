@@ -136,8 +136,11 @@ def remove_user(user_id: str = typer.Argument(..., help="User ID to remove")):
 @admin_app.command("register-table")
 def register_table(
     name: str = typer.Argument(..., help="Table display name (DuckDB view name for BQ)"),
-    source_type: str = typer.Option("keboola", help="Source type: keboola | bigquery | jira | local"),
-    bucket: str = typer.Option("", help="Source bucket (Keboola) or dataset (BigQuery)"),
+    source_type: str = typer.Option("keboola", help="Source type: keboola | bigquery | jira | local | databricks"),
+    bucket: str = typer.Option(
+        "",
+        help="Source bucket (Keboola), dataset (BigQuery), or schema (Databricks; 'catalog.schema' overrides the default catalog)",
+    ),
     source_table: str = typer.Option("", help="Source table name in the bucket/dataset"),
     query_mode: str = typer.Option("local", help="Query mode: local | remote | materialized"),
     query: str = typer.Option(
@@ -250,11 +253,13 @@ def register_table(
 
     # Keboola materialized rows can omit --query: a NULL source_query means
     # "full-table export via Storage API export-async" (see v25→v26
-    # migration notes). For BigQuery materialized rows, --query is still
-    # required — BQ has no analogous "full table" semantic at the registry
-    # layer (the path is a SELECT against `<project>.<dataset>.<table>`,
-    # which the admin must spell out).
-    if query_mode == "materialized" and not source_query and source_type != "keboola":
+    # migration notes). Databricks materialized rows can omit it too — the
+    # server generates the full-table dump SQL from --bucket/--source-table
+    # (+ data_source.databricks.catalog). For BigQuery materialized rows,
+    # --query is still required — BQ has no analogous "full table" semantic
+    # at the registry layer (the path is a SELECT against
+    # `<project>.<dataset>.<table>`, which the admin must spell out).
+    if query_mode == "materialized" and not source_query and source_type not in ("keboola", "databricks"):
         typer.echo(
             "Error: --query-mode materialized requires --query (literal SQL or @path.sql) for source_type="
             + source_type,
@@ -523,7 +528,7 @@ def sync(
         "--source",
         help=(
             "Restrict the rebuild to one source_type (keboola | bigquery | "
-            "jira | local). Omit for a full sweep of every registered table."
+            "jira | local | databricks). Omit for a full sweep of every registered table."
         ),
     ),
     tables: list[str] = typer.Argument(
