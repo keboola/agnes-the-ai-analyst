@@ -1812,7 +1812,34 @@ git commit -m "feat(connectors): compose an Ossie document from metastore object
 
 ---
 
-### Task 14: Golden regression (slice 2)
+### Task 14: Golden regression (slice 2) — RE-SCOPED DURING THE BUILD
+
+**This task as written below no longer applies, and was not executed.** It
+assumed the metastore adapter would feed `project_document`, making the flat
+tables a projection of the composed document — so a golden regression was
+needed to prove the projected rows equalled today's.
+
+Implementation found that routing the adapter through projection collides with
+the legacy flat importer, which writes `metric_definitions` rows for the same
+metrics under its own `source`. The two writers collide on metric *name*: in one
+order the legacy importer's name-ownership check silently drops its own row, in
+the other the table gains a duplicate, since only `id` is unique. Reproduced
+with a test.
+
+The adapter therefore stores documents only, and **the flat tables keep their
+existing writer, untouched**. With nothing about that path changed, there is no
+projection regression to guard: the evidence is the legacy writer's own
+pre-existing suite passing unchanged, plus an added test proving a broken Ossie
+composition cannot break the flat sync.
+
+The golden regression belongs to the **cutover** — projecting the flat tables
+from stored documents and retiring the legacy writer in the same change. That is
+a separate effort with its own plan; the design doc records the constraint it
+has to satisfy.
+
+The original task text follows for whoever picks the cutover up.
+
+
 
 **Files:**
 - Test: `tests/test_semantic_golden_regression.py`
