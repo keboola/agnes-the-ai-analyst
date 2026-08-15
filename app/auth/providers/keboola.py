@@ -165,6 +165,18 @@ async def keboola_callback(request: Request):
                 if kv.is_wildcard_project():
                     return RedirectResponse(url="/login?error=keboola_oauth_failed", status_code=302)
                 discovery = None
+            except Exception:
+                # The fail-soft promise above must hold for ANY surprise, not
+                # just the client's typed errors — a pinned-project login has
+                # already passed its trust boundary (the single-project
+                # verify), and a provisioning-only helper crashing on an
+                # unexpected introspect shape must not break it. Under the
+                # wildcard discovery IS the boundary, so the same surprise
+                # stays fail-closed via the outer backstop.
+                if kv.is_wildcard_project():
+                    raise
+                logger.warning("Keboola login project discovery failed unexpectedly", exc_info=True)
+                discovery = None
             if discovery is not None and not discovery and kv.is_wildcard_project():
                 logger.info("Keboola login rejected: no project with an allowed role")
                 return RedirectResponse(url="/login?error=keboola_not_permitted", status_code=302)

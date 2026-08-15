@@ -216,6 +216,39 @@ class TestMultiProjectCallback:
         assert "error=keboola_oauth_failed" in resp.headers["location"]
         assert "access_token" not in resp.cookies
 
+    def test_pinned_instance_discovery_surprise_fails_soft(self, client, monkeypatch):
+        """With a concrete project_id the trust boundary (the single-project
+        verify) has already passed — an UNEXPECTED discovery crash (any
+        exception, not just the client's typed error) is a provisioning-only
+        failure and must not break the login (Devin Review on this PR,
+        thirteenth round)."""
+        self._patch_flow(monkeypatch, mode="auto")
+        monkeypatch.setattr(kv, "is_wildcard_project", lambda: False)
+
+        def boom(tok):
+            raise RuntimeError("unexpected introspect shape")
+
+        monkeypatch.setattr(kp, "discover_allowed_projects", boom)
+        resp = client.get("/auth/keboola/callback?code=x&state=y", follow_redirects=False)
+        assert resp.status_code == 302
+        assert "error=" not in resp.headers["location"]
+        assert "access_token" in resp.cookies
+
+    def test_wildcard_discovery_surprise_stays_fail_closed(self, client, monkeypatch):
+        """Under the wildcard, discovery IS the trust boundary — the same
+        unexpected crash must keep failing the login closed (via the outer
+        backstop), exactly like the typed introspect failure."""
+        self._patch_flow(monkeypatch, mode="auto")
+
+        def boom(tok):
+            raise RuntimeError("unexpected introspect shape")
+
+        monkeypatch.setattr(kp, "discover_allowed_projects", boom)
+        resp = client.get("/auth/keboola/callback?code=x&state=y", follow_redirects=False)
+        assert resp.status_code == 302
+        assert "error=keboola_oauth_failed" in resp.headers["location"]
+        assert "access_token" not in resp.cookies
+
     def test_wildcard_zero_projects_is_not_permitted(self, client, monkeypatch):
         self._patch_flow(monkeypatch, mode="auto")
         monkeypatch.setattr(kp, "discover_allowed_projects", lambda tok: [])

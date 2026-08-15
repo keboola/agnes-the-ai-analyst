@@ -28798,7 +28798,7 @@
     },
     "/api/auth/keboola/projects": {
       "get": {
-        "description": "The caller's pending Keboola project discovery, if any.\n\n``discovery_available`` is False when the login didn't run discovery\n(mode ``disabled``/``auto``), when the stash expired (TTL \u2014 sign in with\nKeboola again to refresh), or when the vault key is unconfigured.",
+        "description": "The caller's pending Keboola project discovery, if any.\n\n``discovery_available`` is False when the instance is not in ``select``\nmode (the login didn't run a user-driven discovery \u2014 and a stash left\nover from before an operator flipped the mode must not be offered, or\nthis listing would show projects whose import answers 409\n``not_select_mode``), when the stash expired (TTL \u2014 sign in with Keboola\nagain to refresh), or when the vault key is unconfigured.",
         "operationId": "list_discovered_projects_api_auth_keboola_projects_get",
         "parameters": [
           {
