@@ -32,11 +32,11 @@ import os
 import re
 import shutil
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Iterator
 
 import httpx
 
@@ -1265,7 +1265,7 @@ def run_pull(
         # Future: scope to <workspace>/.agnes/sync_state.json so workspace
         # bootstrap leaves no residue outside <workspace>/.
         local_state["tables"] = local_tables
-        local_state["last_sync"] = datetime.now(timezone.utc).isoformat()
+        local_state["last_sync"] = datetime.now(UTC).isoformat()
         save_sync_state(local_state)
 
         # 6. Rebuild DuckDB views — unconditional. The DB file is the
@@ -1336,7 +1336,7 @@ def _run_stack_sync_from_manifest(manifest: dict, workspace: Path):
     return run_stack_sync(opts)
 
 
-def _emit_pull_confirm(server_url: str, token: str, result: "PullResult") -> None:
+def _emit_pull_confirm(server_url: str, token: str, result: PullResult) -> None:
     """POST /api/sync/pull-confirm with the per-type aggregate counts.
 
     Fire-and-forget — the parent already swallows exceptions but the
@@ -1389,7 +1389,7 @@ def _file_md5(path: Path) -> str:
     return h.hexdigest()
 
 
-def _sync_knowledge_artifacts(manifest: dict, workspace: Path, local_state: dict, result: "PullResult") -> None:
+def _sync_knowledge_artifacts(manifest: dict, workspace: Path, local_state: dict, result: PullResult) -> None:
     """K3 (#798): download/verify/promote/prune per-collection knowledge.duckdb.
 
     Same lifecycle as parquets: sidecar download -> md5 verify -> os.replace
@@ -1485,7 +1485,7 @@ def _digest_to_md(body: dict) -> str:
     return "\n".join(lines)
 
 
-def _sync_knowledge_digests(manifest: dict, workspace: Path, local_state: dict, result: "PullResult") -> None:
+def _sync_knowledge_digests(manifest: dict, workspace: Path, local_state: dict, result: PullResult) -> None:
     """K4 (#799): write/prune maintained digests as `.claude/rules/ka_<slug>.md`.
 
     Same delivery channel as the corporate-memory `km_*.md` bundle — the
@@ -1530,12 +1530,7 @@ def _sync_knowledge_digests(manifest: dict, workspace: Path, local_state: dict, 
         # claimed `ka_*.md` gets the header; for already-synced digests it did
         # not.)
         cached = known.get(did, {})
-        if (
-            md5
-            and cached.get("md5") == md5
-            and cached.get("render") == _DIGEST_RENDER_VERSION
-            and target.exists()
-        ):
+        if md5 and cached.get("md5") == md5 and cached.get("render") == _DIGEST_RENDER_VERSION and target.exists():
             continue  # hash-equal, same template, file present
         try:
             resp = api_get(entry.get("url") or f"/api/knowledge/digests/{did}/content")
@@ -1580,13 +1575,13 @@ def _is_valid_parquet(path: Path) -> bool:
 
 def _blocked_snapshot_names(
     server_tables: dict,
-    authorized_names: "set[str] | None",
-    server_only_names: "set[str]",
+    authorized_names: set[str] | None,
+    server_only_names: set[str],
     *,
-    previously_local: "set[str]",
-    still_local: "set[str]",
-    remembered: "set[str]",
-) -> "set[str]":
+    previously_local: set[str],
+    still_local: set[str],
+    remembered: set[str],
+) -> set[str]:
     """Names a snapshot view must NOT take, remembered across pulls.
 
     ``agnes snapshot create <table>`` with no ``--as`` writes
@@ -1648,7 +1643,7 @@ def _rebuild_duckdb_views(workspace: Path, parquet_dir: Path, blocked_names: set
     Returns the snapshot view names withheld for that reason — empty on every
     ordinary pull.
     """
-    import duckdb  # noqa: F401  (kept for the duckdb.Error path below)
+    import duckdb
 
     from src.duckdb_conn import _open_duckdb
 
@@ -1788,7 +1783,7 @@ def _register_snapshot_views(conn, workspace: Path, blocked_names: set[str] | No
     parquet is left on disk and stays reachable through its snapshot path;
     only the bare id stops resolving. Returns the names withheld.
     """
-    import duckdb  # noqa: F401  (duckdb.Error below)
+    import duckdb
 
     withheld: list[str] = []
     snapshots_dir = workspace / "user" / "snapshots"
