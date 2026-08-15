@@ -1291,7 +1291,12 @@ def run_pull(
         # the rest of the pull.
         if any(k in manifest for k in ("direct_tables", "data_packages", "memory_domains")):
             try:
-                result.stack_sync = _run_stack_sync_from_manifest(manifest, workspace)
+                result.stack_sync = _run_stack_sync_from_manifest(
+                    manifest,
+                    workspace,
+                    skip_materialize=skip_materialize,
+                    show_progress=show_progress,
+                )
             except Exception as exc:
                 result.errors.append({"stage": "stack_sync", "error": str(exc)})
 
@@ -1307,19 +1312,78 @@ def run_pull(
     return result
 
 
-def _run_stack_sync_from_manifest(manifest: dict, workspace: Path):
+def _run_stack_sync_from_manifest(
+    manifest: dict,
+    workspace: Path,
+    *,
+    skip_materialize: bool = False,
+    show_progress: bool = False,
+):
     """Build a ``pull_sync.PullStackOptions`` from the manifest payload
     and invoke ``run_stack_sync``. The local sync root is the
     ``<workspace>/.claude/`` dir so the stack-sync artifacts live next
     to the existing ``<workspace>/.claude/rules/`` / ``<workspace>/.claude/
     settings.json`` tree (workspace-scoped, not user-home, matching
-    Section 5.3 of the spec for analyst workspaces)."""
+    Section 5.3 of the spec for analyst workspaces).
+
+    ``skip_materialize`` (#1304) mirrors the flag `run_pull` already
+    honors in its step-4 flat-``tables`` download loop — threaded through
+    to ``PullStackOptions`` so a ``query_mode='materialized'`` row in the
+    typed ``data_packages``/``direct_tables`` sections is skipped here
+    too, not just in the legacy dict.
+
+    ``show_progress`` (#1308) gates a per-table stderr line emitted
+    before/after each real fetch — same quiet-mode contract as step 4
+    (``run_pull`` passes through the same value it derived from
+    ``--quiet``/``--json``). Also wires `stream_download`'s
+    `progress_callback` so the reported size reflects bytes actually
+    transferred rather than only the manifest's declared size.
+    """
     from cli.lib.pull_sync import PullStackOptions, run_stack_sync
 
     local_root = workspace / ".claude"
 
+    # id -> declared size, purely for the human-readable progress line
+    # below. Best-effort: falls back to "0 B" for a row with no
+    # `size_bytes`, or when `target.stem` (the shared-store filename,
+    # derived from `_safe_segment(table_id)`) doesn't line up with the
+    # raw id here — display-only, never used as a lookup/cache key.
+    sizes_by_id: dict[str, int] = {}
+    for t in manifest.get("direct_tables") or []:
+        tid = t.get("id")
+        if tid:
+            sizes_by_id[tid] = int(t.get("size_bytes") or 0)
+    for pkg in manifest.get("data_packages") or []:
+        for t in pkg.get("tables") or []:
+            tid = t.get("id")
+            if tid:
+                sizes_by_id[tid] = int(t.get("size_bytes") or 0)
+
     def _fetcher(url: str, target: Path) -> None:
-        stream_download(url, str(target))
+        import sys as _sys
+
+        tid = target.stem
+        if show_progress:
+            size = sizes_by_id.get(tid, 0)
+            label = f" ({_TextualProgress._fmt_bytes(size)})" if size else ""
+            _sys.stderr.write(f"stack sync: fetching {tid}{label}...\n")
+            _sys.stderr.flush()
+
+        started = time.monotonic()
+        downloaded = 0
+
+        def _cb(n: int) -> None:
+            nonlocal downloaded
+            downloaded += n
+
+        stream_download(url, str(target), progress_callback=_cb if show_progress else None)
+
+        if show_progress:
+            duration = max(0.001, time.monotonic() - started)
+            _sys.stderr.write(
+                f"stack sync: {tid} done ({_TextualProgress._fmt_bytes(downloaded)} in {duration:.1f}s)\n"
+            )
+            _sys.stderr.flush()
 
     def _bundle_fetcher(slug: str) -> bytes:
         resp = api_get("/api/memory/bundle", params={"domain": slug})
@@ -1332,6 +1396,7 @@ def _run_stack_sync_from_manifest(manifest: dict, workspace: Path):
         fetcher=_fetcher,
         md5_of=_file_md5,
         bundle_fetcher=_bundle_fetcher,
+        skip_materialize=skip_materialize,
     )
     return run_stack_sync(opts)
 
@@ -1530,12 +1595,7 @@ def _sync_knowledge_digests(manifest: dict, workspace: Path, local_state: dict, 
         # claimed `ka_*.md` gets the header; for already-synced digests it did
         # not.)
         cached = known.get(did, {})
-        if (
-            md5
-            and cached.get("md5") == md5
-            and cached.get("render") == _DIGEST_RENDER_VERSION
-            and target.exists()
-        ):
+        if md5 and cached.get("md5") == md5 and cached.get("render") == _DIGEST_RENDER_VERSION and target.exists():
             continue  # hash-equal, same template, file present
         try:
             resp = api_get(entry.get("url") or f"/api/knowledge/digests/{did}/content")

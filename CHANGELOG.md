@@ -10,6 +10,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- **`agnes pull` stack-sync (step 8) no longer copies `server_only` tables to the laptop.** `_server_table_skip` now honors the manifest's `server_only` flag, mirroring the step-4 skip — a table an admin marked server-only can no longer leak into `.claude/data/_shared/` via the stack-sync path (#1324).
+- **`agnes pull --skip-materialize` is honored by the stack-sync phase.** The flag is plumbed through `_run_stack_sync_from_manifest` → `PullStackOptions` → `_server_table_skip`, so `query_mode='materialized'` manifest rows are skipped in step 8 exactly as they already were in step 4 (#1304).
+- **Stack-sync downloads report progress instead of hanging silently.** Step 8's fetcher now emits a per-table `stack sync: fetching <table> (<size>)…` / `… done (<bytes> in <s>)` pair on stderr and wires the byte-level `progress_callback` into `stream_download` — a multi-GB pull is visibly alive. `--quiet`/`--json` runs stay silent, matching step 4's progress gating (#1308).
+- **`agnes pull` reveals which workspace it targeted.** Human output gains a `Workspace: <path>` line (suppressed under `--quiet`) and the `--json` payload gains a `workspace` field, so pull-vs-update workspace divergence is now observable (#1312).
+
 ## [0.83.19] - 2026-08-15
 
 ### Added
