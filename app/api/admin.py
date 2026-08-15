@@ -1769,6 +1769,40 @@ def _feature_flags_inventory() -> List[Dict[str, Any]]:
             # effective-as-redesign); running it through the boolean
             # ``feature_enabled`` below would coerce "classic" to True.
             continue
+        if flag.kind != "bool":
+            # Every OTHER select switch resolves its STRING through the
+            # switch registry. The boolean path below coerces any option to
+            # True ("disabled" included — coerce_flag_value only knows
+            # 0/false/no/off/empty), so a three-way mode read as a boolean
+            # told the operator it was on while it was off (Devin Review on
+            # this PR; the experience skip above was keyed by NAME, so the
+            # second select switch fell straight into the trap the comment
+            # there warns about). Same row shape as the leading experience
+            # row: value_label carries the mode, effective mirrors
+            # "resolved away from the default".
+            from app.switches import switch_value
+
+            value = str(switch_value(flag.name))
+            if os.environ.get(flag.env_var) is not None:
+                source = "env"
+            else:
+                probe = get_value(*flag.config_keys, default=_UNSET)
+                source = "default" if probe is _UNSET else "config"
+            out.append(
+                {
+                    "name": flag.name,
+                    "value_label": value,
+                    "effective": value != flag.default,
+                    "source": source,
+                    "default": flag.default,
+                    "env_var": flag.env_var,
+                    "description": flag.description,
+                    "effect": flag.effect,
+                    "editable": flag.editable,
+                    "lock_reason": flag.lock_reason,
+                }
+            )
+            continue
         if flag.name in _CHAT_RUNTIME_FLAGS:
             effective, source = _chat_flag_runtime_view(flag)
         else:

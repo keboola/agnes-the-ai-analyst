@@ -259,6 +259,26 @@ class TestServerConfigFeatureFlagsInventory:
             assert f["source"] in ("env", "config", "default", "preset")
             assert isinstance(f["effective"], bool)
 
+    def test_select_switch_reports_its_resolved_mode(self, seeded_app, monkeypatch):
+        """A select-kind switch must surface its resolved STRING — the boolean
+        path coerced every option (its 'disabled' default included) to
+        effective=True, so the panel said multi-project was on while it was
+        off (Devin Review on PR #1328)."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        monkeypatch.delenv("AGNES_KEBOOLA_MULTI_PROJECT_MODE", raising=False)
+        flags = {f["name"]: f for f in c.get("/api/admin/server-config", headers=_auth(token)).json()["feature_flags"]}
+        row = flags["keboola_multi_project_mode"]
+        assert row["value_label"] == "disabled"
+        assert row["effective"] is False
+        assert row["source"] == "default"
+        monkeypatch.setenv("AGNES_KEBOOLA_MULTI_PROJECT_MODE", "auto")
+        flags = {f["name"]: f for f in c.get("/api/admin/server-config", headers=_auth(token)).json()["feature_flags"]}
+        row = flags["keboola_multi_project_mode"]
+        assert row["value_label"] == "auto"
+        assert row["effective"] is True
+        assert row["source"] == "env"
+
     def test_preset_coupled_flag_resolves_and_labels_preset_source(self, seeded_app, monkeypatch):
         """Under ``experience: redesign`` with no per-knob setting, the
         coupled flags must report their RUNTIME value (on) with source

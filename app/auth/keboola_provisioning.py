@@ -699,12 +699,16 @@ async def finish_login_provisioning(summary: ProvisionSummary) -> None:
         # Grants strictly AFTER a successful enable, and only for sources
         # this flow itself enabled — a failed enable has no tools to grant,
         # and a source that was not on the enable list was left alone above
-        # (admin-disabled or otherwise not this flow's to widen).
+        # (admin-disabled or otherwise not this flow's to widen). Off the
+        # event loop: this tail runs as a post-response BackgroundTask on
+        # the loop, and the grant writes are plain sync DB calls.
+        import asyncio
+
         for grant in summary.deferred_grants:
             if grant["connection_id"] != connection_id:
                 continue
             try:
-                apply_tool_grants(connection_id, grant["group_id"], grant["role"])
+                await asyncio.to_thread(apply_tool_grants, connection_id, grant["group_id"], grant["role"])
             except Exception:
                 logger.warning(
                     "keboola auto-provision: deferred grant failed for connection %s",
