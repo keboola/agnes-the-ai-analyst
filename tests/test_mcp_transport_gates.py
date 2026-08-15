@@ -241,6 +241,107 @@ def test_source_disabled_after_registration_fails_closed(seeded_app):
     mock.assert_not_called()
 
 
+# ── source url runtime-policy gate (#1216 part 2) ───────────────────────────
+
+
+def _seed_http_tool(
+    *,
+    source_id: str = "src_url_http",
+    tool_id: str = "up-http.lookup",
+    exposed_name: str = "lookup_http",
+    url: str = "https://mcp.vendor.example/mcp",
+    analyst_id: str = "analyst1",
+) -> None:
+    """Seed an http-transport source + one passthrough tool granted to the
+    analyst's group, for exercising the url-policy runtime gate."""
+    conn = get_system_db()
+    sources = MCPSourceRepository(conn)
+    tools = ToolRegistryRepository(conn)
+    groups = UserGroupsRepository(conn)
+    members = UserGroupMembersRepository(conn)
+
+    sources.upsert(id=source_id, name=source_id, transport="http", url=url, auth_method="bearer")
+    tools.upsert(
+        tool_id=tool_id,
+        source_id=source_id,
+        original_name="lookup",
+        exposed_name=exposed_name,
+        mode=PASSTHROUGH,
+        description="url policy runtime gate test",
+    )
+    grp = groups.create(name=f"grp-{tool_id}", description=None)
+    tools.add_grant(tool_id, grp["id"])
+    members.add_member(analyst_id, grp["id"], source="system_seed")
+    conn.close()
+
+
+def test_switch_off_by_default_a_refused_url_still_forwards(seeded_app):
+    """Pin the default: ``mcp.source_url_runtime_enforce`` is OFF, so a row
+    whose url the CURRENT policy would refuse (the #1154 metadata-endpoint
+    shape) keeps forwarding exactly as it does today — the gap #1216 exists
+    to close, unchanged until an admin opts in."""
+    _seed_http_tool(url="http://169.254.169.254/mcp")
+    fn = _closure("lookup_http", caller_id_fn=lambda: "analyst1")
+    with _patch_upstream(text="ok") as mock:
+        out = asyncio.run(fn())
+    assert out == "ok"
+    mock.assert_awaited_once()
+
+
+def test_switch_on_a_refused_url_blocks_and_never_dials(seeded_app, monkeypatch):
+    import app.instance_config as ic
+
+    monkeypatch.setattr(ic, "get_mcp_source_url_runtime_enforce", lambda: True)
+    _seed_http_tool(
+        source_id="src_url_refused",
+        tool_id="up-http.refused",
+        exposed_name="refused_http",
+        url="http://169.254.169.254/mcp",
+    )
+    fn = _closure("refused_http", caller_id_fn=lambda: "analyst1")
+    with _patch_upstream(text="LEAK") as mock:
+        with pytest.raises(RuntimeError, match="Ask an admin") as excinfo:
+            asyncio.run(fn())
+    # The tool caller is an MCP client, never an admin console: the verdict
+    # (which embeds the source's literal address) goes to the log only, the
+    # same line the analyst-reachable url-policy gate draws (Devin Review on
+    # PR #1301).
+    assert "169.254.169.254" not in str(excinfo.value)
+    assert "blocked_range" not in str(excinfo.value)
+    mock.assert_not_called()
+
+
+def test_switch_on_a_clean_url_still_forwards(seeded_app, monkeypatch):
+    import app.instance_config as ic
+
+    monkeypatch.setattr(ic, "get_mcp_source_url_runtime_enforce", lambda: True)
+    _seed_http_tool(
+        source_id="src_url_clean",
+        tool_id="up-http.clean",
+        exposed_name="clean_http",
+        url="https://mcp.vendor.example/mcp",
+    )
+    fn = _closure("clean_http", caller_id_fn=lambda: "analyst1")
+    with _patch_upstream(text="ok") as mock:
+        out = asyncio.run(fn())
+    assert out == "ok"
+    mock.assert_awaited_once()
+
+
+def test_switch_on_stdio_source_is_exempt(seeded_app, monkeypatch):
+    """stdio never dials ``url`` — it stays exempt from this policy even with
+    the switch on, the same exemption every other caller of the policy applies."""
+    import app.instance_config as ic
+
+    monkeypatch.setattr(ic, "get_mcp_source_url_runtime_enforce", lambda: True)
+    _seed_tool(tool_id="up.stdio_url_exempt", exposed_name="stdio_url_exempt", grant_to_analyst=True)
+    fn = _closure("stdio_url_exempt", caller_id_fn=lambda: "analyst1")
+    with _patch_upstream(text="ok") as mock:
+        out = asyncio.run(fn())
+    assert out == "ok"
+    mock.assert_awaited_once()
+
+
 # ── shared gate unit ─────────────────────────────────────────────────────────
 
 
@@ -264,3 +365,32 @@ def test_enforce_passthrough_access_shared_by_rest_and_transports(seeded_app):
     tool["mutating"] = True
     with pytest.raises(MutatingNotAllowed):
         enforce_passthrough_access(tool, "analyst1")
+
+
+def test_enforce_source_url_runtime_policy_shared_by_rest_and_transports(monkeypatch):
+    """The extracted gate (#1216) both `_forward_with_gates` and the REST
+    endpoint call — pin its own contract directly, independent of the seams."""
+    import app.instance_config as ic
+    from app.api.mcp_policy import SourceUrlRefused, enforce_source_url_runtime_policy
+
+    refused = {"id": "s1", "name": "s1", "transport": "http", "url": "http://169.254.169.254/mcp"}
+
+    # Off by default: no-op, no exception, even on a refused url.
+    monkeypatch.setattr(ic, "get_mcp_source_url_runtime_enforce", lambda: False)
+    enforce_source_url_runtime_policy(refused)
+
+    # On: refused url raises, carrying the reason/switch/admin-report facts
+    # an operator needs to route themselves without reading source.
+    monkeypatch.setattr(ic, "get_mcp_source_url_runtime_enforce", lambda: True)
+    with pytest.raises(SourceUrlRefused) as exc_info:
+        enforce_source_url_runtime_policy(refused)
+    exc = exc_info.value
+    assert "blocked_range" in exc.reason
+    assert exc.switch == "mcp.source_url_runtime_enforce"
+    assert "would_refuse" in exc.admin_report_hint
+
+    # A clean url is a no-op even with the switch on.
+    enforce_source_url_runtime_policy({"id": "s2", "transport": "http", "url": "https://mcp.vendor.example/mcp"})
+
+    # stdio is exempt regardless of the switch or the url's shape.
+    enforce_source_url_runtime_policy({"id": "s3", "transport": "stdio", "url": "http://169.254.169.254/mcp"})
