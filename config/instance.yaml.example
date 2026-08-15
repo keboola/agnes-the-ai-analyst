@@ -403,6 +403,29 @@ data_source:
     #                                    # build only happens when the pool is empty. Default 4. Set 0
     #                                    # to disable pooling (every acquire builds + closes a fresh
     #                                    # session; matches pre-pool behavior).
+  # databricks:                          # Databricks SQL warehouse (secondary source; rows register with
+  #                                      # source_type=databricks + query_mode='materialized'). The scheduler
+  #                                      # runs each row's SQL on the warehouse via the Statement Execution
+  #                                      # API and distributes the parquet like any other materialized row.
+  #                                      # Also drives the Unity Catalog metric-view (semantic layer) sync
+  #                                      # into metric_definitions. All fields editable via /admin/server-config.
+  #   host: "${DATABRICKS_HOST}"         # Workspace URL, e.g. "https://dbc-a1b2c3d4-e5f6.cloud.databricks.com".
+  #                                      # https-only, no path. Token comes from the env var named by
+  #                                      # token_env (default DATABRICKS_TOKEN) or the vault — never YAML.
+  #   warehouse_id: "${DATABRICKS_WAREHOUSE_ID}"  # SQL warehouse ID (Connection details tab).
+  #   catalog: "main"                    # Default Unity Catalog catalog: `bucket` on registered rows is a
+  #                                      # schema inside it (dotted bucket "catalog.schema" overrides per
+  #                                      # row); the semantic-layer sync enumerates its metric views.
+  #   token_env: "DATABRICKS_TOKEN"      # Env var holding the PAT / OAuth M2M access token.
+  #   max_bytes_per_materialize: 10737418240
+  #                                      # Cost guardrail (bytes) for materialized Databricks rows. Caps the
+  #                                      # statement RESULT size via the API's byte_limit (no dry-run
+  #                                      # primitive exists, unlike BigQuery); a truncated result is
+  #                                      # rejected, never written. Default 10 GiB. Set 0 to disable.
+  #   statement_timeout_seconds: 900     # Client-side deadline on a materialize statement; on expiry the
+  #                                      # statement is cancelled on the warehouse. Default 900. 0 disables.
+  #   semantic_layer_catalogs: []        # Optional extra catalogs (list or comma string) the metric-view
+  #                                      # sync should enumerate; defaults to [catalog].
 
 # --- OpenMetadata catalog (optional) ---
 # Enriches table and column metadata from OpenMetadata REST API.
