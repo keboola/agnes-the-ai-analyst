@@ -2384,13 +2384,14 @@ def create_app() -> FastAPI:
     except Exception as e:
         logger.warning(f"Could not load instance config: {e}")
 
-    # Warm the retired-knob resolvers so their one-time warnings land in the
-    # BOOT log, which is where an operator upgrading a deployment looks and
-    # what CONFIGURATION.md / instance.yaml.example promise ("a one-time
-    # startup warning"). `_warn_once` fires on first call; without this the
-    # first call was whatever request happened to render a page first, so the
-    # warning appeared minutes later, interleaved with traffic — or never, on
-    # an instance nobody opened.
+    # Warm the two retired-knob resolvers (`ui_layout`, `experience`) so their
+    # one-time warnings land in the BOOT log, which is where an operator
+    # upgrading a deployment looks and what CONFIGURATION.md /
+    # instance.yaml.example promise ("a one-time startup warning").
+    # `_warn_once` fires on first call; without this the first call was
+    # whatever request happened to render a page first, so the warning appeared
+    # minutes later, interleaved with traffic — or never, on an instance nobody
+    # opened. Both resolvers must be called: each owns its own warning.
     try:
         from app.instance_config import get_experience, get_ui_layout
 

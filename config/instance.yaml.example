@@ -34,9 +34,11 @@ instance:
                                      # (Wave 0, 2026-08): "redesign" is the only valid
                                      # value now, and the default even when this key is
                                      # absent — the old "classic" value (or any other
-                                     # unrecognised string) falls back to "redesign".
-                                     # Kept only so an older instance.yaml with
-                                     # `experience: classic` still boots without error.
+                                     # unrecognised string) falls back to "redesign",
+                                     # with a one-time startup warning naming the
+                                     # ignored setting. Kept only so an older
+                                     # instance.yaml with `experience: classic` still
+                                     # boots without error.
                                      # Historically flipped the DEFAULTS of the coupled
                                      # knobs (theme=paper, features.stack_auto_membership
                                      # =true — `ui_layout` was dropped from the coupling

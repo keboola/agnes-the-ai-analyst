@@ -184,10 +184,16 @@ class TestRetiredKnobsWarnAtBoot:
     warning then landed minutes into the log interleaved with traffic, or never
     at all on an instance nobody opened, while three documents told the operator
     to look at boot. `create_app()` calls the resolvers so the promise holds.
+
+    Both retired knobs warn. `experience` did not at first: its switch resolves
+    `classic` to `redesign` via `on_invalid="default"`, which is right for
+    BOOTING an old instance.yaml but left the operator with no signal anywhere
+    that the line had stopped meaning anything.
     """
 
-    def test_retired_ui_layout_warns_during_create_app(self, monkeypatch, tmp_path):
+    def test_retired_knobs_warn_during_create_app(self, monkeypatch, tmp_path):
         monkeypatch.setenv("AGNES_UI_LAYOUT", "topnav")
+        monkeypatch.setenv("AGNES_INSTANCE_EXPERIENCE", "classic")
         monkeypatch.setenv("DATA_DIR", str(tmp_path))
         monkeypatch.setenv("TESTING", "1")
         monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-key-min-32-characters!!")
@@ -207,6 +213,9 @@ class TestRetiredKnobsWarnAtBoot:
         create_app()
         close_system_db()
 
-        assert any(k == "ui_layout" for k, _ in seen), (
-            f"no boot warning for the retired ui_layout — the docs promise one; saw {seen}"
+        keys = {k for k, _ in seen}
+        assert "ui_layout" in keys, f"no boot warning for the retired ui_layout; saw {seen}"
+        assert "experience" in keys, (
+            f"no boot warning for the retired experience preset — `classic` resolves to "
+            f"`redesign` silently, so without this the operator gets no signal at all; saw {seen}"
         )

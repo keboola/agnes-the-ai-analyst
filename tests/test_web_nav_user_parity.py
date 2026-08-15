@@ -49,12 +49,6 @@ DYNAMIC_CHROME_LINKS = {
 # Live user-facing pages deliberately absent from the chrome. Each needs a
 # reason; an entry without one is drift, not a decision.
 KNOWN_UNLINKED = {
-    # Retired from the rail wholesale (see the IA note in _app_rail.html): the
-    # builders it fronted live in the Library "+ Add" menu, and restoring a
-    # rail path is an IA decision rather than a parity fix. The substitution
-    # is not taken on trust — test_rail_replacement_paths_for_retired_entries_exist
-    # below pins that the menu really carries them.
-    "/admin/studio": "builders reachable from the Library '+ Add' menu; rail row retired by IA decision",
     # /stack is UNLINKED, not resolved (TODO #1088 in _app_rail.html): /library
     # already renders every kind it does, from the same StackResolver.browse()
     # call, and its "In stack only" toggle reproduces the page's purpose. The
@@ -63,16 +57,6 @@ KNOWN_UNLINKED = {
     # Reached from the page whose job it is: /how-it-works owns "connect an AI
     # client", and the token flow is its fallback, not a second nav entry.
     "/mcp-connect": "cross-linked from /how-it-works; a nav row would duplicate it",
-    # ORPHAN, found by this guard rather than decided: nothing in the product
-    # links it. Its sibling /marketplace/guide/flea is linked twice (from
-    # marketplace.html and from this page's own CTA) and both render the SAME
-    # marketplace_guide.html with different context, so the curated variant
-    # looks like an oversight rather than an IA choice. Pre-existing — it long
-    # predates the chrome retirement — and adding the inbound link is a
-    # content decision on a page this change set does not otherwise touch, so
-    # it is recorded here rather than silently fixed. Delete this entry when
-    # the link lands.
-    "/marketplace/guide/curated": "ORPHAN: no inbound link anywhere; sibling guide/flea is linked twice",
 }
 
 # Pages whose chrome answer is a REDIRECT into the Library rather than a link.
@@ -185,9 +169,6 @@ def test_every_exception_names_a_live_route():
     """An allowlist that outlives its route is worse than no allowlist: it
     keeps a deleted page's name alive and hides the next real gap behind it."""
     live = _user_facing_page_routes() | set(REDIRECTED_UNDER_RAIL)
-    # /admin/studio is get_current_user-gated but lives behind the admin
-    # prefix, so the sweep above excludes it by pattern rather than by gate.
-    live.add("/admin/studio")
     stale = {p for p in KNOWN_UNLINKED if p not in live}
     assert not stale, f"KNOWN_UNLINKED names routes that no longer render a page: {sorted(stale)}"
 

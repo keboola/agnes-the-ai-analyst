@@ -570,6 +570,19 @@ def get_experience() -> str:
     """
     from app.switches import switch_value
 
+    # Warn on a retired value, the same way :func:`get_ui_layout` does. The
+    # switch's own `on_invalid="default"` resolves `classic` silently — which
+    # is right for BOOTING (an old instance.yaml must not fail) but wrong for
+    # telling the operator, who otherwise gets no signal anywhere that the
+    # line in their config stopped meaning anything. Read raw rather than
+    # through the switch, since the switch has already normalised it away.
+    raw = os.environ.get("AGNES_INSTANCE_EXPERIENCE") or get_value("instance", "experience")
+    if isinstance(raw, str) and raw.strip() and raw.strip().lower() != "redesign":
+        _warn_once(
+            "experience",
+            f"instance.experience={raw!r} is retired; the redesign experience is always on",
+        )
+
     return switch_value("experience")
 
 

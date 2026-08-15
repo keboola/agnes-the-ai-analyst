@@ -11,11 +11,11 @@ That component swap is NOT wave-0 work; it landed with the Library/Catalog
 rework. Wave 0 only made the redesigned path the only path, which is what
 exposed these tests: they had been asserting the classic template all along.
 
-What the new card actually renders for a data package is the owner byline
-(``Curated by <name>``, from ``curator``). It renders NO tag chips and NO
-org/new claim — ``_catalog_card_data()`` does not populate ``tags`` or
-``publisher`` for this kind — so the tests for those were retired rather than
-re-pointed at markup that does not exist. See the note where they were.
+What the new card renders for a data package is the owner byline
+(``Curated by <name>``, from ``curator``) and the tag chips (``.cc-tag``); both
+are asserted below. It renders no org/new claim — ``_catalog_card_data()``
+leaves ``publisher`` unset for this kind — so those tests were retired rather
+than re-pointed at markup that does not exist. See the note where they were.
 
 Runs with stack auto-membership OFF (see the autouse fixture). Wave 0
 (2026-08) made auto-membership the default, and under it a granted package
@@ -93,12 +93,36 @@ class TestCardOwnerAndTags:
         # No byline for cards with no owner set.
         assert "Curated by" not in r.text
 
-    # `test_renders_tag_chips_on_card` and the whole `TestCardBadges` class were
-    # here. They asserted `_stack_card.html`'s tag chips and its curated/new
-    # badge row on /catalog. The Catalog card is `_catalog_card.html` now and
-    # renders neither for a data package: `_catalog_card_data()` builds only
-    # `curator` (asserted above), leaving `tags` and `publisher` unset, so there
-    # is no tag chip and no org/new claim on this grid to assert.
+    def test_renders_tag_chips_on_card(self, seeded_app):
+        """Tag chips survived the component swap.
+
+        `_catalog_card_data()` concatenates the auto-derived source-type pills
+        with the admin-authored tags into the single `tags` field
+        (`app/web/router.py`), and `macros/_catalog_card.html` renders the first
+        three as `.cc-tag` with a `+N` overflow. Asserted on the chip markup,
+        not just the words — the tag names also appear in the card's
+        `data-search` attribute, so a bare substring check would pass on a
+        build that dropped the chips entirely.
+        """
+        _seed_pkg_for_grid(tags=["Finance", "Revenue", "Margin", "Bookings"])
+        r = seeded_app["client"].get(
+            "/catalog",
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        body = r.text
+        assert 'class="cc-tag"' in body, "tag chips are not rendering on the catalog card"
+        # First three tags rendered; the 4th collapses into the +N overflow.
+        for tag in ("Finance", "Revenue", "Margin"):
+            assert f'<span class="cc-tag">{tag}</span>' in body
+        assert 'class="cc-tag cc-tag--more">+1<' in body, "the 4th tag must collapse into +N"
+
+
+    # The whole `TestCardBadges` class was here. It asserted
+    # `_stack_card.html`'s curated/new badge row on /catalog. The Catalog card
+    # is `_catalog_card.html` now and renders no org/new claim for a data
+    # package: `_catalog_card_data()` leaves `publisher` unset, so there is no
+    # trust marker on this grid to assert. (Tags DO come through — the test
+    # above covers them.)
     #
     # Not re-pointed onto /corporate-memory, the one page still rendering
     # `_stack_card.html`: under the rail that route 302s into the Library's
@@ -106,5 +130,6 @@ class TestCardOwnerAndTags:
     # mean constructing the empty-band case — a fixture that tests the redirect
     # guard, not the card.
     #
-    # COVERAGE GAP, deliberately recorded rather than papered over: the tag and
-    # provenance rendering on the live Catalog card has no test of its own.
+    # COVERAGE GAP, deliberately recorded rather than papered over: the
+    # provenance/trust rendering on the live Catalog card has no test of its
+    # own. Its tag rendering does — see above.
