@@ -75,7 +75,11 @@ def enabled() -> bool:
 
     if not switch_value("keboola_token_header"):
         return False
-    return bool(kv.stack_url() and kv.configured_project_id())
+    # A discovery mode stands in for the project binding, same as the OAuth
+    # login's is_available(): on a wildcard instance the header path accepts
+    # a master token from ANY project (existing users only, allowed_roles
+    # still applied to the token's home project by the shared verify gate).
+    return bool(kv.stack_url() and (kv.configured_project_id() or kv.multi_project_active()))
 
 
 def reset_state_for_tests() -> None:

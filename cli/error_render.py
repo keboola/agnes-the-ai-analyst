@@ -31,6 +31,7 @@ _WRAP_KEYS = ("hint", "suggestion")
 _PRIORITY_KEYS = (
     "kind",
     "reason",
+    "table",
     "path",
     "registered_as",
     "billing_project",
@@ -42,6 +43,54 @@ _PRIORITY_KEYS = (
     "limit",
     "retry_after_seconds",
 )
+
+# Table access policies (design doc §16) — reason-keyed error dicts raised
+# by every enforcement surface (`/api/query`, `/api/v2/sample`,
+# `/api/v2/scan`, the MCP per-table tool). Several of these carry NO
+# explanatory key at all on the wire — `policy_identity_unresolvable` is a
+# bare ``{"reason": ...}`` at every current call site — so the actionable
+# next step an LLM needs to stop retrying the same failure lives here, in
+# the CLI, rather than depending on the server payload growing one. Keyed
+# by `reason`; injected as a synthetic `hint` (see `_with_access_policy_hint`)
+# so it rides the same wrapped-at-80-cols rendering as every other typed
+# error's own `hint`/`suggestion`.
+_ACCESS_POLICY_HINTS: dict[str, str] = {
+    "policy_name_collision": (
+        "Rename your CTE or subquery alias — it is spelled identically to a "
+        "table this query reads through an access policy, and Agnes refuses "
+        "to guess which occurrence you meant."
+    ),
+    "policy_identity_unresolvable": (
+        "This table has a per-user access policy, and the current session "
+        "has no single identity to bind it against (e.g. a shared co-drive "
+        "session with several participants). Open the table in a solo "
+        "session and retry."
+    ),
+    "policy_mapping_empty": (
+        "This is a data problem, not a permissions problem — the access "
+        "policy depends on a mapping table that is currently empty or was "
+        "never synced. Contact your administrator to check its sync."
+    ),
+    "policy_error": (
+        "The access policy attached to this table failed to resolve or "
+        "execute. Contact your administrator — the underlying engine error "
+        "is deliberately withheld here (it can quote values from the "
+        "policy body)."
+    ),
+}
+
+
+def _with_access_policy_hint(detail: dict) -> dict:
+    """Inject the §16 next-step text for a recognized access-policy
+    ``reason`` when the server payload doesn't already carry its own
+    ``hint``/``suggestion`` — several call sites send a bare
+    ``{"reason": ...}`` with nothing else (see ``_ACCESS_POLICY_HINTS``).
+    Returns ``detail`` unchanged for every other shape.
+    """
+    reason = detail.get("reason")
+    if reason not in _ACCESS_POLICY_HINTS or detail.get("hint") or detail.get("suggestion"):
+        return detail
+    return {**detail, "hint": _ACCESS_POLICY_HINTS[reason]}
 
 
 def render_error(status_code: int, body: Any) -> str:
@@ -123,6 +172,7 @@ def _format_dict(status_code: int, detail: dict) -> str:
     other must still appear in the key/value section so its value isn't
     silently dropped. Devin Review iter #4 caught this.
     """
+    detail = _with_access_policy_hint(detail)
     label_key = next(
         (k for k in ("kind", "reason", "code") if detail.get(k)),
         None,

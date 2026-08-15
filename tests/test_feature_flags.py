@@ -98,7 +98,9 @@ class TestFeatureFlagsRegistry:
             "mcp_source_url_strict",
             "mcp_connector_ui",
             "agent_profiles",
+            "access_policies",
             "keboola_token_header",
+            "keboola_multi_project_mode",
         }
 
     def test_every_entry_resolves(self, monkeypatch):
@@ -243,7 +245,9 @@ class TestServerConfigFeatureFlagsInventory:
             "mcp_source_url_strict",
             "mcp_connector_ui",
             "agent_profiles",
+            "access_policies",
             "keboola_token_header",
+            "keboola_multi_project_mode",
         }
         # The experience preset leads as a string-valued informational row.
         assert flags[0]["name"] == "instance.experience"
@@ -256,6 +260,26 @@ class TestServerConfigFeatureFlagsInventory:
             assert set(f.keys()) >= {"name", "effective", "source", "default", "env_var", "description"}
             assert f["source"] in ("env", "config", "default", "preset")
             assert isinstance(f["effective"], bool)
+
+    def test_select_switch_reports_its_resolved_mode(self, seeded_app, monkeypatch):
+        """A select-kind switch must surface its resolved STRING — the boolean
+        path coerced every option (its 'disabled' default included) to
+        effective=True, so the panel said multi-project was on while it was
+        off (Devin Review on PR #1328)."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        monkeypatch.delenv("AGNES_KEBOOLA_MULTI_PROJECT_MODE", raising=False)
+        flags = {f["name"]: f for f in c.get("/api/admin/server-config", headers=_auth(token)).json()["feature_flags"]}
+        row = flags["keboola_multi_project_mode"]
+        assert row["value_label"] == "disabled"
+        assert row["effective"] is False
+        assert row["source"] == "default"
+        monkeypatch.setenv("AGNES_KEBOOLA_MULTI_PROJECT_MODE", "auto")
+        flags = {f["name"]: f for f in c.get("/api/admin/server-config", headers=_auth(token)).json()["feature_flags"]}
+        row = flags["keboola_multi_project_mode"]
+        assert row["value_label"] == "auto"
+        assert row["effective"] is True
+        assert row["source"] == "env"
 
     def test_preset_coupled_flag_resolves_and_labels_preset_source(self, seeded_app, monkeypatch):
         """Under ``experience: redesign`` with no per-knob setting, the
@@ -278,6 +302,36 @@ class TestServerConfigFeatureFlagsInventory:
         flags = {f["name"]: f for f in c.get("/api/admin/server-config", headers=_auth(token)).json()["feature_flags"]}
         assert flags["stack_auto_membership"]["effective"] is False
         assert flags["stack_auto_membership"]["source"] == "env"
+
+    def test_known_fields_multi_project_mode_renders_resolved_value(self, seeded_app, monkeypatch):
+        """The editable panel must render the RESOLVED mode for the unset
+        key: an env-only `auto` instance rendered the static `disabled`, so
+        a routine auth-section save wrote `disabled` into the overlay — a
+        silent revert of the feature the day the env var is dropped (Devin
+        Review on PR #1328; same failure as instance.experience on #1199)."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        monkeypatch.delenv("AGNES_KEBOOLA_MULTI_PROJECT_MODE", raising=False)
+        kf = c.get("/api/admin/server-config", headers=_auth(token)).json()["known_fields"]
+        assert kf["auth"]["keboola"]["fields"]["multi_project_mode"]["default"] == "disabled"
+        monkeypatch.setenv("AGNES_KEBOOLA_MULTI_PROJECT_MODE", "auto")
+        kf = c.get("/api/admin/server-config", headers=_auth(token)).json()["known_fields"]
+        assert kf["auth"]["keboola"]["fields"]["multi_project_mode"]["default"] == "auto"
+
+    def test_known_fields_project_id_required_follows_the_mode(self, seeded_app, monkeypatch):
+        """`project_id` is required exactly when the single-project gate is
+        in force: under an active discovery mode unset/`'*'` IS the wildcard,
+        and a static required marker beside the leave-it-blank hint nudged
+        operators to pin a project and silently lose the wildcard (Devin
+        Review on PR #1328, sixteenth round)."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        monkeypatch.delenv("AGNES_KEBOOLA_MULTI_PROJECT_MODE", raising=False)
+        kf = c.get("/api/admin/server-config", headers=_auth(token)).json()["known_fields"]
+        assert kf["auth"]["keboola"]["fields"]["project_id"]["required"] is True
+        monkeypatch.setenv("AGNES_KEBOOLA_MULTI_PROJECT_MODE", "auto")
+        kf = c.get("/api/admin/server-config", headers=_auth(token)).json()["known_fields"]
+        assert kf["auth"]["keboola"]["fields"]["project_id"]["required"] is False
 
     def test_known_fields_defaults_follow_the_preset(self, seeded_app, monkeypatch):
         """The EDITABLE registry must render the preset-implied default for
