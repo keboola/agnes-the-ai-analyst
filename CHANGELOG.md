@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- **Web chat no longer dies on submit for a caller without an explicit chat grant (rail layout).** The rail chrome gates its whole conversation sidebar on `can_chat`, which deliberately reads `has_explicit_grant` — while the /chat route and the chat API gate on `can_access`, where admin god-mode short-circuits. An admin reaching /chat by URL before chat was granted to any of their groups therefore got a fully working chat surface with no `#chat-list` in the DOM — and chat.js's `loadSidebar` dereferenced it unconditionally, so every submit failed with "Could not start chat: Cannot set properties of null (setting 'innerHTML')". `loadSidebar` now bails when the list is absent (after caching the sessions fetch, which the Cmd+K palette and title lookups still read) — the same guard rail_history.js has always carried for this exact page state. Topnav is unaffected: its chat sidebar renders unconditionally.
+
 ## [0.83.25] - 2026-08-15
 
 ### Added
