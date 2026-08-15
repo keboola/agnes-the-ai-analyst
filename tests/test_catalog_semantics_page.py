@@ -271,12 +271,26 @@ class TestCatalogSemanticsRBAC:
 
 
 class TestCatalogSemanticsLinkFromCatalog:
-    def test_catalog_page_links_to_semantics(self, seeded_app):
-        c = seeded_app["client"]
-        token = seeded_app["analyst_token"]
-        resp = c.get("/catalog", headers=_auth(token))
-        assert resp.status_code == 200
-        assert "/catalog/semantics" in resp.text
+    def test_library_carries_the_door_to_semantics(self):
+        """The Definitions block in the Library is the way in.
+
+        This asked /catalog for a rendered link, which the classic template's
+        Semantic layer card supplied. The unified Catalog offers only what the
+        caller does not already have, and the semantic layer is not one of
+        those — the rail's own IA note names the Library's Definitions block as
+        the door instead.
+
+        Asserted on the template rather than on a render because the block is
+        conditional on the instance having definitions to show, and seeding
+        metrics + glossary entries here would be testing the Library's empty
+        state rather than the presence of the link."""
+        from pathlib import Path
+
+        library = Path("app/web/templates/library.html").read_text(encoding="utf-8")
+        assert "/catalog/semantics" in library, (
+            "library.html no longer links /catalog/semantics — under the rail that "
+            "block is the page's entry point (see the IA note in _app_rail.html)"
+        )
 
 
 class TestCatalogSemanticsWayOut:
@@ -293,12 +307,14 @@ class TestCatalogSemanticsWayOut:
         assert resp.status_code == 200
         return resp.text
 
-    def test_topnav_back_link_returns_to_the_catalog(self, seeded_app):
-        # Topnav's own nav highlights Data Packages for any /catalog/* path,
-        # and the legacy Catalog page carries the card that links here.
+    def test_back_link_returns_to_the_library(self, seeded_app):
+        """The way out. It pointed at /catalog while the classic Catalog page
+        carried the card that linked here; the Library's Definitions block is
+        that door now, so the back link follows it — a back link to a page that
+        no longer offers the surface is the "nowhere" this class exists about."""
         body = self._body(seeded_app)
-        assert '<a class="sl-back" href="/catalog">' in body
-        assert "Data Packages" in body
+        assert 'class="sl-back"' in body
+        assert 'href="/library' in body
 
     def test_rail_back_link_returns_to_the_definitions_block(self, seeded_app, monkeypatch):
         # /library is the rail's one browse surface and carries the block the

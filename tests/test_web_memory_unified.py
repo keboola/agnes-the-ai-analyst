@@ -112,15 +112,22 @@ class TestMemoryUnifiedPage:
         assert "QA" not in resp.text
 
     def test_analyst_with_required_domain_grant_sees_card(self, seeded_app):
+        """The granted domain reaches the caller.
+
+        Read off /library. /corporate-memory 302s into the Library's Memory
+        band whenever that band would show the caller a row — which a grant
+        always does — so the page this used to assert on is not what a granted
+        caller gets any more. The `is-required` class was corporate_memory.html's;
+        the band's own locked-membership pill is guarded by
+        tests/test_web_library_memory_band.py::test_required_membership_stays_locked.
+        """
         dom_id = _make_domain("eng", "Engineering Memory")
         _grant("Everyone", dom_id, requirement="required", users=["analyst1"])
         c = seeded_app["client"]
         token = seeded_app["analyst_token"]
-        resp = c.get("/corporate-memory", headers=_auth(token))
+        resp = c.get("/library", headers=_auth(token))
         assert resp.status_code == 200
-        body = resp.text
-        assert "Engineering Memory" in body
-        assert "is-required" in body
+        assert "Engineering Memory" in resp.text
 
     def test_analyst_no_grants_sees_empty_state(self, seeded_app):
         c = seeded_app["client"]
@@ -146,12 +153,24 @@ class TestTopnavClassicMemoryCardState:
     """
 
     @pytest.fixture(autouse=True)
-    def _topnav_classic(self, monkeypatch):
-        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
-        monkeypatch.delenv("AGNES_STACK_AUTO_MEMBERSHIP", raising=False)
-        monkeypatch.delenv("AGNES_INSTANCE_EXPERIENCE", raising=False)
+    def _classic_membership(self, monkeypatch):
+        """Classic (subscribe) membership, stated rather than assumed.
 
-    def test_a_required_domain_card_reads_as_in_stack(self, seeded_app):
+        This used to `delenv` the three knobs on the grounds that the defaults
+        WERE topnav + classic. Wave 0 (2026-08) flipped both — the rail is the
+        only chrome and auto-membership is the default — so deleting them now
+        selects the opposite mode from the one the class is named for. Classic
+        remains a fully supported explicit opt-out."""
+        monkeypatch.setenv("AGNES_STACK_AUTO_MEMBERSHIP", "0")
+
+    # `test_a_required_domain_card_reads_as_in_stack` was here. It read the
+    # card off /corporate-memory, which 302s into the Library's Memory band
+    # whenever that band would have a row for the caller — and a REQUIRED
+    # domain always gives it one, so this case can no longer reach the page it
+    # asserted on. The same fact is covered on the surface that renders it:
+    # tests/test_web_library_memory_band.py::test_required_membership_stays_locked
+    # pins the locked pill and the absence of a remove control.
+    def _retired_test_a_required_domain_card_reads_as_in_stack(self, seeded_app):
         dom = _make_domain(slug="req-dom", name="Required Domain")
         _grant("Everyone", dom, requirement="required", users=["analyst1"])
 
@@ -167,15 +186,19 @@ class TestTopnavClassicMemoryCardState:
         )
 
     def test_an_unsubscribed_available_domain_reads_as_addable(self, seeded_app):
-        """The negative control: without it the assertion above would pass on a
-        build that hardcoded in_stack=1 for every card."""
+        """The negative control: without it a build that hardcoded every card
+        as in-stack would look correct.
+
+        Read off the Catalog's Memory grid. Under the classic subscribe model
+        that grid carries the full granted set with its add-to-stack state,
+        which is exactly the state under test; /corporate-memory, where this
+        used to look, redirects into the Library for any granted caller."""
         dom = _make_domain(slug="avail-dom", name="Available Domain")
         _grant("Everyone", dom, requirement="available", users=["analyst1"])
 
-        body = seeded_app["client"].get(
-            "/corporate-memory", headers=_auth(seeded_app["analyst_token"])
-        ).text
+        body = seeded_app["client"].get("/catalog", headers=_auth(seeded_app["analyst_token"])).text
 
         assert "Available Domain" in body
-        card = body[body.index("Available Domain") - 3000 : body.index("Available Domain") + 500]
-        assert 'data-in-stack="0"' in card, "an unsubscribed available domain must stay addable in classic mode"
+        card = body[body.index("Available Domain") - 3000 : body.index("Available Domain") + 1500]
+        assert 'data-state="add"' in card, "an unsubscribed available domain must stay addable in classic mode"
+

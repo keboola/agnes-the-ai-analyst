@@ -146,8 +146,20 @@ class TestGridDeletionLeftNothingStranded:
 
     def test_ordinary_admin_destinations_still_reachable(self, seeded_app):
         body = self._body(seeded_app)
-        for href in ("/admin/users", "/admin/sync", "/admin/server-config", "/admin/tables"):
+        for href in ("/admin/users", "/admin/server-config", "/admin/tables"):
             assert f'href="{href}"' in body, f"{href} is no longer linked from /admin"
+
+    def test_sync_is_reached_from_the_surface_that_owns_it(self, seeded_app):
+        """/admin/sync is deliberately OFF the nav — a sync run is per-source,
+        so a nav row would imply a cross-source page that does not exist. It is
+        reached from a source card's SYNC cell instead, which `ADMIN_NAV_OFFNAV`
+        records. It was in the list above while the /admin card grid linked
+        everything; the grid is gone and the entry is the door now."""
+        from app.web.admin_nav import ADMIN_NAV_OFFNAV
+
+        entry = next((e for e in ADMIN_NAV_OFFNAV if e["href"] == "/admin/sync"), None)
+        assert entry is not None, "/admin/sync left ADMIN_NAV_OFFNAV without gaining a nav row"
+        assert entry.get("reached_from"), "an off-nav page must record the door it IS reached from"
 
     def test_chat_sessions_moved_into_the_sidebar(self, seeded_app):
         """Registered in app/api/admin_chat.py, not the web router — it was

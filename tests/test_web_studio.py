@@ -420,11 +420,25 @@ def test_studio_index_requires_login(seeded_app):
         assert "/login" in resp.headers.get("location", "")
 
 
-def test_primary_nav_links_to_studio(seeded_app):
-    c = seeded_app["client"]
-    resp = c.get("/admin/studio", headers=_auth(seeded_app["analyst_token"]))
+def test_studio_is_recorded_as_deliberately_unlinked(seeded_app):
+    """Studio has NO chrome entry, and that is a decision rather than drift.
+
+    It had a topnav row and a rail dropdown; both went — the rail's by IA
+    choice (the builders it fronted live in the Library "+ Add" menu), the
+    topnav's with the chrome in Wave 0 (2026-08). Asserting a self-link on the
+    page proved nothing about reachability anyway: you are already there.
+
+    What is worth pinning is that the absence stays RECORDED, so the next
+    person reads a reason instead of assuming a bug.
+    """
+    from tests.test_web_nav_user_parity import KNOWN_UNLINKED
+
+    assert "/admin/studio" in KNOWN_UNLINKED
+    assert KNOWN_UNLINKED["/admin/studio"]
+
+    # And the page itself still renders for a signed-in caller.
+    resp = seeded_app["client"].get("/admin/studio", headers=_auth(seeded_app["analyst_token"]))
     assert resp.status_code == 200
-    assert 'href="/admin/studio"' in resp.text
 
 
 # --- Instance-level enable/disable toggle (studio.enabled / AGNES_STUDIO_ENABLED) ---
@@ -441,23 +455,26 @@ def test_studio_routes_redirect_when_disabled(seeded_app, monkeypatch):
         assert resp.headers.get("location", "") == "/", path
 
 
-def test_studio_nav_hidden_when_disabled(seeded_app, monkeypatch):
+def test_studio_palette_entries_hidden_when_disabled(seeded_app, monkeypatch):
+    """`can_studio` gates the command-palette rows, which are Studio's only
+    chrome-level trace now.
+
+    This used to check a `data-tour="nav-studio"` nav link on two pages as
+    well. Both premises are gone: `data-tour` anchors went with the guided tour
+    and the topnav chrome (Wave 0, 2026-08), and /dashboard is a redirect. The
+    palette half is the part that still exists, and it is the part the flag
+    actually drives.
+    """
     c = seeded_app["client"]
-    # Sanity: link + palette entries present by default on BOTH chrome paths —
-    # /me/memory-mining renders via _chrome_ctx, /dashboard via _build_context.
-    for page in ("/me/memory-mining", "/dashboard"):
-        resp = c.get(page, headers=_auth(seeded_app["analyst_token"]))
-        assert resp.status_code == 200, page
-        assert 'data-tour="nav-studio"' in resp.text, page
-        assert "Studio · Data package" in resp.text, page  # command palette
-    # Disable → nav entry AND palette items disappear on both paths (the route
-    # stays reachable only by URL, which the redirect test covers).
+    page = "/me/memory-mining"
+    resp = c.get(page, headers=_auth(seeded_app["analyst_token"]))
+    assert resp.status_code == 200
+    assert "Studio · Data package" in resp.text, "palette row missing while studio is enabled"
+
     monkeypatch.setattr("app.web.router.get_studio_enabled", lambda: False)
-    for page in ("/me/memory-mining", "/dashboard"):
-        resp = c.get(page, headers=_auth(seeded_app["analyst_token"]))
-        assert resp.status_code == 200, page
-        assert 'data-tour="nav-studio"' not in resp.text, page
-        assert "Studio · Data package" not in resp.text, page
+    resp = c.get(page, headers=_auth(seeded_app["analyst_token"]))
+    assert resp.status_code == 200
+    assert "Studio · Data package" not in resp.text
 
 
 def test_studio_enabled_env_override(monkeypatch):
