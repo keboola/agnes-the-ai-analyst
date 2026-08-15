@@ -48,7 +48,23 @@
 	# subdir, extend the try_files list. Anything that misses falls
 	# through to the app reverse_proxy below — so an unmapped source
 	# degrades to "downloads work, just through uvicorn" — never 404.
-	@download path_regexp tid ^/api/data/([^/]+)/download$
+	#
+	# `?part=` is excluded deliberately. `path_regexp` matches the PATH only,
+	# so without this a per-part fetch claims the whole-table rule. Every
+	# try_files candidate below is the single-file `<table_id>.parquet`, while
+	# a partitioned table is a DIRECTORY (`<table_id>/month=YYYY-MM/…`) — so
+	# this branch cannot answer a part request with anything but the wrong
+	# bytes: the entire table, served as one month. The rule is simply that a
+	# path-only matcher must not claim a route whose meaning depends on the
+	# query string; that holds regardless of what happens to be on disk.
+	#
+	# Parts go to the app instead. No authz is lost by skipping forward_auth:
+	# `download_table` re-checks `can_access_table`, enforces the distribution
+	# gate, and writes the `data.download` audit row with the `part` recorded.
+	@download {
+		path_regexp tid ^/api/data/([^/]+)/download$
+		not query part=*
+	}
 	handle @download {
 		forward_auth app:8000 {
 			uri /api/data/{re.tid.1}/check-access

@@ -6,6 +6,7 @@ call from ``create()`` is intentionally a soft-fail when the
 that table ports later). Once marketplace_plugins is ported, the
 soft-fail branch becomes dead code and can be removed.
 """
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -29,25 +30,31 @@ class UserGroupsPgRepository:
 
     def list_all(self) -> List[Dict[str, Any]]:
         with self._engine.connect() as conn:
-            rows = conn.execute(
-                sa.text(f"SELECT {self._SELECT_COLS} FROM user_groups ORDER BY name")
-            ).mappings().all()
+            rows = conn.execute(sa.text(f"SELECT {self._SELECT_COLS} FROM user_groups ORDER BY name")).mappings().all()
         return [dict(r) for r in rows]
 
     def get(self, group_id: str) -> Optional[Dict[str, Any]]:
         with self._engine.connect() as conn:
-            row = conn.execute(
-                sa.text(f"SELECT {self._SELECT_COLS} FROM user_groups WHERE id = :id"),
-                {"id": group_id},
-            ).mappings().first()
+            row = (
+                conn.execute(
+                    sa.text(f"SELECT {self._SELECT_COLS} FROM user_groups WHERE id = :id"),
+                    {"id": group_id},
+                )
+                .mappings()
+                .first()
+            )
         return dict(row) if row else None
 
     def get_by_name(self, name: str) -> Optional[Dict[str, Any]]:
         with self._engine.connect() as conn:
-            row = conn.execute(
-                sa.text(f"SELECT {self._SELECT_COLS} FROM user_groups WHERE name = :name"),
-                {"name": name},
-            ).mappings().first()
+            row = (
+                conn.execute(
+                    sa.text(f"SELECT {self._SELECT_COLS} FROM user_groups WHERE name = :name"),
+                    {"name": name},
+                )
+                .mappings()
+                .first()
+            )
         return dict(row) if row else None
 
     def list_names_by_ids(self, group_ids: Iterable[str]) -> List[str]:
@@ -63,11 +70,7 @@ class UserGroupsPgRepository:
             params[k] = gid
         with self._engine.connect() as conn:
             rows = conn.execute(
-                sa.text(
-                    f"SELECT name FROM user_groups "
-                    f"WHERE id IN ({','.join(gid_keys)}) "
-                    f"ORDER BY name"
-                ),
+                sa.text(f"SELECT name FROM user_groups WHERE id IN ({','.join(gid_keys)}) ORDER BY name"),
                 params,
             ).all()
         return [r[0] for r in rows]
@@ -101,8 +104,10 @@ class UserGroupsPgRepository:
         # yet during Phase F rollout.
         try:
             from src.repositories.resource_grants_pg import ResourceGrantsPgRepository
+
             ResourceGrantsPgRepository(self._engine).fanout_system_for_group(
-                group_id, assigned_by=created_by,
+                group_id,
+                assigned_by=created_by,
             )
         except Exception:
             pass
@@ -110,7 +115,10 @@ class UserGroupsPgRepository:
         return self.get(group_id)  # type: ignore[return-value]
 
     def ensure(
-        self, name: str, description: Optional[str] = None
+        self,
+        name: str,
+        description: Optional[str] = None,
+        created_by: str = "system:google-sync",
     ) -> Dict[str, Any]:
         existing = self.get_by_name(name)
         if existing:
@@ -118,7 +126,7 @@ class UserGroupsPgRepository:
         return self.create(
             name=name,
             description=description or "Auto-created from Google Workspace claim",
-            created_by="system:google-sync",
+            created_by=created_by,
         )
 
     def ensure_system(self, name: str, description: str) -> Dict[str, Any]:
@@ -142,15 +150,8 @@ class UserGroupsPgRepository:
         description: Optional[str] = None,
     ) -> None:
         existing = self.get(group_id)
-        if (
-            existing
-            and existing.get("is_system")
-            and name is not None
-            and name != existing["name"]
-        ):
-            raise SystemGroupProtected(
-                f"group {existing.get('name')!r} is a system group and cannot be renamed"
-            )
+        if existing and existing.get("is_system") and name is not None and name != existing["name"]:
+            raise SystemGroupProtected(f"group {existing.get('name')!r} is a system group and cannot be renamed")
         sets: List[str] = []
         params: Dict[str, Any] = {"id": group_id}
         if name is not None:
@@ -170,9 +171,7 @@ class UserGroupsPgRepository:
     def delete(self, group_id: str) -> None:
         existing = self.get(group_id)
         if existing and existing.get("is_system"):
-            raise SystemGroupProtected(
-                f"group {existing.get('name')!r} is a system group and cannot be deleted"
-            )
+            raise SystemGroupProtected(f"group {existing.get('name')!r} is a system group and cannot be deleted")
         with self._engine.begin() as conn:
             conn.execute(
                 sa.text("DELETE FROM user_groups WHERE id = :id"),

@@ -32,8 +32,8 @@ import hashlib
 import logging
 import os
 import threading
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Dict, Iterator, List, Optional
 
 import duckdb
 
@@ -116,7 +116,7 @@ def _capture_orchestrator_exception(exc: BaseException, **props) -> None:
 # orchestrator and the extractors share the same regex (#81 Group D).
 # The local names are kept as aliases so existing call sites need no
 # rename — they import from a single source of truth now.
-from src.identifier_validation import (  # noqa: E402
+from src.identifier_validation import (
     _SAFE_IDENTIFIER,  # noqa: F401  (re-exported for any historical caller)
 )
 from src.identifier_validation import (  # noqa: E402
@@ -202,7 +202,7 @@ class SyncOrchestrator:
             self._db_path = str(data_dir / "analytics" / "server.duckdb")
             Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
 
-    def rebuild(self) -> Dict[str, List[str]]:
+    def rebuild(self) -> dict[str, list[str]]:
         """Scan all extract directories, ATTACH each, create master views.
 
         Backend dispatch: ``analytics.backend: ducklake`` routes to
@@ -224,7 +224,7 @@ class SyncOrchestrator:
                 _capture_orchestrator_exception(exc, op="rebuild")
                 raise
 
-    def rebuild_source(self, source_name: str) -> List[str]:
+    def rebuild_source(self, source_name: str) -> list[str]:
         """Rebuild views from a single source (e.g. after Jira webhook).
 
         Backend dispatch mirrors :meth:`rebuild`. On ``ducklake``, this
@@ -246,7 +246,7 @@ class SyncOrchestrator:
                 _capture_orchestrator_exception(exc, op="rebuild_source", source=source_name)
                 raise
 
-    def migrate_to_backend(self, to: str) -> Dict[str, List[str]]:
+    def migrate_to_backend(self, to: str) -> dict[str, list[str]]:
         """Full rebuild into an EXPLICITLY named target backend — the
         engine behind ``agnes admin analytics migrate --to ducklake|legacy``
         (wave-2G Task 6), as distinct from :meth:`rebuild`, which dispatches
@@ -396,7 +396,7 @@ class SyncOrchestrator:
         ``clean`` is False; per-row claim-time collision detection still
         catches actual collisions.
         """
-        pairs: List[tuple] = []
+        pairs: list[tuple] = []
         clean = True
         for ext_dir in sorted(extracts_dir.iterdir()):
             if not ext_dir.is_dir():
@@ -426,7 +426,7 @@ class SyncOrchestrator:
                 clean = False
         return pairs, clean
 
-    def _do_rebuild(self) -> Dict[str, List[str]]:
+    def _do_rebuild(self) -> dict[str, list[str]]:
         extracts_dir = _get_extracts_dir()
         if not extracts_dir.exists():
             logger.warning("Extracts directory %s does not exist", extracts_dir)
@@ -499,7 +499,7 @@ class SyncOrchestrator:
             view_repo = None
 
         # Track every (source, view) pair this rebuild successfully claims.
-        claimed_pairs: List[tuple] = []
+        claimed_pairs: list[tuple] = []
 
         result = {}
         # Write to temp file then rename — avoids lock conflict with query endpoint
@@ -564,7 +564,7 @@ class SyncOrchestrator:
 
         return result
 
-    def _do_rebuild_source(self, source_name: str) -> List[str]:
+    def _do_rebuild_source(self, source_name: str) -> list[str]:
         """Rebuild views for a single source by doing a full rebuild.
 
         A full rebuild is necessary because the analytics DB is created fresh
@@ -580,7 +580,7 @@ class SyncOrchestrator:
         result = self._do_rebuild()
         return result.get(source_name, [])
 
-    def _do_rebuild_ducklake(self, only_source: Optional[str] = None) -> Dict[str, List[str]]:
+    def _do_rebuild_ducklake(self, only_source: str | None = None) -> dict[str, list[str]]:
         """DuckLake copy-ingest rebuild — the ``analytics.backend: ducklake``
         counterpart to :meth:`_do_rebuild` / :meth:`_do_rebuild_source`.
 
@@ -654,8 +654,8 @@ class SyncOrchestrator:
             existing_owners = {}
             view_repo = None
 
-        claimed_pairs: List[tuple] = []
-        result: Dict[str, List[str]] = {}
+        claimed_pairs: list[tuple] = []
+        result: dict[str, list[str]] = {}
 
         from src.ducklake_session import get_ducklake_write
 
@@ -718,10 +718,10 @@ class SyncOrchestrator:
         write_conn: duckdb.DuckDBPyConnection,
         source_name: str,
         db_file: Path,
-        existing_owners: Optional[Dict[str, str]] = None,
-        claimed_pairs: Optional[List[tuple]] = None,
+        existing_owners: dict[str, str] | None = None,
+        claimed_pairs: list[tuple] | None = None,
         view_repo=None,
-    ) -> List[str]:
+    ) -> list[str]:
         """Copy-ingest one source's LOCAL/MATERIALIZED tables into
         ``lake."<source_name>"`` and point the matching master views
         (``lake."main"."<table>"``) at them.
@@ -772,7 +772,7 @@ class SyncOrchestrator:
         """
         if existing_owners is None:
             existing_owners = {}
-        tables: List[str] = []
+        tables: list[str] = []
         meta_rows: list = []
 
         try:
@@ -942,10 +942,10 @@ class SyncOrchestrator:
         write_conn: duckdb.DuckDBPyConnection,
         extracts_dir: Path,
         *,
-        only_source: Optional[str],
-        claimed_pairs: Optional[List[tuple]],
+        only_source: str | None,
+        claimed_pairs: list[tuple] | None,
         view_repo=None,
-        local_result: Optional[Dict[str, List[str]]] = None,
+        local_result: dict[str, list[str]] | None = None,
     ) -> None:
         """Create the ``lake."main"."<name>"`` wrapper view for every
         ``query_mode='remote'`` table_registry row, and reconcile away
@@ -1064,10 +1064,10 @@ class SyncOrchestrator:
         conn: duckdb.DuckDBPyConnection,
         source_name: str,
         db_path: str,
-        existing_owners: Optional[Dict[str, str]] = None,
-        claimed_pairs: Optional[List[tuple]] = None,
+        existing_owners: dict[str, str] | None = None,
+        claimed_pairs: list[tuple] | None = None,
         view_repo=None,
-    ) -> List[str]:
+    ) -> list[str]:
         """ATTACH extract.duckdb, read _meta, create views in master.
 
         Issue #81 Group C — when ``existing_owners`` and ``view_repo`` are
@@ -1198,7 +1198,7 @@ class SyncOrchestrator:
                     # master view — that would resurrect a deleted table.
                     # Pre-existing test `test_orchestrator_skips_orphan_
                     # parquet_in_extracts` pins this contract.
-                    registered_ids: Optional[set] = None
+                    registered_ids: set | None = None
                     try:
                         # Backend-aware: read the registry through the factory
                         # (Postgres on a PG instance) — a raw DuckDB conn would
@@ -1500,6 +1500,47 @@ class SyncOrchestrator:
                         table_dir,
                     )
                 if pq_path.exists():
+                    # TODO(#1339): the flat file winning is a precedence choice, not a
+                    # verdict — when both layouts are present the partitioned
+                    # data is almost certainly the fresh one. Flipping it (and
+                    # the matching `app/utils.py::resolve_local_parquet_glob`,
+                    # which prefers the single file the same way) plus removing
+                    # the stale sibling server-side needs a decision about
+                    # in-flight readers, so for now this only warns.
+                    # Existence probe only — deliberately NOT `_hash_table_parts`,
+                    # which full-MD5s every part just to yield a truthy value.
+                    # Two reasons: the dual-layout state can persist
+                    # indefinitely, and `rebuild_source` runs on every Jira
+                    # webhook, so that would re-hash the whole partition dir per
+                    # event while holding `rebuild_mutex()`. And this sits inside
+                    # the try/except wrapping the WHOLE meta_rows loop, so a raise
+                    # here would skip sync_state for every remaining table in the
+                    # source — a diagnostic must never break what it diagnoses,
+                    # hence the OSError guard around a mid-scan prune.
+                    try:
+                        both_layouts = next(table_dir.rglob("*.parquet"), None) is not None
+                    except OSError:
+                        both_layouts = False
+                    if both_layouts:
+                        # Both layouts on disk. Distribution silently freezes:
+                        # the manifest advertises this as a single-file table
+                        # hashed from the STALE parquet, so `agnes pull`
+                        # downloads it and the md5 MATCHES — analysts keep
+                        # getting pre-conversion data indefinitely while the
+                        # server's own view reads the fresh partitions. No
+                        # error surfaces anywhere, which is why this warns
+                        # loudly. Nothing removes the sibling: a Keboola table
+                        # flipped to `sync_strategy: partitioned` leaves the
+                        # old `<table>.parquet` behind, and the client-side
+                        # `_drop_stale_layout` has no server equivalent.
+                        logger.warning(
+                            "%s has BOTH a flat parquet (%s) and a partition dir (%s); "
+                            "serving the flat file — the partitioned data is NOT being "
+                            "distributed. Remove the stale flat parquet.",
+                            table_name,
+                            pq_path,
+                            table_dir,
+                        )
                     # Single-file table: full content MD5 (see docstring).
                     h = hashlib.md5()
                     with open(pq_path, "rb") as f:

@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from cli.lib.pull import run_pull, PullResult
+from cli.lib.pull import PullResult, run_pull
 
 
 @pytest.fixture(autouse=True)
@@ -272,6 +272,49 @@ def test_download_one_retries_on_hash_mismatch_then_succeeds(
     assert result.errors == [], "a recovered mismatch must record no error"
     # The sidecar must not linger.
     assert not (tmp_path / "server" / "parquet" / "tbl1.parquet.verify.tmp").exists()
+
+
+def test_download_one_honors_the_shared_retry_budget(tmp_path, monkeypatch):
+    """The single-file path must spend the budget named by `_DOWNLOAD_RETRIES`,
+    not a hardcoded count. This is the single-file half of the retry parity the
+    partitioned path relies on — `tests/test_pull_partitioned.py` pins the
+    other half against the same constant, so dropping retry from EITHER path
+    turns something red."""
+    canned_manifest = {"tables": {"tbl1": {"hash": "good", "rows": 0, "size_bytes": 0}}}
+    canned_memory = {"mandatory": [], "approved": []}
+
+    def _api_get(path, *args, **kwargs):
+        resp = MagicMock()
+        resp.status_code = 200
+        if path == "/api/sync/manifest":
+            resp.json.return_value = canned_manifest
+        elif path == "/api/memory/bundle":
+            resp.json.return_value = canned_memory
+        resp.raise_for_status = lambda: None
+        return resp
+
+    download_calls = {"count": 0}
+
+    def _stream_download(path, target_path, progress_callback=None):
+        from pathlib import Path as _P
+
+        download_calls["count"] += 1
+        _P(target_path).write_bytes(b"PAR1" + b"\x00" * 100 + b"PAR1")
+        return 0
+
+    monkeypatch.setattr("cli.lib.pull.api_get", _api_get, raising=False)
+    monkeypatch.setattr("cli.lib.pull.stream_download", _stream_download, raising=False)
+    monkeypatch.setattr("cli.lib.pull._is_valid_parquet", lambda p: True, raising=False)
+    # Never matches the manifest hash → the retry budget is spent in full.
+    monkeypatch.setattr("cli.lib.pull._file_md5", lambda p: "bad", raising=False)
+    monkeypatch.setattr("cli.lib.pull.time.sleep", lambda s: None)
+    monkeypatch.setattr("cli.lib.pull._DOWNLOAD_RETRIES", 4)
+
+    run_pull(server_url="http://x", token="t", workspace=tmp_path)
+
+    assert download_calls["count"] == 5, (
+        f"expected 4 retries + 1 initial from the shared constant, got {download_calls['count']}"
+    )
 
 
 def test_textual_progress_reset_zeroes_failed_attempt_bytes():
