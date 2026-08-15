@@ -185,6 +185,90 @@ Real-time webhook-based connector that updates parquet files incrementally.
 2. The connector (`connectors/jira/`) processes webhook events and updates parquet files
 3. Produces `extract.duckdb` with `_meta` table + incremental parquet data
 
+## Databricks Connector
+
+Runs registered SQL on a Databricks SQL warehouse (Statement Execution API,
+Arrow result stream — no Databricks SDK) and distributes the result as
+parquet through the standard materialized-row path, plus syncs the
+workspace's Unity Catalog **metric views** (Databricks's semantic layer)
+into Agnes's `metric_definitions` registry.
+
+### Requirements
+
+- A SQL warehouse (its ID is under *Connection details*).
+- A workspace PAT or OAuth M2M access token in the `DATABRICKS_TOKEN` env
+  var (or the vault) — never in YAML.
+
+### Configuration
+
+```yaml
+data_source:
+  databricks:
+    host: "${DATABRICKS_HOST}"                  # https://dbc-....cloud.databricks.com
+    warehouse_id: "${DATABRICKS_WAREHOUSE_ID}"
+    catalog: "main"                             # default Unity Catalog catalog
+    # max_bytes_per_materialize: 10737418240    # result-size cap, 0 disables
+    # statement_timeout_seconds: 900            # client-side deadline, 0 disables
+```
+
+Works as a secondary source next to any primary `data_source.type` — the
+block's presence is what enables `source_type=databricks` registrations
+(same rule as any secondary source).
+
+### Registering tables (materialized-only)
+
+Phase 1 supports `query_mode='materialized'` only; `local`/`remote` are
+rejected at register time (`remote` would need the experimental DuckDB
+`unity_catalog`/`delta` extensions plus a `_remote_attach` allowlist entry —
+a follow-up phase). Two shapes:
+
+```bash
+# Custom SQL — this is where semantic-layer queries live:
+agnes admin register-table --name revenue_by_day --source-type databricks \
+    --query-mode materialized \
+    --source-query 'SELECT order_date, MEASURE(`Total Revenue`) FROM `main`.`sales`.`kpis` GROUP BY order_date'
+
+# Full-table dump — server generates SELECT * FROM `catalog`.`schema`.`table`:
+agnes admin register-table --name orders --source-type databricks \
+    --query-mode materialized --bucket sales --source-table orders
+```
+
+`bucket` is the schema inside the configured default catalog; a dotted
+bucket (`other_catalog.sales`) overrides the catalog per row. The scheduler
+materializes due rows on their `sync_schedule`, writes
+`extracts/databricks/data/<name>.parquet`, and the row rides the normal
+manifest + `agnes pull` distribution.
+
+**Cost guardrail:** the Statement Execution API has no dry-run primitive
+(unlike BigQuery), so `max_bytes_per_materialize` caps the statement
+**result** size via the API's `byte_limit`. A result truncated at the cap is
+rejected with a structured error — never written as data.
+
+### Semantic-layer sync (Unity Catalog metric views)
+
+`POST /api/admin/run-databricks-semantic-layer-refresh` (scheduler default:
+every 6 h, `SCHEDULER_DATABRICKS_SEMANTIC_LAYER_REFRESH_INTERVAL`)
+enumerates metric views per configured catalog
+(`information_schema.tables`, `table_type='METRIC_VIEW'`), reads each YAML
+definition (`SHOW CREATE TABLE`), and upserts **one metric per declared
+measure** into `metric_definitions`:
+
+- rows are stamped `source='databricks_semantic_layer'` +
+  `source_ref=<workspace host>`; the prune only ever touches rows inside
+  that scope (manual / yaml-imported / Keboola rows are untouchable), and a
+  fetch yielding zero usable measures skips the prune entirely;
+- the stored `sql` is warehouse-flavor (`SELECT MEASURE(...) FROM
+  <metric view>`) and the notes say so explicitly — `MEASURE()` cannot be
+  evaluated locally, so agents route it through a materialized row or run it
+  server-side;
+- declared dimensions land in the metric's `dimensions` list; metric names
+  already owned by another writer are skipped and counted
+  (`skipped_conflict`), never shadowed.
+
+`agnes catalog --metrics` then surfaces the definitions to analysts and
+agents like any other metric. Extra catalogs can be enumerated via
+`data_source.databricks.semantic_layer_catalogs`.
+
 ## Writing a Custom Connector
 
 Create a new connector in `connectors/<name>/extractor.py` that produces the `extract.duckdb` contract:
@@ -199,12 +283,12 @@ Create a new connector in `connectors/<name>/extractor.py` that produces the `ex
 
 ```sql
 CREATE TABLE _meta (
-    table_name   VARCHAR,
+    table_name   VARCHAR NOT NULL,
     description  VARCHAR,
-    rows         INTEGER,
-    size_bytes   INTEGER,
+    rows         BIGINT,      -- 0 for remote
+    size_bytes   BIGINT,      -- 0 for remote
     extracted_at TIMESTAMP,
-    query_mode   VARCHAR   -- 'local' or 'remote'
+    query_mode   VARCHAR      -- 'local' | 'remote' | 'materialized'
 );
 ```
 

@@ -479,6 +479,7 @@ from app.auth.mcp_oauth import make_consent_routes as _make_mcp_consent_routes
 from app.api.cache_warmup import router as cache_warmup_router
 from app.api.bq_metadata_refresh import router as bq_metadata_refresh_router
 from app.api.keboola_semantic_layer_refresh import router as keboola_semantic_layer_refresh_router
+from app.api.databricks_semantic_layer_refresh import router as databricks_semantic_layer_refresh_router
 from app.api.activity import router as activity_router
 from app.api.observability import router as observability_router
 from app.api.admin_user_sessions import router as admin_user_sessions_router
@@ -2648,6 +2649,7 @@ def create_app() -> FastAPI:
     app.include_router(cache_warmup_router)
     app.include_router(bq_metadata_refresh_router)
     app.include_router(keboola_semantic_layer_refresh_router)
+    app.include_router(databricks_semantic_layer_refresh_router)
     app.include_router(activity_router)
     app.include_router(observability_router)
     app.include_router(admin_user_sessions_router)
