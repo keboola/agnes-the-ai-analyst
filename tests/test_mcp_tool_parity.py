@@ -43,6 +43,14 @@ def test_glossary_search_is_a_foundation_tool():
     assert "glossary_search" in FOUNDATION_TOOL_NAMES
 
 
+def test_semantic_model_tools_are_foundation_tools():
+    """Open semantic-layer contract (Task 12)."""
+    from app.api.mcp.foundation_tools import FOUNDATION_TOOL_NAMES
+
+    for name in ("semantic_model_search", "semantic_model_get"):
+        assert name in FOUNDATION_TOOL_NAMES
+
+
 def test_data_apps_tools_are_foundation_tools():
     from app.api.mcp.foundation_tools import FOUNDATION_TOOL_NAMES
 

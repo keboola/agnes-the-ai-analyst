@@ -53,6 +53,12 @@ FOUNDATION_TOOL_NAMES: tuple[str, ...] = (
     "collection_file_read",
     "knowledge_search",
     "glossary_search",
+    # Open semantic-layer contract (Task 12) — read-only search + get over
+    # canonical Ossie semantic models. Triple-surface with
+    # GET /api/semantic-models/search + GET /api/semantic-models/{slug}.yaml
+    # + `agnes admin semantic-model list/export`.
+    "semantic_model_search",
+    "semantic_model_get",
     "collections_reingest",
     "schema",
     "describe",
@@ -399,6 +405,50 @@ def register_foundation_tools(
             )
             r.raise_for_status()
             return r.json()
+
+    @tool()
+    async def semantic_model_search(query: str, k: int = 10) -> dict:
+        """Search canonical Ossie semantic models by slug/name/description.
+
+        RBAC-filtered to models linked to a Data Package you can access
+        (any authenticated user; admins see everything). A model with no
+        linked Data Package yet is invisible here — ask an admin to link
+        it to one you have access to. Use `semantic_model_get` with a
+        matching result's `slug` to read the full document.
+
+        Args:
+            query: Substring to match against slug, name, or description.
+            k: Max results (default 10).
+        """
+        async with httpx.AsyncClient() as c:
+            r = await c.get(
+                f"{base_url}/api/semantic-models/search",
+                headers=headers_fn(),
+                params={"q": query, "limit": k},
+                timeout=30,
+            )
+            r.raise_for_status()
+            return r.json()
+
+    @tool()
+    async def semantic_model_get(slug: str) -> dict:
+        """Read one semantic model's full Ossie document, byte-for-byte.
+
+        RBAC tier matches `semantic_model_search` — a Data Package grant,
+        not admin-only. Use `semantic_model_search` first if you don't
+        already know the slug.
+
+        Args:
+            slug: Model slug, e.g. from a `semantic_model_search` result.
+        """
+        async with httpx.AsyncClient() as c:
+            r = await c.get(
+                f"{base_url}/api/semantic-models/{slug}.yaml",
+                headers=headers_fn(),
+                timeout=30,
+            )
+            r.raise_for_status()
+            return {"slug": slug, "document": r.text}
 
     @tool()
     async def collection_file_read(collection_id: str, file_id: str) -> dict:

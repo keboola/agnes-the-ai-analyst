@@ -1,0 +1,173 @@
+"""Cross-engine contract tests for the semantic_models repository."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _make_duckdb_repo(tmp_path):
+    from src.db import _ensure_schema
+    from src.duckdb_conn import _open_duckdb
+    from src.repositories.semantic_models import SemanticModelsRepository
+
+    conn = _open_duckdb(str(tmp_path / "duck.duckdb"))
+    _ensure_schema(conn)
+    return SemanticModelsRepository(conn), conn
+
+
+def _make_pg_repo(pg_engine, monkeypatch):
+    from alembic import command
+    from alembic.config import Config
+
+    cfg = Config(str(REPO_ROOT / "alembic.ini"))
+    cfg.set_main_option("script_location", str(REPO_ROOT / "migrations"))
+    cfg.attributes["sqlalchemy.url"] = str(pg_engine.url)
+    command.upgrade(cfg, "head")
+
+    monkeypatch.setenv("AGNES_DB_URL", str(pg_engine.url))
+    import src.db_pg as db_pg
+
+    db_pg.dispose()
+    db_pg.get_engine()
+
+    from src.repositories.semantic_models_pg import SemanticModelsPgRepository
+
+    return SemanticModelsPgRepository(db_pg.get_engine()), None
+
+
+@pytest.fixture(params=["duckdb", "pg"])
+def repo(request, tmp_path, pg_engine, monkeypatch):
+    if request.param == "duckdb":
+        r, conn = _make_duckdb_repo(tmp_path)
+        yield r
+        conn.close()
+    else:
+        r, _ = _make_pg_repo(pg_engine, monkeypatch)
+        yield r
+
+
+def _upsert(repo, *, id, slug, source="git", source_ref="repo-a"):
+    return repo.upsert(
+        id=id,
+        slug=slug,
+        name=slug.title(),
+        description=None,
+        document=f"version: '0.2.0.dev0'\nsemantic_model:\n  - name: {slug}\n",
+        document_json={"semantic_model": [{"name": slug}]},
+        spec_version="0.2.0.dev0",
+        content_hash=f"hash-{slug}",
+        source=source,
+        source_ref=source_ref,
+        status="valid",
+        validation_errors=None,
+        validated_at=None,
+    )
+
+
+def test_upsert_then_get(repo):
+    _upsert(repo, id="m1", slug="retail")
+    row = repo.get("m1")
+    assert row["slug"] == "retail"
+    assert row["spec_version"] == "0.2.0.dev0"
+    assert row["document"].startswith("version:")
+    assert row["document_json"]["semantic_model"][0]["name"] == "retail"
+
+
+def test_upsert_is_idempotent_on_same_origin(repo):
+    _upsert(repo, id="m1", slug="retail")
+    _upsert(repo, id="m1", slug="retail")
+    assert len(repo.list_all()) == 1
+
+
+def test_get_by_slug(repo):
+    _upsert(repo, id="m1", slug="retail")
+    assert repo.get_by_slug("retail")["id"] == "m1"
+    assert repo.get_by_slug("nope") is None
+
+
+def test_list_filters_by_origin(repo):
+    _upsert(repo, id="m1", slug="retail", source="git", source_ref="repo-a")
+    _upsert(repo, id="m2", slug="finance", source="git", source_ref="repo-b")
+    assert {r["id"] for r in repo.list_all(source="git", source_ref="repo-a")} == {"m1"}
+    assert len(repo.list_all(source="git")) == 2
+
+
+def test_delete_missing_is_scoped_to_one_origin(repo):
+    _upsert(repo, id="m1", slug="retail", source="git", source_ref="repo-a")
+    _upsert(repo, id="m2", slug="stale", source="git", source_ref="repo-a")
+    _upsert(repo, id="m3", slug="other", source="git", source_ref="repo-b")
+
+    deleted = repo.delete_missing(source="git", source_ref="repo-a", keep_slugs=["retail"])
+
+    assert deleted == ["m2"]
+    assert repo.get("m1") is not None
+    assert repo.get("m3") is not None, "prune must never cross a source_ref boundary"
+
+
+def test_delete_missing_with_empty_keep_list_deletes_that_origin_only(repo):
+    _upsert(repo, id="m1", slug="retail", source="git", source_ref="repo-a")
+    _upsert(repo, id="m3", slug="other", source="git", source_ref="repo-b")
+
+    assert repo.delete_missing(source="git", source_ref="repo-a", keep_slugs=[]) == ["m1"]
+    assert repo.get("m3") is not None
+
+
+def test_package_links(repo):
+    _upsert(repo, id="m1", slug="retail")
+    repo.link_package("pkg1", "m1")
+    assert [r["id"] for r in repo.list_for_package("pkg1")] == ["m1"]
+    repo.link_package("pkg1", "m1")  # idempotent
+    assert len(repo.list_for_package("pkg1")) == 1
+    repo.unlink_package("pkg1", "m1")
+    assert repo.list_for_package("pkg1") == []
+
+
+def test_list_packages_for_model_is_the_reverse_lookup(repo):
+    """The export/search RBAC gate (Task 10) needs "which packages grant
+    access to this model" — the reverse of list_for_package, which answers
+    "which models does this package grant"."""
+    _upsert(repo, id="m1", slug="retail")
+    assert repo.list_packages_for_model("m1") == []
+
+    repo.link_package("pkg1", "m1")
+    repo.link_package("pkg2", "m1")
+    assert repo.list_packages_for_model("m1") == ["pkg1", "pkg2"]
+
+    repo.unlink_package("pkg1", "m1")
+    assert repo.list_packages_for_model("m1") == ["pkg2"]
+
+
+def test_delete_missing_treats_a_null_source_ref_as_its_own_origin(repo):
+    """A NULL source_ref is one origin among others, not a wildcard.
+
+    SQL NULL is never equal to itself, so a naive `source_ref = ?` prunes
+    nothing here on both engines — and the two engines express the null-safe
+    comparison differently (IS NOT DISTINCT FROM vs an array cast), which is
+    exactly where they can silently diverge.
+    """
+    _upsert(repo, id="m1", slug="kept", source="manual", source_ref=None)
+    _upsert(repo, id="m2", slug="gone", source="manual", source_ref=None)
+    _upsert(repo, id="m3", slug="other", source="manual", source_ref="repo-a")
+
+    deleted = repo.delete_missing(source="manual", source_ref=None, keep_slugs=["kept"])
+
+    assert deleted == ["m2"]
+    assert repo.get("m1") is not None
+    assert repo.get("m3") is not None, "a NULL-ref sync must not prune a non-NULL sibling"
+
+
+def test_list_all_source_ref_none_means_unfiltered_on_both_engines(repo):
+    """`source_ref=None` on list_all means "don't filter", NOT "match NULL".
+
+    It reads the same as delete_missing's None, which means the NULL origin —
+    so the two are deliberately different and both engines must at least agree
+    with each other. Pinned so the asymmetry is a decision, not a surprise.
+    """
+    _upsert(repo, id="m1", slug="kept", source="manual", source_ref=None)
+    _upsert(repo, id="m3", slug="other", source="manual", source_ref="repo-a")
+
+    assert {r["id"] for r in repo.list_all(source="manual", source_ref=None)} == {"m1", "m3"}

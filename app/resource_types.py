@@ -42,6 +42,7 @@ class ResourceType(StrEnum):
     MARKETPLACE_PLUGIN = "marketplace_plugin"
     TABLE = "table"
     DATA_PACKAGE = "data_package"
+    SEMANTIC_MODEL = "semantic_model"
     MEMORY_DOMAIN = "memory_domain"
     MEMORY_ITEM = "memory_item"
     RECIPE = "recipe"
@@ -242,6 +243,48 @@ def _data_package_blocks() -> List[Block]:
                     "description": r.get("description"),
                     "icon": r.get("icon"),
                     "color": r.get("color"),
+                    "slug": r.get("slug"),
+                }
+                for r in rows
+            ],
+        }
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Semantic model projection
+# ---------------------------------------------------------------------------
+
+
+def _semantic_model_blocks() -> List[Block]:
+    """Project ``semantic_models`` into the (block → items) shape rendered
+    by the admin /access page. ``resource_id`` is ``semantic_models.id``.
+
+    NOTE: this registers ``SEMANTIC_MODEL`` as a directly grantable resource
+    type, following the ``DATA_PACKAGE`` entry above — but nothing in the
+    export/search RBAC gate (``app/api/semantic_models.py``) reads a direct
+    ``resource_grants(SEMANTIC_MODEL, ...)`` row today: that gate checks the
+    linked-package grant via ``list_packages_for_model`` instead. A grant
+    created here through /admin/access is therefore inert until a future
+    task wires a direct-grant fallback into the export/search check (the
+    same way ``can_access_table`` layers per-table grants under the
+    data-package stack).
+    """
+    from src.repositories import semantic_model_repo
+
+    rows = semantic_model_repo().list_all()
+    if not rows:
+        return []
+    return [
+        {
+            "id": "semantic_models",
+            "name": "Semantic models",
+            "items": [
+                {
+                    "resource_id": r["id"],
+                    "name": r["name"],
+                    "category": "semantic_model",
+                    "description": r.get("description"),
                     "slug": r.get("slug"),
                 }
                 for r in rows
@@ -697,6 +740,13 @@ RESOURCE_TYPES: dict[ResourceType, ResourceTypeSpec] = {
         description="An admin-curated bundle of data tables.",
         id_format="<package_id>",
         list_blocks=_data_package_blocks,
+    ),
+    ResourceType.SEMANTIC_MODEL: ResourceTypeSpec(
+        key=ResourceType.SEMANTIC_MODEL,
+        display_name="Semantic models",
+        description="A semantic model — datasets, fields, relationships and metrics.",
+        id_format="<model_id>",
+        list_blocks=_semantic_model_blocks,
     ),
     ResourceType.MEMORY_DOMAIN: ResourceTypeSpec(
         key=ResourceType.MEMORY_DOMAIN,

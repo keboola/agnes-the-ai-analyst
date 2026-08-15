@@ -678,6 +678,84 @@ def _enumerate_master_sources() -> list[dict]:
     return sources
 
 
+def _store_ossie_documents(documents: list[str], *, source: str, source_ref: Optional[str]) -> None:
+    """Validate and store composed Ossie documents into ``semantic_models``
+    ONLY — deliberately NOT through
+    ``src/semantic/importer.py::import_documents``'s flat-table projection.
+
+    That importer's ``project_document`` step writes ``metric_definitions``
+    rows keyed by each metric's own declared ``name`` — the exact same
+    ``metric_definitions.name`` the flat write in ``_sync_one_source`` below
+    already claims, under ``source="keboola_semantic_layer"``, for the same
+    real-world metric. Calling ``import_documents`` here makes two writers
+    race for one name: composing before the flat loop makes ITS OWN
+    name-ownership check see the name as already taken by "a different
+    owner" and silently skip writing its row (reproduced in
+    tests/test_keboola_semantic_layer_sync.py while building this); composing
+    after leaves the flat loop's row alone but adds a SECOND, duplicate-by-
+    name row under ``source="keboola_metastore"`` (``metric_definitions`` has
+    no uniqueness constraint on ``name``, only on ``id``). Neither is
+    acceptable, and reconciling the two into one writer is the flat-table
+    CUTOVER a later task ("Golden regression") exists to validate with its
+    own regression test — not something to do silently here. This function
+    therefore replicates only the storage half of ``import_documents``
+    (validate, hash, upsert-if-changed, prune-scoped-to-this-source) so this
+    adapter's real deliverable — full-fidelity documents, queryable via the
+    semantic-model REST/CLI/MCP surfaces — lands without touching a table
+    the flat importer still owns.
+    """
+    import hashlib
+    from datetime import datetime, timezone
+
+    from src.repositories import semantic_model_repo
+    from src.semantic.document_validation import validate_document
+
+    repo = semantic_model_repo()
+    existing_by_slug = {m["slug"]: m for m in repo.list_all(source=source, source_ref=source_ref)}
+    keep_slugs: list[str] = []
+
+    for text in documents:
+        result = validate_document(text)
+        if not result.ok:
+            # No slug to key storage on or protect from prune — logged and
+            # dropped, consistent with import_documents' own handling of an
+            # invalid document.
+            logger.warning(
+                "Keboola semantic layer: composed Ossie document failed validation for source %s: %s",
+                source_ref,
+                "; ".join(result.errors),
+            )
+            continue
+        models = (result.parsed or {}).get("semantic_model") or []
+        slug = models[0].get("name") if models else None
+        if not slug:
+            continue
+        keep_slugs.append(slug)
+
+        content_hash = hashlib.sha256(text.encode()).hexdigest()
+        existing = existing_by_slug.get(slug)
+        if existing is not None and existing.get("content_hash") == content_hash:
+            continue
+
+        repo.upsert(
+            id="/".join([source, source_ref or "_", slug]),
+            slug=slug,
+            name=slug,
+            description=None,
+            document=text,
+            document_json=result.parsed,
+            spec_version=result.spec_version,
+            content_hash=content_hash,
+            source=source,
+            source_ref=source_ref,
+            status="valid",
+            validation_errors=None,
+            validated_at=datetime.now(timezone.utc),
+        )
+
+    repo.delete_missing(source=source, source_ref=source_ref, keep_slugs=keep_slugs)
+
+
 def _sync_one_source(
     url: str,
     token: str,
@@ -827,6 +905,34 @@ def _sync_one_source(
     model_uuids = sorted(m["id"] for m in models if m.get("id"))
     if not model_uuids:
         return empty_result
+
+    # Compose full Ossie documents (one per model) alongside the flat
+    # metric_definitions/glossary_terms writes below: nothing upstream is
+    # discarded on the way in, even the fields the flat projection has no
+    # column for (per-field descriptions, the declared SQL dialect,
+    # relationships beyond the single JOIN case, ai.keywords, constraints,
+    # glossary terms — see connectors/keboola/semantic_ossie.py). Stored via
+    # `_store_ossie_documents`, NOT `src/semantic/importer.py::import_documents`
+    # — see that function's docstring for why running the generic importer's
+    # flat-table projection here would collide with the write below. A
+    # dedicated MetastoreClient fetch (inside KeboolaMetastoreAdapter) rather
+    # than reusing the fetch below keeps the adapter self-contained — the
+    # same "hand it connection config, get documents back" contract every
+    # semantic-source adapter uses — at the cost of one extra round-trip per
+    # sync. This is strictly additive: failures are logged and swallowed
+    # rather than raised, so a bug in it can never regress the flat sync
+    # this function has always done.
+    try:
+        from connectors.keboola.semantic_ossie import KeboolaMetastoreAdapter
+
+        ossie_documents = KeboolaMetastoreAdapter().extract({"url": url, "token": token})
+        _store_ossie_documents(ossie_documents, source="keboola_metastore", source_ref=source_ref)
+    except Exception:
+        logger.exception(
+            "Keboola semantic layer: Ossie document composition failed for source %s; "
+            "the flat metric_definitions/glossary_terms sync below is unaffected",
+            source_ref,
+        )
 
     # EVERY model, not just the first. A project exposes more than one the
     # moment a model shared from another project is linked into it — the

@@ -92,6 +92,28 @@ Extractors with `query_mode='remote'` tables include a `_remote_attach` table in
 
 Deeper architecture notes: [`docs/architecture.md`](docs/architecture.md).
 
+### Semantic layer (Apache Ossie documents)
+
+A semantic model — datasets, per-column fields, relationships, metrics and
+`ai_context` — is stored whole as an [Apache Ossie](https://ossie.apache.org/)
+document in `semantic_models`, validated against a vendored, pinned JSON
+Schema. `metric_definitions`, `glossary_terms` and `column_metadata` are
+**projections** of that document and regenerable from it; the document is the
+owner. Sources (`semantic_sources`) feed it over three transports — git clone,
+upload, or an existing connection — each through an adapter whose entire
+contract is `extract(config) -> list[str]` returning documents as text. Adapters
+never write to the database, which is what makes a new source format additive.
+Provenance is `(source, source_ref)` and a sync prunes only within its own; a
+model owned by a source is read-only through the API (`409 source_owned`) so a
+scheduled sync cannot silently revert a downstream edit. Reference:
+[`docs/semantic-layer.md`](docs/semantic-layer.md). Design:
+[`docs/superpowers/specs/2026-08-13-open-semantic-layer-contract-design.md`](docs/superpowers/specs/2026-08-13-open-semantic-layer-contract-design.md).
+
+Note the neighbour: `src/semantic_validation.py` is a **query** validator (does
+a SQL statement obey a document's constraints and dialects);
+`src/semantic/document_validation.py` is a **document** validator (does a
+document conform to the schema). Different concerns, adjacent names.
+
 ### Agent profiles & agent-as-API
 
 Named, scoped agents layered over a user's own stack — CRUD/scope/PAT issuance

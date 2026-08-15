@@ -58,8 +58,10 @@ _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 # pre-existing governance-created agents from `draft` to `ready` (see
 # `_v114_to_v115`), 116 table_registry access-policy columns —
 # access_policy_sql/note/updated_at/updated_by + policy_mapping, the storage
-# for one SQL row/column-filtering policy per table (see `_v115_to_v116`).
-SCHEMA_VERSION = 116
+# for one SQL row/column-filtering policy per table (see `_v115_to_v116`),
+# 117 semantic_models / semantic_sources / data_package_semantic_models —
+# the canonical Ossie semantic-layer document store (see `_v116_to_v117`).
+SCHEMA_VERSION = 117
 
 # v96: data_apps registry (hosted user web apps). Extracted as a shared
 # module-level constant so the fresh-install DDL (appended to
@@ -1705,6 +1707,55 @@ CREATE TABLE IF NOT EXISTS glossary_terms (
     source_ref   VARCHAR,
     created_at   TIMESTAMP DEFAULT current_timestamp,
     updated_at   TIMESTAMP DEFAULT current_timestamp
+);
+
+-- v116: semantic_models / semantic_sources / data_package_semantic_models —
+-- canonical Apache Ossie semantic-layer documents (see _v115_to_v116).
+-- metric_definitions and glossary_terms above remain the flat projections
+-- queries actually read; these tables own the document they were derived
+-- from.
+CREATE TABLE IF NOT EXISTS semantic_models (
+    id                VARCHAR PRIMARY KEY,
+    slug              VARCHAR NOT NULL,
+    name              VARCHAR NOT NULL,
+    description       TEXT,
+    -- The document exactly as the adapter produced it. Never re-serialized:
+    -- round-tripping through a YAML dumper would silently reorder keys and
+    -- drop comments, and this column is what `export` hands back out.
+    document          TEXT NOT NULL,
+    document_json     JSON,
+    spec_version      VARCHAR NOT NULL,
+    content_hash      VARCHAR NOT NULL,
+    source            VARCHAR NOT NULL DEFAULT 'manual',
+    source_ref        VARCHAR,
+    status            VARCHAR NOT NULL DEFAULT 'valid',
+    validation_errors JSON,
+    validated_at      TIMESTAMP,
+    created_at        TIMESTAMP DEFAULT current_timestamp,
+    updated_at        TIMESTAMP DEFAULT current_timestamp
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_semantic_models_origin
+    ON semantic_models (source, source_ref, slug);
+
+CREATE TABLE IF NOT EXISTS semantic_sources (
+    id               VARCHAR PRIMARY KEY,
+    kind             VARCHAR NOT NULL,     -- 'git' | 'upload' | 'connection'
+    name             VARCHAR NOT NULL,
+    adapter          VARCHAR NOT NULL,     -- 'native' | 'keboola_metastore'
+    config           JSON NOT NULL,
+    enabled          BOOLEAN DEFAULT TRUE,
+    last_sync_at     TIMESTAMP,
+    last_sync_status VARCHAR,
+    last_sync_error  TEXT,
+    created_at       TIMESTAMP DEFAULT current_timestamp,
+    updated_at       TIMESTAMP DEFAULT current_timestamp
+);
+
+CREATE TABLE IF NOT EXISTS data_package_semantic_models (
+    package_id VARCHAR NOT NULL,
+    model_id   VARCHAR NOT NULL,
+    PRIMARY KEY (package_id, model_id)
 );
 
 -- v94: jobs — durable job queue, the foundation of the worker runtime
@@ -7291,6 +7342,62 @@ def _v115_to_v116(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("UPDATE schema_version SET version = 116")
 
 
+def _v116_to_v117(conn: duckdb.DuckDBPyConnection) -> None:
+    """v116→v117: semantic_models + semantic_sources + the data-package junction.
+
+    Pure additive DDL — no backfill. Existing metric_definitions and
+    glossary_terms rows keep their provenance and are NOT retro-attached to a
+    model: there is no document they came from, and inventing one would make
+    `export` emit a document the instance never received.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS semantic_models (
+            id                VARCHAR PRIMARY KEY,
+            slug              VARCHAR NOT NULL,
+            name              VARCHAR NOT NULL,
+            description       TEXT,
+            document          TEXT NOT NULL,
+            document_json     JSON,
+            spec_version      VARCHAR NOT NULL,
+            content_hash      VARCHAR NOT NULL,
+            source            VARCHAR NOT NULL DEFAULT 'manual',
+            source_ref        VARCHAR,
+            status            VARCHAR NOT NULL DEFAULT 'valid',
+            validation_errors JSON,
+            validated_at      TIMESTAMP,
+            created_at        TIMESTAMP DEFAULT current_timestamp,
+            updated_at        TIMESTAMP DEFAULT current_timestamp
+        )
+    """)
+    conn.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_semantic_models_origin
+            ON semantic_models (source, source_ref, slug)
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS semantic_sources (
+            id               VARCHAR PRIMARY KEY,
+            kind             VARCHAR NOT NULL,
+            name             VARCHAR NOT NULL,
+            adapter          VARCHAR NOT NULL,
+            config           JSON NOT NULL,
+            enabled          BOOLEAN DEFAULT TRUE,
+            last_sync_at     TIMESTAMP,
+            last_sync_status VARCHAR,
+            last_sync_error  TEXT,
+            created_at       TIMESTAMP DEFAULT current_timestamp,
+            updated_at       TIMESTAMP DEFAULT current_timestamp
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS data_package_semantic_models (
+            package_id VARCHAR NOT NULL,
+            model_id   VARCHAR NOT NULL,
+            PRIMARY KEY (package_id, model_id)
+        )
+    """)
+    conn.execute("UPDATE schema_version SET version = 117")
+
+
 def _add_store_entity_trust_columns(conn: duckdb.DuckDBPyConnection) -> None:
     """The v111 column DDL on its own, with no version stamp.
 
@@ -8319,6 +8426,9 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # v115→v116: table_registry access-policy columns. No-op on
             # fresh installs — _SYSTEM_SCHEMA already declares the columns.
             _v115_to_v116(conn)
+            # v116→v117: semantic_models + semantic_sources + junction. No-op
+            # on fresh installs — _SYSTEM_SCHEMA already declares them.
+            _v116_to_v117(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -8604,6 +8714,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v114_to_v115(conn)
             if current < 116:
                 _v115_to_v116(conn)
+            if current < 117:
+                _v116_to_v117(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],
