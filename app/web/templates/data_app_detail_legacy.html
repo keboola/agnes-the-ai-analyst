@@ -1,0 +1,175 @@
+{% extends "base_page.html" %}
+{% block title %}{{ app.name }} — Data apps — {{ config.INSTANCE_NAME }}{% endblock %}
+
+{% set page_hero_eyebrow = "Data Apps" %}
+{% set page_hero_title = app.name %}
+{% set page_hero_subtitle = app.slug %}
+
+{% block head_extra %}
+<style>
+  .dda-page .info-grid { margin-bottom: var(--space-6); }
+  .dda-page .info-item .value code { font-size: var(--text-sm); }
+  .dda-actions { display: flex; gap: 8px; margin-bottom: var(--space-6); flex-wrap: wrap; }
+  .dda-logs-section h3 { margin-bottom: var(--space-2); }
+  .dda-logs { max-height: 480px; overflow-y: auto; }
+  .dda-grant-note { margin-top: var(--space-6); color: var(--ds-text-secondary); font-size: var(--text-sm); }
+</style>
+{% endblock %}
+
+{% block page %}
+<div class="dda-page">
+  <div class="info-grid ds-card">
+    <div class="info-item">
+      <span class="label">Slug</span>
+      <span class="value"><code>{{ app.slug }}</code></span>
+    </div>
+    <div class="info-item">
+      <span class="label">State</span>
+      <span class="value">
+        {% if app.kind == 'linked' %}
+        <span class="badge" id="dda-state-badge">linked</span>
+        {% else %}
+        <span class="badge {{ app.badge_class }}" id="dda-state-badge">{{ app.state }}</span>
+        {% endif %}
+      </span>
+    </div>
+    <div class="info-item">
+      <span class="label">{% if app.kind == 'linked' %}Source{% else %}Owner{% endif %}</span>
+      <span class="value">{% if app.kind == 'linked' %}Keboola{% else %}{{ app.owner_email }}{% endif %}</span>
+    </div>
+    <div class="info-item">
+      <span class="label">Description</span>
+      <span class="value" id="dda-description">{{ app.effective_description or "—" }}</span>
+    </div>
+    {% if app.kind != 'linked' %}
+    <div class="info-item">
+      <span class="label">Deployed SHA</span>
+      <span class="value"><code>{{ (app.deployed_sha or "—")[:12] }}</code></span>
+    </div>
+    {% endif %}
+    <div class="info-item">
+      <span class="label">URL</span>
+      <span class="value">
+        {% if app.kind == 'linked' or app.state == 'running' %}
+        <a href="{{ app.url }}" target="_blank" rel="noopener">{{ app.url }} ↗</a>
+        {% else %}
+        <code>{{ app.url }}</code>
+        {% endif %}
+      </span>
+    </div>
+  </div>
+
+  {% if can_manage and app.kind == 'hosted' %}
+  <div class="dda-actions">
+    {{ ds.button('Deploy', variant='primary', id='dda-deploy-btn') }}
+    {{ ds.button('Stop', variant='secondary', id='dda-stop-btn') }}
+  </div>
+
+  <div class="dda-logs-section">
+    <h3>Logs</h3>
+    <pre class="dda-logs" id="dda-logs">Loading…</pre>
+  </div>
+  {% endif %}
+
+  {% if can_manage and app.kind == 'linked' %}
+  <div class="dda-desc-section">
+    <h3>Description override</h3>
+    <p class="dda-grant-note">The ingest sync refreshes this app's description; a value here pins your own and won't be clobbered.</p>
+    <form id="dda-desc-form" class="dda-actions">
+      <input type="text" id="dda-desc-input" value="{{ app.description_override or '' }}" placeholder="Custom description…" style="flex:1;min-width:280px;" />
+      {{ ds.button('Save', variant='primary', id='dda-desc-save', type='submit') }}
+    </form>
+  </div>
+  {% endif %}
+
+  <p class="dda-grant-note">
+    To give another user or group access to this app, grant them
+    <code>data_app:{{ app.slug }}</code> in the <a href="/admin/access">Access workspace</a>.
+  </p>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{% if can_manage and app.kind == 'linked' %}
+<script>
+(function () {
+  const slug = {{ app.slug | tojson }};
+  const form = document.getElementById("dda-desc-form");
+  const input = document.getElementById("dda-desc-input");
+  const descEl = document.getElementById("dda-description");
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    try {
+      const r = await fetch(`/api/data-apps/${encodeURIComponent(slug)}`, {
+        method: "PATCH",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ description: input.value }),
+      });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        alert("Failed: " + (err.detail || r.status));
+        return;
+      }
+      const body = await r.json();
+      descEl.textContent = body.effective_description || "—";
+    } catch (e) {
+      alert("Network error: " + e.message);
+    }
+  });
+})();
+</script>
+{% endif %}
+{% if can_manage and app.kind == 'hosted' %}
+<script>
+(function () {
+  const slug = {{ app.slug | tojson }};
+  const logsEl = document.getElementById("dda-logs");
+  const deployBtn = document.getElementById("dda-deploy-btn");
+  const stopBtn = document.getElementById("dda-stop-btn");
+
+  async function loadLogs() {
+    try {
+      const r = await fetch(`/api/data-apps/${encodeURIComponent(slug)}/logs?tail=200`, { credentials: "include" });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const body = await r.json();
+      logsEl.textContent = body.logs || "(no logs yet)";
+    } catch (e) {
+      logsEl.textContent = "Failed to load logs: " + e.message;
+    }
+  }
+
+  async function runAction(btn, path) {
+    btn.disabled = true;
+    const prev = btn.textContent;
+    btn.textContent = "Working…";
+    try {
+      const r = await fetch(`/api/data-apps/${encodeURIComponent(slug)}/${path}`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        alert("Failed: " + (err.detail || r.status));
+        btn.disabled = false;
+        btn.textContent = prev;
+        return;
+      }
+      location.reload();
+    } catch (e) {
+      alert("Network error: " + e.message);
+      btn.disabled = false;
+      btn.textContent = prev;
+    }
+  }
+
+  deployBtn.addEventListener("click", () => runAction(deployBtn, "deploy"));
+  stopBtn.addEventListener("click", () => runAction(stopBtn, "stop"));
+
+  loadLogs();
+})();
+</script>
+{% endif %}
+{% endblock %}

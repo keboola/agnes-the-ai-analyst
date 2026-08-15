@@ -1,6 +1,6 @@
 [project]
 name = "agnes-the-ai-analyst"
-version = "0.83.11"
+version = "0.83.21"
 description = "Agnes — self-hosted AI harness for organizations: governed data access, agents as an API, skills marketplace, corporate memory, hosted data apps, and agent surfaces (web chat, Slack, MCP, CLI)"
 requires-python = ">=3.11,<3.14"
 license = {file = "LICENSE"}
@@ -344,10 +344,18 @@ line-length = 120
 target-version = "py313"
 
 [tool.ruff.lint.flake8-bugbear]
-# FastAPI's parameter-declaration calls are immutable markers, not runtime
-# defaults — without this, ruff versions that enable B008 by default flag
-# every `= Body(...)` / `= Header(...)` route signature in the repo.
-extend-immutable-calls = ["fastapi.Body", "fastapi.Depends", "fastapi.Header", "fastapi.Query"]
+# FastAPI's and typer's parameter-declaration calls are immutable markers,
+# not runtime defaults — without this, ruff versions that enable B008 by
+# default flag every `= Body(...)` / `= Header(...)` route signature and
+# every `= typer.Option(...)` CLI signature in the repo.
+extend-immutable-calls = [
+    "fastapi.Body",
+    "fastapi.Depends",
+    "fastapi.Header",
+    "fastapi.Query",
+    "typer.Argument",
+    "typer.Option",
+]
 
 [tool.ruff.lint.per-file-ignores]
 # main.py deliberately runs env/config setup before its imports — the

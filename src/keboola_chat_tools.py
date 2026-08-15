@@ -30,6 +30,7 @@ by running the thing (2026-08-10):
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import re
 from pathlib import Path
@@ -38,6 +39,8 @@ from typing import Any, Dict, List
 # Upstream package. Bump deliberately — the tool surface the agent sees is a
 # function of this pin, so a bump is a user-visible change and wants a
 # CHANGELOG bullet.
+logger = logging.getLogger(__name__)
+
 KEBOOLA_MCP_PACKAGE = "keboola-mcp-server"
 KEBOOLA_MCP_VERSION = "1.74.6"
 
@@ -46,6 +49,12 @@ KEBOOLA_MCP_VERSION = "1.74.6"
 # name the subprocess expects.
 TOKEN_ENV = "KBC_STORAGE_TOKEN"
 STACK_URL_ENV = "KBC_STORAGE_API_URL"
+# Only a MASTER token gets a workspace created for it behind the scenes. A
+# custom token — the one an admin reaches for when they want the agent to have
+# read-only rights — has to be told which workspace to run SQL in, or
+# `query_data` fails while every other tool works. Optional here because the
+# master-token setup genuinely does not need it.
+WORKSPACE_SCHEMA_ENV = "KBC_WORKSPACE_SCHEMA"
 
 # uv ships in the runtime image at /usr/local/bin/uv (Dockerfile), so a bare
 # name resolves through the PATH the MCP SDK inherits (its
@@ -149,11 +158,51 @@ def runner_args(*, version: str = KEBOOLA_MCP_VERSION) -> List[str]:
     ]
 
 
+#: Env keys this module derives from the connection. Everything else in a
+#: derived source's ``env`` belongs to the admin who put it there.
+DERIVED_ENV_KEYS = frozenset({STACK_URL_ENV, WORKSPACE_SCHEMA_ENV, "UV_CACHE_DIR"})
+
+
+def merge_env(existing: Dict[str, str] | None, derived: Dict[str, str]) -> Dict[str, str]:
+    """Combine a derived source's existing env with a freshly built one.
+
+    A plain ``existing | derived`` looks right and quietly cannot delete: a
+    connection that *drops* ``workspace_schema`` still has the old
+    ``KBC_WORKSPACE_SCHEMA`` in the row, so the agent keeps running SQL against
+    a workspace the admin removed and nothing says so. Keys this module derives
+    are therefore authoritative — absent from the new spec means absent, full
+    stop — while any other key is the admin's and survives untouched.
+
+    One definition because there are two callers (enable and the
+    unrelated-edit resync); the same merge written twice is the shape that
+    gets fixed on one path and not the other.
+
+    The cost of that rule is real and is logged rather than hidden: an admin
+    who typed one of these keys directly onto the MCP source entry loses it
+    here, on a save they made about something else. Keeping it is not an
+    option — it is the same value the connection is authoritative for, so
+    preserving it would resurrect exactly the stale workspace this rule
+    exists to clear. Saying so in the log is, and the connection is where
+    that key is edited. (Devin Review on this PR.)
+    """
+    kept = {k: v for k, v in (existing or {}).items() if k not in DERIVED_ENV_KEYS}
+    dropped = sorted(k for k in (existing or {}) if k in DERIVED_ENV_KEYS and k not in derived)
+    if dropped:
+        logger.info(
+            "derived MCP source: dropping connection-owned env %s — the connection no longer sets it; "
+            "edit it on the connection, not on the source entry",
+            ", ".join(dropped),
+        )
+    kept.update(derived)
+    return kept
+
+
 def build_stdio_spec(
     *,
     connection_id: str,
     connection_name: str,
     stack_url: str,
+    workspace_schema: str | None = None,
     version: str = KEBOOLA_MCP_VERSION,
 ) -> Dict[str, Any]:
     """Build the ``mcp_sources`` row for a Keboola connection.
@@ -163,6 +212,13 @@ def build_stdio_spec(
     resulting tools is decided downstream by ``tool_grants`` — the derived
     source lands with no grants at all, so enabling it exposes nothing until
     an admin grants explicitly.
+
+    ``workspace_schema`` is passed through whenever the connection carries one
+    (``config.workspace_schema``) — an admin opt-in with no token-kind check;
+    the code only refuses to *invent* a value. It is what makes a non-master
+    token usable: only a master token gets a workspace created for it by
+    Keboola, so such setups normally leave the key unset — setting it anyway
+    pins ``query_data`` to that workspace instead of the auto-created one.
     """
     return {
         "id": derived_source_id(connection_id),
@@ -170,7 +226,11 @@ def build_stdio_spec(
         "transport": "stdio",
         "command": RUNNER_COMMAND,
         "args": runner_args(version=version),
-        "env": {STACK_URL_ENV: stack_url.rstrip("/"), "UV_CACHE_DIR": uv_cache_dir()},
+        "env": {
+            STACK_URL_ENV: stack_url.rstrip("/"),
+            "UV_CACHE_DIR": uv_cache_dir(),
+            **({WORKSPACE_SCHEMA_ENV: workspace_schema} if workspace_schema else {}),
+        },
         "auth_secret_env": TOKEN_ENV,
         "auth_method": None,
         "scope": "shared",

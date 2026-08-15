@@ -11,7 +11,6 @@ import io
 import json
 import zipfile
 from datetime import datetime, timezone
-from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -301,7 +300,7 @@ class TestMarketplaceZip:
         """GET /marketplace.zip with a stale If-None-Match returns full content."""
         c = marketplace_env["client"]
         headers = _auth(marketplace_env["admin_token"])
-        first = c.get("/marketplace.zip", headers=headers)
+        c.get("/marketplace.zip", headers=headers)  # warm request; only the conditional GET below is asserted
         stale_etag = "0000000000000000"  # definitely wrong
         second = c.get(
             "/marketplace.zip",
@@ -361,3 +360,56 @@ class TestMarketplaceZip:
         manifest = json.loads(zip_contents[".claude-plugin/marketplace.json"])
         plug_x = next(p for p in manifest["plugins"] if p["source"] == "./plugins/mkt-a-plug-x")
         assert plug_x["name"] == "plug-x"
+
+
+class TestBuildInfoEtagCache:
+    """/marketplace/info goes through the shared ETag TTL cache.
+
+    It used to call ``marketplace_filter.compute_etag`` directly — a SHA-256
+    over every plugin byte on disk, per request — while only /marketplace.zip
+    was cached. The AI-Connector page polls /marketplace/info for its package
+    list, so on an instance with a large plugin every page view re-hashed the
+    full content. Both paths now share one cache entry (unit-level test: the
+    resolver is stubbed, no app fixture needed).
+    """
+
+    def test_build_info_reuses_cached_etag(self, monkeypatch, tmp_path):
+        from app.marketplace_server import packager
+        from src import marketplace_filter
+
+        packager.invalidate_etag_cache()
+        plugins = [
+            {
+                "marketplace_id": "mkt",
+                "marketplace_slug": "mkt",
+                "original_name": "demo",
+                "prefixed_name": "mkt-demo",
+                "manifest_name": "demo",
+                "version": "1.0.0",
+                "raw": {"name": "demo", "description": "d"},
+                "plugin_dir": tmp_path,
+                "source": "marketplace",
+            }
+        ]
+        monkeypatch.setattr(marketplace_filter, "resolve_user_marketplace", lambda conn, user: plugins)
+        monkeypatch.setattr(marketplace_filter, "resolve_user_groups", lambda conn, user: [])
+        calls: list[int] = []
+        real_compute = marketplace_filter.compute_etag
+
+        def counting_compute(p):
+            calls.append(1)
+            return real_compute(p)
+
+        monkeypatch.setattr(marketplace_filter, "compute_etag", counting_compute)
+
+        user = {"id": "u1", "email": "u@example.test"}
+        info1 = packager.build_info(None, user)
+        info2 = packager.build_info(None, user)
+        assert info1["etag"] == info2["etag"]
+        assert len(calls) == 1, "second /marketplace/info re-hashed instead of using the cache"
+
+        # /marketplace.zip's etag resolution shares the same cache entry.
+        etag, _ = packager.compute_etag_for_user(None, user)
+        assert etag == info1["etag"]
+        assert len(calls) == 1
+        packager.invalidate_etag_cache()

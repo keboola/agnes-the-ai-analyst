@@ -36,6 +36,27 @@ To limit what an *agent* can reach, use agent scopes (an agent's effective autho
 
 `resource_type` is a string from the `app.resource_types.ResourceType` `StrEnum`. `resource_id` is a path string whose format is owned by the registering module — for `marketplace_plugin` it's `<marketplace_slug>/<plugin_name>`.
 
+### Owner-writable grants (Library sharing)
+
+Most `resource_grants` rows are admin-written (`/admin/access`), but the types
+registered with the owner-sharing service (`app/services/library_sharing.py`:
+collections, agents, corpus files, **data apps**) can also be granted by the
+resource's *owner* through the Library's Share dialog — same rows, narrower
+writer (the owner may only share what they own; admins pass for everything,
+including linked data apps whose synthetic `system` owner matches no real
+user).
+
+Governance note for `data_app`, decided deliberately (Devin Review on #1321):
+sharing a hosted app shares its **rendered output**. The app executes under
+its own service credentials regardless of who views it, so a grant — `Everyone`
+included — widens who can see whatever data the app displays, independent of
+the viewers' own table/package grants. This is the same publish-what-you-built
+model as sharing a collection or a file (those too can embed data the grantee
+could not query directly); the owner had access to the data when building the
+app, and sharing is their call to publish that view. Admins retain full
+oversight: every grant is visible and revocable in `/admin/access`, and grant
+writes are audited like any other.
+
 ---
 
 ## Authorization API
@@ -160,7 +181,7 @@ No DB migration, no startup hook, no second wiring step in `access-overview` —
 Members are added to groups by three sources, distinguished by the `source` column:
 
 - **`google_sync`** — written by the OAuth callback on every login. The previous Google-sync set is wholesale replaced (DELETE + INSERT) so a removed Workspace membership disappears immediately.
-- **`admin`** — written by admin actions in the UI (`/admin/access`), CLI (`agnes admin group add-member …`), or REST (`POST /api/admin/groups/{id}/members`). Survives Google sync. Admin can only delete admin-source rows.
+- **`admin`** — written by admin actions in the UI (`/admin/groups/{id}` → Members), CLI (`agnes admin group add-member …`), or REST (`POST /api/admin/groups/{id}/members`). Survives Google sync. Admin can only delete admin-source rows.
 - **`system_seed`** — written at deploy time (the `SEED_ADMIN_EMAIL` → Admin-group binding) **and** at every new-user creation (the Everyone auto-grant, issue #748 — every creation path: Google OAuth first sign-in, `POST /auth/bootstrap`, admin `POST /api/users`, marketplace import stubs — unless `AGNES_GROUP_EVERYONE_EMAIL` maps Everyone to a Workspace group instead, in which case Everyone comes exclusively from `google_sync`). The Everyone grant fires once, at creation time, and is never re-asserted afterward — an admin who later removes a user from Everyone stays removed on their next login/boot.
 
 Removing a user from a group via the admin path (UI/CLI/REST) only deletes admin-source rows. To revoke a Google-synced membership, the operator must change the upstream Workspace group instead — Agnes will pick up the change on the user's next login.
@@ -171,12 +192,25 @@ Removing a user from a group via the admin path (UI/CLI/REST) only deletes admin
 
 ### UI
 
-`/admin/access` is the single admin page. Two tabs:
+Accounts and access are two sections:
 
-- **Groups** — list user-groups with member/grant counts. Click a group to manage members. System groups are read-only.
-- **Resource grants** — list grants across all groups (filterable by group / resource_type), create new grants via dropdowns wired against `/api/admin/resource-types`.
+- **People** (`/admin/users`) — accounts: invite, activate/deactivate, passwords, delete. **Tokens** (`/admin/tokens`) sits beside it: every personal access token across users, for incident response and offboarding.
+- **Access** (`/admin/access`) — groups, and what each one can use.
 
-`/admin/users/{id}` (the existing user detail page) toggles the Admin-group membership when an operator switches a user's "role" between admin and non-admin — there's no four-level hierarchy left, just admin / non-admin.
+#### The Access workspace
+
+A group is one object with two sides — an audience, and a bundle of what that audience can use — so it has one editor. `/admin/access` is a two-pane workspace:
+
+- **Left** — every group, with its origin (system / custom / Google-synced), member count and grant count. Search matches name, description and Workspace address. `+ New group` opens the create drawer and selects the result here.
+- **Right** — the selected group. Its header carries the name, the Workspace address it is really stored under, the origin pill, the description, the created date, and **Rename** / **Delete** (hidden for system and Google-synced rows, which the API refuses to change).
+  - **Who it reaches** — a member count stated as its consequence, avatars, and one search box that both adds someone and answers "is Maria in this group?". **Show all N** expands the full roster with each member's source (`added by admin` / `synced from Google` / `system-managed`) and a Remove button on admin-added rows only.
+  - **What it can use** — the grant matrix, by resource type, with a filter matching name, `resource_id`, block, category and description. Backed by `/api/admin/access-overview` + `/api/admin/grants`.
+
+The second lens, **Simulate a person** (`/admin/access?lens=simulate`), walks one person's membership → grant → tier and names what is *not* shared with them.
+
+Retired URLs, all 308 onto the workspace: `/admin/grants` and `/admin/groups` → `/admin/access`; `/admin/groups/{id}` → `/admin/access?group=<id>` (unknown ids still 404). `/admin/tables`' per-row *Manage access* arrives as `/admin/access?resource=<type>:<id>`, which pre-filters the grant tree; the older `#table:<id>` fragment is rewritten to it.
+
+The one editor rule has two deliberate exceptions, both *transposes* rather than copies: a data package's **Share** panel answers "which groups get this package", and `/admin/users/{id}` answers "which groups is this person in". The user detail page also toggles Admin-group membership when an operator switches a user between admin and non-admin — there's no four-level hierarchy, just admin / non-admin — and lists that user's **effective access** (each row links to the granting group in the workspace) and their **access tokens**, so an offboarding runs on one page.
 
 ### CLI
 

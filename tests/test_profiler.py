@@ -316,3 +316,34 @@ class TestRound:
 
     def test_inf(self):
         assert _round(float("inf")) is None
+
+
+class TestJiraTableLayoutMetadata:
+    """The profile must report each Jira table's real layout.
+
+    Six Jira tables are month-partitioned event streams; `jira_organizations`
+    is a current-state dimension stored as one unpartitioned parquet with no
+    `created_at` column. Stamping every entry with the same partition metadata
+    advertised a monthly history the flat table does not have
+    (Devin Review on #1274).
+    """
+
+    def test_organizations_is_reported_flat(self):
+        from src.profiler import _JIRA_TABLE_DEFS, _jira_table_info
+
+        by_name = {jt["name"]: jt for jt in _JIRA_TABLE_DEFS}
+        org = _jira_table_info(by_name["jira_organizations"])
+        assert org.sync_strategy == "full_refresh"
+        assert org.partition_by is None
+        assert org.partition_granularity is None
+        assert not org.is_partitioned()
+
+    def test_partitioned_tables_keep_their_metadata(self):
+        from src.profiler import _JIRA_TABLE_DEFS, _jira_table_info
+
+        by_name = {jt["name"]: jt for jt in _JIRA_TABLE_DEFS}
+        issues = _jira_table_info(by_name["jira_issues"])
+        assert issues.is_partitioned()
+        assert issues.partition_by == "created_at"
+        assert issues.partition_granularity == "month"
+        assert [fk.references for fk in issues.foreign_keys] == ["jira_organizations.org_id"]

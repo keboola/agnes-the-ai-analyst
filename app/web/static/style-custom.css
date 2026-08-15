@@ -1378,6 +1378,38 @@ footer {
     font-size: var(--text-13);
 }
 
+/* Shared footer partial (`_footer.html`): product name, running build, then
+   the operator credit when configured. Only the INSIDE is styled here — the
+   outer `<footer>` keeps the rule above plus every chrome-specific override
+   that keys on the element or on `footer_class` (`.idx > footer`,
+   `body.chat-page-body .container > footer`, the rail detail-page rule, and
+   `.cloud-chat-empty-foot`), so no existing footer treatment moves.
+   Inline spans, not a flex row — see the comment in the partial: inline flow
+   inherits each chrome's own centering and needs no width, which a flex row
+   would have to be given separately in each of the six layout contexts. */
+.site-footer__line {
+    margin: 0;
+}
+.site-footer__brand {
+    font-weight: 600;
+    color: var(--ds-text-secondary);
+}
+.site-footer__build,
+.site-footer__deploy {
+    color: var(--ds-text-muted);
+}
+/* Separators ride the segments they precede, so each one disappears with its
+   own segment — no dangling bullet when /api/version is unreachable or when
+   the instance configures no credit. */
+.site-footer__build::before,
+.site-footer__deploy::before {
+    content: '·';
+    margin: 0 6px;
+}
+.site-footer__build[hidden] {
+    display: none;  /* explicit: `hidden` alone loses to any inline reset */
+}
+
 /* Username box and copy buttons */
 .username-box {
     background: var(--username-box-bg);
@@ -4257,36 +4289,48 @@ a.app-header-logo:focus-visible {
 .app-onboarding-launch:focus-visible { outline: var(--ds-focus-outline); outline-offset: var(--ds-focus-outline-offset); }
 
 /* ── Theme toggle — Light / Dark / System segmented control in the user menu.
-   Built only from tokens that flip under [data-theme="dark"] (--surface,
-   --surface-dim, --border, --text-*, --shadow-sm), so it themes itself in both
-   modes with no dark-specific rules. Wiring: app.js → window.__agnesTheme. ── */
+   One row: the "Theme" label reads like a menu item, the three choices sit
+   opposite it as an icon-only pill (markup: _theme_toggle.html) — the stacked
+   label-over-full-width-buttons layout cost two rows for the same three
+   choices. Built only from tokens that flip under [data-theme="dark"]
+   (--surface, --surface-dim, --border, --text-*, --shadow-sm), so it themes
+   itself in both modes with no dark-specific rules.
+   Wiring: app.js → window.__agnesTheme. ── */
 .app-user-menu-sep { height: 1px; background: var(--border-light, #f3f4f6); margin: 6px 4px; }
-.app-theme-toggle { padding: 6px 8px 4px; }
+.app-theme-toggle {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 4px 12px 6px;
+}
 .app-theme-toggle-label {
-    display: block; margin-bottom: 6px;
-    font-size: 11px; text-transform: uppercase; letter-spacing: 0.3px;
-    color: var(--text-secondary, #6b7280);
+    font-size: 13px; line-height: 1.4;
+    color: var(--text-primary, #111827);
 }
 .app-theme-toggle-options {
-    display: flex; gap: 3px; padding: 3px;
+    display: inline-flex; gap: 2px; padding: 2px;
     background: var(--surface-dim, #f0f2f6);
     border: 1px solid var(--border, #e5e7eb);
-    border-radius: 8px;
+    border-radius: 999px;
 }
 .app-theme-toggle-btn {
-    flex: 1; border: 1px solid transparent; border-radius: 6px;
-    padding: 5px 6px;
-    font: inherit; font-size: 12px; line-height: 1.4;
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 26px; height: 26px; padding: 0;
+    border: 1px solid transparent; border-radius: 999px;
     color: var(--text-secondary, #6b7280);
     background: transparent; cursor: pointer;
     transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
+/* Sized here (not on the inline SVGs) so the icons can't inherit a stray
+   page-level `svg { width: 100% }` and blow the pill apart. */
+.app-theme-toggle-btn svg { width: 15px; height: 15px; display: block; }
+/* Idle hover = a ghost of the active chip (ink + ring, no fill). A fill would
+   need a token between --surface-dim and --surface, and the two are a hair
+   apart in light mode — the ring reads in both themes. */
 .app-theme-toggle-btn:hover { color: var(--text-primary, #111827); }
+.app-theme-toggle-btn:not(.is-active):hover { border-color: var(--border, #e5e7eb); }
 .app-theme-toggle-btn.is-active {
     background: var(--surface, #fff);
     border-color: var(--border, #e5e7eb);
     color: var(--text-primary, #111827);
-    font-weight: 600;
     box-shadow: var(--shadow-sm, 0 1px 2px rgba(0, 0, 0, 0.08));
 }
 .app-theme-toggle-btn:focus-visible { outline: 2px solid var(--ds-primary, #2ea877); outline-offset: 2px; }
@@ -5181,11 +5225,61 @@ textarea.form-textarea::placeholder { color: var(--text-muted); }
     flex-wrap: wrap;
 }
 
+/* Plain variant — the INDEX-PAGE head: a name, a sentence, and nothing
+   drawn around them.
+
+   This is the treatment /library, /agents and /chats already run by hand
+   (`.lib-head`, `.ag-head`, `.ch-head` — 24px title, 15px secondary lede
+   capped at 68ch), lifted onto the shared primitive so a page can opt in
+   with one variable (`page_hero_plain`) instead of a fourth private copy.
+
+   Use it where the page is a WORKSPACE the reader stays in — a list they
+   filter, a table they act on, a two-pane editor. A gradient (or, under
+   paper, a bordered white card) around the title is chrome the reader
+   scrolls past on every visit, and on a page whose body is already made of
+   cards it puts a card above the cards. The hero variant below stays right
+   where a page is a DESTINATION that has to introduce itself: /home, an
+   install walkthrough, a marketing-adjacent surface.
+
+   Only three declarations differ from the base primitive — the type scale,
+   the measure, and the link colour (there is no global `a` rule, so an
+   unstyled link in the lede renders as UA blue). Everything else is
+   inherited, which is what keeps this from becoming a second header
+   component: the theme's own `h1` rule still owns the weight and the
+   tracking, exactly as it does for the three hand-built heads above. */
+.page-header--plain {
+    display: block;
+    margin: 8px 0 0;
+    /* Padding, not margin: the head's clearance must not collapse-adjoin a
+       following notice or tab strip, both of which carry their own top
+       edge. */
+    padding: 0 0 22px;
+}
+.page-header--plain .page-header__title { font-size: 24px; }
+.page-header--plain .page-header__subtitle {
+    margin: 8px 0 0;
+    font-size: 15px;
+    line-height: 1.5;
+    color: var(--ds-text-secondary);
+    max-width: 68ch;
+}
+.page-header--plain .page-header__eyebrow { color: var(--ds-text-muted); }
+.page-header--plain a {
+    color: var(--ds-primary-dark);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+.page-header--plain a:hover { color: var(--ds-primary); }
+
 /* Hero variant — gradient background, larger title, light eyebrow.
-   Tuned to match the look of admin_tokens.html's per-page .tokens-hero
-   (which analysts already liked): tighter padding, 14px radius, soft
-   blue glow shadow. Applied across all primary-content pages so the
-   admin section reads as one product instead of a patchwork. */
+   Tuned to match the look of the per-page hero /admin/tokens used to
+   carry (which analysts already liked): tighter padding, 14px radius,
+   soft blue glow shadow.
+
+   NOT the admin default any more — People, Data and Access (and their tab
+   siblings) run the `--plain` variant above, because a workspace page is
+   not a page that has to introduce itself. This stays for the surfaces
+   that do. */
 .page-header--hero {
     padding: 28px 32px 24px;
     /* Spans the parent container width. `.container` already provides

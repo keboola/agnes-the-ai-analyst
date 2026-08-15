@@ -12,7 +12,6 @@ Coverage:
 
 from __future__ import annotations
 
-
 import pytest
 
 from connectors.internal.access import (
@@ -331,6 +330,57 @@ def test_sample_internal_via_api_admin_path(seeded_app, admin_user):
     assert body["table_id"] == "agnes_sessions"
     assert body["source"] == "internal"
     assert isinstance(body["rows"], list)
+
+
+def _register(table_id):
+    from src.repositories import table_registry_repo
+
+    table_registry_repo().register(id=table_id, name=table_id, source_type="keboola", query_mode="local")
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT session_id FROM agnes_sessions ORDER BY session_id DESC LIMIT 2",
+        "SELECT session_id FROM agnes_sessions LIMIT 2",
+        "SELECT count(*) FILTER (WHERE session_id IS NOT NULL) FROM agnes_sessions",
+    ],
+)
+def test_ordinary_syntax_on_an_internal_table_is_not_a_cross_plane_join(seeded_app, admin_user, sql):
+    """The reported bug: with tables registered as `order`, `limit` and
+    `filter`, ordinary SQL against an internal table was rejected as a join
+    with them."""
+    _seed_internal_via_api()
+    for name in ("order", "limit", "filter"):
+        _register(name)
+    resp = seeded_app["client"].post("/api/query", json={"sql": sql}, headers=admin_user)
+    assert resp.status_code == 200, resp.text
+
+
+def test_genuine_mix_of_internal_and_registered_table_still_rejected(seeded_app, admin_user):
+    """The guard still does its job — including when the registered id has to
+    be quoted because it is a SQL keyword."""
+    _seed_internal_via_api()
+    _register("order")
+    resp = seeded_app["client"].post(
+        "/api/query",
+        json={"sql": 'SELECT s.session_id FROM agnes_sessions s JOIN "order" o ON s.session_id = o.id'},
+        headers=admin_user,
+    )
+    assert resp.status_code == 400, resp.text
+    assert "can't be joined" in resp.json()["detail"]
+
+
+def test_genuine_mix_via_comma_list_still_rejected(seeded_app, admin_user):
+    _seed_internal_via_api()
+    _register("issues")
+    resp = seeded_app["client"].post(
+        "/api/query",
+        json={"sql": "SELECT s.session_id FROM agnes_sessions s, issues i"},
+        headers=admin_user,
+    )
+    assert resp.status_code == 400, resp.text
+    assert "can't be joined" in resp.json()["detail"]
 
 
 # ---------------------------------------------------------------------------

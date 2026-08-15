@@ -1,0 +1,377 @@
+/* =====================================================================
+ * drawer.css — the ONE right-side drawer chrome.
+ *
+ * A drawer, not a modal card, wherever a flow has MORE THAN ONE thing to
+ * do: naming a group and then filling it, or connecting a project and
+ * then choosing its tables. A centred card is sized for one decision —
+ * grow it to four steps and it either outgrows the viewport or scrolls
+ * its own header away. The drawer is full-height by construction, keeps
+ * the page it was opened from visible behind it (the list you are adding
+ * to stays the context), and gives every step the same head / steps /
+ * body / foot frame so "where am I and how do I get out" never moves.
+ *
+ * Used by:
+ *   - js/components/group_drawer.js    (create/edit a group end to end)
+ *   - js/components/package_drawer.js  (create a data package, from any lens)
+ *   - admin_data_sources.html          (the Add-data wizard)
+ *   - admin_users.html                 (invite a person → their groups)
+ *   - admin_package_detail.html        (add tables / share)
+ *
+ * Every value is a `--ds-*` token, so the drawer follows whatever theme
+ * it is opened under (blue / paper, light / dark) with no per-theme rule
+ * here. Nothing in this sheet styles page content — a drawer body is
+ * built from the shared components (`.ds-card`, `.data-table`, `.fbar__search`,
+ * `.fbar-seg`, `.btn`), never from a drawer-local vocabulary.
+ * ===================================================================== */
+
+.ds-drawer {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: none;
+}
+/* Two spellings of "open" on purpose: `.is-open` is the vocabulary the
+   component JS uses, `.show` is what the pages that already had an
+   overlay toggle. One sheet, so a caller cannot pick the wrong one. */
+.ds-drawer.is-open,
+.ds-drawer.show {
+  display: block;
+}
+
+.ds-drawer__backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.45);
+  animation: ds-drawer-fade var(--ds-motion-fast) var(--ds-ease-standard);
+}
+
+.ds-drawer__panel {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(600px, 100vw);
+  display: flex;
+  flex-direction: column;
+  background: var(--ds-surface);
+  border-left: 1px solid var(--ds-border);
+  box-shadow: var(--ds-shadow-lg);
+  animation: ds-drawer-in var(--ds-motion-med) var(--ds-ease-enter);
+}
+
+/* For a flow whose step needs a board rather than a form — the Add-data
+   wizard's bundle step, an access checklist two columns wide. */
+.ds-drawer--wide .ds-drawer__panel { width: min(760px, 100vw); }
+
+@keyframes ds-drawer-in {
+  from { transform: translateX(24px); opacity: 0; }
+  to   { transform: translateX(0);    opacity: 1; }
+}
+@keyframes ds-drawer-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ds-drawer__panel,
+  .ds-drawer__backdrop { animation: none; }
+}
+
+/* ── Head ──────────────────────────────────────────────────────────── */
+
+.ds-drawer__head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 18px 22px 14px;
+  border-bottom: 1px solid var(--ds-border-light);
+}
+.ds-drawer__head-main { min-width: 0; }
+.ds-drawer__title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--ds-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ds-drawer__sub {
+  margin: 3px 0 0;
+  font-size: 12.5px;
+  color: var(--ds-text-muted);
+}
+.ds-drawer__x {
+  margin-left: auto;
+  flex: 0 0 auto;
+  border: none;
+  background: none;
+  font-family: inherit;
+  font-size: 22px;
+  line-height: 1;
+  padding: 2px 6px;
+  cursor: pointer;
+  color: var(--ds-text-muted);
+  border-radius: var(--ds-radius-btn);
+}
+.ds-drawer__x:hover { color: var(--ds-text-primary); background: var(--ds-surface-sunken); }
+.ds-drawer__x:focus-visible {
+  outline: var(--ds-focus-outline);
+  outline-offset: var(--ds-focus-outline-offset);
+}
+
+/* ── Steps strip ───────────────────────────────────────────────────────
+   The whole reason this is a drawer: it says how many decisions are in
+   the flow before the first one is made, and — once the subject exists —
+   lets the reader jump back to any of them. A step is a BUTTON when it
+   is reachable and inert text when it is not, so "you cannot go there
+   yet" is carried by the control's own state rather than by a click
+   that silently does nothing. */
+
+.ds-drawer__steps {
+  display: flex;
+  gap: 6px;
+  padding: 12px 22px;
+  border-bottom: 1px solid var(--ds-border-light);
+  background: var(--ds-surface-dim);
+}
+.ds-drawer__step {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 4px 6px;
+  border: none;
+  background: none;
+  border-radius: var(--ds-radius-btn);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+  color: var(--ds-text-muted);
+}
+button.ds-drawer__step:not([disabled]) { cursor: pointer; }
+button.ds-drawer__step:not([disabled]):hover { background: var(--ds-surface-sunken); }
+.ds-drawer__step:focus-visible {
+  outline: var(--ds-focus-outline);
+  outline-offset: var(--ds-focus-outline-offset);
+}
+.ds-drawer__step > .n {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  border-radius: var(--ds-radius-pill);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 800;
+  background: var(--ds-surface-sunken);
+  color: var(--ds-text-muted);
+}
+.ds-drawer__step > .lbl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ds-drawer__step.is-now { color: var(--ds-primary-dark, var(--ds-primary)); }
+.ds-drawer__step.is-now > .n {
+  background: var(--ds-primary);
+  color: #fff;
+  box-shadow: 0 0 0 3px var(--ds-primary-light, rgba(2, 132, 199, 0.16));
+}
+.ds-drawer__step.is-done { color: var(--ds-accent-success-ink); }
+.ds-drawer__step.is-done > .n { background: var(--ds-accent-success-ink); color: #fff; }
+/* A finished step swaps its numeral for a tick: three states — done, here,
+   not yet — have to be told apart at a glance, and colour alone does not do
+   that for everyone. The numeral is redundant once the label is readable. */
+.ds-drawer__step.is-done > .n { font-size: 0; }
+.ds-drawer__step.is-done > .n::after { content: "✓"; font-size: 12px; line-height: 1; }
+
+/* Not yet reachable: dimmed AND cursor-blocked, so the difference between
+   "you can jump back here" and "not until the step before it is done" is
+   legible before the click rather than after it. */
+.ds-drawer__step[disabled] { opacity: 0.55; cursor: not-allowed; }
+.ds-drawer__step[disabled] > .n { background: transparent; box-shadow: inset 0 0 0 1px var(--ds-border); }
+
+/* On a phone the drawer is the whole screen and four labels do not fit —
+   they truncate to "Peo… Acc… Revi…", which is worse than a number. Only
+   the step you are ON keeps its word; the others are numbered dots, and
+   the count still says how long the flow is. */
+@media (max-width: 480px) {
+  .ds-drawer__step { flex: 0 0 auto; }
+  .ds-drawer__step.is-now { flex: 1 1 auto; }
+  .ds-drawer__step:not(.is-now) > .lbl { display: none; }
+}
+
+/* ── Body ──────────────────────────────────────────────────────────────
+   The ONLY scroll container in the drawer, which is what keeps the head,
+   the steps strip and the actions on screen at every scroll position. */
+
+.ds-drawer__body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 18px 22px;
+}
+.ds-drawer__pane { display: none; }
+.ds-drawer__pane.is-on { display: block; }
+
+/* A step's opening sentence: what this step is for, in one line. */
+.ds-drawer__lede {
+  margin: 0 0 14px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--ds-text-secondary);
+}
+
+/* Form fields — the same metrics as the admin pages' `.ds-field`. */
+.ds-drawer__field { display: block; margin-bottom: 16px; }
+.ds-drawer__field > label {
+  display: block;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ds-text-primary);
+  margin-bottom: 5px;
+}
+.ds-drawer__field input[type="text"],
+.ds-drawer__field input[type="email"],
+.ds-drawer__field textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 9px 12px;
+  font: inherit;
+  font-size: 13px;
+  border: 1px solid var(--ds-border);
+  border-radius: var(--ds-radius-btn);
+  background: var(--ds-surface);
+  color: var(--ds-text-primary);
+}
+.ds-drawer__field textarea { min-height: 62px; resize: vertical; }
+.ds-drawer__field input:focus-visible,
+.ds-drawer__field textarea:focus-visible {
+  outline: var(--ds-focus-outline);
+  outline-offset: var(--ds-focus-outline-offset);
+}
+.ds-drawer__hint { margin: 5px 0 0; font-size: 11.5px; color: var(--ds-text-muted); }
+.ds-drawer__opt { font-weight: 400; color: var(--ds-text-muted); }
+
+/* Two fields that answer one question sit on one line — and collapse to two
+   lines before either gets too narrow to read its own placeholder. */
+.ds-drawer__row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 0 14px;
+}
+
+/* The three controls the fields above do not cover, because a browser draws
+   each of them in its own house style and none of those is ours. A drawer's
+   form has to look like ONE form: the select borrows the product's own
+   (`.fbar-select`, filter_toolbar.css — this only supplies the metrics), and
+   the colour swatch and the file button are dressed here.
+
+   `<select>` is not styled bare on purpose — `.fbar-select` is the wrapper
+   that carries the chevron, and a caller who forgets it should see a native
+   select rather than a chevron-less box pretending to be ours. */
+.ds-drawer__select { display: flex; }
+.ds-drawer__select select { width: 100%; }
+
+/* Sized like a swatch, not like a text field: it is the escape hatch beside a
+   palette, and a full-width colour bar reads as the answer rather than as the
+   "something else" option. */
+.ds-drawer__color {
+  flex: 0 0 auto;
+  width: 46px;
+  height: 26px;
+  box-sizing: border-box;
+  padding: 2px;
+  border: 1px solid var(--ds-border);
+  border-radius: var(--ds-radius-btn);
+  background: var(--ds-surface);
+  cursor: pointer;
+}
+.ds-drawer__color::-webkit-color-swatch-wrapper { padding: 0; }
+.ds-drawer__color::-webkit-color-swatch { border: none; border-radius: 5px; }
+.ds-drawer__color::-moz-color-swatch { border: none; border-radius: 5px; }
+
+/* A file input is two controls in one element: the button and the file name.
+   Only the button can be styled, so it takes the secondary button's look and
+   the name beside it takes the hint's. */
+.ds-drawer__file {
+  max-width: 100%;
+  font: inherit;
+  font-size: 12px;
+  color: var(--ds-text-muted);
+}
+.ds-drawer__file::file-selector-button {
+  margin-right: 10px;
+  padding: 7px 12px;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ds-text-primary);
+  background: var(--ds-surface);
+  border: 1px solid var(--ds-border);
+  border-radius: var(--ds-radius-btn);
+  cursor: pointer;
+}
+.ds-drawer__file::file-selector-button:hover {
+  border-color: var(--ds-text-muted);
+  background: var(--ds-surface-dim);
+}
+
+/* An inline verb inside running text ("Remove") — a link's job, not a
+   button's look, but a button's element because it acts on this page. */
+.ds-drawer__linkbtn {
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: inherit;
+  font-weight: 600;
+  color: var(--ds-primary);
+  cursor: pointer;
+  text-decoration: underline;
+}
+.ds-drawer__linkbtn[hidden] { display: none; }
+
+/* An optional part of the flow, folded away: the drawer stays one screen for
+   the common case and the reader can still see what else is on offer. */
+.ds-drawer__disclose {
+  margin-bottom: 16px;
+  padding: 10px 12px;
+  border: 1px solid var(--ds-border);
+  border-radius: var(--ds-radius-btn);
+  background: var(--ds-surface-dim);
+}
+.ds-drawer__disclose > summary {
+  cursor: pointer;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ds-text-primary);
+  user-select: none;
+}
+.ds-drawer__disclose > summary:focus-visible {
+  outline: var(--ds-focus-outline);
+  outline-offset: var(--ds-focus-outline-offset);
+}
+.ds-drawer__disclose[open] > summary { margin-bottom: 4px; }
+.ds-drawer__err {
+  margin-top: 10px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ds-accent-danger-ink);
+}
+.ds-drawer__err[hidden] { display: none; }
+.ds-drawer__empty { padding: 16px 2px; font-size: 13px; color: var(--ds-text-muted); }
+
+/* ── Foot ──────────────────────────────────────────────────────────────
+   Back on the left, the way out and the way on at the right, in that
+   order — the flow is progressive, so "leave it here" must be an equal
+   citizen beside "continue", not a corner someone has to find. */
+
+.ds-drawer__foot {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 22px;
+  border-top: 1px solid var(--ds-border);
+  background: var(--ds-surface-dim);
+}
+.ds-drawer__foot-gap { flex: 1 1 auto; }

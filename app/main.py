@@ -400,6 +400,7 @@ from app.api.me_stats import router as me_stats_router
 from app.api.admin import router as admin_router
 from app.api.admin_bigquery_test import router as admin_bigquery_test_router
 from app.api.admin_keboola_test import router as admin_keboola_test_router
+from app.api.attachments import router as attachments_router
 from app.api.jira_webhooks import router as jira_webhooks_router
 from app.api.metrics import router as metrics_router
 from app.api.glossary import router as glossary_router
@@ -485,6 +486,7 @@ from app.api.admin_sessions import router as admin_sessions_router
 from app.api.admin_usage import router as admin_usage_router
 from app.api.admin_usage_summary import router as admin_usage_summary_router
 from app.api.admin_reports import router as admin_reports_router
+from app.api.admin_dashboard import router as admin_dashboard_router
 from app.api.admin_adoption import router as admin_adoption_router
 from app.api.db_state import router as db_state_router
 from app.api.admin_analytics import router as admin_analytics_router
@@ -664,7 +666,9 @@ def _state_checkpoint_interval_s() -> float:
 
 
 async def _state_checkpoint_loop(interval_s: float) -> None:
-    """Periodically fold the system.duckdb WAL into the main file (#710).
+    """Periodically fold the system.duckdb WAL into the main file (#710),
+    and — on the cadence configured separately — refresh the rolling
+    recovery snapshot (#380).
 
     The app's long-lived singleton connection makes DuckDB defer its own
     threshold checkpoint indefinitely, so without this loop the state-DB
@@ -676,10 +680,18 @@ async def _state_checkpoint_loop(interval_s: float) -> None:
     cancellation waits for an in-flight CHECKPOINT/read instead of letting
     the lifespan's ``close_system_db()`` race it (see that helper's
     docstring in ``app/api/health_probes.py``).
+
+    ``refresh_rolling_snapshot`` piggybacks on this same tick rather than
+    getting its own loop/timer: it needs the identical locking discipline
+    (the app's own ``system.duckdb`` singleton, never a second connection),
+    so reusing this loop is both the simplest wiring and the only safe one.
+    It self-gates on its own (much coarser) cadence — see
+    ``backups.rolling_snapshot_interval_hours`` — so most ticks here no-op
+    for it in a single mtime check.
     """
     from app.api.health_probes import to_thread_drain_on_cancel
     from app.secrets import reapply_all_overlay_tokens_from_vault
-    from src.db import checkpoint_operational_db, checkpoint_system_db
+    from src.db import checkpoint_operational_db, checkpoint_system_db, refresh_rolling_snapshot
 
     while True:
         await asyncio.sleep(interval_s)
@@ -693,6 +705,14 @@ async def _state_checkpoint_loop(interval_s: float) -> None:
             # checkpoint_*_db already swallow DB errors; this guards the loop
             # itself (e.g. to_thread failure) so it never dies.
             logger.exception("state-checkpoint tick failed; loop continues")
+        try:
+            # No-ops instantly on a Postgres-state instance, when no
+            # system.duckdb singleton is open yet, or when the rolling
+            # snapshot is still within its configured cadence — the
+            # EXPORT DATABASE cost only actually runs on the (rare) stale tick.
+            await to_thread_drain_on_cancel(refresh_rolling_snapshot)
+        except Exception:
+            logger.exception("rolling-snapshot refresh tick failed; loop continues")
         try:
             # Belt-and-braces piggyback (wave 2C task 6): re-apply every
             # env_overlay/* vault row to os.environ on every tick. Covers a
@@ -888,6 +908,19 @@ async def lifespan(app):
     except Exception:
         pass  # never block startup on a logging convenience
 
+    # Validate auth.providers at boot so an all-unknown value (a typo in
+    # instance.yaml / AGNES_AUTH_PROVIDERS) surfaces its error in the startup
+    # log, not only lazily on the first /auth request. configured_allowlist()
+    # logs the error itself and fails open (all providers) so a bad value can
+    # never lock the instance out; the admin API rejects the same value at
+    # set-time. Fail-soft — a config-read hiccup must not block startup.
+    try:
+        from app.auth.provider_registry import configured_allowlist
+
+        configured_allowlist()
+    except Exception:
+        pass
+
     # Bump anyio's default thread pool size from 40 → AGNES_THREADPOOL_SIZE
     # (default 200). FastAPI auto-runs every plain `def` route handler AND
     # every plain `def` dependency in this pool — the Tier 1 endpoints
@@ -1036,11 +1069,17 @@ async def lifespan(app):
     if role_enabled(Role.WORKER):
         _maybe_rebuild_on_boot()
 
-    # Rebuild the FTS BM25 index over knowledge_items at boot (issue #121).
-    # The migration to schema v47 already does this on first upgrade, but
-    # for instances that have been on v47 across restarts the boot-time
-    # rebuild guarantees the index reflects whatever mutations landed via
-    # the BG-task / scheduler paths that bypass the per-mutation hook.
+    # Rebuild the FTS BM25 indexes over knowledge_items and glossary_terms at
+    # boot (issue #121; glossary_terms joined in for #1294 — a rolling/WAL
+    # recovery restore lands a plain system.duckdb with no fts_main_* schemas
+    # until something rebuilds them, and this is the only unconditional
+    # safety net for that: knowledge_items/glossary_terms mutations rebuild
+    # their own index on write, but a table that hasn't been touched since
+    # restore would otherwise stay on the ILIKE fallback indefinitely). The
+    # migration to schema v47 already does this on first upgrade, but for
+    # instances that have been on v47 across restarts the boot-time rebuild
+    # guarantees the index reflects whatever mutations landed via the
+    # BG-task / scheduler paths that bypass the per-mutation hook.
     # Soft-failure — logs WARNING and the repo falls back to ILIKE.
     #
     # DuckDB-only: the BM25 index is a DuckDB FTS-extension artefact built on
@@ -1051,9 +1090,11 @@ async def lifespan(app):
     if not _use_pg():
         try:
             from src.db import get_system_db
-            from src.fts import ensure_knowledge_fts_index
+            from src.fts import ensure_glossary_fts_index, ensure_knowledge_fts_index
 
-            ensure_knowledge_fts_index(get_system_db())
+            _fts_conn = get_system_db()
+            ensure_knowledge_fts_index(_fts_conn)
+            ensure_glossary_fts_index(_fts_conn)
         except Exception:
             logger.exception("startup FTS index rebuild failed; falling back to ILIKE on /api/memory?search=")
 
@@ -1786,6 +1827,16 @@ async def lifespan(app):
             usage_accumulator.flush()
         except Exception:
             logger.exception("llm_usage accumulator flush failed during shutdown (non-fatal)")
+        # Warm stdio MCP sessions are child processes owned by keeper tasks on
+        # THIS loop. Closing them here lets each anyio task group unwind and
+        # terminate its subprocess while the loop is still running, instead of
+        # leaving them to be reaped when this process dies.
+        try:
+            from connectors.mcp.session_pool import close_all as close_mcp_sessions
+
+            await close_mcp_sessions()
+        except Exception:
+            logger.exception("MCP session pool close failed during shutdown (non-fatal)")
         from src.db import close_analytics_db, close_operational_db, close_system_db
 
         close_system_db()
@@ -1926,6 +1977,7 @@ def create_app() -> FastAPI:
         # REDUCES privilege — see the module docstring.
         from app.auth.elevation import (
             ELEVATION_COOKIE,
+            request_is_noninteractive,
             reset_for_request,
             resolve_from_cookie,
             set_paused_for_request,
@@ -1934,10 +1986,17 @@ def create_app() -> FastAPI:
         token = set_paused_for_request(
             resolve_from_cookie(
                 request.cookies.get(ELEVATION_COOKIE),
-                # Bearer callers (CLI/PAT/service tokens) have no cookie jar
-                # to re-elevate with — the instance-wide default must not
-                # apply to them (an explicit paused cookie still would).
-                bearer_auth=request.headers.get("authorization", "").lower().startswith("bearer "),
+                # Non-interactive callers (Bearer CLI/PAT/service tokens, or a
+                # sole X-StorageApi-Token header) have no cookie jar to
+                # re-elevate with, so the instance-wide default must not apply
+                # (an explicit paused cookie still would). A request carrying a
+                # session cookie stays interactive even if it also sends the
+                # header — see request_is_noninteractive (Devin review #1288).
+                bearer_auth=request_is_noninteractive(
+                    authorization=request.headers.get("authorization", ""),
+                    has_session_cookie=bool(request.cookies.get("access_token")),
+                    has_sapi_header=bool(request.headers.get("x-storageapi-token")),
+                ),
             )
         )
         try:
@@ -2083,6 +2142,9 @@ def create_app() -> FastAPI:
         minimum_size=1024,
         skip_prefixes=(
             "/api/data/",
+            # Attachment binaries (PDF/PNG/ZIP …) are already compressed;
+            # same rationale as the parquet exclusion above.
+            "/api/attachments/",
             "/api/mcp",  # SSE stream — do not gzip
             # Chat sandbox LLM proxy: the model completion streams back as
             # text/event-stream. GZipMiddleware buffers a StreamingResponse
@@ -2132,6 +2194,22 @@ def create_app() -> FastAPI:
         if o.strip()
     ]
     cors_allow_credentials = True
+    # Captured HERE, from the same read the middleware is configured with:
+    # the readiness handler's per-app CORS grant must agree with the
+    # middleware about whether a wildcard is in force, and `create_app`
+    # loads overlay env AFTER this point — a request-time env re-read could
+    # see a different value than the middleware did (Devin on #1321).
+    app.state.cors_has_wildcard = "*" in cors_origins
+    # Data-app subdomains are deliberately NOT allowed here. The holding
+    # page's readiness poll (data_app_waking.html on `<slug>.<base>`) does
+    # need a credentialed cross-origin read of ONE response — but this
+    # middleware is app-wide, those subdomains serve user-authored app code,
+    # and the session cookie already rides to the main host from them
+    # (`Domain=.<parent>`, same-site). A subdomain `allow_origin_regex`
+    # paired with `allow_credentials=True` therefore let any hosted app's JS
+    # read every authenticated endpoint as its viewer. The poll's allowance
+    # lives route-scoped and per-app instead:
+    # `app.api.data_apps._readiness_cors_headers` (Devin Review on this PR).
     if "*" in cors_origins:
         # SECURITY: Starlette's CORSMiddleware, when allow_origins contains "*"
         # AND allow_credentials=True, reflects the caller's Origin into
@@ -2147,6 +2225,26 @@ def create_app() -> FastAPI:
             "any-origin-with-credentials CORS policy. Set an explicit origin allowlist."
         )
         cors_allow_credentials = False
+        # The wildcard also OVERWRITES per-route CORS grants: with
+        # allow_all_origins the middleware stamps `Access-Control-Allow-Origin:
+        # *` (credential-less) over response headers a handler set, which
+        # breaks the data-app readiness poll's per-app credentialed grant
+        # (app/api/data_apps.py::_readiness_cors_headers) — the subdomain
+        # holding page then polls forever. Say so where the operator is
+        # already being told their CORS config is wrong.
+        try:
+            from app.instance_config import get_data_apps_config
+
+            if (get_data_apps_config().get("subdomain_base") or "").strip():
+                logger.error(
+                    "CORS_ORIGINS='*' with data_apps.subdomain_base configured: the "
+                    "readiness poll on data-app subdomains needs a credentialed "
+                    "per-app CORS grant, which the wildcard overrides — subdomain "
+                    "holding pages will not detect the app coming up until "
+                    "CORS_ORIGINS lists explicit origins."
+                )
+        except Exception:
+            pass
     app.add_middleware(
         CORSMiddleware,
         allow_origins=cors_origins,
@@ -2392,12 +2490,14 @@ def create_app() -> FastAPI:
     from app.auth.providers.google import router as google_auth_router
     from app.auth.providers.password import router as password_auth_router
     from app.auth.providers.email import router as email_auth_router
+    from app.auth.providers.keboola import router as keboola_auth_router
 
     # API routers
     app.include_router(auth_router)
     app.include_router(google_auth_router)
     app.include_router(password_auth_router)
     app.include_router(email_auth_router)  # Always register, check availability per-request
+    app.include_router(keboola_auth_router)  # Always register, availability + allowlist per-request
     app.include_router(health_router)
 
     from app.api import health_probes
@@ -2425,6 +2525,7 @@ def create_app() -> FastAPI:
     app.include_router(me_access_router)
     app.include_router(me_router)
     app.include_router(me_stats_router)
+    app.include_router(attachments_router)
     app.include_router(jira_webhooks_router)
     app.include_router(metrics_router)
     app.include_router(glossary_router)
@@ -2554,6 +2655,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_usage_router)
     app.include_router(admin_usage_summary_router)
     app.include_router(admin_reports_router)
+    app.include_router(admin_dashboard_router)
     app.include_router(admin_adoption_router)
     app.include_router(admin_contributed_skills_router)
     app.include_router(db_state_router)

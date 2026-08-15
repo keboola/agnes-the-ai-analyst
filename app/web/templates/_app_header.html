@@ -142,14 +142,28 @@
 
                     <section class="app-admin-menu-col">
                         <div class="app-admin-menu-section">Users &amp; Access</div>
-                        <a class="app-nav-menu-item {% if _path.startswith('/admin/users') %}is-active{% endif %}" role="menuitem" href="/admin/users">Users</a>
-                        <a class="app-nav-menu-item {% if _path.startswith('/admin/groups') %}is-active{% endif %}" role="menuitem" href="/admin/groups">Groups</a>
-                        <a class="app-nav-menu-item {% if _path.startswith('/admin/access') %}is-active{% endif %}" role="menuitem" href="/admin/access">Resource access</a>
+                        {# Labels follow `admin_nav.py`, the inventory the rail's
+                           sidebar renders — this row said "Groups" long after
+                           that section became **Access** (a group is one thing
+                           Access holds, beside the grants and the simulator).
+                           The COLUMNS here are this menu's own, deliberately:
+                           it groups by the job you came to do, where the
+                           sidebar groups by section. Only the rows must agree.
+                           `tests/test_web_admin_nav.py` fails the build if an
+                           inventory entry has no row here. #}
+                        <a class="app-nav-menu-item {% if _path.startswith('/admin/users') %}is-active{% endif %}" role="menuitem" href="/admin/users">People</a>
+                        <a class="app-nav-menu-item {% if _path.startswith('/admin/groups') or _path.startswith('/admin/access') %}is-active{% endif %}" role="menuitem" href="/admin/access">Access</a>
                         <a class="app-nav-menu-item {% if _path.startswith('/admin/tokens') %}is-active{% endif %}" role="menuitem" href="/admin/tokens">Tokens</a>
                     </section>
 
                     <section class="app-admin-menu-col">
                         <div class="app-admin-menu-section">Data Packages</div>
+                        {# The package is the object this column is named after
+                           and the unit an analyst actually receives — it now has
+                           a lens of its own, and this menu had no row for it, so
+                           a default-chrome instance could not reach it from the
+                           nav at all. #}
+                        <a class="app-nav-menu-item {% if _path.startswith('/admin/data-packages') %}is-active{% endif %}" role="menuitem" href="/admin/data-packages">Data packages</a>
                         <a class="app-nav-menu-item {% if _path.startswith('/admin/tables') %}is-active{% endif %}" role="menuitem" href="/admin/tables">Tables</a>
                         <a class="app-nav-menu-item {% if _path.startswith('/admin/sync') %}is-active{% endif %}" role="menuitem" href="/admin/sync">Sync</a>
                         <div class="app-admin-menu-section">Sources</div>
@@ -177,9 +191,12 @@
                         <a class="app-nav-menu-item {% if _path == '/admin/store' %}is-active{% endif %}" role="menuitem" href="/admin/store">Moderation &amp; Trust</a>
                         <a class="app-nav-menu-item {% if _path.startswith('/admin/corporate-memory') %}is-active{% endif %}" role="menuitem" href="/admin/corporate-memory">Curated memory reviews</a>
                         <a class="app-nav-menu-item {% if _path.startswith('/admin/store/submissions') %}is-active{% endif %}" role="menuitem" href="/admin/store/submissions">Flea Submissions</a>
+                        <a class="app-nav-menu-item {% if _path.startswith('/admin/store/lint') %}is-active{% endif %}" role="menuitem" href="/admin/store/lint">Store lint</a>
+                        <a class="app-nav-menu-item {% if _path.startswith('/admin/studio/suggestions') %}is-active{% endif %}" role="menuitem" href="/admin/studio/suggestions">Studio suggestions</a>
                         <div class="app-admin-menu-section">Marketplace &amp; knowledge distribution</div>
                         <a class="app-nav-menu-item {% if _path.startswith('/admin/marketplaces') %}is-active{% endif %}" role="menuitem" href="/admin/marketplaces">Curated Marketplaces</a>
                         <a class="app-nav-menu-item {% if _path.startswith('/admin/knowledge-digests') %}is-active{% endif %}" role="menuitem" href="/admin/knowledge-digests">Maintained digests</a>
+                        <a class="app-nav-menu-item {% if _path.startswith('/admin/contribute-skill') %}is-active{% endif %}" role="menuitem" href="/admin/contribute-skill">Contribute a skill</a>
                         <div class="app-admin-menu-section">Onboarding &amp; messaging</div>
                         <a class="app-nav-menu-item {% if _path.startswith('/admin/initial-workspace') %}is-active{% endif %}" role="menuitem" href="/admin/initial-workspace">Initial Workspace</a>
                         <a class="app-nav-menu-item {% if _path.startswith('/admin/news') %}is-active{% endif %}" role="menuitem" href="/admin/news">News</a>
@@ -266,11 +283,24 @@
                    on is_paper() (rail has its own nav with a "How {brand}
                    works" row). Guarded by tests/test_web_nav_cowork.py. "My
                    connections" (#1086) stays — tests/test_web_nav_me_connections
-                   requires it here. #}
+                   requires it here. The "Learn how it works" branch stays
+                   regardless of can_mcp_connector_ui (#1024): /how-it-works is
+                   the general orientation page (chat, CLI, privacy…), not an
+                   MCP-only surface, so it keeps its nav entry — only the
+                   MCP-only "AI Connector" branch (default chrome) is gated.
+                   That claim only held under paper until the else-branch below:
+                   on the default chrome with the switch off, gating the
+                   connector row alone left the menu with no entry to either
+                   surface, so /how-it-works — which also carries the CLI
+                   setup, the first-session narrative and the privacy content —
+                   became unreachable from the menu as a side effect of hiding
+                   MCP. Devin Review on #1024. #}
                 {% if is_paper() %}
                 <a class="app-user-menu-item {% if _path == '/how-it-works' %}is-active{% endif %}" role="menuitem" href="/how-it-works">Learn how it works</a>
-                {% else %}
+                {% elif can_mcp_connector_ui %}
                 <a class="app-user-menu-item {% if _path.startswith('/me/ai-connector') or _path.startswith('/me/cowork') or _path.startswith('/me/mcp') %}is-active{% endif %}" role="menuitem" href="/me/ai-connector">AI Connector</a>
+                {% else %}
+                <a class="app-user-menu-item {% if _path == '/how-it-works' %}is-active{% endif %}" role="menuitem" href="/how-it-works">Learn how it works</a>
                 {% endif %}
                 <a class="app-user-menu-item {% if _path.startswith('/me/connections') %}is-active{% endif %}" role="menuitem" href="/me/connections">My connections</a>
                 <a class="app-user-menu-item {% if _path.startswith('/me/activity') %}is-active{% endif %}" role="menuitem" href="/me/activity">My activity</a>
@@ -287,19 +317,9 @@
 
                 <div class="app-user-menu-sep" role="separator"></div>
                 <a class="app-user-menu-item" role="menuitem" href="{{ url_for('auth.logout') }}">Logout</a>
-                {# Appearance — Light / Dark / System. Drives window.__agnesTheme
-                   (defined pre-paint in _theme_resolve.html); wired in app.js.
-                   The choice is per-browser (localStorage) and overrides the
-                   instance default + OS setting. #}
+                {# Appearance — Light / Dark / System (see _theme_toggle.html). #}
                 <div class="app-user-menu-sep" role="separator"></div>
-                <div class="app-theme-toggle" id="themeToggle" role="radiogroup" aria-label="Theme">
-                    <span class="app-theme-toggle-label">Theme</span>
-                    <div class="app-theme-toggle-options">
-                        <button type="button" role="radio" aria-checked="false" tabindex="-1" data-theme-choice="light" class="app-theme-toggle-btn">Light</button>
-                        <button type="button" role="radio" aria-checked="false" tabindex="-1" data-theme-choice="dark" class="app-theme-toggle-btn">Dark</button>
-                        <button type="button" role="radio" aria-checked="false" tabindex="-1" data-theme-choice="system" class="app-theme-toggle-btn">System</button>
-                    </div>
-                </div>
+                {% include "_theme_toggle.html" %}
             </div>
         </div>
     </div>

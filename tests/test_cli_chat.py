@@ -68,6 +68,44 @@ EVENTS_ERROR = [
     {"type": "RUN_ERROR", "message": "tool exploded", "code": "tool_failed"},
 ]
 
+#: A turn with NO `TEXT_MESSAGE_CONTENT` deltas — only the trailing
+#: `TEXT_MESSAGE_END` carries the answer. Real shape whenever the backend
+#: doesn't stream incrementally (the `AGNES_RUNNER_FAKE_AGENT=1` test/dev
+#: runner's `echo:` reply, or the real runner's idle-watchdog partial-save)
+#: — see `tests/test_agent_stream_end_to_end.py` for the frame-level proof
+#: this is what the server actually emits, not a hand-invented shape.
+EVENTS_NO_DELTA = [
+    {"type": "RUN_STARTED"},
+    {"type": "TEXT_MESSAGE_END", "content": "echo: hi"},
+    {"type": "RUN_FINISHED"},
+]
+
+#: Like `EVENTS_NO_DELTA`, but the stream emits `TEXT_MESSAGE_CONTENT`
+#: deltas that are all blank/whitespace (`app/api/agent_sse.py` maps a
+#: `token` frame's `text` straight to `delta`, empty string included)
+#: before the trailing `TEXT_MESSAGE_END` with the real answer. Nothing
+#: visible ever streamed, so the fallback print must still fire — the
+#: non-empty `answer_parts` list alone must not suppress it.
+EVENTS_BLANK_DELTAS_ONLY = [
+    {"type": "RUN_STARTED"},
+    {"type": "TEXT_MESSAGE_CONTENT", "delta": ""},
+    {"type": "TEXT_MESSAGE_CONTENT", "delta": " \n"},
+    {"type": "TEXT_MESSAGE_END", "content": "echo: hi"},
+    {"type": "RUN_FINISHED"},
+]
+
+#: The real runner's idle-watchdog partial-save emits the `error` frame
+#: FIRST (`app/chat/runner.py` — `turn_idle_timeout`) and only THEN the
+#: partial `assistant_message` + `done`, which the SSE mapper turns into
+#: RUN_ERROR → TEXT_MESSAGE_END → RUN_FINISHED. A client that treats
+#: RUN_ERROR as end-of-stream never sees the partial text.
+EVENTS_ERROR_THEN_PARTIAL = [
+    {"type": "RUN_STARTED"},
+    {"type": "RUN_ERROR", "message": "no agent activity for 300s; interrupting the turn"},
+    {"type": "TEXT_MESSAGE_END", "content": "partial answer so far"},
+    {"type": "RUN_FINISHED"},
+]
+
 
 class TestOnce:
     def test_once_prints_assembled_answer_and_exits_zero(self):
@@ -88,6 +126,55 @@ class TestOnce:
         assert mock_sse.call_args.kwargs["json"] == {"input": "hi"}
         # /exit-equivalent cleanup: --once best-effort deletes the session too.
         assert mock_delete.call_args.args[0] == "/api/v1/sessions/sess-1"
+
+    def test_once_prints_the_answer_even_when_nothing_streamed_incrementally(self):
+        """HIGH: `--once` against a backend that answers without
+        incremental streaming (only a trailing `TEXT_MESSAGE_END`, no
+        `TEXT_MESSAGE_CONTENT` deltas — see `EVENTS_NO_DELTA`) must still
+        print the real answer, not "(no answer)"."""
+        with (
+            patch("cli.commands.chat.api_post", return_value=_resp(201, {"session_id": "sess-1"})),
+            patch("cli.commands.chat.api_post_sse", return_value=iter(EVENTS_NO_DELTA)),
+            patch("cli.commands.chat.api_delete", return_value=_resp(204)),
+        ):
+            result = runner.invoke(app, ["chat", "myagent", "--once", "hi"])
+
+        assert result.exit_code == 0
+        assert "echo: hi" in result.output
+        assert "(no answer)" not in result.output
+
+    def test_once_prints_the_answer_when_only_blank_deltas_streamed(self):
+        """Devin regression: blank/whitespace-only `TEXT_MESSAGE_CONTENT`
+        deltas before the `TEXT_MESSAGE_END` must not suppress the
+        fallback print — otherwise the turn exits 0 with the answer
+        swallowed silently (neither the answer nor "(no answer)")."""
+        with (
+            patch("cli.commands.chat.api_post", return_value=_resp(201, {"session_id": "sess-1"})),
+            patch("cli.commands.chat.api_post_sse", return_value=iter(EVENTS_BLANK_DELTAS_ONLY)),
+            patch("cli.commands.chat.api_delete", return_value=_resp(204)),
+        ):
+            result = runner.invoke(app, ["chat", "myagent", "--once", "hi"])
+
+        assert result.exit_code == 0
+        assert "echo: hi" in result.output
+        assert "(no answer)" not in result.output
+
+    def test_watchdog_partial_after_run_error_is_still_shown(self):
+        """The idle-watchdog partial-save arrives AFTER the error frame
+        (runner emits `error` → partial `assistant_message` → `done`, i.e.
+        RUN_ERROR → TEXT_MESSAGE_END → RUN_FINISHED on the wire). The
+        client must drain the stream past RUN_ERROR so the partial text
+        the user already earned is shown next to the error, not dropped."""
+        with (
+            patch("cli.commands.chat.api_post", return_value=_resp(201, {"session_id": "sess-1"})),
+            patch("cli.commands.chat.api_post_sse", return_value=iter(EVENTS_ERROR_THEN_PARTIAL)),
+            patch("cli.commands.chat.api_delete", return_value=_resp(204)),
+        ):
+            result = runner.invoke(app, ["chat", "myagent", "--once", "hi"])
+
+        assert "partial answer so far" in result.output
+        assert "no agent activity" in result.output
+        assert result.exit_code != 0
 
     def test_run_error_event_exits_nonzero_with_rendered_message(self):
         with (
@@ -147,6 +234,30 @@ class TestInteractive:
         assert mock_sse.call_args.kwargs["json"] == {"input": "hello"}
         # /exit best-effort deletes the session.
         assert mock_delete.call_args.args[0] == "/api/v1/sessions/sess-1"
+
+    def test_interactive_prints_the_answer_even_when_nothing_streamed_incrementally(self):
+        with (
+            patch("cli.commands.chat.api_post", return_value=_resp(201, {"session_id": "sess-1"})),
+            patch("cli.commands.chat.api_post_sse", return_value=iter(EVENTS_NO_DELTA)),
+            patch("cli.commands.chat.api_delete", return_value=_resp(204)),
+        ):
+            result = runner.invoke(app, ["chat", "myagent"], input="hi\n/exit\n")
+
+        assert result.exit_code == 0
+        assert "echo: hi" in result.output
+        assert "(no answer)" not in result.output
+
+    def test_interactive_prints_the_answer_when_only_blank_deltas_streamed(self):
+        with (
+            patch("cli.commands.chat.api_post", return_value=_resp(201, {"session_id": "sess-1"})),
+            patch("cli.commands.chat.api_post_sse", return_value=iter(EVENTS_BLANK_DELTAS_ONLY)),
+            patch("cli.commands.chat.api_delete", return_value=_resp(204)),
+        ):
+            result = runner.invoke(app, ["chat", "myagent"], input="hi\n/exit\n")
+
+        assert result.exit_code == 0
+        assert "echo: hi" in result.output
+        assert "(no answer)" not in result.output
 
     def test_eof_also_quits_and_cleans_up(self):
         with (
@@ -436,3 +547,89 @@ class TestAgentEscapeHatch:
 
         assert result.exit_code == 0
         assert mock_post.call_args_list[0].args[0] == "/api/v1/agents/myagent/sessions"
+
+
+#: The sandbox workspace prompt asks the agent to end every answer with a
+#: fenced ```next_actions trailer; the web chat lifts it into one-click
+#: buttons. `agnes chat` is the one AG-UI client that puts the stream in
+#: front of a HUMAN, so it strips the trailer at render time — the wire
+#: format itself (and `--once --json`) deliberately stays raw for
+#: programmatic callers, the same line `app.chat.sources.strip_block`
+#: draws for the sources fence. Deltas split mid-fence on purpose: the
+#: SSE mapper forwards the runner's token chunks verbatim, which can cut
+#: anywhere.
+_TRAILER_ANSWER = "Revenue was 4.2M.\n\n```next_actions\n- Break it down by country\n```"
+
+EVENTS_TRAILER_SPLIT = [
+    {"type": "RUN_STARTED"},
+    {"type": "TEXT_MESSAGE_CONTENT", "delta": "Revenue was 4.2M.\n\n``"},
+    {"type": "TEXT_MESSAGE_CONTENT", "delta": "`next_ac"},
+    {"type": "TEXT_MESSAGE_CONTENT", "delta": "tions\n- Break it down by country\n"},
+    {"type": "TEXT_MESSAGE_CONTENT", "delta": "```"},
+    {"type": "TEXT_MESSAGE_END", "content": _TRAILER_ANSWER},
+    {"type": "RUN_FINISHED"},
+]
+
+EVENTS_TRAILER_IN_END_ONLY = [
+    {"type": "RUN_STARTED"},
+    {"type": "TEXT_MESSAGE_END", "content": _TRAILER_ANSWER},
+    {"type": "RUN_FINISHED"},
+]
+
+EVENTS_TRAILER_UNTERMINATED = [
+    {"type": "RUN_STARTED"},
+    {"type": "TEXT_MESSAGE_CONTENT", "delta": "Answer.\n\n```next_actions\n- half"},
+    {"type": "RUN_FINISHED"},
+]
+
+EVENTS_ORDINARY_CODE_FENCE = [
+    {"type": "RUN_STARTED"},
+    {"type": "TEXT_MESSAGE_CONTENT", "delta": "See:\n\n``"},
+    {"type": "TEXT_MESSAGE_CONTENT", "delta": "`sql\nSELECT 1\n```\n"},
+    {"type": "TEXT_MESSAGE_END", "content": "See:\n\n```sql\nSELECT 1\n```"},
+    {"type": "RUN_FINISHED"},
+]
+
+
+class TestNextActionsTrailer:
+    def _run_once(self, events, *extra_args):
+        with (
+            patch("cli.commands.chat.api_post", return_value=_resp(201, {"session_id": "sess-1"})),
+            patch("cli.commands.chat.api_post_sse", return_value=iter(events)),
+            patch("cli.commands.chat.api_delete", return_value=_resp(204)),
+        ):
+            return runner.invoke(app, ["chat", "myagent", "--once", "hi", *extra_args])
+
+    def test_streamed_trailer_never_reaches_the_terminal(self):
+        result = self._run_once(EVENTS_TRAILER_SPLIT)
+        assert result.exit_code == 0
+        assert "Revenue was 4.2M." in result.output
+        assert "next_actions" not in result.output
+        assert "Break it down by country" not in result.output
+
+    def test_fallback_print_strips_the_trailer_too(self):
+        """The no-deltas shape (fake runner, watchdog partial-save) prints
+        TEXT_MESSAGE_END.content directly — same strip applies."""
+        result = self._run_once(EVENTS_TRAILER_IN_END_ONLY)
+        assert result.exit_code == 0
+        assert "Revenue was 4.2M." in result.output
+        assert "next_actions" not in result.output
+
+    def test_an_unterminated_opener_is_not_a_block_and_is_shown(self):
+        """Same rule as every other implementation of this fence: stripping
+        an unterminated opener would eat a truncated answer's tail."""
+        result = self._run_once(EVENTS_TRAILER_UNTERMINATED)
+        assert "```next_actions" in result.output
+        assert "- half" in result.output
+
+    def test_an_ordinary_code_fence_streams_through(self):
+        result = self._run_once(EVENTS_ORDINARY_CODE_FENCE)
+        assert "```sql" in result.output
+        assert "SELECT 1" in result.output
+
+    def test_once_json_keeps_the_raw_wire_format(self):
+        """--json is the programmatic surface — exactly the caller the
+        machine-readable trailer exists for. No strip."""
+        result = self._run_once(EVENTS_TRAILER_SPLIT, "--json")
+        assert result.exit_code == 0
+        assert "next_actions" in result.output

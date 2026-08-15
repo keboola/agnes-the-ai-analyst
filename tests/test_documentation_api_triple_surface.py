@@ -22,7 +22,6 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-
 # Endpoints that must have all three surfaces. Forward-only — add new
 # entries when they land, do NOT retroactively backfill old endpoints
 # (the policy is a ratchet, not a sweep). Tuple of (cli_cmd, mcp_tool).
@@ -150,11 +149,12 @@ _COHORT: dict[str, tuple[str, str]] = {
 
 def test_rest_endpoints_callable():
     """REST surface — every cohort entry resolves to a router handler."""
-    from app.web.router import router  # noqa: F401  (import surface registration)
-
     # documentation_api is the handler name; importing the module is enough
     # to register the route on the router. Spot-check the new one explicitly.
-    from app.web.router import documentation_api  # type: ignore[attr-defined]
+    from app.web.router import (
+        documentation_api,  # type: ignore[attr-defined]
+        router,  # noqa: F401  (import surface registration)
+    )
 
     assert callable(documentation_api)
 
@@ -510,6 +510,15 @@ _OAUTH_DISCONNECT_REASON = (
     "out from under a live session is the same class of self-service "
     "identity operation the my-secret endpoints were never MCP-exposed for."
 )
+_MCP_SOURCE_GRANT_REASON = (
+    "grant/revoke every tool of one MCP source to a group — an RBAC widening "
+    "write. Reachable via `agnes admin mcp source grant [--revoke]`; "
+    "deliberately never MCP-exposed, on the same reasoning as the standing "
+    "credential-provisioning exemption in CONTRIBUTING.md: a tool an agent can "
+    "call that widens which tools a group may call is a privilege-escalation "
+    "seam, and this one widens by the whole source at once"
+)
+
 _EXEMPT: dict[str, str] = {
     "/api/me/display-name": (
         "self-service display-name edit (issue #1036) — UI-only affordance on "
@@ -614,10 +623,20 @@ _EXEMPT: dict[str, str] = {
         "persistence, no analyst CLI/MCP analogue."
     ),
     "/api/admin/reports/marketplace-digest": _REPORTS_REASON,
+    "/api/admin/dashboard/signals": (
+        "Render-path split for the /admin dashboard's 'Needs fixing' zone, not a "
+        "capability: every signal it returns is a count over a page an admin can "
+        "already open, and each row exists to link there. It is fetched after "
+        "first paint purely so the unbounded audit/history reads stay off the "
+        "page render. A CLI/MCP surface would expose nothing `agnes admin` "
+        "cannot already reach per-queue."
+    ),
     "/api/mcp-connect/token": _MCP_CONNECT_REASON,
     "/api/admin/source-connections/{connection_id}": _SOURCE_CONNECTIONS_CRUD_REASON,
     "/api/admin/source-connections/{connection_id}/secret": _SOURCE_CONNECTIONS_CRUD_REASON,
     "/api/admin/source-connections/{connection_id}/test": _SOURCE_CONNECTIONS_CRUD_REASON,
+    "/api/admin/mcp-sources/{source_id}/grants": _MCP_SOURCE_GRANT_REASON,
+    "/api/admin/mcp-sources/{source_id}/grants/{group_id}": _MCP_SOURCE_GRANT_REASON,
     "/api/admin/source-connections/{connection_id}/chat-tools": (
         "derives a Keboola MCP source from a connection and copies that "
         "connection's storage token into the MCP vault — a credential-"
@@ -630,6 +649,12 @@ _EXEMPT: dict[str, str] = {
         "admin-only bucket/table discovery for the 'Add data source' wizard (#755) — "
         "keboola-only browse-and-register primitive with no analyst CLI/MCP analogue; "
         "`agnes admin register-table` already covers the actual registration step"
+    ),
+    "/api/attachments/{source}/{attachment_id}/download": (
+        "connector-catalogued attachment binary download (Jira first) — one-shot "
+        "fetch by id consumed by `agnes attachment get`; binary byte-stream with "
+        "no MCP/JSON analogue, mirrors the parquet /api/data/{table_id}/download "
+        "and knowledge-artifact download channels"
     ),
     "/api/knowledge/artifacts/{corpus_id}/download": (
         "K3 local packaging (#798) — binary knowledge.duckdb artifact consumed by "

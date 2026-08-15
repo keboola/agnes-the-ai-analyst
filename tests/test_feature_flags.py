@@ -94,9 +94,12 @@ class TestFeatureFlagsRegistry:
             "experience",
             "stack_auto_membership",
             "mcp_query_param_token",
+            "mcp_session_pool",
             "mcp_source_url_strict",
+            "mcp_connector_ui",
             "mcp_source_url_runtime_enforce",
             "agent_profiles",
+            "keboola_token_header",
         }
 
     def test_every_entry_resolves(self, monkeypatch):
@@ -237,9 +240,12 @@ class TestServerConfigFeatureFlagsInventory:
             "library_show_unverified_trust",
             "stack_auto_membership",
             "mcp_query_param_token",
+            "mcp_session_pool",
             "mcp_source_url_strict",
+            "mcp_connector_ui",
             "mcp_source_url_runtime_enforce",
             "agent_profiles",
+            "keboola_token_header",
         }
         # The experience preset leads as a string-valued informational row.
         assert flags[0]["name"] == "instance.experience"

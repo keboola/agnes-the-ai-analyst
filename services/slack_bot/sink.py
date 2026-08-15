@@ -17,7 +17,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from app.chat.sources import strip_block
+from app.chat.sources import strip_block, strip_next_actions_block
 from services.slack_bot.blocks import (
     continue_on_web_block,
     new_session_block,
@@ -89,10 +89,11 @@ class SlackSinkBridge:
     async def send_json(self, data: dict) -> None:
         t = data.get("type")
         if t == "assistant_message":
-            # Slack has no chips to draw the verdict into, so the raw
-            # machine-readable fence would just be a code block of machinery
-            # under every answer. See `app.chat.sources.strip_block`.
-            content = strip_block(data.get("content", ""))
+            # Slack has no chips to draw the verdict into and no buttons wired
+            # to the follow-up trailer, so both machine-readable fences would
+            # just be code blocks of machinery under every answer. See
+            # `app.chat.sources.strip_block` / `strip_next_actions_block`.
+            content = strip_next_actions_block(strip_block(data.get("content", "")))
             if not content:
                 return
             # With a chat_id we emit the interactive buttons on the streaming
@@ -245,7 +246,7 @@ class EphemeralCommandSink:
             return
         t = data.get("type")
         if t == "assistant_message":
-            content = strip_block(data.get("content", ""))
+            content = strip_next_actions_block(strip_block(data.get("content", "")))
             if content:
                 self._delivered = True
                 await send_ephemeral(self._response_url, content)

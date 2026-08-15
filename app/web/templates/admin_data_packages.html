@@ -1,58 +1,274 @@
-{% extends "base_page.html" %}
-{% from "macros/_stack_card.html" import card %}
-{# Admin audit view — every Data Package + Memory Domain regardless of
-   grant. The Catalog reshape (follow-up to auto-membership) removed the
-   ``browse_admin`` god-mode path from the user-facing /catalog and
-   /corporate-memory pages — both now show the same grant-scoped,
-   addable-only view for every visitor, admin included. This page is
-   where the "see everything" audit affordance moved: a read-only
-   inventory grid, not a stack-management surface (no Add/Remove wiring —
-   see admin_hub.html → Data Packages → "All packages"). #}
-{% block title %}All Packages — {{ config.INSTANCE_NAME }}{% endblock %}
-{% block container_modifier %}container--wide{% endblock %}
+{% extends "base_admin_page.html" %}
+{% from "macros/_fbar_card.html" import fbar_card %}
+{# The Packages workspace — every Data Package + Memory Domain regardless of
+   grant (the ``browse_admin`` audit affordance moved here when the Catalog
+   reshape made /catalog grant-scoped for everyone).
 
-{% set page_hero_eyebrow = "Admin" %}
-{% set page_hero_title = "All Packages" %}
-{% set page_hero_subtitle = "Every Data Package and Memory Domain on this instance, regardless of who's been granted access — for auditing coverage and spotting empty or ungranted entries." %}
+   ── The card ────────────────────────────────────────────────────────────
+   The SAME card an analyst sees in their Library: `.fbar-card`, rendered
+   through `macros/_fbar_card.html` (which is `filter_toolbar.css`'s
+   component, not a copy of it). Before this it was `_stack_card` — a 120px
+   coloured banner with two-letter initials over it, plus a `NEW` badge, an
+   `In stack` pill and an `Owned by` line — so a package the admin published
+   and the package the analyst received looked like two different objects,
+   and four of them filled a screen. The banner carried no information: an
+   admin scanning forty packages needs the name, what is in it and who gets
+   it, and every one of those was below the fold.
+
+   Admin-only facts are not a reason for an admin-only card. They ride the
+   pattern's own slots: the count and the owner on the meta line, the source
+   types as tags, and the two states worth acting on in the footer's two —
+   who can use it (left), and the one alarm worth raising (right).
+
+   ── No sharing CONTROL on the card ──────────────────────────────────────
+   The card says who can use a package; it no longer edits that. A grant is
+   consequential — `Automatic` puts a package into every member's workspace
+   on their next pull — and the index shows none of its consequences. The
+   package's own page owns the edit, beside the delivery read-out ("14 people
+   get this, 11 have pulled it") that answers for it, and a group's Access
+   workspace owns the other end. Both write the same `/api/admin/grants` rows,
+   so the two surfaces can never disagree.
+
+   Tier vocabulary: the API says ``available`` / ``required``; this page says
+   **Optional** / **Automatic** — what each one does to an analyst's
+   workspace — with the system word carried in a title attribute. #}
+{% block title %}Data Packages — {{ config.INSTANCE_NAME }}{% endblock %}
+{% block container_modifier %}container--full{% endblock %}
+
+{# Section-level and PLAIN, matching the rest of the Data section: the h1
+   names the section, the tab strip below names the lens. See
+   `.page-header--plain` in style-custom.css. #}
+{% set page_hero_title = "Data" %}
+{% set page_hero_subtitle = "Every Data Package and Memory Domain on this instance — what each one carries, and who can use it." %}
+{% set page_hero_plain = True %}
 
 {% block head_extra %}
+{# The card and its icon tile are shared components; this page links their
+   sheets and adds nothing to them. `.cc-icon` (the 38px kind-coloured tile)
+   lives in catalog_card.css, `.fbar-card` and its grid in filter_toolbar.css. #}
+<link rel="stylesheet" href="{{ static_url('css/filter_toolbar.css') }}">
+<link rel="stylesheet" href="{{ static_url('css/catalog_card.css') }}">
+{# Creating a package happens HERE, in the shared right-side drawer — see the
+   `+ New package` comment below for why it used to happen on another lens. #}
+<link rel="stylesheet" href="{{ static_url('css/drawer.css') }}">
+<link rel="stylesheet" href="{{ static_url('css/package_drawer.css') }}">
 <style>
-  .adp-section { margin: 28px 0 8px; }
-  .adp-section h2 { font-size: 18px; margin: 0 0 4px; color: var(--ds-text-primary); }
-  .adp-section .adp-count { font-size: 12px; color: var(--ds-text-secondary); margin: 0 0 14px; }
-  .adp-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; margin-bottom: 8px; }
-  /* Read-only audit grid: the shared _stack_card macro renders an
-     interactive Add/Remove footer button meant for /catalog + /stack,
-     where page JS wires POST/DELETE against /api/stack/*. This page ships
-     no such JS (it's an inventory, not a stack-management surface) — hide
-     the button so it doesn't look actionable while doing nothing. The
-     drilldown link and the "0 tables — assign some →" CTA stay untouched. */
-  .adp-grid .stack-card__btn { display: none; }
+  /* Section heads are the shared `.apg-sechead` (css/admin_page.css) — the
+     same row, count and type scale People, Access and Sources carry. */
+  .adp-section + .adp-section { margin-top: 28px; }
+
+  /* The grid is `.fbar-grid`'s, with one difference: the Library's is a fixed
+     three columns because it lives in a centred reading column, and this page
+     runs full-bleed (`container--full`) where three 700px cards would each be
+     a banner. Auto-fill against the card's own comfortable measure instead, so
+     the count follows the monitor. */
+  .adp-grid { grid-template-columns: repeat(auto-fill, minmax(292px, 1fr)); }
+
+  /* ── The footer's two slots ──────────────────────────────────────────
+     LEFT — who can use this, as a fact, in the shared read-only access
+     vocabulary (`.fbar-card__access--fixed`: bare text, no box, no chevron,
+     which is exactly what "a state you cannot change from here" looks like on
+     the Library card). Only the unshared state takes a colour: it is the one
+     that strands analysts, and a package nobody can see is worth spotting
+     from across a grid of forty. */
+  .adp-share--none { color: var(--ds-accent-warn-ink); font-weight: 600; }
+  .adp-share--none svg { color: currentColor; }
+
+  /* RIGHT — one chip, for the one thing worth acting on. `Empty` outranks the
+     tier: a package with no tables delivers nothing however it is shared, so
+     naming its tier first would answer the wrong question. Same 26px box in
+     both states, so the footer is one height across the grid. */
+  .adp-chip {
+    flex: none; display: inline-flex; align-items: center; gap: 5px;
+    box-sizing: border-box; height: 26px; max-width: 60%; padding: 0 10px;
+    border-radius: var(--ds-radius-pill);
+    font-size: 12px; font-weight: 600; white-space: nowrap;
+    color: var(--ds-text-muted); background: color-mix(in srgb, var(--ds-text-primary) 6%, transparent);
+  }
+  .adp-chip svg { width: 12px; height: 12px; flex: none; }
+  .adp-chip--warn { color: var(--ds-accent-warn-ink); background: var(--ds-accent-warn-bg); }
+  .adp-chip--auto { color: var(--ds-primary-dark); background: var(--ds-primary-light); }
+
+  /* The unpackaged pile used to be a page-local tray — a dashed amber card
+     with a wall of up to 24 mono table-name chips in it. It said the same KIND
+     of thing the Tables lens says in one shared `.apg-strip--warn` line
+     ("Keboola is not connected — N tables …"), in a second object, three times
+     the height, on the adjacent tab. Two shapes for one message is what made
+     the Data section read as four pages rather than one surface, so it is now
+     that strip. The names went with it: 24 of 450 is a sample, not a list, and
+     the strip's own link lands on all of them in the surface that filters and
+     acts on them row by row. */
 </style>
 {% endblock %}
 
 {% block page %}
+{% include "_admin_tabs.html" %}
+
+{# ── The invisible rule, said out loud, in the shared strip ──────────────
+   Tables outside a package are added and syncing, but no analyst manifest
+   carries them. `.apg-strip--warn` is the object every Data lens uses for a
+   standing fact worth acting on, with the fix pinned to its end — the same
+   line the Tables lens renders when a connector is unconfigured. It sits
+   ABOVE the section heads because it is a fact about the surface, not about
+   either grid on it.
+
+   The link lands on the Tables lens with its "In no package" filter already
+   applied, and now with a chip on the toolbar saying so — the same pile, in
+   the surface that acts on it row by row. #}
+{% if unpackaged_tables %}
+<div class="apg-strip apg-strip--warn">
+  <span class="apg-strip__mark" aria-hidden="true">!</span>
+  <span>
+    <strong>{{ unpackaged_tables|length }} table{{ '' if unpackaged_tables|length == 1 else 's' }} in no package</strong>
+    — tables reach analysts only through a data package, so these are registered
+    and syncing but nobody can pull them.
+  </span>
+  <span class="apg-strip__end"><a href="/admin/tables?unpackaged=1">Assign these tables →</a></span>
+</div>
+{% endif %}
+
+{# ── The footer's left slot: who can use this ────────────────────────────
+   One definition for both grids, so a package and a memory domain state the
+   same fact the same way. `shares` is the resource's grant rows. #}
+{% macro share_readout(shares) %}
+  {% if shares %}
+  <span class="fbar-card__access fbar-card__access--fixed"
+        title="{{ shares | map(attribute='group_name') | join(', ') }}">
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="18" cy="6" r="2.6" stroke="currentColor" stroke-width="1.9"/><circle cx="6" cy="12" r="2.6" stroke="currentColor" stroke-width="1.9"/><circle cx="18" cy="18" r="2.6" stroke="currentColor" stroke-width="1.9"/><path d="M8.4 10.8l7.2-3.6M8.4 13.2l7.2 3.6" stroke="currentColor" stroke-width="1.9"/></svg>
+    {# One group is named; several are counted. A list of five group names in a
+       26px slot ellipsises after the first anyway, and the count is the fact
+       the reader is scanning for — the names ride the title attribute. #}
+    <span>{% if shares|length == 1 %}{{ shares[0].group_name }}{% else %}{{ shares|length }} groups{% endif %}</span>
+  </span>
+  {% else %}
+  <span class="fbar-card__access fbar-card__access--fixed adp-share--none"
+        title="No group has been granted this — it appears in nobody's Library">
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4.5 21 19.5H3L12 4.5Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M12 10v3.5M12 16.4v.2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+    <span>Not shared</span>
+  </span>
+  {% endif %}
+{% endmacro %}
+
 <div class="adp-section">
-  <h2>Data Packages</h2>
-  <p class="adp-count">{{ package_cards|length }} package{{ '' if package_cards|length == 1 else 's' }} total</p>
+  {# The two PACKAGE verbs ride the section head's own action slot, which is
+     what `.apg-sechead__end` is for and where Sources puts "+ Add source".
+     They used to sit in a bare `.apg-bar` above the strip — two buttons
+     floating under the tab strip with no bar around them and nothing to say
+     what they acted on, since the head naming the grid came 400px later.
+
+     "+ New package" is a BUTTON, not a link, and this is the lens that makes
+     packages: it used to send you to `/admin/tables?new_package=1`, because
+     that page owned the only copy of the create form — so asking for a new
+     package on the Packages tab landed you on the Tables tab with a modal
+     over a list of tables. The form is now the shared drawer
+     (js/components/package_drawer.js) and opens over the grid it adds to.
+
+     "Suggest packages by bucket" still crosses to the Tables lens: it reads
+     the registry, proposes one package per bucket and assigns the rows, so
+     the table list IS its subject. #}
+  <div class="apg-sechead">
+    <h2 class="apg-sechead__title">Data Packages</h2>
+    <span class="apg-sechead__count">{{ package_cards|length }} package{{ '' if package_cards|length == 1 else 's' }}</span>
+    <span class="apg-sechead__end">
+      <a class="btn btn-secondary btn-sm" href="/admin/tables?group_by_bucket=1"
+         title="Create one package per distinct bucket and assign its tables">Suggest packages by bucket</a>
+      <button type="button" class="btn btn-primary btn-sm" data-adp-new-package>+ New package</button>
+    </span>
+  </div>
   {% if package_cards %}
-  <div class="stack-grid adp-grid">
-    {% for entry in package_cards %}{{ card(entry) }}{% endfor %}
+  <div class="fbar-grid adp-grid">
+    {% for entry in package_cards %}
+    {% set shares = pkg_sharing.get(entry.id, []) %}
+    {% set n_tables = entry.table_count | default(0) %}
+    {# The meta line, in the order an admin reads a package: how much is in
+       it, what it is filed under, whose it is. One line, ellipsised. #}
+    {% set meta_parts = [n_tables ~ ' table' ~ ('' if n_tables == 1 else 's')] %}
+    {% if entry.category %}{% set _ = meta_parts.append(entry.category) %}{% endif %}
+    {% if entry.owner_name %}{% set _ = meta_parts.append(entry.owner_name) %}{% endif %}
+    {% call fbar_card({
+         'kind': 'data',
+         'title': entry.name,
+         'href': entry.drilldown_url,
+         'description': entry.description,
+         'meta': meta_parts | join(' · '),
+         'tags': entry.tags,
+         'attrs': 'data-pkg-id="' ~ entry.id ~ '"',
+       }) %}
+      {{ share_readout(shares) }}
+      {% if n_tables == 0 %}
+      {# Outranks the tier deliberately: an empty package delivers nothing
+         however it is shared. The link is the fix, one click away. #}
+      <a class="adp-chip adp-chip--warn" href="/admin/tables?assign_to={{ entry.id }}"
+         title="This package carries no tables — nothing is delivered until it does">
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4.5 21 19.5H3L12 4.5Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M12 10v3.5M12 16.4v.2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+        <span>No tables</span>
+      </a>
+      {% elif shares | selectattr('requirement', 'equalto', 'required') | list %}
+      <span class="adp-chip adp-chip--auto" title="required — lands in members' workspaces on their next sync">
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4v11m0 0 4-4m-4 4-4-4" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/><path d="M5 19h14" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg>
+        <span>Automatic</span>
+      </span>
+      {% elif shares %}
+      <span class="adp-chip" title="available — members add it themselves from their Library">
+        <span>Optional</span>
+      </span>
+      {% endif %}
+    {% endcall %}
+    {% endfor %}
   </div>
   {% else %}
   <div class="empty-state">
     <h3>No Data Packages yet</h3>
-    <p>Create one from <a href="/admin/tables?new_package=1">/admin/tables</a>.</p>
+    <p>
+      A package is the unit an analyst receives — bundle related tables, share the
+      bundle with a group, and it lands in their workspace.
+    </p>
+    <p>
+      <button type="button" class="btn btn-primary btn-sm" data-adp-new-package>
+        Create the first one
+      </button>
+    </p>
   </div>
   {% endif %}
 </div>
 
 <div class="adp-section">
-  <h2>Memory Domains</h2>
-  <p class="adp-count">{{ domain_cards|length }} domain{{ '' if domain_cards|length == 1 else 's' }} total</p>
+  <div class="apg-sechead">
+    <h2 class="apg-sechead__title">Memory Domains</h2>
+    <span class="apg-sechead__count">{{ domain_cards|length }} domain{{ '' if domain_cards|length == 1 else 's' }}</span>
+  </div>
   {% if domain_cards %}
-  <div class="stack-grid adp-grid">
-    {% for entry in domain_cards %}{{ card(entry) }}{% endfor %}
+  {# The same card, one kind along. The two grids sit on one page and answer
+     the same question about two resource types; drawing them differently
+     would say they were different KINDS of answer. #}
+  <div class="fbar-grid adp-grid">
+    {% for entry in domain_cards %}
+    {% set shares = dom_sharing.get(entry.id, []) %}
+    {% set n_items = entry.items_count | default(0) %}
+    {% call fbar_card({
+         'kind': 'memory',
+         'title': entry.name,
+         'href': entry.drilldown_url,
+         'description': entry.description,
+         'meta': entry.meta,
+         'attrs': 'data-domain-id="' ~ entry.id ~ '"',
+       }) %}
+      {{ share_readout(shares) }}
+      {% if n_items == 0 %}
+      <span class="adp-chip adp-chip--warn" title="This domain holds no memory items yet">
+        <span>Empty</span>
+      </span>
+      {% elif shares | selectattr('requirement', 'equalto', 'required') | list %}
+      <span class="adp-chip adp-chip--auto" title="required — lands in members' workspaces on their next sync">
+        <span>Automatic</span>
+      </span>
+      {% elif shares %}
+      <span class="adp-chip" title="available — members add it themselves from their Library">
+        <span>Optional</span>
+      </span>
+      {% endif %}
+    {% endcall %}
+    {% endfor %}
   </div>
   {% else %}
   <div class="empty-state">
@@ -61,4 +277,23 @@
   </div>
   {% endif %}
 </div>
+
+{# ── "+ New package" ─────────────────────────────────────────────────────
+   Both entry points (the section head and the empty state) open the shared
+   drawer over this grid. A created package is a new card with server-side
+   sharing and delivery joins behind it, so the page reloads rather than
+   inventing a card client-side — the same choice the package's own page makes
+   after a grant change, and for the same reason. #}
+<script src="{{ static_url('js/components/package_drawer.js') }}" defer></script>
+<script>
+  document.addEventListener("click", function (e) {
+    if (!e.target.closest("[data-adp-new-package]")) return;
+    // Deferred component, so a click in the first few hundred milliseconds
+    // could land before it exists — do nothing rather than throw.
+    if (!window.AgnesPackageDrawer) return;
+    window.AgnesPackageDrawer.open({
+      onCreated: function () { window.location.reload(); },
+    });
+  });
+</script>
 {% endblock %}

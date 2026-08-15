@@ -220,6 +220,8 @@ def _normalize_primary_key(v):
 _URL_BEARING_FIELDS: tuple[tuple[str, ...], ...] = (
     ("data_source", "keboola", "stack_url"),
     ("marketplace", "curators_url"),
+    ("auth", "keboola", "stack_url"),
+    ("auth", "keboola", "oauth_host"),
 )
 
 
@@ -244,7 +246,170 @@ def _validate_urls_in_patch(sections: Dict[str, Dict[str, Any]]) -> None:
         if isinstance(node, dict):
             value = node.get(path[-1])
             if isinstance(value, str) and value:
-                _validate_url_not_private(value, field_name=".".join(path))
+                field_name = ".".join(path)
+                # The auth-provider URLs carry credentials at use time (the
+                # Storage token on verify, the OAuth token exchange) and are
+                # held to the same bar as the source-connection sibling
+                # (_validate_stack_url: "Rejects non-https") — scheme checked
+                # at store time, host at store AND use time (Devin Review on
+                # PR #1288).
+                if path[:2] == ("auth", "keboola") and not value.lower().startswith("https://"):
+                    raise HTTPException(status_code=422, detail=f"{field_name} must be https")
+                _validate_url_not_private(value, field_name=field_name)
+
+
+def _normalize_provider_names(value: Any) -> "list[str] | None":
+    """Provider names from the list or the comma-separated string form (matching
+    the runtime resolver `configured_allowlist`). ``None`` when the value is
+    null/unset. Raises 422 for a scalar the runtime couldn't parse either."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return [v.strip() for v in value.split(",") if v.strip()]
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    raise HTTPException(
+        status_code=422,
+        detail="auth.providers must be a list or comma-separated string of provider names (or omitted entirely)",
+    )
+
+
+def _validate_auth_providers_in_patch(sections: Dict[str, Dict[str, Any]]) -> None:
+    """Refuse an auth-section overlay write that would name no usable sign-in
+    method (Devin review on #1288): an empty or all-unknown ``auth.providers``,
+    and — whenever the auth section is patched at all — an effective allowlist
+    whose named providers are none of them actually available (e.g.
+    ``[keboola]`` after its stack config was cleared in a separate save).
+
+    This is NOT the lockout backstop. The runtime fails open on exactly this
+    shape: ``provider_registry._rescue_if_unusable`` treats an allowlist with
+    zero usable providers as unset (all sign-in methods) with a loud error
+    log, so a config that slips past this validator does not lock anyone out
+    — it silently means "all providers", the opposite of what the operator
+    wrote. The 422 exists so the operator learns that at save time instead of
+    shipping it. Known blind spot, caught by that runtime rescue rather than
+    here: a patch that never touches ``auth`` (e.g. clearing
+    ``data_source.keboola.stack_url``, which ``auth.keboola.stack_url`` falls
+    back to) skips this validator entirely, as does the env /
+    static-instance.yaml path."""
+    auth = sections.get("auth")
+    if not isinstance(auth, dict):
+        return
+
+    # A non-dict keboola block would crash the availability merge below; reject
+    # it with a clear message rather than a 500.
+    kb = auth.get("keboola")
+    if kb is not None and not isinstance(kb, dict):
+        raise HTTPException(status_code=422, detail="auth.keboola must be an object (a map of settings)")
+
+    from app.auth.provider_registry import KNOWN_PROVIDERS
+
+    if "providers" in auth:
+        names = _normalize_provider_names(auth["providers"])
+        if names is None:
+            return  # explicit null clears the override → no allowlist, can't lock out
+        if not names:
+            raise HTTPException(
+                status_code=422,
+                detail="auth.providers must not be empty — omit it entirely to keep all sign-in methods",
+            )
+        if not any(n in KNOWN_PROVIDERS for n in names):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"auth.providers names no known provider (valid: {sorted(KNOWN_PROVIDERS)}); "
+                    "only unknown names would silently re-enable all sign-in methods"
+                ),
+            )
+        effective = names
+    else:
+        # providers isn't in THIS patch. Only a change to auth.keboola config
+        # can newly break a currently-available provider via server-config —
+        # google/email availability is env-only and no config save can change
+        # it. So re-check the EXISTING allowlist ONLY when the patch touches
+        # keboola: that catches "clear auth.keboola while providers=[keboola]",
+        # without 422-ing an unrelated auth save (e.g. allowed_domain) against a
+        # pre-existing env-provider allowlist that has no server-config field to
+        # fix (Devin review on #1288).
+        if "keboola" not in auth:
+            return
+        from app.instance_config import get_value
+
+        current_raw = get_value("auth", "providers")
+        if not isinstance(current_raw, (str, list)):
+            return
+        effective = _normalize_provider_names(current_raw) or []
+        if not effective:
+            return
+
+    # The login page offers a provider only when it is BOTH allowlisted and
+    # actually available (configured). `password` is always available, so any
+    # list including it passes.
+    known = [n for n in effective if n in KNOWN_PROVIDERS]
+    if not known:
+        # An all-unknown EXISTING value (not being edited here) fails open to
+        # all providers at runtime — not a lockout — so don't block this save.
+        return
+    if not any(_provider_available_after_save(n, auth, sections) for n in known):
+        detail = (
+            "auth.providers would leave no usable sign-in method: none of the named "
+            "providers is configured/available on this instance. Saved anyway it would "
+            "not lock anyone out — the runtime treats such a list as unset (ALL sign-in "
+            "methods) with a loud error — but that silently means the opposite of what "
+            "was written, so it is refused here instead. Configure one of the named "
+            "providers (e.g. add the Google or Keboola OAuth credentials), or include a "
+            "method that is."
+        )
+        if "google" in known:
+            # Google's availability probe reads env vars captured at process
+            # start (see _provider_available_after_save) — without this note,
+            # an operator who just filled Google settings into instance.yaml
+            # has no way to understand the refusal (Devin Review on PR #1288).
+            detail += (
+                " Note: Google availability is read from the GOOGLE_CLIENT_ID / "
+                "GOOGLE_CLIENT_SECRET environment variables at process start — a Google "
+                "OAuth client configured only in instance.yaml is not detected."
+            )
+        raise HTTPException(status_code=422, detail=detail)
+
+
+def _provider_available_after_save(name: str, auth_patch: Dict[str, Any], sections: Dict[str, Dict[str, Any]]) -> bool:
+    """Whether ``name`` would be an offerable login method once this
+    server-config save lands. ``password`` is always available; ``google`` /
+    ``email`` are env-configured (untouched by an auth.providers patch), so
+    their live ``is_available()`` is authoritative; ``keboola`` is configured
+    under ``auth.keboola`` and can be set in the SAME patch, so it is evaluated
+    against the current config merged with the patch — including its stack_url
+    fallback to ``data_source.keboola.stack_url``, which the admin may also be
+    supplying in this same save (or enabling + configuring in one step would be
+    wrongly rejected)."""
+    if name == "password":
+        return True
+    if name == "google":
+        from app.auth.providers.google import is_available as google_available
+
+        # Env-only, captured at module import (GOOGLE_CLIENT_ID/SECRET) — a
+        # yaml-only Google config reads unavailable here; the 422 detail in
+        # _validate_auth_providers_in_patch explains that to the operator.
+        return google_available()
+    if name == "email":
+        from app.auth.providers.email import is_available as email_available
+
+        return email_available()
+    if name == "keboola":
+        from app.instance_config import get_value
+
+        merged = {**(get_value("auth", "keboola") or {}), **(auth_patch.get("keboola") or {})}
+        # stack_url falls back to data_source.keboola.stack_url — merge the
+        # current value with this patch's data_source block so a one-save
+        # "configure login + data-source address" isn't wrongly refused.
+        ds_merged = {
+            **(get_value("data_source", "keboola") or {}),
+            **((sections.get("data_source") or {}).get("keboola") or {}),
+        }
+        stack = merged.get("stack_url") or ds_merged.get("stack_url")
+        return bool(merged.get("client_id") and merged.get("client_secret") and merged.get("project_id") and stack)
+    return False
 
 
 _LOCK_TTL_MIN = 60
@@ -357,8 +522,16 @@ def _flag_default(section: str, key: str, fallback: bool) -> bool:
     covers a declared field with no registry entry — a plain config boolean
     rather than a switch.
     """
+    return _flag_default_path((section, key), fallback)
+
+
+def _flag_default_path(config_keys: tuple[str, ...], fallback: bool) -> bool:
+    """`_flag_default` for a switch whose config path is deeper than
+    `section.key` (e.g. `auth.keboola.allow_token_header`). Same no-second-copy
+    rationale; matched on the full path so a nested declaration can't silently
+    miss the registry entry and fall back to a hand-typed default."""
     for s in SWITCHES:
-        if s.config_keys == (section, key):
+        if s.config_keys == config_keys:
             return bool(s.default)
     return fallback
 
@@ -429,6 +602,18 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
                 "client you use sends the header."
             ),
         },
+        "session_pool": {
+            "kind": "bool",
+            "default": _flag_default("mcp", "session_pool", True),
+            "hint": (
+                "Keep a stdio MCP server's process warm between tool calls "
+                "instead of starting one per call — the upstream's own imports "
+                "cost about six seconds every time. Read per call, so a change "
+                "applies to the next one. Turn it off for a process per call: "
+                "the debugging shape, and the answer for an upstream that "
+                "cannot survive being reused. http/sse sources are unaffected."
+            ),
+        },
         "source_url_strict": {
             "kind": "bool",
             "default": _flag_default("mcp", "source_url_strict", False),
@@ -440,6 +625,19 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
                 "cleartext http to a public one. Leaving it off is what allows a "
                 "source on your own intranet. Turn it on if every MCP service you "
                 "use is third-party — it makes an internal source unconfigurable."
+            ),
+        },
+        "connector_ui_enabled": {
+            "kind": "bool",
+            "default": _flag_default("mcp", "connector_ui_enabled", True),
+            "hint": (
+                "Expose the user-facing MCP connector surface — /me/ai-connector, "
+                "/mcp-connect, and the MCP tab of /how-it-works#connect, plus their "
+                "nav/palette entries. On by default. Turn off on a VPN/intranet-only "
+                "instance whose cloud-side MCP clients can never reach the endpoint, "
+                "so users are not shown a setup path that cannot work for them. UI "
+                "only — the MCP protocol endpoints keep serving in-network clients "
+                "regardless."
             ),
         },
         "source_url_runtime_enforce": {
@@ -673,6 +871,82 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
                 "'acme.com,acme-internal.com'). Single domain works too. Empty → no "
                 "domain restriction (any verified Google identity can sign in)."
             ),
+        },
+        # Keboola sign-in + token-header API auth. Declared so the panel
+        # renders structured fields with hints — in particular the
+        # `allow_token_header` boolean as a toggle rather than a free-text
+        # box (Devin Review on PR #1288; same failure shape as `mcp` in
+        # #1183). Read by app/auth/providers/keboola_verify.py.
+        "keboola": {
+            "kind": "object",
+            "hint": (
+                "Sign in with Keboola (OAuth) + optional X-StorageApi-Token "
+                "API auth. Membership in project_id is the trust boundary — "
+                "see config/instance.yaml.example for the full notes."
+            ),
+            "fields": {
+                "stack_url": {
+                    "kind": "string",
+                    "hint": (
+                        "Keboola stack URL tokens are verified against, e.g. "
+                        "https://connection.keboola.com. https only. Empty → falls "
+                        "back to data_source.keboola.stack_url."
+                    ),
+                },
+                "oauth_host": {
+                    "kind": "string",
+                    "hint": (
+                        "Host serving /oauth/authorize + /oauth/token. https only. "
+                        "Empty → falls back to stack_url (OAuth lives on the "
+                        "connection host)."
+                    ),
+                },
+                "project_id": {
+                    "kind": "string",
+                    "required": True,
+                    "hint": (
+                        "Keboola project this instance is bound to — tokens from any "
+                        "other project are rejected. Required for both the OAuth "
+                        "login and the token-header auth."
+                    ),
+                },
+                "client_id": {
+                    "kind": "string",
+                    "hint": (
+                        "OAuth client id issued by Keboola for your stack (not "
+                        "self-service — ask your Keboola contact). Only the OAuth "
+                        "login needs it; token-header auth works without one."
+                    ),
+                },
+                "client_secret": {
+                    "kind": "secret",
+                    "hint": (
+                        "OAuth client secret. Use a ${KEBOOLA_OAUTH_CLIENT_SECRET} "
+                        "env-var reference (don't paste the secret directly)."
+                    ),
+                },
+                "allowed_roles": {
+                    "kind": "array",
+                    "item_kind": "string",
+                    "hint": (
+                        "Keboola project roles permitted to sign in (e.g. admin, "
+                        "share). Empty/unset → any role the project admits, "
+                        "guest/readOnly included."
+                    ),
+                },
+                "allow_token_header": {
+                    "kind": "bool",
+                    "default": _flag_default_path(("auth", "keboola", "allow_token_header"), False),
+                    "hint": (
+                        "Accept a Keboola Storage API master token in the "
+                        "X-StorageApi-Token header as API authentication (existing "
+                        "users only, never provisions). Off by default: a plain "
+                        "Storage token carries no interactive factor, so this "
+                        "bypasses any MFA/SSO enforced on web logins. See "
+                        "docs/feature-flags.md."
+                    ),
+                },
+            },
         },
     },
     "ai": {
@@ -1119,11 +1393,18 @@ def _declared_boolean_fields() -> frozenset[str]:
     name contains the substring "token" (Devin Review on #1183).
 
     Derived from the registry rather than an allowlist so a future boolean is
-    covered without anyone remembering this failure mode.
+    covered without anyone remembering this failure mode. Both registries feed
+    it: the ``_KNOWN_FIELDS`` panel declarations AND the ``SWITCHES`` registry
+    — a bool switch whose leaf name carries a redactor substring (e.g.
+    ``auth.keboola.allow_token_header`` / ``mcp.allow_query_param_token``, both
+    matching "token") would otherwise render as ``***`` on the settings screen,
+    the same failure mode this guards against.
     """
-    return frozenset(
+    from_known = {
         name for section in _KNOWN_FIELDS.values() for name, spec in section.items() if spec.get("kind") == "bool"
-    )
+    }
+    from_switches = {s.config_keys[-1] for s in SWITCHES if s.kind == "bool" and s.config_keys}
+    return frozenset(from_known | from_switches)
 
 
 def _is_secret_key(key: str) -> bool:
@@ -1651,6 +1932,14 @@ async def update_server_config(
     scrubbed_sections: Dict[str, Dict[str, Any]] = {
         section: _strip_redacted_sentinels(patch, section) for section, patch in request.sections.items()
     }
+
+    # Runs on the SCRUBBED sections: the auth.providers availability check reads
+    # secret leaves (auth.keboola.client_secret), and a masking sentinel (`***`
+    # / `<empty>`) round-tripped from the GET payload is truthy — on the raw
+    # patch it would report keboola as "available" and let a lockout config
+    # through. After the scrub the sentinel key is gone, so the merge with the
+    # current overlay sees the real stored value (Devin review on #1288).
+    _validate_auth_providers_in_patch(scrubbed_sections)
 
     # Serialize read-modify-write across concurrent admin saves. Without the
     # lock, two saves would each read the same overlay snapshot, merge their

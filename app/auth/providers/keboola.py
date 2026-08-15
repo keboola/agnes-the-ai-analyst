@@ -1,0 +1,170 @@
+"""Keboola OAuth login provider.
+
+Same shape as the Google provider: authlib redirect flow with session-backed
+``state``, then a session cookie. Identity comes from verifying the OAuth
+access token against the stack's /tokens/verify (see keboola_verify — the
+master-token/project/role gates live there). First login auto-provisions via
+the shared helper; membership in the configured project is the trust
+boundary, so the allowed_domain filter is deliberately NOT applied here.
+"""
+
+import logging
+
+from authlib.integrations.starlette_client import OAuth
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import RedirectResponse
+from starlette.concurrency import run_in_threadpool
+
+from app.auth._common import safe_next_path
+from app.auth.jwt import SESSION_COOKIE_MAX_AGE_SECONDS, create_access_token
+from app.auth.provider_registry import require_provider
+from app.auth.providers import keboola_verify as kv
+from app.auth.provisioning import UserDeactivatedError, ensure_user
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(
+    prefix="/auth/keboola",
+    tags=["auth"],
+    dependencies=[Depends(require_provider("keboola"))],
+)
+
+oauth = OAuth()
+
+# Config the current "keboola" registration was built from —
+# (client_id, client_secret, oauth_host). See _oauth_client.
+_client_fingerprint: tuple[str, str, str | None] | None = None
+
+# KeboolaVerifyError.reason → /login?error=<code>. Every code has copy in
+# login.html; anything unmapped falls back to the generic failure.
+_ERROR_CODE_BY_REASON = {
+    "project_mismatch": "keboola_project_mismatch",
+    "not_master_token": "keboola_not_permitted",
+    # The login path's own master-token failure: the assumption that an
+    # interactive OAuth token always verifies as a master token is
+    # platform-unverified (see keboola_verify's module docstring), so if it
+    # ever fails it gets a self-describing code instead of the generic
+    # not-permitted banner.
+    "oauth_not_master_token": "keboola_oauth_not_master",
+    "role_forbidden": "keboola_not_permitted",
+    "no_admin_identity": "keboola_not_permitted",
+    "invalid_token": "keboola_oauth_failed",
+    "verify_failed": "keboola_oauth_failed",
+    "not_configured": "keboola_not_configured",
+}
+
+
+def is_available() -> bool:
+    """Config-completeness only — the allowlist is a separate layer (spec)."""
+    return bool(kv.client_id() and kv.client_secret() and kv.configured_project_id() and kv.stack_url())
+
+
+def _oauth_client():
+    """Register (or re-register) the authlib client for the CURRENT config.
+
+    Config is instance.yaml, read at first use — unlike Google's import-time
+    env vars it can change at runtime (server-config overlay save: secret
+    rotation, oauth_host/stack_url move). authlib's registry caches the
+    client object per name forever, so a register-once client would keep
+    signing with the stale credentials until restart while is_available()
+    reads live (Devin Review on PR #1288). A fingerprint of the effective
+    config is compared on every call; on change the cached client is dropped
+    and re-registered. Safe to call repeatedly."""
+    global _client_fingerprint
+    fingerprint = (kv.client_id(), kv.client_secret(), kv.oauth_host())
+    client = oauth.create_client("keboola")
+    if client is not None and fingerprint == _client_fingerprint:
+        return client
+    # First use, or the config changed since registration: rebuild. authlib
+    # keeps instantiated clients in `oauth._clients` (create_client returns
+    # the cached instance before ever consulting the registry), so the stale
+    # instance must be evicted for a fresh `register` to take effect.
+    oauth._clients.pop("keboola", None)
+    host = fingerprint[2]
+    oauth.register(
+        name="keboola",
+        client_id=fingerprint[0],
+        client_secret=fingerprint[1],
+        authorize_url=f"{host}/oauth/authorize",
+        access_token_url=f"{host}/oauth/token",
+        client_kwargs={"scope": "email"},
+    )
+    _client_fingerprint = fingerprint
+    return oauth.create_client("keboola")
+
+
+@router.get("/login")
+async def keboola_login(request: Request):
+    """Redirect to the Keboola OAuth authorize endpoint (state in session)."""
+    if not is_available():
+        return RedirectResponse(url="/login?error=keboola_not_configured", status_code=302)
+    next_path = safe_next_path(request.query_params.get("next"), default="")
+    if next_path:
+        request.session["login_next"] = next_path
+    else:
+        request.session.pop("login_next", None)
+    redirect_uri = str(request.url_for("keboola_callback"))
+    return await _oauth_client().authorize_redirect(request, redirect_uri)
+
+
+@router.get("/callback")
+async def keboola_callback(request: Request):
+    """Exchange the code, verify the access token at the stack, sign in."""
+    if not is_available():
+        return RedirectResponse(url="/login?error=keboola_not_configured", status_code=302)
+    try:
+        # SSRF: oauth_host is re-validated at use time (not just when
+        # stored), same posture as stack_url in
+        # keboola_verify._fetch_verify — a DNS-rebind or config edit
+        # between store and use must not point the token exchange at a
+        # private/internal address.
+        from app.api.admin import _validate_url_not_private
+
+        # Offload — _validate_url_not_private resolves the host (blocking DNS),
+        # which must not run on the single event loop (Tier-1 convention).
+        await run_in_threadpool(_validate_url_not_private, kv.oauth_host(), "auth.keboola.oauth_host")
+        token = await _oauth_client().authorize_access_token(request)
+    except Exception:
+        logger.exception("Keboola OAuth token exchange failed")
+        return RedirectResponse(url="/login?error=keboola_oauth_failed", status_code=302)
+    access_token = str(token.get("access_token") or "")
+    # Backstop: any unexpected failure in the post-exchange flow (verify →
+    # provisioning → JWT → cookie) must land on the friendly login banner,
+    # never a raw 500. The specific except branches below return their own
+    # redirects from inside the try, so the backstop never shadows them.
+    try:
+        try:
+            # Sync HTTP verify off the event loop (same Tier-1 posture as auth).
+            identity = await run_in_threadpool(kv.verify_oauth_access_token, access_token)
+        except kv.KeboolaVerifyError as exc:
+            logger.info("Keboola login rejected: %s", exc.reason)
+            code = _ERROR_CODE_BY_REASON.get(exc.reason, "keboola_oauth_failed")
+            return RedirectResponse(url=f"/login?error={code}", status_code=302)
+        try:
+            user = await run_in_threadpool(
+                ensure_user, identity.email, identity.name, source="auth.keboola:first-signin"
+            )
+        except UserDeactivatedError:
+            return RedirectResponse(url="/login?error=deactivated", status_code=302)
+
+        jwt_token = create_access_token(user["id"], user["email"])
+        target = safe_next_path(request.session.pop("login_next", None))
+
+        from app.auth.public_url import cookie_secure
+        from app.instance_config import session_cookie_domain
+
+        response = RedirectResponse(url=target, status_code=302)
+        response.set_cookie(
+            key="access_token",
+            value=jwt_token,
+            httponly=True,
+            max_age=SESSION_COOKIE_MAX_AGE_SECONDS,
+            samesite="lax",
+            secure=cookie_secure(request),
+            domain=session_cookie_domain(),
+        )
+        return response
+    except Exception:
+        # Deliberately no token/identity details in the log record.
+        logger.exception("Keboola OAuth callback failed after token exchange")
+        return RedirectResponse(url="/login?error=keboola_oauth_failed", status_code=302)

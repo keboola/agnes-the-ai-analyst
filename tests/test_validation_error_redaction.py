@@ -16,7 +16,7 @@ import pytest
 
 # Every admin endpoint whose request body is itself a credential. Each entry is
 # (method, path template, wrong-shaped body carrying the secret).
-SECRET = "5947-0000000-doNotEchoThisTokenBack"
+SECRET = "12345-0000000-doNotEchoThisTokenBack"
 
 SECRET_BEARING_ENDPOINTS = [
     ("put", "/api/admin/source-connections/{cid}/secret", {"secret": SECRET, "kind": "master"}),

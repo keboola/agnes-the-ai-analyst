@@ -2,16 +2,164 @@
 
 import json
 from pathlib import Path
-from typing import Optional
 
 import typer
 
 from cli.client import RedirectHardStop, api_get
 from cli.config import get_sync_state, get_workspace_root
 from cli.lib.jira_partition_check import detect_jira_partition_layout
+from cli.lib.local_tables import local_table_names
 from cli.lib.session_health import session_upload_health
+from cli.lib.workspace_resolve import resolve_data_workspace
 
 diagnose_app = typer.Typer(help="System diagnostics")
+
+
+def _offered_table_names(manifest: dict) -> set[str]:
+    """Which tables `agnes pull` would actually put on this laptop.
+
+    Deliberately mirrors `cli/lib/pull.py:run_pull`'s download-set filter
+    rather than counting the manifest's flat `tables` dict, so the comparison
+    agrees with what pull fetches instead of with what the server lists:
+
+    - The payload is a DICT keyed by table id (`app/api/sync.py`:
+      `_build_manifest_for_user`), the shape every other consumer reads. A
+      list is tolerated defensively (proxied / hand-crafted payloads) but is
+      not the contract.
+    - `query_mode='remote'` rows answer server-side and have no parquet at
+      all; `server_only` rows have one but it is never distributed. Expecting
+      either on disk reports a permanent, unfixable shortfall.
+    - The flat dict is gated by `can_access_table`, whose Admin short-circuit
+      bypasses the stack, so it over-lists for admins. When the manifest
+      carries the typed v49 sections (`direct_tables` / `data_packages[]
+      .tables[]`) those are the stack-scoped truth and `run_pull` filters
+      through them; a pre-v49 server ships neither, and then the flat dict is
+      all there is (`authorized_names is None` in `run_pull`).
+    """
+    raw = manifest.get("tables")
+    entries: dict[str, dict] = {}
+    if isinstance(raw, dict):
+        entries = {str(k): v for k, v in raw.items() if isinstance(v, dict)}
+    elif isinstance(raw, list):
+        for t in raw:
+            if isinstance(t, dict):
+                tid = t.get("id") or t.get("name") or t.get("table_id")
+                if tid:
+                    entries[str(tid)] = t
+
+    authorized: set[str] | None = None
+    if any(k in manifest for k in ("direct_tables", "data_packages")):
+        authorized = set()
+        for pkg in manifest.get("data_packages") or []:
+            for t in pkg.get("tables") or []:
+                if isinstance(t, dict) and t.get("name"):
+                    authorized.add(str(t["name"]))
+        for t in manifest.get("direct_tables") or []:
+            if isinstance(t, dict) and t.get("name"):
+                authorized.add(str(t["name"]))
+
+    offered: set[str] = set()
+    for tid, info in entries.items():
+        if (info.get("query_mode") or "local") == "remote":
+            continue
+        if info.get("server_only"):
+            continue
+        if authorized is not None and tid not in authorized:
+            continue
+        offered.add(tid)
+    return offered
+
+
+def _local_delivery_check() -> dict:
+    """Can the analyst actually READ the data the server says they may?
+
+    Every other check here asks the server about itself. This one compares
+    what the manifest offers against what is on the laptop, because that gap
+    is invisible from the server side: a fresh analyst whose `agnes pull`
+    had 403'd on the download still saw "Overall: healthy" and "[ok] data".
+
+    Severity vocabulary is the one the headline aggregation reads: a genuine
+    shortfall is a `warning` (the whole point — a verdict that stays `healthy`
+    through a total data outage is worse than no verdict), while the benign
+    states are `info` so they never move it. No workspace at all is a normal
+    first run, and a manifest this check cannot read is the `api` check's
+    business, not evidence of missing data.
+    """
+    check: dict = {"name": "local-data", "audience": "analyst"}
+    try:
+        # Resolved the way the DATA commands resolve it (`agnes pull`,
+        # `agnes query`, `agnes status`: `AGNES_LOCAL_DIR` override → cwd if
+        # workspace-shaped → `workspace_root` anchor), not via the
+        # push/session anchor alone — `agnes query` reads wherever
+        # `resolve_data_workspace()` points, and inspecting any other
+        # directory reports a false shortfall (or a false "run `agnes
+        # init`") the moment the two differ: override set, analyst standing
+        # in another workspace, stale or unset anchor.
+        root = resolve_data_workspace()
+        if root is None or not root.exists():
+            check.update(
+                status="info",
+                detail="No workspace on this machine — run `agnes init` first.",
+            )
+            return check
+
+        local = local_table_names(root / "server" / "parquet")
+
+        try:
+            resp = api_get("/api/sync/manifest")
+            # A 401/403/500 comes back as an ordinary response with a JSON
+            # error body — no `tables` key — which would read as "the server
+            # offers nothing" and report a false green. Same pattern as
+            # `cli/lib/pull.py`'s manifest fetch: non-2xx belongs in the
+            # except branch below, not in the comparison.
+            resp.raise_for_status()
+            manifest = resp.json() or {}
+            offered = _offered_table_names(manifest)
+        except RedirectHardStop:
+            # Derives from BaseException, so the clause below cannot take it —
+            # and unhandled it would abort the whole command (exit 2, empty
+            # output) on exactly the relocated deployment this command exists
+            # to diagnose. The redirect verdict itself is the `api` check's
+            # business; this row just declines the comparison.
+            check.update(
+                status="info",
+                detail=f"{len(local)} table(s) local; could not read the manifest to compare (server redirected).",
+                tables_local=len(local),
+            )
+            return check
+        except Exception as e:
+            check.update(
+                status="info",
+                detail=f"{len(local)} table(s) local; could not read the manifest to compare ({e}).",
+                tables_local=len(local),
+            )
+            return check
+
+        missing = offered - local
+        check.update(tables_local=len(local), tables_offered=len(offered))
+        if offered and not (offered & local):
+            check.update(
+                status="warning",
+                detail=(
+                    f"The server offers {len(offered)} table(s) but none are on this "
+                    "machine — run `agnes pull` and read its output; a download "
+                    "that 403s means the table is not in your stack yet."
+                ),
+            )
+        elif missing:
+            check.update(
+                status="warning",
+                detail=(
+                    f"{len(offered) - len(missing)} of {len(offered)} offered table(s) "
+                    "are local — `agnes pull` to fetch the rest."
+                ),
+            )
+        else:
+            check.update(status="ok", detail=f"{len(local)} table(s) available locally.")
+        return check
+    except Exception as e:
+        check.update(status="info", detail=f"local delivery check failed: {e}")
+        return check
 
 
 @diagnose_app.callback(invoke_without_command=True)
@@ -57,7 +205,7 @@ def diagnose(
     # ship it; absent role disables audience filtering so we don't
     # regress against an older server with the full-aggregation
     # contract the rest of the CLI was written against.
-    caller_role: Optional[str] = None
+    caller_role: str | None = None
 
     # 1. API reachability
     try:
@@ -149,6 +297,22 @@ def diagnose(
                 "detail": f"partition check failed: {e}",
             }
         )
+
+    # Local delivery: does the analyst actually HAVE the data the server says
+    # they may read? Every check above this point asks the server about
+    # itself, so `agnes diagnose` reported "Overall: healthy" including
+    # "[ok] data" while a fresh analyst's tables were unreachable — the
+    # manifest listed one table, `agnes pull` had 403'd on the download, and
+    # nothing on the laptop said so. A diagnostic that stays green through a
+    # total data outage is worse than none: the analyst who hit this stopped
+    # trusting it and went to raw curl.
+    #
+    # Analyst-audience on purpose — this is the analyst's own workspace, and
+    # it is the one thing they can act on ("run agnes pull", "ask for the
+    # grant"). A real shortfall is a `warning` so it reaches the headline;
+    # the benign states (no workspace yet, manifest unreadable) stay `info`
+    # and never move it — a first run is not a broken instance.
+    checks.append(_local_delivery_check())
 
     # Determine overall — `info` and `unknown` surface in the per-check
     # output but never promote the headline (issue #178).

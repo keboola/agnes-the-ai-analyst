@@ -1,8 +1,6 @@
 """Tests for incremental Jira parquet transform (upsert_dataframe and friends)."""
 
 import json
-from pathlib import Path
-from unittest.mock import patch
 
 import duckdb
 import pandas as pd
@@ -14,7 +12,7 @@ from connectors.jira.incremental_transform import (
     transform_single_issue,
     upsert_dataframe,
 )
-from connectors.jira.transform import REMOTE_LINKS_SCHEMA
+from connectors.jira.transform import COMMENTS_SCHEMA, REMOTE_LINKS_SCHEMA
 
 
 # Minimal schema compatible with ISSUES_SCHEMA for testing purposes
@@ -54,10 +52,12 @@ class TestUpsertDataframe:
 
     def test_update_existing_issue(self):
         """Upserting an existing issue_key replaces the old row."""
-        existing = _make_df([
-            {"issue_key": "PROJ-1", "summary": "Old summary"},
-            {"issue_key": "PROJ-2", "summary": "Other issue"},
-        ])
+        existing = _make_df(
+            [
+                {"issue_key": "PROJ-1", "summary": "Old summary"},
+                {"issue_key": "PROJ-2", "summary": "Other issue"},
+            ]
+        )
         new_records = [{"issue_key": "PROJ-1", "summary": "Updated summary"}]
         result = upsert_dataframe(existing, new_records, "issue_key", "PROJ-1")
         assert len(result) == 2
@@ -66,10 +66,12 @@ class TestUpsertDataframe:
 
     def test_delete_issue(self):
         """Upserting with empty records removes the issue (deletion case)."""
-        existing = _make_df([
-            {"issue_key": "PROJ-1", "summary": "To be deleted"},
-            {"issue_key": "PROJ-2", "summary": "Keep this"},
-        ])
+        existing = _make_df(
+            [
+                {"issue_key": "PROJ-1", "summary": "To be deleted"},
+                {"issue_key": "PROJ-2", "summary": "Keep this"},
+            ]
+        )
         result = upsert_dataframe(existing, [], "issue_key", "PROJ-1")
         assert len(result) == 1
         assert result.iloc[0]["issue_key"] == "PROJ-2"
@@ -84,11 +86,13 @@ class TestUpsertDataframe:
 
     def test_upsert_multiple_records_same_issue(self):
         """Multiple records for the same issue_key are all replaced."""
-        existing = _make_df([
-            {"issue_key": "PROJ-1", "summary": "Comment 1"},
-            {"issue_key": "PROJ-1", "summary": "Comment 2"},
-            {"issue_key": "PROJ-2", "summary": "Other"},
-        ])
+        existing = _make_df(
+            [
+                {"issue_key": "PROJ-1", "summary": "Comment 1"},
+                {"issue_key": "PROJ-1", "summary": "Comment 2"},
+                {"issue_key": "PROJ-2", "summary": "Other"},
+            ]
+        )
         new_records = [{"issue_key": "PROJ-1", "summary": "Updated comment"}]
         result = upsert_dataframe(existing, new_records, "issue_key", "PROJ-1")
         proj1_rows = result[result["issue_key"] == "PROJ-1"]
@@ -99,9 +103,11 @@ class TestUpsertDataframe:
 class TestParquetMonthlyPartitioning:
     def test_save_and_load_parquet(self, parquet_dir):
         """save_parquet_month writes and load_parquet_month reads correctly."""
-        df = _make_df([
-            {"issue_key": "PROJ-1", "summary": "Test issue"},
-        ])
+        df = _make_df(
+            [
+                {"issue_key": "PROJ-1", "summary": "Test issue"},
+            ]
+        )
         save_parquet_month(df, _SIMPLE_SCHEMA, parquet_dir, "2026-04")
         loaded = load_parquet_month(parquet_dir, "2026-04")
         assert loaded is not None
@@ -144,10 +150,12 @@ class TestParquetMonthlyPartitioning:
 
     def test_parquet_readable_by_duckdb(self, parquet_dir):
         """Parquet files written by save_parquet_month are readable by DuckDB."""
-        df = _make_df([
-            {"issue_key": "PROJ-1", "summary": "DuckDB readable"},
-            {"issue_key": "PROJ-2", "summary": "Also readable"},
-        ])
+        df = _make_df(
+            [
+                {"issue_key": "PROJ-1", "summary": "DuckDB readable"},
+                {"issue_key": "PROJ-2", "summary": "Also readable"},
+            ]
+        )
         save_parquet_month(df, _SIMPLE_SCHEMA, parquet_dir, "2026-04")
 
         pq_file = str(parquet_dir / "month=2026-04" / "data.parquet")
@@ -159,10 +167,12 @@ class TestParquetMonthlyPartitioning:
     def test_upsert_round_trip_with_real_parquet(self, parquet_dir):
         """Full upsert round trip: write, load, upsert, save, verify."""
         # Initial write
-        initial = _make_df([
-            {"issue_key": "PROJ-1", "summary": "Original"},
-            {"issue_key": "PROJ-2", "summary": "Keep"},
-        ])
+        initial = _make_df(
+            [
+                {"issue_key": "PROJ-1", "summary": "Original"},
+                {"issue_key": "PROJ-2", "summary": "Keep"},
+            ]
+        )
         save_parquet_month(initial, _SIMPLE_SCHEMA, parquet_dir, "2026-04")
 
         # Load existing
@@ -215,30 +225,40 @@ def test_incremental_preserves_remote_links_when_overlay_absent(tmp_path):
     attachments_dir.mkdir()
 
     # Pre-seed an existing remote-link row for PROJ-1 in month 2026-05.
-    _seed_remote_links_parquet(output_dir, "2026-05", [{
-        "issue_key": "PROJ-1",
-        "remote_link_id": "rl-existing",
-        "url": "https://example.com/old",
-        "title": "Pre-existing link",
-        "application_name": "X",
-        "application_type": "x",
-    }])
+    _seed_remote_links_parquet(
+        output_dir,
+        "2026-05",
+        [
+            {
+                "issue_key": "PROJ-1",
+                "remote_link_id": "rl-existing",
+                "url": "https://example.com/old",
+                "title": "Pre-existing link",
+                "application_name": "X",
+                "application_type": "x",
+            }
+        ],
+    )
 
     # Raw issue WITHOUT _remote_links key — overlay was skipped upstream.
-    _write_raw_issue(raw_dir, "PROJ-1", {
-        "key": "PROJ-1",
-        "id": "10001",
-        "fields": {
-            "summary": "test",
-            "status": {"name": "Open"},
-            "issuetype": {"name": "Bug"},
-            "attachment": [],
-            "comment": {"comments": []},
-            "created": "2026-05-15T00:00:00.000+0000",
-            "updated": "2026-05-15T00:00:00.000+0000",
+    _write_raw_issue(
+        raw_dir,
+        "PROJ-1",
+        {
+            "key": "PROJ-1",
+            "id": "10001",
+            "fields": {
+                "summary": "test",
+                "status": {"name": "Open"},
+                "issuetype": {"name": "Bug"},
+                "attachment": [],
+                "comment": {"comments": []},
+                "created": "2026-05-15T00:00:00.000+0000",
+                "updated": "2026-05-15T00:00:00.000+0000",
+            },
+            # NOTE: no _remote_links key — that is the test condition.
         },
-        # NOTE: no _remote_links key — that is the test condition.
-    })
+    )
 
     ok = transform_single_issue(
         issue_key="PROJ-1",
@@ -249,8 +269,7 @@ def test_incremental_preserves_remote_links_when_overlay_absent(tmp_path):
     assert ok is True
 
     df = load_parquet_month(output_dir / "remote_links", "2026-05")
-    assert df is not None and len(df) == 1, \
-        "Existing remote-link row was wiped — overlay-absent signal not honored"
+    assert df is not None and len(df) == 1, "Existing remote-link row was wiped — overlay-absent signal not honored"
     assert df.iloc[0]["remote_link_id"] == "rl-existing"
 
 
@@ -271,30 +290,40 @@ def test_incremental_wipes_remote_links_when_overlay_present_but_empty(tmp_path)
     attachments_dir.mkdir()
 
     # Pre-seed a stale row that should be wiped.
-    _seed_remote_links_parquet(output_dir, "2026-05", [{
-        "issue_key": "PROJ-2",
-        "remote_link_id": "rl-stale",
-        "url": "https://example.com/stale",
-        "title": "Stale link to be wiped",
-        "application_name": "X",
-        "application_type": "x",
-    }])
+    _seed_remote_links_parquet(
+        output_dir,
+        "2026-05",
+        [
+            {
+                "issue_key": "PROJ-2",
+                "remote_link_id": "rl-stale",
+                "url": "https://example.com/stale",
+                "title": "Stale link to be wiped",
+                "application_name": "X",
+                "application_type": "x",
+            }
+        ],
+    )
 
     # Raw issue WITH _remote_links: [] — fresh fetch confirmed empty.
-    _write_raw_issue(raw_dir, "PROJ-2", {
-        "key": "PROJ-2",
-        "id": "10002",
-        "fields": {
-            "summary": "test",
-            "status": {"name": "Open"},
-            "issuetype": {"name": "Bug"},
-            "attachment": [],
-            "comment": {"comments": []},
-            "created": "2026-05-15T00:00:00.000+0000",
-            "updated": "2026-05-15T00:00:00.000+0000",
+    _write_raw_issue(
+        raw_dir,
+        "PROJ-2",
+        {
+            "key": "PROJ-2",
+            "id": "10002",
+            "fields": {
+                "summary": "test",
+                "status": {"name": "Open"},
+                "issuetype": {"name": "Bug"},
+                "attachment": [],
+                "comment": {"comments": []},
+                "created": "2026-05-15T00:00:00.000+0000",
+                "updated": "2026-05-15T00:00:00.000+0000",
+            },
+            "_remote_links": [],
         },
-        "_remote_links": [],
-    })
+    )
 
     ok = transform_single_issue(
         issue_key="PROJ-2",
@@ -309,6 +338,182 @@ def test_incremental_wipes_remote_links_when_overlay_present_but_empty(tmp_path)
     # Both outcomes satisfy the contract — the stale row must not survive.
     if df is not None:
         remaining = df[df["issue_key"] == "PROJ-2"]
-        assert len(remaining) == 0, \
-            "Stale remote-link row survived a successful empty-list fetch — " \
+        assert len(remaining) == 0, (
+            "Stale remote-link row survived a successful empty-list fetch — "
             "the empty-list (legitimate) signal was misinterpreted as preserve"
+        )
+
+
+def _seed_comments_parquet(parquet_root, month_key, rows):
+    """Write a starter comments parquet so we can assert preservation."""
+    df = pd.DataFrame(rows)
+    target = parquet_root / "comments"
+    target.mkdir(parents=True, exist_ok=True)
+    save_parquet_month(df, COMMENTS_SCHEMA, target, month_key)
+
+
+def test_incremental_preserves_comments_when_pagination_incomplete(tmp_path):
+    """A previously successful fetch stored the issue's full 190-comment
+    thread. A later refetch hits a transient pagination failure mid-fetch
+    (``complete_issue_comments`` marks ``_comments_incomplete``) and only
+    managed to re-embed 124 of them. Because the comments upsert is an
+    issue-scoped delete-then-insert, overlaying that known-truncated list
+    would regress 190 stored comments down to 124 — a regression the
+    pre-pagination code could not cause. transform_single_issue must instead
+    preserve the previously stored rows untouched."""
+    raw_dir = tmp_path / "raw"
+    output_dir = tmp_path / "parquet"
+    attachments_dir = tmp_path / "attachments"
+    output_dir.mkdir()
+    attachments_dir.mkdir()
+
+    # Pre-seed 190 previously-stored comment rows for PROJ-3 in month 2026-05.
+    _seed_comments_parquet(
+        output_dir,
+        "2026-05",
+        [{"comment_id": f"c{i}", "issue_key": "PROJ-3", "body": f"comment {i}"} for i in range(190)],
+    )
+
+    # Raw issue with a partial re-fetch (124 comments) marked incomplete —
+    # the shape complete_issue_comments leaves behind on a mid-pagination
+    # failure.
+    _write_raw_issue(
+        raw_dir,
+        "PROJ-3",
+        {
+            "key": "PROJ-3",
+            "id": "10003",
+            "fields": {
+                "summary": "test",
+                "status": {"name": "Open"},
+                "issuetype": {"name": "Bug"},
+                "attachment": [],
+                "comment": {
+                    "total": 190,
+                    "comments": [{"id": f"c{i}", "author": {}, "updateAuthor": {}, "body": {}} for i in range(124)],
+                },
+                "created": "2026-05-15T00:00:00.000+0000",
+                "updated": "2026-05-15T00:00:00.000+0000",
+            },
+            "_comments_incomplete": True,
+        },
+    )
+
+    ok = transform_single_issue(
+        issue_key="PROJ-3",
+        raw_dir=raw_dir,
+        output_dir=output_dir,
+        attachments_dir=attachments_dir,
+    )
+    assert ok is True
+
+    df = load_parquet_month(output_dir / "comments", "2026-05")
+    assert df is not None and len(df) == 190, (
+        "Stored comment thread was overwritten by a known-truncated pagination "
+        "retry — _comments_incomplete was not honored"
+    )
+
+
+def test_incremental_writes_partial_comments_when_nothing_stored(tmp_path):
+    """The marker is persisted in the raw JSON, so every later re-transform
+    reads it again. On an issue's FIRST fetch there are no stored rows to
+    preserve, and skipping would mean the issue never gets a comment row at
+    all — the partial list cannot regress anything, so it is written."""
+    raw_dir = tmp_path / "raw"
+    output_dir = tmp_path / "parquet"
+    attachments_dir = tmp_path / "attachments"
+    output_dir.mkdir()
+    attachments_dir.mkdir()
+
+    _write_raw_issue(
+        raw_dir,
+        "PROJ-4",
+        {
+            "key": "PROJ-4",
+            "id": "10004",
+            "fields": {
+                "summary": "test",
+                "status": {"name": "Open"},
+                "issuetype": {"name": "Bug"},
+                "attachment": [],
+                "comment": {
+                    "total": 190,
+                    "comments": [{"id": f"c{i}", "author": {}, "updateAuthor": {}, "body": {}} for i in range(124)],
+                },
+                "created": "2026-05-15T00:00:00.000+0000",
+                "updated": "2026-05-15T00:00:00.000+0000",
+            },
+            "_comments_incomplete": True,
+        },
+    )
+
+    ok = transform_single_issue(
+        issue_key="PROJ-4",
+        raw_dir=raw_dir,
+        output_dir=output_dir,
+        attachments_dir=attachments_dir,
+    )
+    assert ok is True
+
+    df = load_parquet_month(output_dir / "comments", "2026-05")
+    assert df is not None and len(df) == 124, (
+        "A first fetch that hit a pagination failure wrote no comments at all — "
+        "preserve semantics fired with nothing to preserve"
+    )
+
+
+def test_incremental_skips_partial_comments_when_created_at_unparseable(tmp_path):
+    """A ``_comments_incomplete`` payload with no parseable ``created_at``
+    (realistic via the webhook fallback path) has no meaningful month to
+    probe: ``get_month_key(None)`` falls back to the CURRENT month, which is
+    not necessarily where the issue's real comments live. Probing that
+    (empty) month would read "nothing stored" and write the partial list
+    THERE, while the genuine thread sits in the true creation month — same
+    issue_key with comment rows in two partitions (views glob ``month=*``,
+    so they'd double-count). Without a reliable month to probe, this must
+    behave the same as "something is stored" and skip the write."""
+    raw_dir = tmp_path / "raw"
+    output_dir = tmp_path / "parquet"
+    attachments_dir = tmp_path / "attachments"
+    output_dir.mkdir()
+    attachments_dir.mkdir()
+
+    _write_raw_issue(
+        raw_dir,
+        "PROJ-5",
+        {
+            "key": "PROJ-5",
+            "id": "10005",
+            "fields": {
+                "summary": "test",
+                "status": {"name": "Open"},
+                "issuetype": {"name": "Bug"},
+                "attachment": [],
+                "comment": {
+                    "total": 190,
+                    "comments": [{"id": f"c{i}", "author": {}, "updateAuthor": {}, "body": {}} for i in range(124)],
+                },
+                # NOTE: no "created" field at all — created_at will not parse.
+                "updated": "2026-05-15T00:00:00.000+0000",
+            },
+            "_comments_incomplete": True,
+        },
+    )
+
+    ok = transform_single_issue(
+        issue_key="PROJ-5",
+        raw_dir=raw_dir,
+        output_dir=output_dir,
+        attachments_dir=attachments_dir,
+    )
+    assert ok is True
+
+    from connectors.jira.incremental_transform import get_month_key
+
+    fallback_month = get_month_key(None)
+    df = load_parquet_month(output_dir / "comments", fallback_month)
+    assert df is None or df.empty, (
+        "A _comments_incomplete payload with no parseable created_at wrote its "
+        "partial comment list into the fallback (current) month — this can "
+        "double-count the thread once the real creation month is known"
+    )

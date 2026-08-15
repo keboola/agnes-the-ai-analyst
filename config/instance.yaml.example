@@ -15,7 +15,10 @@ config_version: 1
 instance:
   name: "AI Harness"
   subtitle: "Your Organization"
-  copyright: "Your Organization"
+  copyright: "Your Organization"   # Footer credit, rendered "Deployed by <this>".
+                                     # Leave unset and the footer shows only the
+                                     # product name + running build — it never
+                                     # invents an attribution.
   # brand: "Agnes"                   # Product-name brand string used in analyst-facing UI copy
                                      # (/home hero, /setup, /login messages, clipboard setup
                                      # script). Default "Agnes". Set to e.g. "Foundry AI" to
@@ -226,8 +229,29 @@ auth:
   #
   # username_strip_domain: false
   # username_prefix: ""
-  # disabled_providers:            # Hide auth methods from login page
-  #   - "email"                    # Disable email magic link (use when Google OAuth is configured)
+  # providers: [google, email, password, keboola]
+  #                                 # Which login methods this instance offers.
+  #                                 # Unset = every configured provider (default).
+  #                                 # Explicit empty list is rejected. Excluded
+  #                                 # providers' endpoints return 404. Env
+  #                                 # override: AGNES_AUTH_PROVIDERS (comma-sep).
+
+  # --- Keboola login (optional) ---
+  # Lets users sign in with their Keboola platform identity. The OAuth
+  # client (client_id/client_secret) is issued by Keboola for your stack —
+  # ask your Keboola contact; it is not self-service. The token-header API
+  # auth (auth.keboola.allow_token_header switch) works without any OAuth
+  # client. Membership in project_id is the trust boundary: ANYONE that
+  # project admits (including guest/readOnly collaborators) can sign in and
+  # self-provision unless allowed_roles narrows it.
+  # keboola:
+  #   client_id: "${KEBOOLA_OAUTH_CLIENT_ID}"
+  #   client_secret: "${KEBOOLA_OAUTH_CLIENT_SECRET}"
+  #   stack_url: ""                 # default: data_source.keboola.stack_url
+  #   oauth_host: ""                # default: stack_url (OAuth lives on the connection host)
+  #   project_id: ""                # REQUIRED — tokens from other projects are rejected
+  #   allowed_roles: []             # e.g. [admin, share]; empty/unset = any project role
+  #   allow_token_header: false     # X-StorageApi-Token API auth; see docs/feature-flags.md
 
 # --- Security (optional) ---
 # security:
@@ -264,6 +288,18 @@ auth:
 #   # on-prem source does not stop an instance from adopting it.
 #   # Env override: AGNES_MCP_SOURCE_URL_STRICT.
 #   source_url_strict: false
+#
+#   # Expose the user-facing MCP connector surface — Agnes's OWN server, i.e.
+#   # the /me/ai-connector and /mcp-connect install-instruction pages, the MCP
+#   # tab of /how-it-works#connect, and their nav/palette entries. On by
+#   # default (current behavior). Set false on a VPN/intranet-only instance
+#   # whose cloud-side MCP clients (e.g. a hosted connector resolved from
+#   # outside the network) can never reach the endpoint, so users are not
+#   # shown a setup path that cannot work for them. UI only — the MCP
+#   # protocol endpoints (/api/mcp/http, /api/mcp/sse) keep serving in-network
+#   # clients regardless. See docs/DEPLOYMENT.md. Env override:
+#   # AGNES_MCP_CONNECTOR_UI_ENABLED.
+#   connector_ui_enabled: true
 
 # --- Access control (optional) ---
 # access:
@@ -721,6 +757,22 @@ catalog:
 # Min 60 (1 minute), max 604800 (7 days). Configurable via /admin/server-config UI.
 materialize:
   lock_ttl_seconds: 86400
+
+# --- Rolling state-DB recovery snapshot (optional) ---
+# system.duckdb.pre-migrate is captured once per migration transition and
+# never refreshed afterwards, so it goes stale within hours of normal
+# operation (#379/#380). This section controls a SEPARATE, rolling-refreshed
+# recovery aid: system.duckdb.rolling-snapshot/, a logical EXPORT DATABASE
+# (Parquet + schema.sql) taken over the app's own system.duckdb connection —
+# never a second connection to the file. Runs on the same in-process tick as
+# the periodic CHECKPOINT (app/main.py's _state_checkpoint_loop). DuckDB-
+# backend only; a no-op when app-state lives in Postgres (its own backup
+# story applies there). See docs/runbooks/wal-recovery.md for how to use it.
+#
+# backups:
+#   # Hours between refreshes; 0 disables the rolling snapshot entirely.
+#   # Default 6.
+#   rolling_snapshot_interval_hours: 6
 
 # --- Cloud-hosted Claude Code (optional) ---
 # Cloud-hosted Claude Code (web /chat + Slack adapter). Off by default;

@@ -41,7 +41,11 @@ import httpx
 from dotenv import load_dotenv
 
 from app.logging_config import setup_logging
-from connectors.jira.service import JiraFetchError
+from connectors.jira.service import (
+    JiraFetchError,
+    complete_issue_comments,
+    sweep_stale_attachment_staging,
+)
 
 setup_logging(__name__)
 logger = logging.getLogger(__name__)
@@ -88,12 +92,100 @@ class Config:
         )
 
 
+def _incomplete_marker_path(json_path: Path) -> Path:
+    """Sidecar marker path for an issue JSON's ``_comments_incomplete`` state.
+
+    A dedicated file next to the JSON — rather than a key inside it — so
+    ``--skip-existing`` can answer "does this issue need a re-fetch?" with a
+    single ``stat()``, the same cost as the pre-pagination ``json_path.exists()``
+    check it replaces. ``_comments_incomplete`` is added to the dict well
+    after ``fields`` (often the largest part of a ``fields=*all`` payload),
+    so it sits late in the file — a bounded read from the front would
+    routinely miss it, and parsing the whole file to find it is exactly the
+    six-figure-issue-count cost this sidecar avoids (Devin Review on #1283).
+    """
+    return json_path.with_suffix(json_path.suffix + ".incomplete")
+
+
+def _sync_incomplete_marker(json_path: Path, issue_data: dict) -> None:
+    """Create/remove the sidecar marker to match ``issue_data``'s current
+    ``_comments_incomplete`` state. Called right after writing *json_path*.
+    """
+    marker_path = _incomplete_marker_path(json_path)
+    if issue_data.get("_comments_incomplete") is True:
+        marker_path.touch(exist_ok=True)
+    else:
+        marker_path.unlink(missing_ok=True)
+
+
+def _needs_refetch(json_path: Path) -> bool:
+    """Is an already-downloaded issue JSON one that ``--skip-existing`` must NOT skip?
+
+    True when the sidecar ``.incomplete`` marker exists next to *json_path*
+    (comment pagination failed mid-fetch on the write that produced it — see
+    ``_sync_incomplete_marker``) — a single ``stat()``, deliberately NOT a
+    ``json.load()`` of the JSON itself: at six-figure issue counts, with
+    ``fields=*all`` payloads running hundreds of KB each, opening and parsing
+    every existing file just to skip it was tens of GB of I/O on every
+    ``--skip-existing`` run (Devin Review on #1283).
+
+    Also true when the JSON itself looks truncated/corrupt — cheaply, via
+    the last byte rather than a full parse: ``json.dump`` of a dict never
+    ends in anything but ``}``, so a file that doesn't is evidence of a
+    crashed/partial write, not a completed download.
+    """
+    marker_path = _incomplete_marker_path(json_path)
+    if marker_path.exists():
+        logger.info(f"Re-fetching {json_path.name}: stored comments are incomplete")
+        return True
+
+    try:
+        size = json_path.stat().st_size
+        if size == 0:
+            logger.warning(f"Re-fetching {json_path.name}: existing JSON is empty")
+            return True
+        with open(json_path, "rb") as f:
+            f.seek(-1, os.SEEK_END)
+            last_byte = f.read(1)
+    except OSError as e:
+        logger.warning(f"Re-fetching {json_path.name}: existing JSON is unreadable ({e})")
+        return True
+    if last_byte != b"}":
+        logger.warning(f"Re-fetching {json_path.name}: existing JSON looks truncated")
+        return True
+    return False
+
+
+def _count_already_downloaded(issues_dir: Path, issue_keys: list[str]) -> int:
+    """How many of *issue_keys* already have a JSON that ``--skip-existing``
+    would actually skip — the same decision ``process_issue`` makes (existence
+    AND ``not _needs_refetch(...)``), not a bare ``.exists()``. Shared by both
+    ``--dry-run`` paths (JQL search mode and targeted-keys mode) so dry-run's
+    "already downloaded" count doesn't under-report what a real run would
+    re-fetch (Devin Review on #1283).
+    """
+    existing = 0
+    for key in issue_keys:
+        json_path = issues_dir / f"{key}.json"
+        if json_path.exists() and not _needs_refetch(json_path):
+            existing += 1
+    return existing
+
+
 class JiraBackfill:
     """Backfill handler for downloading all Jira issues."""
 
     # Jira API limits
     MAX_RESULTS_PER_PAGE = 100
     MAX_ATTACHMENT_SIZE = 50 * 1024 * 1024  # 50 MB
+    # Bounded retry for a rate-limited issue fetch, mirroring the comment-
+    # pagination retry in complete_issue_comments (service.py). Before this
+    # PR the 429 branch lived AFTER the `with httpx.Client(...)` block; this
+    # PR moved the 200 branch inside it (to hand `client` to
+    # complete_issue_comments) and left the 429 branch's recursive retry
+    # inside too, so N consecutive 429s held N open httpx.Client instances
+    # plus N stack frames — unbounded (Devin Review on #1283).
+    ISSUE_FETCH_RATE_LIMIT_RETRIES = 5
 
     def __init__(self, config: Config):
         self.config = config
@@ -201,6 +293,12 @@ class JiraBackfill:
         """
         Fetch complete issue data from Jira.
 
+        A 429 is retried in a bounded loop (up to ISSUE_FETCH_RATE_LIMIT_RETRIES
+        times): only the successful (200) response is handled while `client`
+        is open — the retry's `time.sleep()` runs OUTSIDE it, after the
+        client (and its connection) is closed, so consecutive 429s don't
+        hold multiple open httpx.Client instances (Devin Review on #1283).
+
         Args:
             issue_key: Issue key (e.g., "PROJ-123")
 
@@ -213,32 +311,46 @@ class JiraBackfill:
             "fields": "*all",
         }
 
-        try:
-            with httpx.Client(timeout=30) as client:
-                response = client.get(
-                    url,
-                    auth=self.auth,
-                    params=params,
-                    headers={"Accept": "application/json"},
-                )
+        rate_limit_retries = 0
+        while True:
+            try:
+                with httpx.Client(timeout=30) as client:
+                    response = client.get(
+                        url,
+                        auth=self.auth,
+                        params=params,
+                        headers={"Accept": "application/json"},
+                    )
 
-            if response.status_code == 200:
-                return response.json()
-            elif response.status_code == 404:
+                    if response.status_code == 200:
+                        issue_data = response.json()
+                        complete_issue_comments(issue_data, self.base_url, self.auth, client)
+                        return issue_data
+            except httpx.RequestError as e:
+                logger.error(f"Request error fetching {issue_key}: {e}")
+                return None
+
+            if response.status_code == 404:
                 logger.warning(f"Issue {issue_key} not found")
                 return None
-            elif response.status_code == 429:
-                # Rate limited - wait and retry
-                retry_after = int(response.headers.get("Retry-After", 60))
-                logger.warning(f"Rate limited, waiting {retry_after}s...")
-                time.sleep(retry_after)
-                return self.fetch_issue(issue_key)  # Retry
-            else:
-                logger.error(f"Failed to fetch {issue_key}: {response.status_code}")
-                return None
 
-        except httpx.RequestError as e:
-            logger.error(f"Request error fetching {issue_key}: {e}")
+            if response.status_code == 429:
+                if rate_limit_retries >= self.ISSUE_FETCH_RATE_LIMIT_RETRIES:
+                    logger.error(
+                        f"Failed to fetch {issue_key}: still rate limited after "
+                        f"{rate_limit_retries} retries — giving up"
+                    )
+                    return None
+                retry_after = int(response.headers.get("Retry-After", 60))
+                rate_limit_retries += 1
+                logger.warning(
+                    f"Rate limited fetching {issue_key}, waiting {retry_after}s "
+                    f"(retry {rate_limit_retries}/{self.ISSUE_FETCH_RATE_LIMIT_RETRIES})..."
+                )
+                time.sleep(retry_after)
+                continue
+
+            logger.error(f"Failed to fetch {issue_key}: {response.status_code}")
             return None
 
     def fetch_remote_links(self, issue_key: str) -> list[dict]:
@@ -260,9 +372,7 @@ class JiraBackfill:
                     headers={"Accept": "application/json"},
                 )
         except httpx.RequestError as e:
-            raise JiraFetchError(
-                f"Backfill remote-links fetch for {issue_key} failed: connection — {e}"
-            ) from e
+            raise JiraFetchError(f"Backfill remote-links fetch for {issue_key} failed: connection — {e}") from e
 
         if response.status_code == 200:
             return response.json()
@@ -280,12 +390,10 @@ class JiraBackfill:
             )
         if response.status_code >= 500:
             raise JiraFetchError(
-                f"Backfill remote-links fetch for {issue_key} failed: server error "
-                f"({response.status_code})"
+                f"Backfill remote-links fetch for {issue_key} failed: server error ({response.status_code})"
             )
         raise JiraFetchError(
-            f"Backfill remote-links fetch for {issue_key} failed: unexpected status "
-            f"{response.status_code}"
+            f"Backfill remote-links fetch for {issue_key} failed: unexpected status {response.status_code}"
         )
 
     def save_issue(self, issue_data: dict) -> Path | None:
@@ -310,6 +418,11 @@ class JiraBackfill:
         try:
             with open(file_path, "w") as f:
                 json.dump(issue_data, f, indent=2, default=str)
+            # Keep the sidecar marker in sync with this write's incomplete
+            # state (set it when _comments_incomplete is True, clear it
+            # otherwise) so _needs_refetch can answer with a stat instead of
+            # parsing the JSON body (Devin Review on #1283).
+            _sync_incomplete_marker(file_path, issue_data)
             return file_path
         except Exception as e:
             logger.error(f"Failed to save {issue_key}: {e}")
@@ -342,12 +455,16 @@ class JiraBackfill:
         # Create issue-specific directory
         issue_attachments_dir = self.attachments_dir / issue_key
         issue_attachments_dir.mkdir(parents=True, exist_ok=True)
+        sweep_stale_attachment_staging(issue_attachments_dir)
 
         safe_filename = f"{attachment_id}_{filename}"
         file_path = issue_attachments_dir / safe_filename
 
-        # Skip if already downloaded
-        if file_path.exists():
+        # Skip if already downloaded AND complete — a short file (worker
+        # SIGKILLed mid-write by the pre-atomic writer) must be re-fetched,
+        # or the download endpoint serves the truncated bytes forever
+        # (Devin on #1297).
+        if file_path.exists() and (not size or file_path.stat().st_size == size):
             return file_path
 
         try:
@@ -355,8 +472,41 @@ class JiraBackfill:
                 response = client.get(content_url, auth=self.auth)
 
             if response.status_code == 200:
-                with open(file_path, "wb") as f:
-                    f.write(response.content)
+                # Publish atomically (per-process temp + os.replace), mirroring
+                # JiraService.download_attachment: the attachment download
+                # endpoint serves this very tree, and a webhook-driven
+                # incremental transform in another process can catalogue this
+                # exact path mid-backfill — a reader must never fstat a
+                # partially written file.
+                # Bounded temp name: appending to the full name could push a
+                # near-NAME_MAX (255-byte) filename over the limit and make a
+                # previously-storable attachment fail to save. 40 codepoints
+                # (<=160 UTF-8 bytes) keeps the total well under NAME_MAX and
+                # stays unique: the name starts with the attachment id.
+                # pid alone is not unique enough: the backfill downloads under a
+                # thread pool, so two workers on the same attachment would share
+                # the staging name — one os.replace() could publish the other's
+                # half-written bytes (Devin on #1297).
+                tmp_path = file_path.with_name(f".tmp-{os.getpid()}-{os.urandom(4).hex()}-{file_path.name[:32]}")
+                try:
+                    with open(tmp_path, "wb") as f:
+                        f.write(response.content)
+                    # os.replace preserves the TEMP file's mode (0666 & umask),
+                    # not the previous inode's — pin it explicitly so a
+                    # restrictive deploy-time umask cannot leave the published
+                    # file unreadable to the serving process. 0o660, matching
+                    # the sibling issue-JSON writer's "Restore group rw for
+                    # ACL" pin: 0o644 would grant world-read to attachment
+                    # bytes AND collapse any named POSIX-ACL entries to
+                    # read-only (chmod resets the ACL mask from the group
+                    # bits) — a widening relative to the pre-atomic writer
+                    # under the documented 0007-umask ACL deployments (Devin
+                    # on #1297).
+                    os.chmod(tmp_path, 0o660)
+                    os.replace(tmp_path, file_path)
+                except BaseException:
+                    tmp_path.unlink(missing_ok=True)
+                    raise
                 return file_path
             else:
                 logger.debug(f"Failed to download {filename}: {response.status_code}")
@@ -392,14 +542,17 @@ class JiraBackfill:
 
         Args:
             issue_key: Issue key to process
-            skip_existing: Skip if JSON already exists
+            skip_existing: Skip if a COMPLETE JSON already exists (see below)
 
         Returns:
             True if successful, False otherwise
         """
-        # Check if already downloaded
+        # Check if already downloaded. A JSON marked `_comments_incomplete`
+        # (comment pagination failed mid-fetch) is exactly the issue that needs
+        # re-fetching: without this, `--skip-existing` — the default — makes the
+        # marker permanent, so the issue is never re-fetched and never heals.
         json_path = self.issues_dir / f"{issue_key}.json"
-        if skip_existing and json_path.exists():
+        if skip_existing and json_path.exists() and not _needs_refetch(json_path):
             self.stats["skipped"] += 1
             return True
 
@@ -415,8 +568,7 @@ class JiraBackfill:
             issue_data["_remote_links"] = self.fetch_remote_links(issue_key)
         except JiraFetchError as e:
             logger.warning(
-                f"Skipping _remote_links overlay for {issue_key}: {e}. "
-                f"Existing parquet rows will be preserved."
+                f"Skipping _remote_links overlay for {issue_key}: {e}. Existing parquet rows will be preserved."
             )
 
         # Save JSON
@@ -466,8 +618,11 @@ class JiraBackfill:
 
         if dry_run:
             logger.info("Dry run mode - not downloading any data")
-            # Count existing
-            existing = sum(1 for k in issue_keys if (self.issues_dir / f"{k}.json").exists())
+            # Count existing — the same skip decision a real --skip-existing
+            # run would make (marker-aware), not a bare .exists(), so this
+            # doesn't under-report against what a real run would re-fetch
+            # (Devin Review on #1283).
+            existing = _count_already_downloaded(self.issues_dir, issue_keys)
             logger.info(f"Already downloaded: {existing}")
             logger.info(f"Would download: {total_issues - existing}")
             return {"total": total_issues, "existing": existing}
@@ -484,7 +639,7 @@ class JiraBackfill:
                 processed += 1
 
                 try:
-                    success = future.result()
+                    future.result()
                 except Exception as e:
                     logger.error(f"Error processing {issue_key}: {e}")
                     self.stats["failed"] += 1
@@ -579,7 +734,9 @@ def main():
 
             if args.dry_run:
                 logger.info("Dry run mode - not downloading any data")
-                existing = sum(1 for k in issue_keys if (backfill.issues_dir / f"{k}.json").exists())
+                # Same marker-aware skip decision as the real run — see
+                # _count_already_downloaded (Devin Review on #1283).
+                existing = _count_already_downloaded(backfill.issues_dir, issue_keys)
                 logger.info(f"Already downloaded: {existing}")
                 logger.info(f"Would download: {len(issue_keys) - existing}")
                 sys.exit(0)
@@ -598,7 +755,7 @@ def main():
                     processed += 1
 
                     try:
-                        success = future.result()
+                        future.result()
                     except Exception as e:
                         logger.error(f"Error processing {issue_key}: {e}")
                         backfill.stats["failed"] += 1

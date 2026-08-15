@@ -1,57 +1,26 @@
-{% extends "base_ds.html" %}
+{% extends "base_admin.html" %}
 {% import "macros/_icon.html" as ico %}
 {% block title %}Data sources — {{ config.INSTANCE_NAME }}{% endblock %}
 
 {% block head_extra %}
+{# The Add-data flow rides the SHARED right-side drawer (css/drawer.css) —
+   the same chrome the group flow opens from Access and from Groups. It
+   used to be a 640px centred card holding four steps: on the bundle step
+   the board scrolled its own header away, and on a laptop the actions row
+   sat below the fold. A drawer is full-height by construction and keeps
+   the sources list you are adding to visible behind it. #}
+<link rel="stylesheet" href="{{ static_url('css/drawer.css') }}">
 <style>
   .ds-page {
     font-family: var(--font-primary, 'Inter', system-ui, -apple-system, BlinkMacSystemFont, sans-serif);
   }
 
-  /* Blocking vault-key banner — same treatment as /admin/datasource-credentials */
-  .ds-vault-banner {
-    display: flex;
-    align-items: flex-start;
-    gap: 12px;
-    background: var(--ds-accent-warn-bg);
-    border: 1px solid var(--ds-accent-warn-line);
-    border-radius: 10px;
-    padding: 14px 16px;
-    margin-bottom: 20px;
-    font-size: 13px;
-    color: var(--ds-accent-warn-ink);
-  }
-  .ds-vault-banner .vault-icon { font-size: 18px; flex-shrink: 0; margin-top: 1px; }
-  .ds-vault-banner strong { display: block; margin-bottom: 2px; font-weight: 600; }
-
-  /* Semantic-layer sync summary — same shape as the vault banner. Accent
-     tracks the last-run status: success (ok), danger (error), neutral
-     (never synced yet). */
-  .ds-semantic-summary {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    flex-wrap: wrap;
-    background: var(--ds-accent-success-bg);
-    border: 1px solid var(--ds-accent-success-line);
-    border-radius: 10px;
-    padding: 12px 16px;
-    margin-bottom: 20px;
-    font-size: 13px;
-    color: var(--ds-accent-success-ink);
-  }
-  .ds-semantic-summary.ds-semantic-summary--pending {
-    background: var(--ds-surface-dim);
-    border-color: var(--ds-border);
-    color: var(--text-secondary, var(--ds-text-secondary));
-  }
-  .ds-semantic-summary.ds-semantic-summary--error {
-    background: var(--ds-accent-danger-bg);
-    border-color: var(--ds-accent-danger-line);
-    color: var(--ds-accent-danger-ink);
-  }
-  .ds-semantic-summary a { color: inherit; font-weight: 600; text-decoration: underline; }
+  /* The vault-key banner, the semantic-layer line, the section head and the
+     closing footnote are the SHARED admin page vocabulary now (`.apg-strip`,
+     `.apg-sechead`, `.apg-foot` in css/admin_page.css, loaded by the admin
+     bases) — People, Data and Access each carried a private copy of the same
+     objects. What is left in this block is this page's own: the connection
+     cards, the pipeline strips and the Add-data wizard. */
 
   /* Storage token and master token resolving to different projects — the fix
      belongs on this page, so the warning does too. */
@@ -61,36 +30,12 @@
   .ds-token-mismatch[hidden] { display: none; }
   .ds-token-mismatch {
     display: flex; gap: 8px; align-items: flex-start;
-    margin-top: 8px; padding: 8px 10px; border-radius: 8px;
+    margin: 10px 16px; padding: 8px 10px; border-radius: 8px;
     font-size: 12px; line-height: 1.5;
     background: var(--ds-accent-warn-bg);
     border: 1px solid var(--ds-accent-warn-line);
     color: var(--ds-accent-warn-ink);
   }
-
-  .ds-section-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 12px;
-  }
-  .ds-section-title {
-    display: flex; align-items: center; gap: 8px;
-    font-size: 15px; font-weight: 600; color: var(--text-primary, var(--ds-text-primary));
-  }
-  .ds-section-icon {
-    width: 32px; height: 32px; border-radius: 8px;
-    display: flex; align-items: center; justify-content: center;
-    font-size: 16px; background: var(--ds-accent-warn-bg); color: var(--ds-accent-warn-ink);
-  }
-  .ds-section-desc { font-size: 12px; color: var(--text-secondary, var(--ds-text-secondary)); margin-top: 2px; }
-
-  .ds-footnote {
-    margin-top: 16px;
-    font-size: 12px; color: var(--text-secondary, var(--ds-text-secondary));
-  }
-  .ds-footnote a { color: var(--ds-primary, var(--ds-primary)); text-decoration: none; }
-  .ds-footnote a:hover { text-decoration: underline; }
 
   .ds-empty, .ds-loading {
     text-align: center; padding: 28px 20px;
@@ -100,39 +45,137 @@
     border-radius: 10px;
   }
 
-  /* Per-connection card */
-  .ds-conn-card {
+  /* ── The source card ───────────────────────────────────────────────────
+     Three bands, in the order an admin reads them:
+
+       head    who this source is, whether it is well, and the verbs
+       pipe    what it has produced and who is getting it   (`.ds-pipe`)
+       body    the settings and the inline tasks — CLOSED by default
+
+     It used to be five stacked bands, every one of them always open: an
+     identity row, the strip, a chat-tools row, a five-button action strip,
+     and a master-token row, plus two hidden input rows that pushed the next
+     card down when they appeared. Nothing was subordinate to anything, so
+     scanning a list of three projects meant reading ~40 controls to find the
+     one amber word among them. The move is not removal — every control is
+     still here — it is RANK: status and the two verbs an admin uses weekly
+     stay on the head; the rest is one click away in the body or the menu,
+     which is where a control that is touched twice a year belongs. */
+  .ds-src {
     background: var(--surface, var(--ds-surface));
     border: 1px solid var(--border, var(--ds-border));
-    border-radius: 10px;
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+    border-radius: 12px;
+    box-shadow: var(--ds-shadow-sm);
     margin-bottom: 12px;
     overflow: hidden;
   }
-  .ds-conn-header {
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 12px 16px;
-    border-bottom: 1px solid var(--border, var(--ds-border));
-    gap: 8px;
+  .ds-src:focus-within { border-color: var(--ds-text-muted); }
+
+  .ds-src__head {
+    display: flex; align-items: center; gap: 12px;
+    padding: 13px 14px 13px 16px;
   }
-  .ds-conn-header-left { display: flex; align-items: center; gap: 8px; min-width: 0; }
-  .ds-conn-name { font-size: 13px; font-weight: 600; color: var(--text-primary, var(--ds-text-primary)); }
-  /* Project identity sits between the connection's own name and the stack
-     host: it is what distinguishes two connections to the same stack. */
-  .ds-unbind { margin-left: 8px; padding: 0; border: 0; background: none; font-size: 11px;
-    color: var(--ds-text-muted); text-decoration: underline; cursor: pointer; }
-  .ds-conn-project {
-    font-size: 11px; color: var(--ds-text-secondary);
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-    max-width: 260px;
+  /* The whole head toggles the body, so it takes the pointer — but the
+     KEYBOARD path is the caret button alone, never a click handler on a
+     div. */
+  .ds-src__head { cursor: pointer; }
+  .ds-src__head:hover { background: var(--ds-surface-dim); }
+
+  /* The connector's mark. The categorical "sticker" palette (--ds-kind-*),
+     never the brand primary: a connector is a KIND, and a tile in the action
+     colour would read as something to press. */
+  .ds-src__logo {
+    width: 34px; height: 34px; border-radius: 9px; flex: 0 0 auto;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 12px; font-weight: 800; letter-spacing: 0.02em;
   }
-  .ds-conn-stack {
-    font-size: 11px; color: var(--text-secondary, var(--ds-text-secondary));
+  .ds-src__logo--keboola  { background: var(--ds-kind-data-soft); color: var(--ds-kind-data); }
+  .ds-src__logo--bigquery { background: var(--ds-accent-info-bg); color: var(--ds-accent-info-ink); }
+  .ds-src__logo--jira     { background: var(--ds-kind-plugin-soft); color: var(--ds-kind-plugin); }
+  .ds-src__logo--local    { background: var(--ds-kind-file-soft); color: var(--ds-kind-file); }
+
+  .ds-src__id { min-width: 0; flex: 1 1 auto; }
+  .ds-src__name {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 14.5px; font-weight: 700; letter-spacing: -0.01em;
+    color: var(--text-primary, var(--ds-text-primary));
+  }
+  .ds-src__name > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* Identity, not status: which project the CLI and the sync reach for when
+     nobody names one. Quiet — it is a fact about this row, not a warning. */
+  .ds-src__tag {
+    flex: 0 0 auto;
+    font-size: 10.5px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
+    padding: 2px 7px; border-radius: var(--ds-radius-pill);
+    background: var(--ds-surface-sunken); color: var(--ds-text-secondary);
+  }
+  /* ONE subtitle line, not three. Host, project and mode were three stacked
+     11px lines saying one thing — where this source is — so they are one
+     line with middots, and it truncates from the end where the least
+     identifying part sits. */
+  .ds-src__sub {
+    margin-top: 2px;
+    font-size: 12px; line-height: 1.4;
+    color: var(--ds-text-muted);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .ds-src__sub code {
     font-family: var(--font-mono, ui-monospace, monospace);
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-    max-width: 260px;
+    font-size: 11.5px; color: var(--ds-text-secondary);
   }
-  .ds-conn-badges { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+
+  /* The card's ONE status word. Folded from the strip below it (see
+     `_sourceHealth`), so the reader gets the verdict before the evidence and
+     can skip a healthy card entirely. */
+  .ds-src__health {
+    flex: 0 0 auto;
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 11.5px; font-weight: 700; white-space: nowrap;
+    padding: 3px 10px; border-radius: var(--ds-radius-pill);
+    border: 1px solid transparent;
+  }
+  .ds-src__health::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+  .ds-src__health.is-ok   { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); border-color: var(--ds-accent-success-line); }
+  .ds-src__health.is-warn { background: var(--ds-accent-warn-bg);    color: var(--ds-accent-warn-ink);    border-color: var(--ds-accent-warn-line); }
+  .ds-src__health.is-err  { background: var(--ds-accent-danger-bg);  color: var(--ds-accent-danger-ink);  border-color: var(--ds-accent-danger-line); }
+
+  .ds-src__acts { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; }
+  /* Icon-only and circular, so it is a badge-shaped control rather than a
+     third button competing with the two labelled ones beside it. 28px keeps
+     it above the 24px target minimum. */
+  .ds-src__caret {
+    width: 28px; height: 28px; padding: 0; flex: 0 0 auto;
+    display: inline-flex; align-items: center; justify-content: center;
+    border: 1px solid transparent; border-radius: var(--ds-radius-pill);
+    background: transparent; color: var(--ds-text-muted); cursor: pointer;
+  }
+  .ds-src__caret:hover { background: var(--ds-surface-sunken); color: var(--ds-text-primary); }
+  .ds-src__caret:focus-visible { outline: var(--ds-focus-outline); outline-offset: var(--ds-focus-outline-offset); }
+  .ds-src__caret .ui-ico { transition: transform var(--ds-motion-fast, 140ms) var(--ds-ease-standard, ease); }
+  .ds-src__caret[aria-expanded="true"] .ui-ico { transform: rotate(90deg); }
+  @media (prefers-reduced-motion: reduce) { .ds-src__caret .ui-ico { transition: none; } }
+
+  /* ── The body: settings + the inline tasks the menu opens ──────────── */
+  .ds-src__body { border-top: 1px solid var(--border, var(--ds-border)); }
+  .ds-src__body[hidden] { display: none; }
+  .ds-src__facts { margin: 0; padding: 4px 16px; }
+  /* Label · state · the control that changes it. The label column is fixed
+     so three rows read as a table of settings rather than three sentences. */
+  .ds-src__fact {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 9px 0;
+    border-bottom: 1px solid var(--border-light, var(--ds-border-light));
+    font-size: 13px;
+  }
+  .ds-src__fact:last-child { border-bottom: none; }
+  .ds-src__fact-k {
+    flex: 0 0 190px; color: var(--ds-text-secondary);
+  }
+  .ds-src__fact-v { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 8px; }
+  .ds-src__fact-a { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; }
+  .ds-src__fact-a .btn { padding: 4px 11px; font-size: 12.5px; }
+  @media (max-width: 640px) { .ds-src__fact-k { flex-basis: 100%; } }
+
   .ds-badge {
     display: inline-flex; align-items: center; gap: 5px;
     font-size: 11px; font-weight: 600; letter-spacing: 0.03em;
@@ -148,25 +191,24 @@
   .ds-badge.badge-default { background: var(--ds-accent-info-bg); color: var(--ds-accent-info-ink); }
   .ds-badge.badge-default::before { background: var(--ds-accent-info-line); }
 
-  .ds-conn-actions {
-    display: flex; align-items: center; gap: 6px;
-    padding: 10px 16px;
-    background: var(--background, var(--ds-surface-dim));
-    flex-wrap: wrap;
-  }
+  /* The Test verdict. It reports on the whole card, so it lands at the top
+     of the body under the fact it is about, not floating after a button in
+     a strip that no longer exists. */
   .ds-conn-test-result {
-    font-size: 12px; display: none; align-items: center; gap: 4px; margin-left: 4px;
+    font-size: 12.5px; display: none; align-items: center; gap: 6px;
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--border-light, var(--ds-border-light));
   }
   .ds-conn-test-result.show { display: flex; }
-  .ds-conn-test-result.ok   { color: var(--ds-accent-success-ink); }
-  .ds-conn-test-result.fail { color: var(--ds-accent-danger-ink); }
+  .ds-conn-test-result.ok   { color: var(--ds-accent-success-ink); background: var(--ds-accent-success-bg); }
+  .ds-conn-test-result.fail { color: var(--ds-accent-danger-ink); background: var(--ds-accent-danger-bg); }
 
   /* Inline token rotate row */
   .ds-rotate-row {
     display: none; align-items: center; gap: 8px;
     padding: 10px 16px;
-    border-top: 1px solid var(--border, var(--ds-border));
-    background: var(--background, var(--ds-surface-dim));
+    border-top: 1px solid var(--border-light, var(--ds-border-light));
+    background: var(--ds-surface-dim);
   }
   .ds-rotate-row.show { display: flex; }
   .ds-rotate-row input {
@@ -177,40 +219,121 @@
   }
   .ds-rotate-row input:focus { outline: 2px solid var(--ds-primary, var(--ds-primary)); outline-offset: -1px; }
 
-  /* Master (owner) token row — separate vault slot for the semantic-layer sync */
-  .ds-master-row {
-    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-    padding: 10px 16px;
-    border-top: 1px solid var(--border, var(--ds-border));
-  }
-  .ds-master-label {
-    font-size: 12px; color: var(--text-secondary, var(--ds-text-secondary));
-    margin-right: 4px; cursor: help;
-  }
-
   /* Table-browse panel (inline, per connection card) */
   .ds-browse-panel {
     display: none;
-    border-top: 1px solid var(--border, var(--ds-border));
+    border-top: 1px solid var(--border-light, var(--ds-border-light));
     padding: 14px 16px;
+    background: var(--ds-surface-dim);
   }
   .ds-browse-panel.show { display: block; }
-  .ds-bucket-group { margin-bottom: 14px; }
+
+  /* ── Bucket/table picker ───────────────────────────────────────────────
+     A Keboola project routinely lists 40+ buckets and hundreds of tables.
+     Rendering that flat made step 2 a scroll marathon where the admin lost
+     both "where am I" and "what have I picked", so the unit of navigation is
+     the BUCKET: closed by default, one line each, and openable one at a time.
+     The bucket's own checkbox is the bulk gesture (a whole bucket is the
+     common intent), the tri-state tells the truth about partial picks, and
+     the per-table checkboxes underneath keep the granular case. The filter
+     and the running count are what make it survive a big project — the count
+     is always over the WHOLE picker, never over what the filter happens to
+     show, so nothing is silently registered or silently dropped. */
+  .ds-picker-bar {
+    position: sticky; top: 0; z-index: 2;
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    padding: 8px 0 10px;
+    margin-bottom: 8px;
+    background: var(--surface, var(--ds-surface));
+    border-bottom: 1px solid var(--border-light, var(--ds-border-light));
+  }
+  .ds-browse-panel .ds-picker-bar { background: var(--ds-surface-dim); }
+  .ds-picker-search {
+    flex: 1 1 200px; min-width: 140px;
+    padding: 6px 10px; font: inherit; font-size: 12.5px;
+    border: 1px solid var(--border, var(--ds-border)); border-radius: 8px;
+    background: var(--surface, var(--ds-surface)); color: var(--ds-text-primary);
+  }
+  .ds-picker-search:focus-visible {
+    outline: var(--ds-focus-outline); outline-offset: var(--ds-focus-outline-offset);
+  }
+  .ds-picker-count {
+    font-size: 12px; font-weight: 600; color: var(--ds-text-secondary);
+    font-variant-numeric: tabular-nums;
+  }
+  .ds-picker-count .hid { font-weight: 500; color: var(--ds-accent-warn-ink); }
+  .ds-picker-link {
+    font: inherit; font-size: 12px; font-weight: 600;
+    padding: 4px 8px; border-radius: var(--ds-radius-btn);
+    border: 1px solid transparent; background: none; cursor: pointer;
+    color: var(--ds-primary-dark, var(--ds-primary));
+  }
+  .ds-picker-link:hover { background: var(--ds-surface-sunken); }
+  .ds-picker-link[disabled] { opacity: 0.45; cursor: default; background: none; }
+  .ds-picker-link:focus-visible {
+    outline: var(--ds-focus-outline); outline-offset: var(--ds-focus-outline-offset);
+  }
+
+  .ds-bucket-group {
+    margin-bottom: 6px;
+    border: 1px solid var(--border-light, var(--ds-border-light));
+    border-radius: 10px;
+    background: var(--surface, var(--ds-surface));
+    overflow: hidden;
+  }
   .ds-bucket-group:last-child { margin-bottom: 0; }
+  .ds-bucket-group[hidden] { display: none; }
+  .ds-bucket-group.is-open { border-color: var(--border, var(--ds-border)); }
+  .ds-bucket-hd {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 10px;
+  }
+  .ds-bucket-group.is-open .ds-bucket-hd {
+    border-bottom: 1px solid var(--border-light, var(--ds-border-light));
+    background: var(--ds-surface-dim);
+  }
+  .ds-bucket-check { flex: 0 0 auto; margin: 0; cursor: pointer; }
+  .ds-bucket-toggle {
+    flex: 1; min-width: 0;
+    display: flex; align-items: center; gap: 7px;
+    padding: 2px 0; border: none; background: none; cursor: pointer;
+    font: inherit; text-align: left; color: var(--ds-text-primary);
+  }
+  .ds-bucket-toggle:focus-visible {
+    outline: var(--ds-focus-outline); outline-offset: var(--ds-focus-outline-offset);
+  }
+  .ds-bucket-caret {
+    flex: 0 0 auto; width: 12px; color: var(--ds-text-muted);
+    font-size: 10px; line-height: 1;
+    transition: transform 0.12s ease;
+  }
+  .ds-bucket-group.is-open .ds-bucket-caret { transform: rotate(90deg); }
   .ds-bucket-title {
     font-size: 12px; font-weight: 600; color: var(--text-primary, var(--ds-text-primary));
-    margin-bottom: 6px; display: flex; align-items: center; gap: 6px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .ds-bucket-stage {
+    flex: 0 0 auto;
     font-size: 10px; text-transform: uppercase; letter-spacing: 0.03em;
     color: var(--text-secondary, var(--ds-text-secondary));
     background: var(--border-light, var(--ds-surface-dim)); border-radius: 4px; padding: 1px 6px;
   }
+  .ds-bucket-meta {
+    margin-left: auto; flex: 0 0 auto;
+    font-size: 11.5px; color: var(--ds-text-muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .ds-bucket-meta .on {
+    color: var(--ds-primary-dark, var(--ds-primary)); font-weight: 700;
+  }
+  .ds-bucket-tables { padding: 4px 10px 8px 30px; }
+  .ds-bucket-tables[hidden] { display: none; }
   .ds-table-row {
     display: flex; align-items: center; gap: 8px;
     padding: 6px 4px; font-size: 12px;
     border-radius: 6px;
   }
+  .ds-table-row[hidden] { display: none; }
   .ds-table-row:hover { background: var(--border-light, var(--ds-surface-dim)); }
   .ds-table-row label { flex: 1; cursor: pointer; display: flex; align-items: center; gap: 8px; min-width: 0; }
   .ds-table-name { color: var(--text-primary, var(--ds-text-primary)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -232,41 +355,352 @@
     margin-bottom: 10px;
   }
 
-  /* Modal (wizard) — mirrors /admin/datasource-credentials */
-  .ds-modal-overlay {
-    position: fixed; inset: 0; background: rgba(0, 0, 0, 0.35);
-    z-index: 10000; display: none; align-items: center; justify-content: center;
-    padding: 20px;
+  /* The wizard's chrome — overlay, panel, steps strip, actions row — is the
+     shared drawer (css/drawer.css). What was ~60 lines of page-local modal
+     CSS here is gone; only the pane switch below is this page's, because
+     the wizard drives it by id rather than by the drawer's own class. */
+  .ds-wizard-lede { margin: 0 0 12px; font-size: 13px; color: var(--ds-text-secondary); }
+
+  /* ── Step 1: connector picker ── */
+  .ds-srcpick {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
+    margin-bottom: 16px;
   }
-  .ds-modal-overlay.show { display: flex; }
-  .ds-modal {
+  @media (max-width: 640px) { .ds-srcpick { grid-template-columns: 1fr 1fr; } }
+  .ds-srcopt {
+    display: flex; flex-direction: column; align-items: flex-start; gap: 4px;
+    padding: 10px 12px; text-align: left; cursor: pointer;
+    border: 1px solid var(--border, var(--ds-border)); border-radius: 10px;
+    background: var(--surface, var(--ds-surface)); color: var(--ds-text-primary);
+  }
+  .ds-srcopt:hover { border-color: var(--ds-text-muted); }
+  .ds-srcopt.on {
+    border-color: var(--ds-primary);
+    background: var(--ds-primary-light, rgba(2, 132, 199, 0.08));
+    box-shadow: 0 0 0 1px var(--ds-primary);
+  }
+  .ds-srcopt .so-logo {
+    width: 26px; height: 26px; border-radius: 7px;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-weight: 800; font-size: 12px;
+  }
+  .ds-srcopt .so-logo--kbc  { background: var(--ds-kind-data-soft, #e1f3f1); color: var(--ds-kind-data, #185a57); }
+  .ds-srcopt .so-logo--bq   { background: var(--ds-accent-info-bg); color: var(--ds-accent-info-ink); }
+  .ds-srcopt .so-logo--csv  { background: var(--ds-accent-warn-bg); color: var(--ds-accent-warn-ink); }
+  .ds-srcopt .so-logo--jira { background: var(--ds-kind-plugin-soft, #f2e9fb); color: var(--ds-kind-plugin, #391c57); }
+  .ds-srcopt .so-name { font-weight: 700; font-size: 13px; }
+  .ds-srcopt .so-sub { font-size: 11.5px; color: var(--ds-text-muted); line-height: 1.3; }
+
+  /* ── The "already connected" offer ────────────────────────────────────
+     It was a grey utility strip — one line of small secondary text, a bare
+     select and a ghost button — sitting above the form it was meant to save
+     you from filling in. On an instance that is already running it is the
+     path most admins want, and it read as chrome. It is the shared
+     connect-banner bar now (`.cbn--bar`, style-custom.css): the Agnes soft
+     surface, a mark in a lifted tile, a full sentence saying what you are
+     spared, and one filled pill for the action. Same tokens, same radii,
+     same CTA weight the analyst side uses, so the two halves of the product
+     look like one. */
+  .ds-wexisting {
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    padding: 16px 18px; margin-bottom: 14px;
+    border: none; border-radius: 16px;
+    background: var(--ds-agnes-soft);
+  }
+  /* --ds-agnes-soft is a light-only tint; under the dark theme it keeps a
+     near-white fill while the text tokens flip to near-white too. Tint the
+     current surface instead — the idiom `.cbn` uses for the same reason. */
+  :root[data-theme="dark"] .ds-wexisting {
+    background: color-mix(in srgb, var(--ds-agnes) 18%, var(--ds-surface));
+  }
+  .ds-wexisting[hidden] { display: none; }
+  /* The connector's own mark, in the connector's own PAIR of tokens — the
+     same `-soft` fill under the same ink the picker's Keboola tile above it
+     uses. A lifted white tile (the `.cbn-bar-icon` look) would have been
+     prettier, but --ds-kind-data is a light-only ink: on the dark theme's
+     surface it measures 2.16:1 and the mark disappears. Both halves of this
+     pair are light-only, so they stay legible together in every theme. */
+  .ds-wexisting__tile {
+    flex-shrink: 0; width: 46px; height: 46px; border-radius: 13px;
+    display: grid; place-items: center;
+    background: var(--ds-kind-data-soft, #e1f3f1);
+    color: var(--ds-kind-data, #185a57);
+    box-shadow: 0 2px 8px color-mix(in srgb, var(--ds-text-primary) 7%, transparent);
+    font-weight: 800; font-size: 13px; letter-spacing: -0.01em;
+  }
+  /* Basis kept well under the sentence's own width: flexbox decides wrapping
+     from the BASIS, so a basis wide enough to read the copy on one line broke
+     the action onto a second row on the very width the drawer opens at. */
+  .ds-wexisting__body { flex: 1 1 200px; min-width: 180px; }
+  .ds-wexisting__title {
+    font-size: 15px; font-weight: 750; letter-spacing: -0.02em; line-height: 1.2;
+    color: var(--ds-text-primary); margin-bottom: 3px;
+  }
+  .ds-wexisting__copy {
+    margin: 0; font-size: 12.5px; line-height: 1.45; color: var(--ds-text-secondary);
+  }
+  .ds-wexisting__act {
+    display: flex; align-items: center; gap: 8px; flex-shrink: 0;
+    margin-left: auto;
+  }
+  .ds-wexisting select {
+    font: inherit; font-size: 12.5px; font-weight: 600; padding: 8px 10px;
+    max-width: 200px;
+    border: 1px solid var(--ds-border); border-radius: var(--ds-radius-btn);
+    background: var(--surface, var(--ds-surface)); color: var(--ds-text-primary);
+  }
+  .ds-wexisting select:focus-visible {
+    outline: var(--ds-focus-outline); outline-offset: var(--ds-focus-outline-offset);
+  }
+  .ds-wexisting__cta {
+    display: inline-flex; align-items: center; gap: 7px; flex-shrink: 0;
+    background: var(--ds-primary); color: var(--ds-text-inverse);
+    border: none; border-radius: var(--ds-radius-pill);
+    padding: 10px 20px; font: inherit; font-size: 14px; font-weight: 650;
+    letter-spacing: -0.01em; cursor: pointer; white-space: nowrap;
+    box-shadow: 0 4px 12px color-mix(in srgb, var(--ds-primary) 25%, transparent);
+    transition: background 0.15s, transform 0.1s;
+  }
+  .ds-wexisting__cta:hover { background: var(--ds-primary-dark); }
+  .ds-wexisting__cta:active { transform: translateY(1px); }
+  .ds-wexisting__cta:focus-visible {
+    outline: var(--ds-focus-outline); outline-offset: var(--ds-focus-outline-offset);
+  }
+  /* Narrow: the mark stays BESIDE the sentence it belongs to — a basis wide
+     enough to keep them on one row at drawer width strands the tile alone on
+     its own line here — and the choose-a-project row takes the full width
+     underneath, where the select can use it. */
+  @media (max-width: 620px) {
+    .ds-wexisting { gap: 12px; }
+    /* Basis ZERO, not auto: `auto` means "as wide as the sentence", which is
+       wider than the phone and strands the mark on a line of its own. */
+    .ds-wexisting__body { flex: 1 1 0; min-width: 0; }
+    /* The choose-a-project row wraps INTERNALLY: a select long enough to hold
+       a project name plus its table count and a button that must not
+       hyphenate do not always fit one phone line, and without this the
+       button was pushed off the side of the drawer entirely. */
+    /* min-width:0 — a flex item's automatic minimum is its MIN-CONTENT, which
+       here is the un-shrinkable button plus the select's own intrinsic width;
+       without this the row refuses to fit and spills past the banner's
+       padding instead. */
+    .ds-wexisting__act { flex: 1 1 100%; min-width: 0; margin-left: 0; flex-wrap: wrap; }
+    .ds-wexisting select { flex: 1 1 150px; min-width: 0; max-width: none; }
+    .ds-wexisting__cta { flex: 1 1 auto; justify-content: center; }
+  }
+
+  /* The two paths are the whole point of this screen — a muted sentence
+     inside the offer box could not carry that, so the "or" is a real rule
+     with the choice written on it. */
+  .ds-wor {
+    display: flex; align-items: center; gap: 12px;
+    margin: 0 0 16px; font-size: 12px; font-weight: 600;
+    letter-spacing: 0.02em; text-transform: uppercase;
+    color: var(--ds-text-muted);
+  }
+  .ds-wor[hidden] { display: none; }
+  .ds-wor::before, .ds-wor::after {
+    content: ""; flex: 1; height: 1px; background: var(--ds-border-light);
+  }
+
+  .ds-wguide {
+    border: 1px solid var(--border, var(--ds-border)); border-radius: 10px;
+    padding: 14px 16px; background: var(--ds-surface-dim);
+  }
+  .ds-wguide h4 { margin: 0 0 8px; font-size: 13.5px; color: var(--ds-text-primary); }
+  .ds-wguide p { margin: 0 0 10px; font-size: 13px; color: var(--ds-text-secondary); }
+  .ds-wguide p:last-child { margin-bottom: 0; }
+  .ds-wguide a { color: var(--ds-primary); }
+
+  .ds-bqcred { display: flex; align-items: center; gap: 8px; min-height: 26px; }
+
+  /* ── Step 2 (BigQuery): manual rows editor ── */
+  .ds-bqrow { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+  .ds-bqrow input {
+    flex: 1; font: inherit; font-size: 13px; padding: 7px 10px;
+    border: 1px solid var(--border, var(--ds-border)); border-radius: 8px;
+    background: var(--surface, var(--ds-surface)); color: var(--ds-text-primary);
+  }
+  .ds-bqrow .ds-table-status { flex: 0 0 auto; }
+  .ds-bqrow button { flex: 0 0 auto; }
+
+  /* ── Pipeline strip — connected → synced → semantic → feeding whom, on
+        every source card. Four (or three) cells reading across the whole
+        vertical for ONE project; previously this took four pages to
+        assemble. Data: `_source_pipelines()` in app/web/router.py. ── */
+  .ds-pipe {
+    display: grid;
+    border-top: 1px solid var(--border-light, var(--ds-border-light));
+    background: var(--ds-surface-dim);
+  }
+  .ds-pipe--4 { grid-template-columns: repeat(4, 1fr); }
+  .ds-pipe--3 { grid-template-columns: repeat(3, 1fr); }
+  @media (max-width: 700px) { .ds-pipe--4, .ds-pipe--3 { grid-template-columns: 1fr 1fr; } }
+  .ds-pipe__cell {
+    padding: 9px 16px;
+    border-right: 1px solid var(--border-light, var(--ds-border-light));
+    display: flex; flex-direction: column; gap: 2px;
+    font-size: 12px; color: var(--ds-text-secondary);
+    text-decoration: none;
+  }
+  .ds-pipe__cell:last-child { border-right: none; }
+  a.ds-pipe__cell:hover,
+  button.ds-pipe__cell:hover { background: var(--surface, var(--ds-surface)); }
+  /* A cell that DOES something rather than going somewhere — the empty-tables
+     cell, where the fix is to add tables and the Tables page is the one place
+     that cannot. Same cell shape either way: the strip's job is to read as one
+     row of facts, so the verb borrows the fact's clothes and says what it does
+     in words (`Add the first tables →`) instead of in a different shape. */
+  button.ds-pipe__cell {
+    font: inherit; text-align: left; cursor: pointer;
+    border-top: 0; border-bottom: 0; border-left: 0;
+    background: transparent;
+  }
+  button.ds-pipe__cell:focus-visible {
+    outline: var(--ds-focus-outline);
+    outline-offset: calc(var(--ds-focus-outline-offset) * -1);
+  }
+  .ds-pipe__k {
+    font-size: 10.5px; font-weight: 700; letter-spacing: 0.06em;
+    text-transform: uppercase; color: var(--ds-text-muted);
+  }
+  .ds-pipe__v {
+    font-weight: 600; color: var(--ds-text-primary);
+    display: flex; align-items: center; gap: 5px;
+  }
+  .ds-pipe__v.is-ok   { color: var(--ds-accent-success-ink); }
+  .ds-pipe__v.is-warn { color: var(--ds-accent-warn-ink); }
+  .ds-pipe__v.is-err  { color: var(--ds-accent-danger-ink); }
+
+  /* ── Step 1: semantic-layer opt-in ── */
+  .ds-wsl-opt {
+    border: 1px solid var(--border, var(--ds-border));
+    border-radius: 10px;
+    padding: 12px 14px;
+    margin-top: 14px;
+    background: var(--ds-surface-dim);
+  }
+  .ds-wsl-opt__head {
+    display: flex; align-items: center; gap: 9px;
+    font-weight: 600; font-size: 13px; color: var(--ds-text-primary);
+    cursor: pointer;
+  }
+  .ds-wsl-opt__head input { width: 15px; height: 15px; accent-color: var(--ds-primary); }
+  .ds-wsl-opt p { margin: 6px 0 0 24px; font-size: 12.5px; color: var(--ds-text-secondary); }
+  .ds-wsl-opt__field { margin: 10px 0 2px 24px; }
+
+  /* ── Step 3: bundle board ── */
+  .ds-seed-row {
+    display: flex; gap: 8px; align-items: center; margin: 0 0 12px;
+    font-size: 12.5px; color: var(--ds-text-muted); flex-wrap: wrap;
+  }
+  .ds-seed-chip {
+    padding: 4px 12px; border-radius: 999px;
+    border: 1px solid var(--border, var(--ds-border)); background: var(--surface, var(--ds-surface));
+    font-size: 12px; font-weight: 600; color: var(--ds-text-secondary); cursor: pointer;
+  }
+  .ds-seed-chip:hover { border-color: var(--ds-primary); color: var(--ds-primary-dark, var(--ds-primary)); }
+  .ds-seed-chip[disabled] { opacity: 0.45; cursor: not-allowed; }
+  .ds-seed-chip[disabled]:hover { border-color: var(--border, var(--ds-border)); color: var(--ds-text-secondary); }
+  .ds-tray-created {
+    font-size: 11px; font-weight: 700; letter-spacing: 0.02em;
+    color: var(--ds-accent-success-ink); background: var(--ds-accent-success-bg);
+    border-radius: 5px; padding: 1px 7px;
+  }
+  .ds-btray.is-created { border-color: var(--ds-accent-success-line, var(--ds-border)); }
+  .ds-btray.is-created .ds-tray-name { cursor: default; }
+  .ds-btray.is-created .ds-tray-name:hover { background: transparent; }
+  .ds-btray {
+    border: 1px solid var(--border, var(--ds-border)); border-radius: 10px;
+    margin-bottom: 10px; overflow: hidden; background: var(--surface, var(--ds-surface));
+  }
+  .ds-btray-hd {
+    display: flex; align-items: center; gap: 8px;
+    padding: 7px 12px; background: var(--ds-surface-dim);
+    border-bottom: 1px solid var(--border-light, var(--ds-border-light));
+  }
+  .ds-btray-hd .cnt { font-size: 11.5px; color: var(--ds-text-muted); font-weight: 600; }
+  .ds-tray-name {
+    font: inherit; font-weight: 700; font-size: 13px; width: 200px;
+    border: none; background: transparent; color: var(--ds-text-primary);
+    padding: 2px 6px; border-radius: 5px;
+  }
+  .ds-tray-name:hover { background: var(--surface, var(--ds-surface)); }
+  .ds-tray-name:focus { background: var(--surface, var(--ds-surface)); outline: 1.5px solid var(--ds-primary); }
+  .ds-btray-row {
+    display: flex; align-items: center; gap: 9px;
+    padding: 6px 12px; border-bottom: 1px solid var(--border-light, var(--ds-border-light));
+    font-size: 13px; color: var(--ds-text-primary);
+  }
+  .ds-btray-row:last-child { border-bottom: none; }
+  .ds-btray-row input { width: 15px; height: 15px; accent-color: var(--ds-primary); }
+  .ds-btray-row .bkt {
+    font-family: var(--font-mono, ui-monospace, monospace); font-size: 11px;
+    background: var(--ds-surface-sunken); color: var(--ds-text-secondary);
+    padding: 1px 6px; border-radius: 5px;
+  }
+  .ds-btray-empty { padding: 9px 12px; font-size: 12.5px; color: var(--ds-text-muted); }
+  .ds-btray.out { border-style: dashed; border-color: var(--ds-accent-warn-line); }
+  .ds-btray.out .ds-btray-hd {
+    background: var(--ds-accent-warn-bg); color: var(--ds-accent-warn-ink);
+    border-bottom-color: var(--ds-accent-warn-line);
+  }
+  .ds-movebar {
+    position: sticky; bottom: 0; z-index: 5;
+    display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+    padding: 8px 12px; margin-top: 10px;
     background: var(--surface, var(--ds-surface));
-    border-radius: 14px;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.18);
-    width: 100%; max-width: 480px;
-    max-height: 85vh;
-    overflow-y: auto;
+    border: 1px solid var(--ds-primary);
+    border-radius: 10px; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.10);
+    font-size: 12.5px; font-weight: 700; color: var(--ds-text-primary);
   }
-  .ds-modal-header {
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 16px 20px 14px;
-    border-bottom: 1px solid var(--border, var(--ds-border));
-    position: sticky; top: 0; background: var(--surface, var(--ds-surface));
+  .ds-movebar[hidden] { display: none; }
+  .ds-movebar .mv-to { font-weight: 500; color: var(--ds-text-muted); }
+  #ds-movebar-targets { display: flex; gap: 6px; flex-wrap: wrap; }
+
+  /* ── Step 4: share cards ── */
+  .ds-wshare-card {
+    border: 1px solid var(--border, var(--ds-border)); border-radius: 10px;
+    padding: 2px 14px 8px; margin-bottom: 12px; background: var(--surface, var(--ds-surface));
   }
-  .ds-modal-title { font-size: 15px; font-weight: 600; color: var(--text-primary, var(--ds-text-primary)); }
-  .ds-modal-close {
-    background: none; border: none; cursor: pointer; padding: 4px;
-    color: var(--text-secondary, var(--ds-text-secondary)); font-size: 18px; line-height: 1;
+  .ds-wshare-card__hd { display: flex; align-items: center; gap: 8px; padding: 9px 0 4px; }
+  .ds-wshare-card__hd b { font-size: 13.5px; color: var(--ds-text-primary); }
+  .ds-wshare-card__hd .m { font-size: 12px; color: var(--ds-text-muted); }
+  .ds-wshare-row {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 0; border-bottom: 1px solid var(--border-light, var(--ds-border-light));
+    font-size: 13px;
   }
-  .ds-modal-close:hover { color: var(--text-primary, var(--ds-text-primary)); }
-  .ds-modal-body { padding: 20px; }
-  .ds-modal-actions {
-    display: flex; align-items: center; justify-content: flex-end; gap: 8px;
-    padding: 14px 20px;
-    border-top: 1px solid var(--border, var(--ds-border));
-    background: var(--background, var(--ds-surface-dim));
-    position: sticky; bottom: 0;
+  .ds-wshare-row:last-child { border-bottom: none; }
+  .ds-wshare-row input[type="checkbox"] { width: 15px; height: 15px; accent-color: var(--ds-primary); }
+  .ds-wshare-row .g-name { font-weight: 600; color: var(--ds-text-primary); }
+  .ds-wshare-row .g-sub { font-size: 11.5px; color: var(--ds-text-muted); }
+  .ds-wshare-row .g-sub.everyone { color: var(--ds-accent-info-ink); }
+  .ds-wtier {
+    margin-left: auto; display: inline-flex; padding: 2px;
+    background: var(--ds-surface-sunken); border-radius: 9px;
   }
+  .ds-wtier button {
+    border: none; background: transparent; padding: 3px 10px;
+    font-size: 12px; font-weight: 600; border-radius: 7px;
+    color: var(--ds-text-muted); cursor: pointer;
+  }
+  .ds-wtier button.on { background: var(--surface, var(--ds-surface)); color: var(--ds-text-primary); box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08); }
+  .ds-wtier button.on.auto { color: var(--ds-primary-dark, var(--ds-primary)); }
+  .ds-wtier[aria-disabled="true"] { opacity: .45; pointer-events: none; }
+
+  /* ── Done slab ── */
+  .ds-wdone-slab { text-align: center; padding: 26px 12px 8px; }
+  .ds-wdone-slab .big {
+    width: 48px; height: 48px; margin: 0 auto 12px; border-radius: 50%;
+    background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink);
+    display: flex; align-items: center; justify-content: center; font-size: 22px;
+  }
+  .ds-wdone-slab h3 { margin: 0 0 10px; font-size: 17px; color: var(--ds-text-primary); }
+  .ds-wdone-slab ul {
+    text-align: left; max-width: 460px; margin: 0 auto 16px; padding-left: 18px;
+    font-size: 13px; color: var(--ds-text-secondary);
+  }
+  .ds-wdone-slab li { margin: 3px 0; }
   .ds-field { display: block; margin-bottom: 14px; }
   .ds-field:last-child { margin-bottom: 0; }
   .ds-field label {
@@ -299,6 +733,11 @@
   .ds-wizard-error {
     display: none; font-size: 12px; color: var(--ds-accent-danger-ink); margin-top: 8px;
   }
+  /* The step-2 variant lives in the drawer's sticky foot, beside the button
+     that refused, so it drops the stacked margin and rides the button row. */
+  .ds-wizard-error--foot {
+    margin: 0 4px 0 0; align-self: center; text-align: right;
+  }
 
   /* Toast */
   .ds-toast {
@@ -318,16 +757,29 @@
 </style>
 {% endblock %}
 
-{% block content %}
+{% block admin_content %}
 <div class="ds-page">
-  {% set page_hero_eyebrow = "Sources" %}
-  {% set page_hero_title = "Data sources" %}
-  {% set page_hero_subtitle = "Keboola and BigQuery projects Agnes pulls tables from. Looking to connect an MCP server instead? See <a href=\"/admin/mcp-sources\">MCP sources</a> — the tools an agent calls at runtime." %}
+  {# One head for the whole Data section, PLAIN and section-level — the same
+     rule People and Access follow: the h1 names the SECTION, the tab strip
+     under it names the lens you are on (Sources · Tables · Packages ·
+     Semantic). It used to say "Data sources" inside a hero card under an
+     eyebrow reading "Sources", which spent three lines of chrome saying the
+     word the highlighted tab was already saying. #}
+  {% set page_hero_title = "Data" %}
+  {% set page_hero_subtitle = "Where the tables come from — the Keboola and BigQuery projects Agnes pulls from, what it registered, and how those tables reach people. Looking to connect an MCP server instead? See <a href=\"/admin/mcp-sources\">MCP sources</a> — the tools an agent calls at runtime." %}
+  {% set page_hero_plain = True %}
   {% include "_page_hero.html" %}
+  {% include "_admin_tabs.html" %}
 
   {% if not vault_key_configured %}
-  <div class="ds-vault-banner" role="alert">
-    <span class="vault-icon">&#9888;&#65039;</span>
+  {# The shared context strip in its warn state (`.apg-strip`, admin_page.css),
+     not a page-local banner: this is the same object People's identity strip
+     and the semantic-layer line below are, and it was three copies of it.
+     `--block` because this one is a paragraph, so it aligns to the top of its
+     glyph instead of centring; the glyph is the shared icon macro rather than
+     an emoji, which rendered at whatever size the reader's OS font chose. #}
+  <div class="apg-strip apg-strip--warn apg-strip--block" role="alert">
+    <span aria-hidden="true">{{ ico.icon('warning', 16) }}</span>
     <div>
       <strong>Vault key not configured</strong>
       Set <code>AGNES_VAULT_KEY</code> on the server to add data sources here — storage tokens
@@ -338,63 +790,171 @@
   </div>
   {% endif %}
 
-  {# Semantic-layer status — one-line only; per-source counts, the "Sync
-     now" control and the orphaned-rows view all live at
-     /admin/semantic-layer (#853 + #920 follow-up, #953 status visibility,
-     task 7 slim-down). Always visible, not just after a successful sync:
-     an admin who hasn't synced yet, or whose last attempt failed, needs to
-     see that state instead of nothing. #}
-  {% set rs = semantic_refresh_summary or {} %}
   {# Connection cards are built in JS; the mismatch warning's icon is rendered
      once here by the shared macro and cloned, never assembled as markup. #}
   <template id="ds-warn-icon">{{ ico.icon('warning', 16) }}</template>
 
-  <div class="ds-semantic-summary {{ 'ds-semantic-summary--error' if rs.last_status == 'error' else ('ds-semantic-summary--pending' if not rs.last_status else '') }}">
-    <span>
-      <strong>Semantic layer:</strong>
-      {% if rs.last_status == 'ok' %}
-        Last sync {{ rs.last_completed_at }} — OK.
-      {% elif rs.last_status == 'error' %}
-        Last sync attempt ({{ rs.last_completed_at }}) failed: {{ rs.last_result }}
-      {% else %}
-        Never synced yet.
-      {% endif %}
-      — manage at <a href="/admin/semantic-layer">Semantic layer</a>.
-    </span>
-  </div>
+  {# No semantic-layer status strip here. Semantic is its own tab in the same
+     tab row (`_admin_tabs.html`), and every source card already carries the
+     semantic step in its pipeline strip — a page-wide "Never synced yet." band
+     above the list restated, at full width, what the tab beside it and the
+     cards below it both say. Status, per-source counts, "Sync now" and the
+     orphaned-rows view all live at /admin/semantic-layer. #}
 
-  <div class="ds-section-header">
-    <div>
-      <div class="ds-section-title">
-        <div class="ds-section-icon">&#128297;</div>
-        Keboola projects
-      </div>
-      <div class="ds-section-desc">Paste a project's connection URL + storage token, validate, then pick tables to register.</div>
-    </div>
-    <button type="button" class="btn btn-primary" id="ds-add-btn" {% if not vault_key_configured %}disabled{% endif %}>+ Add Keboola project</button>
+  {# The shared section head (`.apg-sechead`) — the row People and Access
+     carry, in the same type scale: the section's name, its count and the one
+     action that changes it. No sentence under them — the cards state what a
+     source is and where its verbs live. It used to be a
+     15px title behind a 32px amber tile holding a wrench emoji: an icon in
+     the STATUS accent (amber = needs attention) on a section that is merely
+     a heading, at a size no other heading on the page wears. #}
+  {# "Connected sources", not "Keboola projects" — and one CTA that opens the
+     connector picker, not one that names a single connector.
+
+     The heading and the CTA used to say Keboola while the drawer behind the
+     CTA offered Keboola, BigQuery, CSV and Jira, and the list below asked the
+     API for `?source_type=keboola` — so a BigQuery table registered through
+     that very drawer appeared NOWHERE on the page that had just registered
+     it. Three surfaces disagreeing about what a "source" is, which is the
+     mental model this section exists to teach. Now: one heading, one Add,
+     one list, every connector in it (`_source_inventory()` in
+     app/web/router.py synthesizes the cards for the connectors that keep no
+     connection row of their own). #}
+  <div class="apg-sechead">
+    <h2 class="apg-sechead__title">Connected sources</h2>
+    <span class="apg-sechead__count" id="ds-conn-count" role="status" aria-live="polite"></span>
+    <span class="apg-sechead__end">
+      <button type="button" class="btn btn-primary" id="ds-add-btn" {% if not vault_key_configured %}disabled{% endif %}>+ Add source</button>
+    </span>
   </div>
 
   <div id="ds-conn-list">
     <div class="ds-loading">Loading…</div>
   </div>
 
-  <div class="ds-footnote">
-    BigQuery / Google Workspace secrets live in
+  {# Why Google Workspace is absent from a list of every source. The note used
+     to answer it with one role — "the identity provider, not a data source …
+     credentials live in Instance secrets" — which reads as *the identity
+     provider's* credentials being in Instance secrets. They are not: that card
+     holds the Drive/Gmail/Calendar connector's OAuth client, a different client
+     for a different job (sign-in reads `auth.google_client_id` from
+     instance.yaml). Workspace wears two hats here and the note has to name
+     both, because the reason it is missing from THIS list is different for
+     each: one produces people, the other extracts nothing onto the server. #}
+  <div class="apg-foot">
+    Google Workspace is not in this list — neither of its roles produces tables here.
+    As the <b>identity provider</b> it produces people: sign-in and group sync are
+    configured in <code>instance.yaml</code>, and the groups it owns appear in
+    <a href="/admin/access">Access</a>. As the <b>Drive, Gmail &amp; Calendar
+    connector</b> it runs in each analyst's own Claude Code session against their own
+    account, extracting nothing onto this instance — its OAuth client lives in
     <a href="/admin/datasource-credentials">Instance secrets</a>.
   </div>
 </div>
 
-{# ── Add Keboola project wizard ──────────────────────────────────────── #}
-<div id="ds-wizard-overlay" class="ds-modal-overlay" role="dialog" aria-modal="true" aria-labelledby="ds-wizard-title">
-  <div class="ds-modal">
-    <div class="ds-modal-header">
-      <div class="ds-modal-title" id="ds-wizard-title">Add Keboola project</div>
-      <button type="button" class="ds-modal-close" id="ds-wizard-close" aria-label="Close">&times;</button>
-    </div>
-    <div class="ds-modal-body">
+{# ONE menu node for the whole list, refilled and repositioned per card
+   (`.apg-menu__pop`, admin_page.css). Fixed rather than absolute because
+   `.ds-src` clips its own overflow for the rounded corners, and a menu
+   opened from the last card would be cut off by it. #}
+<div id="ds-src-menu" class="apg-menu__pop" role="menu" hidden></div>
 
-      {# Step 1: connect #}
+{# Icons rendered ONCE by the shared macro and cloned into the JS-built
+   cards — the same rule the warning glyph above follows. Building an SVG as
+   a string in JS is how a page ends up with its own private icon set. #}
+<template id="ds-ico-chevron">{{ ico.icon('chevron', 13) }}</template>
+<template id="ds-ico-caret">{{ ico.icon('chevron-right', 16) }}</template>
+
+{# ── Add data wizard — connect → choose tables → bundle → share ────────
+   The redesign's one flow from "nothing connected" to "data in someone's
+   hands" (spec §3.6–3.8). Steps 1–2 are the previous Add-Keboola-project
+   wizard unchanged (connection retry-reuse, name adoption, project binding
+   all preserved); 3 bundles the just-registered tables into packages (the
+   dependency the product never used to say out loud), 4 shares them —
+   skippable, because an unshared package now warns on Overview and on
+   /admin/data-packages rather than failing silently. #}
+<div id="ds-wizard-overlay" class="ds-drawer ds-drawer--wide" role="dialog" aria-modal="true" aria-labelledby="ds-wizard-title">
+  <div class="ds-drawer__backdrop" data-wizard-close></div>
+  <div class="ds-drawer__panel">
+    <div class="ds-drawer__head">
+      <div class="ds-drawer__head-main">
+        <h2 class="ds-drawer__title" id="ds-wizard-title">Add data</h2>
+        <p class="ds-drawer__sub">Connect a project, choose its tables, bundle them, share them — stop after any step.</p>
+      </div>
+      <button type="button" class="ds-drawer__x" id="ds-wizard-close" aria-label="Close">&times;</button>
+    </div>
+    {# The strip is the flow's map AND its back button. A step you have
+       already been through is a real button — the admin who mistyped a
+       package name or missed a table gets back to it without cancelling and
+       starting over, and every selection they made on the way is still
+       there. A step you have not earned yet is `disabled`, so "not until the
+       one before it is done" is carried by the control's own state rather
+       than by a click that silently does nothing (drawer.css). #}
+    <div class="ds-drawer__steps" role="group" aria-label="Add data steps">
+      <button type="button" class="ds-drawer__step is-now" data-wstep="1"><span class="n">1</span><span class="lbl">Connect</span></button>
+      <button type="button" class="ds-drawer__step" data-wstep="2" disabled><span class="n">2</span><span class="lbl">Choose tables</span></button>
+      <button type="button" class="ds-drawer__step" data-wstep="3" disabled><span class="n">3</span><span class="lbl">Bundle</span></button>
+      <button type="button" class="ds-drawer__step" data-wstep="4" disabled><span class="n">4</span><span class="lbl">Share</span></button>
+    </div>
+    <div class="ds-drawer__body">
+
+      {# Step 1: connect — opens on a connector picker (spec §3.7). Each
+         connector brings its own connect form; steps 3–4 are identical for
+         all of them, because once tables exist, bundling and sharing don't
+         care where the data came from. CSV and Jira are honest guidance,
+         not forms: there is no CSV connector (files enter through Library
+         Collections) and Jira is configured instance-side + webhook. #}
       <div class="ds-wizard-step active" id="ds-wizard-step-connect">
+        <div class="ds-srcpick" role="radiogroup" aria-label="Source type">
+          <button type="button" class="ds-srcopt on" data-wsrc="keboola">
+            <span class="so-logo so-logo--kbc">K</span>
+            <span class="so-name">Keboola project</span>
+            <span class="so-sub">Buckets &amp; tables, synced copies</span>
+          </button>
+          <button type="button" class="ds-srcopt" data-wsrc="bigquery">
+            <span class="so-logo so-logo--bq">BQ</span>
+            <span class="so-name">BigQuery</span>
+            <span class="so-sub">Live queries, no copy</span>
+          </button>
+          <button type="button" class="ds-srcopt" data-wsrc="csv">
+            <span class="so-logo so-logo--csv">⇪</span>
+            <span class="so-name">CSV / files</span>
+            <span class="so-sub">Uploads via the Library</span>
+          </button>
+          <button type="button" class="ds-srcopt" data-wsrc="jira">
+            <span class="so-logo so-logo--jira">J</span>
+            <span class="so-name">Jira</span>
+            <span class="so-sub">Real-time via webhooks</span>
+          </button>
+        </div>
+
+        <div data-wsrcform="keboola">
+        {# Existing-source shortcut: the wizard is also the way to ADD MORE
+           tables from a project that is already connected — without it,
+           "add data" reads as "new connection only". It is the SHORTER of the
+           two paths on this screen and, for an instance that is already
+           running, the far more common one, so it is drawn as an offer rather
+           than as a grey utility strip above the real form: the shared
+           connect-banner shape (`.cbn--bar` in style-custom.css) — mark tile,
+           a sentence that says what you are being spared, action pushed
+           right. The "or" below is a real divider, because the thing this
+           screen has to make obvious is that there are TWO ways in. #}
+        <div class="ds-wexisting" id="ds-wexisting" hidden>
+          <span class="ds-wexisting__tile" aria-hidden="true">KB</span>
+          <div class="ds-wexisting__body">
+            {# The title is the connector-level fact and never varies; the
+               count belongs in the sentence that explains the picker beside
+               it. Saying "N Keboola projects" here would also re-plant the
+               exact phrase this page was rebuilt to stop using — the guard in
+               TestSourcesIsEveryConnector reads the whole body. #}
+            <div class="ds-wexisting__title">Keboola is already connected.</div>
+            <p class="ds-wexisting__copy" id="ds-wexisting-copy">Go straight to its tables — no URL, no token to paste again.</p>
+          </div>
+          <div class="ds-wexisting__act">
+            <select id="ds-wexisting-select" aria-label="Which connected project"></select>
+            <button type="button" class="ds-wexisting__cta" id="ds-wexisting-btn">Choose tables <span aria-hidden="true">→</span></button>
+          </div>
+        </div>
+        <div class="ds-wor" id="ds-wor" hidden><span>or connect a new project</span></div>
         <div class="ds-field">
           <label for="ds-new-name">Connection name</label>
           <input type="text" id="ds-new-name" placeholder="e.g. Production (auto-detected if left blank)" autocomplete="off">
@@ -409,6 +969,74 @@
           <input type="password" id="ds-new-token" placeholder="paste token here" autocomplete="off">
           <div class="field-hint">Stored in the server vault, never echoed back.</div>
         </div>
+        {# The second token, offered where it belongs. The semantic layer's
+           master-token requirement was previously discoverable only on the
+           semantic-layer page's empty state; here it is an option inside
+           Connect — skippable, and if skipped the Data sources page's
+           token-mismatch/missing warnings still catch it later. #}
+        <div class="ds-wsl-opt">
+          <label class="ds-wsl-opt__head">
+            <input type="checkbox" id="ds-new-semantic">
+            <span>Also sync business metrics &amp; glossary (semantic layer)</span>
+          </label>
+          <p>Keeps this project's metric definitions in Agnes so analysts and agents compute
+             metrics one way. Keboola's Metastore requires a second token for this — a project
+             <strong>owner</strong> token, separate from the storage token above.
+             <strong>Optional:</strong> skip it and tables still work; you can set it any time
+             later on this connection's card.</p>
+          <div class="ds-field ds-wsl-opt__field" hidden>
+            <label for="ds-new-master">Semantic-layer token <span class="optional">(project owner)</span></label>
+            <input type="password" id="ds-new-master" placeholder="paste owner token" autocomplete="off">
+          </div>
+        </div>
+        </div>
+
+        {# BigQuery — real: credentials are the instance service account
+           (managed on Instance secrets; status fetched live), tables are
+           registered as live queries in step 2. Saved queries / partitioning
+           keep their full editor on /admin/tables. #}
+        <div data-wsrcform="bigquery" hidden>
+          <div class="ds-field">
+            <label>Credentials</label>
+            <div class="ds-bqcred" id="ds-bqcred"><span class="ds-loading" style="padding:4px 0;">Checking service account…</span></div>
+            <div class="field-hint">BigQuery uses the instance-level service account — one credential for every dataset,
+              managed in <a href="/admin/datasource-credentials">Instance secrets</a>.</div>
+          </div>
+          <div class="ds-wsl-opt">
+            <div class="ds-wsl-opt__head" style="cursor:default;">Live queries, cost-guarded</div>
+            <p style="margin-left:0;">Tables you add here are registered as <strong>live queries</strong> — no copy, every query
+               runs in BigQuery behind the scan cap. For a <strong>saved query</strong> (materialized SQL on a schedule),
+               partitioning or custom SQL, use <a href="/admin/tables">Tables → Register new table</a> — the full editor stays there.</p>
+          </div>
+        </div>
+
+        {# CSV / files — honest guidance: there is no CSV connector. Files
+           enter through Library Collections (per-file ingestion); a live
+           system's export belongs in a data package instead. #}
+        <div data-wsrcform="csv" hidden>
+          <div class="ds-wguide">
+            <h4>Files become searchable through the Library, not a connector.</h4>
+            <p>Upload documents (PDF, Markdown, CSV, …) into a <strong>Collection</strong> in the
+               <a href="/library">Library</a> — Agnes ingests them per file and analysts search them with citations.
+               A Collection is honest about being a snapshot: when the content changes, a person re-uploads.</p>
+            <p>If the file is an <em>export of a live system</em>, that system is the source — connect it
+               (Keboola or BigQuery) and let a data package carry the tables, or the copy starts drifting
+               the moment it lands. The trade-offs: <a href="https://github.com/keboola/agnes-the-ai-analyst/blob/main/docs/admin/collections-vs-data-packages.md" rel="noopener">Collections vs. data packages</a>.</p>
+          </div>
+        </div>
+
+        {# Jira — honest guidance: webhook-driven connector configured
+           instance-side, not through a browser form. #}
+        <div data-wsrcform="jira" hidden>
+          <div class="ds-wguide">
+            <h4>Jira streams in over webhooks — set up once, fresh within seconds.</h4>
+            <p>The Jira connector is configured on the instance (site, credentials and a webhook registered in
+               Jira's admin), not through this form. Once wired, issues, sprints and worklogs update as they
+               change and surface as ordinary tables you can bundle and share like any other.</p>
+            <p>Setup recipe: <a href="https://github.com/keboola/agnes-the-ai-analyst/blob/main/docs/connectors/jira.md" rel="noopener">docs/connectors/jira.md</a>.</p>
+          </div>
+        </div>
+
         <div id="ds-wizard-error" class="ds-wizard-error"></div>
       </div>
 
@@ -420,11 +1048,59 @@
         </div>
       </div>
 
+      {# Step 3: bundle — arrange the registered tables into packages #}
+      <div class="ds-wizard-step" id="ds-wizard-step-bundle">
+        <p class="ds-wizard-lede">
+          Arrange the tables into <strong>data packages</strong> — the bundles analysts add to
+          their workspace. Tables reach analysts only through a package. Nothing is final:
+          merge, split or rename any time from Data packages.
+        </p>
+        <div class="ds-seed-row">
+          <span>Start from:</span>
+          <button type="button" class="ds-seed-chip" data-wseed="one">One package</button>
+          <button type="button" class="ds-seed-chip" data-wseed="bucket">Split by bucket</button>
+          <span style="flex:1"></span>
+          <button type="button" class="btn btn-secondary" id="ds-new-tray-btn">＋ New package</button>
+        </div>
+        <div id="ds-bundle-board"></div>
+        <div class="ds-movebar" id="ds-movebar" hidden>
+          <span id="ds-movebar-label">0 selected</span>
+          <span class="mv-to">Move to:</span>
+          <span id="ds-movebar-targets"></span>
+        </div>
+      </div>
+
+      {# Step 4: share — one card per created package; skippable #}
+      <div class="ds-wizard-step" id="ds-wizard-step-share">
+        <div class="ds-wshare">
+          <p class="ds-wizard-lede">
+            Who gets these packages? Share now or skip — an unshared package stays private and
+            waits for you on the Overview. <strong>Optional</strong> shows it in members' Library
+            to add themselves; <strong>Automatic</strong> puts it in their workspace on the next sync.
+          </p>
+          <div id="ds-share-cards"><div class="ds-loading">Loading groups…</div></div>
+          <div id="ds-share-error" class="ds-wizard-error"></div>
+        </div>
+        <div class="ds-wdone" style="display:none;">
+          <div class="ds-wdone-slab" id="ds-wdone-slab"></div>
+        </div>
+      </div>
+
     </div>
-    <div class="ds-modal-actions">
+    <div class="ds-drawer__foot">
       <button type="button" class="btn btn-secondary" id="ds-wizard-cancel">Cancel</button>
+      <span class="ds-drawer__foot-gap"></span>
+      {# Step 2's refusal, stated where the refusing button is. It lived on the
+         step's own pane first, which put it under 576 rows of bucket list —
+         8500px below the fold, which is the same as nowhere. The foot is
+         sticky, so a message here is on screen whatever the list is doing. #}
+      <div id="ds-tables-error" class="ds-wizard-error ds-wizard-error--foot" role="alert"></div>
+      <button type="button" class="btn btn-secondary" id="ds-wizard-skip-btn" style="display:none;">Skip sharing for now</button>
+      <button type="button" class="btn btn-secondary" id="ds-wizard-finish-early-btn" style="display:none;" title="Register the selected tables and stop — bundle them later from Data packages.">Register only &amp; finish</button>
       <button type="button" class="btn btn-primary" id="ds-wizard-connect-btn">Connect &amp; validate</button>
-      <button type="button" class="btn btn-primary" id="ds-wizard-register-btn" style="display:none;">Register selected</button>
+      <button type="button" class="btn btn-primary" id="ds-wizard-register-btn" style="display:none;">Continue with selected tables</button>
+      <button type="button" class="btn btn-primary" id="ds-wizard-bundle-btn" style="display:none;">Create packages &amp; continue</button>
+      <button type="button" class="btn btn-primary" id="ds-wizard-share-btn" style="display:none;">Share &amp; finish</button>
       <button type="button" class="btn btn-secondary" id="ds-wizard-done-btn" style="display:none;">Done</button>
     </div>
   </div>
@@ -439,6 +1115,12 @@ const API_REGISTER_TABLE = "/api/admin/register-table";
 function _esc(s) {
   return (s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
+
+// Server-rendered by the shared icon macro, read once and interpolated into
+// the JS-built cards. Trusted markup by construction — it never touches user
+// input — and it keeps this page from growing a private copy of two glyphs.
+const ICO_CHEVRON = document.getElementById("ds-ico-chevron").innerHTML;
+const ICO_CARET = document.getElementById("ds-ico-caret").innerHTML;
 
 function showToast(msg, ok) {
   const el = document.getElementById("ds-toast");
@@ -472,24 +1154,26 @@ function _secretBadgeHtml(row) {
   return `<span class="ds-badge ${classes[src] || "badge-unset"}">${labels[src] || "unset"}</span>`;
 }
 
-function _masterTokenRowHtml(row) {
+function _masterTokenFactHtml(row) {
   // Semantic-layer sync (Metastore) needs a separate Keboola *master* (project
   // owner) token — not the plain storage token above. Only keboola connections
   // support this vault slot.
+  //
+  // Named "Semantic-layer token" with the system word in the hint, not
+  // "Master token (semantic layer)": an admin reading a settings list needs to
+  // know WHAT IT IS FOR first — the Keboola noun is the detail, and it is one
+  // hover away.
   if (row.source_type !== "keboola") return "";
   const id = row.id;
   const hasMaster = row.has_master_secret === true;
-  const badgeClass = hasMaster ? "badge-vault" : "badge-unset";
-  const badgeLabel = hasMaster ? "set" : "not set";
-  const removeBtn = hasMaster
-    ? `<button type="button" class="btn btn-secondary" style="color:var(--ds-accent-danger-ink); border-color:var(--ds-accent-danger-line);" onclick="removeMasterToken('${id}')">Remove</button>`
-    : "";
   return `
-  <div class="ds-master-row">
-    <span class="ds-master-label" title="Optional. Project owner token — required only for semantic-layer sync (Metastore).">Master token (semantic layer)</span>
-    <span class="ds-badge ${badgeClass}">${badgeLabel}</span>
-    <button type="button" class="btn btn-secondary" onclick="toggleMasterToken('${id}')">${hasMaster ? "Rotate" : "Set token"}</button>
-    ${removeBtn}
+  <div class="ds-src__fact">
+    <span class="ds-src__fact-k" title="Keboola calls this the project MASTER (owner) token. Required only for the semantic layer — metrics and glossary.">Semantic-layer token</span>
+    <span class="ds-src__fact-v"><span class="ds-badge ${hasMaster ? "badge-vault" : "badge-unset"}">${hasMaster ? "set" : "not set"}</span></span>
+    <span class="ds-src__fact-a">
+      <button type="button" class="btn btn-secondary" onclick="toggleMasterToken('${id}')">${hasMaster ? "Rotate" : "Set token"}</button>
+      ${hasMaster ? `<button type="button" class="btn btn-secondary" style="color:var(--ds-accent-danger-ink); border-color:var(--ds-accent-danger-line);" onclick="removeMasterToken('${id}')">Remove</button>` : ""}
+    </span>
   </div>
   <div class="ds-rotate-row" id="ds-master-row-${id}">
     <input type="password" id="ds-master-input-${id}" placeholder="paste master (owner) token" autocomplete="off">
@@ -499,13 +1183,203 @@ function _masterTokenRowHtml(row) {
   <div class="ds-token-mismatch" id="ds-mismatch-${id}" hidden></div>`;
 }
 
+/* ── Pipeline strip ────────────────────────────────────────────────────────
+   Server-computed per connection (`_source_pipelines()` in
+   app/web/router.py) so a card needs no extra round-trips. Each cell links
+   to the page that owns that stage, and every value is worded as a state an
+   admin can act on: "no tables yet", "never synced", "token not set",
+   "0 packages — nobody can pull this". A missing cell (BigQuery has no
+   semantic layer) simply is not rendered — the strip is per-connector. */
+const SOURCE_PIPELINES = {{ source_pipelines | tojson }};
+
+/* Connectors that produce tables but keep no `source_connections` row —
+   BigQuery (credentialed once, at instance level), Jira (webhooks), uploaded
+   files. Server-synthesized into rows of the SAME shape as a real connection
+   (`_source_inventory()` in app/web/router.py) so exactly one renderer draws
+   every card. Without them "Sources" was a Keboola-only list on a page whose
+   Add button offered four connectors. */
+const DERIVED_SOURCES = {{ derived_sources | tojson }};
+
+/* The connector's identity: the tile's two letters and its palette class.
+   A source whose type this build has never heard of still gets a card — it
+   falls back to its own initials rather than being dropped from the list,
+   because a table that exists must have a source that is visible. */
+/* `wizard` is the picker's own key for the same connector, which is not
+   always the registry's `source_type`: files register as `local` but the
+   picker calls that pane `csv`. Naming the translation here keeps it out of
+   the callers, where a mismatch silently hides every form in step 1. */
+const CONNECTOR = {
+  keboola:  { abbr: "KB", cls: "keboola",  wizard: "keboola" },
+  bigquery: { abbr: "BQ", cls: "bigquery", wizard: "bigquery" },
+  jira:     { abbr: "JR", cls: "jira",     wizard: "jira" },
+  local:    { abbr: "FS", cls: "local",    wizard: "csv" },
+};
+function _connector(type) {
+  return CONNECTOR[type] || { abbr: (type || "?").slice(0, 2).toUpperCase(), cls: "local", wizard: "keboola" };
+}
+
+function _relAge(minutes) {
+  if (minutes === null || minutes === undefined) return "";
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes} min ago`;
+  const h = Math.floor(minutes / 60);
+  if (h < 24) return `${h} h ago`;
+  const d = Math.floor(h / 24);
+  return `${d} day${d === 1 ? "" : "s"} ago`;
+}
+
+function _pipelineStripHtml(row) {
+  const p = SOURCE_PIPELINES[row.id];
+  if (!p) return "";
+  const cells = [];
+
+  // Tables. `unlinked` rows carry no connection_id and this source type has
+  // several connections, so they cannot be attributed — named rather than
+  // reported as "no tables yet", which read as an empty instance.
+  const t = p.tables || { count: 0, unlinked: 0 };
+  let tblText, tblTone = "", tblTitle = "Registered against this connection";
+  if (t.count) {
+    tblText = `${t.count} registered`;
+    if (t.basis === "source_type") tblTitle = "Counted by source type — these rows predate per-connection tracking, and this is the only connection of this type";
+  } else if (t.unlinked) {
+    tblText = `${t.unlinked} unlinked`;
+    tblTone = "is-warn";
+    tblTitle = `${t.unlinked} table(s) of this source type predate per-connection tracking, so they cannot be attributed to one connection. They still sync and are still bundleable.`;
+  } else {
+    tblText = "No tables yet";
+    tblTone = "is-warn";
+  }
+  // A source with nothing registered gets the VERB here rather than a link to
+  // the Tables page, which is the one place that cannot fix it — you add
+  // tables from the source, not from the list of tables that already exist.
+  // It is also the card's primary action put back within one click, where the
+  // reader is already looking at the reason to press it.
+  if (!t.count && !t.unlinked) {
+    const open = row.derived
+      ? `openWizard('${_esc(row.source_type)}')`
+      : `toggleBrowse('${row.id}')`;
+    cells.push(`
+      <button type="button" class="ds-pipe__cell" onclick="${open}">
+        <span class="ds-pipe__k">Tables</span>
+        <span class="ds-pipe__v is-warn">Add the first tables →</span>
+      </button>`);
+  } else {
+    cells.push(`
+      <a class="ds-pipe__cell" href="/admin/tables" title="${_esc(tblTitle)}">
+        <span class="ds-pipe__k">Tables</span>
+        <span class="ds-pipe__v ${tblTone}">${tblText}</span>
+      </a>`);
+  }
+
+  // Sync — or, for a connector that never pulls, the thing that CAN go wrong
+  // with it instead. A BigQuery source is queried live, so "never synced" is
+  // its permanent, correct and useless state; what its admin actually watches
+  // is the cost guard. Jira arrives over webhooks and files are replaced by
+  // hand, so both keep the freshness reading but say it in their own words.
+  if (p.cost) {
+    cells.push(`
+      <a class="ds-pipe__cell" href="/admin/server-config"
+         title="Refused above these — a query over the scan cap returns remote_scan_too_large. Editable in server config.">
+        <span class="ds-pipe__k">Cost guard</span>
+        <span class="ds-pipe__v">${_esc(p.cost.scan)} scan · ${_esc(p.cost.materialize)} materialize</span>
+      </a>`);
+  } else {
+    const s = p.sync || {};
+    const label = { jira: "Webhook", local: "Freshness" }[row.source_type] || "Sync";
+    const never = { jira: "No events yet", local: "Never updated" }[row.source_type] || "Never synced";
+    let syncTone = "", syncText;
+    if (s.errors) { syncTone = "is-err"; syncText = `${s.errors} failing`; }
+    else if (s.last_sync) { syncTone = "is-ok"; syncText = `✓ ${_relAge(s.age_minutes)}`; }
+    else { syncTone = "is-warn"; syncText = never; }
+    cells.push(`
+      <a class="ds-pipe__cell" href="/admin/sync">
+        <span class="ds-pipe__k">${label}</span>
+        <span class="ds-pipe__v ${syncTone}">${syncText}</span>
+      </a>`);
+  }
+
+  // Semantic layer (Keboola only)
+  if (p.semantic) {
+    const sem = p.semantic;
+    const semText = !sem.token
+      ? "Token not set"
+      : (sem.metrics || sem.terms)
+        ? `✓ ${sem.metrics} metric${sem.metrics === 1 ? "" : "s"} · ${sem.terms} term${sem.terms === 1 ? "" : "s"}`
+        : "Nothing imported yet";
+    const semTone = !sem.token ? "is-warn" : (sem.metrics || sem.terms) ? "is-ok" : "is-warn";
+    cells.push(`
+      <a class="ds-pipe__cell" href="/admin/semantic-layer">
+        <span class="ds-pipe__k">Semantic layer</span>
+        <span class="ds-pipe__v ${semTone}">${semText}</span>
+      </a>`);
+  }
+
+  // Feeds — the end of the chain: who actually gets this source's data.
+  const f = p.feeds || { packages: 0, groups: 0, people: 0 };
+  let feedText;
+  if (!f.packages) feedText = "0 packages";
+  else if (f.people === -1) feedText = `${f.packages} package${f.packages === 1 ? "" : "s"} → everyone`;
+  else feedText = `${f.packages} package${f.packages === 1 ? "" : "s"} → ${f.people} ${f.people === 1 ? "person" : "people"}`;
+  cells.push(`
+    <a class="ds-pipe__cell" href="/admin/data-packages"
+       title="${f.packages ? "Packages holding this source's tables, and who they reach" : "Tables reach analysts only through a data package"}">
+      <span class="ds-pipe__k">Feeds</span>
+      <span class="ds-pipe__v ${f.packages ? "" : "is-warn"}">${feedText}</span>
+    </a>`);
+
+  return `<div class="ds-pipe ds-pipe--${cells.length}">${cells.join("")}</div>`;
+}
+
+/* ── The card's one status word ────────────────────────────────────────────
+   A fold over the strip below it, in severity order, so the reader gets a
+   VERDICT before the evidence and can skip a healthy card without reading
+   four cells. The order is the argument: broken beats empty beats
+   undelivered.
+
+     err   a sync is failing            — data is stale and nobody was told
+     warn  no tables registered         — the source does nothing yet
+     warn  tables reach nobody          — the end of the chain is open
+     ok    everything above is false
+
+   The semantic-layer token is deliberately NOT in this ladder. It is
+   optional — a project with metrics disabled is not unhealthy — so its
+   absence stays a warn on its own cell, where it means "this cell is off"
+   rather than "this source is broken". Turning an opt-in feature into a
+   card-level warning is how a status chip becomes decoration. */
+function _sourceHealth(row) {
+  const p = SOURCE_PIPELINES[row.id];
+  if (!p) return null;
+  const s = p.sync || {}, t = p.tables || {}, f = p.feeds || {};
+  if (s.errors) return { tone: "is-err", label: `${s.errors} failing sync${s.errors === 1 ? "" : "s"}` };
+  if (!t.count && !t.unlinked) return { tone: "is-warn", label: "No tables yet" };
+  if (!f.packages) return { tone: "is-warn", label: "Reaches nobody" };
+  return { tone: "is-ok", label: "Healthy" };
+}
+
+/* One line of identity under the name: where this source is, and which
+   project it opens. Three stacked 11px lines (name / project / host) said one
+   thing in three places; the middot list says it once, and the part that
+   truncates is the tail, which is the least identifying end of a host. */
+function _sourceSubtitle(row) {
+  const config = row.config || {};
+  const bits = [];
+  if (row.derived) {
+    if (row.subtitle) bits.push(_esc(row.subtitle));
+  } else {
+    const stackUrl = (config.stack_url || "").replace(/^https?:\/\//, "").replace(/\/$/, "");
+    bits.push(stackUrl ? `<code>${_esc(stackUrl)}</code>` : "(no connection URL)");
+    if (config.project_id != null) {
+      bits.push(`${_esc(config.project_name || "unnamed")} · project ${_esc(String(config.project_id))}`);
+    }
+  }
+  return bits.join(" · ");
+}
+
 function _connectionCardHtml(row) {
   const id = row.id;
   const name = _esc(row.name || "");
   const config = row.config || {};
-  const stackUrl = _esc((config.stack_url || "").replace(/\/$/, ""));
   const isDefault = row.is_default === true || row.is_default === 1;
-  const defaultBadge = isDefault ? `<span class="ds-badge badge-default">default</span>` : "";
   // Which Keboola project this connection actually opens, recorded from the
   // token's own owner block. Several projects on one stack render as the same
   // host, so the URL alone never told two connections apart — and the "master
@@ -517,69 +1391,110 @@ function _connectionCardHtml(row) {
   // this page: an edit no longer clears the binding (it used to, silently, on
   // every save, which is the bug that made the lock necessary). "Unbind" is
   // that route. (Devin Review.)
-  const projectLine = config.project_id != null
-    ? `<div class="ds-conn-project">${_esc(config.project_name || "unnamed")} · project ${_esc(String(config.project_id))}
-        <button type="button" class="ds-unbind" onclick="unbindProject('${id}')"
-                title="Forget which project this connection is locked to, so a token for another project on the same stack can be stored">unbind</button>
-      </div>`
-    : "";
+  const c = _connector(row.source_type);
+  const health = _sourceHealth(row);
+
+  // The body: settings, then the inline tasks the Actions menu opens into it.
+  // Everything here was previously a permanently-visible band on the card.
+  const facts = row.derived
+    ? `
+    <div class="ds-src__fact">
+      <span class="ds-src__fact-k">Managed in</span>
+      <span class="ds-src__fact-v">${_esc(row.settings_label || "Instance settings")}</span>
+      <span class="ds-src__fact-a"><a class="btn btn-secondary" href="${_esc(row.settings_href || "/admin")}">Open</a></span>
+    </div>
+    <div class="ds-src__fact">
+      <span class="ds-src__fact-k">Tables</span>
+      <span class="ds-src__fact-v">Registered against this connector, not against a stored connection.</span>
+      <span class="ds-src__fact-a"><a class="btn btn-secondary" href="/admin/tables">View tables</a></span>
+    </div>`
+    : `
+    <div class="ds-src__fact">
+      <span class="ds-src__fact-k" title="Where Agnes reads this project's storage token from.">Storage token</span>
+      <span class="ds-src__fact-v">${_secretBadgeHtml(row)}</span>
+      <span class="ds-src__fact-a"><button type="button" class="btn btn-secondary" onclick="toggleRotate('${id}')">Rotate</button></span>
+    </div>
+    <div class="ds-rotate-row" id="ds-rotate-${id}">
+      <input type="password" id="ds-rotate-input-${id}" placeholder="paste new token" autocomplete="off">
+      <button type="button" class="btn btn-primary" onclick="saveRotatedToken('${id}')">Save token</button>
+      <button type="button" class="btn btn-secondary" onclick="toggleRotate('${id}')">Cancel</button>
+    </div>
+    ${_masterTokenFactHtml(row)}
+    ${_chatToolsFactHtml(row)}
+    ${config.project_id != null ? `
+    <div class="ds-src__fact">
+      <span class="ds-src__fact-k" title="The connection is locked to the first project it verified against, so a token for a different project on the same stack is refused.">Bound to project</span>
+      <span class="ds-src__fact-v">${_esc(config.project_name || "unnamed")} · ${_esc(String(config.project_id))}</span>
+      <span class="ds-src__fact-a"><button type="button" class="btn btn-secondary" onclick="unbindProject('${id}')"
+        title="Forget which project this connection is locked to, so a token for another project on the same stack can be stored">Unbind</button></span>
+    </div>` : ""}`;
 
   return `
-<div class="ds-conn-card" id="ds-conn-${id}" data-id="${id}">
-  <div class="ds-conn-header">
-    <div class="ds-conn-header-left">
-      <div>
-        <div class="ds-conn-name">${name}</div>
-        ${projectLine}
-        <div class="ds-conn-stack">${stackUrl || "(no stack URL)"}</div>
+<article class="ds-src" id="ds-conn-${id}" data-id="${id}">
+  <div class="ds-src__head" data-src-head="${id}">
+    <span class="ds-src__logo ds-src__logo--${c.cls}" aria-hidden="true">${c.abbr}</span>
+    <div class="ds-src__id">
+      <div class="ds-src__name">
+        <span>${name}</span>
+        ${isDefault ? `<span class="ds-src__tag" title="The project the CLI and the sync use when nobody names one">default</span>` : ""}
       </div>
+      <div class="ds-src__sub">${_sourceSubtitle(row)}</div>
     </div>
-    <div class="ds-conn-badges">
-      ${defaultBadge}
-      ${_secretBadgeHtml(row)}
+    ${health ? `<span class="ds-src__health ${health.tone}">${health.label}</span>` : ""}
+    <div class="ds-src__acts">
+      <button type="button" class="apg-menu__btn" data-srcmenu="${id}"
+              aria-haspopup="true" aria-expanded="false">Actions ${ICO_CHEVRON}</button>
+      <button type="button" class="ds-src__caret" data-disclose="${id}"
+              aria-expanded="false" aria-controls="ds-body-${id}"
+              aria-label="Settings for ${name}">${ICO_CARET}</button>
     </div>
   </div>
-  ${_chatToolsRowHtml(row)}
-  <div class="ds-conn-actions">
-    <button type="button" class="btn btn-secondary" data-role="test" onclick="testConn('${id}')">Test</button>
-    <button type="button" class="btn btn-secondary" onclick="toggleBrowse('${id}')">Browse &amp; register tables</button>
-    ${!isDefault ? `<button type="button" class="btn btn-secondary" onclick="setDefaultConn('${id}')">Set as default</button>` : ""}
-    <button type="button" class="btn btn-secondary" onclick="toggleRotate('${id}')">Rotate token</button>
-    <button type="button" class="btn btn-secondary" style="color:var(--ds-accent-danger-ink); border-color:var(--ds-accent-danger-line);" onclick="deleteConn('${id}')">Delete</button>
+  ${_pipelineStripHtml(row)}
+  <div class="ds-src__body" id="ds-body-${id}" hidden>
     <span class="ds-conn-test-result" id="ds-test-${id}"></span>
+    <div class="ds-src__facts">${facts}</div>
+    <div class="ds-browse-panel" id="ds-browse-${id}"></div>
   </div>
-  <div class="ds-rotate-row" id="ds-rotate-${id}">
-    <input type="password" id="ds-rotate-input-${id}" placeholder="paste new token" autocomplete="off">
-    <button type="button" class="btn btn-primary" onclick="saveRotatedToken('${id}')">Save token</button>
-    <button type="button" class="btn btn-secondary" onclick="toggleRotate('${id}')">Cancel</button>
-  </div>
-  ${_masterTokenRowHtml(row)}
-  <div class="ds-browse-panel" id="ds-browse-${id}"></div>
-</div>`;
+</article>`;
 }
 
 async function loadConnections() {
   const list = document.getElementById("ds-conn-list");
   try {
-    const r = await fetch(`${API_CONNECTIONS}?source_type=keboola`, { credentials: "include" });
+    // No `?source_type=` filter. This list is EVERY source — the page used to
+    // ask for Keboola alone while its own Add drawer registered BigQuery
+    // tables that then appeared nowhere on it.
+    const r = await fetch(API_CONNECTIONS, { credentials: "include" });
     if (!r.ok) {
       list.innerHTML = `<div class="ds-empty">Failed to load data sources (HTTP ${r.status}).</div>`;
       return;
     }
-    _connections = await r.json();
+    // Stored connections first, then the connectors that keep no row of their
+    // own — they are the tail because they are the ones you manage elsewhere.
+    _connections = [...(await r.json()), ...DERIVED_SOURCES];
     renderConnList();
   } catch (e) {
     list.innerHTML = `<div class="ds-empty">Failed to load data sources.</div>`;
   }
 }
 
+// The section head's count — the same quiet read-out People puts beside its
+// heading and Access beside its group list. Empty (not "0 projects") while the
+// list is still loading: a zero that turns into three is worse than a blank.
+function setConnCount(n) {
+  const c = document.getElementById("ds-conn-count");
+  if (c) c.textContent = n === null ? "" : `${n} source${n === 1 ? "" : "s"}`;
+}
+
 function renderConnList() {
   const list = document.getElementById("ds-conn-list");
+  setConnCount(_connections.length);
   if (!_connections.length) {
-    list.innerHTML = `<div class="ds-empty">No Keboola projects connected yet. Click "+ Add Keboola project" to get started.</div>`;
+    list.innerHTML = `<div class="ds-empty">No sources connected yet — <b>+ Add source</b> opens the connector picker.</div>`;
     return;
   }
   list.innerHTML = _connections.map(_connectionCardHtml).join("");
+  _fillGrantPickers();
   loadTokenMismatchWarnings();
 }
 
@@ -628,15 +1543,14 @@ async function loadTokenMismatchWarnings() {
 
 async function testConn(id) {
   const resultEl = document.getElementById(`ds-test-${id}`);
-  const card = document.getElementById(`ds-conn-${id}`);
-  // Explicitly the Test button. This was `querySelector("button")` — the
-  // FIRST button in the card — which stopped being Test the moment the unbind
-  // control landed in the header above the action row: the link greyed out
-  // instead, Test stayed live, and repeated presses fired duplicate requests
-  // with no sign anything was happening. (Devin Review.)
-  const btn = card.querySelector('button[data-role="test"]');
-  if (btn) btn.disabled = true;
-  resultEl.className = "ds-conn-test-result";
+  // Test lives in the Actions menu now, so there is no button left on the
+  // card to grey out — and the verdict lands in the body, which may be shut.
+  // Open it and say "testing…" instead: the feedback that a press registered
+  // has to exist somewhere, and unexplained silence was the failure the old
+  // `querySelector("button")` bug produced. (Devin Review.)
+  setSourceOpen(id, true);
+  resultEl.className = "ds-conn-test-result show";
+  resultEl.textContent = "Testing…";
   try {
     const r = await fetch(`${API_CONNECTIONS}/${id}/test`, { method: "POST", credentials: "include" });
     const data = await r.json().catch(() => ({}));
@@ -650,7 +1564,7 @@ async function testConn(id) {
   } catch (e) {
     resultEl.className = "ds-conn-test-result show fail";
     resultEl.textContent = "✗ Request failed";
-  } finally { if (btn) btn.disabled = false; }
+  }
 }
 
 async function deleteConn(id) {
@@ -698,6 +1612,11 @@ async function setDefaultConn(id) {
 
 function toggleRotate(id) {
   const row = document.getElementById(`ds-rotate-${id}`);
+  // These three inline tasks live INSIDE the settings body now, and they are
+  // reached from a menu that does not know whether the body is open. Opening
+  // it is part of the verb — otherwise the menu item would appear to do
+  // nothing at all.
+  setSourceOpen(id, true);
   if (row.classList.contains("show")) {
     row.classList.remove("show");
     document.getElementById(`ds-rotate-input-${id}`).value = "";
@@ -738,6 +1657,7 @@ async function saveRotatedToken(id) {
 
 function toggleMasterToken(id) {
   const row = document.getElementById(`ds-master-row-${id}`);
+  setSourceOpen(id, true);
   if (row.classList.contains("show")) {
     row.classList.remove("show");
     document.getElementById(`ds-master-input-${id}`).value = "";
@@ -837,7 +1757,7 @@ function detailMessage(body, fallback) {
   return detail || fallback;
 }
 
-function _chatToolsRowHtml(row) {
+function _chatToolsFactHtml(row) {
   // Exposes this Keboola project's own MCP tools (query_data, buckets, search,
   // semantic layer, …) to the chat agent by deriving an MCP source from this
   // connection. Keboola-only; needs a stored storage token to be useful.
@@ -856,12 +1776,74 @@ function _chatToolsRowHtml(row) {
     ? "Tools are registered but not yet reachable — grant them under Admin -> MCP sources, on each tool's Grants page."
     : "Give the chat agent this project's own Keboola tools. The first run downloads the server, so it can take a minute.";
   return `
-  <div class="ds-master-row">
-    <span class="ds-master-label" title="${_esc(hint)}">Chat tools (Keboola MCP)</span>
-    <span class="ds-badge ${badgeClass}">${badgeLabel}</span>
-    <button type="button" class="btn btn-secondary" onclick="toggleChatTools('${id}', ${on ? "true" : "false"})">${on ? "Turn off" : "Turn on"}</button>
-    ${on ? `<button type="button" class="btn btn-secondary" onclick="toggleChatTools('${id}', false, true)">Re-sync token</button>` : ""}
+  <div class="ds-src__fact">
+    <span class="ds-src__fact-k" title="${_esc(hint)}">Chat tools (Keboola MCP)</span>
+    <span class="ds-src__fact-v"><span class="ds-badge ${badgeClass}">${badgeLabel}</span></span>
+    <span class="ds-src__fact-a">
+      <button type="button" class="btn btn-secondary" onclick="toggleChatTools('${id}', ${on ? "true" : "false"})">${on ? "Turn off" : "Turn on"}</button>
+      ${on ? `<button type="button" class="btn btn-secondary" onclick="toggleChatTools('${id}', false, true)">Re-sync token</button>` : ""}
+      ${on && row.chat_tools_source_id ? `
+      <select id="ds-grant-group-${id}" class="ds-dropdown-native" aria-label="Group to grant this project's tools to"></select>
+      <button type="button" class="btn btn-secondary" onclick="grantChatTools('${id}', '${_esc(row.chat_tools_source_id)}')">Grant all to group</button>` : ""}
+    </span>
   </div>`;
+}
+
+let _groupsCache = null;
+
+async function _loadGroups() {
+  if (_groupsCache) return _groupsCache;
+  try {
+    const r = await fetch(`/api/admin/groups`, { credentials: "include" });
+    // Only a successful load is cached. `[]` is truthy, so caching the
+    // fallback would make `if (_groupsCache) return _groupsCache` treat one
+    // transient failure as a valid hit for the rest of the page visit —
+    // leaving the grant picker permanently blank until a full reload.
+    if (r.ok) _groupsCache = await r.json();
+    else return [];
+  } catch (_) {
+    return [];
+  }
+  return _groupsCache;
+}
+
+async function _fillGrantPickers() {
+  const groups = await _loadGroups();
+  document.querySelectorAll('select[id^="ds-grant-group-"]').forEach((sel) => {
+    if (sel.options.length) return;
+    sel.innerHTML = groups
+      .map((g) => `<option value="${_esc(g.id)}">${_esc(g.name)}</option>`)
+      .join("");
+  });
+}
+
+async function grantChatTools(id, sourceId) {
+  const sel = document.getElementById(`ds-grant-group-${id}`);
+  const groupId = sel && sel.value;
+  if (!groupId) { showToast("Pick a group first.", false); return; }
+  try {
+    const r = await fetch(`/api/admin/mcp-sources/${encodeURIComponent(sourceId)}/grants`, {
+      method: "POST", credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ group_id: groupId }),
+    });
+    const body = await r.json().catch(() => ({}));
+    if (r.ok) {
+      // "granted 0 of 37" is not the same news as "granted 37 of 37", and
+      // both look like success without the counts.
+      const extra = body.already_granted ? ` (${body.already_granted} already granted)` : "";
+      // A grant does not reach a mutating tool — the passthrough gate refuses
+      // those for every non-admin regardless, so promising reach here would
+      // be false for exactly the tools an analyst would notice missing.
+      const gated = body.admin_only ? ` ${body.admin_only} are mutating and stay admin-only.` : "";
+      const off = body.skipped_disabled ? ` ${body.skipped_disabled} disabled tools were skipped.` : "";
+      showToast(`Granted ${body.granted} of ${body.total} tools${extra}.${gated}${off}`, true);
+    } else {
+      showToast("Failed: " + detailMessage(body, `HTTP ${r.status}`), false);
+    }
+  } catch (_) {
+    showToast("Request failed.", false);
+  }
 }
 
 async function toggleChatTools(id, isOn, resync) {
@@ -907,6 +1889,7 @@ async function toggleChatTools(id, isOn, resync) {
 
 async function toggleBrowse(id) {
   const panel = document.getElementById(`ds-browse-${id}`);
+  setSourceOpen(id, true);
   if (panel.classList.contains("show")) {
     panel.classList.remove("show");
     panel.innerHTML = "";
@@ -922,6 +1905,7 @@ async function toggleBrowse(id) {
       return;
     }
     panel.innerHTML = _scopeNote(data) + _renderBucketPicker(id, data.buckets || []);
+    _syncPicker(panel);
   } catch (e) {
     panel.innerHTML = `<div class="ds-browse-error">Request failed.</div>`;
   }
@@ -936,11 +1920,19 @@ function _scopeNote(data) {
     : "";
 }
 
+/* Buckets render CLOSED. On a real project this list is dozens of buckets and
+   hundreds of tables; open, it is a wall nobody can navigate, and the one
+   thing an admin always knows is which bucket they want. The exception is a
+   single-bucket project, where a closed accordion is a click that asks
+   nothing. */
 function _renderBucketPicker(connId, buckets) {
   if (!buckets.length) {
     return `<div class="ds-empty">No buckets/tables visible to this token.</div>`;
   }
+  const openByDefault = buckets.length === 1;
+  const totalTables = buckets.reduce((n, b) => n + ((b.tables || []).length), 0);
   const groups = buckets.map((b, bi) => {
+    const count = (b.tables || []).length;
     const rows = (b.tables || []).map((t, ti) => {
       // register-table stores bucket and the BARE in-bucket table name in
       // separate columns; the sync path re-composes `bucket.table`. Keboola's
@@ -951,7 +1943,7 @@ function _renderBucketPicker(connId, buckets) {
         ? t.id.slice(b.id.length + 1)
         : (t.name || t.id || "");
       return `
-      <div class="ds-table-row">
+      <div class="ds-table-row" data-search="${_esc((t.name || "").toLowerCase())}">
         <label>
           <input type="checkbox" class="ds-table-checkbox" data-conn="${connId}"
                  data-bucket="${_esc(b.id)}" data-table-id="${_esc(t.id)}" data-table-name="${_esc(t.name)}"
@@ -962,13 +1954,37 @@ function _renderBucketPicker(connId, buckets) {
         <span class="ds-table-status" id="ds-tstatus-${connId}-${bi}-${ti}"></span>
       </div>`;
     }).join("");
+    const label = b.name || b.id;
+    const panelId = `ds-bkt-${connId}-${bi}`;
     return `
-      <div class="ds-bucket-group">
-        <div class="ds-bucket-title">${_esc(b.name || b.id)} <span class="ds-bucket-stage">${_esc(b.stage || "")}</span></div>
-        ${rows || '<div class="ds-empty">No tables in this bucket.</div>'}
+      <div class="ds-bucket-group${openByDefault ? " is-open" : ""}"
+           data-bucket-group data-user-open="${openByDefault ? "1" : "0"}"
+           data-search="${_esc((label + " " + (b.id || "")).toLowerCase())}">
+        <div class="ds-bucket-hd">
+          <input type="checkbox" class="ds-bucket-check"
+                 aria-label="Select all ${count} table${count === 1 ? "" : "s"} in ${_esc(label)}">
+          <button type="button" class="ds-bucket-toggle" aria-expanded="${openByDefault}" aria-controls="${panelId}">
+            <span class="ds-bucket-caret" aria-hidden="true">▶</span>
+            <span class="ds-bucket-title">${_esc(label)}</span>
+            <span class="ds-bucket-stage">${_esc(b.stage || "")}</span>
+            <span class="ds-bucket-meta" data-bucket-meta>${count} table${count === 1 ? "" : "s"}</span>
+          </button>
+        </div>
+        <div class="ds-bucket-tables" id="${panelId}"${openByDefault ? "" : " hidden"}>
+          ${rows || '<div class="ds-empty">No tables in this bucket.</div>'}
+        </div>
       </div>`;
   }).join("");
   return `
+    <div class="ds-picker-bar">
+      <input type="search" class="ds-picker-search" data-picker-search
+             placeholder="Filter buckets and tables…" aria-label="Filter buckets and tables"
+             autocomplete="off" spellcheck="false">
+      <span class="ds-picker-count" data-picker-count aria-live="polite">0 of ${totalTables} selected</span>
+      <button type="button" class="ds-picker-link" data-picker-all>Select all</button>
+      <button type="button" class="ds-picker-link" data-picker-none disabled>Clear</button>
+      <button type="button" class="ds-picker-link" data-picker-expand>${openByDefault ? "Collapse all" : "Expand all"}</button>
+    </div>
     ${groups}
     <div class="ds-browse-actions">
       <button type="button" class="btn btn-primary" onclick="registerSelected('${connId}')">Register selected</button>
@@ -976,17 +1992,216 @@ function _renderBucketPicker(connId, buckets) {
     </div>`;
 }
 
-async function registerSelected(connId) {
+/* ── Picker interaction ───────────────────────────────────────────────────
+   One delegated set of handlers for BOTH places the picker renders: the
+   wizard's step 2 and a connection card's inline browse panel. `root` is
+   whichever of the two the event landed in, so the two never see each
+   other's checkboxes or counts.
+
+   Selection lives in the DOM (the checkboxes themselves), which is what
+   makes collapsing a bucket, filtering the list, or stepping back to this
+   screen from Bundle non-destructive: nothing is ever re-rendered, only
+   hidden. */
+
+const _pickerRoot = (el) =>
+  el.closest("#ds-wizard-tables-body") || el.closest(".ds-browse-panel");
+
+const _bucketBoxes = (group) => [...group.querySelectorAll(".ds-table-checkbox")];
+
+function _syncBucket(group) {
+  const boxes = _bucketBoxes(group);
+  const on = boxes.filter((b) => b.checked).length;
+  const head = group.querySelector(".ds-bucket-check");
+  if (head) {
+    head.checked = boxes.length > 0 && on === boxes.length;
+    head.indeterminate = on > 0 && on < boxes.length;
+  }
+  const meta = group.querySelector("[data-bucket-meta]");
+  if (meta) {
+    const n = boxes.length;
+    meta.innerHTML = on
+      ? `<span class="on">${on} selected</span> · ${n} table${n === 1 ? "" : "s"}`
+      : `${n} table${n === 1 ? "" : "s"}`;
+  }
+}
+
+function _syncPicker(root) {
+  if (!root) return;
+  const groups = [...root.querySelectorAll("[data-bucket-group]")];
+  groups.forEach(_syncBucket);
+  const boxes = [...root.querySelectorAll(".ds-table-checkbox")];
+  const selected = boxes.filter((b) => b.checked);
+  // A table selected but filtered out of view is still going to be
+  // registered — say so, rather than letting the filter imply otherwise.
+  const hidden = selected.filter((b) => b.closest(".ds-table-row").hidden).length;
+  const countEl = root.querySelector("[data-picker-count]");
+  if (countEl) {
+    countEl.innerHTML = `${selected.length} of ${boxes.length} selected` +
+      (hidden ? ` <span class="hid">(${hidden} hidden by the filter)</span>` : "");
+  }
+  const search = root.querySelector("[data-picker-search]");
+  const filtering = !!(search && search.value.trim());
+  const allBtn = root.querySelector("[data-picker-all]");
+  if (allBtn) {
+    const visible = boxes.filter((b) => !b.closest(".ds-table-row").hidden);
+    allBtn.textContent = filtering ? "Select matching" : "Select all";
+    allBtn.disabled = !visible.length || visible.every((b) => b.checked || b.disabled);
+  }
+  const noneBtn = root.querySelector("[data-picker-none]");
+  if (noneBtn) noneBtn.disabled = !selected.length;
+  const expandBtn = root.querySelector("[data-picker-expand]");
+  if (expandBtn) {
+    // Filtering opens buckets on its own — the label has to describe the list
+    // as it stands, not as it was left.
+    const shown = [...root.querySelectorAll("[data-bucket-group]:not([hidden])")];
+    expandBtn.textContent = shown.length && shown.every((g) => g.classList.contains("is-open"))
+      ? "Collapse all" : "Expand all";
+  }
+}
+
+function _setBucketOpen(group, open) {
+  group.classList.toggle("is-open", open);
+  const panel = group.querySelector(".ds-bucket-tables");
+  if (panel) panel.hidden = !open;
+  const toggle = group.querySelector(".ds-bucket-toggle");
+  if (toggle) toggle.setAttribute("aria-expanded", String(open));
+}
+
+/* Filtering matches a bucket by its own name/id and a table by its name; a
+   bucket that matches keeps ALL its tables (you asked for the bucket), one
+   that only contains matches shows just those. Matching buckets spring open
+   so the hit is visible, and clearing the filter puts every bucket back the
+   way the admin left it rather than the way the filter left it. */
+function _filterPicker(root, raw) {
+  const q = (raw || "").trim().toLowerCase();
+  for (const group of root.querySelectorAll("[data-bucket-group]")) {
+    const rows = [...group.querySelectorAll(".ds-table-row")];
+    if (!q) {
+      group.hidden = false;
+      rows.forEach((r) => { r.hidden = false; });
+      _setBucketOpen(group, group.dataset.userOpen === "1");
+      continue;
+    }
+    const bucketHit = (group.dataset.search || "").includes(q);
+    let hits = 0;
+    for (const row of rows) {
+      const hit = bucketHit || (row.dataset.search || "").includes(q);
+      row.hidden = !hit;
+      if (hit) hits++;
+    }
+    // An empty bucket has no rows to hit — matching its own name is the only
+    // way it can match at all, and hiding it would deny it exists.
+    group.hidden = hits === 0 && !bucketHit;
+    if (hits) _setBucketOpen(group, true);
+  }
+  _syncPicker(root);
+}
+
+document.addEventListener("click", (e) => {
+  const root = _pickerRoot(e.target);
+  if (!root) return;
+
+  const toggle = e.target.closest(".ds-bucket-toggle");
+  if (toggle) {
+    const group = toggle.closest("[data-bucket-group]");
+    const open = !group.classList.contains("is-open");
+    // Remembered so clearing the filter restores the admin's own layout.
+    group.dataset.userOpen = open ? "1" : "0";
+    _setBucketOpen(group, open);
+    _syncPicker(root);
+    return;
+  }
+
+  if (e.target.closest("[data-picker-expand]")) {
+    const groups = [...root.querySelectorAll("[data-bucket-group]:not([hidden])")];
+    const open = !groups.every((g) => g.classList.contains("is-open"));
+    groups.forEach((g) => { g.dataset.userOpen = open ? "1" : "0"; _setBucketOpen(g, open); });
+    _syncPicker(root);
+    return;
+  }
+
+  // Bulk gestures act on what is VISIBLE — with a filter on, "select all"
+  // meaning "including the 300 you filtered away" is a trap.
+  const all = e.target.closest("[data-picker-all]");
+  const none = e.target.closest("[data-picker-none]");
+  if (all || none) {
+    for (const box of root.querySelectorAll(".ds-table-checkbox")) {
+      if (box.disabled) continue;
+      if (all && box.closest(".ds-table-row").hidden) continue;
+      box.checked = !!all;
+    }
+    _syncPicker(root);
+  }
+});
+
+document.addEventListener("change", (e) => {
+  const root = _pickerRoot(e.target);
+  if (!root) return;
+  if (e.target.classList.contains("ds-bucket-check")) {
+    const group = e.target.closest("[data-bucket-group]");
+    const want = e.target.checked;
+    for (const box of _bucketBoxes(group)) {
+      // Already-registered rows are disabled; a bulk gesture must not appear
+      // to change them.
+      if (box.disabled || box.closest(".ds-table-row").hidden) continue;
+      box.checked = want;
+    }
+    _syncPicker(root);
+    return;
+  }
+  if (e.target.classList.contains("ds-table-checkbox")) _syncPicker(root);
+});
+
+document.addEventListener("input", (e) => {
+  if (!e.target.matches("[data-picker-search]")) return;
+  const root = _pickerRoot(e.target);
+  if (root) _filterPicker(root, e.target.value);
+});
+
+async function registerSelected(connId, errElId) {
+  // Returns {ok: [{id, name, bucket}], failed: n} — the wizard's Bundle step
+  // consumes the list; the standalone Browse&register path ignores it. The
+  // id is derived the way the server derives it (see register_table in
+  // app/api/admin.py: name → strip/lower/underscores), so the Bundle step can
+  // attach tables to packages without a second round-trip.
   const checked = document.querySelectorAll(
     `.ds-table-checkbox[data-conn="${connId}"]:checked`
   );
-  const errEl = document.getElementById(`ds-browse-error-${connId}`);
-  if (errEl) errEl.textContent = "";
+  // Two surfaces share this function — the wizard's step-2 list and the
+  // standalone Browse&register panel — and each has its own error line. It used
+  // to always write to the panel's `ds-browse-error-<conn>`, which in the
+  // wizard sits on the page BEHIND the open drawer: "select at least one table"
+  // was rendered somewhere the reader could not see, so the enabled primary
+  // button just did nothing. Only the caller knows which surface it is, so it
+  // names its own line; the id is still the panel's by default.
+  const errEl = document.getElementById(errElId || `ds-browse-error-${connId}`);
+  const showErr = (msg) => {
+    if (!errEl) return;
+    errEl.textContent = msg;
+    // "block", not "": `.ds-wizard-error` is display:none in CSS, so clearing
+    // the inline style would hand it straight back to that rule. Flex parents
+    // blockify their items, so this is a no-op for the browse panel's span.
+    errEl.style.display = msg ? "block" : "none";
+  };
+  showErr("");
   if (!checked.length) {
-    if (errEl) errEl.textContent = "Select at least one table.";
-    return;
+    showErr("Select at least one table.");
+    return { ok: [], failed: 0 };
   }
-  let okCount = 0, failCount = 0;
+  // Per-row "registering…/✗ failed" is the only account of what happened, and
+  // buckets are closed by default — open the ones being written to, and drop
+  // any filter, so the report is on screen while it is being written.
+  const root = _pickerRoot(checked[0]);
+  if (root) {
+    const search = root.querySelector("[data-picker-search]");
+    if (search && search.value) { search.value = ""; _filterPicker(root, ""); }
+    for (const cb of checked) {
+      const group = cb.closest("[data-bucket-group]");
+      if (group && !group.classList.contains("is-open")) _setBucketOpen(group, true);
+    }
+  }
+  const registered = [];
+  let okCount = 0, failCount = 0, alreadyCount = 0;
   for (const cb of checked) {
     const statusId = cb.closest(".ds-table-row").querySelector(".ds-table-status").id;
     const statusEl = document.getElementById(statusId);
@@ -1013,9 +2228,23 @@ async function registerSelected(connId) {
         statusEl.className = "ds-table-status ok";
         cb.disabled = true;
         okCount++;
+        registered.push({
+          id: (cb.dataset.tableName || "").trim().toLowerCase().replace(/ /g, "_"),
+          name: cb.dataset.tableName,
+          bucket: cb.dataset.bucket || "",
+        });
       } else if (r.status === 409) {
         statusEl.textContent = "already registered";
         statusEl.className = "ds-table-status ok";
+        // Already in the registry — still bundleable, so it rides along. Counted
+        // apart from okCount so the summary can say so: folded into neither, the
+        // toast read "0 table(s) registered." after a wholly successful step.
+        alreadyCount++;
+        registered.push({
+          id: (cb.dataset.tableName || "").trim().toLowerCase().replace(/ /g, "_"),
+          name: cb.dataset.tableName,
+          bucket: cb.dataset.bucket || "",
+        });
       } else {
         const body = await r.json().catch(() => ({}));
         statusEl.textContent = "✗ " + (body.detail || "failed");
@@ -1028,34 +2257,193 @@ async function registerSelected(connId) {
       failCount++;
     }
   }
+  if (root) _syncPicker(root);
+  // State each outcome that happened, and only those. A step where every table
+  // was already in the registry is a success, not a "0 registered" — the server
+  // says 409 and the rows say "already registered", so the summary must agree.
   if (failCount === 0) {
-    showToast(`${okCount} table(s) registered.`, true);
+    const parts = [];
+    if (okCount) parts.push(`${okCount} table(s) registered`);
+    if (alreadyCount) parts.push(`${alreadyCount} already registered`);
+    showToast(parts.length ? `${parts.join(" · ")}.` : "Nothing to register.", true);
   } else {
-    showToast(`${okCount} registered, ${failCount} failed. See per-row status.`, false);
+    const done = okCount + alreadyCount;
+    showToast(`${done} ready, ${failCount} failed. See per-row status.`, false);
   }
+  return { ok: registered, failed: failCount };
 }
 
-/* ── Wizard: Add Keboola project ─────────────────────────────────────────── */
+/* ── Wizard: Add data (connect → choose → bundle → share) ────────────────── */
 
 let _wizardConnId = null;
+let _wizardStep = 1;
+let _wizardMaxStep = 1;       // furthest step reached — what the strip lets you back into
+let _wizardDone = false;      // the receipt is up; the flow is no longer navigable
+let _wizardSource = "keboola"; // 'keboola' | 'bigquery' | 'csv' | 'jira'
+let _bqCredStatus = null;      // cached /api/admin/datasource-secrets read
+let _wizardTables = [];       // [{id, name, bucket}] registered in step 2
+let _wizardBoard = null;      // {trays: [{id, name, tables: [table]}], out: [table]}
+let _wizardTrayIdSeq = 0;
+let _wizardPackages = [];     // [{id, name, count}] created entering step 4
+let _wizardShares = null;     // {trayLocalId: [{group_id, name, tier}]}
+let _wizardGroups = null;     // cached /api/admin/groups
 
-function openWizard() {
+const _WIZ_STEP_PANES = {
+  1: "ds-wizard-step-connect",
+  2: "ds-wizard-step-tables",
+  3: "ds-wizard-step-bundle",
+  4: "ds-wizard-step-share",
+};
+// Footer buttons visible per step (Cancel is always there).
+const _WIZ_STEP_BUTTONS = {
+  1: ["ds-wizard-connect-btn"],
+  2: ["ds-wizard-finish-early-btn", "ds-wizard-register-btn"],
+  3: ["ds-wizard-bundle-btn"],
+  4: ["ds-wizard-skip-btn", "ds-wizard-share-btn"],
+};
+const _WIZ_ALL_BUTTONS = [
+  "ds-wizard-connect-btn", "ds-wizard-register-btn", "ds-wizard-bundle-btn",
+  "ds-wizard-share-btn", "ds-wizard-skip-btn", "ds-wizard-finish-early-btn",
+  "ds-wizard-done-btn",
+];
+
+function _setWizStep(step) {
+  _wizardStep = step;
+  // The furthest the flow has ever reached — NOT the current step. Stepping
+  // back to Connect must not un-earn Bundle, or "go back and fix one thing"
+  // would cost the admin the three screens they had already filled in.
+  _wizardMaxStep = Math.max(_wizardMaxStep, step);
+  for (const [n, paneId] of Object.entries(_WIZ_STEP_PANES)) {
+    document.getElementById(paneId).classList.toggle("active", Number(n) === step);
+  }
+  document.querySelectorAll("#ds-wizard-overlay .ds-drawer__step").forEach((el) => {
+    const n = Number(el.dataset.wstep);
+    el.classList.toggle("is-now", n === step);
+    el.classList.toggle("is-done", n <= _wizardMaxStep && n !== step);
+    // Reachable = already visited. The last screen is a receipt for work that
+    // has landed, so from there the strip stops being a way back.
+    el.disabled = _wizardDone || n > _wizardMaxStep;
+    el.setAttribute("aria-current", n === step ? "step" : "false");
+  });
+  for (const id of _WIZ_ALL_BUTTONS) {
+    document.getElementById(id).style.display =
+      (_WIZ_STEP_BUTTONS[step] || []).includes(id) ? "" : "none";
+  }
+  // The board is seeded BEFORE the step switches (see the register handler),
+  // and the CTA count only recomputes on a live step-3 render — so entering
+  // the step is the moment the label must catch up.
+  if (step === 3) _updateBundleCta();
+  // Each step starts at its own top. The drawer's BODY is the scroll
+  // container (its head, steps strip and actions row never scroll), so
+  // this is the element to reset — the panel itself does not scroll.
+  const body = document.querySelector("#ds-wizard-overlay .ds-drawer__body");
+  if (body) body.scrollTop = 0;
+}
+
+function _setWizSource(src) {
+  _wizardSource = src;
+  document.querySelectorAll("[data-wsrc]").forEach((o) => o.classList.toggle("on", o.dataset.wsrc === src));
+  document.querySelectorAll("[data-wsrcform]").forEach((f) => { f.hidden = f.dataset.wsrcform !== src; });
+  const connectBtn = document.getElementById("ds-wizard-connect-btn");
+  if (src === "keboola") {
+    connectBtn.style.display = _wizardStep === 1 ? "" : "none";
+    connectBtn.textContent = "Connect & validate";
+  } else if (src === "bigquery") {
+    connectBtn.style.display = _wizardStep === 1 ? "" : "none";
+    connectBtn.textContent = "Continue";
+    _loadBqCredStatus();
+  } else {
+    // csv / jira are guidance, not forms — nothing to submit.
+    connectBtn.style.display = "none";
+  }
+  document.getElementById("ds-wizard-error").style.display = "none";
+}
+
+async function _loadBqCredStatus() {
+  const host = document.getElementById("ds-bqcred");
+  if (_bqCredStatus) return; // already rendered this open
+  try {
+    const r = await fetch("/api/admin/datasource-secrets", { credentials: "include" });
+    const data = r.ok ? await r.json() : { secrets: [] };
+    const row = (data.secrets || []).find((s) => s.name === "BIGQUERY_SERVICE_ACCOUNT_JSON");
+    _bqCredStatus = row || { source: "unset", has_value: false };
+  } catch (e) {
+    _bqCredStatus = { source: "unset", has_value: false };
+  }
+  host.innerHTML = _bqCredStatus.has_value
+    ? `<span class="ds-badge ${_bqCredStatus.source === "env" ? "badge-env" : "badge-vault"}">service account · ${_esc(_bqCredStatus.source)}</span>`
+    : `<span class="ds-badge badge-unset">not set</span>
+       <span style="font-size:12px; color:var(--ds-accent-warn-ink);">Set <code>BIGQUERY_SERVICE_ACCOUNT_JSON</code> in
+       <a href="/admin/datasource-credentials">Instance secrets</a> first — registering works, but nothing can query until it's there.</span>`;
+}
+
+/* `connector` preselects step 1's picker. A card's "Add tables…" knows which
+   connector it is, so landing the admin on Keboola's form when they pressed
+   it on the BigQuery card would make them undo a choice they already made. */
+function openWizard(connector) {
   _wizardConnId = null;
+  _wizardTables = [];
+  _wizardBoard = null;
+  _wizardPackages = [];
+  _wizardShares = null;
+  _bqCredStatus = null;
+  _wizardMaxStep = 1;
+  _wizardDone = false;
   document.getElementById("ds-new-name").value = "";
   document.getElementById("ds-new-stack").value = "";
   document.getElementById("ds-new-token").value = "";
+  document.getElementById("ds-new-semantic").checked = false;
+  document.getElementById("ds-new-master").value = "";
+  document.querySelector(".ds-wsl-opt__field").hidden = true;
   document.getElementById("ds-wizard-error").style.display = "none";
-  document.getElementById("ds-wizard-step-connect").classList.add("active");
-  document.getElementById("ds-wizard-step-tables").classList.remove("active");
-  document.getElementById("ds-wizard-connect-btn").style.display = "";
-  document.getElementById("ds-wizard-register-btn").style.display = "none";
-  document.getElementById("ds-wizard-done-btn").style.display = "none";
+  const share = document.getElementById("ds-wizard-step-share");
+  share.querySelector(".ds-wshare").style.display = "";
+  share.querySelector(".ds-wdone").style.display = "none";
+  // Existing-source shortcut: offer already-connected projects for "add
+  // more tables from ..." — the wizard is not only for new connections.
+  // STORED connections only: the derived cards (BigQuery, Jira, files) have
+  // no connection to browse, and offering them here would open a table
+  // picker against an id the API has never heard of.
+  const existing = document.getElementById("ds-wexisting");
+  const orRule = document.getElementById("ds-wor");
+  const browsable = _connections.filter((c) => !c.derived && c.source_type === "keboola");
+  if (browsable.length) {
+    // The option carries what the project already holds. "Keboola AI" alone
+    // does not say whether picking it is worth anything; "· 3 tables" does,
+    // and it is the number the card behind the drawer is showing anyway.
+    document.getElementById("ds-wexisting-select").innerHTML = browsable
+      .map((c) => {
+        const n = ((SOURCE_PIPELINES[c.id] || {}).tables || {}).count || 0;
+        const held = n ? ` · ${n} table${n === 1 ? "" : "s"}` : " · no tables yet";
+        return `<option value="${_esc(c.id)}">${_esc(c.name || c.id)}${held}</option>`;
+      })
+      .join("");
+    document.getElementById("ds-wexisting-copy").textContent = browsable.length === 1
+      ? "Go straight to its tables — no URL, no token to paste again."
+      : `Pick one of your ${browsable.length} connected projects and go straight to its tables.`;
+    existing.hidden = false;
+    orRule.hidden = false;
+  } else {
+    existing.hidden = true;
+    orRule.hidden = true;
+  }
+  _setWizStep(1);
+  _setWizSource(connector ? _connector(connector).wizard : "keboola");
   document.getElementById("ds-wizard-overlay").classList.add("show");
-  document.getElementById("ds-new-name").focus();
+  // The page behind a drawer must not scroll under it — a wheel over the
+  // backdrop otherwise moves the sources list, which reads as the drawer
+  // drifting.
+  document.body.style.overflow = "hidden";
+  // preventScroll: the drawer body is its own scroll container, and a plain
+  // focus() scrolls the name field into view — pushing the steps strip and
+  // the connector picker out of the top of the drawer before anyone sees them.
+  document.getElementById("ds-new-name").focus({ preventScroll: true });
+  document.querySelector("#ds-wizard-overlay .ds-drawer__body").scrollTop = 0;
 }
 
 function closeWizard() {
   document.getElementById("ds-wizard-overlay").classList.remove("show");
+  document.body.style.overflow = "";
 }
 
 async function connectAndValidate() {
@@ -1184,12 +2572,34 @@ async function connectAndValidate() {
       banner.innerHTML = `✓ Connected — ${_esc(name || projectName)}.`;
     }
 
-    // 5. Move to step 2 and load buckets/tables.
-    document.getElementById("ds-wizard-step-connect").classList.remove("active");
-    document.getElementById("ds-wizard-step-tables").classList.add("active");
-    document.getElementById("ds-wizard-connect-btn").style.display = "none";
-    document.getElementById("ds-wizard-register-btn").style.display = "";
-    document.getElementById("ds-wizard-done-btn").style.display = "";
+    // 5. Semantic-layer opt-in: store the owner token in its own vault slot.
+    //    NON-FATAL — the connection and tables are already good, and the
+    //    Data sources page's missing/mismatched-token warnings catch a
+    //    failure here later; the banner says what happened either way.
+    if (document.getElementById("ds-new-semantic").checked) {
+      const masterToken = document.getElementById("ds-new-master").value.trim();
+      if (masterToken) {
+        const mResp = await fetch(`${API_CONNECTIONS}/${connId}/secret`, {
+          method: "PUT", credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ value: masterToken, kind: "master" }),
+        });
+        if (mResp.ok || mResp.status === 204) {
+          banner.innerHTML += ` Semantic layer enabled — metrics & glossary will sync.`;
+        } else {
+          const mb = await mResp.json().catch(() => ({}));
+          const md = mb.detail;
+          banner.innerHTML += ` <span style="color:var(--ds-accent-warn-ink)">Semantic-layer token was refused (` +
+            _esc((md && typeof md === "object" ? (md.message || md.error) : md) || `HTTP ${mResp.status}`) +
+            `) — tables still work; set it later on this connection's card.</span>`;
+        }
+      } else {
+        banner.innerHTML += ` <span style="color:var(--ds-accent-warn-ink)">No owner token pasted — semantic layer skipped; set it later on this connection's card.</span>`;
+      }
+    }
+
+    // 6. Move to step 2 and load buckets/tables.
+    _setWizStep(2);
     await _loadWizardTables(connId);
   } finally {
     btn.disabled = false;
@@ -1220,6 +2630,7 @@ async function _loadWizardTables(connId) {
     // modal's footer button — hide it here to avoid two triggers.
     const inlineBtn = body.querySelector(".ds-browse-actions .btn-primary");
     if (inlineBtn) inlineBtn.style.display = "none";
+    _syncPicker(body);
   } catch (e) {
     body.innerHTML = `<div class="ds-browse-error">Request failed.</div>`;
   }
@@ -1230,24 +2641,687 @@ function finishWizard() {
   loadConnections();
 }
 
+/* ── Step 2 (BigQuery): manual rows editor ────────────────────────────────
+   BigQuery has no bucket browser — datasets are named, not listed (the
+   service account may see thousands). Each filled row registers as a LIVE
+   query (query_mode='remote', cost-guarded); saved queries and partitioning
+   keep their full editor on /admin/tables. */
+
+function _renderBqRowsEditor() {
+  const body = document.getElementById("ds-wizard-tables-body");
+  document.getElementById("ds-wizard-connected-banner").innerHTML =
+    "Name the BigQuery tables to register — dataset and table, one per row.";
+  body.innerHTML = `
+    <div id="ds-bqrows">
+      ${_bqRowHtml()}${_bqRowHtml()}${_bqRowHtml()}
+    </div>
+    <button type="button" class="btn btn-secondary" id="ds-bqrow-add">＋ Add another table</button>
+    <div class="ds-browse-error" id="ds-bq-rows-error" style="display:block; margin-top:8px;"></div>`;
+  body.querySelector("#ds-bqrow-add").addEventListener("click", () => {
+    body.querySelector("#ds-bqrows").insertAdjacentHTML("beforeend", _bqRowHtml());
+  });
+}
+
+function _bqRowHtml() {
+  return `
+  <div class="ds-bqrow">
+    <input type="text" data-bq-dataset placeholder="dataset (e.g. analytics)" autocomplete="off" spellcheck="false">
+    <input type="text" data-bq-table placeholder="table (e.g. events_raw)" autocomplete="off" spellcheck="false">
+    <span class="ds-table-status"></span>
+  </div>`;
+}
+
+async function _registerBqRows() {
+  const rows = [...document.querySelectorAll("#ds-bqrows .ds-bqrow")]
+    .map((row) => ({
+      row,
+      dataset: row.querySelector("[data-bq-dataset]").value.trim(),
+      table: row.querySelector("[data-bq-table]").value.trim(),
+      statusEl: row.querySelector(".ds-table-status"),
+    }))
+    .filter((r) => r.dataset || r.table);
+  const errEl = document.getElementById("ds-bq-rows-error");
+  errEl.textContent = "";
+  if (!rows.length) {
+    errEl.textContent = "Fill in at least one dataset + table row.";
+    return { ok: [], failed: 0 };
+  }
+  const registered = [];
+  let failed = 0;
+  for (const r of rows) {
+    if (!r.dataset || !r.table) {
+      r.statusEl.textContent = "✗ needs both dataset and table";
+      r.statusEl.className = "ds-table-status fail";
+      failed++;
+      continue;
+    }
+    r.statusEl.textContent = "registering…";
+    r.statusEl.className = "ds-table-status";
+    try {
+      const resp = await fetch(API_REGISTER_TABLE, {
+        method: "POST", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: r.table,
+          source_type: "bigquery",
+          bucket: r.dataset,
+          source_table: r.table,
+          query_mode: "remote",
+          description: "Added via the Add-data wizard",
+        }),
+      });
+      if (resp.ok || resp.status === 201 || resp.status === 409) {
+        r.statusEl.textContent = resp.status === 409 ? "already registered" : "✓ registered";
+        r.statusEl.className = "ds-table-status ok";
+        registered.push({
+          id: r.table.trim().toLowerCase().replace(/ /g, "_"),
+          name: r.table,
+          bucket: r.dataset,
+        });
+      } else {
+        const b = await resp.json().catch(() => ({}));
+        r.statusEl.textContent = "✗ " + _esc(typeof b.detail === "string" ? b.detail : "failed");
+        r.statusEl.className = "ds-table-status fail";
+        failed++;
+      }
+    } catch (e) {
+      r.statusEl.textContent = "✗ request failed";
+      r.statusEl.className = "ds-table-status fail";
+      failed++;
+    }
+  }
+  return { ok: registered, failed };
+}
+
+// One entry point for step 2's "register whatever this source selected".
+async function _registerStepTwo() {
+  if (_wizardSource === "bigquery") return _registerBqRows();
+  if (!_wizardConnId) return { ok: [], failed: 0 };
+  // Step 2's own error line — the browse panel's sits on the page behind the
+  // drawer, and `#ds-wizard-error` belongs to the connect step's pane.
+  return registerSelected(_wizardConnId, "ds-tables-error");
+}
+
+/* ── Step 3: the bundle board ─────────────────────────────────────────────
+   Arrange the just-registered tables into packages. Seeds (one package /
+   split by bucket) are one-click STARTING POINTS, not modes — everything is
+   editable after: tick tables → move bar, inline rename, ＋ New package, and
+   a warn-styled "Leave out" tray whose tables land in the standing
+   unpackaged tray on /admin/data-packages rather than vanishing. */
+
+function _seedBoard(kind) {
+  _wizardTrayIdSeq = 0;
+  if (kind === "bucket") {
+    const byBucket = new Map();
+    for (const t of _wizardTables) {
+      if (!byBucket.has(t.bucket)) byBucket.set(t.bucket, []);
+      byBucket.get(t.bucket).push(t);
+    }
+    _wizardBoard = {
+      trays: [...byBucket.entries()].map(([bucket, tables]) => ({
+        id: "t" + (++_wizardTrayIdSeq),
+        // `in.c-sales` → "Sales" — a starting name, editable inline.
+        name: (bucket.split(".").pop() || bucket || "Package")
+          .replace(/^c-/, "").replace(/[-_]+/g, " ")
+          .replace(/\b\w/g, (c) => c.toUpperCase()) || "Package",
+        tables: tables.slice(),
+      })),
+      out: [],
+    };
+  } else {
+    const conn = _connections.find((c) => c.id === _wizardConnId);
+    _wizardBoard = {
+      trays: [{
+        id: "t" + (++_wizardTrayIdSeq),
+        name: (conn && conn.name) ? conn.name : "New package",
+        tables: _wizardTables.slice(),
+      }],
+      out: [],
+    };
+  }
+  _renderBoard();
+}
+
+/* A tray that has already become a real package is FROZEN here: its name is
+   read-only and its tables cannot be ticked or moved. Coming back to Bundle
+   after Share must not be able to re-create the same package, and pretending
+   a rename or a move on this board still reaches a package that now lives in
+   the registry would be a lie. Renames, merges and splits belong to
+   /admin/data-packages from that point on — which the lede already says. */
+function _renderBoard() {
+  const trayHtml = (tray, out) => `
+    <div class="ds-btray ${out ? "out" : ""}${tray.committed ? " is-created" : ""}" data-tray="${tray.id}">
+      <div class="ds-btray-hd">
+        ${out
+          ? '<b style="font-size:13px;">Leave out</b>'
+          : `<input class="ds-tray-name" value="${_esc(tray.name)}" aria-label="Package name"${tray.committed ? " readonly" : ""}>`}
+        <span class="cnt">${tray.tables.length} table${tray.tables.length === 1 ? "" : "s"}</span>
+        ${tray.committed ? '<span class="ds-tray-created" title="Already created — rename, merge or split it on Data packages.">✓ created</span>' : ""}
+        ${out ? '<span class="cnt" style="margin-left:auto; font-weight:500;">they wait in the unpackaged tray — nobody can pull them until packaged</span>' : ""}
+      </div>
+      ${tray.tables.map((t) => `
+        <div class="ds-btray-row">
+          <input type="checkbox" class="ds-bt-check" data-table="${_esc(t.id)}" aria-label="Select ${_esc(t.name)}"${tray.committed ? " disabled" : ""}>
+          <b>${_esc(t.name)}</b> <span class="bkt">${_esc(t.bucket)}</span>
+        </div>`).join("")}
+      ${tray.tables.length ? "" : '<div class="ds-btray-empty">Empty — tick tables anywhere and move them here.</div>'}
+    </div>`;
+  const frozen = _wizardBoard.trays.some((t) => t.committed);
+  document.getElementById("ds-bundle-board").innerHTML =
+    (frozen
+      ? `<div class="ds-scope-note">The ticked packages already exist. Rename, merge or split them on
+         <a href="/admin/data-packages">Data packages</a> — here you can still bundle anything new you add.</div>`
+      : "") +
+    _wizardBoard.trays.map((t) => trayHtml(t, false)).join("") +
+    (_wizardBoard.out.length ? trayHtml({ id: "out", tables: _wizardBoard.out }, true) : "");
+  // A seed rebuilds the whole board from scratch, which would silently drop
+  // trays that are already packages — it is a starting point, and there is no
+  // longer a start to go back to.
+  document.querySelectorAll("#ds-wizard-step-bundle [data-wseed]").forEach((el) => {
+    el.disabled = frozen;
+    el.title = frozen ? "Packages have already been created — start over from Data packages." : "";
+  });
+  _updateMovebar();
+  _updateBundleCta();
+}
+
+const _selectedBoardTables = () =>
+  [...document.querySelectorAll(".ds-bt-check:checked")].map((c) => c.dataset.table);
+
+function _updateMovebar() {
+  const sel = _selectedBoardTables();
+  const bar = document.getElementById("ds-movebar");
+  bar.hidden = sel.length === 0;
+  if (!sel.length) return;
+  document.getElementById("ds-movebar-label").textContent = sel.length + " selected";
+  document.getElementById("ds-movebar-targets").innerHTML =
+    // Created packages are not move targets: the package already exists with
+    // the tables it was created from, and this board can no longer add to it.
+    _wizardBoard.trays.filter((t) => !t.committed)
+      .map((t) => `<button type="button" class="btn btn-secondary" data-wmove="${t.id}">${_esc(t.name)}</button>`).join("") +
+    '<button type="button" class="btn btn-secondary" data-wmove="out">Leave out</button>' +
+    '<button type="button" class="btn btn-secondary" data-wmove="__new">＋ New package</button>';
+}
+
+function _moveSelected(target) {
+  const sel = new Set(_selectedBoardTables());
+  if (!sel.size) return;
+  const moved = [];
+  for (const tray of _wizardBoard.trays) {
+    tray.tables = tray.tables.filter((t) => (sel.has(t.id) ? (moved.push(t), false) : true));
+  }
+  _wizardBoard.out = _wizardBoard.out.filter((t) => (sel.has(t.id) ? (moved.push(t), false) : true));
+  if (target === "__new") {
+    _wizardBoard.trays.push({ id: "t" + (++_wizardTrayIdSeq), name: "New package", tables: moved });
+  } else if (target === "out") {
+    _wizardBoard.out.push(...moved);
+  } else {
+    const tray = _wizardBoard.trays.find((t) => t.id === target);
+    if (tray) tray.tables.push(...moved);
+  }
+  _renderBoard();
+}
+
+function _updateBundleCta() {
+  if (_wizardStep !== 3 || !_wizardBoard) return;
+  const pending = _wizardBoard.trays.filter((t) => t.tables.length && !t.committed).length;
+  const btn = document.getElementById("ds-wizard-bundle-btn");
+  if (!pending && _wizardPackages.length) {
+    // Stepped back into a Bundle whose packages already exist and were not
+    // changed — the button is a way forward, not a second creation.
+    btn.textContent = "Back to sharing";
+  } else {
+    btn.textContent = pending === 0
+      ? "Continue (no packages)"
+      : `Create ${pending} package${pending === 1 ? "" : "s"} & continue`;
+  }
+}
+
+const _slugify = (name) =>
+  name.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "package";
+
+async function _createPackagesAndContinue() {
+  const btn = document.getElementById("ds-wizard-bundle-btn");
+  btn.disabled = true;
+  try {
+    // Only trays that are not already packages — re-entering this step from
+    // the strip must move on, not mint a duplicate of everything on it.
+    for (const tray of _wizardBoard.trays.filter((t) => t.tables.length && !t.committed)) {
+      let slug = _slugify(tray.name);
+      let resp = await fetch("/api/admin/data-packages", {
+        method: "POST", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: tray.name.trim() || "Package", slug }),
+      });
+      if (resp.status === 409) {
+        // slug_exists — suffix and retry once rather than failing the flow.
+        slug = `${slug}-${Date.now() % 10000}`;
+        resp = await fetch("/api/admin/data-packages", {
+          method: "POST", credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: tray.name.trim() || "Package", slug }),
+        });
+      }
+      if (!resp.ok) {
+        const b = await resp.json().catch(() => ({}));
+        showToast(`Could not create "${tray.name}": ${b.detail || resp.status}`, false);
+        return; // stop on the failing tray; already-created packages stand
+      }
+      const pkgId = (await resp.json()).id;
+      let attached = 0;
+      for (const t of tray.tables) {
+        const ar = await fetch(`/api/admin/data-packages/${encodeURIComponent(pkgId)}/tables`, {
+          method: "POST", credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ table_id: t.id }),
+        });
+        if (ar.ok) attached++;
+        else showToast(`"${t.name}" could not be added to ${tray.name} — attach it later from the package.`, false);
+      }
+      tray.committed = pkgId;
+      _wizardPackages.push({ id: pkgId, localId: tray.id, name: tray.name, count: attached });
+    }
+    _renderBoard();
+    _setWizStep(4);
+    await _renderShareStep();
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+/* ── Step 4: share — one card per created package, same grant rows as the
+   group-side matrix; entirely skippable because unshared packages warn on
+   Overview and on /admin/data-packages. ── */
+
+async function _renderShareStep() {
+  const host = document.getElementById("ds-share-cards");
+  if (!_wizardGroups) {
+    try {
+      const r = await fetch("/api/admin/groups", { credentials: "include" });
+      _wizardGroups = r.ok ? await r.json() : [];
+    } catch (e) { _wizardGroups = []; }
+  }
+  if (!_wizardShares) {
+    _wizardShares = {};
+    for (const p of _wizardPackages) _wizardShares[p.localId] = [];
+  }
+  if (!_wizardPackages.length) {
+    host.innerHTML = '<div class="ds-empty">No packages were created — the tables wait in the unpackaged tray on Data packages.</div>';
+    return;
+  }
+  const card = (p) => {
+    const shares = _wizardShares[p.localId] || [];
+    const row = (g) => {
+      const share = shares.find((s) => s.group_id === g.id);
+      const everyone = g.is_system && g.name === "Everyone";
+      return `
+      <div class="ds-wshare-row" data-pkg="${_esc(p.localId)}" data-group="${_esc(g.id)}">
+        <input type="checkbox" ${share ? "checked" : ""} aria-label="Share ${_esc(p.name)} with ${_esc(g.name)}">
+        <div>
+          <div class="g-name">${_esc(g.name)}</div>
+          <div class="g-sub ${everyone ? "everyone" : ""}">${everyone
+            ? "the whole company — every account, automatically"
+            : `${g.member_count ?? 0} member${(g.member_count ?? 0) === 1 ? "" : "s"}`}</div>
+        </div>
+        <div class="ds-wtier" ${share ? "" : 'aria-disabled="true"'} role="group" aria-label="Access tier">
+          <button type="button" data-wtier="available" class="${share && share.tier === "available" ? "on" : ""}" title="available">Optional</button>
+          <button type="button" data-wtier="required" class="${share && share.tier === "required" ? "on auto" : ""}" title="required">Automatic</button>
+        </div>
+      </div>`;
+    };
+    return `
+    <div class="ds-wshare-card">
+      <div class="ds-wshare-card__hd"><b>${_esc(p.name)}</b><span class="m">${p.count} table${p.count === 1 ? "" : "s"}</span></div>
+      ${_wizardGroups.map(row).join("") || '<div class="ds-btray-empty">No groups on this instance yet.</div>'}
+    </div>`;
+  };
+  host.innerHTML = _wizardPackages.map(card).join("");
+}
+
+async function _shareAndFinish() {
+  const btn = document.getElementById("ds-wizard-share-btn");
+  const errEl = document.getElementById("ds-share-error");
+  errEl.style.display = "none";
+  btn.disabled = true;
+  try {
+    const failures = [];
+    for (const p of _wizardPackages) {
+      for (const s of _wizardShares[p.localId] || []) {
+        const r = await fetch("/api/admin/grants", {
+          method: "POST", credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            group_id: s.group_id, resource_type: "data_package",
+            resource_id: p.id, requirement: s.tier,
+          }),
+        });
+        if (!r.ok && r.status !== 409) failures.push(`${p.name} → ${s.name}`);
+      }
+    }
+    if (failures.length) {
+      errEl.textContent = "Some grants could not be written: " + failures.join(", ") +
+        ". Finish anyway — they stay editable from the package's Share editor.";
+      errEl.style.display = "block";
+    }
+    _showDoneSlab();
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function _showDoneSlab() {
+  const lines = _wizardPackages.map((p) => {
+    const shares = _wizardShares[p.localId] || [];
+    if (!shares.length) {
+      return `<li><b>${_esc(p.name)}</b> — created, shared with nobody yet. It waits on the Overview.</li>`;
+    }
+    const det = shares.map((s) => `${_esc(s.name)} <span style="color:var(--ds-text-muted)">(${s.tier === "required" ? "automatic" : "optional"})</span>`).join(", ");
+    return `<li><b>${_esc(p.name)}</b> — shared with ${det}.</li>`;
+  });
+  if (_wizardBoard && _wizardBoard.out.length) {
+    lines.push(`<li><b>${_wizardBoard.out.length} table${_wizardBoard.out.length === 1 ? "" : "s"}</b> left unpackaged — see the tray on Data packages.</li>`);
+  }
+  const shared = _wizardPackages.filter((p) => (_wizardShares[p.localId] || []).length).length;
+  document.getElementById("ds-wdone-slab").innerHTML = `
+    <div class="big">✓</div>
+    <h3>${_wizardPackages.length} package${_wizardPackages.length === 1 ? "" : "s"} created${shared ? ` · ${shared} shared` : ""}</h3>
+    <ul>${lines.join("")}</ul>
+    <a class="btn btn-secondary" href="/admin/data-packages">Open Data packages</a>
+    <button type="button" class="btn btn-primary" id="ds-wdone-close">Done</button>`;
+  const share = document.getElementById("ds-wizard-step-share");
+  share.querySelector(".ds-wshare").style.display = "none";
+  share.querySelector(".ds-wdone").style.display = "";
+  // The receipt is the end of the flow — the strip stops offering a way back
+  // into screens whose work has already landed in the registry.
+  _wizardDone = true;
+  document.querySelectorAll("#ds-wizard-overlay .ds-drawer__step").forEach((el) => {
+    el.disabled = true;
+    el.classList.add("is-done");
+    el.classList.remove("is-now");
+  });
+  for (const id of _WIZ_ALL_BUTTONS) document.getElementById(id).style.display = "none";
+  document.getElementById("ds-wdone-close").addEventListener("click", finishWizard);
+}
+
+/* ── Disclosure: the card's settings body ──────────────────────────────────
+   The caret button is the ONE control for assistive tech and the keyboard —
+   it carries `aria-expanded` and `aria-controls`. The head also toggles on a
+   plain mouse click, because a 60px-tall row that opens something should open
+   it wherever you hit it, but that convenience never becomes the only path:
+   clicks that land on a real control inside the head (Actions, the caret
+   itself) are left alone. */
+function setSourceOpen(id, open) {
+  const body = document.getElementById(`ds-body-${id}`);
+  const caret = document.querySelector(`[data-disclose="${CSS.escape(id)}"]`);
+  if (!body || !caret) return;
+  body.hidden = !open;
+  caret.setAttribute("aria-expanded", open ? "true" : "false");
+}
+function isSourceOpen(id) {
+  const body = document.getElementById(`ds-body-${id}`);
+  return !!body && !body.hidden;
+}
+
+document.getElementById("ds-conn-list").addEventListener("click", (e) => {
+  const caret = e.target.closest("[data-disclose]");
+  if (caret) {
+    setSourceOpen(caret.dataset.disclose, !isSourceOpen(caret.dataset.disclose));
+    return;
+  }
+  const menuBtn = e.target.closest("[data-srcmenu]");
+  if (menuBtn) { e.stopPropagation(); toggleSourceMenu(menuBtn); return; }
+  const head = e.target.closest("[data-src-head]");
+  // Anything interactive inside the head keeps its own meaning.
+  if (head && !e.target.closest("a, button, input, select")) {
+    setSourceOpen(head.dataset.srcHead, !isSourceOpen(head.dataset.srcHead));
+  }
+});
+
+/* ── The Actions menu ──────────────────────────────────────────────────────
+   ONE popover node for the whole list, refilled and repositioned per card.
+   Its contents are per-connector: a source this page OWNS gets the verbs, a
+   source it merely reports on gets the routes to where it is really managed
+   plus a line saying so — never a disabled item, which tells the reader what
+   they cannot do without telling them what they can.
+
+   The dividers are the ranking. Group one is what an admin does weekly (add
+   tables, test); group two is credentials; group three is this-project-wide
+   state; `Delete` sits alone at the bottom, out of reach of momentum. */
+const _srcMenu = () => document.getElementById("ds-src-menu");
+
+function closeSourceMenu() {
+  const menu = _srcMenu();
+  if (!menu || menu.hidden) return;
+  menu.hidden = true;
+  menu.innerHTML = "";
+  document.querySelectorAll("[data-srcmenu][aria-expanded='true']")
+    .forEach((b) => b.setAttribute("aria-expanded", "false"));
+}
+
+function _sourceMenuItems(row) {
+  const id = row.id;
+  const name = _esc(row.name || "");
+  if (row.derived) {
+    return `
+      <button type="button" class="apg-menu__item" role="menuitem" onclick="closeSourceMenu(); openWizard('${_esc(row.source_type)}')">Add tables…</button>
+      <a class="apg-menu__item" role="menuitem" href="/admin/tables">Open its tables</a>
+      <div class="apg-menu__sep"></div>
+      <a class="apg-menu__item" role="menuitem" href="${_esc(row.settings_href || "/admin")}">${_esc(row.settings_label || "Settings")} <span class="note">→</span></a>
+      <p class="apg-menu__note">${name} keeps no stored connection — its credentials and settings live where the link above goes.</p>`;
+  }
+  const isDefault = row.is_default === true || row.is_default === 1;
+  const hasMaster = row.has_master_secret === true;
+  const chatOn = row.has_chat_tools === true;
+  return `
+    <button type="button" class="apg-menu__item" role="menuitem" onclick="closeSourceMenu(); toggleBrowse('${id}')">Add tables…</button>
+    <button type="button" class="apg-menu__item" role="menuitem" data-role="test" onclick="closeSourceMenu(); testConn('${id}')">Test connection</button>
+    <div class="apg-menu__sep"></div>
+    <button type="button" class="apg-menu__item" role="menuitem" onclick="closeSourceMenu(); toggleRotate('${id}')">Rotate storage token</button>
+    <button type="button" class="apg-menu__item" role="menuitem" onclick="closeSourceMenu(); toggleMasterToken('${id}')">Semantic-layer token <span class="note">${hasMaster ? "set" : "not set"}</span></button>
+    <button type="button" class="apg-menu__item" role="menuitem" onclick="closeSourceMenu(); toggleChatTools('${id}', ${chatOn ? "true" : "false"})">${chatOn ? "Turn off chat tools" : "Turn on chat tools"} <span class="note">${chatOn ? "on" : "off"}</span></button>
+    ${isDefault ? "" : `
+    <div class="apg-menu__sep"></div>
+    <button type="button" class="apg-menu__item" role="menuitem" onclick="closeSourceMenu(); setDefaultConn('${id}')">Make default project</button>`}
+    <div class="apg-menu__sep"></div>
+    <button type="button" class="apg-menu__item apg-menu__item--danger" role="menuitem" onclick="closeSourceMenu(); deleteConn('${id}')">Delete source</button>`;
+}
+
+function toggleSourceMenu(btn) {
+  const wasOpen = btn.getAttribute("aria-expanded") === "true";
+  closeSourceMenu();
+  if (wasOpen) return;
+  const row = _connections.find((c) => c.id === btn.dataset.srcmenu);
+  if (!row) return;
+
+  const menu = _srcMenu();
+  menu.setAttribute("aria-label", `Actions for ${_esc(row.name || row.id)}`);
+  menu.innerHTML = _sourceMenuItems(row);
+  menu.hidden = false;
+  btn.setAttribute("aria-expanded", "true");
+
+  // Right-aligned to the trigger, flipping above it when the viewport below
+  // is too short — the menu is `position: fixed`, so it is the viewport it
+  // has to fit in, not the card.
+  const r = btn.getBoundingClientRect();
+  const w = menu.offsetWidth, h = menu.offsetHeight;
+  menu.style.left = `${Math.max(8, Math.min(r.right - w, window.innerWidth - w - 8))}px`;
+  menu.style.top = r.bottom + 6 + h > window.innerHeight ? `${Math.max(8, r.top - h - 6)}px` : `${r.bottom + 6}px`;
+  menu.querySelector(".apg-menu__item")?.focus({ preventScroll: true });
+}
+
+// Broad dismissal — a fixed popover does not travel with the card it belongs
+// to, and a menu still pointing at a source that has scrolled away is exactly
+// the mistake a Delete item must not make.
+document.addEventListener("click", (e) => {
+  if (!e.target.closest("#ds-src-menu") && !e.target.closest("[data-srcmenu]")) closeSourceMenu();
+});
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeSourceMenu(); });
+window.addEventListener("scroll", closeSourceMenu, true);
+window.addEventListener("resize", closeSourceMenu);
+
 /* ── Event wiring ────────────────────────────────────────────────────────── */
 
-document.getElementById("ds-add-btn").addEventListener("click", openWizard);
+document.getElementById("ds-add-btn").addEventListener("click", () => openWizard());
 document.getElementById("ds-wizard-close").addEventListener("click", closeWizard);
 document.getElementById("ds-wizard-cancel").addEventListener("click", closeWizard);
-document.getElementById("ds-wizard-connect-btn").addEventListener("click", connectAndValidate);
-document.getElementById("ds-wizard-register-btn").addEventListener("click", () => {
-  if (_wizardConnId) registerSelected(_wizardConnId);
+
+// Step 1: the connector picker swaps the connect form.
+document.querySelectorAll("[data-wsrc]").forEach((opt) => {
+  opt.addEventListener("click", () => _setWizSource(opt.dataset.wsrc));
 });
+
+// Step 1 primary: what "continue" means depends on the connector.
+document.getElementById("ds-wizard-connect-btn").addEventListener("click", () => {
+  if (_wizardSource === "bigquery") {
+    _setWizStep(2);
+    _renderBqRowsEditor();
+    return;
+  }
+  connectAndValidate();
+});
+
+/* The steps strip as a back button. Nothing is re-fetched and nothing is
+   re-rendered: every screen's state lives where it was left — the connect
+   form's fields, the picker's checkboxes, the board's trays, the share
+   grid's rows — so going back to fix one thing costs nothing else. The
+   disabled attribute already blocks the steps that have not been earned;
+   this only has to honour it. */
+document.querySelector("#ds-wizard-overlay .ds-drawer__steps").addEventListener("click", (e) => {
+  const btn = e.target.closest(".ds-drawer__step");
+  if (!btn || btn.disabled) return;
+  const step = Number(btn.dataset.wstep);
+  if (!step || step === _wizardStep) return;
+  _setWizStep(step);
+  // Step 1's primary button is the connector's, not the step's — CSV and
+  // Jira have no form to submit, and _setWizStep only knows about steps.
+  if (step === 1) _setWizSource(_wizardSource);
+});
+
+// Step 1 shortcut: add more tables from an already-connected project.
+document.getElementById("ds-wexisting-btn").addEventListener("click", async () => {
+  const id = document.getElementById("ds-wexisting-select").value;
+  if (!id) return;
+  _wizardConnId = id;
+  const conn = _connections.find((c) => c.id === id);
+  document.getElementById("ds-wizard-connected-banner").innerHTML =
+    `Adding tables from "${_esc((conn && conn.name) || id)}".`;
+  _setWizStep(2);
+  await _loadWizardTables(id);
+});
+
+// Step 1: the semantic-layer opt-in reveals its token field.
+document.getElementById("ds-new-semantic").addEventListener("change", (e) => {
+  document.querySelector(".ds-wsl-opt__field").hidden = !e.target.checked;
+  if (e.target.checked) document.getElementById("ds-new-master").focus();
+});
+
+// Step 2 → 3: register what this source selected, then bundle it.
+document.getElementById("ds-wizard-register-btn").addEventListener("click", async () => {
+  const btn = document.getElementById("ds-wizard-register-btn");
+  btn.disabled = true;
+  try {
+    const result = await _registerStepTwo();
+    if (!result || !result.ok.length) return; // per-row statuses say why
+    if (!_wizardBoard) {
+      _wizardTables = result.ok;
+      _seedBoard("one");
+    } else {
+      // Stepped back to add more tables. The board the admin already arranged
+      // survives; only what is genuinely new joins it, in a tray of its own so
+      // it is obvious what just arrived.
+      const known = new Set([..._wizardBoard.trays.flatMap((t) => t.tables), ..._wizardBoard.out].map((t) => t.id));
+      const fresh = result.ok.filter((t) => !known.has(t.id));
+      _wizardTables = [..._wizardTables, ...fresh];
+      if (fresh.length) {
+        const open = _wizardBoard.trays.find((t) => !t.committed);
+        if (open) open.tables.push(...fresh);
+        else _wizardBoard.trays.push({ id: "t" + (++_wizardTrayIdSeq), name: "New package", tables: fresh });
+      }
+      _renderBoard();
+    }
+    _setWizStep(3);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// Step 2 escape hatch: the pre-redesign behavior — register and stop.
+document.getElementById("ds-wizard-finish-early-btn").addEventListener("click", async () => {
+  const result = await _registerStepTwo();
+  if (result && result.ok.length) finishWizard();
+});
+
+document.getElementById("ds-wizard-bundle-btn").addEventListener("click", _createPackagesAndContinue);
+document.getElementById("ds-wizard-share-btn").addEventListener("click", _shareAndFinish);
+document.getElementById("ds-wizard-skip-btn").addEventListener("click", _showDoneSlab);
 document.getElementById("ds-wizard-done-btn").addEventListener("click", finishWizard);
 
-document.getElementById("ds-wizard-overlay").addEventListener("click", function (e) {
-  if (e.target === this) closeWizard();
+// Step 3 board: seeds, selection, moves, renames, new tray.
+document.getElementById("ds-wizard-step-bundle").addEventListener("click", (e) => {
+  const seed = e.target.closest("[data-wseed]");
+  if (seed) { _seedBoard(seed.dataset.wseed); return; }
+  const mv = e.target.closest("[data-wmove]");
+  if (mv) { _moveSelected(mv.dataset.wmove); return; }
+  if (e.target.closest("#ds-new-tray-btn")) {
+    _wizardBoard.trays.push({ id: "t" + (++_wizardTrayIdSeq), name: "New package", tables: [] });
+    _renderBoard();
+    const names = document.querySelectorAll(".ds-tray-name");
+    const last = names[names.length - 1];
+    if (last) { last.focus(); last.select(); }
+  }
 });
-document.getElementById("ds-wizard-overlay").addEventListener("keydown", function (e) {
-  if (e.key === "Escape") closeWizard();
+document.getElementById("ds-wizard-step-bundle").addEventListener("change", (e) => {
+  if (e.target.classList.contains("ds-bt-check")) _updateMovebar();
+});
+document.getElementById("ds-wizard-step-bundle").addEventListener("input", (e) => {
+  if (e.target.classList.contains("ds-tray-name")) {
+    const tray = _wizardBoard.trays.find((t) => t.id === e.target.closest(".ds-btray").dataset.tray);
+    if (tray) tray.name = e.target.value;
+  }
 });
 
-loadConnections();
+// Step 4 cards: checkbox = share with default Optional; tier segmented.
+document.getElementById("ds-share-cards").addEventListener("click", (e) => {
+  const row = e.target.closest(".ds-wshare-row");
+  if (!row) return;
+  const pkgLocal = row.dataset.pkg;
+  const groupId = row.dataset.group;
+  const group = (_wizardGroups || []).find((g) => g.id === groupId);
+  const shares = _wizardShares[pkgLocal] || (_wizardShares[pkgLocal] = []);
+  if (e.target.matches('input[type="checkbox"]')) {
+    const i = shares.findIndex((s) => s.group_id === groupId);
+    if (e.target.checked && i === -1) shares.push({ group_id: groupId, name: group ? group.name : groupId, tier: "available" });
+    else if (!e.target.checked && i !== -1) shares.splice(i, 1);
+    _renderShareStep();
+    return;
+  }
+  const tierBtn = e.target.closest("[data-wtier]");
+  if (tierBtn) {
+    const share = shares.find((s) => s.group_id === groupId);
+    if (share) { share.tier = tierBtn.dataset.wtier; _renderShareStep(); }
+  }
+});
+
+// The backdrop is a CHILD of the drawer now (it has to sit under the panel
+// rather than around it), so "clicked outside" is a hit on that element —
+// `e.target === this` matched the old full-screen overlay and would never
+// fire here.
+document.getElementById("ds-wizard-overlay").addEventListener("click", function (e) {
+  if (e.target.closest("[data-wizard-close]")) closeWizard();
+});
+// Document-level: focus legitimately leaves the panel (a click on the
+// backdrop puts it on <body>), and Escape must still close from there.
+document.addEventListener("keydown", function (e) {
+  if (e.key !== "Escape") return;
+  if (document.getElementById("ds-wizard-overlay").classList.contains("show")) closeWizard();
+});
+
+// Deep-link: the Overview's "+ Add data" lands here with ?add=1. The open
+// waits for the connections list — openWizard reads it to offer the
+// "already connected" shortcut, and racing it hid the strip on exactly the
+// entry path that needs it most.
+loadConnections().then(() => {
+  if (new URLSearchParams(window.location.search).has("add")) openWizard();
+});
 </script>
 {% endblock %}

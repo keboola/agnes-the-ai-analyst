@@ -488,17 +488,31 @@ def test_a_tool_call_row_with_no_tool_name_is_skipped_not_rendered_as_undefined(
     chat = _read(CHAT_JS)
     decl = re.search(r"function formatToolCall\(tc\) \{.*?\n\}\n", chat, re.DOTALL)
     assert decl, "formatToolCall moved — re-point this guard"
+    # formatToolCall now routes the label through _toolLabel (human labels,
+    # tests/test_chat_tool_rendering_ui.py) — ship its registry block too so
+    # the shipped function runs unmodified.
+    labels = chat[chat.index("const _TOOL_LABELS") : chat.index("function renderApprovalRequest")]
     cases = [
         {"tool": "agnes_query", "args": {"sql": "SELECT 1"}},
         {"cancelled": True},
         {"interrupted": True, "reason": "kicked"},
         {},
     ]
-    script = decl.group(0) + "\n" + f"process.stdout.write(JSON.stringify({json.dumps(cases)}.map(formatToolCall)));\n"
+    script = (
+        labels
+        + "\n"
+        + decl.group(0)
+        + "\n"
+        + f"process.stdout.write(JSON.stringify({json.dumps(cases)}.map(formatToolCall)));\n"
+    )
     out = subprocess.run([node, "-e", script], capture_output=True, text=True)
     assert out.returncode == 0, f"node failed:\n{out.stderr}"
     real_call, cancelled, interrupted, empty = json.loads(out.stdout)
-    assert real_call == {"label": "agnes_query", "argsJson": json.dumps({"sql": "SELECT 1"}, indent=2)}
+    assert real_call == {
+        "label": "Agnes query",
+        "tool": "agnes_query",
+        "argsJson": json.dumps({"sql": "SELECT 1"}, indent=2),
+    }, "a real tool call carries its humanized label AND the raw id (the export has no tooltip)"
     assert cancelled is None, "a cancelled marker has no `tool` name and must be skipped, not stringified"
     assert interrupted is None, "an interrupted marker has no `tool` name and must be skipped, not stringified"
     assert empty is None

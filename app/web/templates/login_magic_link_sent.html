@@ -46,7 +46,9 @@
                 </div>
 
                 <p style="color: #666; font-size: 14px;">
-                    Click the link in the email to sign in. The link expires in 15 minutes.
+                    {# expires_minutes comes from the handler, computed from
+                       MAGIC_LINK_EXPIRY — never hand-copy a number here. #}
+                    Click the link in the email to sign in. The link expires in {{ expires_minutes }} minutes.
                 </p>
                 <p style="color: #999; font-size: 13px;">
                     Don't see it? Check your spam folder.

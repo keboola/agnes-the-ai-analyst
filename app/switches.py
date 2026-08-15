@@ -260,6 +260,27 @@ SWITCHES: tuple[Switch, ...] = (
         ),
     ),
     Switch(
+        name="mcp_session_pool",
+        config_keys=("mcp", "session_pool"),
+        env_var="AGNES_MCP_SESSION_POOL",
+        kind="bool",
+        default=True,
+        effect="live",
+        category="operations",
+        editable=True,
+        description=(
+            "Keep a stdio MCP server's process warm between tool calls instead of starting "
+            "one per call (~6 s of upstream import time each). Read per call, so a save "
+            "applies to the next tool call; sessions already warm age out on their own. Turn "
+            "off to go back to a process per call — the debugging shape, and the answer for "
+            "an upstream that cannot survive being reused. Only stdio sources are affected; "
+            "http/sse have no spawn to amortize."
+        ),
+    ),
+    Switch(
+        name="keboola_token_header",
+        config_keys=("auth", "keboola", "allow_token_header"),
+        env_var="AGNES_KEBOOLA_ALLOW_TOKEN_HEADER",
         name="mcp_source_url_runtime_enforce",
         config_keys=("mcp", "source_url_runtime_enforce"),
         env_var="AGNES_MCP_SOURCE_URL_RUNTIME_ENFORCE",
@@ -269,6 +290,36 @@ SWITCHES: tuple[Switch, ...] = (
         category="operations",
         editable=True,
         description=(
+            "Accept a Keboola Storage API token in the X-StorageApi-Token header as API "
+            "authentication. The token is verified against the configured stack per request "
+            "(60s cache), must be a master token for the bound project, and maps only to an "
+            "EXISTING user — it never provisions accounts. Off by default: a plain Storage "
+            "token carries no interactive factor, so enabling this bypasses any MFA/SSO the "
+            "organization enforces on web logins. It also grants that user's full Agnes "
+            "authority (PAT-equivalent): if the mapped user is an admin, admin mutation "
+            "endpoints are reachable with the token — the narrowing is on the data-read "
+            "surface (credential_surface='stack'), not the admin gate. Credential-minting "
+            "endpoints (PAT/MCP/agent/data-app) are blocked regardless."
+        ),
+    ),
+    Switch(
+        name="mcp_connector_ui",
+        config_keys=("mcp", "connector_ui_enabled"),
+        env_var="AGNES_MCP_CONNECTOR_UI_ENABLED",
+        kind="bool",
+        default=True,
+        effect="live",
+        category="product",
+        editable=True,
+        description=(
+            "User-facing MCP connector surface: the /me/ai-connector and /mcp-connect "
+            "install-instruction pages, the MCP tab of /how-it-works#connect, and their nav / "
+            "command-palette entries. On by default (current behavior unchanged). Turn off on a "
+            "VPN/intranet-only instance where cloud-side MCP clients (e.g. a hosted connector "
+            "resolved from outside the network) can never reach the endpoint — so users are not "
+            "shown a setup path that cannot work for them. This hides UI ONLY: the MCP protocol "
+            "endpoints (/api/mcp/http, /api/mcp/sse) keep serving in-network clients regardless "
+            "of this switch."
             "Enforce the DNS-free half of the MCP source url policy (scheme + "
             "literal-IP checks) at the two runtime forward seams too, not only when a "
             "source is configured (#1216). Off by default: a source that is enabled "
