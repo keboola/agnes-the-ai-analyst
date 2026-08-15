@@ -159,26 +159,33 @@ active.
    anything that moves.
 8. **The rail is the only chrome.** `_app_header.html` (topnav) was
    deleted in Wave 0 (2026-08); every page renders `_app_rail.html`
-   unconditionally, so grant gating (`can_chat`), admin sections,
-   `data-tour` anchors, and the JS id contract (`#global-search`,
+   unconditionally, so grant gating (`can_chat`), the admin entry, and
+   the JS id contract (`#global-search` + `#globalSearchResults`,
    `#userMenu`, `#themeToggle`) live in that one file — no second
    chrome left to mirror them into
    (`tests/test_ui_layout_theme.py::TestRailOptIn` asserts the rail
-   side directly). The rail's IA is **two fixed zones with the
-   conversation list between them** — top: New chat + the newest 5
-   chats (no "Chats" heading; `View all chats` expands the list, which
-   scrolls inside `.rail-history-body`); bottom: Library · Agents, then
-   Admin behind the nav's only divider, then the onboarding card
-   (`Set up Agnes` → `Continue setup`, tinted `--ds-accent-info-*`, gone
-   at 5/5), then the profile. Neither zone may move when the list grows.
-   Admin's seven areas are fixed subitem rows whose links open in a
-   flyout BESIDE the rail (`.rail-admin-flyout`, absolutely positioned,
-   revealed by `:hover` / `:focus-within`) — nothing in the rail may
-   expand inline, or the zones drift page to page. Note the two traps:
-   a closed `<details>` cannot host a hover-revealed panel (Chrome's
-   `::details-content { content-visibility: hidden }` beats any author
-   `display`), and the rail's only script is chat-gated, so admin
-   chrome must work with zero JS.
+   side directly). There are **no `data-tour` anchors** anywhere in the
+   templates: the guided tour was retired with the topnav, and
+   `js/tour.js` keeps `[data-tour=…]` only as a dead fallback in one
+   selector — do not add new ones expecting anything to read them.
+   The rail's IA is **two fixed zones with the
+   conversation list between them** — top: global search, then New chat
+   and Chats (a destination row of its own; the old `View all chats`
+   link at the foot of the list is retired, because a way OUT cannot
+   live inside the one region collapse hides), with the conversations
+   under them scrolling inside `.rail-history-body`; bottom: Library ·
+   Agents, then Admin behind the nav's only divider, then the
+   onboarding row (`Set up Agnes` → `Continue setup`, a circular
+   progress ring, gone at 5/5), then the profile. Neither zone may move
+   when the list grows. **Every row carries an icon** — the rail
+   collapses to a glyph strip, so a text-only row is one that
+   disappears.
+   Admin is ONE destination (`/admin`), not a menu: the hand-written
+   flyout was retired as a second, drifting copy of the admin
+   inventory. That inventory now lives once in `app/web/admin_nav.py`,
+   rendered by `_admin_nav.html` as the admin sidebar on every
+   `/admin/*` page, and guarded by `tests/test_web_admin_nav.py`. Add an
+   admin page there — never by growing the rail.
    Every row shares one height (`--rail-row-h`) and the active
    destination is the ONLY tinted row — never add a standing CTA tint.
    The Studio dropdown, the Marketplace entry and the `.rail-sub-i`
