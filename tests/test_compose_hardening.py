@@ -210,3 +210,31 @@ def test_host_mount_overlay_covers_every_base_service_that_mounts_data():
         f"services {missing} mount the `data:` named volume but have no host-mount override — "
         "on a bind-mounted deployment they land on a filesystem no other service can see"
     )
+
+
+def test_apps_runner_env_knobs_are_actually_reachable():
+    """apps-runner has no `env_file: .env`, so it sees ONLY the variables named
+    in its compose `environment:` block.
+
+    Every env var the sidecar's code reads must therefore be listed there, or
+    the setting is a dead knob: documented, unit-tested against os.environ, and
+    silently unreachable on a real deployment. (`app` is the opposite case — it
+    does carry `env_file: .env`, so its own knobs need no listing.)
+    """
+    import re
+
+    src = Path(__file__).resolve().parents[1] / "services" / "apps_runner"
+    read_by_code = set()
+    for py in src.glob("*.py"):
+        read_by_code |= set(re.findall(r'os\.environ\.get\(\s*"(APPS_RUNNER_[A-Z_]+)"', py.read_text()))
+        read_by_code |= set(re.findall(r'_ENV\s*=\s*"(APPS_RUNNER_[A-Z_]+)"', py.read_text()))
+
+    svc = _service("apps-runner")
+    assert not svc.get("env_file"), "premise moved — apps-runner now has an env_file, relax this guard"
+    declared = {e.split("=", 1)[0] for e in svc.get("environment", [])}
+
+    missing = sorted(read_by_code - declared)
+    assert not missing, (
+        f"apps-runner reads {missing} but compose never passes them in — with no env_file, "
+        "a value set in .env never reaches the process and the knob does nothing"
+    )
