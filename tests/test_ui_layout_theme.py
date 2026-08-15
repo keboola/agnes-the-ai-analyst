@@ -2331,12 +2331,49 @@ class TestDetailPageParity:
     copies it served on a default (topnav) instance were removed in Wave 0
     legacy retirement (2026-08) — every render site now serves the
     redesigned template unconditionally. The unit test on the old switch and
-    the closed-set static sweep over the seven frozen copies went with them;
-    what remains are the live render pairs for the two cheaply-seedable pages
+    the closed-set static sweep over the seven frozen copies went with them.
+    What remains: the live render pairs for the two cheaply-seedable pages
     (collection + catalog table), whose topnav-side assertions are tracked as
     a pre-existing default-pinned-expectation gap (see
-    ``TestDefaultContentParity``), not something this class re-derives.
+    ``TestDefaultContentParity``), not something this class re-derives — and
+    ``test_the_live_detail_page_keeps_the_invariant`` below, which is NOT
+    legacy-chrome leftover: rail-only chrome means these live templates are
+    what every instance renders now, so the three prior production
+    regressions it guards (#1177, #1178, the per-file entry point) matter
+    more than before, not less.
     """
+
+    #: Behaviours that must hold on the live (redesigned) detail templates —
+    #: each one a prior production regression, restated as the token that
+    #: implements the fix. Add a row whenever a fix has to reach one of these
+    #: pages, so a later edit can't silently drop it again.
+    FORKED_PAIR_INVARIANTS = (
+        (
+            "marketplace_plugin_detail",
+            "own_private",
+            "#1177 — the author's own Private row sits at 'hidden' and must stay deletable",
+        ),
+        ("marketplace_item_detail", "own_private", "#1177 — same gate on the skill/agent page"),
+        (
+            "marketplace_plugin_detail",
+            "d.installable !== true",
+            "#1178 — install is gated on the server-resolved flag, not on the status alone",
+        ),
+        ("marketplace_item_detail", "d.installable !== true", "#1178 — same gate on the skill/agent page"),
+        (
+            "library_detail",
+            "/f/",
+            "the per-file page's only entry point — without it, "
+            "`/library/<slug>/f/<id>` is reachable only by typing the URL",
+        ),
+    )
+
+    @pytest.mark.parametrize("base,token,why", FORKED_PAIR_INVARIANTS)
+    def test_the_live_detail_page_keeps_the_invariant(self, base, token, why):
+        from pathlib import Path
+
+        live = Path(f"app/web/templates/{base}.html").read_text()
+        assert token in live, f"regression — {token!r} is no longer in {base}.html ({why})"
 
     def _seed_collection(self, web_client, admin_cookie, name):
         r = web_client.post("/api/collections", json={"name": name}, cookies=admin_cookie)

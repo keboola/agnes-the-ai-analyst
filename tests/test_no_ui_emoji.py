@@ -24,6 +24,7 @@ import re
 from pathlib import Path
 
 TEMPLATES = Path("app/web/templates")
+STATIC = Path("app/web/static")
 
 _EMOJI = re.compile("[\U0001f000-\U0001faff\U00002705\U000026a0\U0000fe0f]")
 
@@ -52,6 +53,17 @@ def test_legacy_exemption_is_a_closed_set() -> None:
         "unexpected *_legacy.html templates (either a naming dodge of the emoji "
         f"ban, or extend LEGACY_FROZEN deliberately): {sorted(on_disk - LEGACY_FROZEN)}"
     )
+
+
+def test_legacy_static_assets_are_a_closed_set() -> None:
+    """Static-asset sibling of `test_legacy_exemption_is_a_closed_set` above.
+
+    The frozen pre-redesign tour's `js/tour_legacy.js` + `css/tour_legacy.css`
+    were deleted alongside the topnav chrome (Wave 0 legacy retirement,
+    2026-08) — nothing frozen remains, so the on-disk set must be empty. A
+    new `*_legacy.js`/`*_legacy.css` can't reappear silently."""
+    on_disk = {str(p.relative_to(STATIC)).replace("\\", "/") for p in STATIC.rglob("*_legacy.*") if p.is_file()}
+    assert not on_disk, f"unexpected *_legacy static assets: {sorted(on_disk)}"
 
 
 def test_no_pictographic_emoji_in_user_facing_templates() -> None:

@@ -1287,9 +1287,7 @@ async def how_it_works_page(
 
 @router.get("/me/ai-connector", response_class=HTMLResponse)
 async def me_ai_connector_page(
-    request: Request,
     user: dict = Depends(get_current_user),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """AI Connector — consolidated into /how-it-works#connect.
 
@@ -1312,8 +1310,7 @@ async def me_ai_connector_page(
 @router.get("/me/mcp", response_class=HTMLResponse)
 @router.get("/me/cowork", response_class=HTMLResponse)
 async def me_mcp_redirect(request: Request):
-    """Legacy aliases → /me/ai-connector (which renders the page on default
-    chrome and forwards to /how-it-works#connect under the redesign opt-in).
+    """Legacy aliases → /me/ai-connector.
 
     302, not 301: a permanent redirect is cached by the browser forever, so
     it would be very hard to walk back if the routing is revisited.
