@@ -16,7 +16,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Removed
 
-- **The classic chrome's frozen legacy templates and guided tour are deleted.** 19 byte-for-byte pre-redesign template copies (`*_legacy.html`) are gone — the catalog/marketplace/library/memory-domain/profile detail and list pages, the pre-redesign `/agents` builder, the chat welcome cards, and the guided tour's own template are all counted in that 19 — along with the tour's JS/CSS and step registry (not templates, so counted separately), the topnav chrome partial itself, and one further template, `home_onboarded.html` — a dead page no route had rendered since before this wave, found and removed by audit rather than a frozen parity copy. Every page now renders its single redesigned template unconditionally, with no second chrome left to keep in parity. The standalone `/me/ai-connector` page is retired the same way: it is now an unconditional redirect to `/how-it-works#connect` rather than a page that rendered on the classic chrome.
+- **The classic chrome's frozen legacy templates, guided tour, and topnav chrome partial are deleted.** Gone: 19 byte-for-byte `*_legacy.html` copies of the catalog/marketplace/library/memory-domain/profile pages, the pre-redesign `/agents` builder, the chat welcome cards, the tour's own template, and others; the tour's JS, CSS, and step registry; the topnav chrome partial (`_app_header.html`); and one dead, orphaned template (`home_onboarded.html`) that no route had rendered. Every page now renders its single redesigned template unconditionally, with no second chrome to keep in parity. The standalone `/me/ai-connector` page is now an unconditional redirect to `/how-it-works#connect`.
 
 ## [0.83.14] - 2026-08-14
 
