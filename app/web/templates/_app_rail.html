@@ -317,11 +317,15 @@
        from page to page. An absolutely-positioned flyout contributes no
        height, so `Admin` open is now always exactly seven rows tall.
 
-       Data-driven so the row + flyout markup is written once; the area rows
-       and their links used to be the same set the retired topnav's Admin
-       mega-menu carried (`_app_header.html`) — that parity contract is now
-       moot (only the rail exists), but this is still the one place the
-       admin nav is enumerated, so keep it complete as areas are added.
+       Data-driven so the row + flyout markup is written once; this is the
+       one place the admin nav is enumerated, so keep it complete as areas
+       are added — the rail is the ONLY chrome a rail-layout instance
+       renders (the retired topnav's Admin mega-menu, `_app_header.html`,
+       is gone since Wave 0, 2026-08 legacy retirement), so a live admin
+       page with no entry here is unreachable, full stop, not just
+       "missing from one of two chromes". /admin/semantic-layer was exactly
+       that — a live page with no link anywhere in the product, found only
+       because someone was handed the URL.
        `match` is the list of path prefixes that mean "this link is the page
        you're on" — the area row picks up a quiet marker when any of its own
        links match (it is the ROUTE to the active page, not the active page
@@ -332,14 +336,7 @@
        script (rail_history.js) is chat-gated and an admin without a chat grant
        would otherwise get a dead Admin section.
 
-       That parity contract is load-bearing, not cosmetic: the rail is the ONLY
-       chrome a rail-layout instance renders, so an entry that exists just in
-       the header dropdown is unreachable there. /admin/semantic-layer was
-       exactly that — a live page with no link to it under `rail`, found only
-       because someone was handed the URL. tests/test_admin_nav_parity.py now
-       guards the direction topnav → rail.
-
-       TODO: /admin/store ("Moderation & Trust") is still topnav-only. It needs
+       TODO: /admin/store ("Moderation & Trust") has no entry here — it needs
        exact-path matching — `_admin_hit` is startswith-only, so an
        '/admin/store' entry would light up on '/admin/store/submissions' too —
        and that belongs in a change that touches the match model. #}

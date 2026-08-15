@@ -838,11 +838,6 @@ def _build_context(
         # "navy" = darker opt-in palette. Admin toggles via
         # /admin/server-config.
         "instance_theme": get_instance_theme(),
-        # Structural chrome layout — always "rail" (fixed left sidebar,
-        # _app_rail.html); the topnav chrome was retired in Wave 0
-        # (2026-08). Kept in context so templates have one source of
-        # truth and `html[data-ui-layout="rail"]`-scoped CSS keeps working.
-        "ui_layout": get_ui_layout(),
         # Whether /home renders the "Step 3 — turn on auto-accept mode"
         # install-block. Operator can hide it via AGNES_HOME_SHOW_AUTOMODE=0
         # for cautious rollouts; same content stays on /setup-advanced.
@@ -4593,7 +4588,6 @@ def _chrome_ctx(request: Request, user: Optional[dict]) -> dict:
         "instance_brand_short": get_instance_brand_short(),
         "workspace_dir": get_workspace_dir_name(),
         "instance_theme": get_instance_theme(),
-        "ui_layout": get_ui_layout(),
         "home_automode": {"show": get_home_automode_visibility()},
         "custom_scripts": get_custom_scripts(),
         # Set here too (not only in _build_context) so the Studio nav link
