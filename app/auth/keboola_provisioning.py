@@ -561,7 +561,14 @@ def _mint_and_store_tokens(
             # Remember the verdict: an admin-role mint is the best this flow
             # can do, so a non-master answer here means re-minting at the
             # next login cannot do better — without this record the master
-            # chase would orphan one PAT per sign-in forever.
+            # chase would orphan one PAT per sign-in forever. Deliberately
+            # written even on a row this flow does NOT own (the empty-slot
+            # fill on an admin-created connection): the chase bound is per
+            # CONNECTION, and skipping the record there would re-open the
+            # per-login orphan loop against exactly those rows. The key is
+            # bookkeeping only — no ownership transfer (user_email is left
+            # alone), a hand-stored master supersedes it via the
+            # master_present check, and clearing it retries.
             new_config["pat_master_unobtainable"] = True
 
     if new_config != config:
@@ -977,9 +984,10 @@ def store_pending_discovery(user: Dict[str, Any], projects: List[kp.DiscoveredPr
 
 
 def load_pending_discovery(user_id: str) -> Optional[Dict[str, Any]]:
-    """The user's stored discovery, or None when absent/expired/corrupt.
-    Expiry deletes the blob — it holds a live access token and must not
-    outstay its usefulness."""
+    """The user's stored discovery, or None when absent/expired/corrupt —
+    or when the instance's stack changed under it. Every invalidation
+    deletes the blob: it holds a live access token and must not outstay
+    its usefulness."""
     from src.repositories import per_user_secrets_repo
 
     repo = per_user_secrets_repo()
@@ -996,6 +1004,19 @@ def load_pending_discovery(user_id: str) -> Optional[Dict[str, Any]]:
         clear_pending_discovery(user_id)
         return None
     if (datetime.now(timezone.utc) - stored_at).total_seconds() > PENDING_DISCOVERY_TTL_SECONDS:
+        clear_pending_discovery(user_id)
+        return None
+    stored_stack = str(blob.get("stack_url") or "").rstrip("/")
+    if stored_stack and stored_stack != (kv.stack_url() or "").rstrip("/"):
+        # The stash's access token belongs to the stack the sign-in happened
+        # on. If the operator re-points auth.keboola.stack_url inside the
+        # TTL, an import would mint PATs against the NEW stack with the OLD
+        # stack's token — every project failing with opaque pat_exchange /
+        # pat_verify errors instead of a clear answer (Devin Review on this
+        # PR, fourteenth round). The recorded stack is authoritative: a
+        # mismatch invalidates the stash exactly like expiry, so the listing
+        # stops offering it and the import says to sign in again — and the
+        # token, useless here forever, is deleted with it.
         clear_pending_discovery(user_id)
         return None
     return blob

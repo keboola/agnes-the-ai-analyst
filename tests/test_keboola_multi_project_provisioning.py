@@ -829,6 +829,24 @@ class TestSelectModeStash:
         assert kprov.load_pending_discovery("u1") is None
         assert per_user_secrets_repo().get(kprov.PENDING_DISCOVERY_SOURCE_ID, "u1") is None
 
+    def test_stack_change_inside_the_ttl_invalidates_the_stash(self, env, monkeypatch):
+        """The stash's access token belongs to the stack the sign-in happened
+        on — re-pointing auth.keboola.stack_url inside the TTL must expire
+        the stash (listing stops offering it, import says sign in again)
+        instead of minting PATs on the wrong stack (Devin Review on this PR,
+        fourteenth round)."""
+        from src.repositories import per_user_secrets_repo
+
+        projects = [P("516", "Agnes - test", "admin")]
+        assert kprov.store_pending_discovery(env["user"], projects, "at-1") is True
+        monkeypatch.setattr(kv, "stack_url", lambda: "https://elsewhere.example.com")
+
+        assert kprov.load_pending_discovery("u1") is None
+        assert per_user_secrets_repo().get(kprov.PENDING_DISCOVERY_SOURCE_ID, "u1") is None
+        with pytest.raises(kprov.DiscoveryStateError) as err:
+            kprov.provision_selected(env["user"], ["516"])
+        assert err.value.reason == "discovery_expired"
+
     def test_import_refilters_against_the_current_gates(self, env, pat_mocks, monkeypatch):
         """Roles narrowed INSIDE the stash's TTL must bite at import time:
         the stashed grant must not outlive the config that granted it."""
