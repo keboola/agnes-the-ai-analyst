@@ -5,6 +5,8 @@ import json
 import pytest
 from typer.testing import CliRunner
 
+from cli.commands.status import status_app
+
 # CI-safety: Typer/rich emits ANSI escapes in --help output. Strip before asserts.
 _ANSI_RE = __import__("re").compile(r"\x1b\[[0-9;]*m")
 
@@ -12,8 +14,6 @@ _ANSI_RE = __import__("re").compile(r"\x1b\[[0-9;]*m")
 def _clean(s: str) -> str:
     return _ANSI_RE.sub("", s)
 
-
-from cli.commands.status import status_app
 
 runner = CliRunner()
 
@@ -133,7 +133,11 @@ def test_shared_only_table_is_not_counted_as_queryable(tmp_path, monkeypatch):
 
 def test_package_reference_links_do_not_double_count(tmp_path, monkeypatch):
     """`_direct/` and `<package>/` are reference links INTO `_shared`, so a
-    table shipped by two packages still counts once."""
+    table shipped by two packages still counts once — and since #1325 the
+    DuckDB view rebuild registers a view per reference NAME, so a table
+    reachable through any of these three reference links is queryable, not
+    merely downloaded: one view, not three, and it counts in `queryable`
+    rather than `downloaded (no local view)`."""
     _init(tmp_path)
     data = tmp_path / ".claude" / "data"
     (data / "_shared").mkdir(parents=True)
@@ -142,7 +146,7 @@ def test_package_reference_links_do_not_double_count(tmp_path, monkeypatch):
         (data / ref_dir).mkdir(parents=True)
         (data / ref_dir / "orders.parquet").touch()
 
-    assert _counts(tmp_path, monkeypatch) == (0, 1)
+    assert _counts(tmp_path, monkeypatch) == (1, 0)
 
 
 def test_same_table_in_both_trees_counts_once_as_queryable(tmp_path, monkeypatch):

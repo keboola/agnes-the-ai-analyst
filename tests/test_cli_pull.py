@@ -222,9 +222,7 @@ class TestPullErrorRendering:
     def test_table_error_renders_as_prose(self):
         from cli.commands.pull import format_pull_error
 
-        line = format_pull_error(
-            {"table": "orders", "error": "Client error '403 Forbidden' for url '...'"}
-        )
+        line = format_pull_error({"table": "orders", "error": "Client error '403 Forbidden' for url '...'"})
         assert not line.startswith("{")
         assert "'table'" not in line
         assert line == "orders: Client error '403 Forbidden' for url '...'"
@@ -233,10 +231,7 @@ class TestPullErrorRendering:
         from cli.commands.pull import format_pull_error
 
         assert format_pull_error({"stage": "manifest", "error": "boom"}) == "manifest: boom"
-        assert (
-            format_pull_error({"package": "sales", "name": "orders", "error": "nope"})
-            == "orders sales: nope"
-        )
+        assert format_pull_error({"package": "sales", "name": "orders", "error": "nope"}) == "orders sales: nope"
 
     def test_unknown_shape_falls_back_to_str(self):
         from cli.commands.pull import format_pull_error
@@ -254,9 +249,32 @@ class TestPullErrorRendering:
         from pathlib import Path
 
         src = Path("cli/commands/pull.py").read_text(encoding="utf-8")
-        assert 'f"warn: {e}"' not in src, (
-            "raw repr of the error dict is back — route it through format_pull_error"
-        )
-        assert src.count('format_pull_error(e)') == 2, (
-            "both the --quiet and the interactive error paths must format"
-        )
+        assert 'f"warn: {e}"' not in src, "raw repr of the error dict is back — route it through format_pull_error"
+        assert src.count("format_pull_error(e)") == 2, "both the --quiet and the interactive error paths must format"
+
+
+class TestPullRevealsWorkspace:
+    """Issue #1312 (cheap proposal 1): `agnes pull` never echoed which
+    workspace it targeted — neither on the human path nor in `--json`."""
+
+    def test_json_payload_carries_workspace(self, tmp_path, monkeypatch):
+        from pathlib import Path as _P
+
+        result = _run_pull_in(tmp_path, monkeypatch, ["--json"])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(_clean(result.stdout).strip())
+        assert payload["workspace"] == str(_P(tmp_path).resolve())
+
+    def test_human_output_shows_resolved_workspace(self, tmp_path, monkeypatch):
+        from cli.lib.hooks import install_claude_hooks
+
+        install_claude_hooks(tmp_path)  # modern workspace, no legacy nudge noise
+        result = _run_pull_in(tmp_path, monkeypatch, [])
+        assert result.exit_code == 0, result.output
+        out = _clean(result.stdout)
+        assert f"Workspace: {tmp_path.resolve()}" in out
+
+    def test_workspace_line_suppressed_under_quiet(self, tmp_path, monkeypatch):
+        result = _run_pull_in(tmp_path, monkeypatch, ["--quiet"])
+        assert result.exit_code == 0
+        assert "Workspace:" not in _clean(result.stdout)

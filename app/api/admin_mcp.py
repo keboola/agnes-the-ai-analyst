@@ -424,12 +424,20 @@ def _url_policy_report(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     }
 
 
-def _serialize_source(row: Dict[str, Any], *, has_vault_secret: bool = False) -> Dict[str, Any]:
+def _serialize_source(
+    row: Dict[str, Any],
+    *,
+    has_vault_secret: bool = False,
+    vault_secret_updated_at: Optional[str] = None,
+) -> Dict[str, Any]:
     """Project a ``mcp_sources`` row to the API shape (timestamps as ISO).
 
     ``has_vault_secret`` is a write-only-secret status flag — True iff a
     vault-stored secret exists for this source (the value is never read
-    back into the API).
+    back into the API). ``vault_secret_updated_at`` is that same secret's
+    last-rotated timestamp (ISO-8601, or ``None`` when unset/not computed by
+    the caller) — distinct from ``updated_at`` below, which is the SOURCE
+    row's own last-edit time, not the secret's.
     """
     return {
         "id": row.get("id"),
@@ -445,6 +453,7 @@ def _serialize_source(row: Dict[str, Any], *, has_vault_secret: bool = False) ->
         "scope": row.get("scope") or "shared",
         "connect_hint": row.get("connect_hint"),
         "has_vault_secret": has_vault_secret,
+        "vault_secret_updated_at": vault_secret_updated_at,
         "url_policy_verdict": _url_policy_report(row),
         "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
         "updated_at": row["updated_at"].isoformat() if row.get("updated_at") else None,
@@ -470,6 +479,39 @@ def _serialize_tool(row: Dict[str, Any]) -> Dict[str, Any]:
         "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
         "updated_at": row["updated_at"].isoformat() if row.get("updated_at") else None,
     }
+
+
+def _per_user_secret_coverage(source_id: str) -> List[Dict[str, Any]]:
+    """Who has connected their OWN credential for ``source_id``, and when.
+
+    Read-only admin diagnostic for the detail page — never returns a secret
+    value, only identity (``user_id`` / ``email`` / ``name``) + the ISO-8601
+    timestamp of their last upsert. Ordered by ``user_id`` (what
+    ``list_for_source`` already returns), so the result is deterministic.
+
+    Built entirely from the two existing, already-parity-tested
+    ``PerUserSecretsRepository`` methods — ``list_for_source`` (previously
+    called only from the delete/purge cleanup paths in this module and in
+    ``admin_source_connections.py``) and ``get_updated_at`` (added for the
+    per-user connect status endpoint) — rather than a new repo method, so
+    this diagnostic adds no new surface to keep in DuckDB/Postgres parity.
+    """
+    from src.repositories import users_repo
+
+    pu_secrets = per_user_secrets_repo()
+    user_ids = pu_secrets.list_for_source(source_id)
+    if not user_ids:
+        return []
+    info = users_repo().get_info_by_ids(user_ids)
+    return [
+        {
+            "user_id": uid,
+            "email": info.get(uid, {}).get("email"),
+            "name": info.get(uid, {}).get("name"),
+            "updated_at": pu_secrets.get_updated_at(source_id, uid),
+        }
+        for uid in user_ids
+    ]
 
 
 def _merge_source_patch(existing: Dict[str, Any], patch: UpdateMCPSourceRequest) -> Dict[str, Any]:
@@ -766,15 +808,25 @@ async def get_mcp_source(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Detail view — includes the list of tools registered against this source."""
+    """Detail view — includes the list of tools registered against this
+    source, the shared vault secret's last-rotated timestamp
+    (``vault_secret_updated_at``), and per-user secret coverage
+    (``per_user_secrets`` — who has connected their own credential, and
+    when; never the secret value)."""
     repo = mcp_sources_repo()
     src = repo.get(source_id)
     if not src:
         raise HTTPException(status_code=404, detail="mcp_source_not_found")
     tools_repo = tool_registry_repo()
     tools = tools_repo.list_for_source(source_id)
-    out = _serialize_source(src, has_vault_secret=shared_secrets_repo().has(source_id))
+    secrets = shared_secrets_repo()
+    out = _serialize_source(
+        src,
+        has_vault_secret=secrets.has(source_id),
+        vault_secret_updated_at=secrets.get_updated_at(source_id),
+    )
     out["tools"] = [_serialize_tool(t) for t in tools]
+    out["per_user_secrets"] = _per_user_secret_coverage(source_id)
     return out
 
 

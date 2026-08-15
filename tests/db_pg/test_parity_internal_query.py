@@ -12,7 +12,10 @@ These tests assert the SAME query returns the SAME result on DuckDB AND Postgres
 (the parity goal), plus that the RBAC scoping + non-admin denylist + the PG
 attach-catalog guard hold on both.
 """
+
 from __future__ import annotations
+
+import json
 
 import pytest
 
@@ -100,10 +103,7 @@ def test_cte_shadow_cannot_escape_rbac_both_backends(_env):
             system_db_path="",
             user={"id": "ua", "email": "a@example.com"},
             is_admin=False,
-            sql=(
-                "WITH agnes_telemetry AS (SELECT * FROM usage_events) "
-                "SELECT COUNT(*) AS n FROM agnes_telemetry"
-            ),
+            sql=("WITH agnes_telemetry AS (SELECT * FROM usage_events) SELECT COUNT(*) AS n FROM agnes_telemetry"),
             limit=100,
         )
 
@@ -135,3 +135,115 @@ def test_postgres_tvf_is_unavailable_pg(_env):
             ),
             limit=100,
         )
+
+
+def test_heterogeneous_json_params_materialize_and_stay_queryable_both_backends(_env):
+    """Issue #1310: a JSON/JSONB column with mixed row shapes (one dict, one
+    list, one scalar, one NULL) must not break the materialize-into-DuckDB
+    step that backs a non-admin internal query (and every PG-backend
+    internal query, admin or not).
+
+    Pre-fix, ``CREATE TABLE AS SELECT`` over the raw column let DuckDB infer
+    a type per result set — a ``STRUCT`` for uniformly-shaped dict rows,
+    otherwise a best-effort ``VARCHAR`` holding Python's ``repr()`` of the
+    value (single-quoted — not valid JSON). Either way ``agnes_audit`` came
+    out unqueryable as JSON, and which failure mode hit depended on which
+    rows happened to land in a given caller's RBAC-filtered batch. The fix
+    casts every JSON/JSONB column to text in the source SELECT, so the
+    materialized column is always a deterministic, genuinely-JSON VARCHAR.
+    """
+    from connectors.internal.access import execute_internal_query
+    from src.repositories import audit_repo
+
+    repo = audit_repo()
+    repo.log(user_id="ua", action="shape.dict", params={"tool": "Read", "count": 1})
+    repo.log(user_id="ua", action="shape.list", params=["a", "b", "c"])
+    repo.log(user_id="ua", action="shape.scalar", params="a-plain-string")
+    repo.log(user_id="ua", action="shape.null", params=None)
+    # A different user's row must never leak into 'ua's RBAC-scoped batch —
+    # also keeps the source table a realistic shared physical table rather
+    # than a single-user toy.
+    repo.log(user_id="ub", action="shape.other_user", params={"other": True})
+
+    cols, rows, _truncated = execute_internal_query(
+        system_db_path="",
+        user={"id": "ua", "email": "a@example.com"},
+        is_admin=False,
+        sql="SELECT action, params FROM agnes_audit",
+        limit=100,
+    )
+    by_action = {r[0]: r[1] for r in rows}
+    assert set(by_action) == {"shape.dict", "shape.list", "shape.scalar", "shape.null"}, (
+        f"[{_env}] materialization must succeed and scope to user 'ua': {rows}"
+    )
+
+    # Queryable AS TEXT: every non-null value round-trips through
+    # json.loads() as valid JSON — the pre-fix VARCHAR fallback held
+    # Python's repr() (single-quoted), which does not.
+    assert json.loads(by_action["shape.dict"]) == {"tool": "Read", "count": 1}
+    assert json.loads(by_action["shape.list"]) == ["a", "b", "c"]
+    assert json.loads(by_action["shape.scalar"]) == "a-plain-string"
+    assert by_action["shape.null"] is None
+
+    # A second query using DuckDB's own JSON functions proves `params` is
+    # genuinely queryable as JSON, not merely round-trippable via Python's
+    # json module.
+    _cols2, rows2, _ = execute_internal_query(
+        system_db_path="",
+        user={"id": "ua", "email": "a@example.com"},
+        is_admin=False,
+        sql="SELECT json_extract_string(params, '$.tool') AS tool FROM agnes_audit WHERE action = 'shape.dict'",
+        limit=10,
+    )
+    assert rows2[0][0] == "Read", f"[{_env}] params must be queryable JSON text: {rows2}"
+
+
+def test_schema_drift_between_model_and_physical_table_degrades_not_breaks(_env):
+    """The JSON→text projection must follow the PHYSICAL table's columns,
+    with the model metadata only choosing which of them get the cast
+    (Devin review on #1331). A one-sided drift between the model and the
+    physical schema — a column added on one side only, or a system.duckdb
+    that hasn't finished migrating — must keep internal queries behaving
+    like ``SELECT *`` did (extra columns show up, missing columns are
+    simply absent), never raise a Binder error naming a column the analyst
+    never referenced."""
+    if _env != "duckdb":
+        pytest.skip("drift is simulated by ALTERing the DuckDB system table directly")
+
+    from connectors.internal.access import execute_internal_query
+    from src.db import get_system_db
+    from src.repositories import audit_repo
+
+    repo = audit_repo()
+    repo.log(user_id="ua", action="drift.row", params={"k": 1})
+
+    db = get_system_db()
+    # Physical table AHEAD of the model: a column the model doesn't know.
+    # (A model-derived projection would silently drop it from the
+    # materialized table, making this SELECT a Binder error.)
+    db.execute("ALTER TABLE audit_log ADD COLUMN drift_extra VARCHAR DEFAULT 'x'")
+
+    cols, rows, _ = execute_internal_query(
+        system_db_path="",
+        user={"id": "ua", "email": "a@example.com"},
+        is_admin=False,
+        sql="SELECT action, params, drift_extra FROM agnes_audit",
+        limit=10,
+    )
+    assert rows[0][0] == "drift.row", f"[{_env}] drifted table must stay queryable: {rows}"
+    # The known JSON column still gets the deterministic text cast…
+    assert json.loads(rows[0][1]) == {"k": 1}
+    # …and the model-unknown physical column flows through like SELECT *.
+    assert rows[0][2] == "x"
+
+    # Physical table BEHIND the model (the direction that used to raise a
+    # Binder error naming a column the analyst never referenced): DuckDB's
+    # dependency tracking refuses ALTER ... DROP COLUMN on the live table,
+    # so assert the mechanism directly — the projection is built from the
+    # physical column list, so a model-declared column the physical table
+    # lacks structurally cannot appear in it.
+    from connectors.internal.access import _select_list_with_json_as_text
+
+    proj = _select_list_with_json_as_text("audit_log", ["id", "user_id", "action", "params"])
+    assert "params_before" not in proj
+    assert 'CAST("params" AS VARCHAR) AS "params"' in proj
