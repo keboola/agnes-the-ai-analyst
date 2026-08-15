@@ -10,7 +10,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
-## [0.83.21] - 2026-08-15
+## [0.83.22] - 2026-08-15
 
 ### Fixed
 
@@ -20,6 +20,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **`agnes pull --skip-materialize` is honored by the stack-sync phase.** The flag is plumbed through `_run_stack_sync_from_manifest` → `PullStackOptions` → `_server_table_skip`, so `query_mode='materialized'` manifest rows are skipped in step 8 exactly as they already were in step 4 (#1304). The flag is a fetch opt-out, not an unsubscribe: a previously synced materialized table keeps its state row (and files) under the flag, so a later pull without it can still update or prune the copy instead of orphaning it (Devin review).
 - **Stack-sync downloads report progress instead of hanging silently.** Step 8's fetcher now emits a per-table `stack sync: fetching <table> (<size>)…` / `… done (<bytes> in <s>)` pair on stderr and wires the byte-level `progress_callback` into `stream_download` — a multi-GB pull is visibly alive. `--quiet`/`--json` runs stay silent, matching step 4's progress gating (#1308).
 - **`agnes pull` reveals which workspace it targeted.** Human output gains a `Workspace: <path>` line (suppressed under `--quiet`) and the `--json` payload gains a `workspace` field, so pull-vs-update workspace divergence is now observable (#1312).
+
+## [0.83.21] - 2026-08-15
+
+### Internal
+
+- Semantic-layer validator: a `dialects[]` entry now needs both a label and a non-empty `expression` body to count as declared, and a metric whose entries all lack a body is reported as not locally executable. A label-only entry has no fragment to compose, so counting it claimed a metric ran on that engine with nothing behind it — while simply dropping such entries turned "declares an engine we cannot use" into silence, holding `locally_executable` at `True` for a metric that composes on no engine at all. Both are the silent-wrong-answer that flag exists to prevent. A metric with no expression block at all stays unflagged. Follow-up to #1319, found by review after that PR merged.
 
 ## [0.83.20] - 2026-08-15
 
