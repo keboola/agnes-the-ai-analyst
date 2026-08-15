@@ -10533,7 +10533,7 @@
   "info": {
     "description": "Self-hosted AI harness: governed data access, skills marketplace, corporate memory, and agent workspaces",
     "title": "AI Harness",
-    "version": "0.83.14"
+    "version": "0.83.19"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -18335,7 +18335,7 @@
         ]
       },
       "get": {
-        "description": "Detail view \u2014 includes the list of tools registered against this source.",
+        "description": "Detail view \u2014 includes the list of tools registered against this\nsource, the shared vault secret's last-rotated timestamp\n(``vault_secret_updated_at``), and per-user secret coverage\n(``per_user_secrets`` \u2014 who has connected their own credential, and\nwhen; never the secret value).",
         "operationId": "get_mcp_source_api_admin_mcp_sources__source_id__get",
         "parameters": [
           {
@@ -51434,7 +51434,7 @@
     },
     "/stack": {
       "get": {
-        "description": "Unified My Stack (rail layout / #896 prototype IA) \u2014 the caller's\npersonal workspace: \"Everything in your Stack\", one inventory table\nover every kind \u2014 Data (data packages), Plugins (hydrated client-side\nfrom /api/marketplace/items?tab=my), Memory (memory domains), Uploads\n(private file collections). Growing the stack happens on /catalog,\nwhich carries the \"Recommended for you\" row.\n\nReachable under any layout; the rail's \"My Stack\" entry points here.",
+        "description": "My Stack is retired \u2014 folded into the Library (#1088).\n\nDirection (a) from the issue thread: \"the Library absorbs the Stack. No\nmigration of functionality is required \u2014 it is already there.\" /library\nalready renders every kind My Stack did (data packages, memory domains,\nmarketplace plugins, uploads) off the same ``StackResolver.browse()``\ncall, with per-row ``stack_state`` membership controls, and its \"In\nstack only\" toggle (the ``?stack=in_stack`` preset this redirect targets)\nanswers the exact question this page existed to answer.\n\n302, not 308, so a later reversal is not cached permanently \u2014 same\nreasoning as the /corporate-memory and /apps retirements (#1278). Route\nkept registered (not removed) so old links, bookmarks and the onboarding\ntour's stored history don't 404.",
         "operationId": "my_stack_page_stack_get",
         "parameters": [
           {
