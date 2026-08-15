@@ -190,8 +190,8 @@ that shipped `mcp.allow_query_param_token` without a write path.
 | `chat_approvals` | `chat.approvals_enabled` | `AGNES_CHAT_APPROVALS_ENABLED` | `true` | yes | Operator kill-switch for interactive approval prompts. Off denies ask-flagged tool calls instantly instead of waiting for a human. |
 | `data_apps` | `data_apps.enabled` | `AGNES_DATA_APPS_ENABLED` | `false` | no — apps_runner sidecar needs the `apps` Compose profile | New feature — off by default. |
 | `library_show_unverified_trust` | `library.show_unverified_trust` | `AGNES_LIBRARY_SHOW_UNVERIFIED_TRUST` | `true` | yes | 'Community' trust marker for unverified Store items in the Library, so every row states its provenance (Organization / Verified / Community) and none is left silently unlabelled. On by default: the whole trust vocabulary is gated to the paper theme, so upgrade parity for a default blue instance comes from that gate, not from this flag. Set `false` for the older reading, where an unverified item is marked by the ABSENCE of a marker. |
-| `experience` | `instance.experience` | `AGNES_INSTANCE_EXPERIENCE` | `classic` | yes | Select (`classic` \| `redesign`): the one-line redesign adoption preset — see the dedicated section below. Changes only the DEFAULTS of the coupled knobs; any per-knob setting wins; invalid values fall back to `classic`. |
-| `stack_auto_membership` | `features.stack_auto_membership` | `AGNES_STACK_AUTO_MEMBERSHIP` | `false` | yes | Stack membership mode. Off (classic, the default): membership is the subscribe model — required plus subscribed grants — with the grant-downgrade subscription fan-out, exactly the pre-redesign behavior. On: auto-membership — every granted resource is in the caller's stack immediately; subscribe/unsubscribe only control the downloaded local copy, and `agnes pull` manifests list granted-but-unsubscribed tables as `server_only`. Default follows the `instance.experience` preset (below). Flipping OFF after running ON: users lose visibility of granted-but-unsubscribed resources until they subscribe (no data loss — subscriptions are interpreted, never rewritten); flipping ON later only widens visibility. |
+| `experience` | `instance.experience` | `AGNES_INSTANCE_EXPERIENCE` | `redesign` | yes | Retired as a choice (Wave 0, 2026-08) — see the dedicated section below. `redesign` is the only valid value and the default; the old `classic` value (or any other unrecognised string) falls back to `redesign`. Changes only the DEFAULTS of the coupled knobs; any per-knob setting wins. |
+| `stack_auto_membership` | `features.stack_auto_membership` | `AGNES_STACK_AUTO_MEMBERSHIP` | `true` | yes | Stack membership mode. On (the default since Wave 0, 2026-08 — `experience` is always `redesign` now): auto-membership — every granted resource is in the caller's stack immediately; subscribe/unsubscribe only control the downloaded local copy, and `agnes pull` manifests list granted-but-unsubscribed tables as `server_only`. Off: the classic subscribe model — required plus subscribed grants — with the grant-downgrade subscription fan-out, exactly the pre-redesign behavior; still fully supported, and an explicit `false` always wins over the default. Flipping OFF after running ON: users lose visibility of granted-but-unsubscribed resources until they subscribe (no data loss — subscriptions are interpreted, never rewritten); flipping ON later only widens visibility. |
 | `mcp_query_param_token` | `mcp.allow_query_param_token` | `AGNES_MCP_ALLOW_QUERY_PARAM_TOKEN` | `true` | yes | Grandfathered on. Accepts the MCP bearer token as `?token=` on SSE GET for header-incapable clients; the token then appears in every request log (CWE-598). Turn off when all MCP clients send the `Authorization` header. **Unlike the other flags here its default is the permissive state, so an unrecognized value — `disabled`, `n` — silently leaves it on; use `false`/`off`/`no`/`0` and verify via `effective`.** |
 | `mcp_source_url_strict` | `mcp.source_url_strict` | `AGNES_MCP_SOURCE_URL_STRICT` | `false` | yes | Holds a registered MCP source's own url to the same bar as its OAuth endpoints (https, public address). Off by default, which is **not** unguarded: the baseline always refuses link-local / metadata / multicast / reserved addresses and cleartext http to a public one. The default only permits a source on an *internal* address — an organization's own tool server, a developer's localhost — because those are ordinary deployments. Turn on for instances that talk only to third-party MCP services; it makes an intranet source unconfigurable, hence opt-in. |
 | `mcp_connector_ui` | `mcp.connector_ui_enabled` | `AGNES_MCP_CONNECTOR_UI_ENABLED` | `true` | yes | User-facing MCP connector surface: the `/me/ai-connector` and `/mcp-connect` install-instruction pages, the MCP tab of `/how-it-works#connect`, and their nav / command-palette entries. On by default (current behavior unchanged). Turn off on a VPN/intranet-only instance where cloud-side MCP clients (e.g. a hosted connector resolved from outside the network) can never reach the endpoint — so users are not shown a setup path that cannot work for them. Hides UI ONLY: the MCP protocol endpoints (`/api/mcp/http`, `/api/mcp/sse`) keep serving in-network clients regardless of this flag. |
@@ -199,21 +199,30 @@ that shipped `mcp.allow_query_param_token` without a write path.
 
 ## The `instance.experience` preset
 
-One line flips the DEFAULTS of every experience-coupled knob (spec
-`docs/superpowers/specs/2026-08-07-default-chrome-ux-parity.md`):
+Originally a one-line switch that flipped the DEFAULTS of every
+experience-coupled knob between a `classic` and a `redesign` world (spec
+`docs/superpowers/specs/2026-08-07-default-chrome-ux-parity.md`). Wave 0
+(2026-08, `docs/superpowers/specs/2026-08-13-grounded-analyst-workspace-design.md`)
+retired the `classic` side of that choice — the classic experience (topnav
+chrome, pre-redesign pages, legacy chat) no longer exists, so there is
+nothing left for the preset to switch between:
 
 | | |
 |---|---|
 | Config key | `instance.experience` |
-| Values | `classic` (default) \| `redesign` |
+| Values | `redesign` (the only valid value, and the default) |
 | Env | `AGNES_INSTANCE_EXPERIENCE` |
 
-`redesign` defaults `instance.ui_layout` to `rail`, `instance.theme` to
-`paper` and `features.stack_auto_membership` to `true`; `classic` (or an
-absent/invalid key) is byte-for-byte the pre-redesign experience. The preset
-changes only defaults — any per-knob env/yaml setting still wins, and
-per-knob precedence is unchanged (`env(knob) > yaml(knob) > preset-implied
-default > built-in default`). Deliberately NOT coupled:
+The old `classic` value (or any other unrecognised string) falls back to
+`redesign` with a startup warning; the key is kept only so an older
+`instance.yaml` still boots. `redesign` still defaults `instance.theme` to
+`paper` and `features.stack_auto_membership` to `true` — any per-knob
+env/yaml setting still wins, and per-knob precedence is unchanged
+(`env(knob) > yaml(knob) > preset-implied default > built-in default`).
+`instance.ui_layout` is no longer part of the coupling: the rail chrome is
+now the only chrome, hard-wired independently of this preset (a configured
+`ui_layout`/`AGNES_UI_LAYOUT` is tolerated but inert — ignored with its own
+startup warning; see `docs/CONFIGURATION.md`). Deliberately NOT coupled:
 `store.verification_enabled` (a governance opt-in — it needs a reviewer, not
 a theme) and `library.show_unverified_trust` (the trust vocabulary is
 already gated to the paper theme itself). The `/admin/server-config` flag

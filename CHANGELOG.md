@@ -10,6 +10,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING**: the classic experience (topnav chrome, pre-redesign pages, legacy chat) is retired; every instance renders the redesign (rail + paper default). Explicit theme choices still win; `instance.ui_layout`/`experience: classic` are ignored with a startup warning. Stack membership defaults to auto-membership (`features.stack_auto_membership` default flips to true; an explicit `false` still wins).
+
+### Removed
+
+- **The classic chrome's frozen legacy templates and guided tour are deleted.** 19 byte-for-byte pre-redesign template copies (the catalog/marketplace/library/memory-domain/profile detail and list pages, the pre-redesign `/agents` builder, and others), the legacy guided-tour overlay, and the topnav chrome partial itself are gone — every page now renders its single redesigned template unconditionally, with no second chrome left to keep in parity. The standalone `/me/ai-connector` page is retired the same way: it is now an unconditional redirect to `/how-it-works#connect` rather than a page that rendered on the classic chrome.
+
 ## [0.83.14] - 2026-08-14
 
 ### Added
