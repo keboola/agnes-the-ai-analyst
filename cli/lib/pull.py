@@ -656,18 +656,41 @@ def _fetch_part_with_retry(fetch_part, relpath: str, dest: Path, expected: str) 
     Note this sits ON TOP of `stream_download`'s own transient-error retries,
     so a persistently failing part now costs up to (its attempts x these) round
     trips, serially, before the table gives up.
+
+    Two consecutive reads yielding the SAME wrong hash stop the loop early: the
+    server is serving stable bytes that simply are not the ones the manifest
+    describes, and re-reading identical bytes a third time cannot change that.
+    This is the common case in practice, not a micro-optimization — a part
+    rewritten server-side without `sync_state` being re-hashed (a backfill
+    running between rebuilds) publishes a hash that no longer matches anything
+    on disk, and stays that way until the next rebuild. Retrying a plain "hash
+    mismatch" reads like corruption and sends people hunting a transfer bug, so
+    that case gets its own message naming the real cause.
     """
     last_err: str | None = None
+    prev_got: str | None = None
     for attempt in range(_DOWNLOAD_RETRIES + 1):
         try:
             fetch_part(relpath, dest)
             got = _file_md5(dest)
             if got == expected:
                 return None
+            if got == prev_got:
+                # Deterministic: same bytes, twice. Not a transfer problem.
+                dest.unlink(missing_ok=True)
+                return (
+                    f"part {relpath} hash mismatch: expected {expected[:12]}, got {got[:12]} "
+                    f"— identical on {attempt + 1} reads, so the server's bytes are stable and "
+                    f"the published hash is stale. A transfer retry cannot fix this; the source "
+                    f"needs a rebuild to re-hash it."
+                )
+            prev_got = got
             # Truncated like `_verify_and_promote`'s message — same failure,
             # same shape, whichever layout the table happens to use.
             last_err = f"part {relpath} hash mismatch: expected {expected[:12]}, got {got[:12]}"
         except Exception as exc:
+            # Transport errors keep the full budget: unlike a stable hash, a
+            # second connection failure is not evidence the third will fail.
             last_err = f"part {relpath} fetch failed: {exc}"
         # Never leave a rejected part's bytes in staging: the next attempt must
         # not be able to verify a stale file if its fetch dies before writing.
