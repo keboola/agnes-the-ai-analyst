@@ -57,6 +57,12 @@ _KEBOOLA_HEADER_DETAIL = {
     "invalid_token": "Invalid or expired token",
     "verify_failed": "Could not verify the token against the Keboola stack",
     "not_configured": "Keboola token authentication is not configured",
+    # Transient-failure reasons ("rate_limited" is special-cased to 429 before
+    # this map): the .get() fallback says "Invalid or expired token", which
+    # would tell a caller hitting an outage to rotate a good credential
+    # (Devin Review on PR #1288). Both must read as retryable.
+    "keboola_verify_error": "Token verification failed unexpectedly — this is a server-side problem, retry later",
+    "keboola_lookup_error": "The token verified but the account lookup failed — this is a server-side problem, retry later",
 }
 
 

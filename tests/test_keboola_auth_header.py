@@ -251,6 +251,18 @@ class TestResolveUnit:
         assert user is None
         assert reason == "keboola_lookup_error"
 
+    def test_transient_failure_reasons_do_not_read_as_invalid_token(self):
+        # Devin Review on PR #1288: without map entries, both transient
+        # reasons fell through .get()'s "Invalid or expired token" fallback --
+        # telling a caller hitting an outage to rotate a good credential.
+        from app.auth.dependencies import _KEBOOLA_HEADER_DETAIL
+
+        for reason in ("keboola_verify_error", "keboola_lookup_error"):
+            detail = _KEBOOLA_HEADER_DETAIL.get(reason)
+            assert detail, f"{reason} must have an explicit 401 detail"
+            assert "Invalid or expired" not in detail
+            assert "retry" in detail.lower()
+
 
 class TestRejectKeboolaHeaderCredential:
     """Unit coverage for app.auth.dependencies.reject_keboola_header_credential

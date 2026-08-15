@@ -48,7 +48,18 @@ _LOCKOUT_RESCUE_LOGGED: Optional[tuple] = None
 def _provider_available(name: str) -> bool:
     """Config-completeness of one provider (``password``: nothing to
     configure). Probes lazily and treats a raising probe as unavailable,
-    matching the login page's try/except around the same calls."""
+    matching the login page's try/except around the same calls.
+
+    Raise-as-unavailable is a deliberate direction of failure: on a healthy
+    instance these probes are in-memory config/env reads that do not raise,
+    and if one somehow does, reading it as available would leave the login
+    page offering only a provider that is actively broken — a lockout. The
+    cost is that a transient raise can trip ``_rescue_if_unusable`` and widen
+    the offering to all providers for the fault's duration (Devin Review on
+    PR #1288) — accepted, because the rescue's one-shot error log makes it
+    loud and every offered provider still authenticates on its own merits;
+    availability here gates OFFERING, never identity.
+    """
     module_path = _AVAILABILITY_PROBES.get(name)
     if module_path is None:
         return True
