@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- **`/admin/news` no longer jumps a beat after it loads.** Both news surfaces style themselves through a body class that a `DOMContentLoaded` handler added, so the browser painted the page once with the shell's own geometry and again with the page's — on `/admin/news` that also re-imposed a `max-width` over the admin shell's `container--full`, moving the whole two-column split (sidebar included) 219px off the rail on a 1700px viewport, 16px up, and narrowing the content column by 268px. The class is now server-rendered (`body_attrs`) on both pages and the admin editor no longer redeclares `.container` geometry, so the sidebar rests flush with the rail like every other admin page. A design-system contract guard now rejects `.container` width/gutter overrides in leaf templates — the descendant-selector spelling of the `.container:has()` opt-out the existing guard already blocked.
+
 ## [0.83.20] - 2026-08-15
 
 ### Fixed

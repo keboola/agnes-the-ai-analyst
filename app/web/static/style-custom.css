@@ -5931,11 +5931,16 @@ textarea.form-textarea::placeholder { color: var(--text-muted); }
 
 /* =====================================================
    /news page — page chrome
-   body.news-page class added by a DOMContentLoaded
-   script in news.html so these rules only apply there.
+   body.news-page comes from news.html's `body_attrs`
+   block, so these rules only apply there — and they are
+   in effect at first paint. Do not move that class to a
+   DOMContentLoaded handler: the padding below differs
+   from the shell's, so the page would shift once loaded.
    ===================================================== */
 body.news-page { background: var(--background); }
-body.news-page .container { max-width: 1280px; padding: 0 var(--space-8) var(--space-10); }
+/* max-width intentionally omitted — the shell's `--width-app` is already
+   1280px, and restating it here only invites drift from the canonical value. */
+body.news-page .container { padding: 0 var(--space-8) var(--space-10); }
 body.news-page main { color: var(--text-primary); line-height: 1.6; }
 
 body.news-page .news-card {

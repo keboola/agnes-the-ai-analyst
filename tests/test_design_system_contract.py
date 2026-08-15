@@ -591,6 +591,42 @@ def test_no_container_has_optout_in_leaf_templates() -> None:
     )
 
 
+# `body.X-page .container { max-width: … }` — the same opt-out written with a
+# descendant selector instead of `:has()`, and the one the `:has()` guard above
+# does not see. It outranks the canonical modifiers (0,2,1 beats `.container--full`'s
+# 0,1,0), so a leaf template silently re-narrows and re-centres the whole page
+# shell — including the admin sidebar, which base_admin.html deliberately keeps
+# flush with the rail.
+#
+# `(?![\w-])` so sibling classes of their own (`.container-memory`) and the
+# canonical modifiers (`.container--wide`) are not read as the shell itself.
+_CONTAINER_GEOMETRY_RE = re.compile(
+    r"[^{}]*\.container(?![\w-])[^{}]*\{[^}]*\b(?:max-width|min-width|width|padding(?:-(?:left|right))?|margin)\s*:",
+    re.MULTILINE,
+)
+
+
+def test_no_container_geometry_override_in_leaf_templates() -> None:
+    """A leaf template must not redeclare the page shell's box geometry on
+    `.container`. Width/gutters belong to the canonical
+    `.container--wide/--narrow/--full` modifiers, which any page-scoped
+    descendant selector would silently outrank."""
+    offenders: list[str] = []
+    for path in _all_html():
+        if path.name in _CANONICAL_LAYOUT_FILES:
+            continue
+        css = _inline_styles_in_template(path.read_text(encoding="utf-8"))
+        # Strip CSS comments — several templates *document* the shell's rules.
+        css = re.sub(r"/\*.*?\*/", " ", css, flags=re.DOTALL)
+        for match in _CONTAINER_GEOMETRY_RE.finditer(css):
+            offenders.append(f"{path}: {' '.join(match.group(0).split())[:90]}")
+    assert not offenders, (
+        "`.container` geometry override found in a leaf template — set width via a "
+        "canonical `.container--wide/--narrow/--full` modifier on the "
+        "`container_modifier` block instead:\n" + "\n".join(f"  {o}" for o in offenders)
+    )
+
+
 def test_no_bare_root_block_in_leaf_templates() -> None:
     """A bare `:root { … }` block in a leaf template shadows the canonical
     design tokens (cf. the `admin_tables :root{--primary:…}` collapse, #367).
