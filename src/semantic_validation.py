@@ -486,18 +486,20 @@ def _build_summary(
     error_count = sum(1 for v in violations if v.get("severity") == "error")
     warning_count = len(violations) - error_count
 
+    # Every branch keeps the detection read-out, and the counts must agree
+    # with len(violations) -- an error must not hide the advisory count nor
+    # drop the dataset/metric sentence (Devin Review on PR #1319, round 8).
+    base = f"Query references {len(used_datasets)} dataset(s) and {len(used_metrics)} metric(s) from the semantic layer"
     parts: list[str] = []
     if error_count:
-        parts.append(f"{error_count} constraint violation(s) found -- see 'violations'.")
-    else:
-        base = (
-            f"Query references {len(used_datasets)} dataset(s) and {len(used_metrics)} "
-            "metric(s) from the semantic layer"
-        )
+        counts = f"{error_count} blocking"
         if warning_count:
-            parts.append(f"{base}; {warning_count} advisory constraint violation(s) detected -- see 'violations'.")
-        else:
-            parts.append(f"{base}; no constraint violations detected.")
+            counts += f" and {warning_count} advisory"
+        parts.append(f"{base}; {counts} constraint violation(s) found -- see 'violations'.")
+    elif warning_count:
+        parts.append(f"{base}; {warning_count} advisory constraint violation(s) detected -- see 'violations'.")
+    else:
+        parts.append(f"{base}; no constraint violations detected.")
     if post_execution_checks:
         parts.append(
             f"{len(post_execution_checks)} constraint(s) cannot be checked before execution -- "

@@ -516,6 +516,38 @@ class TestValidateQuery:
         assert "no constraint violations" not in result["summary"]
         assert "advisory" in result["summary"]
 
+    def test_summary_with_an_error_still_names_advisory_count_and_readout(self):
+        # Devin Review on PR #1319 (round 8): with a blocking violation
+        # present, the summary previously reported only the error count --
+        # hiding the advisory violation and dropping the dataset/metric
+        # read-out entirely. The counts must agree with len(violations).
+        document = _fixture_document()
+        document["custom_extensions"] = [
+            _agnes_extension(
+                [
+                    {
+                        "name": "eu_only",
+                        "type": "required_filter",
+                        "rule": "region = 'EU'",
+                        "severity": "error",
+                        "metrics": ["revenue"],
+                    },
+                    {
+                        "name": "prefer_date_filter",
+                        "type": "required_filter",
+                        "rule": "order_date",
+                        "severity": "warning",
+                        "metrics": ["revenue"],
+                    },
+                ]
+            )
+        ]
+        result = validate_query("SELECT SUM(amount) AS revenue FROM orders", [document])
+        assert result["valid"] is False
+        assert len(result["violations"]) == 2
+        assert "1 blocking and 1 advisory" in result["summary"]
+        assert "Query references" in result["summary"]
+
     def test_no_cross_document_mixed_warning_when_a_common_dialect_exists(self):
         # One metric per document; both offer DUCKDB (one alongside a
         # SNOWFLAKE alternative) -- composable, so no mixed-dialect warning.
