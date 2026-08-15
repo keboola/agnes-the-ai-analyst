@@ -1,7 +1,6 @@
 # tests/test_v2_sample.py
-import asyncio
 import importlib
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 import pytest
 from fastapi import HTTPException
 
@@ -10,6 +9,7 @@ from fastapi import HTTPException
 def reload_db(tmp_path, monkeypatch):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     import src.db as db_module
+
     importlib.reload(db_module)
     yield db_module
 
@@ -17,9 +17,14 @@ def reload_db(tmp_path, monkeypatch):
 def _seed(conn):
     _ensure_admin1(conn)
     from src.repositories.table_registry import TableRegistryRepository
+
     TableRegistryRepository(conn).register(
-        id="bq_view", name="bq_view", source_type="bigquery",
-        bucket="ds", source_table="bq_view", query_mode="remote",
+        id="bq_view",
+        name="bq_view",
+        source_type="bigquery",
+        bucket="ds",
+        source_table="bq_view",
+        query_mode="remote",
     )
 
 
@@ -29,14 +34,15 @@ def _ensure_admin1(conn):
     from src.db import SYSTEM_ADMIN_GROUP
     from src.repositories.users import UserRepository
     from src.repositories.user_group_members import UserGroupMembersRepository
-    if UserRepository(conn).get_by_id('admin1') is None:
-        UserRepository(conn).create(id='admin1', email='admin1@test.com', name='Admin')
-    admin_gid = conn.execute(
-        'SELECT id FROM user_groups WHERE name = ?', [SYSTEM_ADMIN_GROUP]
-    ).fetchone()
+
+    if UserRepository(conn).get_by_id("admin1") is None:
+        UserRepository(conn).create(id="admin1", email="admin1@test.com", name="Admin")
+    admin_gid = conn.execute("SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP]).fetchone()
     if admin_gid:
         UserGroupMembersRepository(conn).add_member(
-            'admin1', admin_gid[0], source='system_seed',
+            "admin1",
+            admin_gid[0],
+            source="system_seed",
         )
 
 
@@ -44,14 +50,17 @@ def _bq(billing="billing-proj", data="data-proj"):
     """Build a BqAccess wired to default factories. For tests that monkeypatch
     `_fetch_bq_sample` whole, the inner factories are never called."""
     from connectors.bigquery.access import BqAccess, BqProjects
+
     return BqAccess(BqProjects(billing=billing, data=data))
 
 
 class TestSampleEndpoint:
     def test_returns_n_rows_for_bq_table(self, reload_db, monkeypatch):
         from app.api import v2_sample
+
         monkeypatch.setattr(
-            v2_sample, "_fetch_bq_sample",
+            v2_sample,
+            "_fetch_bq_sample",
             lambda bq, dataset, table, n: [
                 {"event_date": "2026-04-27", "country_code": "CZ"},
                 {"event_date": "2026-04-26", "country_code": "SK"},
@@ -69,10 +78,13 @@ class TestSampleEndpoint:
 
     def test_caps_n_at_100(self, reload_db, monkeypatch):
         from app.api import v2_sample
+
         captured = {}
+
         def fake_fetch(bq, dataset, table, n):
             captured["n"] = n
             return []
+
         monkeypatch.setattr(v2_sample, "_fetch_bq_sample", fake_fetch)
         conn = reload_db.get_system_db()
         try:
@@ -88,11 +100,12 @@ class TestSampleEndpoint:
         scan used to crash the response with `ValueError: Out of range
         float values are not JSON compliant: nan`. The endpoint now
         sanitizes NaN/±inf to None before returning the payload."""
-        import math
         from app.api import v2_sample
+
         v2_sample._sample_cache.clear()
         monkeypatch.setattr(
-            v2_sample, "_fetch_bq_sample",
+            v2_sample,
+            "_fetch_bq_sample",
             lambda bq, dataset, table, n: [
                 {"col": float("nan"), "ok": 1.0},
                 {"col": float("inf"), "ok": 2.0},
@@ -115,17 +128,19 @@ class TestSampleEndpoint:
         # in strict mode (allow_nan=False) — that's what FastAPI's
         # serializer enforces internally.
         import json as _json
+
         _json.dumps(data, allow_nan=False)  # must not raise
 
     def test_sample_handles_nested_nan_in_arrays(self, reload_db, monkeypatch):
         """Sanitizer recurses into nested lists/dicts — array-typed BQ
         cells with NaN inside also serialize cleanly."""
         from app.api import v2_sample
+
         v2_sample._sample_cache.clear()
         monkeypatch.setattr(
-            v2_sample, "_fetch_bq_sample",
-            lambda *a, **kw: [{"arr": [1.0, float("nan"), 3.0],
-                                "nested": {"x": float("inf")}}],
+            v2_sample,
+            "_fetch_bq_sample",
+            lambda *a, **kw: [{"arr": [1.0, float("nan"), 3.0], "nested": {"x": float("inf")}}],
         )
         conn = reload_db.get_system_db()
         try:
@@ -137,14 +152,17 @@ class TestSampleEndpoint:
         assert data["rows"][0]["arr"] == [1.0, None, 3.0]
         assert data["rows"][0]["nested"] == {"x": None}
         import json as _json
+
         _json.dumps(data, allow_nan=False)
 
     def test_rbac_check_runs_before_cache(self, reload_db, monkeypatch):
         """Regression: cache check used to come before RBAC, leaking sample rows
         cached by an authorized user to subsequent unauthorized callers."""
         from app.api import v2_sample
+
         monkeypatch.setattr(
-            v2_sample, "_fetch_bq_sample",
+            v2_sample,
+            "_fetch_bq_sample",
             lambda *a, **kw: [{"col": "secret"}],
         )
         monkeypatch.setattr(
@@ -200,10 +218,14 @@ class TestSampleEndpoint:
         try:
             _ensure_admin1(conn)
             from src.repositories.table_registry import TableRegistryRepository
+
             TableRegistryRepository(conn).register(
-                id="order_economics", name="order_economics",
-                source_type="bigquery", query_mode="materialized",
-                bucket="finance_unit_economics", source_table="order_economics",
+                id="order_economics",
+                name="order_economics",
+                source_type="bigquery",
+                query_mode="materialized",
+                bucket="finance_unit_economics",
+                source_table="order_economics",
             )
             user = {"id": "admin1", "email": "a@x.com"}
             data = v2_sample.build_sample(conn, user, "order_economics", n=5, bq=_bq())
@@ -236,6 +258,7 @@ class TestBqAccessErrors:
         """The sample-result TTL cache is module-level; clear it between
         tests so cached payloads from a sibling test don't mask call paths."""
         from app.api import v2_sample
+
         v2_sample._sample_cache.clear()
         yield
         v2_sample._sample_cache.clear()
@@ -249,9 +272,7 @@ class TestBqAccessErrors:
         from google.api_core.exceptions import Forbidden
 
         mock_conn = MagicMock()
-        mock_conn.execute.side_effect = Forbidden(
-            "Permission denied: serviceusage.services.use on project foo"
-        )
+        mock_conn.execute.side_effect = Forbidden("Permission denied: serviceusage.services.use on project foo")
         bq = bq_access(duckdb_conn=mock_conn, billing="billing-proj", data="data-proj")
 
         conn = reload_db.get_system_db()
@@ -262,9 +283,15 @@ class TestBqAccessErrors:
             # Endpoint is async — drive it directly. dependency_overrides only
             # fires through TestClient/HTTP, so pass `bq=bq` explicitly.
             with pytest.raises(HTTPException) as exc_info:
-                (v2_sample.sample(
-                    table_id="bq_view", n=5, user=user, conn=conn, bq=bq,
-                ))
+                (
+                    v2_sample.sample(
+                        table_id="bq_view",
+                        n=5,
+                        user=user,
+                        conn=conn,
+                        bq=bq,
+                    )
+                )
         finally:
             conn.close()
 
@@ -281,9 +308,7 @@ class TestBqAccessErrors:
         from google.api_core.exceptions import Forbidden
 
         mock_conn = MagicMock()
-        mock_conn.execute.side_effect = Forbidden(
-            "Access Denied: Table foo.bar.baz: User does not have permission"
-        )
+        mock_conn.execute.side_effect = Forbidden("Access Denied: Table foo.bar.baz: User does not have permission")
         bq = bq_access(duckdb_conn=mock_conn, billing="billing-proj", data="data-proj")
 
         conn = reload_db.get_system_db()
@@ -292,9 +317,15 @@ class TestBqAccessErrors:
             user = {"id": "admin1", "email": "a@x.com"}
 
             with pytest.raises(HTTPException) as exc_info:
-                (v2_sample.sample(
-                    table_id="bq_view", n=5, user=user, conn=conn, bq=bq,
-                ))
+                (
+                    v2_sample.sample(
+                        table_id="bq_view",
+                        n=5,
+                        user=user,
+                        conn=conn,
+                        bq=bq,
+                    )
+                )
         finally:
             conn.close()
 
@@ -310,9 +341,7 @@ class TestBqAccessErrors:
         from google.api_core.exceptions import BadRequest
 
         mock_conn = MagicMock()
-        mock_conn.execute.side_effect = BadRequest(
-            "Syntax error: unexpected token at line 1, column 5"
-        )
+        mock_conn.execute.side_effect = BadRequest("Syntax error: unexpected token at line 1, column 5")
         bq = bq_access(duckdb_conn=mock_conn, billing="billing-proj", data="data-proj")
 
         conn = reload_db.get_system_db()
@@ -321,9 +350,15 @@ class TestBqAccessErrors:
             user = {"id": "admin1", "email": "a@x.com"}
 
             with pytest.raises(HTTPException) as exc_info:
-                (v2_sample.sample(
-                    table_id="bq_view", n=5, user=user, conn=conn, bq=bq,
-                ))
+                (
+                    v2_sample.sample(
+                        table_id="bq_view",
+                        n=5,
+                        user=user,
+                        conn=conn,
+                        bq=bq,
+                    )
+                )
         finally:
             conn.close()
 
@@ -358,9 +393,15 @@ class TestBqAccessErrors:
         try:
             _seed(conn)
             user = {"id": "admin1", "email": "a@x.com"}
-            (v2_sample.sample(
-                table_id="bq_view", n=5, user=user, conn=conn, bq=bq,
-            ))
+            (
+                v2_sample.sample(
+                    table_id="bq_view",
+                    n=5,
+                    user=user,
+                    conn=conn,
+                    bq=bq,
+                )
+            )
         finally:
             conn.close()
 
@@ -410,9 +451,7 @@ class TestNotSyncedDetail:
         try:
             _ensure_admin1(conn)
             self._register_keboola_row(conn, "kbc_broken")
-            SyncStateRepository(conn).set_error(
-                "kbc_broken", "GET .../export-async -> HTTP 404: nonexistent table"
-            )
+            SyncStateRepository(conn).set_error("kbc_broken", "GET .../export-async -> HTTP 404: nonexistent table")
             user = {"id": "admin1", "email": "a@x.com"}
             with pytest.raises(v2_sample.TableNotSyncedError) as exc_info:
                 v2_sample.build_sample(conn, user, "kbc_broken", n=5, bq=_bq())
@@ -527,8 +566,13 @@ class TestByDesignNotLocalTablesDoNotBlameTheSync:
 
         with _pytest.raises(ValueError, match="server_only"):
             RegisterTableRequest(
-                id="x", name="x", source_type="keboola", bucket="in.c-main",
-                source_table="orders", query_mode="remote", server_only=True,
+                id="x",
+                name="x",
+                source_type="keboola",
+                bucket="in.c-main",
+                source_table="orders",
+                query_mode="remote",
+                server_only=True,
             )
 
     def test_still_a_not_synced_error_so_existing_catches_and_the_404_hold(self, reload_db):
@@ -618,3 +662,89 @@ class TestPartitionedTablePreview:
         from app.utils import resolve_local_parquet_glob
 
         assert resolve_local_parquet_glob("kbc_empty", "keboola") is None
+
+
+class TestSampleAccessPolicyBqBranch:
+    """Task 13 (§8 ratchet) — the BQ live-query branch of `build_sample` had
+    NO access-policy enforcement at all: `_fetch_bq_sample` pushes straight
+    to BigQuery with no `policied_relation` call anywhere on the path.
+    `_fetch_bq_sample` is monkeypatched to return a recognizable row so a
+    regression (the new guard silently not firing) shows up as leaked
+    content reaching the caller, not just a passing assert.
+    """
+
+    def _register_policied_bq_table(self, conn, table_id: str) -> None:
+        from src.repositories.table_registry import TableRegistryRepository
+
+        repo = TableRegistryRepository(conn)
+        repo.register(
+            id=table_id,
+            name=table_id,
+            source_type="bigquery",
+            bucket="ds",
+            source_table=table_id,
+            query_mode="remote",
+        )
+        repo.set_access_policy(table_id, sql=f"SELECT * FROM {table_id}", note="test", updated_by="admin")
+
+    def test_non_admin_fails_closed_instead_of_leaking_the_raw_bq_rows(self, reload_db, monkeypatch):
+        monkeypatch.setenv("AGNES_ACCESS_POLICIES_ENABLED", "true")
+        from app.api import v2_sample
+
+        leaked = [{"secret_col": "leaked-row"}]
+        monkeypatch.setattr(v2_sample, "_fetch_bq_sample", lambda *a, **kw: leaked)
+        # can_access_table's real stack-gate needs a data-package grant this
+        # test has no reason to set up — the policy-guard behavior under
+        # test fires AFTER that check, so stub it exactly like
+        # test_rbac_check_runs_before_cache above does.
+        monkeypatch.setattr("app.api.v2_sample.can_access_table", lambda user, tid, conn: True)
+
+        conn = reload_db.get_system_db()
+        try:
+            _ensure_admin1(conn)
+            self._register_policied_bq_table(conn, "bq_policied")
+            non_admin = {"id": "viewer1", "email": "viewer@x.com"}
+            with pytest.raises(HTTPException) as exc_info:
+                v2_sample.build_sample(conn, non_admin, "bq_policied", n=2, bq=_bq())
+        finally:
+            conn.close()
+        assert exc_info.value.status_code == 500
+        assert exc_info.value.detail == {"reason": "policy_error", "table": "bq_policied"}
+
+    def test_admin_bypass_is_unaffected(self, reload_db, monkeypatch):
+        """Admin/no-policy unchanged (§12) — the guard checks
+        `policied_relation`'s own admin bypass, not a bare
+        `access_policy_sql` truthiness, so an admin keeps reading the raw
+        sample exactly as before this change."""
+        monkeypatch.setenv("AGNES_ACCESS_POLICIES_ENABLED", "true")
+        from app.api import v2_sample
+
+        admin_rows = [{"secret_col": "admin-visible-row"}]
+        monkeypatch.setattr(v2_sample, "_fetch_bq_sample", lambda *a, **kw: admin_rows)
+
+        conn = reload_db.get_system_db()
+        try:
+            _ensure_admin1(conn)
+            self._register_policied_bq_table(conn, "bq_policied_admin")
+            admin = {"id": "admin1", "email": "admin1@test.com"}
+            data = v2_sample.build_sample(conn, admin, "bq_policied_admin", n=2, bq=_bq())
+        finally:
+            conn.close()
+        assert data["rows"] == admin_rows
+
+    def test_non_policied_bq_table_is_unaffected(self, reload_db, monkeypatch):
+        """The inert case: a table with no access_policy_sql keeps the
+        pre-existing (unfiltered) BQ-sample behavior exactly."""
+        from app.api import v2_sample
+
+        rows = [{"event_date": "2026-04-27"}]
+        monkeypatch.setattr(v2_sample, "_fetch_bq_sample", lambda *a, **kw: rows)
+
+        conn = reload_db.get_system_db()
+        try:
+            _seed(conn)  # registers "bq_view" with no access_policy_sql
+            user = {"id": "admin1", "email": "a@x.com"}
+            data = v2_sample.build_sample(conn, user, "bq_view", n=2, bq=_bq())
+        finally:
+            conn.close()
+        assert data["rows"] == rows

@@ -98,6 +98,7 @@ class TestFeatureFlagsRegistry:
             "mcp_source_url_strict",
             "mcp_connector_ui",
             "agent_profiles",
+            "access_policies",
             "keboola_token_header",
             "keboola_multi_project_mode",
         }
@@ -244,6 +245,7 @@ class TestServerConfigFeatureFlagsInventory:
             "mcp_source_url_strict",
             "mcp_connector_ui",
             "agent_profiles",
+            "access_policies",
             "keboola_token_header",
             "keboola_multi_project_mode",
         }

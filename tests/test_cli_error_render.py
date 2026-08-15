@@ -10,6 +10,7 @@ pretty-prints them; falls back to truncated form for anything else.
 
 Closes part of #160 §4.7.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -18,6 +19,7 @@ import pytest
 @pytest.fixture
 def render_error():
     from cli.error_render import render_error
+
     return render_error
 
 
@@ -25,17 +27,19 @@ def test_renders_typed_bq_access_error(render_error):
     """`{detail: {kind, hint, billing_project, data_project}}` from
     BqAccessError surfaces as a multi-line block with the kind line, the
     key/value pairs, and the hint word-wrapped at 80 cols."""
-    body = {"detail": {
-        "kind": "cross_project_forbidden",
-        "message": "USER_PROJECT_DENIED on bigquery.googleapis.com",
-        "billing_project": "",
-        "data_project": "prj-example-data-001",
-        "hint": (
-            "Set data_source.bigquery.billing_project in /admin/server-config "
-            "to a project where the SA has serviceusage.services.use, or "
-            "grant the SA that role on the data project."
-        ),
-    }}
+    body = {
+        "detail": {
+            "kind": "cross_project_forbidden",
+            "message": "USER_PROJECT_DENIED on bigquery.googleapis.com",
+            "billing_project": "",
+            "data_project": "prj-example-data-001",
+            "hint": (
+                "Set data_source.bigquery.billing_project in /admin/server-config "
+                "to a project where the SA has serviceusage.services.use, or "
+                "grant the SA that role on the data project."
+            ),
+        }
+    }
     out = render_error(502, body)
     # Single-line `f"HTTP {code}: ..."` style is the OLD form. The new
     # renderer must produce multi-line output.
@@ -53,17 +57,19 @@ def test_renders_remote_scan_too_large(render_error):
     """`{detail: {reason: 'remote_scan_too_large', scan_bytes, limit_bytes,
     tables, suggestion}}` from the new /api/query guardrail formats with
     the bytes + tables + suggestion clearly visible."""
-    body = {"detail": {
-        "reason": "remote_scan_too_large",
-        "scan_bytes": 10737418240,  # 10 GiB
-        "limit_bytes": 5368709120,  # 5 GiB
-        "tables": ["finance.unit_economics"],
-        "suggestion": (
-            "Use `agnes snapshot create <id> --select <cols> --where <predicate> "
-            "--estimate` to materialize a filtered subset, then query "
-            "the snapshot locally."
-        ),
-    }}
+    body = {
+        "detail": {
+            "reason": "remote_scan_too_large",
+            "scan_bytes": 10737418240,  # 10 GiB
+            "limit_bytes": 5368709120,  # 5 GiB
+            "tables": ["finance.unit_economics"],
+            "suggestion": (
+                "Use `agnes snapshot create <id> --select <cols> --where <predicate> "
+                "--estimate` to materialize a filtered subset, then query "
+                "the snapshot locally."
+            ),
+        }
+    }
     out = render_error(400, body)
     assert "remote_scan_too_large" in out
     assert "10737418240" in out or "10 GiB" in out or "10737418240" in str(out)
@@ -74,14 +80,16 @@ def test_renders_remote_scan_too_large(render_error):
 def test_renders_bq_path_not_registered(render_error):
     """`{detail: {reason: 'bq_path_not_registered', path, hint}}` from the
     RBAC patch formats path + hint clearly."""
-    body = {"detail": {
-        "reason": "bq_path_not_registered",
-        "path": 'bq."secret_ds"."secret_tbl"',
-        "hint": "Direct bq.* references must point to a registered table.",
-    }}
+    body = {
+        "detail": {
+            "reason": "bq_path_not_registered",
+            "path": 'bq."secret_ds"."secret_tbl"',
+            "hint": "Direct bq.* references must point to a registered table.",
+        }
+    }
     out = render_error(403, body)
     assert "bq_path_not_registered" in out
-    assert 'secret_ds' in out
+    assert "secret_ds" in out
     assert "registered table" in out
 
 
@@ -106,15 +114,16 @@ def test_renders_empty_string_as_empty_marker(render_error):
     """Devin Review iter #6: `billing_project: ""` in cross_project_forbidden
     is the key diagnostic showing WHY the operator hits USER_PROJECT_DENIED.
     The renderer must show empty strings as `(empty)`, not silently drop them."""
-    body = {"detail": {
-        "kind": "cross_project_forbidden",
-        "billing_project": "",            # the key diagnostic
-        "data_project": "prj-example",
-        "hint": "Set data_source.bigquery.billing_project",
-    }}
+    body = {
+        "detail": {
+            "kind": "cross_project_forbidden",
+            "billing_project": "",  # the key diagnostic
+            "data_project": "prj-example",
+            "hint": "Set data_source.bigquery.billing_project",
+        }
+    }
     out = render_error(502, body)
-    assert "billing_project: (empty)" in out, \
-        f"empty billing_project must render as (empty); got:\n{out}"
+    assert "billing_project: (empty)" in out, f"empty billing_project must render as (empty); got:\n{out}"
     assert "data_project: prj-example" in out
 
 
@@ -122,11 +131,13 @@ def test_renders_code_labeled_detail(render_error):
     """`{detail: {code, message, submission_id}}` (store 409s like
     prior_version_pending) renders as a labeled block, not a truncated
     python-dict dump."""
-    body = {"detail": {
-        "code": "prior_version_pending",
-        "message": "A previous edit is still under review.",
-        "submission_id": "abc123",
-    }}
+    body = {
+        "detail": {
+            "code": "prior_version_pending",
+            "message": "A previous edit is still under review.",
+            "submission_id": "abc123",
+        }
+    }
     out = render_error(409, body)
     assert out.startswith("Error: prior_version_pending (HTTP 409)")
     assert "abc123" in out
@@ -143,18 +154,20 @@ def test_renders_validation_failed_issue_per_line(render_error):
             "field": "frontmatter.description",
             "code": "too_short",
             "hint": f"Description number {i} is too short (minimum 60 characters). "
-                    "Say when to use the skill and what it does.",
+            "Say when to use the skill and what it does.",
         }
         for i in range(8)
     ]
-    body = {"detail": {
-        "code": "validation_failed",
-        "checks": {
-            "manifest": {"status": "pass", "issues": []},
-            "content": {"status": "fail", "issues": issues},
-            "quality": {"status": "pass", "issues": []},
-        },
-    }}
+    body = {
+        "detail": {
+            "code": "validation_failed",
+            "checks": {
+                "manifest": {"status": "pass", "issues": []},
+                "content": {"status": "fail", "issues": issues},
+                "quality": {"status": "pass", "issues": []},
+            },
+        }
+    }
     out = render_error(422, body)
     assert out.startswith("Error: validation_failed (HTTP 422)")
     # Every single issue is present — no first-issue-only truncation.
@@ -170,3 +183,86 @@ def test_validation_failed_without_issues_still_renders(render_error):
     body = {"detail": {"code": "validation_failed", "checks": {"content": {"status": "fail"}}}}
     out = render_error(422, body)
     assert "validation_failed" in out
+
+
+# ---------------------------------------------------------------------------
+# Table access policies (design doc §16) -- reason-keyed error dicts raised
+# by every enforcement surface (`app/api/query.py`, `v2_sample.py`,
+# `v2_scan.py`, `mcp_per_table.py`). These render through the SAME generic
+# `_format_dict` path exercised above, plus a dedicated next-step hint (§16
+# says each error "must say" something actionable an LLM can act on).
+# ---------------------------------------------------------------------------
+
+
+def test_renders_policy_name_collision(render_error):
+    """`{reason, table, fix}` -- the server already sends `fix: "rename
+    your CTE"` on every call site, so this must surface verbatim."""
+    body = {
+        "detail": {
+            "reason": "policy_name_collision",
+            "table": "tbl_orders",
+            "fix": "rename your CTE",
+        }
+    }
+    out = render_error(400, body)
+    assert "policy_name_collision" in out
+    assert "tbl_orders" in out
+    assert "rename" in out.lower() and "cte" in out.lower()
+
+
+def test_renders_policy_identity_unresolvable_with_solo_session_hint(render_error):
+    """Every current server call site sends a BARE `{"reason": ...}` with
+    no other key at all -- the "open it in a solo session" next step must
+    come from the CLI renderer itself, not the wire payload, or an agent
+    retrying the same co-drive session loops forever."""
+    body = {"detail": {"reason": "policy_identity_unresolvable"}}
+    out = render_error(403, body)
+    assert "policy_identity_unresolvable" in out
+    assert "solo session" in out.lower()
+
+
+def test_renders_policy_mapping_empty_names_table_and_last_sync(render_error):
+    """§15.1 / §16: the mapping table and its `last_sync` must both be
+    visible, plus a hint distinguishing this from an ordinary permission
+    denial (it is a data problem, not an access problem)."""
+    body = {
+        "detail": {
+            "reason": "policy_mapping_empty",
+            "mapping_table": "user_access",
+            "last_sync": "2026-07-01T00:00:00+00:00",
+        }
+    }
+    out = render_error(409, body)
+    assert "policy_mapping_empty" in out
+    assert "user_access" in out
+    assert "2026-07-01" in out
+    assert "administrator" in out.lower()
+
+
+def test_renders_policy_mapping_empty_never_synced(render_error):
+    """`last_sync: null` (the mapping table was registered but never
+    extracted) must not crash the renderer or print a bare `None`-shaped
+    line the operator can't act on."""
+    body = {
+        "detail": {
+            "reason": "policy_mapping_empty",
+            "mapping_table": "user_access",
+            "last_sync": None,
+        }
+    }
+    out = render_error(409, body)
+    assert "policy_mapping_empty" in out
+    assert "user_access" in out
+
+
+def test_renders_policy_error_without_leaking_engine_detail(render_error):
+    """`{reason, table}` only -- §16's closing paragraph: a failing
+    policy's raw engine message can quote literal values from the policy
+    body, so the server never sends one and the renderer must not invent
+    one either. The table name and an actionable next step must still
+    show."""
+    body = {"detail": {"reason": "policy_error", "table": "tbl_orders"}}
+    out = render_error(500, body)
+    assert "policy_error" in out
+    assert "tbl_orders" in out
+    assert "administrator" in out.lower()

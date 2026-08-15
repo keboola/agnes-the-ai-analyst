@@ -292,6 +292,58 @@ class TableRegistryPgRepository:
                 {"d": description, "id": table_id},
             )
 
+    def set_access_policy(
+        self,
+        table_id: str,
+        sql: Optional[str],
+        note: Optional[str],
+        updated_by: str,
+    ) -> None:
+        """Postgres mirror of ``TableRegistryRepository.set_access_policy``.
+
+        ``sql=None`` clears all four ``access_policy_*`` columns; setting a
+        policy re-stamps ``access_policy_updated_at`` to "now".
+        """
+        with self._engine.begin() as conn:
+            if sql is None:
+                conn.execute(
+                    sa.text(
+                        """UPDATE table_registry
+                           SET access_policy_sql = NULL,
+                               access_policy_note = NULL,
+                               access_policy_updated_at = NULL,
+                               access_policy_updated_by = NULL
+                           WHERE id = :id"""
+                    ),
+                    {"id": table_id},
+                )
+                return
+            conn.execute(
+                sa.text(
+                    """UPDATE table_registry
+                       SET access_policy_sql = :sql,
+                           access_policy_note = :note,
+                           access_policy_updated_at = :updated_at,
+                           access_policy_updated_by = :updated_by
+                       WHERE id = :id"""
+                ),
+                {
+                    "sql": sql,
+                    "note": note,
+                    "updated_at": datetime.now(timezone.utc),
+                    "updated_by": updated_by,
+                    "id": table_id,
+                },
+            )
+
+    def set_policy_mapping(self, table_id: str, value: bool) -> None:
+        """Postgres mirror of ``TableRegistryRepository.set_policy_mapping``."""
+        with self._engine.begin() as conn:
+            conn.execute(
+                sa.text("UPDATE table_registry SET policy_mapping = :v WHERE id = :id"),
+                {"v": bool(value), "id": table_id},
+            )
+
     def get(self, table_id: str) -> Optional[Dict[str, Any]]:
         with self._engine.connect() as conn:
             row = (

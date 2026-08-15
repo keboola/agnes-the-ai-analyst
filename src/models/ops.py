@@ -66,6 +66,18 @@ class TableRegistry(Base):
     # v79: named source connections (spec 2026-06-12). NULL => default
     # connection for this row's source_type.
     connection_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    # v116: table access policies (design doc 2026-08-11). One SQL policy
+    # per table, substituted for the table on every server-side read when
+    # access_policies.enabled is on. NULL access_policy_sql = no policy.
+    # access_policy_note is the admin-facing "why" (mandatory at the API
+    # layer when a policy is set, not enforced by the column itself).
+    # policy_mapping marks this table as referenceable from another
+    # table's policy body.
+    access_policy_sql: Mapped[str | None] = mapped_column(String, nullable=True)
+    access_policy_note: Mapped[str | None] = mapped_column(String, nullable=True)
+    access_policy_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    access_policy_updated_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    policy_mapping: Mapped[bool] = mapped_column(Boolean, server_default=text("FALSE"), nullable=False)
 
     __table_args__ = (
         Index("ix_table_registry_source_type", "source_type"),
