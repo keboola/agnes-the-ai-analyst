@@ -10,7 +10,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
-## [0.83.22] - 2026-08-15
+## [0.83.23] - 2026-08-15
 
 ### Fixed
 
@@ -20,6 +20,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **`agnes pull --skip-materialize` is honored by the stack-sync phase.** The flag is plumbed through `_run_stack_sync_from_manifest` → `PullStackOptions` → `_server_table_skip`, so `query_mode='materialized'` manifest rows are skipped in step 8 exactly as they already were in step 4 (#1304). The flag is a fetch opt-out, not an unsubscribe: a previously synced materialized table keeps its state row (and files) under the flag, so a later pull without it can still update or prune the copy instead of orphaning it (Devin review).
 - **Stack-sync downloads report progress instead of hanging silently.** Step 8's fetcher now emits a per-table `stack sync: fetching <table> (<size>)…` / `… done (<bytes> in <s>)` pair on stderr and wires the byte-level `progress_callback` into `stream_download` — a multi-GB pull is visibly alive. `--quiet`/`--json` runs stay silent, matching step 4's progress gating (#1308).
 - **`agnes pull` reveals which workspace it targeted.** Human output gains a `Workspace: <path>` line (suppressed under `--quiet`) and the `--json` payload gains a `workspace` field, so pull-vs-update workspace divergence is now observable (#1312).
+
+## [0.83.22] - 2026-08-15
+
+### Fixed
+
+- **A deleted data app left its credentials on disk.** `docker-compose.host-mount.yml` swaps the `data` named volume for a direct `/data` host bind per service, and `apps-runner` was never added to it — so on every host-mount deployment (which is what the Terraform VMs run) the sidecar's `/data` was a different filesystem from every other container's. Data-app deploys still worked, which is why it went unnoticed: `_resolve_host_path` maps the sidecar's own mount back to a daemon-visible path either way. What broke is the other direction — `_rmtree_config_dir` deletes `${DATA_DIR}/apps/<slug>` from the *app* container's filesystem, found nothing there, and swallowed the `FileNotFoundError`. The `config.json` it exists to remove carries a service JWT and git credentials in plaintext, and was never deleted on any such deployment. A guard now requires every service mounting the `data` named volume to bind `/data` in the overlay, the same "service added to the base file, forgotten in an overlay" class the prod-image-override guard next to it already covers. Operators with data apps already deployed: config dirs stranded in the old named volume are not migrated — `docker volume inspect agnes_data` to find them, and remove the volume's `apps/` tree once the sidecar has been recreated.
 
 ## [0.83.21] - 2026-08-15
 
