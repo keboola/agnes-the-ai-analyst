@@ -33,7 +33,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Internal
 
 - Semantic-layer groundwork: `src/semantic_validation.py` — pure validator core over semantic-model documents (used-object detection, constraint evaluation with static/post-execution split, dialect checks incl. `locally_executable`). No user-visible surface yet; REST/CLI/MCP wiring and the UI land with the storage slice per `docs/superpowers/specs/2026-08-14-semantic-layer-ui-and-agent-parity-design.md`.
-umn.
 
 ## [0.83.18] - 2026-08-14
 

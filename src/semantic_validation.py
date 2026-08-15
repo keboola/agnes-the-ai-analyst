@@ -220,7 +220,14 @@ def extract_constraints(document: dict[str, Any]) -> list[dict[str, Any]]:
 
     constraints: list[dict[str, Any]] = []
     for entry in extensions:
-        if not isinstance(entry, dict) or entry.get("vendor_name") != AGNES_VENDOR_NAME:
+        if not isinstance(entry, dict):
+            continue
+        # vendor_name is imported document text: casefold like every other
+        # name comparison in this module, or a model tagged "Agnes"/"AGNES"
+        # silently drops ALL its constraints -- fail-open (Devin Review on
+        # PR #1319, round 7).
+        vendor = entry.get("vendor_name")
+        if not isinstance(vendor, str) or vendor.casefold() != AGNES_VENDOR_NAME:
             continue
         raw = entry.get("data")
         if isinstance(raw, str):
@@ -338,11 +345,17 @@ def evaluate_constraints(
         constraint_type = constraint.get("type")
         if isinstance(constraint_type, str):
             constraint_type = constraint_type.casefold()
-        if constraint_type not in _STATICALLY_CHECKABLE_CONSTRAINT_TYPES or not constraint.get("rule"):
+        # A non-string rule (imported documents are untrusted; a structured
+        # rule value is legal input) can never appear verbatim in SQL text, so
+        # stringifying it would manufacture a violation -- "never a guess in
+        # either direction" means it degrades to a post-execution check
+        # instead (Devin Review on PR #1319, round 7).
+        rule = constraint.get("rule")
+        if constraint_type not in _STATICALLY_CHECKABLE_CONSTRAINT_TYPES or not isinstance(rule, str) or not rule:
             post_execution_checks.append({**entry, "reason": "rule cannot be checked before executing the query"})
             continue
 
-        rule_text = _normalize_for_presence(str(constraint["rule"]))
+        rule_text = _normalize_for_presence(rule)
         if rule_text not in normalized_text:
             violations.append({**entry, "reason": f"required filter not found in the query: {constraint['rule']}"})
 
@@ -533,11 +546,18 @@ def _diff_expected(
         if not isinstance(item, dict):
             continue
         etype, name = item.get("type"), item.get("name")
-        if not etype or not name or etype not in detected_sets:
+        if not etype or not name:
             continue
-        expected_names[etype].add(str(name).casefold())
+        # The type key casefolds like the names on both sides: an expectation
+        # typed "Dataset" must be checked, not silently skipped as an unknown
+        # type (Devin Review on PR #1319, round 7). Output entries keep the
+        # caller's spelling.
+        etype_key = str(etype).casefold()
+        if etype_key not in detected_sets:
+            continue
+        expected_names[etype_key].add(str(name).casefold())
         entry = {"type": etype, "name": name}
-        (matched if str(name).casefold() in detected_sets[etype] else missing).append(entry)
+        (matched if str(name).casefold() in detected_sets[etype_key] else missing).append(entry)
 
     unexpected: list[dict[str, Any]] = []
     for etype, names in detected_lists.items():

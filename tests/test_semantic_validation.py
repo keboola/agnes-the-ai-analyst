@@ -798,6 +798,34 @@ class TestConstraintCaseNormalization:
         constraints = extract_constraints(document)
         assert [c["severity"] for c in constraints] == ["error", "warning"]
 
+    def test_cased_vendor_name_still_yields_constraints(self):
+        # Devin Review on PR #1319 (round 7): a model tagged "Agnes"/"AGNES"
+        # must not silently drop every constraint (fail-open).
+        ext = _agnes_extension([{"name": "c1", "type": "required_filter", "rule": "x", "metrics": ["revenue"]}])
+        for vendor in ("Agnes", "AGNES"):
+            document = {"custom_extensions": [{**ext, "vendor_name": vendor}]}
+            assert [c["name"] for c in extract_constraints(document)] == ["c1"], vendor
+
+    def test_non_string_rule_degrades_to_post_execution_not_violation(self):
+        # Devin Review on PR #1319 (round 7): a structured (dict/list) rule
+        # can never appear verbatim in SQL text -- stringifying it would
+        # manufacture an error-severity violation on a query that genuinely
+        # applies the filter. "Never a guess in either direction."
+        constraints = [
+            {
+                "name": "date_floor",
+                "type": "required_filter",
+                "rule": {"column": "order_date", "op": ">="},
+                "severity": "error",
+                "metrics": ["revenue"],
+            }
+        ]
+        violations, post_checks = evaluate_constraints(
+            constraints, ["revenue"], "SELECT revenue FROM orders WHERE order_date >= '2026-01-01'"
+        )
+        assert violations == []
+        assert [c["name"] for c in post_checks] == ["date_floor"]
+
     def test_uppercase_error_severity_drives_valid_false(self):
         document = _fixture_document()
         document["custom_extensions"] = [
@@ -916,3 +944,16 @@ class TestUnexpectedDetectedScope:
         )
         assert {"type": "metric", "name": "revenue"} in result["unexpected_detected_objects"]
         assert {"type": "metric", "name": "customer_lifetime_value"} in result["missing_expected_objects"]
+
+    def test_cased_expected_type_is_checked_not_silently_dropped(self):
+        # Devin Review on PR #1319 (round 7): {"type": "Dataset"} must be the
+        # same expectation as {"type": "dataset"} -- a silent drop reports
+        # "nothing missing" without ever checking. Caller's spelling is kept
+        # in the output entry.
+        result = validate_query(
+            "SELECT revenue FROM orders",
+            [_fixture_document()],
+            expected=[{"type": "Dataset", "name": "orders"}, {"type": "Metric", "name": "nope"}],
+        )
+        assert result["matched_expected_objects"] == [{"type": "Dataset", "name": "orders"}]
+        assert result["missing_expected_objects"] == [{"type": "Metric", "name": "nope"}]
