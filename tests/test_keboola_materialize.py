@@ -17,6 +17,7 @@ default parquet path and the legacy CSV opt-in (via
 import hashlib
 import importlib.util
 import os
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -921,6 +922,67 @@ def test_consolidation_conn_spills_under_agnes_temp_dir(tmp_path, monkeypatch):
         # DuckDB's own default is "90% of available disk space" — anything
         # naming a concrete size proves the cap was applied.
         assert "%" not in max_temp, max_temp
+    finally:
+        conn.close()
+
+
+def test_consolidation_spill_dir_is_private_per_connection(tmp_path, monkeypatch):
+    """Each consolidation connection gets its OWN spill directory.
+
+    DuckDB names its spill files by size class + index only —
+    ``duckdb_temp_storage_DEFAULT-0.tmp``, no pid, no random component — and
+    on close it deletes *every* ``duckdb_temp_storage_*`` in its
+    ``temp_directory``, including files it did not create. Two DuckDB
+    instances sharing one directory therefore write over each other's blocks
+    (verified on duckdb 1.5.5: two processes spilling into one shared
+    directory ended with one of them killed by SIGSEGV). Consolidation
+    connections are opened concurrently — across api/worker/sync-subprocess
+    roles on the same data volume, and within one process — so the directory
+    must never be shared."""
+    monkeypatch.setenv("AGNES_TEMP_DIR", str(tmp_path / "scratch"))
+
+    a = kbe._open_consolidation_conn()
+    b = kbe._open_consolidation_conn()
+    try:
+        da = Path(a.execute("SELECT current_setting('temp_directory')").fetchone()[0])
+        db = Path(b.execute("SELECT current_setting('temp_directory')").fetchone()[0])
+        assert da != db, f"consolidation connections share a spill directory: {da}"
+        assert da.parent == tmp_path / "scratch", da
+        assert db.parent == tmp_path / "scratch", db
+    finally:
+        a.close()
+        b.close()
+
+
+def test_orphaned_consolidation_spill_is_reclaimed_by_sweep(tmp_path, monkeypatch):
+    """A consolidation hard-killed mid-spill leaves its spill directory
+    behind (DuckDB removes it only on a clean close) — the existing
+    orphaned-scratch sweep must reclaim it, or a capped-at-10 GB spill sits
+    on the data disk until an operator removes it by hand.
+
+    End-to-end on real DuckDB spill output: force an actual spill, then age
+    the directory past the threshold and sweep."""
+    from connectors.keboola.storage_api import sweep_orphaned_scratch
+
+    root = tmp_path / "scratch"
+    monkeypatch.setenv("AGNES_TEMP_DIR", str(root))
+    # Small cap so a tiny fixture really spills to disk.
+    monkeypatch.setattr(kbe, "_CONSOLIDATION_MEMORY_LIMIT", "100MB")
+
+    conn = kbe._open_consolidation_conn()
+    spill = Path(conn.execute("SELECT current_setting('temp_directory')").fetchone()[0])
+    try:
+        conn.execute("CREATE OR REPLACE TABLE t AS SELECT i, repeat('y', 300) s FROM range(0, 150000) tbl(i)")
+        conn.execute("SELECT count(*) FROM (SELECT s, i, count(*) FROM t GROUP BY s, i)").fetchone()
+        spilled = sorted(p.name for p in spill.iterdir())
+        assert spilled and all(n.startswith("duckdb_temp_storage_") for n in spilled), spilled
+
+        # Simulate the hard kill: the connection never closes, so the dir and
+        # its spill files survive. Age it past the sweep threshold.
+        old = time.time() - 7200
+        os.utime(spill, (old, old))
+        assert sweep_orphaned_scratch(root=str(root), max_age_seconds=3600) == 1
+        assert not spill.exists()
     finally:
         conn.close()
 

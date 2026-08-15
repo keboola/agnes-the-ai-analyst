@@ -2,6 +2,7 @@
 
 import logging
 import os
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -143,25 +144,36 @@ def _open_consolidation_conn(db_path: Optional[str] = None):
     ``/app`` in the shipped image, i.e. the container's overlay on the boot
     disk. Measured on a live instance: one consolidation transiently held
     7.6 GB of spill there (boot disk 26% → 53% and back), on a volume no
-    watchdog tracks. Leftovers are not self-healing either —
-    `cleanup_orphaned_temp_files` only ever sweeps ``{STATE_DIR}/duckdb-tmp``,
-    and a container *restart* keeps the overlay, so spill from a process
-    killed mid-consolidation survives until the next image upgrade recreates
-    the container (indefinitely on an instance that does not auto-upgrade).
-    Best-effort: a failing PRAGMA leaves the connection usable on DuckDB's
-    defaults rather than failing the sync.
+    watchdog tracks. Best-effort: a failing PRAGMA leaves the connection
+    usable on DuckDB's defaults rather than failing the sync.
+
+    The spill dir is **private to this connection** —
+    ``{temp_root}/kbc-spill-{pid}-{uuid}``, never a shared one — because
+    DuckDB's spill filenames carry no process identity
+    (``duckdb_temp_storage_DEFAULT-0.tmp``: size class + index) and a closing
+    instance deletes every ``duckdb_temp_storage_*`` in its temp dir, not just
+    its own. Two instances sharing a directory therefore clobber each other,
+    and consolidation connections do run concurrently (api / worker /
+    sync-subprocess roles share the data volume). For the same reason the
+    spill must not be pointed at ``{STATE_DIR}/duckdb-tmp``, which the
+    app's own DuckDB connections use (``src/db.py:_apply_memory_caps``).
+    Left uncreated on purpose: DuckDB creates the directory on the first
+    spill and removes it — spill files included — when the connection closes,
+    so a connection that never spills leaves nothing behind, and the only
+    survivors are hard-kill orphans, which
+    ``storage_api.sweep_orphaned_scratch`` reclaims via the shared
+    ``kbc-`` scratch prefixes.
     """
     conn = _open_duckdb(db_path) if db_path else _open_duckdb(":memory:")
     conn.execute(f"SET memory_limit='{_CONSOLIDATION_MEMORY_LIMIT}'")
     conn.execute(f"SET threads={_CONSOLIDATION_THREADS}")
     conn.execute("SET preserve_insertion_order=false")
     try:
-        from connectors.keboola.storage_api import get_temp_root
+        from connectors.keboola.storage_api import SPILL_DIR_PREFIX, get_temp_root
 
         temp_root = get_temp_root()
         if temp_root:
-            spill = Path(temp_root) / "duckdb-spill"
-            spill.mkdir(parents=True, exist_ok=True)
+            spill = Path(temp_root) / f"{SPILL_DIR_PREFIX}{os.getpid()}-{uuid.uuid4().hex[:12]}"
             conn.execute(f"SET temp_directory='{str(spill).replace(chr(39), chr(39) * 2)}'")
         conn.execute(f"SET max_temp_directory_size='{_CONSOLIDATION_MAX_TEMP_DIR_SIZE}'")
     except Exception as e:
