@@ -61,6 +61,15 @@ _COUNTER_KEYS = (
 # rejected the CREATE), so the first closing delimiter is the right one.
 _YAML_BODY_RE = re.compile(r"\$\$(.*?)\$\$", re.DOTALL)
 
+# ``information_schema.tables.table_type`` values that denote a metric view.
+# Both spellings are accepted for the same reason the BigQuery extractor
+# normalises ``MATERIALIZED VIEW``/``MATERIALIZED_VIEW`` (see
+# ``connectors/bigquery/extractor.py``): the underscore/space split is exactly
+# where a vendor's INFORMATION_SCHEMA vocabulary has bitten this codebase
+# before, and matching only one spelling degrades to a silent "0 metric views"
+# — indistinguishable from a workspace that genuinely has none.
+_METRIC_VIEW_TABLE_TYPES = ("METRIC_VIEW", "METRIC VIEW")
+
 
 def _empty_counters() -> Dict[str, int]:
     return {key: 0 for key in _COUNTER_KEYS}
@@ -140,6 +149,11 @@ def extract_yaml_from_create(create_stmt: str) -> Optional[str]:
 def _quote_dbx_ident(name: str) -> str:
     """Backtick-quote a Databricks identifier (doubling embedded backticks)."""
     return "`" + name.replace("`", "``") + "`"
+
+
+def _escape_sql_literal(value: str) -> str:
+    """Double single quotes for embedding inside a '...' SQL literal."""
+    return value.replace("'", "''")
 
 
 def build_metric_rows(
@@ -243,10 +257,11 @@ def _list_metric_views(client: DatabricksStatementClient, catalog: str) -> List[
     """Enumerate metric views in one catalog as
     ``(catalog, schema, name, comment)`` tuples, privilege-filtered by the
     warehouse's own information_schema."""
+    candidates = ", ".join(f"'{_escape_sql_literal(v)}'" for v in _METRIC_VIEW_TABLE_TYPES)
     sql = (
         "SELECT table_catalog, table_schema, table_name, comment "
         f"FROM {_quote_dbx_ident(catalog)}.information_schema.tables "
-        "WHERE table_type = 'METRIC_VIEW'"
+        f"WHERE table_type IN ({candidates})"
     )
     _columns, rows = client.execute_rows(sql)
     out: List[Tuple[str, str, str, str]] = []
@@ -256,6 +271,36 @@ def _list_metric_views(client: DatabricksStatementClient, catalog: str) -> List[
         comment = row[3] if len(row) > 3 and row[3] else ""
         out.append((str(row[0]), str(row[1]), str(row[2]), str(comment)))
     return out
+
+
+def _log_table_type_vocabulary(client: DatabricksStatementClient, catalogs: List[str]) -> None:
+    """Best-effort diagnostic for a zero-metric-view run: report which
+    ``table_type`` values the workspace actually publishes.
+
+    Purely observational — never raises, never affects the sync result. If
+    the list contains something metric-view-shaped that
+    ``_METRIC_VIEW_TABLE_TYPES`` does not cover, that log line is the whole
+    diagnosis; if it contains only TABLE/VIEW, the workspace simply has no
+    metric views.
+    """
+    for catalog in catalogs:
+        try:
+            _cols, rows = client.execute_rows(
+                f"SELECT DISTINCT table_type FROM {_quote_dbx_ident(catalog)}.information_schema.tables"
+            )
+        except Exception as exc:
+            logger.debug("Databricks semantic layer: table_type probe skipped for %s (%s)", catalog, exc)
+            continue
+        found = sorted({str(r[0]) for r in rows if r and r[0]})
+        logger.info(
+            "Databricks semantic layer: no metric views matched %s in catalog %r. "
+            "table_type values present upstream: %s. If one of those denotes a "
+            "metric view, add it to _METRIC_VIEW_TABLE_TYPES in "
+            "connectors/databricks/semantic_layer.py.",
+            list(_METRIC_VIEW_TABLE_TYPES),
+            catalog,
+            found or "<none readable>",
+        )
 
 
 def sync_semantic_layer(client: Optional[DatabricksStatementClient] = None) -> Dict[str, Any]:
@@ -305,6 +350,13 @@ def sync_semantic_layer(client: Optional[DatabricksStatementClient] = None) -> D
             views.extend(_list_metric_views(client, cat))
 
         counters["metric_views_seen"] = len(views)
+        if not views:
+            # Zero views is either "this workspace has none" (fine) or "the
+            # table_type vocabulary drifted past `_METRIC_VIEW_TABLE_TYPES`"
+            # (a silent no-op nobody would diagnose from a counter alone).
+            # One cheap information_schema probe tells the operator which,
+            # and only ever runs on the zero-result path.
+            _log_table_type_vocabulary(client, settings["catalogs"])
 
         for catalog, schema, view, comment in views:
             fqn_quoted = f"{_quote_dbx_ident(catalog)}.{_quote_dbx_ident(schema)}.{_quote_dbx_ident(view)}"
