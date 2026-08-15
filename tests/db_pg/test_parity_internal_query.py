@@ -196,3 +196,54 @@ def test_heterogeneous_json_params_materialize_and_stay_queryable_both_backends(
         limit=10,
     )
     assert rows2[0][0] == "Read", f"[{_env}] params must be queryable JSON text: {rows2}"
+
+
+def test_schema_drift_between_model_and_physical_table_degrades_not_breaks(_env):
+    """The JSON→text projection must follow the PHYSICAL table's columns,
+    with the model metadata only choosing which of them get the cast
+    (Devin review on #1331). A one-sided drift between the model and the
+    physical schema — a column added on one side only, or a system.duckdb
+    that hasn't finished migrating — must keep internal queries behaving
+    like ``SELECT *`` did (extra columns show up, missing columns are
+    simply absent), never raise a Binder error naming a column the analyst
+    never referenced."""
+    if _env != "duckdb":
+        pytest.skip("drift is simulated by ALTERing the DuckDB system table directly")
+
+    from connectors.internal.access import execute_internal_query
+    from src.db import get_system_db
+    from src.repositories import audit_repo
+
+    repo = audit_repo()
+    repo.log(user_id="ua", action="drift.row", params={"k": 1})
+
+    db = get_system_db()
+    # Physical table AHEAD of the model: a column the model doesn't know.
+    # (A model-derived projection would silently drop it from the
+    # materialized table, making this SELECT a Binder error.)
+    db.execute("ALTER TABLE audit_log ADD COLUMN drift_extra VARCHAR DEFAULT 'x'")
+
+    cols, rows, _ = execute_internal_query(
+        system_db_path="",
+        user={"id": "ua", "email": "a@example.com"},
+        is_admin=False,
+        sql="SELECT action, params, drift_extra FROM agnes_audit",
+        limit=10,
+    )
+    assert rows[0][0] == "drift.row", f"[{_env}] drifted table must stay queryable: {rows}"
+    # The known JSON column still gets the deterministic text cast…
+    assert json.loads(rows[0][1]) == {"k": 1}
+    # …and the model-unknown physical column flows through like SELECT *.
+    assert rows[0][2] == "x"
+
+    # Physical table BEHIND the model (the direction that used to raise a
+    # Binder error naming a column the analyst never referenced): DuckDB's
+    # dependency tracking refuses ALTER ... DROP COLUMN on the live table,
+    # so assert the mechanism directly — the projection is built from the
+    # physical column list, so a model-declared column the physical table
+    # lacks structurally cannot appear in it.
+    from connectors.internal.access import _select_list_with_json_as_text
+
+    proj = _select_list_with_json_as_text("audit_log", ["id", "user_id", "action", "params"])
+    assert "params_before" not in proj
+    assert 'CAST("params" AS VARCHAR) AS "params"' in proj

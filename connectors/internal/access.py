@@ -340,7 +340,7 @@ def find_internal_refs(sql: str) -> list[str]:
 _PG_MATERIALIZE_ROW_CAP = 1_000_000
 
 
-def _select_list_with_json_as_text(source_table: str) -> str:
+def _select_list_with_json_as_text(source_table: str, physical_columns: "list[str] | None") -> str:
     """Column list for ``SELECT <list> FROM source_table`` that casts every
     JSON-family column (per the SQLAlchemy model's declared type) to text.
 
@@ -363,30 +363,37 @@ def _select_list_with_json_as_text(source_table: str) -> str:
     ``JSON`` cast), which is queryable with ``json_extract`` / ``->>`` on
     either backend exactly like before, just now unconditionally.
 
-    The column list comes from ``Base.metadata`` (the model is the schema
-    source of truth on both backends — PG via Alembic, DuckDB via the
-    matching ``_vN_to_v(N+1)`` step in ``src/db.py``) rather than a
-    hardcoded name list, so a future JSON/JSONB column added to a model
-    inherits the fix with no edit here. Falls back to ``"*"`` when the
-    table isn't in the model metadata — should not happen for a registered
-    ``InternalTable``, but keeps this defensive.
+    The projection is built from ``physical_columns`` — the columns the
+    source table ACTUALLY has, as introspected by the caller — in physical
+    order, so it selects exactly what ``SELECT *`` would have. The model
+    metadata (``Base.metadata`` — PG's Alembic source of truth, mirrored by
+    the DuckDB ``_vN_to_v(N+1)`` ladder in ``src/db.py``) only decides
+    *which* of those columns get the JSON→text cast, so a future JSON/JSONB
+    column added to a model inherits the fix with no edit here. Deriving
+    the column *list* itself from the model instead would turn any
+    one-sided drift between the two schema ladders (or a system.duckdb
+    that hasn't finished migrating) into a hard Binder error naming a
+    column the analyst never referenced — the projection must degrade like
+    ``SELECT *`` did, never fail harder than it. Falls back to ``"*"``
+    when the caller has no introspected columns to offer.
     """
     import sqlalchemy as sa
 
     import src.models  # noqa: F401 — registers every model on Base.metadata
     from src.db_pg import Base
 
-    table = Base.metadata.tables.get(source_table)
-    if table is None:
+    if not physical_columns:
         return "*"
+    table = Base.metadata.tables.get(source_table)
+    # `sa.JSON` is the generic base of both the dialect-agnostic and the
+    # Postgres-specific `JSON`/`JSONB` column types, so one isinstance check
+    # covers every JSON-family column regardless of which subtype a model
+    # uses.
+    json_cols = {c.name for c in table.columns if isinstance(c.type, sa.JSON)} if table is not None else set()
     parts = []
-    for c in table.columns:
-        ident = quote_ident(c.name)
-        # `sa.JSON` is the generic base of both the dialect-agnostic and the
-        # Postgres-specific `JSON`/`JSONB` column types, so this one check
-        # covers every JSON-family column regardless of which subtype a
-        # model uses.
-        if isinstance(c.type, sa.JSON):
+    for name in physical_columns:
+        ident = quote_ident(name)
+        if name in json_cols:
             parts.append(f"CAST({ident} AS VARCHAR) AS {ident}")
         else:
             parts.append(ident)
@@ -418,7 +425,18 @@ def _materialized_internal_duckdb(refs, user, is_admin):
             for table_id in refs:
                 table = INTERNAL_TABLES_BY_ID[table_id]
                 where_clause = build_filter_clause(table, user, is_admin)
-                select_list = _select_list_with_json_as_text(table.source_table)
+                # source_table values are trusted registry constants, never
+                # user input — safe to interpolate into the catalog lookup.
+                phys_cols = [
+                    r[0]
+                    for r in pg.exec_driver_sql(
+                        "SELECT column_name FROM information_schema.columns "
+                        "WHERE table_schema = current_schema() "
+                        f"AND table_name = '{table.source_table}' "
+                        "ORDER BY ordinal_position"
+                    ).fetchall()
+                ]
+                select_list = _select_list_with_json_as_text(table.source_table, phys_cols)
                 q = (
                     f"SELECT {select_list} FROM {quote_ident(table.source_table)} "
                     f"{where_clause} LIMIT {_PG_MATERIALIZE_ROW_CAP + 1}"
@@ -474,7 +492,14 @@ def _materialized_internal_duckdb_from_duckdb(refs, user, is_admin):
         for table_id in refs:
             table = INTERNAL_TABLES_BY_ID[table_id]
             where_clause = build_filter_clause(table, user, is_admin)
-            select_list = _select_list_with_json_as_text(table.source_table)
+            phys_cols = [
+                r[0]
+                for r in src.execute(
+                    "SELECT column_name FROM information_schema.columns WHERE table_name = ? ORDER BY ordinal_position",
+                    [table.source_table],
+                ).fetchall()
+            ]
+            select_list = _select_list_with_json_as_text(table.source_table, phys_cols)
             q = f"SELECT {select_list} FROM {table.source_table} {where_clause} LIMIT {_PG_MATERIALIZE_ROW_CAP + 1}"
             src_df = src.execute(q).fetch_df()
             if len(src_df) > _PG_MATERIALIZE_ROW_CAP:
