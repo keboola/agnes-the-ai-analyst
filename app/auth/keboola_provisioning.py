@@ -893,18 +893,37 @@ async def run_login_provisioning(
     await finish_login_provisioning(summary)
 
 
+def _enable_chat_tools_off_loop(connection_id: str) -> Dict[str, Any]:
+    """Run the admin enable coroutine on its own short-lived event loop in
+    the calling worker thread. The coroutine is ``async`` for the MCP
+    introspection await alone — everything around it is synchronous
+    repo/vault I/O (per-tool registry upserts, the ``_undo`` restore path)
+    that must not execute on the server's request loop, where this tail's
+    per-login, per-project cadence would stall unrelated requests (Devin
+    Review on this PR, fifteenth round). Safe with the MCP session pool by
+    design: its bookkeeping is per RUNNING loop
+    (``connectors/mcp/session_pool.py``), so a session created here binds to
+    this thread's loop and is torn down when ``asyncio.run`` closes it —
+    the request loop's warm pool is never touched."""
+    from app.api.admin_source_connections import enable_chat_tools
+
+    return asyncio.run(enable_chat_tools(connection_id, _user={"id": MEMBERSHIP_ADDED_BY}))
+
+
 async def finish_login_provisioning(summary: ProvisionSummary) -> None:
     """The slow tail, run AFTER the login response: enable chat tools for
-    fresh connections (MCP introspection — first run downloads the server),
-    apply the deferred grants, then kick the semantic-layer refresh under the
-    admin endpoint's own single-flight guard. Never raises."""
+    fresh connections (MCP introspection — first run downloads the server;
+    the whole enable runs in a worker thread, see
+    ``_enable_chat_tools_off_loop``), apply the deferred grants, then kick
+    the semantic-layer refresh under the admin endpoint's own single-flight
+    guard — that one deliberately stays on THIS loop: its claim flag and
+    ``asyncio.Lock`` are single-loop constructs shared with the admin
+    endpoint. Never raises."""
     from fastapi import HTTPException
 
     for connection_id in summary.connections_needing_chat_tools:
         try:
-            from app.api.admin_source_connections import enable_chat_tools
-
-            result = await enable_chat_tools(connection_id, _user={"id": MEMBERSHIP_ADDED_BY})
+            result = await asyncio.to_thread(_enable_chat_tools_off_loop, connection_id)
             logger.info(
                 "keboola auto-provision: chat tools enabled for connection %s (%s tools)",
                 connection_id,
