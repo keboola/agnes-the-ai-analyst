@@ -11,6 +11,15 @@ from app.auth.dependencies import get_current_user, _get_db
 from src.db import _open_duckdb
 from src.audit_helpers import identity_for_audit, client_kind_from_user
 from src.rbac import can_access_table
+from src.access_policy import (
+    PolicyError,
+    PolicyIdentityUnresolvable,
+    assert_unique_output_columns,
+    policied_from_sql,
+    policied_relation,
+    policy_cache_identity,
+    row_scope_payload,
+)
 from app.api.v2_cache import TTLCache
 from connectors.bigquery.access import BqAccess, BqAccessError, get_bq_access
 
@@ -152,6 +161,13 @@ def _fetch_bq_sample(bq, dataset: str, table: str, n: int) -> list[dict]:
     ):
         raise ValueError("unsafe BQ identifier in registry — refusing to query")
 
+    # Task 10/13: BigQuery policy enforcement (transpile + named params via
+    # `policied_relation(..., dialect="bigquery")`) is not wired into this
+    # execution path yet -- this function itself still runs the raw,
+    # unfiltered physical table. The Task 13 caller guard (`build_sample`,
+    # above) fails closed before reaching here for a policied table's
+    # non-admin caller, so this remains reachable only for a non-policied
+    # table or an admin bypass -- never silently for a filtered caller.
     bq_sql = f"SELECT * FROM `{bq.projects.data}.{dataset}.{table}` LIMIT {int(n)}"
     with bq.duckdb_session() as conn:
         try:
@@ -222,12 +238,67 @@ def build_sample(
         rows = sample_internal_rows(internal_def, where_clause, n)
         return {"table_id": table_id, "rows": _sanitize_for_json(rows), "source": source_type}
 
+    # A policied table's sample is caller-scoped the same way an internal
+    # source's is (§9) — row filtering + column masking both depend on the
+    # caller's identity, so a shared `table_id|n` key would serve team A's
+    # rows to team B on the next request. `cache_key`/`cacheable` default to
+    # the plain (pre-existing) shape; a policied table re-derives both
+    # below, once identity resolution has actually run — only the
+    # local-parquet branch does that today (the BQ-sample branch has no
+    # identity to key on yet, see the Task 10 note in `_fetch_bq_sample`
+    # above, so it keeps skipping the cache entirely, exactly as before
+    # this task).
+    has_access_policy = bool(row.get("access_policy_sql"))
+
     cache_key = f"{table_id}|{n}"
-    cached = _sample_cache.get(cache_key)
-    if cached is not None:
-        return cached
+    cacheable = not has_access_policy
+    if cacheable:
+        cached = _sample_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+    # Task 11 (§10): populated below only on the local-parquet branch, which
+    # is the only one that currently resolves through policied_relation —
+    # the BQ-sample branch has no execution path that could carry it yet
+    # (see the Task 13 fail-closed guard immediately below), so there is
+    # nothing to disclose there.
+    row_scope: dict | None = None
 
     if source_type == "bigquery" and (row.get("query_mode") or "") != "materialized":
+        if has_access_policy:
+            # Task 13 (§8 ratchet): this branch pushes the sample straight to
+            # BigQuery via the DuckDB `bigquery_query()` extension -- Task 10
+            # only wired `policied_relation(dialect="bigquery")` into
+            # `/api/query`'s AST-rewrite path (app/api/query.py), never into
+            # this table_id-shaped surface's live-BQ branch, so unguarded it
+            # would hand back the RAW, unfiltered physical table to any
+            # caller with base table-level access. Fail closed (§17: "every
+            # failure denies") instead: the same `policy_error` 500 the
+            # local-parquet branch below already returns for an
+            # unresolvable policy. Admin bypass is preserved --
+            # `policied_relation` itself decides that (not a bare
+            # `access_policy_sql` check), so an admin keeps seeing the raw
+            # sample exactly as before this change.
+            #
+            # TODO(follow-up): wire this branch the way
+            # `app/api/query.py::_execute_policied_remote_bq` wires the
+            # AST-rewrite surface -- transpile via
+            # `policied_relation(table_id, user, dialect="bigquery")`,
+            # resolve the policy body's own `FROM <name>` to the physical
+            # `` `project.dataset.table` `` path, convert `.params` to BQ
+            # `QueryParameter`s, and execute through the jobs API
+            # (`run_bq_query_to_arrow`) instead of the `bigquery_query()`
+            # push-down this branch uses today. Left undone here: it needs
+            # its own cost/quota/label design pass for this endpoint (which
+            # has none of those today), not just a mechanical swap.
+            try:
+                bq_relation = policied_relation(table_id, user)
+            except PolicyIdentityUnresolvable:
+                raise HTTPException(status_code=403, detail={"reason": "policy_identity_unresolvable"})
+            except PolicyError as exc:
+                raise HTTPException(status_code=500, detail={"reason": "policy_error", "table": exc.table_id})
+            if bq_relation.policied:
+                raise HTTPException(status_code=500, detail={"reason": "policy_error", "table": table_id})
         rows = _fetch_bq_sample(bq, row.get("bucket") or "", row.get("source_table") or table_id, n)
     else:
         # Resolve by source-name-agnostic lookup — the extract directory is not
@@ -252,19 +323,82 @@ def build_sample(
                 raise TableNotPreviewableError(table_id, _not_previewable_detail(table_id, query_mode=query_mode))
             # Genuinely "no data has landed yet" — including for server_only.
             raise TableNotSyncedError(table_id, _not_synced_detail(table_id))
+
+        # Table access policies (§5): this connection is a throwaway
+        # :memory: DB with nothing but the parquet attached — no analytics
+        # catalog, so the policy body's own `FROM <name>` has nothing to
+        # bind against unless we wrap it. Resolve first; the inert (not
+        # policied) branch below stays byte-identical to the pre-existing
+        # code.
+        try:
+            relation = policied_relation(table_id, user)
+        except PolicyIdentityUnresolvable:
+            raise HTTPException(status_code=403, detail={"reason": "policy_identity_unresolvable"})
+        except PolicyError as exc:
+            raise HTTPException(status_code=500, detail={"reason": "policy_error", "table": exc.table_id})
+
+        if has_access_policy:
+            # Task 12 (§9): re-key on the caller's identity now that
+            # identity resolution has actually run — covers BOTH the
+            # genuinely-filtered case AND the admin-bypass one (a policied
+            # table with `relation.policied=False` for an admin must still
+            # not be cached under the same key a non-admin's filtered
+            # slice would read from). Re-check the cache now that the real
+            # key is known — a hit skips the DuckDB read below entirely —
+            # and write under the SAME key at the bottom.
+            cache_key = f"{table_id}|{n}|policy:{policy_cache_identity(user, table_id=table_id)!r}"
+            cacheable = True
+            cached = _sample_cache.get(cache_key)
+            if cached is not None:
+                return cached
+
+        # Task 11 (§10): disclose that these sample rows are a caller-scoped
+        # slice, not the whole table. `None` (no key added below) for the
+        # inert/admin-bypass case, matching /api/query's row_scope contract.
+        if relation.policied:
+            row_scope = row_scope_payload([relation.table_id])
+
         c = _open_duckdb(":memory:")
         try:
-            df = c.execute(
-                f"SELECT * FROM {LOCAL_PARQUET_READ_EXPR} LIMIT {n}",
-                [parquet],
-            ).fetchdf()
+            if relation.policied:
+                # The parquet path is server-resolved, never user input, so
+                # it is safe to splice as an escaped literal — it must NOT
+                # be a `?` placeholder: the policy binds named `$user_*`
+                # parameters, and DuckDB refuses to mix positional and
+                # named parameters in one statement.
+                escaped_parquet = parquet.replace("'", "''")
+                from_sql = policied_from_sql(
+                    relation,
+                    table_name=row["name"],
+                    source_sql=f"read_parquet('{escaped_parquet}', union_by_name=true, hive_partitioning=true)",
+                )
+                # Read-path guard (§17): DESCRIBE the policy relation itself —
+                # a masking policy that re-derives a column `*` still emits has
+                # duplicate output names and leaks the plaintext copy (pandas
+                # `.to_dict` below renames the 2nd dup, hiding it under the
+                # expected key). The outer `SELECT * FROM (...)` would dedup
+                # and mask the collision, so DESCRIBE `from_sql` directly.
+                try:
+                    _out_cols = [r[0] for r in c.execute(f"DESCRIBE {from_sql}", relation.params).fetchall()]
+                    assert_unique_output_columns(_out_cols, relation.table_id)
+                except PolicyError as exc:
+                    raise HTTPException(status_code=500, detail={"reason": "policy_error", "table": exc.table_id})
+                df = c.execute(f"SELECT * FROM {from_sql} LIMIT {n}", relation.params).fetchdf()
+            else:
+                df = c.execute(
+                    f"SELECT * FROM {LOCAL_PARQUET_READ_EXPR} LIMIT {n}",
+                    [parquet],
+                ).fetchdf()
             rows = df.to_dict(orient="records")
         finally:
             c.close()
 
     rows = _sanitize_for_json(rows)
     payload = {"table_id": table_id, "rows": rows, "source": source_type}
-    _sample_cache.set(cache_key, payload)
+    if row_scope is not None:
+        payload["row_scope"] = row_scope
+    if cacheable:
+        _sample_cache.set(cache_key, payload)
     return payload
 
 

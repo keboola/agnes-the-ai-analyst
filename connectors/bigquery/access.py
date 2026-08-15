@@ -13,7 +13,10 @@ import threading
 from collections import deque
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Callable, Iterator, List, Literal
+from typing import TYPE_CHECKING, Callable, Iterator, List, Literal
+
+if TYPE_CHECKING:
+    import pyarrow as pa  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
@@ -234,8 +237,38 @@ def translate_bq_error(
     raise e
 
 
+def bq_query_parameters_from_policy_params(params: dict) -> list:
+    """Build ``google.cloud.bigquery`` ``QueryParameter`` objects from a
+    :class:`src.access_policy.PoliciedRelation` ``.params`` dict (§6.2's
+    three identity values, §7.1) for ``run_bq_query_to_arrow``'s
+    ``query_parameters`` argument.
+
+    ``user_email`` / ``user_id`` bind as scalar ``STRING`` parameters;
+    ``user_groups`` (a Python ``list``) binds as an ``ARRAY<STRING>``
+    parameter — the shape ``list_contains($user_groups, col)`` transpiles
+    to (``EXISTS(SELECT 1 FROM UNNEST(@user_groups) ...)``, §6.5, §7.2)
+    expects. Values are never interpolated into SQL text — this is the
+    ONLY place a policy's bound values become part of the BigQuery request,
+    and they travel as typed job-config parameters, exactly like the
+    DuckDB bind path (§6.2).
+    """
+    from google.cloud import bigquery  # noqa: PLC0415
+
+    query_parameters = []
+    for name, value in params.items():
+        if isinstance(value, (list, tuple, set)):
+            query_parameters.append(bigquery.ArrayQueryParameter(name, "STRING", list(value)))
+        else:
+            query_parameters.append(bigquery.ScalarQueryParameter(name, "STRING", value))
+    return query_parameters
+
+
 def run_bq_query_to_arrow(
-    bq: "BqAccess", sql: str, *, labels: dict[str, str] | None = None
+    bq: "BqAccess",
+    sql: str,
+    *,
+    labels: dict[str, str] | None = None,
+    query_parameters: list | None = None,
 ) -> tuple["pa.Table", dict]:
     """Run a billable BigQuery query via ``google-cloud-bigquery``
     ``client.query(labels=...)`` and return ``(arrow_table, job_info)``.
@@ -249,6 +282,15 @@ def run_bq_query_to_arrow(
     metadata. Mirrors the labeled-job + Storage-Read-API-fallback shape of
     ``src.remote_query.register_bq`` (#751) and ``v2_scan._run_bq_scan``.
 
+    ``query_parameters`` — a list of ``bigquery.ScalarQueryParameter`` /
+    ``bigquery.ArrayQueryParameter`` (build via
+    ``bq_query_parameters_from_policy_params``) — threads named ``@name``
+    binds into the job config (table access policies design §7.1): the
+    DuckDB ``bigquery_query()`` extension's dollar-quoted string-literal
+    payload has no bind mechanism at all, which is why a policied
+    ``query_mode='remote'`` table's transpiled policy runs through THIS
+    function instead of that extension.
+
     ``job_info`` has keys ``bq_job_id`` / ``bytes_scanned`` / ``bytes_billed``
     for the caller's audit log. SQL here is user-derived → BadRequest → 400
     (``bad_request_status="client_error"``).
@@ -259,7 +301,7 @@ def run_bq_query_to_arrow(
     try:
         job = client.query(
             sql,
-            job_config=bigquery.QueryJobConfig(labels=labels or {}),
+            job_config=bigquery.QueryJobConfig(labels=labels or {}, query_parameters=query_parameters or []),
         )
         try:
             table = job.to_arrow()
