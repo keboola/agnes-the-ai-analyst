@@ -10,13 +10,17 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
-## [0.83.22] - 2026-08-15
+## [0.83.24] - 2026-08-15
 
 ### Added
 
 - **The two credentialed MCP forward seams can now enforce the source-url policy at call time, not only at configuration time (#1216 part 2).** `check_source_url` (#1154/#1204) refuses a source's `url` when it is CONFIGURED; a row registered before the guard existed, or before `mcp.source_url_strict` was turned on, kept forwarding credentials to an address the current policy would refuse — the admin-visible `url_policy_verdict` report (#1216 part 1, 0.83.9) could only flag it, not stop it. `mcp.source_url_runtime_enforce` (env `AGNES_MCP_SOURCE_URL_RUNTIME_ENFORCE`, **off by default** — this ships zero behavior change on upgrade) now runs the DNS-free half of the policy at both the SSE/Streamable-HTTP transport closures (`app/api/mcp/tools_generator.py`) and the REST passthrough endpoint (`app/api/mcp_passthrough.py`) through one shared helper (`app.api.mcp_policy.enforce_source_url_runtime_policy`), so a refused url — a literal link-local/reserved address, or cleartext http to a literal public one — is never dialed, regardless of when the row was enabled. `stdio` sources stay exempt (`url`, if set, is inert documentation). **Before turning this switch on, review the `url_policy_verdict` column on the admin MCP source list (`GET /api/admin/mcp-sources` / `agnes admin mcp source list`) for any `would_refuse` row and fix its url first** — enabling converts each one from a silent warning into a refused call at the next invocation, with no other notice. A refused call fails with a structured error naming the policy reason, a pointer to that admin report, and the switch name, so an operator can route themselves to a fix without reading source. The refusal's operator-routing facts (the policy verdict, which embeds the source's literal address, plus the admin-report pointer and the switch name) go to an **admin** caller and to the log; a non-admin — and every MCP tool caller, which is never an admin console — gets only "…is not configured correctly. Ask an admin to check it.", the same line the analyst-reachable url-policy gate on `/me/connections` already draws, so this never becomes the first place a non-admin learns a source's network address.
 
-## [0.83.21] - 2026-08-15
+## [0.83.22] - 2026-08-15
+
+### Fixed
+
+- **A deleted data app left its credentials on disk.** `docker-compose.host-mount.yml` swaps the `data` named volume for a direct `/data` host bind per service, and `apps-runner` was never added to it — so on every host-mount deployment (which is what the Terraform VMs run) the sidecar's `/data` was a different filesystem from every other container's. Data-app deploys still worked, which is why it went unnoticed: `_resolve_host_path` maps the sidecar's own mount back to a daemon-visible path either way. What broke is the other direction — `_rmtree_config_dir` deletes `${DATA_DIR}/apps/<slug>` from the *app* container's filesystem, found nothing there, and swallowed the `FileNotFoundError`. The `config.json` it exists to remove carries a service JWT and git credentials in plaintext, and was never deleted on any such deployment. A guard now requires every service mounting the `data` named volume to bind `/data` in the overlay, the same "service added to the base file, forgotten in an overlay" class the prod-image-override guard next to it already covers. Operators with data apps already deployed: config dirs stranded in the old named volume are not migrated — `docker volume inspect agnes_data` to find them, and remove the volume's `apps/` tree once the sidecar has been recreated.
 
 ### Internal
 
