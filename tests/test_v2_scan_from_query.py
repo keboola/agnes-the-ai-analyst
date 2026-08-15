@@ -8,7 +8,6 @@ snapshot via --auto-snapshot).
 """
 
 import importlib
-from unittest.mock import patch
 
 import pyarrow as pa
 import pytest
@@ -18,6 +17,7 @@ import pytest
 def reload_db(tmp_path, monkeypatch):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     import src.db as db_module
+
     importlib.reload(db_module)
     yield db_module
 
@@ -26,28 +26,35 @@ def _ensure_admin1(conn):
     from src.db import SYSTEM_ADMIN_GROUP
     from src.repositories.users import UserRepository
     from src.repositories.user_group_members import UserGroupMembersRepository
-    if UserRepository(conn).get_by_id('admin1') is None:
-        UserRepository(conn).create(id='admin1', email='admin1@test.com', name='Admin')
-    admin_gid = conn.execute(
-        'SELECT id FROM user_groups WHERE name = ?', [SYSTEM_ADMIN_GROUP]
-    ).fetchone()
+
+    if UserRepository(conn).get_by_id("admin1") is None:
+        UserRepository(conn).create(id="admin1", email="admin1@test.com", name="Admin")
+    admin_gid = conn.execute("SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP]).fetchone()
     if admin_gid:
         UserGroupMembersRepository(conn).add_member(
-            'admin1', admin_gid[0], source='system_seed',
+            "admin1",
+            admin_gid[0],
+            source="system_seed",
         )
 
 
 def _seed(conn):
     _ensure_admin1(conn)
     from src.repositories.table_registry import TableRegistryRepository
+
     TableRegistryRepository(conn).register(
-        id="web_view", name="web_view", source_type="bigquery",
-        bucket="ds", source_table="web_view", query_mode="remote",
+        id="web_view",
+        name="web_view",
+        source_type="bigquery",
+        bucket="ds",
+        source_table="web_view",
+        query_mode="remote",
     )
 
 
 def _bq(billing="billing-proj", data="data-proj"):
     from connectors.bigquery.access import BqAccess, BqProjects
+
     return BqAccess(BqProjects(billing=billing, data=data))
 
 
@@ -62,7 +69,7 @@ def test_from_query_materializes_raw_sql_no_cap(reload_db, monkeypatch):
     # Patch the materialize core so we don't need a live BQ.
     monkeypatch.setattr(
         "app.api.query.run_remote_select_to_arrow",
-        lambda conn, user, sql, bq, quota: fake_table,
+        lambda conn, user, sql, bq, quota, policy_info=None: fake_table,
     )
 
     conn = reload_db.get_system_db()
@@ -79,6 +86,7 @@ def test_from_query_materializes_raw_sql_no_cap(reload_db, monkeypatch):
         conn.close()
 
     from app.api.v2_arrow import parse_ipc_bytes
+
     out = parse_ipc_bytes(ipc)
     assert out.num_rows == 3
     assert out.column("country").to_pylist() == ["CZ", "US", "CZ"]

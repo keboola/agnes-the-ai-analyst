@@ -43,6 +43,25 @@ class TTLCache:
         with self._lock:
             self._data.pop(key, None)
 
+    def invalidate_prefix(self, prefix: str) -> None:
+        """Drop every entry whose key starts with ``prefix``.
+
+        ``invalidate`` is an exact-key delete, which silently misses every
+        COMPOSITE key — and the caches here key composites routinely: a
+        policied table's schema entry lives under
+        ``f"{table_id}|policy:{identity!r}"`` (identity-keyed per
+        table-access-policies §9), so an exact ``invalidate(table_id)``
+        after an admin edits the policy leaves the pre-edit payload
+        serving until the TTL runs out.
+
+        Literal prefix match, no delimiter of its own — callers pass the
+        key delimiter themselves (``f"{table_id}|"``) so a table named
+        ``orders`` cannot evict ``orders_archive``'s entries.
+        """
+        with self._lock:
+            for key in [k for k in self._data if k.startswith(prefix)]:
+                del self._data[key]
+
     def clear(self) -> None:
         with self._lock:
             self._data.clear()

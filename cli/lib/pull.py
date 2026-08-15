@@ -32,16 +32,17 @@ import os
 import re
 import shutil
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Iterator
 
 import httpx
 
 from cli.client import api_get, api_post, stream_download
 from cli.config import get_sync_state, save_sync_state
+from cli.snapshot_meta import list_snapshots
 from src.sql_ident import quote_ident
 
 
@@ -70,6 +71,11 @@ class PullResult:
       `kind=="digest"` entries (de-authorization or digest deletion).
       Always 0 against a pre-K4 server that emits no `knowledge_artifacts`
       key at all.
+    - `access_policy_tables`: count of access-policied tables named in
+      `.claude/rules/access_policies.md` this run (table access policies
+      §10 item 4) — 0 when the analyst's stack has none, or against a
+      pre-this-feature server whose manifest carries no `data_packages[]
+      .tables[].access_policy` marker at all.
     - `duration_s`: wall time of the call.
     - `errors`: list of `{"table": ..., "error": ...}` (or
       `{"stage": "memory_bundle", "error": ...}` /
@@ -95,6 +101,7 @@ class PullResult:
     knowledge_removed: int = 0
     digests_updated: int = 0
     digests_removed: int = 0
+    access_policy_tables: int = 0
     tables_via_signed_url: int = 0
     tables_via_app: int = 0
     duration_s: float = 0.0
@@ -167,6 +174,14 @@ def _safe_manifest_tables(raw: dict) -> tuple[dict, list[str]]:
 # even a persistent mismatch never leaves the table missing from disk.
 _DOWNLOAD_RETRIES = 2
 _DOWNLOAD_RETRY_BACKOFFS_S = (0.5, 1.0)
+
+
+def _retry_backoff(attempt: int) -> float:
+    """Seconds to wait before re-attempting a failed download. Clamps to the
+    tail of the schedule so `_DOWNLOAD_RETRIES` can be raised (or monkeypatched
+    in tests) without having to extend `_DOWNLOAD_RETRY_BACKOFFS_S` in step."""
+    return _DOWNLOAD_RETRY_BACKOFFS_S[min(attempt, len(_DOWNLOAD_RETRY_BACKOFFS_S) - 1)]
+
 
 # WF-4 (wave 2H) — direct-to-object-storage fetch of a manifest `signed_url`.
 # Bounded connect/read timeouts so a stalled object-store endpoint doesn't
@@ -625,6 +640,73 @@ def _drop_stale_layout(parquet_dir: Path, tid: str, *, partitioned: bool) -> Non
             shutil.rmtree(stale_dir, ignore_errors=True)
 
 
+def _fetch_part_with_retry(fetch_part, relpath: str, dest: Path, expected: str) -> str | None:
+    """Fetch ONE part into ``dest`` and md5-verify it, retrying a bad fetch on
+    the same bounded budget ``_download_one`` gives a single-file table
+    (``_DOWNLOAD_RETRIES`` extra attempts, ``_DOWNLOAD_RETRY_BACKOFFS_S``
+    between them). Returns ``None`` on success, else the last error string.
+
+    Exists for parity with `_download_one` (#596/#626): the partitioned path
+    added later fetched each part exactly once, so one bad part aborted the
+    whole table's sync.
+
+    Both failure kinds retry, matching `_download_one`: a transport error and a
+    hash mismatch are equally plausible symptoms of one flaky transfer, and the
+    caller cannot tell them apart anyway.
+
+    No empty-hash PAR1 fallback, unlike `_verify_and_promote`: the server
+    derives every part hash from file content in `_hash_table_parts`, so an
+    empty ``expected`` is a malformed manifest and should fail loudly rather
+    than downgrade to a structural check. Verified parts are staged, not
+    promoted — the all-or-nothing swap lives in the caller.
+
+    Note this sits ON TOP of `stream_download`'s own transient-error retries,
+    so a persistently failing part now costs up to (its attempts x these) round
+    trips, serially, before the table gives up.
+
+    Two consecutive reads yielding the SAME wrong hash stop the loop early: the
+    server is serving stable bytes that simply are not the ones the manifest
+    describes, and re-reading identical bytes a third time cannot change that.
+    This is the common case in practice, not a micro-optimization — a part
+    rewritten server-side without `sync_state` being re-hashed (a backfill
+    running between rebuilds) publishes a hash that no longer matches anything
+    on disk, and stays that way until the next rebuild. Retrying a plain "hash
+    mismatch" reads like corruption and sends people hunting a transfer bug, so
+    that case gets its own message naming the real cause.
+    """
+    last_err: str | None = None
+    prev_got: str | None = None
+    for attempt in range(_DOWNLOAD_RETRIES + 1):
+        try:
+            fetch_part(relpath, dest)
+            got = _file_md5(dest)
+            if got == expected:
+                return None
+            if got == prev_got:
+                # Deterministic: same bytes, twice. Not a transfer problem.
+                dest.unlink(missing_ok=True)
+                return (
+                    f"part {relpath} hash mismatch: expected {expected[:12]}, got {got[:12]} "
+                    f"— identical on {attempt + 1} reads, so the server's bytes are stable and "
+                    f"the published hash is stale. A transfer retry cannot fix this; the source "
+                    f"needs a rebuild to re-hash it."
+                )
+            prev_got = got
+            # Truncated like `_verify_and_promote`'s message — same failure,
+            # same shape, whichever layout the table happens to use.
+            last_err = f"part {relpath} hash mismatch: expected {expected[:12]}, got {got[:12]}"
+        except Exception as exc:
+            # Transport errors keep the full budget: unlike a stable hash, a
+            # second connection failure is not evidence the third will fail.
+            last_err = f"part {relpath} fetch failed: {exc}"
+        # Never leave a rejected part's bytes in staging: the next attempt must
+        # not be able to verify a stale file if its fetch dies before writing.
+        dest.unlink(missing_ok=True)
+        if attempt < _DOWNLOAD_RETRIES:
+            time.sleep(_retry_backoff(attempt))
+    return last_err
+
+
 def _sync_partitioned_table(
     tid: str,
     server_parts: list[dict],
@@ -639,8 +721,10 @@ def _sync_partitioned_table(
     Staged-then-swapped: changed parts are fetched into a staging dir and
     md5-verified there; only when EVERY fetched part verifies are they moved
     into the table dir (unchanged parts stay put) and server-dropped parts
-    pruned. On any fetch/verify failure nothing is moved — the prior table dir
-    is left intact. The per-part moves themselves are not one atomic unit, so a
+    pruned. Each part is fetched through ``_fetch_part_with_retry``; only when
+    a part fails every attempt does the table abort, moving nothing and leaving
+    the prior table dir intact. The per-part moves themselves are not one
+    atomic unit, so a
     process crash *during* the swap can leave a mix of old/new parts; that is
     self-healing — ``local_tables`` is only updated on success, so the next
     pull re-detects and re-syncs the affected parts.
@@ -662,10 +746,9 @@ def _sync_partitioned_table(
             relpath, expected = part["path"], part["hash"]
             dest = staging / relpath
             dest.parent.mkdir(parents=True, exist_ok=True)
-            fetch_part(relpath, dest)
-            got = _file_md5(dest)
-            if got != expected:
-                return None, False, f"part {relpath} hash mismatch: expected {expected} got {got}"
+            err = _fetch_part_with_retry(fetch_part, relpath, dest, expected)
+            if err is not None:
+                return None, False, err
             staged[relpath] = dest
         # Every fetched part verified → promote atomically, then prune.
         for relpath, dest in staged.items():
@@ -685,11 +768,13 @@ def _sync_partitioned_table(
             None,
         )
     except Exception as exc:
-        # A transport/IO error (e.g. `stream_download` network blip) or a
-        # promote/prune failure must be RETURNED as a per-table error, not
-        # raised — otherwise one flaky partitioned table would abort the whole
-        # pull and discard tables that already downloaded fine. All-or-nothing
-        # still holds: nothing was promoted, the prior table dir is intact.
+        # Staging/promote/prune IO failures land here; per-part fetch errors do
+        # not (`_fetch_part_with_retry` catches those to retry them, and returns
+        # the last one). Either way the failure must be RETURNED as a per-table
+        # error, not raised — otherwise one flaky partitioned table would abort
+        # the whole pull and discard tables that already downloaded fine.
+        # All-or-nothing still holds: nothing was promoted, the prior table dir
+        # is intact.
         return None, False, f"partitioned sync failed: {exc}"
     finally:
         if staging.exists():
@@ -1265,13 +1350,29 @@ def run_pull(
         # Future: scope to <workspace>/.agnes/sync_state.json so workspace
         # bootstrap leaves no residue outside <workspace>/.
         local_state["tables"] = local_tables
-        local_state["last_sync"] = datetime.now(timezone.utc).isoformat()
+        local_state["last_sync"] = datetime.now(UTC).isoformat()
         save_sync_state(local_state)
 
         # 6. Rebuild DuckDB views — unconditional. The DB file is the
         # load-bearing artifact for downstream readers.
+        #
+        # Table access policies (§3.4, §10.3): a local snapshot whose
+        # stored `policy_fingerprint` no longer matches the fingerprint the
+        # manifest (fetched fresh in step 1) reports for its source table
+        # RIGHT NOW must not keep serving pre-change rows — reuses this
+        # SAME `blocked_names` mechanism #1129 built for a de-authorized or
+        # newly-`server_only` table, so `snapshot_views_blocked` stays the
+        # one audit trail for "why did this name stop resolving" regardless
+        # of cause. Computed fresh every run (never merged into
+        # `local_state["snapshot_blocked"]` above): unlike the de-auth
+        # case, both comparison inputs (the snapshot's own meta.json, the
+        # manifest) are already durable, so there is nothing to "remember"
+        # across pulls — and a reverted policy's fingerprint matching again
+        # correctly un-blocks the view on the very next pull.
         result.snapshot_views_blocked = _rebuild_duckdb_views(
-            workspace, parquet_dir, blocked_names=blocked_snapshot_names
+            workspace,
+            parquet_dir,
+            blocked_names=blocked_snapshot_names | _stale_policy_snapshot_names(workspace, manifest),
         )
 
         # 7. Fetch corporate-memory bundle and lazily write
@@ -1282,6 +1383,17 @@ def run_pull(
             result.rules_count = written
         except Exception as exc:
             result.errors.append({"stage": "memory_bundle", "error": str(exc)})
+
+        # 7b. Table access policies (§10 item 4): write/prune
+        # `.claude/rules/access_policies.md` naming every policied table in
+        # the analyst's stack -- the one link in the disclosure chain that
+        # reaches an agent's context BEFORE it writes a query. Sourced from
+        # the manifest already fetched in step 1, no extra round-trip.
+        # Best-effort, same posture as the memory bundle above.
+        try:
+            result.access_policy_tables = _write_access_policy_rules(manifest, workspace)
+        except Exception as exc:
+            result.errors.append({"stage": "access_policy_rules", "error": str(exc)})
 
         # 8. v49 stack sync — per-type loop into ``~/.claude/data/`` and
         # ``~/.claude/memory/`` with reference-counted dedup. Runs only
@@ -1336,7 +1448,7 @@ def _run_stack_sync_from_manifest(manifest: dict, workspace: Path):
     return run_stack_sync(opts)
 
 
-def _emit_pull_confirm(server_url: str, token: str, result: "PullResult") -> None:
+def _emit_pull_confirm(server_url: str, token: str, result: PullResult) -> None:
     """POST /api/sync/pull-confirm with the per-type aggregate counts.
 
     Fire-and-forget — the parent already swallows exceptions but the
@@ -1389,7 +1501,7 @@ def _file_md5(path: Path) -> str:
     return h.hexdigest()
 
 
-def _sync_knowledge_artifacts(manifest: dict, workspace: Path, local_state: dict, result: "PullResult") -> None:
+def _sync_knowledge_artifacts(manifest: dict, workspace: Path, local_state: dict, result: PullResult) -> None:
     """K3 (#798): download/verify/promote/prune per-collection knowledge.duckdb.
 
     Same lifecycle as parquets: sidecar download -> md5 verify -> os.replace
@@ -1485,7 +1597,7 @@ def _digest_to_md(body: dict) -> str:
     return "\n".join(lines)
 
 
-def _sync_knowledge_digests(manifest: dict, workspace: Path, local_state: dict, result: "PullResult") -> None:
+def _sync_knowledge_digests(manifest: dict, workspace: Path, local_state: dict, result: PullResult) -> None:
     """K4 (#799): write/prune maintained digests as `.claude/rules/ka_<slug>.md`.
 
     Same delivery channel as the corporate-memory `km_*.md` bundle — the
@@ -1530,12 +1642,7 @@ def _sync_knowledge_digests(manifest: dict, workspace: Path, local_state: dict, 
         # claimed `ka_*.md` gets the header; for already-synced digests it did
         # not.)
         cached = known.get(did, {})
-        if (
-            md5
-            and cached.get("md5") == md5
-            and cached.get("render") == _DIGEST_RENDER_VERSION
-            and target.exists()
-        ):
+        if md5 and cached.get("md5") == md5 and cached.get("render") == _DIGEST_RENDER_VERSION and target.exists():
             continue  # hash-equal, same template, file present
         try:
             resp = api_get(entry.get("url") or f"/api/knowledge/digests/{did}/content")
@@ -1580,13 +1687,13 @@ def _is_valid_parquet(path: Path) -> bool:
 
 def _blocked_snapshot_names(
     server_tables: dict,
-    authorized_names: "set[str] | None",
-    server_only_names: "set[str]",
+    authorized_names: set[str] | None,
+    server_only_names: set[str],
     *,
-    previously_local: "set[str]",
-    still_local: "set[str]",
-    remembered: "set[str]",
-) -> "set[str]":
+    previously_local: set[str],
+    still_local: set[str],
+    remembered: set[str],
+) -> set[str]:
     """Names a snapshot view must NOT take, remembered across pulls.
 
     ``agnes snapshot create <table>`` with no ``--as`` writes
@@ -1632,6 +1739,93 @@ def _blocked_snapshot_names(
     return (remembered | newly_revoked) - still_local
 
 
+def _manifest_policy_fingerprints(manifest: dict) -> dict:
+    """``table_id -> access_policy_fingerprint`` read from
+    ``data_packages[].tables[]`` (``app/api/sync.py::_table_manifest_entry``,
+    table access policies §3.4/§10.3, plan Task 18) — the only manifest
+    section carrying it, since a policied table is only ever reachable
+    through a data package under the unified-stack model (attaching a
+    policy requires ``server_only=True``, and ``server_only`` tables
+    surface exclusively via packages).
+
+    Keyed by BOTH the registry ``id`` and ``name`` pointing at the same
+    fingerprint: ``SnapshotMeta.table_id`` is whatever the analyst typed as
+    the ``agnes snapshot create <table_id>`` argument, which — mirroring
+    the server-side resolver's own id-or-name fallback
+    (``src/access_policy.py::_resolve_table_row``) — may be either form.
+    Keying on only one would false-positive-block a snapshot of a table
+    whose id and name differ.
+
+    A table id/name absent from the map — outside the puller's current
+    stack, or a pre-this-feature server that never emits the key at all —
+    is a table whose current policy state this manifest simply does not
+    describe. The caller (:func:`_stale_policy_snapshot_names`)
+    distinguishes that from "the manifest says this table has no policy":
+    presence in the map, not the value read out of it, is what makes a
+    comparison meaningful.
+    """
+    out: dict = {}
+    for pkg in manifest.get("data_packages", []) or []:
+        for t in pkg.get("tables", []) or []:
+            fingerprint = t.get("access_policy_fingerprint")
+            for key in (t.get("id"), t.get("name")):
+                if key:
+                    out[key] = fingerprint
+    return out
+
+
+def _stale_policy_snapshot_names(workspace: Path, manifest: dict) -> set[str]:
+    """Local snapshot VIEW names (table access policies §3.4, §10.3; plan
+    Task 18) whose stored ``SnapshotMeta.policy_fingerprint`` no longer
+    matches the CURRENT fingerprint the manifest reports for that
+    snapshot's source table — the policy SQL changed, or the puller's own
+    group membership changed, since ``agnes snapshot create``/``refresh``
+    last ran.
+
+    Keyed off ``SnapshotMeta.name`` (the actual registered view name — may
+    differ from ``table_id`` under ``--as``), unlike ``_blocked_snapshot_
+    names`` above, which only ever withholds the bare ``table_id`` (the
+    one collision a nameless ``agnes snapshot create`` produces): a policy
+    can go stale under ANY snapshot name.
+
+    A snapshot with no recorded fingerprint (created before this feature
+    existed, or of a table that carried no policy at fetch time) compares
+    against ``None`` — so a policy newly ATTACHED to that table after the
+    fact also goes stale, not only an edited one. Both sides ``None`` (no
+    policy then, none now) compares equal and stays resolvable — the "no
+    policy = no behaviour change" invariant holds for snapshots too.
+
+    **The comparison only fires for a snapshot whose source table this
+    manifest actually describes.** Which table that is comes from
+    ``SnapshotMeta.policy_table_id`` (the ``X-Agnes-Policy-Table-Id``
+    ``/api/v2/scan`` stamps beside the fingerprint) when present, falling
+    back to ``table_id``. It has to: on the ``--from-query`` path —
+    ``agnes snapshot create <name> --from-query …`` and every ``agnes
+    query --remote --auto-snapshot`` — ``table_id`` holds the snapshot
+    NAME the caller passed positionally, never a registry id, so it
+    resolves to nothing in the manifest map. Treating that unresolvable
+    lookup as ``None`` and calling ``None != <stored hash>`` "stale"
+    withheld such a snapshot on EVERY subsequent pull, permanently, with
+    no way to recover it. Unknown is not stale: a snapshot whose source
+    table is absent from the map is left alone. Every snapshot that DOES
+    resolve stays fail-closed exactly as before — including one whose
+    table is present but now reports no fingerprint at all.
+    """
+    snapshots_dir = workspace / "user" / "snapshots"
+    if not snapshots_dir.exists():
+        return set()
+
+    current = _manifest_policy_fingerprints(manifest)
+    stale: set[str] = set()
+    for meta in list_snapshots(snapshots_dir):
+        source_table = getattr(meta, "policy_table_id", None) or meta.table_id
+        if source_table not in current:
+            continue
+        if meta.policy_fingerprint != current[source_table]:
+            stale.add(meta.name)
+    return stale
+
+
 def _rebuild_duckdb_views(workspace: Path, parquet_dir: Path, blocked_names: set[str] | None = None) -> list[str]:
     """Recreate DuckDB views from downloaded parquets. Preserve user tables.
 
@@ -1648,7 +1842,7 @@ def _rebuild_duckdb_views(workspace: Path, parquet_dir: Path, blocked_names: set
     Returns the snapshot view names withheld for that reason — empty on every
     ordinary pull.
     """
-    import duckdb  # noqa: F401  (kept for the duckdb.Error path below)
+    import duckdb
 
     from src.duckdb_conn import _open_duckdb
 
@@ -1788,7 +1982,7 @@ def _register_snapshot_views(conn, workspace: Path, blocked_names: set[str] | No
     parquet is left on disk and stays reachable through its snapshot path;
     only the bare id stops resolving. Returns the names withheld.
     """
-    import duckdb  # noqa: F401  (duckdb.Error below)
+    import duckdb
 
     withheld: list[str] = []
     snapshots_dir = workspace / "user" / "snapshots"
@@ -2017,3 +2211,73 @@ def _fetch_and_write_rules(workspace: Path) -> int:
             existing.unlink()
 
     return len(written)
+
+
+def _policied_table_names_from_manifest(manifest: dict) -> list[str]:
+    """Names of tables in the manifest's ``data_packages[].tables[]``
+    sections that carry ``access_policy: true`` (table access policies §10
+    item 4) -- the analyst's OWN granted stack, not the whole registry.
+
+    Sourced from the typed v49 section (``app/api/sync.py::
+    _table_manifest_entry``), the same one the RBAC name-filter above
+    already reads -- the flat legacy ``manifest["tables"]`` dict carries no
+    ``access_policy`` marker and never will (§10 item 4 targets the typed
+    sections only). De-duped and sorted for a stable file across pulls that
+    only reorder unrelated manifest fields.
+    """
+    names: set[str] = set()
+    for pkg in manifest.get("data_packages") or []:
+        for t in pkg.get("tables") or []:
+            if t.get("access_policy") and t.get("name"):
+                names.add(t["name"])
+    return sorted(names)
+
+
+def _write_access_policy_rules(manifest: dict, workspace: Path) -> int:
+    """Write/prune ``.claude/rules/access_policies.md`` (table access
+    policies §10 item 4): name every access-policied table in the
+    analyst's own stack, so an agent carries the caveat in context BEFORE
+    it writes a query against one of these tables -- the only link in the
+    disclosure chain (§10) that reaches an agent before the fact rather
+    than after a response comes back with a `row_scope` note attached.
+
+    Deliberately NOT named ``ka_<x>.md`` / ``km_<x>.md`` despite living
+    next to those two managed namespaces in the same directory: each is
+    swept by its OWN owner's prune loop on every pull --
+    ``_sync_knowledge_digests`` deletes any ``ka_*.md`` file that isn't one
+    of ITS digest slugs the moment the manifest carries a
+    ``knowledge_artifacts`` key (see the empty-list case in that function's
+    own docstring), and ``_fetch_and_write_rules`` does the same over
+    ``km_*.md``. A same-prefix file here would be deleted out from under
+    this feature by an unrelated pull step.
+
+    No hash-based skip, unlike the digest/memory writers above: the content
+    is just a name list (cheap to rebuild every pull), and a table dropping
+    off the stack must prune the file promptly rather than wait for a
+    content hash to differ.
+    """
+    rules_dir = workspace / ".claude" / "rules"
+    target = rules_dir / "access_policies.md"
+    names = _policied_table_names_from_manifest(manifest)
+    if not names:
+        if target.exists():
+            target.unlink()
+        return 0
+
+    rules_dir.mkdir(parents=True, exist_ok=True)
+    lines = [
+        "# Access-Policied Tables",
+        "",
+        "_Server-managed; do not edit._",
+        "",
+        "The following tables in your stack carry a row/column access "
+        "policy: every query against one of them returns YOUR scoped "
+        "slice, not the whole table (the server also flags this per-response "
+        "as `row_scope`). Before summarizing a result from one of these "
+        "tables, state that qualification -- never present a count or "
+        "aggregate over one as an organisation-wide figure.",
+        "",
+    ]
+    lines += [f"- `{name}`" for name in names]
+    target.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return len(names)

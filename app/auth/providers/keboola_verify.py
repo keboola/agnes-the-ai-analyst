@@ -83,6 +83,36 @@ def configured_project_id() -> Optional[str]:
     return str(value).strip()
 
 
+def multi_project_mode() -> str:
+    """The instance's multi-project posture — ``disabled`` (default; the
+    single-project gate from the original provider), ``select``
+    (discover at login, the user picks which projects to import) or
+    ``auto`` (discover + provision every allowed project on each login).
+    Resolved through the switch registry so env override, validation and
+    the admin panel all agree (`keboola_multi_project_mode`)."""
+    from app.switches import switch_value
+
+    return str(switch_value("keboola_multi_project_mode"))
+
+
+def multi_project_active() -> bool:
+    """True when login-time project discovery runs at all."""
+    return multi_project_mode() in ("select", "auto")
+
+
+def is_wildcard_project() -> bool:
+    """True when this instance is NOT pinned to one Keboola project: a
+    discovery mode is on and ``project_id`` is ``"*"`` or unset. The
+    single-project verify gates (project binding; the OAuth path's
+    home-project role gate) are skipped — membership in at least one
+    allowed-role project, per the OAuth host's introspect, becomes the
+    trust boundary instead (see ``keboola_projects.filter_projects``)."""
+    if not multi_project_active():
+        return False
+    pid = configured_project_id()
+    return pid is None or pid == "*"
+
+
 def allowed_roles() -> Optional[list[str]]:
     value = get_value("auth", "keboola", "allowed_roles")
     if not value:
@@ -162,14 +192,16 @@ def _identity_from_payload(payload: Dict[str, Any], *, source: str = "header") -
             "not_master_token",
             "Only a master (admin) Storage API token can authenticate — restricted tokens are rejected",
         )
-    expected = configured_project_id()
-    if expected is None:
-        raise KeboolaVerifyError("not_configured", "auth.keboola.project_id is not configured")
-    if not project_matches(expected, payload):
-        raise KeboolaVerifyError(
-            "project_mismatch",
-            f"The token belongs to a different Keboola project than this instance is bound to (expected project {expected})",
-        )
+    wildcard = is_wildcard_project()
+    if not wildcard:
+        expected = configured_project_id()
+        if expected is None:
+            raise KeboolaVerifyError("not_configured", "auth.keboola.project_id is not configured")
+        if not project_matches(expected, payload):
+            raise KeboolaVerifyError(
+                "project_mismatch",
+                f"The token belongs to a different Keboola project than this instance is bound to (expected project {expected})",
+            )
     admin_owner = payload.get("adminOwner") or {}
     email = str(admin_owner.get("email") or "").strip()
     if not email:
@@ -179,7 +211,16 @@ def _identity_from_payload(payload: Dict[str, Any], *, source: str = "header") -
         )
     role = str((payload.get("admin") or {}).get("role") or "")
     roles = allowed_roles()
-    if roles is not None and role not in roles:
+    # Under the wildcard the OAuth path's role gate moves to discovery:
+    # ``admin.role`` here is the role in the token's HOME project only, and a
+    # user who is e.g. admin of project A must not be turned away because the
+    # OAuth token's home project B lists them as guest. The introspect-based
+    # filter (``keboola_projects.filter_projects``) enforces allowed_roles
+    # across every project, and the callback rejects a login with zero
+    # surviving projects. The header path keeps the gate: a plain Storage
+    # token cannot call the OAuth introspect API, so its home-project role is
+    # the only role there is to check.
+    if roles is not None and role not in roles and not (wildcard and source == "oauth"):
         raise KeboolaVerifyError(
             "role_forbidden",
             f"Keboola project role {role or 'unknown'!r} is not permitted on this instance",
@@ -204,8 +245,20 @@ def _configured_base_url() -> str:
     base = stack_url()
     if not base:
         raise KeboolaVerifyError("not_configured", "No Keboola stack URL configured")
-    if configured_project_id() is None:
+    pid = configured_project_id()
+    if pid is None and not multi_project_active():
         raise KeboolaVerifyError("not_configured", "auth.keboola.project_id is not configured")
+    if pid == "*" and not multi_project_active():
+        # The wildcard only means something under an active discovery mode.
+        # Left behind after the mode is turned off, it would otherwise reach
+        # project_matches("*", …), which fails EVERY token as
+        # project_mismatch — a misleading verdict for what is a
+        # configuration problem (Devin Review on this PR, seventh round).
+        raise KeboolaVerifyError(
+            "not_configured",
+            'auth.keboola.project_id is "*" but no multi-project mode is active — '
+            "set a concrete project id or enable auth.keboola.multi_project_mode",
+        )
     return base
 
 
