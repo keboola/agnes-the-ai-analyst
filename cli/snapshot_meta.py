@@ -48,6 +48,15 @@ class SnapshotMeta:
     # a default, same reason as `expires_at` above -- a `meta.json` written
     # before this feature existed has no such key.
     policy_fingerprint: Optional[str] = None
+    # The registry id of the policied table `policy_fingerprint` was
+    # computed for -- the `X-Agnes-Policy-Table-Id` header `/api/v2/scan`
+    # sends alongside the fingerprint. Needed because `table_id` above is
+    # NOT a registry id on the `--from-query` path (it is the snapshot name
+    # the caller passed positionally), so `agnes pull` would otherwise have
+    # no key to look the CURRENT fingerprint up by in the manifest, read
+    # back `None`, and withhold the snapshot forever. Same LAST-with-a-
+    # default rule as the two fields above.
+    policy_table_id: Optional[str] = None
 
 
 def _meta_path(snap_dir: Path, name: str) -> Path:

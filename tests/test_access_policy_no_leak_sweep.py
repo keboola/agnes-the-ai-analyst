@@ -889,9 +889,7 @@ class TestReadPathGuardCatchesStoredLeakyPolicy:
     def test_v2_scan_fails_closed(self, sweep):
         _store_leaky_policy_on_demo()
         c = sweep["client"]
-        r = c.post(
-            "/api/v2/scan", json={"table_id": "invoices_canonical_demo"}, headers=_auth(sweep["cca_token"])
-        )
+        r = c.post("/api/v2/scan", json={"table_id": "invoices_canonical_demo"}, headers=_auth(sweep["cca_token"]))
         assert r.status_code >= 400, r.text
         _assert_no_plaintext(r)
 
@@ -901,6 +899,24 @@ class TestReadPathGuardCatchesStoredLeakyPolicy:
         r = c.post(
             "/api/mcp/query-table/invoices_canonical_demo",
             json={"filter": {}, "limit": 10},
+            headers=_auth(sweep["cca_token"]),
+        )
+        assert r.status_code >= 400, r.text
+        _assert_no_plaintext(r)
+
+    def test_v2_scan_from_query_fails_closed(self, sweep):
+        """`/api/v2/scan`'s from_query branch — `agnes snapshot create
+        --from-query` and every `agnes query --remote --auto-snapshot` —
+        runs through `run_remote_select_to_arrow`, which had no
+        duplicate-output-column guard of its own. Arrow permits duplicate
+        field names, so the plaintext copy and the masked re-derivation
+        both landed in the analyst's parquet, ON DISK, where every other
+        enforcement point is already behind them."""
+        _store_leaky_policy_on_demo()
+        c = sweep["client"]
+        r = c.post(
+            "/api/v2/scan",
+            json={"from_query": "SELECT * FROM invoices_canonical_demo", "as": "leaky_snap"},
             headers=_auth(sweep["cca_token"]),
         )
         assert r.status_code >= 400, r.text

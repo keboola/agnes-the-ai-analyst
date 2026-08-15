@@ -279,6 +279,16 @@ def invalidate_for_table(table_id: str, *, _publish: bool = True) -> None:
 
     _table_rows_cache.clear()
     v2_schema._schema_cache.invalidate(table_id)
+    # A POLICIED table's schema is cached per caller identity, under
+    # `f"{table_id}|policy:{policy_cache_identity(...)!r}"` (table access
+    # policies §9) — keys the exact-key `invalidate` above can never match.
+    # Without this the caller kept the PRE-edit column list for the full
+    # hour of `_schema_cache`'s TTL after an admin hid a column, and
+    # `/api/v2/scan`'s where/select validator (same payload, via
+    # `_resolve_schema`) went on treating the hidden column as
+    # referenceable. The delimiter is part of the prefix so a table named
+    # `orders` doesn't evict `orders_archive`'s entries.
+    v2_schema._schema_cache.invalidate_prefix(f"{table_id}|")
     # Sample cache key is `f"{table_id}|{n}"`; clearing the whole sample
     # cache is heavier than precise invalidation, but registry-change
     # frequency (handful per day on a typical instance) doesn't justify

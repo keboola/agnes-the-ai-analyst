@@ -28,7 +28,7 @@ The server enforces this both ways, not just at attach time:
 
 - **You cannot attach a policy** to a table that is neither `remote` nor `server_only` — the write is rejected with `access_policy_requires_undistributed`, naming the fix (set `server_only=true` first, or switch to `query_mode='remote'`).
 - **You cannot make a policied table distributable again** — clearing `server_only`, or moving `query_mode` to `local`, is rejected the same way while a policy is attached. Clear the policy first if you really mean to distribute the table.
-- **A second row cannot point at the same physical source.** Registering (or editing) a distributable `local`/`materialized` row whose `source_query` / `(bucket, source_table)` / BigQuery FQN resolves to a *policied* table's underlying data is rejected too — otherwise a raw materialized copy of the policied table under a different registry id would hand out exactly the unfiltered rows the policy exists to withhold.
+- **A second row cannot point at the same physical source.** Registering (or editing) a distributable `local`/`materialized` row whose `source_query` / `(bucket, source_table)` / BigQuery FQN resolves to a *policied* table's underlying data is rejected too (`access_policy_physical_source_conflict`) — otherwise a raw materialized copy of the policied table under a different registry id would hand out exactly the unfiltered rows the policy exists to withhold. The check runs in **both** directions: attaching a policy to a table that already has such a twin is refused the same way, naming the offending row, because nothing would ever write that twin again for the register/edit-time check to catch. Keboola bulk auto-discovery classifies such a source as `invalid` (visible in `discover-and-register`'s dry run) rather than registering it. Register the second row `server_only=true` (or `query_mode='remote'`) if you genuinely need it.
 
 Two things a policy does **not** do, worth stating for the admin dialog as much as here:
 
@@ -210,11 +210,16 @@ Every policy-related rejection is a structured `reason`-keyed detail (never a ra
 | `policy_error` | 500, query surfaces | the policy failed to resolve or execute — never falls back to the unfiltered table |
 | `access_policies_disabled` | 422, admin write | attaching a policy while `access_policies.enabled` is off |
 | `access_policy_requires_undistributed` | 422, admin write | the table is not `remote`/`server_only` |
+| `access_policy_physical_source_conflict` | 422, admin write | a distributable second row points at the same physical source as a policied table (either direction — registering/editing the twin, or attaching the policy) |
 | `policy_note_required` | 422, admin write | `access_policy_sql` is set without `access_policy_note` |
+| `policy_preview_unsafe_group_name` | 422, admin preview | an `as_groups` name carries a pattern metacharacter (`%`, `_`) |
+| `policy_preview_unsafe_live_group_name` | 422, admin preview | the `as_user` persona's own live group name carries one — the resolver would refuse to bind it, so this policy could never be served to that user |
 
 ## Snapshots and staleness
 
-`agnes snapshot create` deliberately materializes a filtered slice of a remote table onto the laptop. `POST /api/v2/scan` stamps an `X-Agnes-Policy-Fingerprint` header (a hash of the policy text plus the caller's group set at fetch time); the CLI stores it on the snapshot's metadata, and `agnes pull` re-derives the current fingerprint from the manifest and blocks the view (via the same `snapshot_views_blocked` mechanism used for a de-authorized or newly-`server_only` table) when they no longer match — so a snapshot taken before a policy tightened does not keep quietly answering with the old, wider slice.
+`agnes snapshot create` deliberately materializes a filtered slice of a remote table onto the laptop. `POST /api/v2/scan` stamps an `X-Agnes-Policy-Fingerprint` header (a hash of the policy text plus the caller's group set at fetch time) plus an `X-Agnes-Policy-Table-Id` naming the policied table it belongs to; the CLI stores both on the snapshot's metadata, and `agnes pull` re-derives the current fingerprint for that table from the manifest and blocks the view (via the same `snapshot_views_blocked` mechanism used for a de-authorized or newly-`server_only` table) when they no longer match — so a snapshot taken before a policy tightened does not keep quietly answering with the old, wider slice.
+
+The table id is what makes this work for `--from-query` snapshots (including every `agnes query --remote --auto-snapshot`), where the snapshot's stored `table_id` is the *name* the analyst chose, not a registry id. A snapshot whose source table the manifest does not describe at all is left resolvable rather than blocked: unknown is not stale. A snapshot created before this was recorded therefore compares against nothing — `agnes snapshot refresh <name>` re-stamps it and restores staleness tracking.
 
 ## v1 limitations
 

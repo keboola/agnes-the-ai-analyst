@@ -146,17 +146,19 @@ class TestInterlockCaseC:
     """§3.2 — the physical-source twin: a different, distributable row
     resolving to the same physical source as a policied table."""
 
-    def test_a_distributable_twin_of_a_policied_source_is_rejected(self, seeded_app, monkeypatch):
-        """PUT-path defense-in-depth: ``TestRegisterTimeInterlock`` covers
-        the twin being caught the moment IT is registered. This test
-        instead registers the twin BEFORE its sibling has a policy
-        attached — so register-time sees no conflict yet and the twin
-        lands (as it must: two unpolicied rows sharing a source is not yet
-        a leak) — and shows the very next write to that twin still gets
-        caught. The interlock re-validates the merged shape on every write
-        to a distributable row, independent of which fields that write
-        touches, so a twin that predates its sibling's policy is not a
-        permanent blind spot."""
+    def test_attaching_a_policy_while_a_distributable_twin_exists_is_rejected(self, seeded_app, monkeypatch):
+        """The ATTACH direction of §3.2 — the one the register-time and
+        twin-write checks structurally cannot cover.
+
+        A row carrying a policy is by construction non-distributable
+        (§3.1 forces ``query_mode='remote'`` or ``server_only=true``), so
+        the "is THIS row a distributable twin of a policied one" check
+        short-circuits on the attach path — it only ever rejects the
+        TWIN's own write. Registering the twin FIRST and then attaching
+        the policy therefore used to be accepted with no scan at all, and
+        since nothing ever PUTs the twin again the interlock never ran:
+        ``agnes pull`` kept distributing the twin's unfiltered parquet
+        forever. The attach must do the symmetric scan itself."""
         monkeypatch.setenv("AGNES_ACCESS_POLICIES_ENABLED", "1")
         c = seeded_app["client"]
         token = seeded_app["admin_token"]
@@ -169,7 +171,8 @@ class TestInterlockCaseC:
             bucket="in.c-main",
             source_table="invoices",
         )
-        # Registered while orig_src carries no policy yet.
+        # Registered while orig_src carries no policy yet — legitimate at
+        # that moment (two unpolicied rows sharing a source is not a leak).
         twin_id = _register(
             c,
             token,
@@ -186,11 +189,57 @@ class TestInterlockCaseC:
             },
             headers=_auth(token),
         )
+        assert attach.status_code == 422, attach.text
+        assert "access_policy_physical_source_conflict" in attach.text
+        assert twin_id in attach.text
+
+        # And the refused attach never landed.
+        from src.repositories import table_registry_repo
+
+        assert table_registry_repo().get(policied_id)["access_policy_sql"] is None
+
+    def test_a_twin_flipped_to_distributable_after_the_attach_is_rejected(self, seeded_app, monkeypatch):
+        """PUT-path defense-in-depth in the other direction:
+        ``TestRegisterTimeInterlock`` covers a brand-new twin being caught
+        the moment IT is registered; this covers an EXISTING undistributed
+        twin (allowed to coexist) being flipped distributable later. The
+        interlock re-validates the merged shape on every write to a
+        distributable row, independent of which fields that write
+        touches."""
+        monkeypatch.setenv("AGNES_ACCESS_POLICIES_ENABLED", "1")
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+
+        policied_id = _register(
+            c,
+            token,
+            name="flip_orig_src",
+            server_only=True,
+            bucket="in.c-main",
+            source_table="credit_notes",
+        )
+        twin_id = _register(
+            c,
+            token,
+            name="flip_twin_src",
+            server_only=True,
+            bucket="in.c-main",
+            source_table="credit_notes",
+        )
+
+        attach = c.put(
+            f"/api/admin/registry/{policied_id}",
+            json={
+                "access_policy_sql": _policy_sql("flip_orig_src"),
+                "access_policy_note": "pii masking",
+            },
+            headers=_auth(token),
+        )
         assert attach.status_code == 200, attach.text
 
         resp = c.put(
             f"/api/admin/registry/{twin_id}",
-            json={"description": "an unrelated edit"},
+            json={"server_only": False},
             headers=_auth(token),
         )
         assert resp.status_code == 422, resp.text

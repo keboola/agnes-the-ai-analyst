@@ -208,6 +208,86 @@ class TestCacheKeyCarriesCallerIdentity:
         assert identity == ("u_team_a", ("TeamA",))
 
 
+class TestPolicyEditInvalidatesTheIdentityKeyedSchemaCache:
+    """`invalidate_for_table` did an exact-key `invalidate(table_id)`, which
+    can never match a policied table's `f"{table_id}|policy:{identity!r}"`
+    entries. With `ttl_seconds=3600` the caller kept the PRE-edit column
+    list — including a column the admin had just hidden — for up to an
+    hour, and `/api/v2/scan`'s where/select validator (same payload via
+    `_resolve_schema`) went on accepting references to it."""
+
+    def _hide_amount(self, client, admin_token):
+        return client.put(
+            "/api/admin/registry/orders",
+            json={
+                "access_policy_sql": (
+                    "SELECT * EXCLUDE (secret, amount) FROM orders WHERE list_contains($user_groups, unit)"
+                ),
+                "access_policy_note": "unit filter + hide amount",
+            },
+            headers=_auth(admin_token),
+        )
+
+    def test_a_newly_hidden_column_disappears_from_the_schema_immediately(self, policied_orders):
+        c = policied_orders["client"]
+        token = policied_orders["team_a_token"]
+
+        before = c.get("/api/v2/schema/orders", headers=_auth(token))
+        assert before.status_code == 200, before.text
+        assert "amount" in [col["name"] for col in before.json()["columns"]]
+
+        edit = self._hide_amount(c, policied_orders["admin_token"])
+        assert edit.status_code == 200, edit.text
+
+        after = c.get("/api/v2/schema/orders", headers=_auth(token))
+        assert after.status_code == 200, after.text
+        assert "amount" not in [col["name"] for col in after.json()["columns"]], (
+            "the pre-edit column list survived the policy edit — the identity-keyed cache entry was never dropped"
+        )
+
+    def test_scan_stops_accepting_a_where_on_the_newly_hidden_column(self, policied_orders):
+        """The same stale payload backs `/api/v2/scan`'s where-validator
+        (via `_resolve_schema`), so the hidden column stayed REFERENCEABLE
+        there: the validator waved it through and the rejection came from
+        the engine instead — a raw binder error that quotes the policy body
+        back at the caller (exactly what §16 says not to do)."""
+        c = policied_orders["client"]
+        token = policied_orders["team_a_token"]
+
+        warm = c.get("/api/v2/schema/orders", headers=_auth(token))
+        assert warm.status_code == 200, warm.text
+
+        edit = self._hide_amount(c, policied_orders["admin_token"])
+        assert edit.status_code == 200, edit.text
+
+        r = c.post(
+            "/api/v2/scan",
+            json={"table_id": "orders", "where": "amount = '100'"},
+            headers=_auth(token),
+        )
+        assert r.status_code == 400, r.text
+        detail = r.json()["detail"]
+        assert detail.get("error") == "validator_rejected", (
+            "the where-validator must reject the hidden column itself, not defer to a raw engine error"
+        )
+        assert detail["details"]["column"] == "amount"
+        assert "list_contains" not in r.text, "a rejection must not echo the policy body"
+
+    def test_invalidate_for_table_drops_the_identity_keyed_entry(self, policied_orders):
+        """Unit-level: the invalidation itself, independent of what any
+        endpoint does with the result."""
+        from app.api import v2_schema
+        from app.api.v2_catalog import invalidate_for_table
+
+        v2_schema._schema_cache.set("orders|policy:('u_team_a', ('TeamA',))", {"columns": []})
+        v2_schema._schema_cache.set("orders", {"columns": []})
+
+        invalidate_for_table("orders")
+
+        assert v2_schema._schema_cache.get("orders|policy:('u_team_a', ('TeamA',))") is None
+        assert v2_schema._schema_cache.get("orders") is None
+
+
 # ── (c): the save-time execution probe (§14.6) ──────────────────────────
 
 

@@ -379,6 +379,71 @@ class TestPolicyPreview:
         assert resp.status_code == 200, resp.text
         assert resp.json()["rows_visible"] == 2
 
+    def test_preview_as_a_user_in_a_wildcard_named_group_is_refused(self, policied_invoices_for_preview):
+        """`as_groups` is checked for `%`/`_` because a wildcard-named group
+        silently widens a LIKE-adjacent policy — but the LIVE resolver
+        (`src/access_policy.py`) raises `PolicyError` for ANY bound group
+        name carrying one, and the `as_user` branch bound a real user's
+        live group names unchecked. A user in a group named `R&D%` would
+        preview a slice the product can never actually serve: the preview
+        succeeds, every real read by that user fails."""
+        from src.db import get_system_db
+        from src.repositories.user_group_members import UserGroupMembersRepository
+        from src.repositories.user_groups import UserGroupsRepository
+        from src.repositories.users import UserRepository
+
+        conn = get_system_db()
+        try:
+            UserRepository(conn).create(id="u_wildcard", email="wildcard@example.com", name="Wildcard")
+            gid = UserGroupsRepository(conn).create(name="R&D%")["id"]
+            UserGroupMembersRepository(conn).add_member("u_wildcard", gid, source="admin")
+        finally:
+            conn.close()
+
+        c = policied_invoices_for_preview["client"]
+        token = policied_invoices_for_preview["admin_token"]
+        resp = c.post(
+            "/api/admin/registry/preview_invoices/policy/preview",
+            json={"as_user": "wildcard@example.com"},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 422, resp.text
+        assert "policy_preview_unsafe_live_group_name" in resp.text
+        assert "R&D%" in resp.text
+
+    def test_preview_as_a_wildcard_group_user_is_fine_when_the_policy_ignores_groups(
+        self, policied_invoices_for_preview
+    ):
+        """Mirrors the resolver exactly: it only rejects the name when the
+        policy actually binds `$user_groups`. A policy that never
+        references them serves that user fine live, so the preview must
+        not invent a rejection."""
+        from src.db import get_system_db
+        from src.repositories.user_group_members import UserGroupMembersRepository
+        from src.repositories.user_groups import UserGroupsRepository
+        from src.repositories.users import UserRepository
+
+        conn = get_system_db()
+        try:
+            UserRepository(conn).create(id="u_wildcard2", email="wildcard2@example.com", name="Wildcard2")
+            gid = UserGroupsRepository(conn).create(name="Ops%")["id"]
+            UserGroupMembersRepository(conn).add_member("u_wildcard2", gid, source="admin")
+        finally:
+            conn.close()
+
+        c = policied_invoices_for_preview["client"]
+        token = policied_invoices_for_preview["admin_token"]
+        resp = c.post(
+            "/api/admin/registry/preview_invoices/policy/preview",
+            json={
+                "as_user": "wildcard2@example.com",
+                "sql": "SELECT * EXCLUDE (secret) FROM preview_invoices WHERE unit = 'Finance'",
+            },
+            headers=_auth(token),
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["rows_visible"] == 2
+
     def test_preview_unknown_as_user_is_404(self, policied_invoices_for_preview):
         c = policied_invoices_for_preview["client"]
         token = policied_invoices_for_preview["admin_token"]

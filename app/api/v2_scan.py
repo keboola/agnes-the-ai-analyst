@@ -722,10 +722,39 @@ def scan_endpoint(
         # -- a documented gap, not a silent one: `agnes pull` simply has
         # nothing to compare for that snapshot and never blocks it on
         # policy drift.
+        #
+        # `X-Agnes-Policy-Table-Id` names WHICH table that fingerprint
+        # belongs to, and is what makes the fingerprint usable at all on
+        # the `from_query` branch: `SnapshotMeta.table_id` is the snapshot
+        # NAME the caller passed positionally there (`agnes snapshot create
+        # <name> --from-query …`, and every `agnes query --remote
+        # --auto-snapshot`), never a registry id, so `agnes pull` has
+        # nothing to look the current fingerprint up by. Without it the
+        # manifest lookup resolves to None on every pull, `None != <hash>`
+        # reads as "stale", and the snapshot is withheld permanently with
+        # no recovery. Sent together with the fingerprint whenever the id
+        # is header-safe: a registry id is derived from the table name and
+        # is not charset-restricted, and Starlette encodes raw header
+        # values as latin-1, so an id outside that range would 500 the
+        # whole response. `X-Agnes-Row-Scope` above sidesteps the same
+        # hazard via `json.dumps`' ASCII escaping; here the header is a
+        # bare id by design, so skip it instead -- the puller then falls
+        # back to `SnapshotMeta.table_id` exactly as it did before this
+        # header existed, which never blocks a snapshot it cannot resolve.
         if policied_ids and len(policied_ids) == 1:
             fingerprint = policy_fingerprint(policied_ids[0], user)
             if fingerprint:
                 response_headers["X-Agnes-Policy-Fingerprint"] = fingerprint
+                policied_id = str(policied_ids[0])
+                try:
+                    policied_id.encode("latin-1")
+                except UnicodeEncodeError:
+                    logger.warning(
+                        "policy table id %r is not header-safe; omitting X-Agnes-Policy-Table-Id",
+                        policied_id,
+                    )
+                else:
+                    response_headers["X-Agnes-Policy-Table-Id"] = policied_id
         return Response(content=ipc, media_type=CONTENT_TYPE, headers=response_headers or None)
     except HTTPException as exc:
         # `run_remote_select_to_arrow` (from_query mode, #616) raises

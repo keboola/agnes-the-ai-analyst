@@ -3943,6 +3943,67 @@ def _policy_physical_source_signals(row: Dict[str, Any]) -> set:
     return signals
 
 
+def _is_distributable_registry_row(row: Dict[str, Any]) -> bool:
+    """Whether ``row`` is the shape ``agnes pull`` downloads —
+    ``query_mode in ('local', 'materialized')`` and not ``server_only``.
+    The single definition both §3.2 directions below are keyed on, so the
+    twin check and the attach check can never drift apart on what
+    "distributable" means.
+    """
+    if (str(row.get("query_mode") or "local")).strip().lower() not in ("local", "materialized"):
+        return False
+    return not row.get("server_only")
+
+
+def _find_policied_physical_source_twin(
+    my_signals: set,
+    *,
+    exclude_id: Optional[str],
+) -> Optional[Dict[str, Any]]:
+    """The first existing registry row that carries ``access_policy_sql``
+    and whose physical-source signals intersect ``my_signals`` — i.e. the
+    policied table a row with these signals would be a distributable twin
+    of. ``None`` when there is no such row.
+    """
+    if not my_signals:
+        return None
+    for other in table_registry_repo().list_all():
+        if other.get("id") == exclude_id or not other.get("access_policy_sql"):
+            continue
+        if my_signals & _policy_physical_source_signals(other):
+            return other
+    return None
+
+
+def _find_distributable_physical_source_twin(
+    my_signals: set,
+    *,
+    exclude_id: Optional[str],
+) -> Optional[Dict[str, Any]]:
+    """The mirror of :func:`_find_policied_physical_source_twin`: the first
+    existing registry row that is itself DISTRIBUTABLE and whose
+    physical-source signals intersect ``my_signals``. ``None`` when there
+    is no such row.
+
+    This is the direction the attach path needs. A row carrying a policy
+    is by construction non-distributable (§3.1 forces ``query_mode=
+    'remote'`` or ``server_only=true``), so
+    ``_check_access_policy_physical_source_conflict`` — which returns
+    early unless the row it is called for is itself distributable — can
+    only ever reject the TWIN's own write. Nothing PUTs a twin that was
+    registered before the policy existed, so without this scan the leak
+    stays open indefinitely.
+    """
+    if not my_signals:
+        return None
+    for other in table_registry_repo().list_all():
+        if other.get("id") == exclude_id or not _is_distributable_registry_row(other):
+            continue
+        if my_signals & _policy_physical_source_signals(other):
+            return other
+    return None
+
+
 def _check_access_policy_physical_source_conflict(
     *,
     source_type: Optional[str],
@@ -3983,10 +4044,15 @@ def _check_access_policy_physical_source_conflict(
     (for ``register_table``) before any materialization can run — a row
     rejected here must never reach disk.
 
+    The ATTACH direction — a policy going onto a row that already has a
+    distributable twin — is the mirror check
+    ``_check_policied_row_has_no_distributable_twin`` below; this one
+    structurally cannot cover it (a policied row is never distributable,
+    so the guard above returns early).
+
     Raises ``HTTPException(422, "access_policy_physical_source_conflict")``.
     """
-    effective_query_mode = (query_mode or "local").strip().lower()
-    if effective_query_mode not in ("local", "materialized") or server_only:
+    if not _is_distributable_registry_row({"query_mode": query_mode, "server_only": server_only}):
         return
     my_signals = _policy_physical_source_signals(
         {
@@ -3998,23 +4064,65 @@ def _check_access_policy_physical_source_conflict(
             "source_query": source_query,
         }
     )
-    if not my_signals:
+    other = _find_policied_physical_source_twin(my_signals, exclude_id=exclude_id)
+    if other is not None:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "access_policy_physical_source_conflict: this table's "
+                f"physical source matches table {other.get('id')!r} "
+                f"({other.get('name')!r}), which has an access policy "
+                "attached -- keep this row server_only=true (or "
+                "query_mode='remote') so the policy can't be routed "
+                "around, or point it at a different physical source"
+            ),
+        )
+
+
+def _check_policied_row_has_no_distributable_twin(merged: Dict[str, Any], *, table_id: str) -> None:
+    """§3.2, the ATTACH direction — refuse to leave a policy on a row that
+    an EXISTING distributable row already resolves to the same physical
+    source as.
+
+    ``_check_access_policy_physical_source_conflict`` above asks "is THIS
+    row a distributable twin of a policied one" and returns early unless
+    the row is itself distributable. A row carrying a policy never is
+    (§3.1 forces ``query_mode='remote'`` or ``server_only=true``), so on
+    the attach path that check always short-circuits: registering
+    ``twin`` (``query_mode='local'``, same bucket/source_table) and only
+    THEN attaching the policy to ``orig`` used to be accepted with no scan
+    at all — and since nothing ever PUTs ``twin`` again, the twin-side
+    interlock never runs and ``agnes pull`` keeps distributing its
+    unfiltered parquet. This is the symmetric scan that closes it.
+
+    Evaluated against the MERGED record on every write that leaves a
+    policy attached — not only the PUT that attaches one — exactly like
+    the §3.1 interlock, so the incoherent shape can't be reached in two
+    steps either. Clearing ``access_policy_sql`` short-circuits (no policy
+    on the merged record, nothing to protect), which keeps the safety
+    valve: an admin can always undo the policy.
+
+    Raises ``HTTPException(422, "access_policy_physical_source_conflict")``.
+    """
+    if not merged.get("access_policy_sql"):
         return
-    for other in table_registry_repo().list_all():
-        if other.get("id") == exclude_id or not other.get("access_policy_sql"):
-            continue
-        if my_signals & _policy_physical_source_signals(other):
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    "access_policy_physical_source_conflict: this table's "
-                    f"physical source matches table {other.get('id')!r} "
-                    f"({other.get('name')!r}), which has an access policy "
-                    "attached -- keep this row server_only=true (or "
-                    "query_mode='remote') so the policy can't be routed "
-                    "around, or point it at a different physical source"
-                ),
-            )
+    my_signals = _policy_physical_source_signals(merged)
+    other = _find_distributable_physical_source_twin(my_signals, exclude_id=table_id)
+    if other is not None:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "access_policy_physical_source_conflict: table "
+                f"{other.get('id')!r} ({other.get('name')!r}) points at this "
+                "table's physical source and is distributable "
+                f"(query_mode={str(other.get('query_mode') or 'local')!r}, "
+                "server_only=false), so agnes pull would hand out the "
+                "unfiltered rows this policy exists to withhold -- set that "
+                "row server_only=true (or query_mode='remote'), unregister "
+                "it, or point it at a different physical source, then "
+                "attach the policy"
+            ),
+        )
 
 
 @router.put("/registry/{table_id}")
@@ -4341,6 +4449,15 @@ async def update_table(
             exclude_id=table_id,
         )
 
+        # §3.2, the OTHER direction — the check just above is structurally
+        # blind to it. It returns early unless the row it is called for is
+        # itself distributable, and a policied row never is (the §3.1 check
+        # right above forces remote/server_only), so on the attach path it
+        # can only ever reject the TWIN's own write. A twin registered
+        # BEFORE the policy existed is never PUT again, so nothing would
+        # ever run that check for it: scan for one here instead.
+        _check_policied_row_has_no_distributable_twin(merged, table_id=table_id)
+
         # §14.6 — the live LIMIT 0 execution probe. Runs LAST among the
         # policy-write checks: after static validation (rule 1-5, above)
         # AND after the §3.1/§3.2 interlocks, so a table this PUT would be
@@ -4626,6 +4743,29 @@ async def preview_table_policy(
         if "user_id" in referenced:
             params["user_id"] = persona_user_id
         if "user_groups" in referenced:
+            # An `as_groups` persona was already screened for pattern
+            # metacharacters up in the persona branch. An `as_user`
+            # persona's groups come from the DB, so nothing screened them
+            # — yet the LIVE resolver (`src/access_policy.py::
+            # policied_relation`) raises `PolicyError` for ANY bound group
+            # name carrying one. Without this check, a preview of a user
+            # in a group named e.g. `R&D%` renders a slice the product can
+            # never serve that user: the preview succeeds, every real read
+            # by them fails. Mirrored here exactly as the resolver does it
+            # — only when the policy actually binds `$user_groups`, since
+            # a policy that never references them serves that user fine.
+            for group_name in persona_groups:
+                if any(ch in group_name for ch in _POLICY_PREVIEW_PATTERN_METACHARACTERS):
+                    raise HTTPException(
+                        status_code=422,
+                        detail=(
+                            f"policy_preview_unsafe_live_group_name: {group_name!r} is a live "
+                            "group of this user and contains a pattern metacharacter (%, _), "
+                            "which the policy resolver refuses to bind -- this policy can "
+                            "never be served to this user as things stand; rename the group "
+                            "before relying on the preview"
+                        ),
+                    )
             params["user_groups"] = persona_groups
 
         try:
@@ -5126,10 +5266,22 @@ def _build_keboola_discovery_plan(
     # the single-row test stubs working without forcing them to
     # implement list_all.
     try:
-        all_rows = [r for r in repo.list_all() if r.get("source_type") == "keboola"]
+        registry_rows = repo.list_all()
     except AttributeError:
-        all_rows = []
+        registry_rows = []
+    all_rows = [r for r in registry_rows if r.get("source_type") == "keboola"]
     by_name: dict[str, dict] = {(r.get("name") or "").strip().lower(): r for r in all_rows}
+    # §3.2 — one pass over the policied rows, so the physical-source-twin
+    # check below is an O(1) dict hit per discovered entry rather than a
+    # fresh `list_all()` scan each time (discovery routinely walks
+    # hundreds of tables). Same signal vocabulary as the register/update
+    # interlocks, via `_policy_physical_source_signals`.
+    policied_by_signal: dict = {}
+    for row in registry_rows:
+        if not row.get("access_policy_sql"):
+            continue
+        for signal in _policy_physical_source_signals(row):
+            policied_by_signal.setdefault(signal, row)
 
     plan = {"new": [], "existing_match": [], "existing_drift": [], "invalid": []}
     for table in discovered:
@@ -5195,6 +5347,44 @@ def _build_keboola_discovery_plan(
                     "registry_source_table": name_match.get("source_table") or "",
                     "registry_id": name_match.get("id"),
                     "drift_kind": "name_collision",
+                }
+            )
+            continue
+
+        # §3.2 — the physical-source twin. Everything the writer takes out
+        # of `new` is registered as `query_mode='materialized'` with no
+        # `server_only`: the distributable shape `agnes pull` downloads,
+        # and one whose next sync tick writes the raw rows to parquet with
+        # no further admin action. The id/name checks above do NOT cover
+        # this: a policied row that was renamed, or registered under a
+        # hand-picked id, matches neither — so discovery would insert a
+        # twin of it and route the policy around in bulk. Classify it
+        # `invalid` (rather than raising) so one governed table never
+        # aborts a whole discovery run, and the operator sees in the
+        # dry-run exactly which row blocked it and why.
+        my_signals = _policy_physical_source_signals(
+            {
+                "source_type": "keboola",
+                "bucket": bucket,
+                "source_table": source_table,
+            }
+        )
+        policied_twin = next(
+            (policied_by_signal[s] for s in my_signals if s in policied_by_signal),
+            None,
+        )
+        if policied_twin is not None:
+            plan["invalid"].append(
+                {
+                    **entry,
+                    "reason": (
+                        "access_policy_physical_source_conflict: this source is already "
+                        f"registered as {policied_twin.get('id')!r} "
+                        f"({policied_twin.get('name')!r}) with an access policy attached -- "
+                        "auto-discovery would register a distributable copy that routes the "
+                        "policy around; register it by hand with server_only=true if you "
+                        "need a second row"
+                    ),
                 }
             )
             continue

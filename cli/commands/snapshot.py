@@ -165,8 +165,10 @@ def refresh_cmd(
     # refresh of a snapshot whose policy changed would fetch CURRENT
     # (correctly filtered) rows but keep the STALE fingerprint from the
     # original `create`, and `agnes pull` would go on blocking a view that
-    # is actually fresh.
+    # is actually fresh. Same for the table id the fingerprint belongs to
+    # -- the two are always stamped and stored together.
     policy_fingerprint_header = resp_headers.get("X-Agnes-Policy-Fingerprint") or None
+    policy_table_id_header = resp_headers.get("X-Agnes-Policy-Table-Id") or None
 
     parquet_path = snap_dir / f"{name}.parquet"
     with snapshot_lock(snap_dir):
@@ -196,6 +198,7 @@ def refresh_cmd(
             result_hash_md5=new_hash,
             expires_at=expires_at,
             policy_fingerprint=policy_fingerprint_header,
+            policy_table_id=policy_table_id_header,
         )
         write_meta(snap_dir, new_meta)
 
@@ -558,6 +561,11 @@ def _create_snapshot(
     # carries no policy, or the fetch ran as the admin bypass (`/api/v2/
     # scan` omits the header in both cases).
     policy_fingerprint_header = resp_headers.get("X-Agnes-Policy-Fingerprint") or None
+    # Which policied table that fingerprint belongs to. On the
+    # `--from-query` path `table_id` below is the snapshot NAME, not a
+    # registry id, so this is the only thing `agnes pull` can resolve the
+    # snapshot's source table by.
+    policy_table_id_header = resp_headers.get("X-Agnes-Policy-Table-Id") or None
 
     # Install under flock — re-check existence here to close the TOCTOU
     # window between the early check above and this write.
@@ -604,6 +612,7 @@ def _create_snapshot(
             result_hash_md5=result_hash,
             expires_at=expires_at,
             policy_fingerprint=policy_fingerprint_header,
+            policy_table_id=policy_table_id_header,
         )
         write_meta(snap_dir, meta)
 

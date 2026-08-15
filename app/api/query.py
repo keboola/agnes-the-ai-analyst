@@ -3081,6 +3081,29 @@ def run_remote_select_to_arrow(conn, user, sql, bq, quota, *, policy_info: dict 
                     # SQL. Byte-identical to `execution_sql` here (a no-op)
                     # unless a table this query touches is policied.
                     execution_sql = policy_rewritten_sql
+                if policied_table_ids:
+                    # Read-path guard (§17) — the same fail-closed check
+                    # `execute_query`'s identically structured branch runs,
+                    # and it matters MORE here: this result is written
+                    # straight to the analyst's snapshot parquet, so a
+                    # masking policy that re-derives a column while `*`
+                    # still emits the original persists BOTH copies to
+                    # disk, past every live enforcement point. Arrow, unlike
+                    # the JSON row surfaces, happily carries two fields of
+                    # the same name. `probe_policy` rejects such a policy at
+                    # save time, but only once the base table has a
+                    # resolvable schema — a policy attached before the table
+                    # synced slips through, which is exactly the gap this
+                    # closes. Not needed on the push-down branch above:
+                    # BigQuery itself refuses a result with duplicate output
+                    # column names.
+                    try:
+                        assert_policied_reads_unique(analytics, policied_table_ids, user)
+                    except PolicyError as exc:
+                        raise HTTPException(
+                            status_code=500,
+                            detail={"reason": "policy_error", "table": exc.table_id},
+                        )
                 try:
                     try:
                         if did_rewrite and inner_sql is not None:

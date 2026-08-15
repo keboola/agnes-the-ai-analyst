@@ -1685,9 +1685,11 @@ def _manifest_policy_fingerprints(manifest: dict) -> dict:
 
     A table id/name absent from the map — outside the puller's current
     stack, or a pre-this-feature server that never emits the key at all —
-    reads back ``None`` via ``dict.get`` on the caller side: the fail-safe
-    direction, since losing sight of a table's current policy state blocks
-    a stale snapshot rather than trusting it.
+    is a table whose current policy state this manifest simply does not
+    describe. The caller (:func:`_stale_policy_snapshot_names`)
+    distinguishes that from "the manifest says this table has no policy":
+    presence in the map, not the value read out of it, is what makes a
+    comparison meaningful.
     """
     out: dict = {}
     for pkg in manifest.get("data_packages", []) or []:
@@ -1719,15 +1721,36 @@ def _stale_policy_snapshot_names(workspace: Path, manifest: dict) -> set[str]:
     fact also goes stale, not only an edited one. Both sides ``None`` (no
     policy then, none now) compares equal and stays resolvable — the "no
     policy = no behaviour change" invariant holds for snapshots too.
+
+    **The comparison only fires for a snapshot whose source table this
+    manifest actually describes.** Which table that is comes from
+    ``SnapshotMeta.policy_table_id`` (the ``X-Agnes-Policy-Table-Id``
+    ``/api/v2/scan`` stamps beside the fingerprint) when present, falling
+    back to ``table_id``. It has to: on the ``--from-query`` path —
+    ``agnes snapshot create <name> --from-query …`` and every ``agnes
+    query --remote --auto-snapshot`` — ``table_id`` holds the snapshot
+    NAME the caller passed positionally, never a registry id, so it
+    resolves to nothing in the manifest map. Treating that unresolvable
+    lookup as ``None`` and calling ``None != <stored hash>`` "stale"
+    withheld such a snapshot on EVERY subsequent pull, permanently, with
+    no way to recover it. Unknown is not stale: a snapshot whose source
+    table is absent from the map is left alone. Every snapshot that DOES
+    resolve stays fail-closed exactly as before — including one whose
+    table is present but now reports no fingerprint at all.
     """
     snapshots_dir = workspace / "user" / "snapshots"
     if not snapshots_dir.exists():
         return set()
 
     current = _manifest_policy_fingerprints(manifest)
-    return {
-        meta.name for meta in list_snapshots(snapshots_dir) if meta.policy_fingerprint != current.get(meta.table_id)
-    }
+    stale: set[str] = set()
+    for meta in list_snapshots(snapshots_dir):
+        source_table = getattr(meta, "policy_table_id", None) or meta.table_id
+        if source_table not in current:
+            continue
+        if meta.policy_fingerprint != current[source_table]:
+            stale.add(meta.name)
+    return stale
 
 
 def _rebuild_duckdb_views(workspace: Path, parquet_dir: Path, blocked_names: set[str] | None = None) -> list[str]:

@@ -204,9 +204,10 @@ def api_post_arrow_with_headers(path: str, payload: dict) -> "tuple[pa.Table, ht
     """Like :func:`api_post_arrow`, but also returns the response headers.
 
     ``/api/v2/scan`` has no JSON body to carry values like
-    ``X-Agnes-Row-Scope`` or ``X-Agnes-Policy-Fingerprint`` (table access
-    policies §10.3, §3.4) -- a caller that needs them (``agnes snapshot
-    create``/``refresh``, ``cli/commands/snapshot.py``) reads this instead
-    of the header-blind :func:`api_post_arrow`.
+    ``X-Agnes-Row-Scope``, ``X-Agnes-Policy-Fingerprint`` or
+    ``X-Agnes-Policy-Table-Id`` (table access policies §10.3, §3.4) -- a
+    caller that needs them (``agnes snapshot create``/``refresh``,
+    ``cli/commands/snapshot.py``) reads this instead of the header-blind
+    :func:`api_post_arrow`.
     """
     return _post_arrow(path, payload)

@@ -1,6 +1,3 @@
-import pytest
-import time
-
 from app.api.v2_cache import TTLCache
 
 
@@ -46,3 +43,36 @@ class TestTTLCache:
         c.clear()
         assert c.get("a") is None
         assert c.get("b") is None
+
+    def test_invalidate_prefix_drops_every_matching_key(self):
+        """`invalidate` is an exact-key delete, so it never reaches the
+        composite keys a policied table's schema entries live under
+        (`f"{table_id}|policy:{identity!r}"`). Prefix invalidation is what
+        an admin's policy edit needs to actually take effect."""
+        c = TTLCache(maxsize=10, ttl_seconds=60)
+        c.set("orders|policy:('u1', ('TeamA',))", 1)
+        c.set("orders|policy:('u2', ('TeamB',))", 2)
+        c.set("line_items|policy:('u1', ('TeamA',))", 3)
+
+        c.invalidate_prefix("orders|")
+
+        assert c.get("orders|policy:('u1', ('TeamA',))") is None
+        assert c.get("orders|policy:('u2', ('TeamB',))") is None
+        assert c.get("line_items|policy:('u1', ('TeamA',))") == 3
+
+    def test_invalidate_prefix_is_a_literal_prefix_match(self):
+        """Which is why callers pass the key delimiter, not a bare id — a
+        table named `orders` must not evict `orders_archive`'s entries."""
+        c = TTLCache(maxsize=10, ttl_seconds=60)
+        c.set("orders_archive|policy:('u1', ())", 1)
+
+        c.invalidate_prefix("orders|")
+        assert c.get("orders_archive|policy:('u1', ())") == 1
+
+        c.invalidate_prefix("orders")
+        assert c.get("orders_archive|policy:('u1', ())") is None
+
+    def test_invalidate_prefix_on_an_empty_cache_is_a_noop(self):
+        c = TTLCache(maxsize=10, ttl_seconds=60)
+        c.invalidate_prefix("orders|")
+        assert c.get("orders") is None

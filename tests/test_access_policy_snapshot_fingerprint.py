@@ -163,6 +163,29 @@ class TestScanEndpointFingerprintHeader:
         assert r.status_code == 200, r.text
         assert "x-agnes-policy-fingerprint" not in r.headers
 
+    def test_policy_table_id_header_accompanies_the_fingerprint(self, policied_orders):
+        """The fingerprint alone is useless to `agnes pull` for a
+        `--from-query` snapshot: `SnapshotMeta.table_id` is the snapshot
+        NAME there, never a registry id, so the manifest lookup can never
+        resolve it. The scan therefore names WHICH policied table the
+        fingerprint belongs to."""
+        c = policied_orders["client"]
+        r = c.post("/api/v2/scan", json={"table_id": "orders"}, headers=_auth(policied_orders["team_a_token"]))
+        assert r.status_code == 200, r.text
+        assert r.headers.get("x-agnes-policy-table-id") == "orders"
+
+    def test_policy_table_id_header_absent_for_non_policied_table(self, policied_orders):
+        c = policied_orders["client"]
+        r = c.post("/api/v2/scan", json={"table_id": "line_items"}, headers=_auth(policied_orders["team_a_token"]))
+        assert r.status_code == 200, r.text
+        assert "x-agnes-policy-table-id" not in r.headers
+
+    def test_policy_table_id_header_absent_for_admin_bypass(self, policied_orders):
+        c = policied_orders["client"]
+        r = c.post("/api/v2/scan", json={"table_id": "orders"}, headers=_auth(policied_orders["admin_token"]))
+        assert r.status_code == 200, r.text
+        assert "x-agnes-policy-table-id" not in r.headers
+
 
 # ── manifest: access_policy_fingerprint per-table entry ──────────────────
 
@@ -270,6 +293,51 @@ class TestSnapshotMetaPolicyFingerprintField:
 
         meta = read_meta(snap_dir, "x")
         assert meta.policy_fingerprint is None
+        assert meta.policy_table_id is None
+
+
+class TestSnapshotMetaPolicyTableIdField:
+    def test_field_defaults_to_none(self):
+        assert _minimal_meta().policy_table_id is None
+
+    def test_round_trips_through_write_and_read_meta(self, tmp_path):
+        from cli.snapshot_meta import read_meta, write_meta
+
+        snap_dir = tmp_path / "snapshots"
+        write_meta(snap_dir, _minimal_meta(policy_fingerprint="deadbeef", policy_table_id="orders"))
+        assert read_meta(snap_dir, "x").policy_table_id == "orders"
+
+    def test_a_meta_json_with_a_fingerprint_but_no_table_id_key_still_parses(self, tmp_path):
+        """Same LAST-field-with-a-default contract as `policy_fingerprint`
+        — a meta.json written between the fingerprint landing and this
+        field existing carries the one key and not the other."""
+        import json as json_lib
+
+        snap_dir = tmp_path / "snapshots"
+        snap_dir.mkdir(parents=True)
+        older = {
+            "name": "x",
+            "table_id": "orders",
+            "select": None,
+            "where": None,
+            "limit": None,
+            "order_by": None,
+            "fetched_at": "2026-01-01T00:00:00+00:00",
+            "effective_as_of": "2026-01-01T00:00:00+00:00",
+            "rows": 1,
+            "bytes_local": 1,
+            "estimated_scan_bytes_at_fetch": 0,
+            "result_hash_md5": "abc",
+            "expires_at": None,
+            "policy_fingerprint": "fp1",
+        }
+        (snap_dir / "x.meta.json").write_text(json_lib.dumps(older), encoding="utf-8")
+
+        from cli.snapshot_meta import read_meta
+
+        meta = read_meta(snap_dir, "x")
+        assert meta.policy_fingerprint == "fp1"
+        assert meta.policy_table_id is None
 
 
 # ── cli.v2_client.api_post_arrow_with_headers ─────────────────────────────
@@ -347,6 +415,86 @@ class TestCreateAndRefreshPersistTheFingerprint:
         meta = read_meta(tmp_path / "user" / "snapshots", "orders_snap")
         assert meta is not None
         assert meta.policy_fingerprint == "fp123"
+
+    def test_a_from_query_create_records_the_policied_table_id(self, tmp_path, monkeypatch):
+        """The end-to-end shape the permanent-block bug lived in: with
+        ``--from-query`` the positional argument is the snapshot NAME, so
+        ``table_id`` is useless as a manifest key and only the recorded
+        ``policy_table_id`` lets ``agnes pull`` resolve the source table."""
+        import pyarrow as pa
+        from cli.commands import snapshot as snap_mod
+
+        monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
+        db = tmp_path / "user" / "duckdb" / "analytics.duckdb"
+        db.parent.mkdir(parents=True, exist_ok=True)
+        db.write_bytes(b"")
+
+        table = pa.table({"a": [1, 2, 3]})
+        monkeypatch.setattr(
+            snap_mod,
+            "api_post_arrow_with_headers",
+            lambda *a, **k: (
+                table,
+                {"X-Agnes-Policy-Fingerprint": "fp123", "X-Agnes-Policy-Table-Id": "orders"},
+            ),
+        )
+        monkeypatch.setattr(snap_mod, "_open_duckdb", lambda *a, **k: _FakeConn())
+
+        snap_mod.create_cmd(
+            table_id="q_snap",
+            select=None,
+            where=None,
+            limit=None,
+            order_by=None,
+            as_name=None,
+            estimate=False,
+            no_estimate=False,
+            force=False,
+            from_query="SELECT * FROM orders",
+            ttl=None,
+        )
+
+        from cli.snapshot_meta import read_meta
+
+        meta = read_meta(tmp_path / "user" / "snapshots", "q_snap")
+        assert meta is not None
+        assert meta.table_id == "q_snap", "the --from-query positional really is the snapshot name"
+        assert meta.policy_fingerprint == "fp123"
+        assert meta.policy_table_id == "orders"
+
+        # …and that recorded id is what makes the pull-side comparison
+        # resolve at all, instead of blocking the view forever.
+        from cli.lib.pull import _stale_policy_snapshot_names
+
+        manifest = {
+            "data_packages": [{"tables": [{"id": "orders", "name": "orders", "access_policy_fingerprint": "fp123"}]}]
+        }
+        assert _stale_policy_snapshot_names(tmp_path, manifest) == set()
+
+    def test_refresh_re_stamps_the_policied_table_id(self, tmp_path, monkeypatch):
+        import pyarrow as pa
+        from cli.commands import snapshot as snap_mod
+        from cli.snapshot_meta import read_meta, write_meta
+
+        monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
+        snap_dir = tmp_path / "user" / "snapshots"
+        write_meta(snap_dir, _minimal_meta(name="orders_snap", table_id="orders", policy_fingerprint="old"))
+
+        table = pa.table({"a": [1]})
+        monkeypatch.setattr(
+            snap_mod,
+            "api_post_arrow_with_headers",
+            lambda *a, **k: (
+                table,
+                {"X-Agnes-Policy-Fingerprint": "new", "X-Agnes-Policy-Table-Id": "orders"},
+            ),
+        )
+
+        snap_mod.refresh_cmd(name="orders_snap", where=None, ttl=None)
+
+        meta = read_meta(snap_dir, "orders_snap")
+        assert meta.policy_fingerprint == "new"
+        assert meta.policy_table_id == "orders"
 
     def test_create_leaves_fingerprint_none_when_header_absent(self, tmp_path, monkeypatch):
         import pyarrow as pa
@@ -631,3 +779,137 @@ class TestStalePolicySnapshotNamesDirect:
         from cli.lib.pull import _stale_policy_snapshot_names
 
         assert _stale_policy_snapshot_names(tmp_path, {}) == set()
+
+
+class TestStalenessNeedsAResolvableSourceTable:
+    """A `--from-query` snapshot (every `agnes query --remote
+    --auto-snapshot`) stores the snapshot NAME the caller passed
+    positionally in `SnapshotMeta.table_id`, not a registry id — the
+    manifest map is keyed only on `data_packages[].tables[].id`/`.name`,
+    so that lookup can never resolve. `/api/v2/scan` DID stamp a real
+    fingerprint, so a naive `stored != manifest.get(table_id)` compares a
+    hash against `None` on EVERY pull: the snapshot is withheld
+    permanently, with no recovery. "Unknown" must not mean "stale".
+    """
+
+    def test_a_from_query_snapshot_naming_its_policied_table_is_compared(self, tmp_path):
+        """The fix's happy path: the scan reported WHICH policied table the
+        fingerprint belongs to, so the comparison resolves and stays
+        fail-closed."""
+        from cli.lib.pull import _stale_policy_snapshot_names
+        from cli.snapshot_meta import write_meta
+
+        snap_dir = tmp_path / "user" / "snapshots"
+        write_meta(
+            snap_dir,
+            _minimal_meta(
+                name="q_snap",
+                table_id="q_snap",  # --from-query: the snapshot name, not a registry id
+                policy_fingerprint="fp1",
+                policy_table_id="orders",
+            ),
+        )
+        manifest = {
+            "data_packages": [{"tables": [{"id": "orders", "name": "orders", "access_policy_fingerprint": "fp1"}]}]
+        }
+
+        assert _stale_policy_snapshot_names(tmp_path, manifest) == set()
+
+    def test_a_from_query_snapshot_goes_stale_when_its_policied_table_changes(self, tmp_path):
+        """Resolvable => fail-closed, exactly like a table_id snapshot."""
+        from cli.lib.pull import _stale_policy_snapshot_names
+        from cli.snapshot_meta import write_meta
+
+        snap_dir = tmp_path / "user" / "snapshots"
+        write_meta(
+            snap_dir,
+            _minimal_meta(
+                name="q_snap",
+                table_id="q_snap",
+                policy_fingerprint="fp1",
+                policy_table_id="orders",
+            ),
+        )
+        manifest = {
+            "data_packages": [{"tables": [{"id": "orders", "name": "orders", "access_policy_fingerprint": "fp2"}]}]
+        }
+
+        assert _stale_policy_snapshot_names(tmp_path, manifest) == {"q_snap"}
+
+    def test_an_unresolvable_source_table_is_not_treated_as_stale(self, tmp_path):
+        """The permanent-block bug itself: a snapshot whose recorded source
+        table matches no manifest entry at all (a `--from-query` snapshot
+        written before `policy_table_id` existed) must be left resolvable,
+        not withheld forever."""
+        from cli.lib.pull import _stale_policy_snapshot_names
+        from cli.snapshot_meta import write_meta
+
+        snap_dir = tmp_path / "user" / "snapshots"
+        write_meta(snap_dir, _minimal_meta(name="q_snap", table_id="q_snap", policy_fingerprint="fp1"))
+        manifest = {
+            "data_packages": [{"tables": [{"id": "orders", "name": "orders", "access_policy_fingerprint": "fp1"}]}]
+        }
+
+        assert _stale_policy_snapshot_names(tmp_path, manifest) == set()
+
+    def test_a_resolvable_table_with_no_current_fingerprint_still_goes_stale(self, tmp_path):
+        """ "Unknown is not stale" must not weaken the resolvable case: a
+        table that IS in the manifest and now reports no fingerprint (the
+        policy was detached, or the caller's groups changed such that the
+        server no longer stamps one) still invalidates a snapshot taken
+        under a policy."""
+        from cli.lib.pull import _stale_policy_snapshot_names
+        from cli.snapshot_meta import write_meta
+
+        snap_dir = tmp_path / "user" / "snapshots"
+        write_meta(snap_dir, _minimal_meta(name="orders", table_id="orders", policy_fingerprint="fp1"))
+        manifest = {
+            "data_packages": [{"tables": [{"id": "orders", "name": "orders", "access_policy_fingerprint": None}]}]
+        }
+
+        assert _stale_policy_snapshot_names(tmp_path, manifest) == {"orders"}
+
+    def test_a_newly_attached_policy_still_goes_stale_for_a_resolvable_table(self, tmp_path):
+        """The other pre-existing direction: no fingerprint stored, one
+        reported now."""
+        from cli.lib.pull import _stale_policy_snapshot_names
+        from cli.snapshot_meta import write_meta
+
+        snap_dir = tmp_path / "user" / "snapshots"
+        write_meta(snap_dir, _minimal_meta(name="orders", table_id="orders", policy_fingerprint=None))
+        manifest = {
+            "data_packages": [{"tables": [{"id": "orders", "name": "orders", "access_policy_fingerprint": "fp1"}]}]
+        }
+
+        assert _stale_policy_snapshot_names(tmp_path, manifest) == {"orders"}
+
+    def test_policy_table_id_wins_over_a_colliding_snapshot_name(self, tmp_path):
+        """A `--from-query` snapshot may be named after some OTHER table
+        that happens to be in the manifest. The recorded policied table id
+        is authoritative — comparing against the coincidental name-match
+        would measure the wrong table's policy."""
+        from cli.lib.pull import _stale_policy_snapshot_names
+        from cli.snapshot_meta import write_meta
+
+        snap_dir = tmp_path / "user" / "snapshots"
+        write_meta(
+            snap_dir,
+            _minimal_meta(
+                name="line_items",
+                table_id="line_items",
+                policy_fingerprint="fp1",
+                policy_table_id="orders",
+            ),
+        )
+        manifest = {
+            "data_packages": [
+                {
+                    "tables": [
+                        {"id": "orders", "name": "orders", "access_policy_fingerprint": "fp2"},
+                        {"id": "line_items", "name": "line_items", "access_policy_fingerprint": "fp1"},
+                    ]
+                }
+            ]
+        }
+
+        assert _stale_policy_snapshot_names(tmp_path, manifest) == {"line_items"}
