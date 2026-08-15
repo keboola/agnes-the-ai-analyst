@@ -111,29 +111,102 @@ final class AppModelTests: XCTestCase {
     XCTAssertTrue(cli.capturedSearchInvocations().isEmpty)
   }
 
-  func testManualAgentSlugAskCanBeCancelled() async throws {
+  func testManualAgentRunCanBeCancelledByRequestID() async throws {
     let executable = try makeExecutable()
     defer { try? FileManager.default.removeItem(at: executable.deletingLastPathComponent()) }
-    let cli = ModelTestCLI(blockAsk: true)
+    let cli = ModelTestCLI(blockRun: true)
     let model = AppModel(cli: cli)
     model.preferredExecutablePath = executable.path
     await model.bootstrap()
     model.agentSlug = "manual-analyst"
     model.prompt = "Keep working"
 
-    XCTAssertTrue(model.canAsk)
-    model.submitPrompt()
-    await cli.waitUntilAskStarted()
-    model.stopRequest()
+    XCTAssertTrue(model.canRun)
+    model.submitRun()
+    await cli.waitUntilRunStarted()
+    let requestID = try XCTUnwrap(cli.capturedRunInvocation()?.requestID)
+    model.stopRun()
 
     XCTAssertEqual(cli.capturedCancelCount(), 1)
-    XCTAssertTrue(model.isStopping)
-    for _ in 0..<20 where model.isAsking {
+    XCTAssertEqual(cli.capturedCancelledRequestIDs(), [requestID])
+    XCTAssertTrue(model.isStoppingAgent)
+    for _ in 0..<20 where model.isRunningAgent {
       await Task.yield()
     }
-    XCTAssertFalse(model.isAsking)
-    XCTAssertEqual(model.askError, "Request stopped.")
-    XCTAssertEqual(cli.capturedAskInvocation()?.agentSlug, "manual-analyst")
+    XCTAssertFalse(model.isRunningAgent)
+    XCTAssertEqual(model.runs.first?.state, .stopped)
+    XCTAssertEqual(model.runs.first?.errorMessage, "Run stopped by you.")
+    XCTAssertEqual(cli.capturedRunInvocation()?.agentSlug, "manual-analyst")
+  }
+
+  func testCompletedRunRetainsEventsAndRefreshesAgentUsage() async throws {
+    let executable = try makeExecutable()
+    defer { try? FileManager.default.removeItem(at: executable.deletingLastPathComponent()) }
+    let cli = ModelTestCLI()
+    let model = AppModel(cli: cli)
+    model.preferredExecutablePath = executable.path
+    await model.bootstrap()
+    model.agentSlug = "revenue-analyst"
+    model.prompt = "Explain the change"
+
+    model.submitRun()
+    await waitForAgentRunToFinish(in: model)
+    for _ in 0..<50 where model.agentUsage == nil {
+      await Task.yield()
+    }
+
+    let run = try XCTUnwrap(model.runs.first)
+    XCTAssertEqual(run.state, .completed)
+    XCTAssertEqual(run.result?.answer, "Done")
+    XCTAssertEqual(run.result?.toolNames, ["agnes_query"])
+    XCTAssertEqual(model.selectedRunID, run.id)
+    XCTAssertEqual(model.agentUsage?.agentSlug, "revenue-analyst")
+    XCTAssertEqual(model.agentUsage?.totalTokens, 250)
+  }
+
+  func testMarketplaceRefreshCanRunWhileAnAgentRunIsActive() async throws {
+    let executable = try makeExecutable()
+    defer { try? FileManager.default.removeItem(at: executable.deletingLastPathComponent()) }
+    let cli = ModelTestCLI(blockRun: true)
+    let model = AppModel(cli: cli)
+    model.preferredExecutablePath = executable.path
+    await model.bootstrap()
+    model.agentSlug = "manual-analyst"
+    model.prompt = "Keep working"
+    model.submitRun()
+    await cli.waitUntilRunStarted()
+
+    await model.refreshMarketplace()
+
+    XCTAssertTrue(model.isRunningAgent)
+    XCTAssertEqual(cli.capturedSearchInvocations().count, 2)
+    model.stopRun()
+    await waitForAgentRunToFinish(in: model)
+  }
+
+  func testCompletedRunDoesNotStayActiveWhileUsageIsLoading() async throws {
+    let executable = try makeExecutable()
+    defer { try? FileManager.default.removeItem(at: executable.deletingLastPathComponent()) }
+    let cli = ModelTestCLI(blockUsage: true)
+    let model = AppModel(cli: cli)
+    model.preferredExecutablePath = executable.path
+    await model.bootstrap()
+    model.agentSlug = "manual-analyst"
+    model.prompt = "Finish before usage loads"
+
+    model.submitRun()
+    await cli.waitUntilUsageStarted()
+
+    XCTAssertFalse(model.isRunningAgent)
+    XCTAssertFalse(model.isStoppingAgent)
+    XCTAssertEqual(model.runs.first?.state, .completed)
+    XCTAssertTrue(model.isLoadingAgentUsage)
+
+    cli.finishUsage()
+    for _ in 0..<20 where model.isLoadingAgentUsage {
+      await Task.yield()
+    }
+    XCTAssertFalse(model.isLoadingAgentUsage)
   }
 
   func testAddAndRemoveRefreshTheMarketplaceStack() async throws {
@@ -211,6 +284,13 @@ final class AppModelTests: XCTestCase {
     XCTAssertNotNil(model.marketplaceDetail)
   }
 
+  private func waitForAgentRunToFinish(in model: AppModel) async {
+    for _ in 0..<50 where model.isRunningAgent {
+      await Task.yield()
+    }
+    XCTAssertFalse(model.isRunningAgent)
+  }
+
   private func makeExecutable() throws -> URL {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -241,13 +321,15 @@ private final class ModelTestCLI: AgnesCLIProviding, @unchecked Sendable {
     let limit: Int
   }
 
-  struct AskInvocation: Equatable {
+  struct RunInvocation: Equatable {
+    let requestID: UUID
     let agentSlug: String
     let prompt: String
   }
 
   private let lock = NSLock()
-  private let blockAsk: Bool
+  private let blockRun: Bool
+  private let blockUsage: Bool
   private let versionError: Error?
   private var installed: Bool
   private var nextSearchError: Error?
@@ -256,19 +338,25 @@ private final class ModelTestCLI: AgnesCLIProviding, @unchecked Sendable {
   private var myStackInvocationCount = 0
   private var addedItemIDs: [String] = []
   private var removedItemIDs: [String] = []
-  private var askInvocation: AskInvocation?
-  private var askContinuation: CheckedContinuation<AskResult, Error>?
-  private var askStarted = false
-  private var askStartWaiters: [CheckedContinuation<Void, Never>] = []
+  private var runInvocation: RunInvocation?
+  private var runContinuation: CheckedContinuation<AgentRunResult, Error>?
+  private var runStarted = false
+  private var runStartWaiters: [CheckedContinuation<Void, Never>] = []
   private var cancelCount = 0
+  private var cancelledRequestIDs: [UUID] = []
+  private var usageContinuation: CheckedContinuation<AgentUsage, Never>?
+  private var usageStarted = false
+  private var usageStartWaiters: [CheckedContinuation<Void, Never>] = []
 
   init(
     initiallyInstalled: Bool = false,
-    blockAsk: Bool = false,
+    blockRun: Bool = false,
+    blockUsage: Bool = false,
     versionError: Error? = nil
   ) {
     installed = initiallyInstalled
-    self.blockAsk = blockAsk
+    self.blockRun = blockRun
+    self.blockUsage = blockUsage
     self.versionError = versionError
   }
 
@@ -330,15 +418,14 @@ private final class ModelTestCLI: AgnesCLIProviding, @unchecked Sendable {
     return "Removed from your stack."
   }
 
-  func ask(executable: URL, agentSlug: String, prompt: String) async throws -> AskResult {
-    lock.withLock { askInvocation = .init(agentSlug: agentSlug, prompt: prompt) }
-    guard blockAsk else { return AskResult(answer: "Done", toolNames: []) }
-    return try await withCheckedThrowingContinuation { continuation in
+  func agentUsage(executable: URL, agentSlug: String) async throws -> AgentUsage {
+    guard blockUsage else { return makeUsage(agentSlug: agentSlug) }
+    return await withCheckedContinuation { continuation in
       let waiters = lock.withLock {
-        askContinuation = continuation
-        askStarted = true
-        let waiters = askStartWaiters
-        askStartWaiters.removeAll()
+        usageContinuation = continuation
+        usageStarted = true
+        let waiters = usageStartWaiters
+        usageStartWaiters.removeAll()
         return waiters
       }
       for waiter in waiters {
@@ -347,14 +434,61 @@ private final class ModelTestCLI: AgnesCLIProviding, @unchecked Sendable {
     }
   }
 
-  func cancel() {
-    let continuation = lock.withLock {
+  private func makeUsage(agentSlug: String) -> AgentUsage {
+    AgentUsage(
+      period: "2026-08",
+      agentSlug: agentSlug,
+      inputTokens: 120,
+      outputTokens: 80,
+      cacheReadTokens: 40,
+      cacheCreationTokens: 10,
+      totalTokens: 250,
+      budgetLimit: 1000,
+      budgetRemaining: 750
+    )
+  }
+
+  func runAgent(
+    executable: URL,
+    requestID: UUID,
+    agentSlug: String,
+    prompt: String
+  ) async throws -> AgentRunResult {
+    lock.withLock {
+      runInvocation = .init(requestID: requestID, agentSlug: agentSlug, prompt: prompt)
+    }
+    guard blockRun else { return completedRunResult() }
+    return try await withCheckedThrowingContinuation { continuation in
+      let waiters = lock.withLock {
+        runContinuation = continuation
+        runStarted = true
+        let waiters = runStartWaiters
+        runStartWaiters.removeAll()
+        return waiters
+      }
+      for waiter in waiters {
+        waiter.resume()
+      }
+    }
+  }
+
+  func cancel(requestID: UUID) {
+    let continuation: CheckedContinuation<AgentRunResult, Error>? = lock.withLock {
+      guard runInvocation?.requestID == requestID else { return nil }
       cancelCount += 1
-      let continuation = askContinuation
-      askContinuation = nil
+      cancelledRequestIDs.append(requestID)
+      let continuation = runContinuation
+      runContinuation = nil
       return continuation
     }
     continuation?.resume(throwing: CancellationError())
+  }
+
+  func cancelAll() {
+    let requestID = lock.withLock { runInvocation?.requestID }
+    if let requestID {
+      cancel(requestID: requestID)
+    }
   }
 
   func failNextMarketplaceSearch(with error: Error) {
@@ -365,17 +499,39 @@ private final class ModelTestCLI: AgnesCLIProviding, @unchecked Sendable {
     lock.withLock { nextMyStackError = error }
   }
 
-  func waitUntilAskStarted() async {
+  func waitUntilRunStarted() async {
     await withCheckedContinuation { continuation in
       let shouldResume = lock.withLock {
-        guard !askStarted else { return true }
-        askStartWaiters.append(continuation)
+        guard !runStarted else { return true }
+        runStartWaiters.append(continuation)
         return false
       }
       if shouldResume {
         continuation.resume()
       }
     }
+  }
+
+  func waitUntilUsageStarted() async {
+    await withCheckedContinuation { continuation in
+      let shouldResume = lock.withLock {
+        guard !usageStarted else { return true }
+        usageStartWaiters.append(continuation)
+        return false
+      }
+      if shouldResume {
+        continuation.resume()
+      }
+    }
+  }
+
+  func finishUsage() {
+    let state: (CheckedContinuation<AgentUsage, Never>?, String) = lock.withLock {
+      let continuation = usageContinuation
+      usageContinuation = nil
+      return (continuation, runInvocation?.agentSlug ?? "manual-analyst")
+    }
+    state.0?.resume(returning: makeUsage(agentSlug: state.1))
   }
 
   func capturedSearchInvocations() -> [SearchInvocation] {
@@ -394,12 +550,40 @@ private final class ModelTestCLI: AgnesCLIProviding, @unchecked Sendable {
     lock.withLock { removedItemIDs }
   }
 
-  func capturedAskInvocation() -> AskInvocation? {
-    lock.withLock { askInvocation }
+  func capturedRunInvocation() -> RunInvocation? {
+    lock.withLock { runInvocation }
   }
 
   func capturedCancelCount() -> Int {
     lock.withLock { cancelCount }
+  }
+
+  func capturedCancelledRequestIDs() -> [UUID] {
+    lock.withLock { cancelledRequestIDs }
+  }
+
+  private func completedRunResult() -> AgentRunResult {
+    AgentRunResult(
+      outcome: .completed,
+      answer: "Done",
+      events: [
+        AgentRunEvent(
+          sequence: 1,
+          type: "TOOL_CALL_START",
+          title: "Tool call",
+          detail: "agnes_query",
+          rawJSON: #"{"type":"TOOL_CALL_START","name":"agnes_query"}"#
+        ),
+        AgentRunEvent(
+          sequence: 2,
+          type: "RUN_FINISHED",
+          title: "Run finished",
+          detail: nil,
+          rawJSON: #"{"type":"RUN_FINISHED"}"#
+        ),
+      ],
+      rawEventsJSON: #"[{"type":"RUN_FINISHED"}]"#
+    )
   }
 }
 

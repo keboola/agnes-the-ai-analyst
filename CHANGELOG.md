@@ -14,18 +14,26 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 - **Keboola multi-project login: discover and auto-connect every project the user can reach.** `auth.keboola.multi_project_mode` (`disabled` default | `select` | `auto`; env `AGNES_KEBOOLA_MULTI_PROJECT_MODE`, see `docs/feature-flags.md`) makes a Keboola OAuth sign-in call the OAuth host's `/v1/auth/token/introspect`, narrow the listed projects by `allowed_roles`, and — in `auto` — provision each one with no hand-copied tokens: a project-scoped PAT minted via `/v1/auth/pat/exchange` (writable for the `admin` role, read-only otherwise), verified against the stack and vaulted as the connection's storage token (master slot too when it verifies as a master token, which is what makes the semantic-layer sync pick the project up; a non-master PAT logs the skip exactly as before), a `source_connections` row per `(stack_url, project_id)`, chat tools enabled and `kbc-<project>-<role>` groups with the user's membership diffed on every login (`source='keboola_sync'` — access lost upstream removes the membership; group grants stay, membership is the revocation lever; tool grants follow the role: admin gets every tool, other roles only non-mutating ones). The whole per-project pass (PAT round-trips included) plus the slow tail (chat-tools MCP introspection, semantic-layer refresh under the admin endpoint's single-flight guard) runs after the login response, so signing in never waits on upstream calls — memberships land moments after the redirect. `select` instead stashes the discovery (vault-encrypted, 15-minute TTL) for a user-driven import via the new `GET/POST /api/auth/keboola/projects` endpoints. With `auth.keboola.project_id: "*"` (or unset) the login gate widens to "reaches at least one allowed-role project"; a concrete `project_id` keeps the single-project gate and narrows discovery to it. Auto-provisioning never overwrites a credential a human stored — it rotates only rows it created for the same user (`config.user_email`) and fills empty slots; admins can still add projects by hand exactly as before, and when no connection is flagged default, the semantic layer's fallback prefers admin-created connections, so an auto-connected project can never silently displace the admin's as the effective default. Requires `AGNES_VAULT_KEY`.
 
-- **macOS desktop client MVP.** A small Marketplace-first native client can
+- **macOS desktop client MVP v2.** A native Marketplace and Agent Runs client can
   locate an already configured Agnes CLI, show executable-path/version health,
   browse Marketplace results, inspect item details, and confirm add/remove
   actions through existing CLI commands. Its My Stack shelf loads the account's
   actual stack membership through `agnes my-stack show --json`; after a
   stack change, the open detail sheet exposes the existing Claude Code
-  `/update-agnes-plugins` activation step. One-shot Ask uses a manually entered
-  agent slug; it intentionally does not call the web-session-only `agnes agent
-  list` management command.
+  `/update-agnes-plugins` activation step. Agent Runs executes a manually
+  entered slug through `agnes chat --once --json`, retains structured AG-UI
+  events, tool activity, raw JSON, duration, token usage, and budget in a local
+  inspector, and uses request-scoped subprocess cancellation so Marketplace
+  reads can continue concurrently. It intentionally does not call the
+  web-session-only `agnes agent list` management command and labels each prompt
+  as an isolated run because the current JSON CLI offers only best-effort
+  session cleanup and no reconnectable handle. CLI pipes are drained with
+  bounded retained output so a verbose run cannot grow desktop memory without
+  limit.
   The client delegates authentication and all Agnes access to the installed
-  CLI; multi-turn history, uploads, credential storage, signing, notarization,
-  and distribution remain out of scope. See `clients/macos/README.md`.
+  CLI; durable multi-turn sessions, uploads, credential storage, local Docker,
+  signing, notarization, and distribution remain out of scope. See
+  `clients/macos/README.md`.
 
 ## [0.83.24] - 2026-08-15
 
