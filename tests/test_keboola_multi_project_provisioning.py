@@ -34,6 +34,9 @@ def env(e2e_env, monkeypatch):
 
     _reset_ephemeral_key_for_tests()
     monkeypatch.setattr(kv, "stack_url", lambda: STACK)
+    # The example stack host doesn't resolve; the SSRF gate has its own
+    # tests — stub it permissive, same pattern as tests/test_keboola_verify.py.
+    monkeypatch.setattr("app.api.admin._validate_url_not_private", lambda url, field_name="url": None)
     from src.db import get_system_db
 
     get_system_db().close()  # runs schema init + system-group seeding
@@ -262,6 +265,76 @@ class TestAutoProvision:
         assert by_id["7"].error == "pat_exchange: pat_exchange_denied"
         # Membership still reflects BOTH projects — upstream access exists.
         assert _kbc_memberships("u1") == {"kbc-516-admin", "kbc-7-readonly"}
+
+    def test_non_master_admin_mint_happens_once_not_per_login(self, env, pat_mocks):
+        """Project 88's PAT exchange never yields a master token. The first
+        login mints (and records the verdict on the connection); every later
+        login REUSES — without the record, the master chase re-minted one
+        orphaned PAT per sign-in forever (Devin Review on this PR)."""
+        from src.repositories import source_connections_repo
+
+        projects = [P("88", "No master here", "admin")]
+        first = kprov.provision_projects(env["user"], projects, projects, "at-1")
+        assert first.outcomes[0].token_stored is True
+        assert first.outcomes[0].master_token_stored is False
+        row = source_connections_repo().get(first.outcomes[0].connection_id)
+        assert row["config"].get("pat_master_unobtainable") is True
+
+        second = kprov.provision_projects(env["user"], projects, projects, "at-2")
+        assert pat_mocks == [("88", False)]  # exactly ONE mint across both logins
+        assert second.outcomes[0].token_reused is True
+
+    def test_dead_token_on_login_provisioned_row_is_repaired_by_another_user(self, env, pat_mocks, monkeypatch):
+        """The owner's PAT died (revoked / owner lost the project). Another
+        allowed user's login replaces it and re-owns the row — the ownership
+        rule protects human-stored credentials, not dead machine-minted ones
+        (Devin Review on this PR)."""
+        from src.repositories import connection_secrets_repo, source_connections_repo, users_repo
+
+        projects = [P("516", "Agnes - test", "admin")]
+        first = kprov.provision_projects(env["user"], projects, projects, "at-1")
+        connection_id = first.outcomes[0].connection_id
+
+        users_repo().create(id="u2", email="bob@example.com", name="Bob")
+        bob = users_repo().get_by_email("bob@example.com")
+
+        def dead_old_token(self):
+            if self.token == "pat-516":
+                from connectors.keboola.storage_api import StorageApiError
+
+                raise StorageApiError("token was revoked", status=401)
+            pid = self.token.split("-")[1]
+            return {"isMasterToken": pid in MASTER_PROJECTS, "owner": {"id": int(pid), "name": "P"}}
+
+        monkeypatch.setattr(KeboolaStorageClient, "verify_token", dead_old_token)
+        monkeypatch.setattr(kp, "exchange_project_pat", lambda tok, pid, *, read_only: f"pat-{pid}-fresh")
+
+        summary = kprov.provision_projects(bob, projects, projects, "at-2")
+        outcome = summary.outcomes[0]
+        assert outcome.connection_id == connection_id
+        assert outcome.token_stored is True
+        assert connection_secrets_repo().get(connection_id) == "pat-516-fresh"
+        # Rotation rights follow the live credential.
+        assert source_connections_repo().get(connection_id)["config"]["user_email"] == "bob@example.com"
+
+    def test_healthy_foreign_row_is_left_alone(self, env, pat_mocks):
+        """Another user's login on a healthy row someone else provisioned
+        neither rotates the credential nor mints anything."""
+        from src.repositories import connection_secrets_repo, users_repo
+
+        projects = [P("516", "Agnes - test", "admin")]
+        first = kprov.provision_projects(env["user"], projects, projects, "at-1")
+        connection_id = first.outcomes[0].connection_id
+        assert pat_mocks == [("516", False)]
+
+        users_repo().create(id="u2", email="bob@example.com", name="Bob")
+        bob = users_repo().get_by_email("bob@example.com")
+        summary = kprov.provision_projects(bob, projects, projects, "at-2")
+        assert pat_mocks == [("516", False)]  # no second mint
+        assert summary.outcomes[0].token_stored is False
+        assert connection_secrets_repo().get(connection_id) == "pat-516"
+        # Bob still gets his membership.
+        assert _kbc_memberships("u2") == {"kbc-516-admin"}
 
     def test_group_ensure_hiccup_never_strips_membership(self, env, pat_mocks, monkeypatch):
         """A transient failure while ensuring a role group leaves the desired

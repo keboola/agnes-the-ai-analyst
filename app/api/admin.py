@@ -1697,6 +1697,17 @@ def _known_fields_resolved() -> dict:
     # operator drops it. Same failure mode as the coupled leaves above, one
     # tier up (Devin on #1199).
     fields["instance"]["experience"]["default"] = get_experience()
+    # Same one-tier-up failure for the Keboola multi-project mode: the
+    # recommended deployment sets it ONLY via env
+    # (AGNES_KEBOOLA_MULTI_PROJECT_MODE=auto), so the unset key rendered the
+    # registry's static `disabled` and a routine auth-section save persisted
+    # that into the overlay — invisible while the env var is present, a
+    # silent revert of the whole feature the day the operator drops it
+    # (Devin Review on this PR). Render the RESOLVED mode instead, so a save
+    # writes what is actually in force.
+    from app.switches import switch_value
+
+    fields["auth"]["keboola"]["fields"]["multi_project_mode"]["default"] = switch_value("keboola_multi_project_mode")
     return fields
 
 

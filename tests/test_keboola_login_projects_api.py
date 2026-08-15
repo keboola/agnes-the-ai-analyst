@@ -27,6 +27,7 @@ def select_env(seeded_app, monkeypatch):
 
     _reset_ephemeral_key_for_tests()
     monkeypatch.setattr(kv, "stack_url", lambda: STACK)
+    monkeypatch.setattr("app.api.admin._validate_url_not_private", lambda url, field_name="url": None)
     monkeypatch.setattr(kv, "multi_project_mode", lambda: "select")
     monkeypatch.setattr(kp, "exchange_project_pat", lambda tok, pid, *, read_only: f"pat-{pid}")
     monkeypatch.setattr(
@@ -133,7 +134,5 @@ class TestImportDiscoveredProjects:
         assert resp.json()["detail"]["error"] == "unknown_project"
 
     def test_empty_selection_is_400(self, select_env):
-        resp = select_env["client"].post(
-            BASE, json={"project_ids": []}, headers=_auth(select_env["analyst_token"])
-        )
+        resp = select_env["client"].post(BASE, json={"project_ids": []}, headers=_auth(select_env["analyst_token"]))
         assert resp.status_code == 400

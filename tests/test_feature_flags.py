@@ -301,6 +301,21 @@ class TestServerConfigFeatureFlagsInventory:
         assert flags["stack_auto_membership"]["effective"] is False
         assert flags["stack_auto_membership"]["source"] == "env"
 
+    def test_known_fields_multi_project_mode_renders_resolved_value(self, seeded_app, monkeypatch):
+        """The editable panel must render the RESOLVED mode for the unset
+        key: an env-only `auto` instance rendered the static `disabled`, so
+        a routine auth-section save wrote `disabled` into the overlay — a
+        silent revert of the feature the day the env var is dropped (Devin
+        Review on PR #1328; same failure as instance.experience on #1199)."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        monkeypatch.delenv("AGNES_KEBOOLA_MULTI_PROJECT_MODE", raising=False)
+        kf = c.get("/api/admin/server-config", headers=_auth(token)).json()["known_fields"]
+        assert kf["auth"]["keboola"]["fields"]["multi_project_mode"]["default"] == "disabled"
+        monkeypatch.setenv("AGNES_KEBOOLA_MULTI_PROJECT_MODE", "auto")
+        kf = c.get("/api/admin/server-config", headers=_auth(token)).json()["known_fields"]
+        assert kf["auth"]["keboola"]["fields"]["multi_project_mode"]["default"] == "auto"
+
     def test_known_fields_defaults_follow_the_preset(self, seeded_app, monkeypatch):
         """The EDITABLE registry must render the preset-implied default for
         unset preset-coupled fields — a static literal there means a redesign

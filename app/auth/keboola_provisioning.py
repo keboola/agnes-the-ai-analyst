@@ -247,12 +247,29 @@ def apply_tool_grants(connection_id: str, group_id: str, role: str) -> int:
 
 
 def _verify_project_token(stack_url: str, token: str) -> Optional[Dict[str, Any]]:
-    """``/tokens/verify`` payload for ``token``, or None on any upstream
-    failure (logged redacted — never the token, never a proxy-echoed body)."""
+    """``/tokens/verify`` payload for ``token``, or None on any failure
+    (logged redacted — never the token, never a proxy-echoed body).
+
+    Validate-at-use, same bar as ``keboola_verify._fetch_verify``: https only
+    plus the shared SSRF validator, re-checked immediately before the
+    outbound call — a config edit or DNS rebind between store and use must
+    not point a token-carrying request at a private address.
+    """
     import requests as _requests
+    from fastapi import HTTPException
 
     from connectors.keboola.storage_api import KeboolaStorageClient, StorageApiError
 
+    if not str(stack_url or "").lower().startswith("https://"):
+        logger.warning("keboola auto-provision: refusing token verify — stack_url must be https")
+        return None
+    from app.api.admin import _validate_url_not_private
+
+    try:
+        _validate_url_not_private(stack_url, "auth.keboola.stack_url")
+    except HTTPException as exc:
+        logger.warning("keboola auto-provision: refusing token verify — %s", exc.detail)
+        return None
     client = KeboolaStorageClient(url=stack_url, token=token)
     try:
         return client.verify_token()
@@ -294,49 +311,80 @@ def _mint_and_store_tokens(
 
     connection_id = connection["id"]
     secrets = connection_secrets_repo()
+    config = connection.get("config") or {}
     may_storage = _may_write_secret(connection, user_email, slot_key=connection_id)
     may_master = _may_write_secret(connection, user_email, slot_key=master_secret_key(connection_id))
-    if not (may_storage or may_master):
-        # Neither slot is ours to touch (admin-managed row with both filled)
-        # — minting would only create an upstream credential nobody stores.
-        return
-    if not may_storage and project.role != ADMIN_ROLE:
-        # Only the master slot is writable, and a non-admin's PAT is minted
-        # read-only — that can never verify as a master token, so there is
-        # nothing a mint could store.
-        return
+    # A previous admin-role mint for this connection already came back
+    # non-master — recorded on the row (see below) so the master chase runs
+    # ONCE per connection, not once per login: without this memory an
+    # admin-role project on a platform whose PAT exchange never yields
+    # master tokens would re-mint at every sign-in forever, the exact
+    # unbounded-orphan loop the reuse rule exists to close (Devin Review on
+    # this PR, second round). Storing a master token by hand supersedes it
+    # (the master_present check wins first); clearing the key retries, and a
+    # mint that ever DOES come back master drops it again.
+    master_unobtainable = bool(config.get("pat_master_unobtainable"))
 
-    if may_storage:
-        stored: Optional[str] = None
+    # Read + preflight the stored token once, for both the reuse check (our
+    # row) and the dead-credential repair check (a login-provisioned row
+    # whose owner lost the project — see below).
+    login_provisioned = config.get("provisioned_by") == "keboola_login"
+    stored: Optional[str] = None
+    if may_storage or login_provisioned:
         try:
             stored = secrets.get(connection_id) if secrets.has(connection_id) else None
         except Exception:
             stored = None
-        if stored:
-            info = _verify_project_token(stack_url, stored)
-            stored_id, _ = project_identity(info) if info is not None else (None, "")
-            if info is not None and stored_id is not None and str(stored_id) == str(project.id):
-                stored_master = bool(info.get("isMasterToken"))
-                try:
-                    master_present = secrets.has(master_secret_key(connection_id))
-                except Exception:
-                    master_present = False
-                if stored_master and may_master and not master_present:
-                    # The stored token can fill the empty master slot itself.
-                    try:
-                        secrets.upsert(master_secret_key(connection_id), stored)
-                        outcome.master_token_stored = True
-                        master_present = True
-                    except Exception:
-                        logger.warning(
-                            "keboola auto-provision: could not store the master token for connection %s",
-                            connection_id,
-                            exc_info=True,
-                        )
-                if master_present or stored_master or project.role != ADMIN_ROLE or not may_master:
-                    outcome.token_reused = True
-                    return
-            # Stored token is stale/foreign — fall through and mint fresh.
+    stored_info = _verify_project_token(stack_url, stored) if stored else None
+    stored_id, _ = project_identity(stored_info) if stored_info is not None else (None, "")
+    stored_valid = stored_info is not None and stored_id is not None and str(stored_id) == str(project.id)
+
+    repairing = False
+    if not may_storage and login_provisioned and stored and not stored_valid:
+        # The row was created by this flow, but its owner's PAT is dead
+        # (revoked upstream, owner lost the project). The ownership rule
+        # protects HUMAN-stored credentials; a dead machine-minted one only
+        # keeps every user of the project broken until an admin notices —
+        # so any allowed user's login may replace it, re-owning the row
+        # (Devin Review on this PR, third round).
+        repairing = True
+        may_storage = True
+
+    if not (may_storage or may_master):
+        # Neither slot is ours to touch (a healthy row owned by someone
+        # else, or an admin-managed row with both filled) — minting would
+        # only create an upstream credential nobody stores.
+        return
+    if not may_storage and (project.role != ADMIN_ROLE or master_unobtainable):
+        # Only the master slot is writable, and this mint cannot fill it: a
+        # non-admin's PAT is minted read-only (never a master token), and a
+        # recorded non-master outcome says an admin's would not be one
+        # either. Nothing a mint could store.
+        return
+
+    if may_storage and stored_valid and not repairing:
+        stored_master = bool(stored_info.get("isMasterToken")) if stored_info else False
+        try:
+            master_present = secrets.has(master_secret_key(connection_id))
+        except Exception:
+            master_present = False
+        if stored_master and may_master and not master_present:
+            # The stored token can fill the empty master slot itself.
+            try:
+                secrets.upsert(master_secret_key(connection_id), stored)
+                outcome.master_token_stored = True
+                master_present = True
+            except Exception:
+                logger.warning(
+                    "keboola auto-provision: could not store the master token for connection %s",
+                    connection_id,
+                    exc_info=True,
+                )
+        if master_present or stored_master or project.role != ADMIN_ROLE or not may_master or master_unobtainable:
+            outcome.token_reused = True
+            return
+        # Fall through: the master slot is still improvable — mint once
+        # (the pat_master_unobtainable record below bounds the retries).
 
     try:
         pat = kp.exchange_project_pat(access_token, project.id, read_only=project.role != ADMIN_ROLE)
@@ -361,6 +409,7 @@ def _mint_and_store_tokens(
         return
     is_master = bool(info.get("isMasterToken"))
 
+    new_config = dict(config)
     if may_storage:
         try:
             secrets.upsert(connection_id, pat)
@@ -385,17 +434,14 @@ def _mint_and_store_tokens(
                 connection_id,
                 exc_info=True,
             )
+        if repairing:
+            # Rotation rights follow the live credential: the row now runs
+            # on this user's PAT, so this user owns future rotations.
+            new_config["user_email"] = user_email
         # Refresh the recorded display name on rows this flow owns.
-        config = dict(connection.get("config") or {})
         fresh_name = project.name or verified_name
-        if fresh_name and config.get("project_name") != fresh_name and config.get("user_email"):
-            from src.repositories import source_connections_repo
-
-            config["project_name"] = fresh_name
-            try:
-                source_connections_repo().update(connection_id, config=config)
-            except Exception:
-                logger.debug("could not refresh project_name on connection %s", connection_id)
+        if fresh_name and new_config.get("project_name") != fresh_name and new_config.get("user_email"):
+            new_config["project_name"] = fresh_name
 
     if is_master and may_master:
         try:
@@ -407,7 +453,11 @@ def _mint_and_store_tokens(
                 connection_id,
                 exc_info=True,
             )
-    if not is_master:
+    if is_master:
+        # A master DID arrive — clear any recorded "unobtainable" verdict so
+        # nothing keeps citing stale evidence.
+        new_config.pop("pat_master_unobtainable", None)
+    else:
         # Named fallback from the spec: data access works on the plain PAT;
         # the semantic layer needs a master token and is skipped until an
         # admin supplies one for this connection.
@@ -416,6 +466,20 @@ def _mint_and_store_tokens(
             "semantic layer sync will skip this project until one is stored",
             project.id,
         )
+        if project.role == ADMIN_ROLE:
+            # Remember the verdict: an admin-role mint is the best this flow
+            # can do, so a non-master answer here means re-minting at the
+            # next login cannot do better — without this record the master
+            # chase would orphan one PAT per sign-in forever.
+            new_config["pat_master_unobtainable"] = True
+
+    if new_config != config:
+        from src.repositories import source_connections_repo
+
+        try:
+            source_connections_repo().update(connection_id, config=new_config)
+        except Exception:
+            logger.debug("could not update the recorded config on connection %s", connection_id)
 
 
 def _provision_one(
