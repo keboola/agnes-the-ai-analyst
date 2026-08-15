@@ -104,3 +104,22 @@ def test_duplicate_model_name_in_one_import_is_reported_not_silently_collapsed(s
     assert report.models_written == len(rows)
     assert len(report.invalid) == 1
     assert "duplicate model name" in report.invalid[0]["errors"][0]
+
+
+def test_null_source_ref_does_not_read_across_other_refs(system_db):
+    """The read scope must match the prune scope.
+
+    `list_all(source_ref=None)` means "unfiltered", while
+    `delete_missing(source_ref=None)` means "the NULL origin" — so an import
+    under a NULL ref would otherwise compare its documents against rows owned
+    by OTHER refs, call an identical one 'unchanged', and skip writing it to
+    the origin it was actually importing into. Not reachable through today's
+    callers; pinned so it cannot become reachable silently.
+    """
+    text = _doc("retail", "revenue")
+    import_documents({"source": "manual", "source_ref": "somewhere-else"}, [text])
+
+    report = import_documents({"source": "manual", "source_ref": None}, [text])
+
+    assert report.models_written == 1, "identical content under another ref is not 'unchanged' here"
+    assert report.models_unchanged == 0

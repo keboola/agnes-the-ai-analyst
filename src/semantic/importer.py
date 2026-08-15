@@ -87,7 +87,16 @@ def import_documents(source: dict, documents: List[str]) -> ImportReport:
     # `semantic_model_repo().get_by_slug` is not scoped by source, so two
     # sources publishing the same slug could otherwise shadow each other's
     # content-hash comparison.
-    existing_by_slug = {m["slug"]: m for m in repo.list_all(source=src_name, source_ref=src_ref)}
+    existing_rows = repo.list_all(source=src_name, source_ref=src_ref)
+    if src_ref is None:
+        # `list_all(source_ref=None)` means "unfiltered", but
+        # `delete_missing(source_ref=None)` means "the NULL origin" — the two
+        # Nones are deliberately different. Without this narrowing the read
+        # would span every ref of this source while the prune touched only the
+        # NULL one, so a document identical to one owned by ANOTHER ref would
+        # be called unchanged and never written to the origin being imported.
+        existing_rows = [m for m in existing_rows if not m.get("source_ref")]
+    existing_by_slug = {m["slug"]: m for m in existing_rows}
 
     keep_slugs: List[str] = []
     valid_documents: List[Dict[str, Any]] = []

@@ -139,3 +139,35 @@ def test_list_packages_for_model_is_the_reverse_lookup(repo):
 
     repo.unlink_package("pkg1", "m1")
     assert repo.list_packages_for_model("m1") == ["pkg2"]
+
+
+def test_delete_missing_treats_a_null_source_ref_as_its_own_origin(repo):
+    """A NULL source_ref is one origin among others, not a wildcard.
+
+    SQL NULL is never equal to itself, so a naive `source_ref = ?` prunes
+    nothing here on both engines — and the two engines express the null-safe
+    comparison differently (IS NOT DISTINCT FROM vs an array cast), which is
+    exactly where they can silently diverge.
+    """
+    _upsert(repo, id="m1", slug="kept", source="manual", source_ref=None)
+    _upsert(repo, id="m2", slug="gone", source="manual", source_ref=None)
+    _upsert(repo, id="m3", slug="other", source="manual", source_ref="repo-a")
+
+    deleted = repo.delete_missing(source="manual", source_ref=None, keep_slugs=["kept"])
+
+    assert deleted == ["m2"]
+    assert repo.get("m1") is not None
+    assert repo.get("m3") is not None, "a NULL-ref sync must not prune a non-NULL sibling"
+
+
+def test_list_all_source_ref_none_means_unfiltered_on_both_engines(repo):
+    """`source_ref=None` on list_all means "don't filter", NOT "match NULL".
+
+    It reads the same as delete_missing's None, which means the NULL origin —
+    so the two are deliberately different and both engines must at least agree
+    with each other. Pinned so the asymmetry is a decision, not a surprise.
+    """
+    _upsert(repo, id="m1", slug="kept", source="manual", source_ref=None)
+    _upsert(repo, id="m3", slug="other", source="manual", source_ref="repo-a")
+
+    assert {r["id"] for r in repo.list_all(source="manual", source_ref=None)} == {"m1", "m3"}
