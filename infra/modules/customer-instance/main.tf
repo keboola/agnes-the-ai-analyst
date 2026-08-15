@@ -408,7 +408,10 @@ resource "google_compute_instance" "vm" {
     tls_mode                        = each.value.tls_mode
     domain                          = each.value.domain
     domain_alias                    = each.value.domain_alias
-    ui_layout                       = each.value.ui_layout
+    # ui_layout is deliberately NOT forwarded: the rail chrome is
+    # unconditional in the app (Wave 0, 2026-08), so there is no env line to
+    # write. The variable stays declared + validated in variables.tf so a root
+    # still asking for "topnav" fails the plan instead of silently getting rail.
     theme                           = each.value.theme
     experience                      = each.value.experience
     acme_email                      = var.acme_email != "" ? var.acme_email : var.seed_admin_email

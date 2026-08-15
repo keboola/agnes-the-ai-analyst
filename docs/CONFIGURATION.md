@@ -74,10 +74,10 @@ Set the env var in `.env`/Terraform, or the YAML path in `instance.yaml`.
 | Product brand string (hero copy, CTAs, setup script) | `AGNES_INSTANCE_BRAND` | `instance.brand` | `Agnes` | `get_instance_brand()` |
 | Short brand for mid-sentence body copy; when it differs from the full brand, the `/home` hero appends "Call me {short}." | `AGNES_INSTANCE_BRAND_SHORT` | `instance.brand_short` | derived (= `instance.brand`) | `get_instance_brand_short()` |
 | Inline `<svg>` logo for the header brand slot | `AGNES_INSTANCE_LOGO_SVG` | `instance.logo_svg` | `""` (text brand) | `get_instance_logo_svg()` |
-| Experience preset (`classic`/`redesign`) — flips the DEFAULTS of `instance.ui_layout`, `instance.theme` and `features.stack_auto_membership`; per-knob settings win | `AGNES_INSTANCE_EXPERIENCE` | `instance.experience` | `classic` | `get_experience()` |
-| UI theme/palette (`blue`/`navy`/`dark`/`auto`/`paper`) | `AGNES_INSTANCE_THEME` | `instance.theme` | `blue` (`paper` under `experience: redesign`) | `get_instance_theme()` |
-| Chrome layout (`topnav` = horizontal header, `rail` = fixed left sidebar) | `AGNES_UI_LAYOUT` | `instance.ui_layout` | `topnav` (`rail` under `experience: redesign`) | `get_ui_layout()` |
-| Stack membership mode (off = classic subscribe model, on = auto-membership) | `AGNES_STACK_AUTO_MEMBERSHIP` | `features.stack_auto_membership` | `false` (`true` under `experience: redesign`) | `get_stack_auto_membership()` |
+| Experience preset — retired as a choice (Wave 0, 2026-08): `redesign` is the only valid value and the default; the old `classic` value (or any other unrecognised string) falls back to `redesign`, with a one-time startup warning naming the ignored setting. Historically flipped the DEFAULTS of `instance.theme` and `features.stack_auto_membership`; per-knob settings still win | `AGNES_INSTANCE_EXPERIENCE` | `instance.experience` | `redesign` | `get_experience()` |
+| UI theme/palette (`blue`/`navy`/`dark`/`auto`/`paper`) — still a live, independent axis; an explicit choice always wins | `AGNES_INSTANCE_THEME` | `instance.theme` | `paper` (explicit `blue`/`navy`/`dark`/`auto` still wins) | `get_instance_theme()` |
+| Chrome layout — retired (Wave 0, 2026-08): the rail chrome (fixed left sidebar) is the only chrome; `topnav` no longer exists. A configured value is tolerated but inert — ignored with a one-time startup warning | `AGNES_UI_LAYOUT` (ignored) | `instance.ui_layout` (ignored) | `rail` (always) | `get_ui_layout()` |
+| Stack membership mode (auto-membership vs. the classic subscribe model); an explicit `false` still wins over the default | `AGNES_STACK_AUTO_MEMBERSHIP` | `features.stack_auto_membership` | `true` (explicit `false` still wins) | `get_stack_auto_membership()` |
 | Analyst workspace folder name (`~/<name>`) | `AGNES_WORKSPACE_DIR_NAME` | `instance.workspace_dir` | derived from brand (non-alphanumerics stripped) | `get_workspace_dir_name()` |
 | Operator-injected HTML/JS blocks (analytics, widgets) | — | `instance.custom_scripts` | `[]` | `get_custom_scripts()` |
 | Hide individual `/login` feature cards (keys: `data`, `marketplace`, `mcp`, `memory`, `anywhere`; list or comma-string) | `AGNES_INSTANCE_HIDE_LOGIN_FEATURES` | `instance.hide_login_features` | `""` (nothing hidden) | `get_hidden_login_features()` |
@@ -160,8 +160,8 @@ instance:
   copyright: "Acme Corp"         # Footer credit, "Deployed by …" (get_instance_copyright)
   brand: "Acme Analyst"          # Product brand string (get_instance_brand)
   brand_short: "Acme"            # Short brand for body copy (get_instance_brand_short)
-  theme: "blue"                  # UI palette (get_instance_theme); "paper" = prototype-derived light look
-  ui_layout: "topnav"            # Chrome layout (get_ui_layout); "rail" = fixed left sidebar
+  theme: "blue"                  # UI palette (get_instance_theme); default is "paper" since Wave 0 (2026-08); "blue" opts out explicitly
+  # ui_layout is retired (Wave 0, 2026-08) — rail is the only chrome; a configured value is ignored
   home_route: "/home"            # Landing after auth (get_home_route)
 ```
 

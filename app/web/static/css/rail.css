@@ -405,6 +405,143 @@ html[data-ui-layout="rail"] .rail-i-label {
     white-space: nowrap;
 }
 
+/* ── Global search ─────────────────────────────────────────────────────
+   Combobox over GET /api/knowledge/search, above Zone 1. Ported from the
+   retired topnav chrome's `.app-header-search` when the rail became the only
+   chrome (Wave 0, 2026-08) — same two ids, same endpoint, rail styling.
+
+   Sized on the row ladder (`--rail-row-h`) so it reads as part of the column
+   rather than a widget dropped on top of it, and FIXED height, so neither zone
+   moves when the conversation list below grows.
+
+   Collapse: `.rail-search` joins `.rail-history` in the `visibility: hidden`
+   list further down rather than getting a compact icon-button form of its own.
+   A 40px input is not a usable search box, and the peek (hover/focus-within)
+   already hands back the full one — the same bargain the conversation list
+   takes. The magnifier stays put in both states so the row is still legible as
+   "search" while collapsed. */
+html[data-ui-layout="rail"] .rail-search {
+    position: relative;
+    display: flex;
+    align-items: center;
+    margin: 0 0 8px;
+}
+html[data-ui-layout="rail"] .rail-search-icon {
+    position: absolute;
+    left: 9px;
+    width: 15px;
+    height: 15px;
+    pointer-events: none;
+    color: var(--ds-text-muted);
+}
+html[data-ui-layout="rail"] .rail-search-input {
+    width: 100%;
+    height: var(--rail-row-h);
+    /* Left pad clears the absolutely-positioned magnifier. */
+    padding: 0 10px 0 30px;
+    font-family: inherit;
+    font-size: 13px;
+    color: var(--ds-text-primary);
+    background: var(--ds-surface-dim);
+    border: 1px solid var(--ds-border);
+    border-radius: var(--ds-radius-sm, 8px);
+    transition: background var(--ds-motion-fast) var(--ds-ease-standard),
+                border-color var(--ds-motion-fast) var(--ds-ease-standard);
+}
+html[data-ui-layout="rail"] .rail-search-input::placeholder { color: var(--ds-text-muted); }
+html[data-ui-layout="rail"] .rail-search-input:focus {
+    outline: none;
+    background: var(--ds-surface);
+    border-color: var(--ds-primary);
+}
+html[data-ui-layout="rail"] .rail-search-input:focus-visible {
+    outline: var(--ds-focus-outline);
+    outline-offset: var(--ds-focus-outline-offset);
+}
+
+/* The results listbox. Anchored to the rail's inner edge and opening RIGHTWARD
+   over the page — the rail is only ~240px wide, so a panel constrained to the
+   column would be narrower than the titles it lists. Capped to the viewport so
+   it cannot run off-screen on a narrow window. */
+html[data-ui-layout="rail"] .rail-search-panel {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    width: min(340px, calc(100vw - 32px));
+    max-height: 60vh;
+    overflow-y: auto;
+    background: var(--ds-surface);
+    border: 1px solid var(--ds-border);
+    border-radius: var(--ds-radius-md, 10px);
+    box-shadow: var(--ds-shadow-md);
+    padding: 6px;
+    /* Above the rail's own stacking, which the collapsed-state rules raise. */
+    z-index: 60;
+}
+html[data-ui-layout="rail"] .rail-search-panel[hidden] { display: none; }
+html[data-ui-layout="rail"] .rail-search-group {
+    padding: 6px 10px 4px;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--ds-text-muted);
+}
+html[data-ui-layout="rail"] .rail-search-result {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    font-size: 13px;
+    color: var(--ds-text-primary);
+    text-decoration: none;
+}
+html[data-ui-layout="rail"] .rail-search-result:hover,
+html[data-ui-layout="rail"] .rail-search-result:focus-visible {
+    background: var(--ds-border-light);
+    outline: none;
+}
+/* Left column of a hit: the title, plus a definition line on the two types
+   that have one (metric, glossary — see definitionFor() in global_search.js).
+   `min-width: 0` is what lets both lines ellipsis inside a flex row. */
+html[data-ui-layout="rail"] .rail-search-result-main {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 0;
+}
+html[data-ui-layout="rail"] .rail-search-result-title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+/* The definition itself — the answer to a lookup, so it is present but clearly
+   subordinate to the term it defines. One line: it is a reminder of the
+   meaning, not the full entry (that is what the row still links to). */
+html[data-ui-layout="rail"] .rail-search-result-def {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12px;
+    line-height: 1.35;
+    color: var(--ds-text-secondary);
+}
+html[data-ui-layout="rail"] .rail-search-result-badge {
+    flex: none;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    color: var(--ds-text-muted);
+}
+html[data-ui-layout="rail"] .rail-search-empty {
+    padding: 12px 10px;
+    font-size: 13px;
+    color: var(--ds-text-muted);
+}
+
 /* ── New chat ──────────────────────────────────────────────────────────
    NO rules of its own. It is an ordinary `.rail-i` row — the block above styles
    it exactly like Library / Agents / Admin — and it highlights only via `.on`.
@@ -1505,6 +1642,7 @@ html[data-ui-layout="rail"] .cloud-chat-journey-finish:focus-visible {
     html[data-ui-layout="rail"] .rail.rail-icon-mode .rail-i-label,
     html[data-ui-layout="rail"] .rail.rail-icon-mode .rail-getstarted-body,
     html[data-ui-layout="rail"] .rail.rail-icon-mode .rail-user-txt,
+    html[data-ui-layout="rail"] .rail.rail-icon-mode .rail-search,
     html[data-ui-layout="rail"] .rail.rail-icon-mode .rail-history {
         /* `visibility`, NOT `display` — the whole choreography depends on it.
            `display: none` took every label and the conversation region OUT OF
@@ -1566,6 +1704,7 @@ html[data-ui-layout="rail"] .cloud-chat-journey-finish:focus-visible {
     html[data-ui-layout="rail"] .rail.rail-icon-mode:not(.rail-no-peek):is(:hover, :focus-within) .rail-i-label,
     html[data-ui-layout="rail"] .rail.rail-icon-mode:not(.rail-no-peek):is(:hover, :focus-within) .rail-getstarted-body,
     html[data-ui-layout="rail"] .rail.rail-icon-mode:not(.rail-no-peek):is(:hover, :focus-within) .rail-user-txt,
+    html[data-ui-layout="rail"] .rail.rail-icon-mode:not(.rail-no-peek):is(:hover, :focus-within) .rail-search,
     html[data-ui-layout="rail"] .rail.rail-icon-mode:not(.rail-no-peek):is(:hover, :focus-within) .rail-history {
         opacity: 1;
         visibility: visible;
@@ -1588,6 +1727,7 @@ html[data-ui-layout="rail"] .cloud-chat-journey-finish:focus-visible {
     html[data-ui-layout="rail"] .rail.rail-icon-mode:not(.rail-no-peek):focus-within .rail-i-label,
     html[data-ui-layout="rail"] .rail.rail-icon-mode:not(.rail-no-peek):focus-within .rail-getstarted-body,
     html[data-ui-layout="rail"] .rail.rail-icon-mode:not(.rail-no-peek):focus-within .rail-user-txt,
+    html[data-ui-layout="rail"] .rail.rail-icon-mode:not(.rail-no-peek):focus-within .rail-search,
     html[data-ui-layout="rail"] .rail.rail-icon-mode:not(.rail-no-peek):focus-within .rail-history {
         transition: opacity var(--ds-motion-fast, .16s) var(--ds-ease-standard, ease) 0s,
                     visibility 0s linear 0s;

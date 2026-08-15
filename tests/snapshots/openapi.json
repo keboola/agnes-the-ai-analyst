@@ -17224,7 +17224,7 @@
         ]
       },
       "put": {
-        "description": "Update the ``requirement`` enum on an existing grant.\n\nThe ``required \u2192 available`` downgrade path depends on the stack\nmembership mode (``features.stack_auto_membership``, spec\n2026-08-07-default-chrome-ux-parity). Classic (the default): membership\nis the subscribe model, so the downgrade eagerly fans out\n``user_stack_subscriptions`` rows to the group's members \u2014 the\npre-redesign v49 behavior \u2014 or they would silently lose the resource.\nAuto-membership: both ``required`` and ``available`` are automatically in\nevery granted user's stack (``StackResolver.stack``), so the downgrade\nonly lifts the \"always downloaded locally\" guarantee and no row is\nwritten.\n\n``marketplace_plugin`` grants are the one remaining exception: plugin\nvisibility is resolved by ``resolve_user_marketplace`` off\n``user_plugin_optouts``, a separate (opt-out, not opt-in) mechanism\noutside the StackResolver's auto-membership \u2014 so a ``required \u2192\navailable`` downgrade there still fans out eagerly to keep every group\nmember's served set from silently shrinking.",
+        "description": "Update the ``requirement`` enum on an existing grant.\n\nThe ``required \u2192 available`` downgrade path depends on the stack\nmembership mode (``features.stack_auto_membership``, spec\n2026-08-07-default-chrome-ux-parity; flipped to default-on in Wave 0,\n2026-08). Auto-membership (the default): both ``required`` and\n``available`` are automatically in every granted user's stack\n(``StackResolver.stack``), so the downgrade only lifts the \"always\ndownloaded locally\" guarantee and no row is written. Classic (explicit\nopt-out via ``features.stack_auto_membership: false``): membership is\nthe subscribe model, so the downgrade eagerly fans out\n``user_stack_subscriptions`` rows to the group's members \u2014 the\npre-redesign v49 behavior \u2014 or they would silently lose the resource.\n\n``marketplace_plugin`` grants are the one remaining exception: plugin\nvisibility is resolved by ``resolve_user_marketplace`` off\n``user_plugin_optouts``, a separate (opt-out, not opt-in) mechanism\noutside the StackResolver's auto-membership \u2014 so a ``required \u2192\navailable`` downgrade there still fans out eagerly to keep every group\nmember's served set from silently shrinking.",
         "operationId": "update_grant_requirement_api_admin_grants__grant_id__put",
         "parameters": [
           {
@@ -42166,7 +42166,7 @@
     },
     "/api/stack": {
       "get": {
-        "description": "Return the user's effective stack for the given resource type.\n\nClassic (the default): effective stack = required grants plus the\n``available`` grants the caller subscribed to; every member is\n``materialized`` (downloaded by `agnes pull`). Auto-membership (opt-in\nvia ``features.stack_auto_membership``): every grant on the caller's\ngroups is a member, no subscription needed \u2014 ``materialized`` then flags\nwhich ones are also kept as a local copy (always true for required, true\nfor available only once subscribed).",
+        "description": "Return the user's effective stack for the given resource type.\n\nAuto-membership (the default): every grant on the caller's groups is a\nmember, no subscription needed \u2014 ``materialized`` then flags which ones\nare also kept as a local copy (always true for required, true for\navailable only once subscribed). Classic (explicit opt-out via\n``features.stack_auto_membership: false``): effective stack = required\ngrants plus the ``available`` grants the caller subscribed to; every\nmember is ``materialized`` (downloaded by `agnes pull`).",
         "operationId": "list_stack_api_stack_get",
         "parameters": [
           {
@@ -42402,7 +42402,7 @@
     },
     "/api/stack/browse": {
       "get": {
-        "description": "List every resource of ``type`` the caller could see (RBAC-granted).\n\nThe full candidate set (issue #621), independent of membership mode.\nClassic (the default): ``in_stack`` marks the members (required or\nsubscribed) and the rest are addable via ``POST /api/stack/subscribe``.\nAuto-membership (opt-in): every granted item is ``in_stack: true`` and\nthe scope equals ``GET /api/stack``; ``materialized`` then tells an\nanalyst's Claude what is already downloaded locally vs. only server-side\nqueryable.\n\nScoped per-user by ``StackResolver.browse`` (group grants only), so the\nonly authorization gate is authentication \u2014 no extra RBAC dependency.",
+        "description": "List every resource of ``type`` the caller could see (RBAC-granted).\n\nThe full candidate set (issue #621), independent of membership mode.\nAuto-membership (the default): every granted item is ``in_stack: true``\nand the scope equals ``GET /api/stack``; ``materialized`` then tells an\nanalyst's Claude what is already downloaded locally vs. only server-side\nqueryable. Classic (explicit opt-out via\n``features.stack_auto_membership: false``): ``in_stack`` marks the\nmembers (required or subscribed) and the rest are addable via\n``POST /api/stack/subscribe``.\n\nScoped per-user by ``StackResolver.browse`` (group grants only), so the\nonly authorization gate is authentication \u2014 no extra RBAC dependency.",
         "operationId": "browse_stack_api_stack_browse_get",
         "parameters": [
           {
@@ -42465,7 +42465,7 @@
     },
     "/api/stack/subscribe": {
       "post": {
-        "description": "Subscribe to an ``available`` resource. Classic (the default): this\nADDS the resource to the caller's stack. Auto-membership (opt-in): the\nresource is already in the stack, so this only requests a downloaded\nlocal copy. Refuses if the resource is required (always in the stack and\ndownloaded automatically \u2014 clients shouldn't bother).",
+        "description": "Subscribe to an ``available`` resource. Auto-membership (the\ndefault): the resource is already in the stack, so this only requests a\ndownloaded local copy. Classic (explicit opt-out via\n``features.stack_auto_membership: false``): this ADDS the resource to\nthe caller's stack. Refuses if the resource is required (always in the\nstack and downloaded automatically \u2014 clients shouldn't bother).",
         "operationId": "subscribe_api_stack_subscribe_post",
         "parameters": [
           {
@@ -42529,7 +42529,7 @@
     },
     "/api/stack/subscription/{resource_type}/{resource_id}": {
       "delete": {
-        "description": "Unsubscribe from an ``available`` resource. Classic (the default):\nthis REMOVES the resource from the caller's stack. Auto-membership\n(opt-in): the resource stays in the stack (still queryable server-side),\nonly the downloaded local copy is dropped. Returns 400\n``cannot_remove_required`` when the resource is required for any of the\nuser's groups (required is always in the stack and downloaded, no\nopt-out).\n\nReturns 204 No Content on success \u2014 DELETE idempotency convention\nenforced by the API design rules test.",
+        "description": "Unsubscribe from an ``available`` resource. Auto-membership (the\ndefault): the resource stays in the stack (still queryable\nserver-side), only the downloaded local copy is dropped. Classic\n(explicit opt-out via ``features.stack_auto_membership: false``): this\nREMOVES the resource from the caller's stack. Returns 400\n``cannot_remove_required`` when the resource is required for any of the\nuser's groups (required is always in the stack and downloaded, no\nopt-out).\n\nReturns 204 No Content on success \u2014 DELETE idempotency convention\nenforced by the API design rules test.",
         "operationId": "unsubscribe_api_stack_subscription__resource_type___resource_id__delete",
         "parameters": [
           {
@@ -49953,7 +49953,7 @@
     },
     "/chat": {
       "get": {
-        "description": "Web chat UI \u2014 streams Claude Code sessions over WebSocket.\n\nGoes through ``_build_context`` so the page inherits the standard\nAgnes chrome from ``base_ds.html``: ``_app_header.html`` (nav),\n``static_url(...)``-resolved CSS, ``config.INSTANCE_NAME``,\n``session.user.is_admin`` for the admin dropdown, footer copyright.\nWithout this, the head's four ``<link rel=\"stylesheet\" href=\"\">``\ntags render with empty href and the nav block short-circuits on\n``{% if session.user %}``.",
+        "description": "Web chat UI \u2014 streams Claude Code sessions over WebSocket.\n\nGoes through ``_build_context`` so the page inherits the standard\nAgnes chrome from ``base_ds.html``: ``_app_rail.html`` (nav),\n``static_url(...)``-resolved CSS, ``config.INSTANCE_NAME``,\n``session.user.is_admin`` for the admin dropdown, footer copyright.\nWithout this, the head's four ``<link rel=\"stylesheet\" href=\"\">``\ntags render with empty href and the nav block short-circuits on\n``{% if session.user %}``.",
         "operationId": "chat_page_chat_get",
         "parameters": [
           {
@@ -50779,7 +50779,7 @@
     },
     "/library": {
       "get": {
-        "description": "Library \u2014 everything the caller has: artefacts, skills, and agents.\n\nThis is the renamed and widened former ``/artefacts`` surface. It answers\n\"what do I have?\" across every kind Agnes governs \u2014 the caller's own things\nplus everything shared with them:\n\n  - **Artefacts** \u2014 ``file_corpora`` uploads: images, documents, data\n    files, and multi-file collections, whether *uploaded* by a person or\n    *generated* by an agent (the Source facet).\n  - **Skills** \u2014 the caller's own store entities of type ``skill``, i.e.\n    what the Skill builder (/skills) publishes.\n  - **Granted resources** \u2014 governed **data packages**, **memory\n    domains**, **recipes** and curated **marketplace plugins** granted to\n    one of the caller's groups, plus the community-store items they have\n    **installed**. These are not the caller's to re-share, so they carry no\n    Share action; the grant belongs to an admin.\n\nAgents are deliberately NOT here \u2014 they have their own home at ``/agents``\n(they are still real server-side rows in the v103 ``agents`` registry, and\n``/api/agents`` reads honour agent grants; the Library just isn't their\nlisting surface).\n\nScope is grant-aware: items you OWN plus anything shared into a group you\nbelong to, tagged ``mine`` / ``shared_with_me`` / ``shared_by_me`` so the\ntoolbar can slice by ownership. Deliberately NOT admin god-mode \u2014 an admin\nstill sees their own Library, not every item in the instance (the audit\nview is /admin/access).\n\nEvery row carries its real visibility (Private / Shared / Workspace) and,\nfor the grant-backed kinds, a Share action writing through\n``PUT /api/sharing/{resource_type}/{resource_id}``. Skills are the\nexception: an approved store entity is already readable by every\nauthenticated user, so the row reports that state rather than offering a\ngroup grant nothing would read.\n\nRendering is server-side; the toolbar (search, ownership segments, Type +\nSource facets, sort, and the table \u21c4 grid switch) is client-side over\nthose rows.\n\nTOPNAV keeps the pre-redesign page: the unified Library above is part of\nthe rail redesign, and a default instance's /library must keep rendering\nthe legacy \"Your collections\" page byte-for-byte (the /catalog pattern \u2014\nclassic template on topnav, redesigned one under rail; guarded by\ntests/test_ui_layout_theme.py::TestDefaultContentParity). The legacy\nbranch below is main's pre-merge handler verbatim.",
+        "description": "Library \u2014 everything the caller has: artefacts, skills, and agents.\n\nThis is the renamed and widened former ``/artefacts`` surface. It answers\n\"what do I have?\" across every kind Agnes governs \u2014 the caller's own things\nplus everything shared with them:\n\n  - **Artefacts** \u2014 ``file_corpora`` uploads: images, documents, data\n    files, and multi-file collections, whether *uploaded* by a person or\n    *generated* by an agent (the Source facet).\n  - **Skills** \u2014 the caller's own store entities of type ``skill``, i.e.\n    what the Skill builder (/skills) publishes.\n  - **Granted resources** \u2014 governed **data packages**, **memory\n    domains**, **recipes** and curated **marketplace plugins** granted to\n    one of the caller's groups, plus the community-store items they have\n    **installed**. These are not the caller's to re-share, so they carry no\n    Share action; the grant belongs to an admin.\n\nAgents are deliberately NOT here \u2014 they have their own home at ``/agents``\n(they are still real server-side rows in the v103 ``agents`` registry, and\n``/api/agents`` reads honour agent grants; the Library just isn't their\nlisting surface).\n\nScope is grant-aware: items you OWN plus anything shared into a group you\nbelong to, tagged ``mine`` / ``shared_with_me`` / ``shared_by_me`` so the\ntoolbar can slice by ownership. Deliberately NOT admin god-mode \u2014 an admin\nstill sees their own Library, not every item in the instance (the audit\nview is /admin/access).\n\nEvery row carries its real visibility (Private / Shared / Workspace) and,\nfor the grant-backed kinds, a Share action writing through\n``PUT /api/sharing/{resource_type}/{resource_id}``. Skills are the\nexception: an approved store entity is already readable by every\nauthenticated user, so the row reports that state rather than offering a\ngroup grant nothing would read.\n\nRendering is server-side; the toolbar (search, ownership segments, Type +\nSource facets, sort, and the table \u21c4 grid switch) is client-side over\nthose rows.",
         "operationId": "library_page_library_get",
         "parameters": [
           {
@@ -52031,7 +52031,7 @@
     },
     "/me/ai-connector": {
       "get": {
-        "description": "AI Connector \u2014 chrome-dependent (spec 2026-08-07 wave 2).\n\nDefault chrome keeps the pre-redesign standalone page (frozen\n``me_cowork_legacy.html``: OAuth connector URL, plugin packages,\navailable tools \u2014 including the /mcp-connect token fallback link).\nUnder ANY redesign opt-in \u2014 rail layout or paper theme, the same\nexpression the user-menu row keys on \u2014 the page stays consolidated into\n/how-it-works#connect via the 302 the redesign shipped: a paper-on-topnav\ninstance's menu says \"Learn how it works\", so a bookmark or alias hop\nmust not resurrect the standalone page there (Devin Review on #1200).\n302, not 301: a permanent redirect is cached by the browser forever, so\nit would be very hard to walk back if the consolidation is revisited.\n\nChecked before either chrome branch (#1024): with the MCP connector UI\nhidden (``mcp.connector_ui_enabled: false`` \u2014 a VPN/intranet-only instance\nwhose cloud-side MCP clients can never reach the endpoint), this whole\npage IS the surface being hidden, so both branches bounce home rather\nthan one of them rendering it anyway.",
+        "description": "AI Connector \u2014 consolidated into /how-it-works#connect.\n\nRedirects there unconditionally (302, not 301: a permanent redirect is\ncached by the browser forever, so it would be very hard to walk back if\nthe consolidation is revisited).\n\nChecked first (#1024): with the MCP connector UI hidden\n(``mcp.connector_ui_enabled: false`` \u2014 a VPN/intranet-only instance whose\ncloud-side MCP clients can never reach the endpoint), this whole page IS\nthe surface being hidden, so it bounces home instead.",
         "operationId": "me_ai_connector_page_me_ai_connector_get",
         "parameters": [
           {
@@ -52131,7 +52131,7 @@
     },
     "/me/cowork": {
       "get": {
-        "description": "Legacy aliases \u2192 /me/ai-connector (which renders the page on default\nchrome and forwards to /how-it-works#connect under the redesign opt-in).\n\n302, not 301: a permanent redirect is cached by the browser forever, so\nit would be very hard to walk back if the routing is revisited.",
+        "description": "Legacy aliases \u2192 /me/ai-connector.\n\n302, not 301: a permanent redirect is cached by the browser forever, so\nit would be very hard to walk back if the routing is revisited.",
         "operationId": "me_mcp_redirect_me_cowork_get",
         "responses": {
           "200": {
@@ -52153,7 +52153,7 @@
     },
     "/me/mcp": {
       "get": {
-        "description": "Legacy aliases \u2192 /me/ai-connector (which renders the page on default\nchrome and forwards to /how-it-works#connect under the redesign opt-in).\n\n302, not 301: a permanent redirect is cached by the browser forever, so\nit would be very hard to walk back if the routing is revisited.",
+        "description": "Legacy aliases \u2192 /me/ai-connector.\n\n302, not 301: a permanent redirect is cached by the browser forever, so\nit would be very hard to walk back if the routing is revisited.",
         "operationId": "me_mcp_redirect_me_mcp_get",
         "responses": {
           "200": {

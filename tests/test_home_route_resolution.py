@@ -386,18 +386,50 @@ def test_navbar_home_link_uses_home_route(fresh_db, monkeypatch):
         close_system_db()
 
     c = _client()
-    # /home page itself renders the shared header.
+    # /home page itself renders the shared chrome.
     resp = c.get("/home", cookies={"access_token": sess})
     assert resp.status_code == 200
-    # Navbar link href reflects the resolved home_route, not hard-coded /dashboard.
-    # Label is "Home" when route is /home, "Dashboard" when route is /dashboard.
-    # The link may carry extra attributes between href and the label (e.g. data-tour) —
-    # match href + label without assuming attribute adjacency.
-    assert re.search(r'href="/home"[^>]*>Home', resp.text)
+    # The chrome's home link href reflects the RESOLVED home_route, not a
+    # hard-coded /dashboard. That link is the rail logo: the topnav's labelled
+    # "Home"/"Dashboard" nav item went with the topnav chrome (Wave 0,
+    # 2026-08), so the label half of this assertion has no surface left — but
+    # the half that matters (the resolver reaching the chrome) does.
+    assert re.search(r'class="rail-logo" href="/home"', resp.text)
 
 
-def test_navbar_dashboard_link_label(fresh_db, monkeypatch):
-    """When home_route resolves to /dashboard the nav label is 'Dashboard'."""
+def test_navbar_home_link_follows_a_reconfigured_route(fresh_db, monkeypatch):
+    """The other side of the same knob: point it elsewhere, the chrome follows.
+
+    Was `test_navbar_dashboard_link_label`, which asked /dashboard for a 200
+    and a "Dashboard" nav label. Both premises are gone — /dashboard is now an
+    unconditional 302 into chat's pre-conversation state, and no chrome renders
+    a labelled home item. Re-pinned onto a route that still renders, so the
+    test still fails if home_route stops reaching the chrome.
+    """
+    monkeypatch.setenv("AGNES_HOME_ROUTE", "/library")
+
+    from src.db import get_system_db, close_system_db
+
+    conn = get_system_db()
+    try:
+        _, sess = _make_user_and_session(conn)
+    finally:
+        conn.close()
+        close_system_db()
+
+    c = _client()
+    resp = c.get("/library", cookies={"access_token": sess})
+    assert resp.status_code == 200
+    assert re.search(r'class="rail-logo" href="/library"', resp.text)
+
+
+def test_dashboard_is_a_redirect_not_a_page(fresh_db, monkeypatch):
+    """/dashboard stopped being a rendered surface in Wave 0 (2026-08).
+
+    Kept as an explicit assertion because the old test above asserted a 200
+    here; without this, deleting that premise would leave the redirect
+    itself unguarded.
+    """
     monkeypatch.setenv("AGNES_HOME_ROUTE", "/dashboard")
 
     from src.db import get_system_db, close_system_db
@@ -410,9 +442,10 @@ def test_navbar_dashboard_link_label(fresh_db, monkeypatch):
         close_system_db()
 
     c = _client()
-    resp = c.get("/dashboard", cookies={"access_token": sess})
-    assert resp.status_code == 200
-    assert re.search(r'href="/dashboard"[^>]*>Dashboard', resp.text)
+    resp = c.get("/dashboard", cookies={"access_token": sess}, follow_redirects=False)
+    assert resp.status_code == 302
+    # No chat grant in this fixture -> the Library landing.
+    assert resp.headers["location"] == "/library"
 
 
 # ---------------------------------------------------------------------------

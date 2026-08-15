@@ -397,7 +397,10 @@ def test_default_theme_renders_no_trust_markers_on_populated_rows(seeded_app, mo
     Library rows carried no trust markers at all before v113, so "none" is the
     pre-existing look, not a degraded one.
     """
-    monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
+    # The trust vocabulary is gated to paper at every mark() callsite, so the
+    # theme has to be stated: paper became the DEFAULT in Wave 0 (2026-08), and
+    # `delenv` now selects the look where the markers are supposed to render.
+    monkeypatch.setenv("AGNES_INSTANCE_THEME", "blue")
     monkeypatch.setenv("AGNES_LIBRARY_SHOW_UNVERIFIED_TRUST", "true")
     org = _entity(owner="admin", owner_name="admin", etype="skill", name="Blue Org", status="approved")
     _set_publisher_kind(org, "organization")

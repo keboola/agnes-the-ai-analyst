@@ -15,7 +15,8 @@
       green palette automatically.
     • Auto-imports `_components.html` as `ds` so child pages can call
       {{ ds.button(...) }} without importing.
-    • Production nav via `_app_header.html` (no regression).
+    • Production nav via `_app_rail.html` (the topnav chrome was retired,
+      Wave 0 2026-08).
     • Canonical `.container` page shell. Pages opt into wide by
       overriding `container_modifier` with `'container--wide'`.
     • Blocks: title, head_extra, body_attrs, hero, content,
@@ -35,7 +36,7 @@
     scripts           inline page scripts (last in <body>)
 #}
 <!DOCTYPE html>
-<html lang="en" data-theme="{{ instance_theme | default('blue') }}" data-ui-layout="{{ ui_layout | default('topnav') }}">
+<html lang="en" data-theme="{{ instance_theme | default('blue') }}" data-ui-layout="rail">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -56,13 +57,10 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     {% endif %}
-    {# Orb favicon + tagline title ship only under the opt-in redesign (paper/rail); default blue/topnav keeps the original SVG mark and 'Agnes' title. #}
-    {% if (instance_theme | default('blue')) == 'paper' or (ui_layout | default('topnav')) == 'rail' %}
+    {# Orb favicon + tagline title — the rail chrome (always on since the
+       topnav retirement, Wave 0 2026-08) ships both unconditionally now. #}
     <link rel="icon" type="image/png" href="{{ static_url('img/agnes-orb.png') }}">
-    {% else %}
-    <link rel="icon" type="image/svg+xml" href="{{ static_url('favicon.svg') }}">
-    {% endif %}
-    <title>{% block title %}{{ config.INSTANCE_NAME or (('Agnes — ask and reuse') if (instance_theme | default('blue')) == 'paper' or (ui_layout | default('topnav')) == 'rail' else 'Agnes') }}{% endblock %}</title>
+    <title>{% block title %}{{ config.INSTANCE_NAME or 'Agnes — ask and reuse' }}{% endblock %}</title>
 
     {# CSS load order matters: style-custom.css carries the legacy
        palette + canonical component CSS; design-tokens.css declares
@@ -115,18 +113,10 @@
        directly: {{ ds.button(...) }}, {% call ds.panel(...) %}…{% endcall %} #}
     {% import '_components.html' as ds %}
 
-    {# Production nav — structural chrome switch (instance.ui_layout /
-       AGNES_UI_LAYOUT). "topnav" (default) renders the horizontal
-       header exactly as before; "rail" renders the fixed left sidebar.
-       Instances that don't opt in see byte-identical chrome. #}
-    {% if (ui_layout | default('topnav')) == 'rail' %}
+    {# Production nav — the fixed left sidebar. The topnav chrome
+       (`_app_header.html`) was retired in Wave 0 (2026-08); rail is the
+       only layout now. #}
     {% include '_app_rail.html' %}
-    {% else %}
-    {# Once `primary_nav` macro adoption is complete this include is
-       replaced by `{{ ds.primary_nav(...) }}` in `_app_header.html`
-       itself; pages don't need to change. #}
-    {% include '_app_header.html' %}
-    {% endif %}
 
     {# Hero block — full-width, sits OUTSIDE the .container so hero
        gradients can bleed to the viewport edges. Most pages leave it
@@ -210,18 +200,6 @@
       })();
     </script>
     {% block scripts %}{% endblock %}
-    {# Legacy guided-tour overlay (spec 2026-08-07 wave 2) — the pre-redesign
-       walking guide, frozen (_tour_legacy.html + js/tour_legacy.js +
-       css/tour_legacy.css), served on the DEFAULT chrome only. Any redesign
-       opt-in keeps the redesign reading: rail has the coach-mark engine
-       booted above, and paper-on-topnav ships neither tour — the overlay
-       must key on the same condition as its header launcher
-       (`not is_paper()`), or the intro modal auto-pops with no way to
-       reopen it (Devin Review on #1200). Self-guarded to authed sessions
-       inside the partial. #}
-    {% if (ui_layout | default('topnav')) != 'rail' and not is_paper() %}
-    {% include "_tour_legacy.html" %}
-    {% endif %}
     {# Operator-injected scripts (placement=body_end) — for vendors that
        explicitly want bottom placement. Admin-only, see
        instance.custom_scripts. #}

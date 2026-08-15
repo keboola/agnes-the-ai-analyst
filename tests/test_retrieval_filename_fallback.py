@@ -278,12 +278,14 @@ class TestAHumanCanTellWhichKindOfHitItIs:
     """Devin Review on #1267: the snippet under a name match is the file's
     opening text, which does not contain the query. MCP agents read
     `matched_on`; a person reading the collections UI saw a normal-looking
-    quotation instead."""
+    quotation instead.
 
-    def test_the_collection_page_labels_a_name_match(self):
-        page = (ROOT / "app" / "web" / "templates" / "library_detail_legacy.html").read_text()
-        assert 'res.matched_on === "filename"' in page
-        assert "matched by file name" in page
+    The UI-labelling half of this (`test_the_collection_page_labels_a_name_match`,
+    asserted against the frozen pre-redesign `library_detail_legacy.html`) was
+    removed when that template was deleted in Wave 0 legacy retirement — the
+    live `library_detail.html` never carried the same inline labelling, so
+    there is no surviving template to point the assertion at. The API-level
+    contract below is unaffected."""
 
     def test_the_api_carries_the_label_to_it(self, e2e_env):
         from src.ingest.retrieval import search

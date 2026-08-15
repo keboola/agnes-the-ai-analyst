@@ -463,11 +463,12 @@ in `app/main.py` (catch-all). Route handlers live in `app/web/router.py` and ret
 - **`base_ds.html` — the canonical base.** Loads the stylesheets in the required
   order (`style-custom` → `design-tokens` → `components` → `stack_card` → the
   attribute-scoped `rail`/`paper-skin` sheets), sets
-  `<html data-theme="{{ instance_theme | default('blue') }}"
-  data-ui-layout="{{ ui_layout | default('topnav') }}">` + the favicon, renders the
-  production nav (`_app_header.html`, or `_app_rail.html` when the instance opts into
-  the `rail` chrome via `instance.ui_layout` / `AGNES_UI_LAYOUT`), the canonical
-  `.container` shell, the operator
+  `<html data-theme="{{ instance_theme | default('blue') }}" data-ui-layout="rail">`
+  + the favicon, renders the production nav (`_app_rail.html` — the only chrome;
+  the topnav chrome (`_app_header.html`) was retired in Wave 0, 2026-08 —
+  `get_ui_layout()` always returns `"rail"`, and a configured
+  `instance.ui_layout` / `AGNES_UI_LAYOUT` is ignored with a startup warning),
+  the canonical `.container` shell, the operator
   `custom_scripts` placements (`head_start` / `head_end` / `body_end`), and the global JS
   (`_app_scripts.html` — undo toast, modal-Esc, command palette, admin shortcuts). It
   **auto-imports `_components.html` as `ds`**, so pages call `{{ ds.button(…) }}` without
@@ -485,7 +486,7 @@ in `app/main.py` (catch-all). Route handlers live in `app/web/router.py` and ret
   on `base.html`.**
 
 Shared partials: `_page_hero.html` (canonical hero), `_components.html` (the `ds.*` macro
-library — buttons, panels, tabs, …), `_app_header.html` (nav), `_app_scripts.html` (global
+library — buttons, panels, tabs, …), `_app_rail.html` (nav), `_app_scripts.html` (global
 JS). Component CSS lives in `app/web/static/` (`style-custom.css` + `css/*.css`); all colours
 come from `--ds-*` tokens in `css/design-tokens.css`.
 

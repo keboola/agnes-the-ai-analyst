@@ -1,6 +1,12 @@
-/* Global header search — combobox over GET /api/knowledge/search (K2, #797).
-   Wires the #global-search input + #globalSearchResults listbox shipped by
-   _app_header.html. Debounces input, groups results by type (Tables /
+/* Global search — combobox over GET /api/knowledge/search (K2, #797).
+   Wires the #global-search input + #globalSearchResults listbox in the rail
+   chrome (`_app_rail.html`). The markup shipped on the topnav chrome first;
+   when that was retired (Wave 0, 2026-08) the box moved into the rail with
+   the same two ids, so this module's binding is unchanged — only the result
+   rows' classes carry the rail's prefix now (`.rail-search-*`, rail.css).
+   The null-guard below stays: the rail is gated on `session.user`, so an
+   unauthenticated page loads this script with nothing to bind to.
+   Debounces input, groups results by type (Tables /
    Knowledge / Documents), and links each hit to its detail page:
      - table     -> /catalog/t/<table_id> (falls back to /catalog)
      - metric    -> /catalog/semantics#metrics   (#1108)
@@ -92,7 +98,7 @@
     function renderMessage(message) {
         panel.textContent = "";
         var el = document.createElement("div");
-        el.className = "app-header-search-empty";
+        el.className = "rail-search-empty";
         el.textContent = message;
         panel.appendChild(el);
         openPanel();
@@ -108,12 +114,12 @@
             var hits = results.filter(function (r) { return r.type === group.type; });
             if (!hits.length) return;
             var heading = document.createElement("div");
-            heading.className = "app-header-search-group";
+            heading.className = "rail-search-group";
             heading.textContent = group.heading;
             panel.appendChild(heading);
             hits.forEach(function (hit) {
                 var row = document.createElement("a");
-                row.className = "app-header-search-result";
+                row.className = "rail-search-result";
                 row.setAttribute("role", "option");
                 row.href = hrefFor(hit);
 
@@ -122,17 +128,17 @@
                    badge dropping under the title — the row stays one flex line
                    of two children whether or not the second line is there. */
                 var mainEl = document.createElement("div");
-                mainEl.className = "app-header-search-result-main";
+                mainEl.className = "rail-search-result-main";
 
                 var titleEl = document.createElement("span");
-                titleEl.className = "app-header-search-result-title";
+                titleEl.className = "rail-search-result-title";
                 titleEl.textContent = titleFor(hit);
                 mainEl.appendChild(titleEl);
 
                 var definition = definitionFor(hit);
                 if (definition) {
                     var defEl = document.createElement("span");
-                    defEl.className = "app-header-search-result-def";
+                    defEl.className = "rail-search-result-def";
                     /* textContent, like every other API-derived string here —
                        a definition is admin/sync-authored text, not markup. */
                     defEl.textContent = definition;
@@ -140,7 +146,7 @@
                 }
 
                 var badgeEl = document.createElement("span");
-                badgeEl.className = "app-header-search-result-badge";
+                badgeEl.className = "rail-search-result-badge";
                 badgeEl.textContent = TYPE_LABELS[hit.type] || hit.type;
 
                 row.appendChild(mainEl);

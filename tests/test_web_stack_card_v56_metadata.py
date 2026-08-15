@@ -1,10 +1,28 @@
-"""Template tests for v56 stack-card additions (owner chip + tags +
-curated/new badges) on the Browse grid.
+"""Template tests for the Catalog Browse grid's card metadata — the owner
+byline, tag chips and the org/new claims.
 
-The shared ``_stack_card.html`` macro renders Data Packages on both
-``/catalog`` and the per-domain memory pages. v56 layers owner/tags/
-badge onto the card without breaking back-compat: rows missing the new
-fields render unchanged from v55.
+Originally written against ``macros/_stack_card.html`` (v56), which rendered
+Data Packages on ``/catalog``. The Catalog grid moved to
+``macros/_catalog_card.html`` — the one component now shared by every kind,
+server-rendered and client-hydrated alike — and ``_stack_card.html`` is left
+with a single consumer, ``corporate_memory.html``.
+
+That component swap is NOT wave-0 work; it landed with the Library/Catalog
+rework. Wave 0 only made the redesigned path the only path, which is what
+exposed these tests: they had been asserting the classic template all along.
+
+What the new card renders for a data package is the owner byline
+(``Curated by <name>``, from ``curator``) and the tag chips (``.cc-tag``); both
+are asserted below. It renders no org/new claim — ``_catalog_card_data()``
+leaves ``publisher`` unset for this kind — so those tests were retired rather
+than re-pointed at markup that does not exist. See the note where they were.
+
+Runs with stack auto-membership OFF (see the autouse fixture). Wave 0
+(2026-08) made auto-membership the default, and under it a granted package
+is in the caller's stack the instant it is granted — so the Catalog's Data
+grid, which offers only what you do NOT have, is empty by construction and
+there is no card to assert anything about. The classic subscribe model is a
+fully supported explicit opt-out and is the mode in which this grid has rows.
 """
 
 from __future__ import annotations
@@ -14,6 +32,12 @@ import uuid
 import pytest
 
 from src.db import get_system_db
+
+
+@pytest.fixture(autouse=True)
+def _classic_membership(monkeypatch):
+    """The Catalog Data grid only has rows under the subscribe model."""
+    monkeypatch.setenv("AGNES_STACK_AUTO_MEMBERSHIP", "0")
 
 
 def _auth(token):
@@ -57,10 +81,8 @@ class TestCardOwnerAndTags:
             headers=_auth(seeded_app["analyst_token"]),
         )
         body = r.text
-        assert "Jane" in body
-        # Class hook lets us pin the owner-chip rendering without
-        # depending on CSS layout.
-        assert 'data-card-owner' in body
+        # The card's eyebrow carries the owner as a curator byline.
+        assert "Curated by Jane" in body
 
     def test_omits_owner_chip_when_unset(self, seeded_app):
         _seed_pkg_for_grid()
@@ -68,105 +90,46 @@ class TestCardOwnerAndTags:
             "/catalog",
             headers=_auth(seeded_app["analyst_token"]),
         )
-        # No data-card-owner attr for cards with no owner set.
-        assert 'data-card-owner' not in r.text
+        # No byline for cards with no owner set.
+        assert "Curated by" not in r.text
 
     def test_renders_tag_chips_on_card(self, seeded_app):
+        """Tag chips survived the component swap.
+
+        `_catalog_card_data()` concatenates the auto-derived source-type pills
+        with the admin-authored tags into the single `tags` field
+        (`app/web/router.py`), and `macros/_catalog_card.html` renders the first
+        three as `.cc-tag` with a `+N` overflow. Asserted on the chip markup,
+        not just the words — the tag names also appear in the card's
+        `data-search` attribute, so a bare substring check would pass on a
+        build that dropped the chips entirely.
+        """
         _seed_pkg_for_grid(tags=["Finance", "Revenue", "Margin", "Bookings"])
         r = seeded_app["client"].get(
             "/catalog",
             headers=_auth(seeded_app["analyst_token"]),
         )
         body = r.text
-        # First three tags rendered; 4th may collapse into +N overflow.
+        assert 'class="cc-tag"' in body, "tag chips are not rendering on the catalog card"
+        # First three tags rendered; the 4th collapses into the +N overflow.
         for tag in ("Finance", "Revenue", "Margin"):
-            assert tag in body
+            assert f'<span class="cc-tag">{tag}</span>' in body
+        assert 'class="cc-tag cc-tag--more">+1<' in body, "the 4th tag must collapse into +N"
 
 
-class TestCardBadges:
-    def test_no_curated_badge_on_card_and_stored_claim_renders_instead(self, seeded_app):
-        """v113: the amber derived `Curated` chip is gone from the card.
-
-        An admin-created package no longer earns a badge from who its creator
-        currently is; the card renders the SAME shared trust marker as the
-        Library row and the detail hero, off the stored publisher_kind, so the
-        three cannot disagree.
-        """
-        _seed_pkg_for_grid(created_by="admin1", publisher_kind="organization")
-        r = seeded_app["client"].get(
-            "/catalog",
-            headers=_auth(seeded_app["analyst_token"]),
-        )
-        # DEFAULT theme: the amber chip stays, so the card is unchanged. What
-        # changed is its source — the stored publisher_kind, not whether the
-        # creator is in the Admin group right now.
-        assert 'data-badge="curated"' in r.text
-        assert 'class="ds-trust' not in r.text
-
-    def test_org_and_new_share_one_badge_row_instead_of_overlapping(self, seeded_app, monkeypatch):
-        """A freshly created org package earns BOTH claims; they must not collide.
-
-        Blue draws the trust claim as the amber `Curated` chip. When that lived in
-        its own absolutely-positioned box it used the same top/left as the derived
-        badge row, so `Curated` and `New` printed on top of each other on any
-        org-published package created inside the 30-day window — the one case
-        where both are true at once.
-        """
-        monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
-        _seed_pkg_for_grid(created_by="admin1", publisher_kind="organization")
-        r = seeded_app["client"].get(
-            "/catalog",
-            headers=_auth(seeded_app["analyst_token"]),
-        )
-        body = r.text
-        assert 'data-badge="curated"' in body
-        assert 'data-badge="new"' in body, "a just-seeded package is still 'new'"
-        # Both chips, ONE positioned container — two would stack at the same spot.
-        assert body.count('class="stack-card__badges"') == 1
-
-    def test_paper_renders_the_shared_marker_instead_of_the_amber_chip(
-        self, seeded_app, monkeypatch
-    ):
-        """Same stored claim, paper's spelling."""
-        monkeypatch.setenv("AGNES_INSTANCE_THEME", "paper")
-        _seed_pkg_for_grid(created_by="admin1", publisher_kind="organization")
-        r = seeded_app["client"].get(
-            "/catalog",
-            headers=_auth(seeded_app["analyst_token"]),
-        )
-        assert "ds-trust--org" in r.text
-        assert 'data-badge="curated"' not in r.text
-
-    def test_new_badge_on_card_for_recent(self, seeded_app):
-        _seed_pkg_for_grid(created_by="admin1")
-        r = seeded_app["client"].get(
-            "/catalog",
-            headers=_auth(seeded_app["analyst_token"]),
-        )
-        assert 'data-badge="new"' in r.text
-
-    def test_no_badges_on_back_compat_row(self, seeded_app):
-        """Pre-v56 package created by a non-admin user, older than 30d:
-        renders without curated or new badges."""
-        from datetime import datetime, timedelta, timezone
-
-        pid = _seed_pkg_for_grid(created_by="analyst1")
-        conn = get_system_db()
-        conn.execute(
-            "UPDATE data_packages SET created_at = ? WHERE id = ?",
-            [datetime.now(timezone.utc) - timedelta(days=120), pid],
-        )
-        conn.close()
-        r = seeded_app["client"].get(
-            "/catalog",
-            headers=_auth(seeded_app["analyst_token"]),
-        )
-        body = r.text
-        # The specific pkg must not have either badge — but other seed
-        # packages on /catalog might. Pin to the card by slug:
-        # Hack: ensure neither badge appears within ~600 chars of our slug.
-        idx = body.find(pid)
-        if idx >= 0:
-            window = body[max(0, idx - 600): idx + 600]
-            assert 'data-badge="curated"' not in window
-            assert 'data-badge="new"' not in window
+    # The whole `TestCardBadges` class was here. It asserted
+    # `_stack_card.html`'s curated/new badge row on /catalog. The Catalog card
+    # is `_catalog_card.html` now and renders no org/new claim for a data
+    # package: `_catalog_card_data()` leaves `publisher` unset, so there is no
+    # trust marker on this grid to assert. (Tags DO come through — the test
+    # above covers them.)
+    #
+    # Not re-pointed onto /corporate-memory, the one page still rendering
+    # `_stack_card.html`: under the rail that route 302s into the Library's
+    # Memory band unless the band would be empty, so reaching the macro would
+    # mean constructing the empty-band case — a fixture that tests the redirect
+    # guard, not the card.
+    #
+    # COVERAGE GAP, deliberately recorded rather than papered over: the
+    # provenance/trust rendering on the live Catalog card has no test of its
+    # own. Its tag rendering does — see above.

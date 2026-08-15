@@ -5,9 +5,12 @@ setup) were both reachable only by typing the URL — same bug class as #919's
 `/me/connections` (see `tests/test_web_nav_me_connections.py`). Placement
 contract, mirroring the AI Connector / My connections entries:
 
-- `/agents`      → user dropdown ("My agents"); it is a per-user resource
-                   list, not instance administration, so it does NOT belong in
-                   the primary nav or the Admin mega-menu.
+- `/agents`      → a rail destination of its own. It shipped in the topnav's
+                   user dropdown as "My agents"; the rail promoted it to a
+                   first-class row ("Agents") when that chrome was retired
+                   (Wave 0, 2026-08). Either way the contract is the same one
+                   this file exists for: it is linked from ordinary chrome,
+                   not reachable only by typing the URL.
 - `/mcp-connect` → contextual link from the AI Connector page, which owns the
                    "connect an AI client" job. OAuth is the happy path there;
                    the token page is the fallback, so it gets a cross-link
@@ -21,21 +24,20 @@ def _auth(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
 
 
-def test_agents_link_in_user_dropdown_for_non_admin(seeded_app):
+def test_agents_link_in_chrome_for_non_admin(seeded_app):
     c = seeded_app["client"]
-    resp = c.get("/dashboard", headers=_auth(seeded_app["analyst_token"]))
+    resp = c.get("/library", headers=_auth(seeded_app["analyst_token"]))
     assert resp.status_code == 200
     body = resp.text
 
     assert 'href="/agents"' in body
-    assert ">My agents<" in body
-    # User dropdown placement, not primary nav.
-    assert "app-user-menu-item" in body
+    # A rail destination row, not a dropdown item.
+    assert ">Agents<" in body
 
 
-def test_agents_link_in_user_dropdown_for_admin(seeded_app):
+def test_agents_link_in_chrome_for_admin(seeded_app):
     c = seeded_app["client"]
-    resp = c.get("/dashboard", headers=_auth(seeded_app["admin_token"]))
+    resp = c.get("/library", headers=_auth(seeded_app["admin_token"]))
     assert resp.status_code == 200
     assert 'href="/agents"' in resp.text
 
@@ -45,7 +47,7 @@ def test_agents_link_hidden_when_agent_profiles_disabled(seeded_app, monkeypatch
     entry point — mirrors test_web_studio.py's test_studio_nav_hidden_when_disabled."""
     monkeypatch.setattr("app.web.router.get_agent_profiles_enabled", lambda: False)
     c = seeded_app["client"]
-    resp = c.get("/dashboard", headers=_auth(seeded_app["analyst_token"]))
+    resp = c.get("/library", headers=_auth(seeded_app["analyst_token"]))
     assert resp.status_code == 200
     assert 'href="/agents"' not in resp.text
     assert "href: '/agents'" not in resp.text  # command palette row too

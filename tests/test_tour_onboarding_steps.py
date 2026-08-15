@@ -27,7 +27,6 @@ TOUR_JS = Path("app/web/static/js/tour.js")
 ONBOARDING_JS = Path("app/web/static/js/chat_onboarding.js")
 CHAT_HTML = Path("app/web/templates/chat.html")
 RAIL_HTML = Path("app/web/templates/_app_rail.html")
-HEADER_HTML = Path("app/web/templates/_app_header.html")
 LIBRARY_HTML = Path("app/web/templates/library.html")
 BASE_DS_HTML = Path("app/web/templates/base_ds.html")
 
@@ -267,9 +266,11 @@ def test_composer_anchor_exists_on_the_chat_page():
     assert 'id="chat-input"' in chat
 
 
-def test_library_nav_anchor_exists_in_both_chromes():
+def test_library_nav_anchor_exists_in_the_rail():
+    """Rail is the only chrome since Wave 0 (2026-08 legacy retirement) —
+    ``_app_header.html`` is deleted, so this no longer has a topnav twin to
+    check."""
     assert 'id="nav-artefacts"' in RAIL_HTML.read_text(encoding="utf-8")
-    assert 'data-tour="nav-library"' in HEADER_HTML.read_text(encoding="utf-8")
 
 
 def test_the_share_step_can_open_the_group_that_holds_its_anchor():

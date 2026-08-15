@@ -717,9 +717,6 @@ AGNES_STUDIO_ENABLED=false
 %{ if experience != "" ~}
 AGNES_INSTANCE_EXPERIENCE=${experience}
 %{ endif ~}
-%{ if ui_layout != "" ~}
-AGNES_UI_LAYOUT=${ui_layout}
-%{ endif ~}
 %{ if theme != "" ~}
 AGNES_INSTANCE_THEME=${theme}
 %{ endif ~}

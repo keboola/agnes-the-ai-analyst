@@ -420,11 +420,39 @@ def test_studio_index_requires_login(seeded_app):
         assert "/login" in resp.headers.get("location", "")
 
 
-def test_primary_nav_links_to_studio(seeded_app):
-    c = seeded_app["client"]
-    resp = c.get("/admin/studio", headers=_auth(seeded_app["analyst_token"]))
+def test_studio_is_reachable_from_the_admin_nav(seeded_app):
+    """Studio is linked from the admin inventory, gated on `can_studio`.
+
+    Replaces an assertion that the page links ITSELF (`href="/admin/studio"` on
+    /admin/studio), which said nothing about reachability — you are already
+    there — and, briefly, an assertion that Studio was in the nav guard's
+    KNOWN_UNLINKED list. That second one was worse: it was false (Studio has an
+    `app/web/admin_nav.py` row and three command-palette entries) and it could
+    not fail, because it tested a dict literal in a test file rather than the
+    app.
+
+    Its topnav row and rail dropdown are both gone — the rail's by IA choice —
+    but the admin nav is a real door, so this asserts that.
+    """
+    from app.web.admin_nav import ADMIN_NAV_SECTIONS, _section_entries
+
+    entries = [e for s in ADMIN_NAV_SECTIONS for e in _section_entries(s) if e["href"] == "/admin/studio"]
+    assert entries, "/admin/studio is not in the admin nav inventory"
+    assert entries[0].get("when") == "can_studio", (
+        "the Studio row must stay gated on can_studio, or an opted-out instance shows a row that redirects home"
+    )
+
+    # And a RENDERED door, not just an inventory entry: the command palette
+    # carries Studio on every authed page. (The sidebar renders only its active
+    # section's body server-side, so a row from another section is not in the
+    # HTML — see test_web_admin_nav.py::
+    # test_only_the_active_section_renders_expanded_server_side.)
+    resp = seeded_app["client"].get("/library", headers=_auth(seeded_app["admin_token"]))
     assert resp.status_code == 200
-    assert 'href="/admin/studio"' in resp.text
+    assert "href: '/admin/studio'" in resp.text
+
+    # The page itself still renders for a signed-in caller.
+    assert seeded_app["client"].get("/admin/studio", headers=_auth(seeded_app["analyst_token"])).status_code == 200
 
 
 # --- Instance-level enable/disable toggle (studio.enabled / AGNES_STUDIO_ENABLED) ---
@@ -441,23 +469,26 @@ def test_studio_routes_redirect_when_disabled(seeded_app, monkeypatch):
         assert resp.headers.get("location", "") == "/", path
 
 
-def test_studio_nav_hidden_when_disabled(seeded_app, monkeypatch):
+def test_studio_palette_entries_hidden_when_disabled(seeded_app, monkeypatch):
+    """`can_studio` gates the command-palette rows, which are Studio's only
+    chrome-level trace now.
+
+    This used to check a `data-tour="nav-studio"` nav link on two pages as
+    well. Both premises are gone: `data-tour` anchors went with the guided tour
+    and the topnav chrome (Wave 0, 2026-08), and /dashboard is a redirect. The
+    palette half is the part that still exists, and it is the part the flag
+    actually drives.
+    """
     c = seeded_app["client"]
-    # Sanity: link + palette entries present by default on BOTH chrome paths —
-    # /me/memory-mining renders via _chrome_ctx, /dashboard via _build_context.
-    for page in ("/me/memory-mining", "/dashboard"):
-        resp = c.get(page, headers=_auth(seeded_app["analyst_token"]))
-        assert resp.status_code == 200, page
-        assert 'data-tour="nav-studio"' in resp.text, page
-        assert "Studio · Data package" in resp.text, page  # command palette
-    # Disable → nav entry AND palette items disappear on both paths (the route
-    # stays reachable only by URL, which the redirect test covers).
+    page = "/me/memory-mining"
+    resp = c.get(page, headers=_auth(seeded_app["analyst_token"]))
+    assert resp.status_code == 200
+    assert "Studio · Data package" in resp.text, "palette row missing while studio is enabled"
+
     monkeypatch.setattr("app.web.router.get_studio_enabled", lambda: False)
-    for page in ("/me/memory-mining", "/dashboard"):
-        resp = c.get(page, headers=_auth(seeded_app["analyst_token"]))
-        assert resp.status_code == 200, page
-        assert 'data-tour="nav-studio"' not in resp.text, page
-        assert "Studio · Data package" not in resp.text, page
+    resp = c.get(page, headers=_auth(seeded_app["analyst_token"]))
+    assert resp.status_code == 200
+    assert "Studio · Data package" not in resp.text
 
 
 def test_studio_enabled_env_override(monkeypatch):

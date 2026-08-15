@@ -1240,12 +1240,17 @@ class TestGrantUpdateRequirementParity:
         assert api_subs == cli_subs == []
 
     def test_downgrade_parity_classic_fan_out(self, parity_env, monkeypatch):
-        """Classic (default): the required → available downgrade fans out a
+        """Classic: the required → available downgrade fans out a
         subscription row per group member — the pre-redesign v49 behavior
         (spec 2026-08-07-default-chrome-ux-parity) — and BOTH paths land on
         the identical row set (the fan-out is idempotent, so the CLI re-run
-        over the API-created rows changes nothing)."""
-        monkeypatch.delenv("AGNES_STACK_AUTO_MEMBERSHIP", raising=False)
+        over the API-created rows changes nothing).
+
+        Classic is no longer the presetless default (Wave 0, 2026-08, coupled
+        the sole remaining `redesign` experience to auto-membership) — forced
+        here via the still-fully-supported explicit per-knob override, which
+        wins over any preset."""
+        monkeypatch.setenv("AGNES_STACK_AUTO_MEMBERSHIP", "0")
         gid, pkg_id, grant_id = self._setup_with_grant("required")
 
         # API path

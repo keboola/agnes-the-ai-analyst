@@ -115,3 +115,66 @@ def test_home_omits_news_section_when_no_intro(fresh_db):
     # gated by `{% if news_intro %}`. Look for the section header copy.
     assert "What's new" not in r.text and "What&#39;s new" not in r.text
     assert "Read more &rarr;" not in r.text and "Read more →" not in r.text
+
+
+# --------------------------------------------------------------------------- #
+# No first-paint layout jump: both news surfaces style themselves through a
+# body class, and that class must be in the SERVER-RENDERED markup. Adding it
+# from a DOMContentLoaded handler (the shape both pages shipped with) let the
+# browser paint the unstyled layout first and snap to the styled one after —
+# on /admin/news that moved the whole admin column 219px sideways, because the
+# page CSS also re-imposed a `.container` max-width over `base_admin.html`'s
+# `container--full`.
+# --------------------------------------------------------------------------- #
+
+
+def _admin_client(conn):
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from src.repositories.users import UserRepository
+    from app.auth.jwt import create_access_token
+
+    uid = str(uuid.uuid4())
+    UserRepository(conn).create(id=uid, email="admin@example.com", name="admin")
+    group = conn.execute("SELECT id FROM user_groups WHERE name = 'Admin'").fetchone()
+    assert group, "Admin system group should be seeded by bootstrap"
+    conn.execute(
+        "INSERT INTO user_group_members (user_id, group_id, source, added_by) "
+        "VALUES (?, ?, 'admin', 'test')",
+        [uid, group[0]],
+    )
+    c = TestClient(app)
+    c.cookies.set("access_token", create_access_token(user_id=uid, email="admin@example.com"))
+    return c
+
+
+def test_news_page_body_class_is_server_rendered(fresh_db):
+    from src.db import get_system_db, close_system_db
+    conn = get_system_db()
+    try:
+        c = _client_with_session(conn)
+    finally:
+        conn.close()
+        close_system_db()
+    r = c.get("/news")
+    assert r.status_code == 200
+    assert 'class="news-page"' in r.text, "/news must carry its body class in the markup"
+    assert "classList.add('news-page')" not in r.text, (
+        "/news adds its styling body class from JS — the page paints unstyled first"
+    )
+
+
+def test_admin_news_body_class_is_server_rendered(fresh_db):
+    from src.db import get_system_db, close_system_db
+    conn = get_system_db()
+    try:
+        c = _admin_client(conn)
+    finally:
+        conn.close()
+        close_system_db()
+    r = c.get("/admin/news")
+    assert r.status_code == 200
+    assert 'class="news-admin"' in r.text, "/admin/news must carry its body class in the markup"
+    assert "classList.add('news-admin')" not in r.text, (
+        "/admin/news adds its styling body class from JS — the page paints unstyled first"
+    )

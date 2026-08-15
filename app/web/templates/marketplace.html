@@ -101,6 +101,13 @@
       <div class="title">Every item says who stands behind it.</div>
       <div class="body">Items published by your organization are labelled <strong>Organization</strong>. Everything else carries its author’s name — and may also be verified by your organization. Filter by publisher to narrow the shelf.</div>
     </div>
+    {# Both publishing guides, not just the flea one. `/marketplace/guide/curated`
+       had its only two inbound links in `marketplace_legacy.html` (the frozen
+       pre-redesign Marketplace), so retiring the classic chrome in Wave 0
+       (2026-08) left a live route nothing pointed at — reachable by typed URL
+       alone, which is the failure `tests/test_web_nav_user_parity.py` exists to
+       catch. It caught this one. #}
+    <a class="link" href="/marketplace/guide/curated">How curated publishing works →</a>
     <a class="link" href="/marketplace/guide/flea">Tips for sharing →</a>
   </div>
 
