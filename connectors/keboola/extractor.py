@@ -41,6 +41,83 @@ logger = logging.getLogger(__name__)
 _CONSOLIDATION_MEMORY_LIMIT = "2GB"
 _CONSOLIDATION_THREADS = 2
 
+# Cap on the DuckDB spill directory (`temp_directory` below). Mirrors
+# `_DUCKDB_MAX_TEMP_DIR_SIZE` in `src/db.py`; DuckDB's own default is
+# "90% of available disk space", which lets one runaway consolidation
+# fill the whole volume before it fails.
+_CONSOLIDATION_MAX_TEMP_DIR_SIZE = "10GB"
+
+# Bound the parquet *writer's* row-group buffer.
+#
+# DuckDB buffers an entire row group in memory before flushing it, and the
+# default (122,880 rows) is sized for narrow rows. A table whose cells hold
+# whole documents — e.g. a conversation-log export at ~16 KiB/row — needs
+# well past 2 GiB for a single group, so the COPY raises
+# `OutOfMemoryException` mid-write no matter how well the *scan* side
+# streams. This is what the `_CONSOLIDATION_MEMORY_LIMIT` comment above did
+# not account for: the cap bounds the buffer pool, not the writer's
+# pre-flush accumulation, so raising the cap only moves the cliff.
+#
+# Reproduced on a 16-slice / 400k-row / 16 KiB-per-cell fixture: the default
+# row group raises `failed to allocate data of size 416.0 MiB (1.4 GiB/1.8
+# GiB used)` after ~4 s, while a 128 MiB bound completes the same COPY in
+# ~1.2 s inside the same cap. Sliced-parquet consolidation, the CSV→parquet
+# path, and the typed retype all write through this same writer.
+#
+# Two knobs exist and both are needed, because they are not interchangeable:
+#   * `ROW_GROUP_SIZE_BYTES` — width-adaptive and the better default, but
+#     DuckDB rejects it outright while `preserve_insertion_order=true`
+#     ("ROW_GROUP_SIZE_BYTES does not work while preserving insertion
+#     order"). Used by the two order-agnostic consolidation COPYs.
+#   * `ROW_GROUP_SIZE` (row count) — valid in both modes. The retype COPY
+#     keeps insertion order for MD5 stability, so it derives an equivalent
+#     row count from the source footer via `_row_group_rows_for`.
+_ROW_GROUP_TARGET_BYTES = 128 * 1024 * 1024
+_ROW_GROUP_TARGET_BYTES_SQL = "128MB"
+# Floor: DuckDB flushes on data-chunk boundaries (STANDARD_VECTOR_SIZE, 2048
+# rows), so a smaller row count is silently ignored rather than honoured —
+# verified, a derived 15 left a 400-row file as a single row group. A table
+# whose individual cells are so large that even 2048 rows overshoot the target
+# cannot be bounded by this knob at all; it is the memory_limit's problem.
+# Ceiling: DuckDB's own default — widening it would regress scan efficiency
+# for the narrow tables this must stay neutral for.
+_ROW_GROUP_MIN_ROWS = 2_048
+_ROW_GROUP_MAX_ROWS = 122_880
+
+
+def _row_group_rows_for(parquet_path) -> int:
+    """Rows per row group so one group holds ~``_ROW_GROUP_TARGET_BYTES`` of
+    *uncompressed* data, derived from ``parquet_path``'s footer statistics.
+
+    For the order-preserving retype COPY, which cannot use the byte-denominated
+    `ROW_GROUP_SIZE_BYTES`. Reads only the parquet footer, never row data.
+
+    Degrades to DuckDB's default row count whenever the footer can't answer
+    (unreadable file, zero rows, missing size statistics) — the caller is a
+    memory guardrail, not a correctness step, so a bad estimate must not fail
+    the retype.
+    """
+    try:
+        import pyarrow.parquet as pq
+
+        md = pq.read_metadata(str(parquet_path))
+        rows = md.num_rows
+        if not rows:
+            return _ROW_GROUP_MAX_ROWS
+        uncompressed = 0
+        for g in range(md.num_row_groups):
+            group = md.row_group(g)
+            for c in range(group.num_columns):
+                uncompressed += group.column(c).total_uncompressed_size
+        if uncompressed <= 0:
+            return _ROW_GROUP_MAX_ROWS
+        avg_row_bytes = max(1, uncompressed // rows)
+        target = _ROW_GROUP_TARGET_BYTES // avg_row_bytes
+        return max(_ROW_GROUP_MIN_ROWS, min(_ROW_GROUP_MAX_ROWS, int(target)))
+    except Exception:  # pragma: no cover - guardrail must never fail the copy
+        logger.debug("row-group sizing fell back to default", exc_info=True)
+        return _ROW_GROUP_MAX_ROWS
+
 
 def _open_consolidation_conn(db_path: Optional[str] = None):
     """Return a DuckDB connection with memory/thread caps applied.
@@ -59,11 +136,33 @@ def _open_consolidation_conn(db_path: Optional[str] = None):
     is a single parquet that downstream consumers re-sort however they
     like — preserving the read-order from the input file isn't
     something any caller depends on.
+
+    Spill (`temp_directory`) is pinned to the same root the Storage API
+    slice downloads already use (``AGNES_TEMP_DIR`` via ``get_temp_root``).
+    Left unset, DuckDB spills to ``.tmp`` *relative to the process cwd* —
+    ``/app`` in the shipped image, i.e. the container's overlay on the boot
+    disk. Measured on a live instance: one consolidation transiently held
+    7.6 GB of spill there (boot disk 26% → 53% and back), on a volume no
+    watchdog tracks, and `cleanup_orphaned_temp_files` only ever sweeps
+    ``{STATE_DIR}/duckdb-tmp`` — so a process killed mid-consolidation
+    strands those GBs permanently. Best-effort: a failing PRAGMA leaves the
+    connection usable on DuckDB's defaults rather than failing the sync.
     """
     conn = _open_duckdb(db_path) if db_path else _open_duckdb(":memory:")
     conn.execute(f"SET memory_limit='{_CONSOLIDATION_MEMORY_LIMIT}'")
     conn.execute(f"SET threads={_CONSOLIDATION_THREADS}")
     conn.execute("SET preserve_insertion_order=false")
+    try:
+        from connectors.keboola.storage_api import get_temp_root
+
+        temp_root = get_temp_root()
+        if temp_root:
+            spill = Path(temp_root) / "duckdb-spill"
+            spill.mkdir(parents=True, exist_ok=True)
+            conn.execute(f"SET temp_directory='{str(spill).replace(chr(39), chr(39) * 2)}'")
+        conn.execute(f"SET max_temp_directory_size='{_CONSOLIDATION_MAX_TEMP_DIR_SIZE}'")
+    except Exception as e:
+        logger.debug("consolidation temp_directory spill setup failed (%s)", e)
     return conn
 
 
@@ -208,9 +307,17 @@ def _retype_parquet_streaming(tmp_parquet: Path, target_schema) -> None:
                 conn.execute("SET TimeZone='UTC'")
             except Exception:
                 pass
+            # `ROW_GROUP_SIZE_BYTES` is unavailable here — DuckDB rejects it
+            # whenever insertion order is preserved, which the line above
+            # deliberately re-enables — so bound the writer by an equivalent
+            # row count derived from the source footer instead. Without a
+            # bound this COPY OOMs on exactly the tables the consolidation
+            # bound above just rescued, one step later.
+            row_group_rows = _row_group_rows_for(tmp_parquet)
             conn.execute(
                 f"COPY (SELECT {', '.join(select_parts)} FROM read_parquet('{safe_src}')) "
-                f"TO '{safe_dst}' (FORMAT PARQUET, COMPRESSION SNAPPY)"
+                f"TO '{safe_dst}' (FORMAT PARQUET, COMPRESSION SNAPPY, "
+                f"ROW_GROUP_SIZE {row_group_rows})"
             )
         finally:
             conn.close()
@@ -393,9 +500,13 @@ def materialize_query(
                 #    naively concatenating them like CSV would be invalid.
                 #    We download all slices into the per-call tempdir, then
                 #    DuckDB-COPY across `read_parquet([slice1, slice2, ...])`
-                #    into one consolidated tmp_parquet. DuckDB streams row
-                #    groups during this consolidation — peak memory is one
-                #    row group (~1 MiB), not the full table.
+                #    into one consolidated tmp_parquet. The scan side streams
+                #    row groups, but the *writer* accumulates a whole output
+                #    row group before flushing, and "one row group" is only
+                #    ~1 MiB for narrow rows — on a document-shaped table it is
+                #    gigabytes, which is what used to OOM this COPY. Hence the
+                #    explicit `ROW_GROUP_SIZE_BYTES` bound below; see
+                #    `_ROW_GROUP_TARGET_BYTES`.
                 stats = storage_client.prepare_export(
                     full_table_id,
                     export_filter=export_filter,
@@ -410,7 +521,10 @@ def materialize_query(
                     safe_tmp = str(tmp_parquet).replace("'", "''")
                     conv = _open_consolidation_conn()
                     try:
-                        conv.execute(f"COPY (SELECT * FROM read_parquet([{quoted}])) TO '{safe_tmp}' (FORMAT PARQUET)")
+                        conv.execute(
+                            f"COPY (SELECT * FROM read_parquet([{quoted}])) TO '{safe_tmp}' "
+                            f"(FORMAT PARQUET, ROW_GROUP_SIZE_BYTES '{_ROW_GROUP_TARGET_BYTES_SQL}')"
+                        )
                     finally:
                         conv.close()
                 else:
@@ -542,7 +656,8 @@ def materialize_query(
                             f"COPY (SELECT * FROM read_csv('{safe_csv}', "
                             f"all_varchar=true, max_line_size=67108864, "
                             f"quote='\"', escape='\"')) "
-                            f"TO '{safe_tmp}' (FORMAT PARQUET)"
+                            f"TO '{safe_tmp}' (FORMAT PARQUET, "
+                            f"ROW_GROUP_SIZE_BYTES '{_ROW_GROUP_TARGET_BYTES_SQL}')"
                         )
                         conv.close()
                     except Exception:
