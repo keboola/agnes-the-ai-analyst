@@ -34,6 +34,10 @@ def env(e2e_env, monkeypatch):
 
     _reset_ephemeral_key_for_tests()
     monkeypatch.setattr(kv, "stack_url", lambda: STACK)
+    # Wildcard instance (project_id "*"): the select-mode stash re-filter
+    # runs the instance gates, and without this the pinned-project branch
+    # would drop every stashed project.
+    monkeypatch.setattr(kv, "is_wildcard_project", lambda: True)
     # The example stack host doesn't resolve; the SSRF gate has its own
     # tests — stub it permissive, same pattern as tests/test_keboola_verify.py.
     monkeypatch.setattr("app.api.admin._validate_url_not_private", lambda url, field_name="url": None)
@@ -316,6 +320,43 @@ class TestAutoProvision:
         assert connection_secrets_repo().get(connection_id) == "pat-516-fresh"
         # Rotation rights follow the live credential.
         assert source_connections_repo().get(connection_id)["config"]["user_email"] == "bob@example.com"
+        # The master slot held the SAME dead PAT (a login mirrors one token
+        # into both slots) — the repair reclaims it too, or the semantic
+        # layer would keep failing on the dead master indefinitely.
+        from app.api.admin_source_connections import master_secret_key
+
+        assert connection_secrets_repo().get(master_secret_key(connection_id)) == "pat-516-fresh"
+
+    def test_repair_with_non_master_fresh_removes_the_dead_master(self, env, pat_mocks, monkeypatch):
+        """When the repair's fresh PAT is NOT a master token, the known-dead
+        master credential is removed rather than left failing the semantic
+        layer — the sync then skips the project (the documented non-master
+        posture) instead of erroring on it."""
+        from app.api.admin_source_connections import master_secret_key
+        from src.repositories import connection_secrets_repo, users_repo
+
+        projects = [P("516", "Agnes - test", "admin")]
+        first = kprov.provision_projects(env["user"], projects, projects, "at-1")
+        connection_id = first.outcomes[0].connection_id
+        assert connection_secrets_repo().has(master_secret_key(connection_id))
+
+        users_repo().create(id="u2", email="bob@example.com", name="Bob")
+        bob = users_repo().get_by_email("bob@example.com")
+
+        def old_dead_fresh_not_master(self):
+            if self.token == "pat-516":
+                from connectors.keboola.storage_api import StorageApiError
+
+                raise StorageApiError("token was revoked", status=401)
+            return {"isMasterToken": False, "owner": {"id": 516, "name": "P"}}
+
+        monkeypatch.setattr(KeboolaStorageClient, "verify_token", old_dead_fresh_not_master)
+        monkeypatch.setattr(kp, "exchange_project_pat", lambda tok, pid, *, read_only: f"pat-{pid}-fresh")
+
+        summary = kprov.provision_projects(bob, projects, projects, "at-2")
+        assert summary.outcomes[0].token_stored is True
+        assert connection_secrets_repo().get(connection_id) == "pat-516-fresh"
+        assert not connection_secrets_repo().has(master_secret_key(connection_id))
 
     def test_healthy_foreign_row_is_left_alone(self, env, pat_mocks):
         """Another user's login on a healthy row someone else provisioned
@@ -588,6 +629,20 @@ class TestSelectModeStash:
         per_user_secrets_repo().upsert(kprov.PENDING_DISCOVERY_SOURCE_ID, "u1", json.dumps(stale))
         assert kprov.load_pending_discovery("u1") is None
         assert per_user_secrets_repo().get(kprov.PENDING_DISCOVERY_SOURCE_ID, "u1") is None
+
+    def test_import_refilters_against_the_current_gates(self, env, pat_mocks, monkeypatch):
+        """Roles narrowed INSIDE the stash's TTL must bite at import time:
+        the stashed grant must not outlive the config that granted it."""
+        projects = [P("516", "Agnes - test", "admin"), P("7", "Beta", "readOnly")]
+        kprov.store_pending_discovery(env["user"], projects, "at-1")
+        monkeypatch.setattr(kv, "allowed_roles", lambda: ["admin"])
+
+        with pytest.raises(kprov.DiscoveryStateError) as err:
+            kprov.provision_selected(env["user"], ["7"])
+        assert err.value.reason == "unknown_project"
+        # The still-allowed project imports fine.
+        summary = kprov.provision_selected(env["user"], ["516"])
+        assert [o.project_id for o in summary.outcomes] == ["516"]
 
     def test_relogin_membership_sync_covers_connected_projects_only(self, env, pat_mocks):
         # Import one of two, then a later select-mode login (provision

@@ -29,6 +29,7 @@ def select_env(seeded_app, monkeypatch):
     monkeypatch.setattr(kv, "stack_url", lambda: STACK)
     monkeypatch.setattr("app.api.admin._validate_url_not_private", lambda url, field_name="url": None)
     monkeypatch.setattr(kv, "multi_project_mode", lambda: "select")
+    monkeypatch.setattr(kv, "is_wildcard_project", lambda: True)
     monkeypatch.setattr(kp, "exchange_project_pat", lambda tok, pid, *, read_only: f"pat-{pid}")
     monkeypatch.setattr(
         KeboolaStorageClient,

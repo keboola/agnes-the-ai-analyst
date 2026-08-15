@@ -68,18 +68,17 @@ async def list_discovered_projects(user: dict = Depends(get_current_user)) -> Di
     blob = await run_in_threadpool(kprov.load_pending_discovery, str(user.get("id")))
 
     def _annotate() -> List[Dict[str, Any]]:
-        projects = []
-        for p in (blob or {}).get("projects") or []:
-            project_id = str(p.get("id"))
-            projects.append(
-                {
-                    "id": project_id,
-                    "name": p.get("name") or "",
-                    "role": p.get("role") or "",
-                    "imported": kprov.is_project_connected(project_id),
-                }
-            )
-        return projects
+        # Through the same use-time re-filter the import applies, so the
+        # listing never offers a project the import would refuse.
+        return [
+            {
+                "id": p.id,
+                "name": p.name,
+                "role": p.role,
+                "imported": kprov.is_project_connected(p.id),
+            }
+            for p in kprov.discovered_from_blob(blob or {})
+        ]
 
     return {
         "mode": mode,

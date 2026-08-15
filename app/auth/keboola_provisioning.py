@@ -443,6 +443,23 @@ def _mint_and_store_tokens(
         if fresh_name and new_config.get("project_name") != fresh_name and new_config.get("user_email"):
             new_config["project_name"] = fresh_name
 
+    reclaimed_dead_master = False
+    if repairing and not may_master and stored:
+        # A login mirrors ONE minted PAT into both slots, so the dead
+        # storage credential usually sits in the master slot too — and
+        # leaving it there keeps the semantic-layer sync failing on this
+        # project long after data access is repaired (Devin Review on this
+        # PR, fifth round). Reclaim it with the repair by VALUE equality
+        # against the known-dead token — no extra round-trip, and a master
+        # an admin pasted by hand (a different value) is never touched.
+        try:
+            master_stored = secrets.get(master_secret_key(connection_id))
+        except Exception:
+            master_stored = None
+        if master_stored and master_stored == stored:
+            may_master = True
+            reclaimed_dead_master = True
+
     if is_master and may_master:
         try:
             secrets.upsert(master_secret_key(connection_id), pat)
@@ -450,6 +467,23 @@ def _mint_and_store_tokens(
         except Exception:
             logger.warning(
                 "keboola auto-provision: could not store the master token for connection %s",
+                connection_id,
+                exc_info=True,
+            )
+    elif reclaimed_dead_master:
+        # The fresh PAT could not take the slot — remove the known-dead
+        # credential rather than leave the sync failing on it; the semantic
+        # layer then SKIPS the project until a master lands, which is the
+        # documented non-master posture.
+        try:
+            secrets.delete(master_secret_key(connection_id))
+            logger.info(
+                "keboola auto-provision: removed the dead master token of connection %s",
+                connection_id,
+            )
+        except Exception:
+            logger.warning(
+                "keboola auto-provision: could not remove the dead master token of connection %s",
                 connection_id,
                 exc_info=True,
             )
@@ -877,27 +911,43 @@ def clear_pending_discovery(user_id: str) -> None:
         logger.debug("no pending keboola discovery to clear for user %s", user_id)
 
 
+def discovered_from_blob(blob: Dict[str, Any]) -> List[kp.DiscoveredProject]:
+    """The stash's projects, re-run through the instance gates at USE time.
+
+    ``allowed_roles`` / ``project_id`` can be narrowed inside the stash's
+    TTL, and a stashed grant must not outlive the config that granted it —
+    without the re-filter, an import inside that window still provisioned
+    (and role-granted) a project the fresh config no longer allows (Devin
+    Review on this PR, fifth round). Shared by the listing endpoint and the
+    import so both show/accept the same set.
+    """
+    projects = [
+        kp.DiscoveredProject(id=str(p.get("id")), name=str(p.get("name") or ""), role=str(p.get("role") or ""))
+        for p in blob.get("projects") or []
+    ]
+    return kp.filter_projects(projects)
+
+
 def provision_selected(user: Dict[str, Any], selected_ids: List[str]) -> ProvisionSummary:
     """``select``-mode import: provision the chosen subset of the stored
     discovery. Raises :class:`DiscoveryStateError` when the discovery is
-    gone/expired (``discovery_expired``) or a requested id was never
-    discovered (``unknown_project``) — the endpoint maps both to 4xx."""
+    gone/expired (``discovery_expired``) or a requested id is not in the
+    (still-allowed) discovered set (``unknown_project``) — the endpoint maps
+    both to 4xx."""
     blob = load_pending_discovery(str(user.get("id")))
     if blob is None:
         raise DiscoveryStateError(
             "discovery_expired",
             "No pending Keboola project discovery — sign in with Keboola again to refresh it",
         )
-    discovered = [
-        kp.DiscoveredProject(id=str(p.get("id")), name=str(p.get("name") or ""), role=str(p.get("role") or ""))
-        for p in blob.get("projects") or []
-    ]
+    discovered = discovered_from_blob(blob)
     by_id = {p.id: p for p in discovered}
     unknown = [pid for pid in selected_ids if pid not in by_id]
     if unknown:
         raise DiscoveryStateError(
             "unknown_project",
-            f"Projects not in the discovered list: {', '.join(sorted(unknown))}",
+            "Projects not in the discovered list (or no longer allowed by the "
+            f"instance's role/project gates): {', '.join(sorted(unknown))}",
         )
     chosen = [by_id[pid] for pid in dict.fromkeys(selected_ids)]
     return provision_projects(user, chosen, discovered, str(blob.get("access_token") or ""))
