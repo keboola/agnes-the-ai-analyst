@@ -352,3 +352,43 @@ class TestSearch:
         )
         assert r.status_code == 200
         assert r.json()["count"] == 1
+
+
+def _grant_model(model_id: str, group_name: str = "Direct Model Readers") -> None:
+    """Grant the seeded analyst a direct grant on the MODEL, not on a package."""
+    from src.repositories import resource_grants_repo, user_groups_repo
+    from src.repositories.user_group_members import UserGroupMembersRepository
+
+    conn = get_system_db()
+    group = user_groups_repo().create(name=group_name, description="", created_by="test")
+    gid = group["id"] if isinstance(group, dict) else group
+    UserGroupMembersRepository(conn).add_member("analyst1", gid, source="test")
+    conn.close()
+    resource_grants_repo().create(
+        group_id=gid,
+        resource_type="semantic_model",
+        resource_id=model_id,
+        assigned_by="test",
+    )
+
+
+def test_export_succeeds_via_a_direct_model_grant(seeded_app):
+    """A grant on the model itself must actually grant access.
+
+    `ResourceType.SEMANTIC_MODEL` is registered, so /admin/access offers it as
+    a grantable resource. A control that is offered but never read is worse
+    than one that is absent — the admin believes access was given and it was
+    not. This mirrors how per-table grants layer under the package stack.
+    """
+    c = seeded_app["client"]
+    created = c.post(
+        "/api/admin/semantic-models",
+        json={"document": DOC},
+        headers=_auth(seeded_app["admin_token"]),
+    ).json()
+
+    _grant_model(created["id"])
+
+    r = c.get("/api/semantic-models/retail.yaml", headers=_auth(seeded_app["analyst_token"]))
+    assert r.status_code == 200
+    assert r.text == DOC

@@ -21,9 +21,14 @@ for is dropped at the door:
 - keyword-style AI metadata (synonyms, hints and warnings are carried; keywords
   are not),
 - constraints, stored as a JSON blob no code evaluates,
-- relationships, honored only in one narrow single-relationship case,
-- the second and any further model in a project — the importer takes `models[0]`
-  and logs a warning.
+- relationships, honored only in one narrow single-relationship case.
+
+One bullet that appeared here in the first draft has been removed as false: the
+importer does NOT stop at `models[0]`. `_sync_one_source` iterates every model
+in a project and says so in a comment; only the separate admin coverage report
+still reads `models[0]`. The claim was true of an earlier code state and was
+carried into this document without being re-checked against the branch it was
+written on.
 
 The dropped material is not recoverable, because nothing keeps the source
 document. Re-reading it means re-fetching from the source.
@@ -228,6 +233,23 @@ deliberately NOT bundled into this design: it widens the migration beyond the
 tables this contract introduces, and the collision requires two sources sharing
 a `source` value, which the source registry does not currently produce. Revisit
 it the moment a second adapter writes columns under an existing `source`.
+
+**Two writers, one table — the metastore adapter stores documents only.**
+Found during implementation and reproduced with a test: the legacy metastore
+importer already writes `metric_definitions` rows for the same metrics, under
+its own `source`. If the metastore adapter ALSO projected its composed
+documents, the two writers would collide on metric *name* — the legacy
+importer's name-ownership check drops its own row when the name is already held
+by a different owner, and in the other order the table simply gains a second
+row with the same name, since only `id` is unique. The adapter therefore
+persists into `semantic_models` and stops there; the flat tables keep their
+existing writer.
+
+Cutting the flat tables over to be projected FROM the stored documents is a
+separate, sequenced step: it needs a before/after regression proving the
+projected rows equal today's, and it must retire the legacy writer in the same
+change rather than run both. Until then, a metastore-backed instance has the
+document as an additive record, not as the source of its metric rows.
 
 **Imported rows are read-only in the UI.** Editing an imported definition in place
 would put the editor in a race with a scheduled importer that prunes what upstream

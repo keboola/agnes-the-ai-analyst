@@ -79,14 +79,24 @@ _VALID_KINDS = ("git", "upload", "connection")
 
 
 def _can_read_model(user: dict, model_row: dict, conn: duckdb.DuckDBPyConnection) -> bool:
-    """True iff ``user`` may read ``model_row``: admin, or a grant on any
-    Data Package the model is linked to."""
+    """True iff ``user`` may read ``model_row``: admin, a grant on any Data
+    Package the model is linked to, or a direct grant on the model itself.
+
+    The direct grant layers UNDER the package path the way per-table grants
+    layer under the package stack. It is not decoration: ``ResourceType
+    .SEMANTIC_MODEL`` is registered, so ``/admin/access`` offers it as a
+    grantable resource — and a control an admin can set but nothing ever reads
+    is worse than no control at all, because it reports success while granting
+    nothing.
+    """
     from app.auth.access import can_access, is_user_admin
 
     user_id = user.get("id") if isinstance(user, dict) else None
     if not user_id:
         return False
     if is_user_admin(user_id, conn):
+        return True
+    if can_access(user_id, ResourceType.SEMANTIC_MODEL.value, model_row["id"], conn):
         return True
     package_ids = semantic_model_repo().list_packages_for_model(model_row["id"])
     return any(can_access(user_id, ResourceType.DATA_PACKAGE.value, pkg_id, conn) for pkg_id in package_ids)
