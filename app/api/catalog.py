@@ -33,6 +33,60 @@ class CatalogTablesResponse(BaseModel):
     count: int
 
 
+def _profile_restriction(table_name: str, user: dict) -> Optional[dict]:
+    """Table access policies (§11's "sharper leak"): a stored profile's
+    min/max/sample_values/top_values are row CONTENT, computed from the
+    physical table at sync/refresh time — independent of any policy
+    attached to the row later. Neither ``get_table_profile`` nor
+    ``refresh_profile`` filtered any of that before this task, so a
+    policied table's per-column stats were fully visible to any caller who
+    merely passed the table-level ``can_access_table`` check, the exact gap
+    a policy exists to close.
+
+    Returns the replacement payload when the stats must be withheld, or
+    ``None`` when the caller should see the profile unchanged — no policy
+    on this table (including a table absent from the registry entirely,
+    e.g. the legacy ``profiles.json`` fallback below), OR an admin (§12's
+    bypass, decided the same way ``policied_relation`` decides it
+    everywhere else).
+
+    Deliberately checked in two steps rather than one ``policied_relation``
+    call: ``policied_relation`` raises ``PolicyError`` for "table not
+    registered" and gives no way to tell that apart from "registered, but
+    some other resolution problem" — and the former is the routine case for
+    a name that only exists in ``profiles.json``, which must NOT be treated
+    as restricted (this feature applies to registered tables only). Once a
+    row with ``access_policy_sql`` is confirmed to exist, ``policied_relation``
+    resolves it and any FURTHER failure (unresolvable identity, a live
+    policy-execution problem) fails closed here exactly like every other
+    policy surface (§17): withhold the stats rather than guess.
+    """
+    from src.repositories import table_registry_repo
+
+    row = table_registry_repo().get(table_name) or table_registry_repo().get_by_name(table_name)
+    if not row or not row.get("access_policy_sql"):
+        return None
+
+    from src.access_policy import PolicyError, PolicyIdentityUnresolvable, policied_relation
+
+    try:
+        relation = policied_relation(row["id"], user)
+    except (PolicyIdentityUnresolvable, PolicyError):
+        relation = None
+
+    if relation is not None and not relation.policied:
+        return None
+
+    return {
+        "table_id": row["id"],
+        "policy_restricted": True,
+        "message": (
+            "this table has an access policy attached; per-column profile statistics "
+            "(min/max/sample values/top values) are withheld for non-admin callers"
+        ),
+    }
+
+
 @router.get("/profile/{table_name}")
 def get_table_profile(
     table_name: str,
@@ -53,11 +107,11 @@ def get_table_profile(
                 all_profiles = json.loads(profiles_path.read_text())
                 tables = all_profiles.get("tables", all_profiles)
                 if table_name in tables:
-                    return tables[table_name]
+                    return _profile_restriction(table_name, user) or tables[table_name]
             except Exception:
                 pass
         raise HTTPException(status_code=404, detail=f"Profile not found for '{table_name}'")
-    return profile
+    return _profile_restriction(table_name, user) or profile
 
 
 @router.get("/tables", response_model=CatalogTablesResponse)
@@ -136,7 +190,14 @@ def refresh_profile(
     try:
         table_info = TableInfo(name=table_name, table_id=table_name)
         profile = profile_table(table_info, target, [], {}, {})
+        # Recompute + persist unconditionally — the STORED profile must stay
+        # fresh for the admin/no-policy case (app/api/sync.py's own scheduled
+        # run does the same, unfiltered, for the same reason). Only the
+        # RESPONSE to THIS caller is gated.
         profile_repo().save(table_name, profile)
+        restricted = _profile_restriction(table_name, user)
+        if restricted is not None:
+            return {"status": "ok", **restricted}
         return {"status": "ok", "table": table_name, "columns": len(profile.get("columns", {}))}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Profile failed: {e}")

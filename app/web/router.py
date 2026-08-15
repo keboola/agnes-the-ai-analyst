@@ -4585,6 +4585,7 @@ async def catalog_table_detail(
     belong to packages they're granted on.
     """
     from src.rbac import get_accessible_ids
+    from src.access_policy import effective_schema
     from app.resource_types import ResourceType
 
     table_repo = table_registry_repo()
@@ -4664,18 +4665,22 @@ async def catalog_table_detail(
         logger.warning("could not load profile for %s", table_id, exc_info=True)
 
     # Fallback: when table_profiles has no row (table never synced, or
-    # profile was wiped), introspect schema via the same code path the
-    # /api/v2/schema endpoint uses. Handles every source type — internal
-    # via connectors.internal, BigQuery remote via the BQ extension,
-    # local + materialized via DESCRIBE on the parquet. Best-effort —
-    # any failure (parquet missing, BQ creds absent, etc.) leaves the
-    # columns section in its "run a sync" empty state.
+    # profile was wiped), introspect schema via `build_schema` — the same
+    # RBAC- and policy-aware wrapper /api/v2/schema uses — rather than
+    # `build_schema_uncached` directly, which by its own docstring skips
+    # BOTH RBAC and the Task 9 effective-schema override ("call only from
+    # contexts where those are unnecessary (warmup) or already enforced
+    # upstream"). Handles every source type — internal via
+    # connectors.internal, BigQuery remote via the BQ extension, local +
+    # materialized via DESCRIBE on the parquet. Best-effort — any failure
+    # (parquet missing, BQ creds absent, etc.) leaves the columns section
+    # in its "run a sync" empty state.
     if not columns:
         try:
-            from app.api.v2_schema import build_schema_uncached
+            from app.api.v2_schema import build_schema
             from connectors.bigquery.access import BqAccess
 
-            sch = build_schema_uncached(conn, table_id, bq=BqAccess(), row=table)
+            sch = build_schema(conn, user, table_id, bq=BqAccess())
             for col in sch.get("columns") or []:
                 columns.append(
                     {
@@ -4686,6 +4691,38 @@ async def catalog_table_detail(
                 )
         except Exception:
             logger.warning("schema introspection fallback failed for %s", table_id, exc_info=True)
+
+    # Table access policies (§11): the profile-derived column list above is
+    # UNFILTERED raw schema — `table_profiles` is computed from the
+    # physical table regardless of any later-attached policy — so an
+    # EXCLUDE'd column's name would otherwise survive into "What's inside"
+    # for a non-admin even after the fallback above started using the
+    # effective-schema-aware `build_schema`. One filter here, applied AFTER
+    # either source has populated `columns`, closes both paths at once.
+    # Fails closed: a resolution problem suppresses the whole column list
+    # rather than risk showing a name this caller cannot actually read.
+    #
+    # `profile_repo()` also carries min/max/sample_values/top_values (§11's
+    # "sharper leak") for every surviving column, but this route never
+    # forwards those fields into `columns` or the template context — only
+    # name/type/nullable are extracted above — so there is nothing further
+    # to suppress here; see `app/api/catalog.py`'s `GET /profile/{id}` and
+    # `POST /profile/{id}/refresh`, which DO serve that stats payload and
+    # are gated the same way.
+    if table.get("access_policy_sql"):
+        try:
+            effective_cols = effective_schema(table_id, user)
+        except Exception:
+            logger.warning(
+                "effective-schema check failed for policied table %s; suppressing columns",
+                table_id,
+                exc_info=True,
+            )
+            columns = []
+        else:
+            if effective_cols is not None:
+                visible_names = {c["name"] for c in effective_cols if not c.get("hidden")}
+                columns = [c for c in columns if c["name"] in visible_names]
 
     last_sync_state = sync_state_repo().get_table_state(table_id) or {}
 

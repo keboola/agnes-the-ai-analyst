@@ -178,6 +178,11 @@ _DEFAULTS = {
     # each run does far fewer HTTP calls (a handful of Metastore list
     # requests vs one BQ metadata fetch per registered table).
     "SCHEDULER_KEBOOLA_SEMANTIC_LAYER_REFRESH_INTERVAL": 6 * 60 * 60,
+    # Databricks semantic layer (Unity Catalog metric views) refresh: same
+    # cadence + rationale as the Keboola sibling — a handful of warehouse
+    # statements per run, upserts+prunes metric_definitions rows tagged
+    # source='databricks_semantic_layer'.
+    "SCHEDULER_DATABRICKS_SEMANTIC_LAYER_REFRESH_INTERVAL": 6 * 60 * 60,
     # Pause between scheduler startup and the first tick. Keeps the
     # scheduler from synchronising its "Table never synced, marking as
     # due" burst with the app's own startup cache_warmup. Set to 0 to
@@ -488,6 +493,7 @@ def build_jobs() -> list[JobRow | EnqueueJobRow]:
     corpmem = _read_positive_int("SCHEDULER_CORPORATE_MEMORY_INTERVAL")
     bqmeta = _read_positive_int("SCHEDULER_BQ_METADATA_REFRESH_INTERVAL")
     kbsl = _read_positive_int("SCHEDULER_KEBOOLA_SEMANTIC_LAYER_REFRESH_INTERVAL")
+    dbxsl = _read_positive_int("SCHEDULER_DATABRICKS_SEMANTIC_LAYER_REFRESH_INTERVAL")
     usageprune = _read_positive_int("SCHEDULER_USAGE_PRUNE_INTERVAL")
     jirasla = _read_positive_int("SCHEDULER_JIRA_SLA_POLL_INTERVAL")
     jiraconsis = _read_positive_int("SCHEDULER_JIRA_CONSISTENCY_INTERVAL")
@@ -505,6 +511,7 @@ def build_jobs() -> list[JobRow | EnqueueJobRow]:
         corpmem,
         bqmeta,
         kbsl,
+        dbxsl,
         usageprune,
         jirasla,
         jiraconsis,
@@ -644,6 +651,18 @@ def build_jobs() -> list[JobRow | EnqueueJobRow]:
             "keboola-semantic-layer-refresh",
             _seconds_to_schedule(kbsl),
             "/api/admin/run-keboola-semantic-layer-refresh",
+            "POST",
+            900,
+        ),
+        # Databricks semantic layer refresh — keeps metric_definitions rows
+        # tagged source='databricks_semantic_layer' in sync with the
+        # workspace's Unity Catalog metric views. Short-circuits (returns an
+        # error result, doesn't crash) when data_source.databricks is not
+        # configured — see connectors/databricks/semantic_layer.py.
+        (
+            "databricks-semantic-layer-refresh",
+            _seconds_to_schedule(dbxsl),
+            "/api/admin/run-databricks-semantic-layer-refresh",
             "POST",
             900,
         ),
