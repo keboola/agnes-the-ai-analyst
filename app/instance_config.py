@@ -546,18 +546,24 @@ def get_gws_oauth_credentials() -> dict:
 
 
 def get_experience() -> str:
-    """One-line adoption preset (spec 2026-08-07-default-chrome-ux-parity):
-    ``classic`` | ``redesign``.
+    """One-line adoption preset (spec 2026-08-07-default-chrome-ux-parity).
 
-    Changes only the DEFAULTS the experience-coupled knobs fall back to
-    (chrome layout, theme, stack membership mode, trust markers); any
-    per-knob env/yaml setting still wins, and each knob's own resolution
-    order is unchanged. ``classic`` — or an absent/unrecognised value — is
-    byte-for-byte the pre-redesign experience, so a routine upgrade changes
-    nothing an operator did not opt into.
+    Retired as a choice in Wave 0 (2026-08, spec
+    2026-08-13-grounded-analyst-workspace-design): ``redesign`` is the only
+    option and the default. The old ``classic`` value — or any other
+    unrecognised value — resolves to ``redesign`` via the ``experience``
+    switch's ``on_invalid="default"``, so an older instance.yaml with
+    ``experience: classic`` still boots without error; it no longer changes
+    any behavior.
+
+    Still changes only the DEFAULTS the remaining experience-coupled knobs
+    fall back to (theme, stack membership mode); any per-knob env/yaml
+    setting still wins, and each knob's own resolution order is unchanged.
+    Chrome layout is no longer part of the coupling — :func:`get_ui_layout`
+    hard-wires the rail chrome unconditionally, independent of this preset.
 
     Resolution: ``AGNES_INSTANCE_EXPERIENCE`` env > ``instance.experience``
-    in instance.yaml > ``"classic"`` — delegated to the ``experience`` entry
+    in instance.yaml > ``"redesign"`` — delegated to the ``experience`` entry
     in :data:`app.switches.SWITCHES` (kind ``select``,
     ``on_invalid="default"``), so the preset rides the same registry every
     operator switch is derived from instead of a hand-rolled lookup pair.
@@ -613,12 +619,15 @@ def preset_flag_default(name: str) -> bool:
 def get_stack_auto_membership() -> bool:
     """Stack membership mode (spec 2026-08-07-default-chrome-ux-parity).
 
-    ``False`` (the classic default): membership is the subscribe model —
-    ``required ∪ (subscribed ∩ available)`` — exactly the pre-redesign
-    behavior, including the grant-downgrade subscription fan-out.
-    ``True``: auto-membership — every granted resource is in the stack the
-    moment it's granted; subscribe/unsubscribe only control the local copy.
-    The ``redesign`` experience preset flips the default to ``True``.
+    ``True`` (the default since Wave 0, 2026-08 — the ``redesign``
+    experience preset, now the only preset, implies this): auto-membership
+    — every granted resource is in the stack the moment it's granted;
+    subscribe/unsubscribe only control the local copy.
+    ``False`` (the classic value — still a fully-supported explicit
+    opt-out, and it always wins over the default): membership is the
+    subscribe model — ``required ∪ (subscribed ∩ available)`` — exactly the
+    pre-redesign behavior, including the grant-downgrade subscription
+    fan-out.
     """
     return feature_enabled(
         "features",
@@ -634,8 +643,15 @@ def get_instance_theme() -> str:
     (`--ds-*`) flips between palettes without touching markup.
 
     Values:
-      - ``blue``   — current default. Brand-blue hero gradient,
-                     blue CTAs, translucent-white eyebrow.
+      - ``paper``  — prototype-derived light look (issue #896), the
+                     default since Wave 0 (2026-08): warm paper canvas,
+                     white panels, emerald accent, pill CTAs; see
+                     ``[data-theme="paper"]`` in ``design-tokens.css``.
+                     Renders on the rail chrome (see :func:`get_ui_layout`,
+                     the only chrome there is now).
+      - ``blue``   — pre-redesign palette: brand-blue hero gradient,
+                     blue CTAs, translucent-white eyebrow. Still fully
+                     supported; set explicitly to opt out of ``paper``.
       - ``navy``   — darker palette opted into via server config.
                      Dark navy hero gradient, mint-green CTAs +
                      eyebrow accents.
@@ -645,17 +661,12 @@ def get_instance_theme() -> str:
       - ``auto``   — light by default, flips to the ``dark`` palette
                      when the user's OS prefers dark (resolved
                      client-side in ``_theme_resolve.html``).
-      - ``paper``  — prototype-derived light look (issue #896): warm
-                     paper canvas, white panels, emerald accent,
-                     pill CTAs; see ``[data-theme="paper"]`` in
-                     ``design-tokens.css``. Pairs with the ``rail``
-                     UI layout (see :func:`get_ui_layout`) but works
-                     with the classic top-nav too.
 
-    Resolution: ``AGNES_INSTANCE_THEME`` env var
-    (Terraform-friendly) > ``instance.theme`` in instance.yaml >
-    default ``"blue"``. Unrecognised values fall back to ``"blue"``
-    so a typo doesn't silently break every page.
+    Resolution: ``AGNES_INSTANCE_THEME`` env var (Terraform-friendly) >
+    ``instance.theme`` in instance.yaml > the ``experience`` preset's
+    implied default (``"paper"`` — see :func:`get_experience`).
+    Unrecognised values fall back to that same preset-implied default so a
+    typo doesn't silently break every page.
     """
     # Preset-implied default (spec 2026-08-07): the `redesign` experience
     # defaults to paper; explicit env/yaml always wins.
