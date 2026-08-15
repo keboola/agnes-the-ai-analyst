@@ -168,6 +168,79 @@ class TestRewriterHonorsPerRowProject:
 
 
 # ---------------------------------------------------------------------------
+# Issue #1322: a registered BQ table named after a SQL keyword (e.g. ``order``)
+# must not corrupt the rewrite when the SQL also contains that keyword's
+# clause form (ORDER BY / GROUP BY / PARTITION BY). A bare ``\bname\b`` match
+# fires on both the real FROM/JOIN reference AND the keyword half of the
+# clause; substituting both turns ``... ORDER BY x`` into
+# ``... `native` `native` BY x``. The fix suppresses a match immediately
+# followed by " by" — a position no real reference can occupy, since neither
+# DuckDB nor BigQuery accepts a bare ``by`` as a table/alias identifier.
+# ---------------------------------------------------------------------------
+
+
+class TestRewriterKeywordNamedTableDoesNotCorruptSql:
+    def test_order_by_survives_when_table_is_named_order(self):
+        """Reproduces issue #1322: registering a table named ``order``
+        must not turn ``FROM order ORDER BY x`` into the corrupted
+        ``FROM `native` `native` BY x``."""
+        sql = _rewrite_bq_table_refs_to_native(
+            "SELECT * FROM order ORDER BY event_date",
+            [("order", "sales", "orders_tbl")],
+            "proj",
+        )
+
+        assert sql == "SELECT * FROM `proj.sales.orders_tbl` ORDER BY event_date"
+        # The issue's corruption signature must not appear.
+        assert "`proj.sales.orders_tbl` `proj.sales.orders_tbl` BY" not in sql
+        assert sql.count("`proj.sales.orders_tbl`") == 1
+
+    def test_real_from_target_named_order_is_still_rewritten(self):
+        """The keyword suppression must not blanket-skip a table that is
+        genuinely referenced just because its name collides with a
+        keyword — only the ORDER BY usage is left alone."""
+        sql = _rewrite_bq_table_refs_to_native(
+            "SELECT * FROM order WHERE status = 'open'",
+            [("order", "sales", "orders_tbl")],
+            "proj",
+        )
+
+        assert sql == "SELECT * FROM `proj.sales.orders_tbl` WHERE status = 'open'"
+
+    def test_group_by_survives_when_table_is_named_group(self):
+        """Same defect class for GROUP BY."""
+        sql = _rewrite_bq_table_refs_to_native(
+            "SELECT category, COUNT(*) FROM group GROUP BY category",
+            [("group", "sales", "customer_groups")],
+            "proj",
+        )
+
+        assert sql == ("SELECT category, COUNT(*) FROM `proj.sales.customer_groups` GROUP BY category")
+
+    def test_partition_by_survives_when_table_is_named_partition(self):
+        """Same defect class for PARTITION BY (window-function clause)."""
+        sql = _rewrite_bq_table_refs_to_native(
+            "SELECT *, ROW_NUMBER() OVER (PARTITION BY region) FROM partition",
+            [("partition", "sales", "table_partitions")],
+            "proj",
+        )
+
+        assert sql == ("SELECT *, ROW_NUMBER() OVER (PARTITION BY region) FROM `proj.sales.table_partitions`")
+
+    def test_case_insensitive_keyword_suppression(self):
+        """The rewriter matches bare names case-insensitively; the keyword
+        suppression must hold across casings too — only the real FROM
+        target rewrites, the ORDER By clause (mixed case) is untouched."""
+        sql = _rewrite_bq_table_refs_to_native(
+            "SELECT * FROM Order ORDER By event_date",
+            [("order", "sales", "orders_tbl")],
+            "proj",
+        )
+
+        assert sql == "SELECT * FROM `proj.sales.orders_tbl` ORDER By event_date"
+
+
+# ---------------------------------------------------------------------------
 # The collection sites must actually populate the override from ``bq_fqn``.
 # A helper that accepts the 4-tuple is inert until callers emit it.
 # ---------------------------------------------------------------------------
@@ -253,3 +326,121 @@ class TestCollectionSitesEmitProjectOverride:
         assert billing == "billing-project"
         assert "`data-project.events_ds.events`" in inner
         assert "configured-project" not in inner
+
+
+# ---------------------------------------------------------------------------
+# Issue #1322: the two selection scans feeding the rewriter (the bare-name
+# pass in ``_bq_guardrail_inputs`` and the mirrored pass + the cross-source
+# skip in ``_bq_remote_execution_plan``) must apply the same keyword-collision
+# suppression, so a registered name that happens to be a SQL keyword neither
+# (a) gets pulled into a dry-run / rewrite it was never actually referenced
+# in, nor (b) forces an unrelated query into the slower ATTACH-catalog
+# fallback, just because the SQL contains that keyword's clause form.
+# ---------------------------------------------------------------------------
+
+
+_ORDER_BQ_ROW = {
+    "id": "bq.sales.orders_tbl",
+    "name": "order",
+    "source_type": "bigquery",
+    "query_mode": "remote",
+    "bucket": "sales",
+    "source_table": "orders_tbl",
+    "bq_fqn": None,
+}
+
+_EVENTS_BQ_ROW = {
+    "id": "bq.events_ds.events",
+    "name": "events",
+    "source_type": "bigquery",
+    "query_mode": "remote",
+    "bucket": "events_ds",
+    "source_table": "events",
+    "bq_fqn": None,
+}
+
+_LOCAL_ORDER_ROW = {
+    "id": "kbc.sales.order",
+    "name": "order",
+    "source_type": "keboola",
+    "query_mode": "local",
+    "bucket": "sales",
+    "source_table": "order",
+}
+
+
+class TestGuardrailInputsKeywordCollision:
+    """``_bq_guardrail_inputs`` bare-name pass (the ``dry_run``/``name_lookups``
+    selection scan feeding the rewriter)."""
+
+    def test_ignores_order_by_when_table_not_actually_referenced(self, monkeypatch):
+        """A registered BQ table named ``order`` must not be pulled into
+        the dry-run/name_lookups set just because the SQL contains an
+        innocent ``ORDER BY`` — that would force an unnecessary (and
+        possibly cap-rejecting) dry-run scan of a table the query never
+        touches."""
+        import app.api.query as query_mod
+
+        monkeypatch.setattr(query_mod, "table_registry_repo", lambda: _FakeRepo([_ORDER_BQ_ROW]))
+        monkeypatch.setattr(query_mod, "is_user_admin", lambda *a, **k: True)
+
+        sql = "SELECT * FROM some_other_view ORDER BY id"
+        dry_run, name_lookups, blocked = query_mod._bq_guardrail_inputs(
+            sql, sql.lower(), None, {"id": "u", "email": "u@example.com"}, None
+        )
+
+        assert blocked is None
+        assert dry_run == []
+        assert name_lookups == []
+
+    def test_still_detects_table_named_order_as_a_real_reference(self, monkeypatch):
+        """The suppression must not blanket-hide a table genuinely named
+        ``order`` when the SQL actually selects FROM it."""
+        import app.api.query as query_mod
+
+        monkeypatch.setattr(query_mod, "table_registry_repo", lambda: _FakeRepo([_ORDER_BQ_ROW]))
+        monkeypatch.setattr(query_mod, "is_user_admin", lambda *a, **k: True)
+
+        sql = "SELECT * FROM order ORDER BY id"
+        dry_run, name_lookups, blocked = query_mod._bq_guardrail_inputs(
+            sql, sql.lower(), None, {"id": "u", "email": "u@example.com"}, None
+        )
+
+        assert blocked is None
+        assert len(name_lookups) == 1
+        assert name_lookups[0][:3] == ("order", "sales", "orders_tbl")
+        assert len(dry_run) == 1
+
+
+class TestRemoteExecutionPlanCrossSourceKeywordCollision:
+    """``_bq_remote_execution_plan``'s ``rewrite_skip_cross_source`` check."""
+
+    def test_local_table_named_order_does_not_force_attach_fallback(self, monkeypatch):
+        """A local-mode table registered as ``order`` must not make every
+        BQ query containing an innocent ``ORDER BY`` fall back to the
+        slower ATTACH-catalog path."""
+        import app.api.query as query_mod
+
+        monkeypatch.setattr(
+            query_mod,
+            "table_registry_repo",
+            lambda: _FakeRepo([_EVENTS_BQ_ROW, _LOCAL_ORDER_ROW]),
+        )
+
+        class _Projects:
+            data = "data-prj"
+            billing = "billing-prj"
+
+        class _Bq:
+            projects = _Projects()
+
+        monkeypatch.setattr(query_mod, "get_bq_access", lambda: _Bq())
+
+        rewritten, did_rewrite, billing, inner = query_mod._bq_remote_execution_plan(
+            "SELECT * FROM events ORDER BY event_date", None
+        )
+
+        assert did_rewrite is True
+        assert inner is not None
+        assert "`data-prj.events_ds.events`" in inner
+        assert "ORDER BY event_date" in inner

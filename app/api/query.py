@@ -1823,8 +1823,15 @@ def _bq_guardrail_inputs(
             # Forbidden-table loop above will have rejected the request
             # before we get here. Defensive skip.
             continue
-        pattern = r"\b" + re.escape(str(name).lower()) + r"\b"
-        if re.search(pattern, sql_lower_masked):
+        # Issue #1322: a bare `\bname\b` match also fires on the keyword
+        # half of ORDER BY / GROUP BY / PARTITION BY when a registered
+        # table is named after one of those keywords (e.g. `order`), which
+        # then corrupts the rewriter's substitution downstream. Reuse the
+        # same compiled pattern the RBAC name guards use — it already
+        # suppresses a name immediately followed by " by" via a negative
+        # lookahead, since no real reference can occupy that position
+        # (DuckDB/BQ both reject a bare `by` as an identifier).
+        if _name_reference_re(str(name).lower()).search(sql_lower_masked):
             key = (bucket.lower(), source_table.lower())
             if key not in seen_paths:
                 seen_paths.add(key)
@@ -2063,8 +2070,18 @@ def _rewrite_bq_table_refs_to_native(
         # left-to-right and stops at the first match — pinning longest
         # entries to the front preserves the prefix-collision invariant
         # exercised by test_rewrite_helper_longer_name_wins_over_prefix.
+        #
+        # Issue #1322: append the same `(?!\s+by\b)` suppression
+        # `_name_reference_re` uses for the RBAC name guards. Without it, a
+        # registered name that happens to be a SQL keyword (e.g. `order`)
+        # also matches the keyword half of ORDER BY / GROUP BY / PARTITION
+        # BY, and re.sub replaces THAT occurrence too — e.g. `FROM order
+        # ORDER BY x` corrupts to ``FROM `proj.ds.tbl` `proj.ds.tbl` BY x``.
+        # A name genuinely used as a table/alias is never immediately
+        # followed by " by" (DuckDB/BQ both reject a bare `by` there), so
+        # the suppression only ever silences the false keyword match.
         sorted_names = sorted(name_to_target.keys(), key=len, reverse=True)
-        pattern = r"\b(" + "|".join(re.escape(n) for n in sorted_names) + r")\b"
+        pattern = r"\b(" + "|".join(re.escape(n) for n in sorted_names) + r")\b(?!\s+by\b)"
 
         def _name_repl(m: re.Match) -> str:
             return name_to_target[m.group(1).lower()]
@@ -2236,8 +2253,15 @@ def _bq_remote_execution_plan(
             # single-project assumption. Bail out completely so we don't
             # mix rewritten and non-rewritten BQ paths in one query.
             return user_sql, False, None, None
-        pattern = r"\b" + re.escape(str(name).lower()) + r"\b"
-        if re.search(pattern, sql_lower_masked):
+        # Issue #1322: a bare `\bname\b` match also fires on the keyword
+        # half of ORDER BY / GROUP BY / PARTITION BY when a registered
+        # table is named after one of those keywords (e.g. `order`), which
+        # then corrupts the rewriter's substitution downstream. Reuse the
+        # same compiled pattern the RBAC name guards use — it already
+        # suppresses a name immediately followed by " by" via a negative
+        # lookahead, since no real reference can occupy that position
+        # (DuckDB/BQ both reject a bare `by` as an identifier).
+        if _name_reference_re(str(name).lower()).search(sql_lower_masked):
             key = (bucket.lower(), source_table.lower())
             if key not in seen_paths:
                 seen_paths.add(key)
@@ -2285,7 +2309,11 @@ def _bq_remote_execution_plan(
             # Same name registered both BQ-remote and local? Pathological;
             # skip as a safety measure.
             return user_sql, False, None, None
-        if re.search(r"\b" + re.escape(name_lc) + r"\b", sql_lower_masked):
+        # Issue #1322: same keyword-collision suppression as the bare-name
+        # pass above — a local-mode table named e.g. `order` must not make
+        # every BQ query containing an innocent `ORDER BY` fall back to the
+        # slower ATTACH-catalog path.
+        if _name_reference_re(name_lc).search(sql_lower_masked):
             logger.info(
                 "rewrite_skip_cross_source: user SQL references both "
                 "BQ-remote and local-mode tables; falling back to "

@@ -340,6 +340,59 @@ def find_internal_refs(sql: str) -> list[str]:
 _PG_MATERIALIZE_ROW_CAP = 1_000_000
 
 
+def _select_list_with_json_as_text(source_table: str) -> str:
+    """Column list for ``SELECT <list> FROM source_table`` that casts every
+    JSON-family column (per the SQLAlchemy model's declared type) to text.
+
+    Issue #1310: a heterogeneous JSON column — one row a dict, another a
+    list, another a scalar or NULL — arrives from the DBAPI as a
+    mixed-shape Python object column. The materialise step's
+    ``CREATE TABLE AS SELECT`` over that then lets DuckDB infer the column
+    type per result set: a ``STRUCT`` for uniformly-shaped dict rows, a
+    ``MAP`` for differently-shaped ones, and otherwise a best-effort
+    ``VARCHAR`` holding Python's ``repr()`` of the value (single-quoted —
+    not valid JSON). Any of those makes ``agnes_audit`` unqueryable as JSON,
+    and the exact outcome silently depends on which rows happen to be in a
+    given caller's RBAC-filtered result set.
+
+    Casting each JSON column to text in the SOURCE SELECT — on BOTH
+    backends, so the fix does not quietly depend on DuckDB's own
+    JSON-to-pandas conversion already stringifying it — makes the
+    materialised column type always a deterministic VARCHAR holding the
+    engine's own canonical JSON text (Postgres' ``jsonb::text`` / DuckDB's
+    ``JSON`` cast), which is queryable with ``json_extract`` / ``->>`` on
+    either backend exactly like before, just now unconditionally.
+
+    The column list comes from ``Base.metadata`` (the model is the schema
+    source of truth on both backends — PG via Alembic, DuckDB via the
+    matching ``_vN_to_v(N+1)`` step in ``src/db.py``) rather than a
+    hardcoded name list, so a future JSON/JSONB column added to a model
+    inherits the fix with no edit here. Falls back to ``"*"`` when the
+    table isn't in the model metadata — should not happen for a registered
+    ``InternalTable``, but keeps this defensive.
+    """
+    import sqlalchemy as sa
+
+    import src.models  # noqa: F401 — registers every model on Base.metadata
+    from src.db_pg import Base
+
+    table = Base.metadata.tables.get(source_table)
+    if table is None:
+        return "*"
+    parts = []
+    for c in table.columns:
+        ident = quote_ident(c.name)
+        # `sa.JSON` is the generic base of both the dialect-agnostic and the
+        # Postgres-specific `JSON`/`JSONB` column types, so this one check
+        # covers every JSON-family column regardless of which subtype a
+        # model uses.
+        if isinstance(c.type, sa.JSON):
+            parts.append(f"CAST({ident} AS VARCHAR) AS {ident}")
+        else:
+            parts.append(ident)
+    return ", ".join(parts)
+
+
 def _materialized_internal_duckdb(refs, user, is_admin):
     """Build a fresh in-memory DuckDB holding ONLY the referenced internal
     source tables, each populated with the caller's RBAC-filtered rows read
@@ -365,7 +418,11 @@ def _materialized_internal_duckdb(refs, user, is_admin):
             for table_id in refs:
                 table = INTERNAL_TABLES_BY_ID[table_id]
                 where_clause = build_filter_clause(table, user, is_admin)
-                q = f"SELECT * FROM {quote_ident(table.source_table)} {where_clause} LIMIT {_PG_MATERIALIZE_ROW_CAP + 1}"
+                select_list = _select_list_with_json_as_text(table.source_table)
+                q = (
+                    f"SELECT {select_list} FROM {quote_ident(table.source_table)} "
+                    f"{where_clause} LIMIT {_PG_MATERIALIZE_ROW_CAP + 1}"
+                )
                 result = pg.exec_driver_sql(q)
                 col_names = list(result.keys())
                 fetched = result.mappings().all()
@@ -417,7 +474,8 @@ def _materialized_internal_duckdb_from_duckdb(refs, user, is_admin):
         for table_id in refs:
             table = INTERNAL_TABLES_BY_ID[table_id]
             where_clause = build_filter_clause(table, user, is_admin)
-            q = f"SELECT * FROM {table.source_table} {where_clause} LIMIT {_PG_MATERIALIZE_ROW_CAP + 1}"
+            select_list = _select_list_with_json_as_text(table.source_table)
+            q = f"SELECT {select_list} FROM {table.source_table} {where_clause} LIMIT {_PG_MATERIALIZE_ROW_CAP + 1}"
             src_df = src.execute(q).fetch_df()
             if len(src_df) > _PG_MATERIALIZE_ROW_CAP:
                 raise InternalAccessError(

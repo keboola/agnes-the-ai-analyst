@@ -12,7 +12,10 @@ These tests assert the SAME query returns the SAME result on DuckDB AND Postgres
 (the parity goal), plus that the RBAC scoping + non-admin denylist + the PG
 attach-catalog guard hold on both.
 """
+
 from __future__ import annotations
+
+import json
 
 import pytest
 
@@ -100,10 +103,7 @@ def test_cte_shadow_cannot_escape_rbac_both_backends(_env):
             system_db_path="",
             user={"id": "ua", "email": "a@example.com"},
             is_admin=False,
-            sql=(
-                "WITH agnes_telemetry AS (SELECT * FROM usage_events) "
-                "SELECT COUNT(*) AS n FROM agnes_telemetry"
-            ),
+            sql=("WITH agnes_telemetry AS (SELECT * FROM usage_events) SELECT COUNT(*) AS n FROM agnes_telemetry"),
             limit=100,
         )
 
@@ -135,3 +135,64 @@ def test_postgres_tvf_is_unavailable_pg(_env):
             ),
             limit=100,
         )
+
+
+def test_heterogeneous_json_params_materialize_and_stay_queryable_both_backends(_env):
+    """Issue #1310: a JSON/JSONB column with mixed row shapes (one dict, one
+    list, one scalar, one NULL) must not break the materialize-into-DuckDB
+    step that backs a non-admin internal query (and every PG-backend
+    internal query, admin or not).
+
+    Pre-fix, ``CREATE TABLE AS SELECT`` over the raw column let DuckDB infer
+    a type per result set — a ``STRUCT`` for uniformly-shaped dict rows,
+    otherwise a best-effort ``VARCHAR`` holding Python's ``repr()`` of the
+    value (single-quoted — not valid JSON). Either way ``agnes_audit`` came
+    out unqueryable as JSON, and which failure mode hit depended on which
+    rows happened to land in a given caller's RBAC-filtered batch. The fix
+    casts every JSON/JSONB column to text in the source SELECT, so the
+    materialized column is always a deterministic, genuinely-JSON VARCHAR.
+    """
+    from connectors.internal.access import execute_internal_query
+    from src.repositories import audit_repo
+
+    repo = audit_repo()
+    repo.log(user_id="ua", action="shape.dict", params={"tool": "Read", "count": 1})
+    repo.log(user_id="ua", action="shape.list", params=["a", "b", "c"])
+    repo.log(user_id="ua", action="shape.scalar", params="a-plain-string")
+    repo.log(user_id="ua", action="shape.null", params=None)
+    # A different user's row must never leak into 'ua's RBAC-scoped batch —
+    # also keeps the source table a realistic shared physical table rather
+    # than a single-user toy.
+    repo.log(user_id="ub", action="shape.other_user", params={"other": True})
+
+    cols, rows, _truncated = execute_internal_query(
+        system_db_path="",
+        user={"id": "ua", "email": "a@example.com"},
+        is_admin=False,
+        sql="SELECT action, params FROM agnes_audit",
+        limit=100,
+    )
+    by_action = {r[0]: r[1] for r in rows}
+    assert set(by_action) == {"shape.dict", "shape.list", "shape.scalar", "shape.null"}, (
+        f"[{_env}] materialization must succeed and scope to user 'ua': {rows}"
+    )
+
+    # Queryable AS TEXT: every non-null value round-trips through
+    # json.loads() as valid JSON — the pre-fix VARCHAR fallback held
+    # Python's repr() (single-quoted), which does not.
+    assert json.loads(by_action["shape.dict"]) == {"tool": "Read", "count": 1}
+    assert json.loads(by_action["shape.list"]) == ["a", "b", "c"]
+    assert json.loads(by_action["shape.scalar"]) == "a-plain-string"
+    assert by_action["shape.null"] is None
+
+    # A second query using DuckDB's own JSON functions proves `params` is
+    # genuinely queryable as JSON, not merely round-trippable via Python's
+    # json module.
+    _cols2, rows2, _ = execute_internal_query(
+        system_db_path="",
+        user={"id": "ua", "email": "a@example.com"},
+        is_admin=False,
+        sql="SELECT json_extract_string(params, '$.tool') AS tool FROM agnes_audit WHERE action = 'shape.dict'",
+        limit=10,
+    )
+    assert rows2[0][0] == "Read", f"[{_env}] params must be queryable JSON text: {rows2}"
