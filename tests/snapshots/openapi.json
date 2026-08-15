@@ -3688,6 +3688,14 @@
             },
             "title": "Items",
             "type": "array"
+          },
+          "tables": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/TableAccessDiagnosis"
+            },
+            "title": "Tables",
+            "type": "array"
           }
         },
         "required": [
@@ -6473,6 +6481,49 @@
         "title": "PluginResponse",
         "type": "object"
       },
+      "PolicyPreviewRequest": {
+        "description": "Body for ``POST /registry/{table_id}/policy/preview`` (design doc\n\u00a713.1). ``sql`` is optional \u2014 omitted previews the table's currently\nstored ``access_policy_sql``; given, it previews a CANDIDATE body\nbefore it is ever saved. Exactly one of ``as_user`` / ``as_groups``\nselects the persona to run the policy as: ``as_user`` binds a real,\nexisting user's identity (id/email) AND their LIVE group membership;\n``as_groups`` is an ad-hoc group set with no real user behind it \u2014 the\nshape Task 15's persona matrix repeatedly calls this endpoint with, one\ndistinct group-set at a time, per \u00a713.1's \"enumerates the distinct\ngroup-sets\" (an ad-hoc set never needs a real account to exist).",
+        "properties": {
+          "as_groups": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "As Groups"
+          },
+          "as_user": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "As User"
+          },
+          "sql": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sql"
+          }
+        },
+        "title": "PolicyPreviewRequest",
+        "type": "object"
+      },
       "PreviewComponent": {
         "properties": {
           "description": {
@@ -6870,6 +6921,18 @@
           "row_count": {
             "title": "Row Count",
             "type": "integer"
+          },
+          "row_scope": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Row Scope"
           },
           "rows": {
             "items": {},
@@ -8239,6 +8302,23 @@
         "title": "SystemFlagResponse",
         "type": "object"
       },
+      "TableAccessDiagnosis": {
+        "properties": {
+          "policy": {
+            "$ref": "#/components/schemas/TablePolicyDiagnosis"
+          },
+          "table_id": {
+            "title": "Table Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "table_id",
+          "policy"
+        ],
+        "title": "TableAccessDiagnosis",
+        "type": "object"
+      },
       "TableDocsRequest": {
         "description": "Per-table docs surface \u2014 v52 (sample_questions / things_to_know /\npairs_well_with) extended in v56 with structured fields (grain /\nplatforms / partition_col / history / gotchas) for the\n/catalog/p/<slug> package detail page rewrite.\n\nAll fields optional. Sending `[]` for a list clears it; sending\n`\"\"` for a scalar clears it; omitting leaves it untouched\n(Optional-is-no-op contract).",
         "properties": {
@@ -8344,6 +8424,47 @@
           }
         },
         "title": "TableDocsRequest",
+        "type": "object"
+      },
+      "TablePolicyDiagnosis": {
+        "description": "Per-table access-policy self-audit (table access policies design\ndoc \u00a710.2, \u00a716). Always present on every table entry, never omitted \u2014\na non-policied table reports ``applies=False`` rather than dropping the\nkey, so a caller can rely on one shape instead of branching on key\npresence (documented choice; the design doc leaves this pick open).\n\n``applies`` is a STRUCTURAL fact about the table \u2014 it carries an\n``access_policy_sql`` \u2014 independent of whether THIS persona is actually\nfiltered by it: an admin-bypass target (\u00a712) still reports\n``applies=True`` for a policied table, with ``rows_visible`` showing\nthe unfiltered count instead (exactly what a live read with that\nidentity would return).\n\n``note`` is additional human-readable context beyond the fixed\n``reason`` enum \u2014 e.g. why ``rows_visible`` is ``null`` despite\n``reason='ok'`` (a remote/BigQuery table, counted-skipped to avoid a\nlive scan), or which mapping table + ``last_sync`` produced\n``reason='mapping_empty'``. ``None`` when the reason is self-explanatory.",
+        "properties": {
+          "applies": {
+            "title": "Applies",
+            "type": "boolean"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "rows_visible": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rows Visible"
+          }
+        },
+        "required": [
+          "applies",
+          "reason"
+        ],
+        "title": "TablePolicyDiagnosis",
         "type": "object"
       },
       "TableQueryRequest": {
@@ -9439,6 +9560,28 @@
       },
       "UpdateTableRequest": {
         "properties": {
+          "access_policy_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Access Policy Note"
+          },
+          "access_policy_sql": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Access Policy Sql"
+          },
           "bq_fqn": {
             "anyOf": [
               {
@@ -9548,6 +9691,17 @@
               }
             ],
             "title": "Partition Granularity"
+          },
+          "policy_mapping": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Policy Mapping"
           },
           "primary_key": {
             "anyOf": [
@@ -10533,7 +10687,7 @@
   "info": {
     "description": "Self-hosted AI harness: governed data access, skills marketplace, corporate memory, and agent workspaces",
     "title": "AI Harness",
-    "version": "0.83.14"
+    "version": "0.83.19"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -23215,6 +23369,79 @@
         ]
       }
     },
+    "/api/admin/registry/{table_id}/policy/preview": {
+      "post": {
+        "description": "Run a stored or candidate access policy as a chosen persona and\nreport what it does (design doc \u00a713.1) \u2014 the single-persona primitive\nadmins use to check a policy before trusting it, and that Task 15's\nadmin-UI matrix (multiple personas, union/overlap) is built from\nrepeated calls to.\n\nDeliberately does NOT route through ``policied_relation``'s admin-bypass\npath (\u00a712): that bypass exists for LIVE reads, where \"is this caller\nexempt from filtering\" is a real authorization decision keyed off the\nCALLING admin's own credential surface. A preview's entire point is\n\"what would THIS CHOSEN persona see\", independent of who is asking for\nit \u2014 so identity/groups are resolved directly from the request (or, for\n``as_user``, from that user's own live membership), never from the\ncalling admin's principal.\n\nEvery preview is audited (\u00a713.1: \"it shows one person another person's\nslice, and 'who looked at whose data, when' is the first question asked\nafter an incident\").",
+        "operationId": "preview_table_policy_api_admin_registry__table_id__policy_preview_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "table_id",
+            "required": true,
+            "schema": {
+              "title": "Table Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PolicyPreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Preview Table Policy",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/api/admin/reports/marketplace-digest": {
       "get": {
         "description": "Compose the full digest payload for `period`.\n\nWindows (all UTC, upper bound exclusive):\n- daily:  primary = the anchor day; comparison = the day before;\n          trend_series = trailing 14 days ending on the anchor.\n- weekly: primary = 7 days ending on the anchor; comparison = the 7 days\n          before that; trend_series = trailing 30 days ending on the anchor.",
@@ -27340,7 +27567,7 @@
     },
     "/api/admin/users/{user_id}/effective-access": {
       "get": {
-        "description": "List resources the user effectively has access to, with which group\ngrants each one. ``is_admin`` reflects the real Admin-group check but\nno longer short-circuits the response \u2014 admins get the same explicit\ngrant breakdown as everyone else, so the admin viewing a target user\ncan see precisely what's been granted via which group rather than a\nflat \"Full access\" pill that hides the wiring.\n\nNote: actual authorization at runtime still gives Admin-group members\ngod-mode (see ``app.auth.access.is_user_admin``); this endpoint is a\ndebugging/audit view of the explicit grant graph, not the enforcement\nsurface.",
+        "description": "List resources the user effectively has access to, with which group\ngrants each one. ``is_admin`` reflects the real Admin-group check but\nno longer short-circuits the response \u2014 admins get the same explicit\ngrant breakdown as everyone else, so the admin viewing a target user\ncan see precisely what's been granted via which group rather than a\nflat \"Full access\" pill that hides the wiring.\n\nNote: actual authorization at runtime still gives Admin-group members\ngod-mode (see ``app.auth.access.is_user_admin``); this endpoint is a\ndebugging/audit view of the explicit grant graph, not the enforcement\nsurface. ``tables`` (\u00a710.2) is the exception \u2014 it reports what the\nTARGET user ``user_id`` (not the calling admin) actually sees through\nany access policy, since that is precisely the \"X says Agnes shows her\nnothing\" question this field exists to answer in one page load.",
         "operationId": "user_effective_access_api_admin_users__user_id__effective_access_get",
         "parameters": [
           {
@@ -36204,7 +36431,7 @@
     },
     "/api/me/effective-access": {
       "get": {
-        "description": "Same payload as /api/admin/users/{id}/effective-access but scoped to\nthe calling user. Drives the /me/profile page's read-only access summary \u2014\nso non-admin callers can self-audit without elevation. Admins get the\nsame explicit grant breakdown as everyone else (no short-circuit) so\nthe profile page audits the actual grant graph; runtime authorization\nstill gives Admin god-mode regardless of this list.",
+        "description": "Same payload as /api/admin/users/{id}/effective-access but scoped to\nthe calling user. Drives the /me/profile page's read-only access summary \u2014\nso non-admin callers can self-audit without elevation. Admins get the\nsame explicit grant breakdown as everyone else (no short-circuit) so\nthe profile page audits the actual grant graph; runtime authorization\nstill gives Admin god-mode regardless of this list.\n\n``tables`` (\u00a710.2) resolves the policy diagnosis against the FULL\n``user`` principal from ``get_current_user`` \u2014 including\n``credential_surface`` when the caller authenticated with a PAT \u2014 so a\n``surface='stack'`` admin token (the ``agnes init`` default) audits\nitself as filtered, exactly like a live ``agnes query`` call with that\nsame token would be (\u00a712: \"policies follow the credential surface\").",
         "operationId": "my_effective_access_api_me_effective_access_get",
         "parameters": [
           {

@@ -12,6 +12,8 @@ from typer.testing import CliRunner
 from cli.commands.snapshot import snapshot_app
 
 _ANSI_RE = __import__("re").compile(r"\x1b\[[0-9;]*m")
+
+
 def _clean(s: str) -> str:
     return _ANSI_RE.sub("", s)
 
@@ -29,8 +31,7 @@ def test_from_query_mutually_exclusive_with_select(tmp_path, monkeypatch):
     runner = CliRunner()
     result = runner.invoke(
         snapshot_app,
-        ["create", "web_view", "--from-query", "SELECT * FROM web_view",
-         "--select", "country"],
+        ["create", "web_view", "--from-query", "SELECT * FROM web_view", "--select", "country"],
     )
     assert result.exit_code != 0
     out = result.output + (result.stderr or "")
@@ -43,6 +44,7 @@ def test_from_query_materializes_raw_sql(tmp_path, monkeypatch):
     monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
     # Local DuckDB must exist (fetch-path guard).
     import duckdb
+
     db_dir = tmp_path / "user" / "duckdb"
     db_dir.mkdir(parents=True)
     duckdb.connect(str(db_dir / "analytics.duckdb")).close()
@@ -53,14 +55,13 @@ def test_from_query_materializes_raw_sql(tmp_path, monkeypatch):
     def fake_arrow(path, payload):
         captured["path"] = path
         captured["payload"] = payload
-        return table
+        return table, {}
 
-    with patch("cli.commands.snapshot.api_post_arrow", side_effect=fake_arrow):
+    with patch("cli.commands.snapshot.api_post_arrow_with_headers", side_effect=fake_arrow):
         runner = CliRunner()
         result = runner.invoke(
             snapshot_app,
-            ["create", "auto_deadbeef", "--from-query",
-             "SELECT country FROM web_view", "--ttl", "24h"],
+            ["create", "auto_deadbeef", "--from-query", "SELECT country FROM web_view", "--ttl", "24h"],
         )
     assert result.exit_code == 0, result.output + (result.stderr or "")
     # Request carried the raw SQL, NOT a select/where-built request.
@@ -74,6 +75,7 @@ def test_from_query_materializes_raw_sql(tmp_path, monkeypatch):
     assert rows == [("CZ",), ("US",)]
     # Meta written with a TTL.
     from cli.snapshot_meta import read_meta
+
     meta = read_meta(tmp_path / "user" / "snapshots", "auto_deadbeef")
     assert meta is not None
     assert meta.expires_at is not None
@@ -84,14 +86,17 @@ def test_from_query_skips_select_based_estimate(tmp_path, monkeypatch):
     select/where-based and can't estimate a raw query)."""
     monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
     import duckdb
+
     db_dir = tmp_path / "user" / "duckdb"
     db_dir.mkdir(parents=True)
     duckdb.connect(str(db_dir / "analytics.duckdb")).close()
 
     table = pa.table({"x": [1]})
     estimate_mock = MagicMock()
-    with patch("cli.commands.snapshot.api_post_arrow", return_value=table), \
-         patch("cli.commands.snapshot.api_post_json", estimate_mock):
+    with (
+        patch("cli.commands.snapshot.api_post_arrow_with_headers", return_value=(table, {})),
+        patch("cli.commands.snapshot.api_post_json", estimate_mock),
+    ):
         runner = CliRunner()
         result = runner.invoke(
             snapshot_app,

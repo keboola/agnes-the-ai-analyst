@@ -99,6 +99,7 @@ class TestFeatureFlagsRegistry:
             "mcp_connector_ui",
             "mcp_source_url_runtime_enforce",
             "agent_profiles",
+            "access_policies",
             "keboola_token_header",
         }
 
@@ -245,6 +246,7 @@ class TestServerConfigFeatureFlagsInventory:
             "mcp_connector_ui",
             "mcp_source_url_runtime_enforce",
             "agent_profiles",
+            "access_policies",
             "keboola_token_header",
         }
         # The experience preset leads as a string-valued informational row.

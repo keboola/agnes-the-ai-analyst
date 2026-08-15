@@ -370,6 +370,25 @@ SWITCHES: tuple[Switch, ...] = (
             "an instance opts out via AGNES_AGENT_PROFILES_ENABLED=0."
         ),
     ),
+    Switch(
+        name="access_policies",
+        config_keys=("access_policies", "enabled"),
+        env_var="AGNES_ACCESS_POLICIES_ENABLED",
+        kind="bool",
+        default=False,
+        effect="live",
+        category="product",
+        editable=True,
+        description=(
+            "Table access policies — lets an admin attach one SQL policy per "
+            "non-distributed table (query_mode='remote' or server_only=true), "
+            "substituted for it on every server-side read with the caller's identity "
+            "bound in ($user_email/$user_id/$user_groups), filtering rows and masking "
+            "columns. Gates ATTACHING a policy (PUT /api/admin/registry/{id}'s setter) "
+            "only — a table that already carries one stays protected regardless of this "
+            "flag. New feature — off by default."
+        ),
+    ),
 )
 
 _BY_NAME: dict[str, Switch] = {s.name: s for s in SWITCHES}

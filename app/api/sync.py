@@ -1322,7 +1322,50 @@ def _apply_signed_url(
     entry["signed_url_expires_at"] = (datetime.now(timezone.utc) + timedelta(seconds=_SIGNED_URL_TTL_S)).isoformat()
 
 
-def _table_manifest_entry(state: dict, reg: dict) -> dict:
+def _compute_manifest_policy_fingerprint(reg: dict, principal) -> "str | None":
+    """The per-caller policy fingerprint for one manifest table entry
+    (table access policies §3.4, §10.3; plan Task 18) — what a local
+    ``agnes pull`` compares a snapshot's stored ``SnapshotMeta.
+    policy_fingerprint`` against to detect that the policy (or the
+    puller's own group membership) drifted since ``agnes snapshot
+    create``/``refresh`` ran, and withhold that snapshot's view via the
+    same ``snapshot_views_blocked`` mechanism #1129 already built for a
+    de-authorized or newly-``server_only`` table.
+
+    ``None`` whenever there's nothing to protect: no ``principal`` in hand
+    (a direct caller of ``_table_manifest_entry`` with none to give — every
+    such site keeps compiling and simply gets a null fingerprint, exactly
+    as a non-policied table would), or no policy on the table (checked
+    BEFORE touching ``src.access_policy`` so the overwhelmingly common
+    non-policied table pays nothing extra building its manifest entry).
+    ``policy_fingerprint`` itself returns ``None`` for the remaining case —
+    the admin bypass (§12).
+
+    Defensive: a manifest build must never fail FOR THE WHOLE CALLER
+    because ONE table's fingerprint computation raised (an unresolvable
+    principal shape — a co-drive ``SessionPrincipal`` reaching this via
+    some future caller — or a registry race). The direct caller here
+    (``_build_data_packages_section``) is itself wrapped by a coarse
+    ``try/except`` in ``_build_manifest_for_user`` that would otherwise
+    blank out the ENTIRE ``data_packages`` section — not just this one
+    field — for that request.
+    """
+    if principal is None or not reg.get("access_policy_sql"):
+        return None
+    table_id = reg.get("id") or reg.get("name")
+    if not table_id:
+        return None
+
+    from src.access_policy import policy_fingerprint
+
+    try:
+        return policy_fingerprint(table_id, principal)
+    except Exception:
+        logger.exception("access-policy fingerprint computation failed for table %r; manifest omits it", table_id)
+        return None
+
+
+def _table_manifest_entry(state: dict, reg: dict, *, principal=None) -> dict:
     """Shape one ``sync_state`` row + registry metadata into the per-table
     manifest object used in ``data_packages[].tables`` and ``direct_tables``.
 
@@ -1330,6 +1373,12 @@ def _table_manifest_entry(state: dict, reg: dict) -> dict:
     empty ``reg`` (sync_state row outlives the registry — race on unregister).
     Both happen in real installs; the manifest is the read path so we must
     not blow up on a partially-consistent snapshot.
+
+    ``principal`` (plan Task 18) is the caller this manifest is being built
+    for — used ONLY to compute ``access_policy_fingerprint`` below.
+    Optional, default ``None``, so every existing direct caller of this
+    helper (tests, and any future caller with no principal in hand) keeps
+    compiling unchanged and simply gets a ``None`` fingerprint.
     """
     name = state.get("table_id") or reg.get("name") or reg.get("id") or ""
     entry = {
@@ -1343,6 +1392,15 @@ def _table_manifest_entry(state: dict, reg: dict) -> dict:
         # #607 — distribution flag. Listed in the manifest (catalog + RBAC)
         # but `agnes pull` skips its parquet download when true.
         "server_only": bool(reg.get("server_only")),
+        # Task 11 (§10 item 4) — disclosure marker, not an enforcement gate:
+        # `agnes pull` reads this to name policied tables in a
+        # `.claude/rules/` entry BEFORE an agent writes a query, the only
+        # link in the disclosure chain that reaches an agent's context
+        # ahead of the fact rather than after a response comes back.
+        "access_policy": bool(reg.get("access_policy_sql")),
+        # Task 18 (§3.4, §10.3) — the CURRENT, per-caller policy fingerprint.
+        # See `_compute_manifest_policy_fingerprint` for the full contract.
+        "access_policy_fingerprint": _compute_manifest_policy_fingerprint(reg, principal),
         "source_type": reg.get("source_type") or "",
         "updated": (state.get("last_sync").isoformat() if state.get("last_sync") else None),
     }
@@ -1399,7 +1457,7 @@ def _build_data_packages_section(conn, user, registry_by_name: dict, states_by_t
             # registry.name today. Cover the id↔name asymmetry.
             reg = registry_by_name.get(t["name"]) or {}
             state = states_by_table_id.get(t["name"]) or states_by_table_id.get(t["id"]) or {}
-            entry_obj = _table_manifest_entry(state, reg or {"id": t["id"]})
+            entry_obj = _table_manifest_entry(state, reg or {"id": t["id"]}, principal=user)
             if not entry.materialized:
                 # Auto-membership: authorized + listed, but not downloaded
                 # until the user subscribes (mirrors server_only semantics).
