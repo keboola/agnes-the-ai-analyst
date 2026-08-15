@@ -30,13 +30,17 @@
    sections under rail (REDIRECTED_UNDER_RAIL in the same guard). The topnav
    chrome keeps its flat link row — this IA applies only to the rail layout.
 
-   TODO(#1088): My Stack is UNLINKED, not resolved. /stack is still a live,
-   fully-featured surface — it is simply not a rail destination any more, and
-   gets no replacement cross-link, because /library already renders every kind
-   it does (data packages and memory domains from the SAME
-   StackResolver.browse() call) and its "In stack only" toggle reproduces the
-   page's purpose over that same list. What is left is to RETIRE /stack
-   (302 → /library), not to restore it here.
+   My Stack is retired too (#1088), not merely unlinked: /stack now 302s to
+   /library?stack=in_stack (the "In stack only" toggle arriving pressed)
+   instead of rendering — the Library already renders every kind it did (data
+   packages and memory domains from the SAME StackResolver.browse() call), so
+   there was nothing left to migrate, only to retire. No entry here or in
+   REDIRECTED_UNDER_RAIL (tests/test_web_nav_user_parity.py): unlike
+   /corporate-memory and /apps, the redirect is unconditional (fires under
+   every layout — there is no legacy My-Stack template to keep serving under
+   topnav) and /stack was never a rail or topnav nav link to begin with, so
+   there is no cross-link to add. Coverage lives in
+   tests/test_ui_layout_theme.py and tests/test_web_admin_nav.py instead.
 
    Mirrors _app_header.html in behavior contract:
      - same auth gating (session.user), chat grant gating (can_chat),

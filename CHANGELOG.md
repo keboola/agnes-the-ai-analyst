@@ -12,6 +12,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [0.83.23] - 2026-08-15
 
+### Changed
+
+- **`/stack` is retired into the Library.** The page had been unlinked from the chrome but left fully live — the worst of the three states, since it hid surface area instead of reducing it and left the next person to reverse-engineer why a route, a 1226-line template, tour anchors and ~20 tests existed for a page nothing pointed at. The Library already rendered every kind the Stack did, from the same `StackResolver.browse` call, with the same membership controls and an "In stack only" toggle standing in for the Required / Added-by-you grouping, so nothing had to move: `/stack` now 302s to `/library?stack=in_stack` (unconditionally — that handler never branched on chrome, so there is no legacy page to keep alive for topnav), the template is deleted, and the last two emitters (`/catalog`'s lede, the chat-onboarding message) point at the Library. The `/api/stack/*` REST surface is untouched. Two behaviors deliberately did not survive and are documented where their tests lived rather than dropped silently: the "Unavailable" badge for a stack-added artefact whose access was later revoked (the Library's rows are grant-scoped, so a revoked item disappears instead), and the old page's auto-membership Remove wording (#1088).
+
 ### Added
 
 - **The admin MCP source page says when the shared secret was last rotated, and who has connected their own.** The vault card reported only "Vault secret set" / "No secret", so an admin auditing a rotation had no way to tell a fresh secret from a two-year-old one; it now carries the same `(since …)` stamp the per-user panel on that page already used. Alongside it, a per-user coverage card lists which users have set their own credential and when — `list_for_source` existed but was called only from delete/purge cleanup, so "who is actually connected?" was unanswerable from the UI. Identity and timestamp only; no secret value is ever exposed, and the read rides the existing admin-gated detail route (#466).

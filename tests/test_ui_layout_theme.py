@@ -217,11 +217,11 @@ class TestRailBodyClearance:
 
 class TestRailOptIn:
     def test_rail_layout_swaps_chrome(self, web_client, admin_cookie, monkeypatch):
-        # Probe a real rail landing surface (/stack). /dashboard is no longer a
-        # rail render target — it 302s to /chat or /stack (see
-        # TestDashboardLandingRedirect).
+        # Probe a real rail landing surface (/library). /dashboard is no longer
+        # a rail render target — it 302s to /chat or /library (see
+        # TestDashboardLandingRedirect); /stack 302s to /library too (#1088).
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
-        resp = web_client.get("/stack", cookies=admin_cookie)
+        resp = web_client.get("/library", cookies=admin_cookie)
         assert resp.status_code == 200
         assert 'class="rail"' in resp.text
         assert 'class="app-header"' not in resp.text
@@ -232,7 +232,7 @@ class TestRailOptIn:
         zone's flat destinations) and the same JS/id contract as the header:
         user menu, theme toggle."""
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
-        resp = web_client.get("/stack", cookies=admin_cookie)
+        resp = web_client.get("/library", cookies=admin_cookie)
         text = resp.text
         for anchor in (
             'id="userMenu"',
@@ -265,17 +265,21 @@ class TestRailOptIn:
         assert 'class="rail-sub"' not in text
 
     def test_rail_has_no_my_stack_entry(self, web_client, admin_cookie, monkeypatch):
-        """My Stack is demoted out of the rail (#1088) — /stack stays a live
-        route, it is simply not a primary destination any more. Asserted against
-        the rail chrome slice, not the whole document: this probes the /stack
-        page itself, whose body legitimately mentions the stack throughout."""
+        """My Stack is retired out of the rail, not merely demoted (#1088) —
+        /stack is no longer a rendering route at all, it 302s into the
+        Library. Asserted against the rail chrome slice, not the whole
+        document: the Library's own body legitimately mentions the stack
+        throughout (the "In stack only" toggle)."""
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
-        text = web_client.get("/stack", cookies=admin_cookie).text
+        text = web_client.get("/library", cookies=admin_cookie).text
         nav = text.split('<nav class="rail"', 1)[1].split("</nav>", 1)[0]
         assert 'href="/stack"' not in nav
         assert "My Stack" not in nav
-        # ...and the page it points at is still served, not 404/redirected.
-        assert web_client.get("/stack", cookies=admin_cookie).status_code == 200
+        # ...and the route it used to point at now redirects rather than
+        # rendering, 404ing, or requiring a fresh bookmark.
+        resp = web_client.get("/stack", cookies=admin_cookie, follow_redirects=False)
+        assert resp.status_code == 302
+        assert resp.headers["location"] == "/library?stack=in_stack"
 
     def test_library_answers_the_stack_question_in_its_toolbar(self, web_client, admin_cookie, monkeypatch):
         """No cross-link to /stack in the Library header — the toolbar's "In
@@ -356,7 +360,7 @@ class TestRailOptIn:
         concept label. Both the trigger markup and the dead .rail-studio-*
         styling must be gone, not merely hidden."""
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
-        text = web_client.get("/stack", cookies=admin_cookie).text
+        text = web_client.get("/library", cookies=admin_cookie).text
         assert "rail-studio" not in text
         assert ">Studio<" not in text
         assert "Corporate Memory builder" not in text
@@ -391,8 +395,10 @@ class TestRailOptIn:
 
     def test_rail_catalog_renders_unified_page(self, web_client, admin_cookie, monkeypatch):
         """Under the rail layout /catalog is the unified browse surface
-        (kind tabs over one grid); /stack is the unified personal
-        collection."""
+        (kind tabs over one grid); the caller's own holdings live on
+        /library — including its "In stack only" toggle, My Stack's
+        replacement (#1088; see test_library_answers_the_stack_question_in_its_toolbar
+        above and tests/test_web_library.py for that surface's coverage)."""
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         resp = web_client.get("/catalog", cookies=admin_cookie)
         assert resp.status_code == 200
@@ -405,31 +411,8 @@ class TestRailOptIn:
         ):
             assert anchor in resp.text, f"unified catalog is missing {anchor}"
         # Uploads (file collections) are private user resources — they
-        # live on My Stack, not in the shared Catalog.
+        # live in the caller's Library, not in the shared Catalog.
         assert 'data-kind="library"' not in resp.text
-
-        resp = web_client.get("/stack", cookies=admin_cookie)
-        assert resp.status_code == 200
-        assert "My Stack" in resp.text
-        # Uploads moved OFF My Stack onto /library — the stack is a knowledge
-        # inventory (data · plugins · artefacts · memory) only.
-        assert 'data-kind="upload"' not in resp.text
-        # The kind filter is now a Filter dropdown (multi-select "Type" facet)
-        # with an active-chips row — the head tabs and the segmented control
-        # are both retired.
-        assert 'class="uc-kindtabs"' not in resp.text
-        assert 'class="fbar-seg"' not in resp.text
-        assert 'id="stk-filter-btn"' in resp.text
-        assert 'id="stk-filter-menu"' in resp.text
-        assert 'id="stk-chips"' in resp.text
-        # Type facet options for each kind (incl. the plugins option).
-        assert 'data-facet="kind"' in resp.text
-        for kind in ("data", "plugins", "artefacts", "memory"):
-            assert f'value="{kind}"' in resp.text
-        # The manage zone groups resources into Required + Added by you (not a
-        # card grid), with the tour anchor on the search + groups zone.
-        assert 'id="stack-explore-zone"' in resp.text
-        assert "Everything in your Stack" not in resp.text
 
     def test_library_page_hosts_uploads(self, web_client, admin_cookie, monkeypatch):
         """The caller's things live on /library — the renamed, widened former
@@ -588,7 +571,8 @@ class TestRailOptIn:
 
     def test_agents_page_has_no_default_agent_card(self, web_client, admin_cookie, monkeypatch):
         """/agents lists the caller's OWN agents only — the always-on baseline
-        assistant is not a card here (it is configured from /stack)."""
+        assistant is not a card here (it is configured from the caller's
+        Stack — /library?stack=in_stack, #1088)."""
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         resp = web_client.get("/agents", cookies=admin_cookie)
         assert resp.status_code == 200
@@ -655,7 +639,7 @@ class TestRailChatHistory:
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         self._enable_chat(web_client, monkeypatch)
         # Probe a NON-chat rail page — the history must render everywhere.
-        resp = web_client.get("/stack", cookies=admin_cookie)
+        resp = web_client.get("/library", cookies=admin_cookie)
         assert resp.status_code == 200
         text = resp.text
         # History section + the reused chat list ids live in the rail.
@@ -700,7 +684,7 @@ class TestRailChatHistory:
         don't carry one either, and it navigates rather than expands)."""
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         self._enable_chat(web_client, monkeypatch)
-        resp = web_client.get("/stack", cookies=admin_cookie)
+        resp = web_client.get("/library", cookies=admin_cookie)
         assert resp.status_code == 200
         # Asserted against the rail chrome slice, not the whole document — the
         # page body is free to say "Get started" in its own copy.
@@ -806,7 +790,7 @@ class TestRailChatHistory:
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         self._enable_chat(web_client, monkeypatch)
         rail = (
-            web_client.get("/stack", cookies=admin_cookie).text.split('<nav class="rail"', 1)[1].split("</nav>", 1)[0]
+            web_client.get("/library", cookies=admin_cookie).text.split('<nav class="rail"', 1)[1].split("</nav>", 1)[0]
         )
         assert 'id="rail-restart-onboarding"' in rail
         assert "Start over onboarding" in rail
@@ -825,7 +809,7 @@ class TestRailChatHistory:
     def test_restart_onboarding_entry_is_chat_gated(self, web_client, admin_cookie, monkeypatch):
         """No chat grant → no onboarding row and nothing to restart."""
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
-        resp = web_client.get("/stack", cookies=admin_cookie)
+        resp = web_client.get("/library", cookies=admin_cookie)
         assert 'id="rail-restart-onboarding"' not in resp.text
 
     def test_pinned_and_chats_are_two_collapsible_sections(self, web_client, admin_cookie, monkeypatch):
@@ -837,7 +821,7 @@ class TestRailChatHistory:
         a section each, Pinned first, each with a disclosure and its own list."""
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         self._enable_chat(web_client, monkeypatch)
-        text = web_client.get("/stack", cookies=admin_cookie).text
+        text = web_client.get("/library", cookies=admin_cookie).text
         rail = text.split('<nav class="rail"', 1)[1].split("</nav>", 1)[0]
 
         # Anatomy of each section: a labelled disclosure button wired to its own
@@ -964,7 +948,7 @@ class TestRailChatHistory:
         reachable" contract)."""
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         # Chat is disabled by default in tests, so can_chat is False.
-        resp = web_client.get("/stack", cookies=admin_cookie)
+        resp = web_client.get("/library", cookies=admin_cookie)
         assert resp.status_code == 200
         assert 'class="rail-history"' not in resp.text
         assert 'id="new-chat"' not in resp.text
@@ -991,7 +975,7 @@ class TestRailTwoZones:
         web_client.app.state.chat_config = SimpleNamespace(enabled=True)
 
     def _rail(self, web_client, admin_cookie):
-        text = web_client.get("/stack", cookies=admin_cookie).text
+        text = web_client.get("/library", cookies=admin_cookie).text
         return text.split('<nav class="rail"', 1)[1].split("</nav>", 1)[0]
 
     def test_zone_order(self, web_client, admin_cookie, monkeypatch):
@@ -1322,7 +1306,7 @@ class TestRailAdminIsOnePlainLink:
 
     def test_no_flyout_markup_on_a_non_admin_rail_page(self, web_client, admin_cookie, monkeypatch):
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
-        resp = web_client.get("/stack", cookies=admin_cookie)
+        resp = web_client.get("/library", cookies=admin_cookie)
         assert resp.status_code == 200
         rail = resp.text.split('<nav class="rail', 1)[1].split("</nav>", 1)[0]
         for gone in (
@@ -1348,7 +1332,7 @@ class TestRailAdminIsOnePlainLink:
             assert "on" in admin_row, path
 
         # ...and NOT active on a page outside it.
-        resp = web_client.get("/stack", cookies=admin_cookie)
+        resp = web_client.get("/library", cookies=admin_cookie)
         rail = resp.text.split('<nav class="rail', 1)[1].split("</nav>", 1)[0]
         admin_row = rail.split('href="/admin"', 1)[0].rsplit("<a ", 1)[1]
         assert " on" not in admin_row
@@ -1368,9 +1352,10 @@ class TestDashboardLandingRedirect:
     unchanged — the legacy table-inventory dashboard.html still renders
     there. Under the rail, the Dashboard IS Chat's pre-conversation state
     (chat.html's rail empty state, see TestRailDashboard), so /dashboard
-    302s to /chat for chat-granted users; grant-less users keep the 302 to
-    My Stack (the page exists to start Agnes conversations, so without a
-    grant it would be a dead shell)."""
+    302s to /chat for chat-granted users; grant-less users get the 302 to
+    the Library (not My Stack — /stack is retired, #1088; the page exists
+    to start Agnes conversations, so without a grant it would be a dead
+    shell)."""
 
     def test_topnav_dashboard_still_renders(self, web_client, admin_cookie, monkeypatch):
         monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
@@ -1558,7 +1543,7 @@ class TestRailDashboard:
         is the rail logo (href = home_route, default /dashboard)."""
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         self._enable_chat(web_client, monkeypatch)
-        resp = web_client.get("/stack", cookies=admin_cookie)
+        resp = web_client.get("/library", cookies=admin_cookie)
         assert resp.status_code == 200
         text = resp.text
         assert 'id="new-chat"' in text
@@ -1588,9 +1573,9 @@ class TestRailDashboard:
     def test_rail_nav_hides_new_chat_without_chat_grant(self, web_client, admin_cookie, monkeypatch):
         """Without a chat grant the chat slot renders nothing; the only
         /dashboard href left is the logo (whose route bounces grant-less
-        callers to /stack)."""
+        callers to /library)."""
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
-        resp = web_client.get("/stack", cookies=admin_cookie)
+        resp = web_client.get("/library", cookies=admin_cookie)
         assert resp.status_code == 200
         assert 'id="new-chat"' not in resp.text
         assert resp.text.count('href="/dashboard"') == 1
@@ -1620,101 +1605,29 @@ class TestProfileNotifications:
 
 
 class TestStackWorkspace:
-    """My Stack is the persistent context the Main Agent uses. Every resource
-    shown is already in the stack, so the page never repeats "In stack" or
-    exposes download states; instead it groups resources into Required
-    (admin-granted, locked) and Added by you (optional, removable). Uploads
-    moved off to /library. Growing the stack happens on /catalog."""
+    """My Stack the PAGE is retired (#1088) — folded into the Library, which
+    already renders every kind it did off the same StackResolver.browse()
+    call. This class used to pin the page's own DOM (a two-group `stk-*`
+    table: Required vs. Added by you); that markup no longer exists, so the
+    business semantics it guarded — a required-tier grant reads "In Stack"
+    but LOCKED with no remove affordance, an optional self-subscription is
+    removable — are folded into the Library's own suite instead:
+    ``tests/test_web_library.py::test_library_required_grant_is_locked_in_stack``
+    and ``::test_library_available_grant_classic_is_not_claimed_in_stack``.
+    What remains here is the redirect contract itself."""
 
-    def test_stack_has_no_status_strip_below_table(self, web_client, admin_cookie, monkeypatch):
-        """The workspace stat strip that used to sit below the inventory has
-        been removed — the page ends at the groups."""
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
-        resp = web_client.get("/stack", cookies=admin_cookie)
-        assert resp.status_code == 200
-        assert 'class="stk-stats"' not in resp.text
-        assert 'class="stk-stat__label"' not in resp.text
-
-    def test_stack_groups_required_and_added(self, web_client, admin_cookie, monkeypatch):
-        """The inventory is ONE table (shared .data-table primitive, same as
-        Artefacts) with column headers and two collapsible <tbody> groups —
-        Required, then Added by you — a dominant search field, and a small
-        secondary sort control. No Added/Status columns, no download wording."""
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
-        resp = web_client.get("/stack", cookies=admin_cookie)
-        assert resp.status_code == 200
-        text = resp.text
-        # One data-table with headers + the two collapsible group bodies.
-        assert 'class="data-table stk-table"' in text
-        assert 'id="stk-required-body"' in text
-        assert 'id="stk-added-body"' in text
-        assert 'data-stk-collapse="required"' in text
-        assert 'data-stk-collapse="added"' in text
-        assert ">Required</span>" in text
-        assert ">Added by you</span>" in text
-        # Column headers present; retired Added/Status columns are gone.
-        for col in ("Name", "Type", "Details", "Source", "Actions"):
-            assert "<th" in text and col in text
-        assert ">Added<" not in text
-        assert ">Status<" not in text
-        # Toolbar is the shared .fbar filter-bar component (same as Artefacts):
-        # search + a Filter dropdown (Type facet) + sort (default Name, never
-        # "Recently added"). Origin (Required/Added) stays the group split, not
-        # a toolbar control.
-        assert 'class="fbar"' in text
-        assert 'id="stk-search"' in text
-        assert 'id="stk-sort"' in text
-        assert 'id="stk-filter-btn"' in text
-        assert '<option value="name" selected>' in text
-        assert "Recently added" not in text
-        # No download/technical states leak in.
-        assert "Downloaded" not in text
-        assert "In stack" not in text
-        assert 'data-toggle-kind="download"' not in text
-        # No card grid — recommendations moved to /catalog.
-        assert 'class="uc-grid"' not in text
-        assert "Recommended for you" not in text
-        assert "stk-recs" not in text
-
-    def test_required_grant_lands_in_required_group_with_badge(self, web_client, admin_cookie, monkeypatch):
-        """A required-tier grant clusters in the Required group, rendered into
-        the required tbody with the subtle Required badge and NO overflow
-        (remove) affordance — required resources cannot be removed."""
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
-        import uuid
-
-        from src.db import get_system_db
-        from src.repositories.data_packages import DataPackagesRepository
-
-        conn = get_system_db()
-        pkg_id = DataPackagesRepository(conn).create(
-            name="Mandatory Revenue Pkg",
-            slug="mandatory-revenue",
-            description="Locked finance data",
-            icon=None,
-            color=None,
-            created_by="test",
-        )
-        admin_gid = conn.execute("SELECT id FROM user_groups WHERE name = 'Admin'").fetchone()[0]
-        conn.execute(
-            "INSERT INTO resource_grants(id, group_id, resource_type, resource_id, "
-            "requirement, assigned_at, assigned_by) "
-            "VALUES (?, ?, 'data_package', ?, 'required', CURRENT_TIMESTAMP, 'test')",
-            [str(uuid.uuid4()), admin_gid, pkg_id],
-        )
-        conn.close()
-
-        resp = web_client.get("/stack", cookies=admin_cookie)
-        assert resp.status_code == 200
-        text = resp.text
-        # The required package renders in the required tbody, ahead of the
-        # Added-by-you tbody, with the subtle Required badge.
-        req_body = text.split('id="stk-required-body"', 1)[1].split('id="stk-added-body"', 1)[0]
-        assert "Mandatory Revenue Pkg" in req_body
-        assert 'class="stk-req"' in req_body
-        # ...and carries no remove/overflow affordance.
-        assert "More actions for Mandatory Revenue Pkg" not in text
-        assert "Remove from My Stack" not in req_body
+    @pytest.mark.parametrize("layout", ["topnav", "rail"])
+    def test_stack_page_redirects_to_library_in_stack_view(self, web_client, admin_cookie, monkeypatch, layout):
+        """Unconditional — unlike /corporate-memory and /apps (#1278), there
+        is no legacy My-Stack template kept alive for topnav, so the redirect
+        must fire under every layout, not just rail."""
+        if layout == "topnav":
+            monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
+        else:
+            monkeypatch.setenv("AGNES_UI_LAYOUT", layout)
+        resp = web_client.get("/stack", cookies=admin_cookie, follow_redirects=False)
+        assert resp.status_code == 302
+        assert resp.headers["location"] == "/library?stack=in_stack"
 
 
 class TestCatalogRecommendations:
@@ -1735,9 +1648,10 @@ class TestCatalogRecommendations:
 
     def test_granted_package_absent_from_catalog_present_on_my_stack(self, web_client, admin_cookie, monkeypatch):
         """A granted-but-not-yet-downloaded package must not appear anywhere
-        on /catalog. It lives on My Stack. Materializing (subscribing) it
-        must not pull it back into the Catalog — it still shows only on My
-        Stack."""
+        on /catalog. It lives on My Stack — /library?stack=in_stack, since
+        the standalone /stack page is retired (#1088). Materializing
+        (subscribing) it must not pull it back into the Catalog — it still
+        shows only on My Stack."""
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         import uuid
 
@@ -1769,7 +1683,7 @@ class TestCatalogRecommendations:
         assert "Unstacked Package XYZ" not in resp.text, "granted package must not appear anywhere on the Catalog"
 
         # ...but it IS on My Stack, where the caller's holdings live.
-        resp = web_client.get("/stack", cookies=admin_cookie)
+        resp = web_client.get("/library?stack=in_stack", cookies=admin_cookie)
         assert "Unstacked Package XYZ" in resp.text
 
         # Materializing (subscribing) it must not pull it back into the Catalog.
@@ -1781,7 +1695,7 @@ class TestCatalogRecommendations:
 
         resp = web_client.get("/catalog", cookies=admin_cookie)
         assert "Unstacked Package XYZ" not in resp.text
-        resp = web_client.get("/stack", cookies=admin_cookie)
+        resp = web_client.get("/library?stack=in_stack", cookies=admin_cookie)
         assert "Unstacked Package XYZ" in resp.text
 
 
