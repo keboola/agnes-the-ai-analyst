@@ -29,22 +29,16 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _refresh_lock = asyncio.Lock()
+# In-flight bookkeeping only — both fields are read by the 409 branch below.
+# The Keboola sibling additionally keeps the LAST completed run's summary for
+# its admin page (`/admin/semantic-layer`); that page enumerates Keboola
+# master-token connections and counts `keboola_semantic_layer` rows, so it has
+# no Databricks section to feed. Those fields land here together with the
+# reader that needs them, rather than as state nothing reads.
 _refresh_state: dict[str, Any] = {
     "run_id": None,
     "started_at": None,
-    "last_completed_at": None,
-    "last_status": None,
-    "last_result": None,
 }
-
-
-def get_last_refresh_summary() -> dict[str, Any]:
-    """Read accessor for the admin UI — the last completed run's summary."""
-    return {
-        "last_completed_at": _refresh_state.get("last_completed_at"),
-        "last_status": _refresh_state.get("last_status"),
-        "last_result": _refresh_state.get("last_result"),
-    }
 
 
 # Error codes `sync_semantic_layer` attaches to a returned {"status": "error"}
@@ -59,12 +53,6 @@ _ERROR_CODE_STATUS = {
 
 def _status_for_error_code(code: Any) -> int:
     return _ERROR_CODE_STATUS.get(code, 502) if isinstance(code, str) else 502
-
-
-def _record_completion(status: str, result: Any) -> None:
-    _refresh_state["last_completed_at"] = datetime.now(timezone.utc).isoformat()
-    _refresh_state["last_status"] = status
-    _refresh_state["last_result"] = result
 
 
 @router.post("/api/admin/run-databricks-semantic-layer-refresh")
@@ -98,18 +86,12 @@ async def run_databricks_semantic_layer_refresh(
         _refresh_state["started_at"] = started_at
         try:
             result = await asyncio.to_thread(sync_semantic_layer)
-        except Exception as e:
-            _record_completion("error", str(e))
-            raise
-        else:
             # Config/upstream failures arrive as a returned {"status": "error"}
-            # dict rather than an exception — record and surface them the same
-            # way, or the admin UI shows a false "OK" after a failed sync.
+            # dict rather than an exception — surface them as the HTTP status
+            # the caller can act on, or a failed sync reads as a success.
             if result.get("status") == "error":
                 message = result.get("error", "Databricks semantic layer sync failed")
-                _record_completion("error", message)
                 raise HTTPException(status_code=_status_for_error_code(result.get("code")), detail=message)
-            _record_completion("ok", result)
         finally:
             _refresh_state["run_id"] = None
             _refresh_state["started_at"] = None
