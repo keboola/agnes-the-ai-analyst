@@ -93,6 +93,37 @@ class TestAuthSmoke:
         assert "access_token" in r.json()
 
 
+class TestKeboolaLoginProjectsSmoke:
+    """Select-mode Keboola project import surface. Depth per this file's
+    contract: status + top-level shape. The default mode is ``disabled``,
+    so the GET answers an empty discovery and the POST refuses with the
+    mode conflict — deterministic on both backends with no Keboola config."""
+
+    COVERED_ROUTES = {
+        "GET /api/auth/keboola/projects",
+        "POST /api/auth/keboola/projects",
+    }
+
+    def test_projects_listing_default_mode(self, seeded_app_both):
+        r = seeded_app_both["client"].get("/api/auth/keboola/projects", headers=_analyst_headers(seeded_app_both))
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["mode"] == "disabled"
+        assert body["discovery_available"] is False
+        assert body["projects"] == []
+
+    def test_projects_listing_requires_auth(self, seeded_app_both):
+        assert seeded_app_both["client"].get("/api/auth/keboola/projects").status_code == 401
+
+    def test_import_outside_select_mode_conflicts(self, seeded_app_both):
+        r = seeded_app_both["client"].post(
+            "/api/auth/keboola/projects",
+            json={"project_ids": ["1"]},
+            headers=_analyst_headers(seeded_app_both),
+        )
+        assert r.status_code == 409, r.text
+
+
 class TestCliAuthRescopeSmoke:
     """v106 — the `agnes init --as-admin` opt-up endpoint."""
 
@@ -767,6 +798,7 @@ class TestAdminRegistrySmoke:
         "POST /api/admin/register-table",
         "PUT /api/admin/registry/{table_id}",
         "DELETE /api/admin/registry/{table_id}",
+        "POST /api/admin/registry/{table_id}/policy/preview",
         "GET /api/admin/discover-tables",
         "POST /api/admin/configure",
         "GET /api/admin/metadata/{table_id}",
@@ -827,6 +859,38 @@ class TestAdminRegistrySmoke:
 
         rd = seeded_app_both["client"].delete(f"/api/admin/registry/{table_id}", headers=h)
         assert rd.status_code == 204
+
+    def test_registry_policy_preview(self, seeded_app_both):
+        """Table access policies (Task 14) — the route reads through the
+        factory-backed repos (table_registry_repo/users_repo/
+        user_group_members_repo/audit_repo) on both backends. The table is
+        never synced, so a real analytics-DB read for rows_total/rows_visible
+        legitimately 422s (`policy_preview_failed`) on top of the never-synced
+        table's `DESCRIBE` failure -- the smoke assertion only cares that the
+        route is reachable and behaves identically on DuckDB and Postgres,
+        same tolerance `test_register_precheck`/`test_discover_tables` above
+        already use for other state-dependent endpoints in this class."""
+        h = _admin_headers(seeded_app_both)
+        rc = seeded_app_both["client"].post(
+            "/api/admin/register-table",
+            json={
+                "name": "policy_preview_smoke",
+                "source_type": "keboola",
+                "bucket": "in.c-smoke",
+                "source_table": "orders",
+                "query_mode": "local",
+            },
+            headers=h,
+        )
+        assert rc.status_code == 201
+        table_id = rc.json()["id"]
+
+        r = seeded_app_both["client"].post(
+            f"/api/admin/registry/{table_id}/policy/preview",
+            json={"sql": "SELECT * FROM policy_preview_smoke", "as_groups": ["Everyone"]},
+            headers=h,
+        )
+        assert r.status_code in (200, 422), r.text
 
     def test_discover_tables(self, seeded_app_both):
         r = seeded_app_both["client"].get("/api/admin/discover-tables", headers=_admin_headers(seeded_app_both))
@@ -2272,6 +2336,18 @@ KNOWN_UNTESTED = {
     # contract test needed (no new repo methods/migration). Behaviour
     # covered in tests/test_keboola_semantic_layer_refresh_endpoint.py.
     "POST /api/admin/run-keboola-semantic-layer-refresh",
+    # Databricks semantic layer (Unity Catalog metric views) sync — same
+    # shape as the Keboola sibling above: scheduler-driven admin maintenance
+    # op, no new repo methods/migration. Behaviour covered in
+    # tests/test_databricks_semantic_layer_refresh_endpoint.py.
+    # The handler never touches the backend switch itself; the repo calls its
+    # sync drives (metric_repo().create/find_by_name/list/delete, incl. the
+    # source_ref kwarg) are already parity-proven on both backends by
+    # tests/db_pg/test_config_pg.py::test_metric_source_ref_roundtrip and
+    # tests/db_pg/test_ported_methods_contract.py::test_metrics_yaml_reconcile_prunes_on_both_backends
+    # — cited here so this exclusion is self-verifying rather than resting on
+    # "nothing new here".
+    "POST /api/admin/run-databricks-semantic-layer-refresh",
     # K3 local knowledge packaging (#798) — scheduler-driven admin maintenance
     # op, mirrors run-corporate-memory. No dual-backend contract test needed
     # (no new repo methods/migration; state.json lives on disk). Behaviour

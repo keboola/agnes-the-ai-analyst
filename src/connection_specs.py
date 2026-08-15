@@ -36,9 +36,22 @@ def _validate_bigquery(config: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+def _validate_databricks(config: Dict[str, Any]) -> Dict[str, Any]:
+    host = str(config.get("host") or "").strip().rstrip("/")
+    if not host:
+        raise ValueError("databricks connection requires config.host")
+    if not host.startswith("https://"):
+        raise ValueError(f"host must be https://, got: {host!r}")
+    warehouse_id = str(config.get("warehouse_id") or "").strip()
+    if not warehouse_id:
+        raise ValueError("databricks connection requires config.warehouse_id")
+    return {**config, "host": host, "warehouse_id": warehouse_id}
+
+
 _SPECS: Dict[str, ConnectionSpec] = {
     "keboola": ConnectionSpec("keboola", _validate_keboola),
     "bigquery": ConnectionSpec("bigquery", _validate_bigquery),
+    "databricks": ConnectionSpec("databricks", _validate_databricks),
 }
 
 

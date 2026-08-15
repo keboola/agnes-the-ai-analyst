@@ -393,6 +393,42 @@ def test_logs_runner_unavailable():
     assert "unavailable" in output.lower()
 
 
+def test_logs_runner_error_names_what_the_runner_said():
+    """`runner_error: <code>` must not be reduced to "unavailable".
+
+    The sidecar answered; telling the operator it is unavailable points the
+    investigation at a healthy process. Its own code is the lead.
+    """
+    fake = _mock_response(502, {"detail": "runner_error: image_not_found"})
+    with patch("cli.commands.data_apps.api_get", return_value=fake):
+        result = runner.invoke(app, ["app", "logs", "sapp"])
+    assert result.exit_code == 1
+    output = (result.output + str(result.stderr_bytes or b"")).lower()
+    assert "image_not_found" in output, f"the runner's own code must survive; got: {output}"
+    assert "unavailable" not in output, f"the sidecar answered — do not call it unavailable: {output}"
+
+
+def test_show_prints_the_error_detail():
+    """A failed deploy records `state_detail`, and the REST detail endpoint
+    already returns it — but `agnes app show` printed only `State: error`,
+    so the one recorded explanation stayed invisible on every surface."""
+    fake = _mock_response(200, {"slug": "sapp", "name": "S", "state": "error",
+                                "state_detail": "image_not_found", "url": "/apps/sapp/"})
+    with patch("cli.commands.data_apps.api_get", return_value=fake):
+        result = runner.invoke(app, ["app", "show", "sapp"])
+    assert result.exit_code == 0
+    assert "image_not_found" in result.output, f"state_detail must be shown; got: {result.output}"
+
+
+def test_show_stays_quiet_when_there_is_no_error_detail():
+    fake = _mock_response(200, {"slug": "sapp", "name": "S", "state": "running",
+                                "state_detail": "", "url": "/apps/sapp/"})
+    with patch("cli.commands.data_apps.api_get", return_value=fake):
+        result = runner.invoke(app, ["app", "show", "sapp"])
+    assert result.exit_code == 0
+    assert "Detail:" not in result.output
+
+
 # ---------------------------------------------------------------------------
 # open
 # ---------------------------------------------------------------------------

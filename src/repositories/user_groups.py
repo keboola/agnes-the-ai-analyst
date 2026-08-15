@@ -32,9 +32,7 @@ class UserGroupsRepository:
     _SELECT_COLS = "id, name, description, is_system, created_at, created_by"
 
     def list_all(self) -> List[Dict[str, Any]]:
-        rows = self.conn.execute(
-            f"SELECT {self._SELECT_COLS} FROM user_groups ORDER BY name"
-        ).fetchall()
+        rows = self.conn.execute(f"SELECT {self._SELECT_COLS} FROM user_groups ORDER BY name").fetchall()
         columns = [d[0] for d in self.conn.description]
         return [dict(zip(columns, r)) for r in rows]
 
@@ -73,8 +71,7 @@ class UserGroupsRepository:
             return []
         placeholders = ",".join(["?"] * len(gids))
         rows = self.conn.execute(
-            f"SELECT name FROM user_groups WHERE id IN ({placeholders}) "
-            f"ORDER BY name",
+            f"SELECT name FROM user_groups WHERE id IN ({placeholders}) ORDER BY name",
             list(gids),
         ).fetchall()
         return [r[0] for r in rows]
@@ -107,8 +104,10 @@ class UserGroupsRepository:
             from src.repositories.resource_grants import (
                 ResourceGrantsRepository,
             )
+
             ResourceGrantsRepository(self.conn).fanout_system_for_group(
-                group_id, assigned_by=created_by,
+                group_id,
+                assigned_by=created_by,
             )
         except Exception:
             # Logger import lives at module scope to keep this hot path
@@ -118,6 +117,7 @@ class UserGroupsRepository:
             # so an admin can manually fan out via /admin/access.
             try:
                 import logging as _logging
+
                 _logging.getLogger(__name__).exception(
                     "system-plugin grant fanout failed for new group %s",
                     group_id,
@@ -127,13 +127,18 @@ class UserGroupsRepository:
         return self.get(group_id)  # type: ignore[return-value]
 
     def ensure(
-        self, name: str, description: Optional[str] = None
+        self,
+        name: str,
+        description: Optional[str] = None,
+        created_by: str = "system:google-sync",
     ) -> Dict[str, Any]:
         """Idempotent get-or-create for claim-driven groups.
 
         Existing row is returned unchanged (preserves `is_system` and
         description — a later Google-sync call must not override an admin's
-        manual description edit).
+        manual description edit). ``created_by`` defaults to the Google-sync
+        writer that historically owned this path; the Keboola login sync
+        passes its own label so the audit trail names the real creator.
         """
         existing = self.get_by_name(name)
         if existing:
@@ -141,7 +146,7 @@ class UserGroupsRepository:
         return self.create(
             name=name,
             description=description or "Auto-created from Google Workspace claim",
-            created_by="system:google-sync",
+            created_by=created_by,
         )
 
     def ensure_system(self, name: str, description: str) -> Dict[str, Any]:
@@ -173,15 +178,8 @@ class UserGroupsRepository:
         # marketplace filter and must not move. Description edits are
         # cosmetic and allowed (admins curate them in /admin/access).
         existing = self.get(group_id)
-        if (
-            existing
-            and existing.get("is_system")
-            and name is not None
-            and name != existing["name"]
-        ):
-            raise SystemGroupProtected(
-                f"group {existing.get('name')!r} is a system group and cannot be renamed"
-            )
+        if existing and existing.get("is_system") and name is not None and name != existing["name"]:
+            raise SystemGroupProtected(f"group {existing.get('name')!r} is a system group and cannot be renamed")
         sets: List[str] = []
         params: List[Any] = []
         if name is not None:
@@ -193,14 +191,10 @@ class UserGroupsRepository:
         if not sets:
             return
         params.append(group_id)
-        self.conn.execute(
-            f"UPDATE user_groups SET {', '.join(sets)} WHERE id = ?", params
-        )
+        self.conn.execute(f"UPDATE user_groups SET {', '.join(sets)} WHERE id = ?", params)
 
     def delete(self, group_id: str) -> None:
         existing = self.get(group_id)
         if existing and existing.get("is_system"):
-            raise SystemGroupProtected(
-                f"group {existing.get('name')!r} is a system group and cannot be deleted"
-            )
+            raise SystemGroupProtected(f"group {existing.get('name')!r} is a system group and cannot be deleted")
         self.conn.execute("DELETE FROM user_groups WHERE id = ?", [group_id])

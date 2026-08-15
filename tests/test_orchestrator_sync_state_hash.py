@@ -5,6 +5,7 @@ the manifest's hash for that table. If the orchestrator stores a
 fingerprint (mtime+size) or a truncated MD5, every `agnes pull` of a
 Keboola local-mode table fails with `hash mismatch: expected … got …`.
 """
+
 import hashlib
 from unittest.mock import patch
 
@@ -25,8 +26,12 @@ def system_db_path(tmp_path):
     try:
         _ensure_schema(conn)
         TableRegistryRepository(conn).register(
-            id="orders", name="orders", source_type="keboola",
-            bucket="in.c-crm", source_table="orders", query_mode="local",
+            id="orders",
+            name="orders",
+            source_type="keboola",
+            bucket="in.c-crm",
+            source_table="orders",
+            query_mode="local",
             description="",
         )
     finally:
@@ -49,22 +54,23 @@ def parquet_with_known_md5(tmp_path):
 def _run_update(system_db_path, meta_rows, data_dir):
     """Helper: invoke `_update_sync_state` with `get_system_db` redirected
     at our test DB and `_get_extracts_dir` redirected at our temp tree."""
+
     def fake_get_system_db():
         return duckdb.connect(str(system_db_path))
 
     # The orchestrator now writes sync_state through the repo factory, which
     # binds get_system_db at src.repositories import time — patch both the
     # source and the factory's binding so the redirect takes effect.
-    with patch("src.db.get_system_db", side_effect=fake_get_system_db), \
-         patch("src.repositories.get_system_db", side_effect=fake_get_system_db), \
-         patch("src.orchestrator._get_extracts_dir", return_value=data_dir / "extracts"):
+    with (
+        patch("src.db.get_system_db", side_effect=fake_get_system_db),
+        patch("src.repositories.get_system_db", side_effect=fake_get_system_db),
+        patch("src.orchestrator._get_extracts_dir", return_value=data_dir / "extracts"),
+    ):
         orch = SyncOrchestrator.__new__(SyncOrchestrator)
         orch._update_sync_state(meta_rows=meta_rows, source_name="keboola")
 
 
-def test_update_sync_state_stores_content_md5(
-    system_db_path, parquet_with_known_md5, tmp_path
-):
+def test_update_sync_state_stores_content_md5(system_db_path, parquet_with_known_md5, tmp_path):
     """The hash written into sync_state must equal MD5 of the parquet's
     raw bytes, full 32 hex chars — same shape as the CLI's `_md5_file`."""
     pq_path, expected_md5 = parquet_with_known_md5
@@ -89,9 +95,7 @@ def test_update_sync_state_stores_content_md5(
     assert len(stored) == 32, "full hex MD5, not truncated"
 
 
-def test_update_sync_state_empty_hash_when_parquet_missing(
-    system_db_path, tmp_path
-):
+def test_update_sync_state_empty_hash_when_parquet_missing(system_db_path, tmp_path):
     """If the parquet isn't on disk (race / failed extract), store empty
     string rather than crashing or writing a stale hash."""
     (tmp_path / "extracts" / "keboola" / "data").mkdir(parents=True)
@@ -110,6 +114,67 @@ def test_update_sync_state_empty_hash_when_parquet_missing(
     assert state["hash"] == ""
 
 
+def test_update_sync_state_warns_when_both_layouts_present(system_db_path, parquet_with_known_md5, tmp_path, caplog):
+    """A flat parquet sitting beside a partition dir freezes distribution
+    SILENTLY, so it has to be logged.
+
+    `_update_sync_state` prefers the flat file, which means the manifest
+    advertises the table as single-file hashed from the STALE parquet. The
+    client downloads it and the md5 MATCHES — `agnes pull` reports success
+    while the analyst keeps receiving pre-conversion data indefinitely and the
+    server's own view reads the fresh partitions. Nothing else surfaces this,
+    and nothing removes the stale sibling (a Keboola table flipped to
+    `sync_strategy: partitioned` leaves it behind; the client-side
+    `_drop_stale_layout` has no server equivalent).
+    """
+    pq_path, _ = parquet_with_known_md5
+    # Same table, now ALSO partitioned: extracts/keboola/data/orders/<part>.
+    part_dir = pq_path.parent / "orders" / "month=2026-06"
+    part_dir.mkdir(parents=True)
+    (part_dir / "data.parquet").write_bytes(b"PAR1fresh-partitioned-dataPAR1")
+
+    with caplog.at_level("WARNING"):
+        _run_update(
+            system_db_path,
+            meta_rows=[("orders", 100, pq_path.stat().st_size, "local")],
+            data_dir=tmp_path,
+        )
+
+    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert any("BOTH a flat parquet" in w and "orders" in w for w in warnings), (
+        f"both-layouts-on-disk must warn — it is otherwise invisible; got {warnings!r}"
+    )
+
+    # Logging only: the warning must not change what gets written. Precedence
+    # is unchanged (flat file still wins, `parts` still NULL) — flipping it is
+    # the deferred follow-up the TODO in `_update_sync_state` describes.
+    conn = duckdb.connect(str(system_db_path))
+    try:
+        state = SyncStateRepository(conn).get_table_state("orders")
+    finally:
+        conn.close()
+    assert state["hash"] == hashlib.md5(pq_path.read_bytes()).hexdigest(), (
+        "the flat file must still win — this change only reports the condition"
+    )
+    assert not state.get("parts"), "parts must still be NULL when the flat file wins"
+
+
+def test_update_sync_state_silent_when_only_one_layout_present(
+    system_db_path, parquet_with_known_md5, tmp_path, caplog
+):
+    """The healthy single-file case must NOT warn, or the signal is noise."""
+    pq_path, _ = parquet_with_known_md5
+    with caplog.at_level("WARNING"):
+        _run_update(
+            system_db_path,
+            meta_rows=[("orders", 100, pq_path.stat().st_size, "local")],
+            data_dir=tmp_path,
+        )
+    assert not [r for r in caplog.records if "BOTH a flat parquet" in r.getMessage()], (
+        "a normal single-file table must not warn"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Partitioned tables: per-part hashing (partitioned distribution).
 # A table stored as a directory of parquet parts (Jira hive
@@ -118,7 +183,7 @@ def test_update_sync_state_empty_hash_when_parquet_missing(
 # today (no single `{table}.parquet` for the single-file path to find).
 # ---------------------------------------------------------------------------
 
-from src.orchestrator import _hash_table_parts, _parts_rollup_hash  # noqa: E402
+from src.orchestrator import _hash_table_parts, _parts_rollup_hash
 
 
 def test_hash_table_parts_hive_layout(tmp_path):
@@ -194,9 +259,7 @@ def test_update_sync_state_stores_parts_for_partitioned_table(system_db_path, tm
     assert state["file_size_bytes"] == len(b)
 
 
-def test_update_sync_state_single_file_still_has_no_parts(
-    system_db_path, parquet_with_known_md5, tmp_path
-):
+def test_update_sync_state_single_file_still_has_no_parts(system_db_path, parquet_with_known_md5, tmp_path):
     """Backward-compat: a single-file table writes parts=None (NULL)."""
     pq_path, _ = parquet_with_known_md5
     _run_update(

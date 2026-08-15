@@ -77,6 +77,7 @@ are the unit of curation and user-facing discovery.
 | `PUT` | `/api/admin/registry/{table_id}` | see §3.2 | Update **operational** fields (idempotent partial) |
 | `PATCH` | `/api/admin/registry/{table_id}/docs` | see §3.5 | Update **extended LLM-facing docs** (grain, gotchas, …) |
 | `DELETE` | `/api/admin/registry/{table_id}` | — | Unregister |
+| `POST` | `/api/admin/registry/{table_id}/policy/preview` | see §3.7 | Preview a stored or candidate access policy as a chosen persona |
 | `GET` | `/api/admin/metadata/{table_id}` | — | Get per-column metadata (see §3.6) |
 | `POST` | `/api/admin/metadata/{table_id}` | see §3.6 | Save per-column metadata |
 | `POST` | `/api/admin/metadata/{table_id}/push` | — | Push saved column metadata downstream (no body) |
@@ -240,6 +241,37 @@ curl -s -X POST \
     ]
   }'
 ```
+
+### 3.7 Access-policy preview — `POST /api/admin/registry/{table_id}/policy/preview`
+
+Runs a table's stored access policy — or a **candidate** policy, checked before it is
+ever saved — as a chosen persona, and reports what that persona would see. A policy is
+attached/replaced/cleared via `PUT /api/admin/registry/{table_id}` (`access_policy_sql`
++ mandatory `access_policy_note`, `policy_mapping`); this endpoint never writes anything.
+Every call is recorded to the audit log (`access_policy.preview`) — it shows one admin
+another person's data slice.
+
+| Field | Type | Notes |
+|---|---|---|
+| `sql` | string, optional | A candidate policy body to preview before saving. Omit to preview the table's **currently stored** `access_policy_sql`. Validated the same way a `PUT` would validate it. |
+| `as_user` | string, optional | Preview as an existing user's real identity (id or email) — binds their **live** group membership. |
+| `as_groups` | string[], optional | Preview as an ad-hoc, hypothetical group set with no real user behind it. |
+
+Exactly one of `as_user` / `as_groups` is required — a request naming both, or neither, returns `422`.
+
+```bash
+curl -s -X POST \
+  "https://{your-instance}/api/admin/registry/orders_daily/policy/preview" \
+  -H "Authorization: Bearer $PAT" \
+  -H "Content-Type: application/json" \
+  -d '{"as_groups": ["Finance"]}'
+# {"columns": [{"name": "id", "hidden": false}, {"name": "secret", "hidden": true}, ...],
+#  "sample_rows": [...], "rows_visible": 42, "rows_total": 4200}
+```
+
+`columns` marks every base column `hidden: true` if the policy's `EXCLUDE`/rewrite drops
+it for that persona; `rows_visible` is the count through the policy, `rows_total` the
+unfiltered count (admin bypass).
 
 ---
 
@@ -605,6 +637,7 @@ checks against.
 - /api/admin/registry/rebuild
 - /api/admin/registry/{table_id}
 - /api/admin/registry/{table_id}/docs
+- /api/admin/registry/{table_id}/policy/preview
 
 ### `/api/admin/register-table` — Table registration
 
@@ -1038,6 +1071,7 @@ CLI: `agnes admin semantic-layer coverage [--json]`. MCP:
 - /api/admin/run-blocked-purge
 - /api/admin/run-bq-metadata-refresh
 - /api/admin/run-corporate-memory
+- /api/admin/run-databricks-semantic-layer-refresh
 - /api/admin/run-jira-consistency-check
 - /api/admin/run-jira-sla-poll
 - /api/admin/run-keboola-semantic-layer-refresh
@@ -1051,6 +1085,20 @@ CLI: `agnes admin semantic-layer coverage [--json]`. MCP:
 ### `/api/auth` — Authentication
 
 - /api/auth/exchange-setup-token
+
+### `/api/auth/keboola` — Keboola multi-project login (select mode)
+
+A `multi_project_mode: select` Keboola sign-in stashes the discovered
+projects (vault-encrypted, 15-minute TTL) for a user-driven import; these
+endpoints serve and act on the caller's OWN stash (session/JWT auth).
+`GET /projects` lists the discovery with an `imported` flag per project;
+`POST /projects` (POST-to-collection — connect these discovered projects)
+provisions the selected ids through the same core
+the `auto` mode runs at login (PAT mint + vault, connection, chat tools,
+`kbc-<project>-<role>` membership). REST-only by design — see the standing
+credential-provisioning exemption in CONTRIBUTING.md.
+
+- /api/auth/keboola/projects
 
 ### `/api/catalog` — Public catalog
 
@@ -1185,8 +1233,15 @@ by-slug surface but keep their grants for a lossless re-link.
 `agnes-live` branch, mints a fresh PAT scoped to `data-app:<slug>` (revoking
 the previous one), decrypts the app's stored secrets, builds the runtime
 `config.json` + container spec, and hands both to the `apps-runner` sidecar.
-A dead/erroring sidecar sets the app's state to `error` and returns 502
-`runner_unavailable`. `POST /reap-idle` is `require_admin`-gated (the
+A failed runner call sets the app's state to `error` (with the runner's own
+message in `state_detail`, which the detail response carries) and returns 502.
+The two causes are reported apart, because they send an operator to different
+places: `runner_unavailable` means the sidecar never answered — it is down,
+unreachable, or slower than the client timeout — while `runner_error: <code>`
+means it answered and named the problem (`image_not_found`,
+`image_not_allowed`, `bad_runner_token`, `docker_error: …`). Collapsing the
+second into the first blames a healthy, responding process; `GET /{slug}/logs`
+reports the same pair the same way. `POST /reap-idle` is `require_admin`-gated (the
 scheduler's shared-secret token resolves to a synthetic Admin user) and
 stops any `running` app idle longer than its own `idle_timeout_s`.
 

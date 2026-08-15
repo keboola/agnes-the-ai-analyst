@@ -20,9 +20,13 @@ The practical consequences:
 - **Scope at the source.** If a group must not see a Confluence space or a Jira project, that restriction belongs on the service account in Confluence/Jira — typically as a second, narrower connection. Granting or withholding the Agnes-side resource is all-or-nothing over whatever the credential can reach.
 - **A shared service account flattens identity.** Everyone reaching a system through one connection is the same principal upstream, which is the point (people without a seat in the upstream tool can still read through it) and also the cost: the upstream audit log records the service account, not the human. Agnes's own audit trail is where per-user attribution survives.
 - **Grants are deterministic and flat.** No nesting, no inheritance, no negative grants. A user's access is the union over their groups — there is no way to express "everything in this package except one table". Split the package instead.
-- **Table-level, not row-level, with one exception.** Grants resolve per table. The internal `agnes_sessions` / `agnes_telemetry` / `agnes_audit` tables are the exception: table-level access is universal and a per-row `WHERE` filter is applied at query time (`src/rbac.py`, `connectors/internal/access.py`). Do not model general row-level security on this — it is specific to those tables.
+- **Grants are table-level.** A group either can or cannot see a whole registered table — there is no row- or column-grain grant in this model. The internal `agnes_sessions` / `agnes_telemetry` / `agnes_audit` tables carry their own hard-coded per-row filter, applied at query time regardless of grants (`src/rbac.py`, `connectors/internal/access.py`); that mechanism is specific to those three tables, not a general primitive.
 
 To limit what an *agent* can reach, use agent scopes (an agent's effective authority is owner grants ∩ agent scope, enforced live at every brokered request) — but the same boundary applies underneath: the agent inherits whatever the connection's upstream principal can see.
+
+### A third layer: row and column access policies
+
+Grants and agent scopes both answer "can this group/agent reach the table at all". A **separate, optional layer** answers a narrower question on top of that: once a group can reach a table, an admin may attach **one SQL policy** that Agnes substitutes for the table on every server-side read — filtering rows and masking columns by the caller's identity (`$user_email` / `$user_id` / `$user_groups`). It only applies to tables that never leave the server (`query_mode='remote'` or `server_only=true`, so a policy can't be routed around via `agnes pull`), and it is off by default behind the `access_policies.enabled` feature flag. Full reference — authoring, the mapping-table pattern, disclosure, and known v1 limitations: [`table-access-policies.md`](table-access-policies.md).
 
 ---
 

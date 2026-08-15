@@ -519,7 +519,17 @@ _MCP_SOURCE_GRANT_REASON = (
     "seam, and this one widens by the whole source at once"
 )
 
+_KEBOOLA_LOGIN_PROJECTS_REASON = (
+    "select-mode Keboola project import — a continuation of the browser OAuth "
+    "login, bound to a short-TTL vaulted stash of that login's access token. "
+    "The CLI has no OAuth login to continue, and MCP exposure is ruled out by "
+    "CONTRIBUTING.md → 'Standing exemption — admin credential-provisioning "
+    "writes': the import mints + vaults upstream project credentials, exactly "
+    "the privilege-escalation seam that paragraph names"
+)
+
 _EXEMPT: dict[str, str] = {
+    "/api/auth/keboola/projects": _KEBOOLA_LOGIN_PROJECTS_REASON,
     "/api/me/display-name": (
         "self-service display-name edit (issue #1036) — UI-only affordance on "
         "/profile; a one-field personal profile edit with no CLI/MCP analogue"
@@ -575,6 +585,29 @@ _EXEMPT: dict[str, str] = {
         "admin-only registry rebuild trigger — server/consumer maintenance op "
         "(companion to register-table's defer_rebuild for bulk onboarding); no "
         "analyst CLI/MCP analogue, mirrors the cache-warmup/run + sync triggers"
+    ),
+    # Table access policies (design doc §13.1/§13.2, plan Task 14/16):
+    # single-persona preview/dry-run an admin uses to check a stored or
+    # candidate policy before trusting it. CLI-reachable via `agnes admin
+    # table-policy preview` (plan Task 16) — mirrors the grandfathered
+    # /api/admin/prompts/{kind}/preview exemption (_PROMPTS_REASON), which is
+    # ALSO an admin-only preview endpoint with no MCP analogue. No MCP tool
+    # planned, by design, not merely "not yet": this endpoint runs a policy
+    # AS A CHOSEN PERSONA and returns that persona's row/column slice to the
+    # calling admin — precisely the "who looked at whose data" action §13.1
+    # says must be audited, and the same category of "must stay interactive,
+    # human-witnessed" the codebase already draws around
+    # _AGENT_MEMORY_ADMIN_REASON / _AGENT_SCOPE_REASON / _AGENT_TOKENS_REASON
+    # rather than something reachable through an agent tool call.
+    "/api/admin/registry/{table_id}/policy/preview": (
+        "admin-only access-policy preview/dry-run (table access policies design "
+        "§13.1) — reachable via `agnes admin table-policy preview` (plan Task "
+        "16). No MCP analogue by design: mirrors the grandfathered "
+        "/api/admin/prompts/{kind}/preview exemption, and separately, this "
+        "endpoint runs a policy AS A CHOSEN PERSONA and hands that persona's "
+        "row-filtered slice to the calling admin — an audited, human-witnessed "
+        "diagnostic action (§13.1), not an agent-facing data operation, the "
+        "same posture as _AGENT_MEMORY_ADMIN_REASON/_AGENT_SCOPE_REASON above."
     ),
     "/api/collections/{collection_id}/files": _COLLECTIONS_FILES_REASON,
     "/api/collections/{collection_id}/files/{file_id}": _COLLECTIONS_FILES_REASON,
@@ -689,6 +722,11 @@ _EXEMPT: dict[str, str] = {
         "scheduler-driven Keboola semantic layer (Metastore) sync trigger — "
         "admin/scheduler maintenance op, mirrors the run-bq-metadata-refresh / "
         "run-knowledge-digests exemptions; no analyst CLI/MCP analogue"
+    ),
+    "/api/admin/run-databricks-semantic-layer-refresh": (
+        "scheduler-driven Databricks semantic layer (Unity Catalog metric "
+        "views) sync trigger — admin/scheduler maintenance op, mirrors the "
+        "run-keboola-semantic-layer-refresh exemption; no analyst CLI/MCP analogue"
     ),
     "/api/chat/journey": (
         "chat-driven onboarding backend foundation — internal state read/write "

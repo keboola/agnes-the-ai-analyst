@@ -2493,6 +2493,12 @@ class TestDetailPageParity:
             "the per-file page's only entry point on a default instance — without it, "
             "`/library/<slug>/f/<id>` is reachable only by typing the URL",
         ),
+        (
+            "data_app_detail",
+            "app.state_detail",
+            "a failed deploy records WHY in state_detail, and the page is where an operator "
+            "looks next — a bare `error` badge sent one investigation at a healthy sidecar",
+        ),
     )
 
     @pytest.mark.parametrize("base,token,why", FORKED_PAIR_INVARIANTS)

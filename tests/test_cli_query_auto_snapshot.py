@@ -54,9 +54,7 @@ class TestFlagOff:
         re-raises through the shared renderer exactly as today (rc=1)."""
         body = _over_cap_400(["web_view"])
         with patch("cli.client.api_post", return_value=_resp(400, body)):
-            result = runner.invoke(
-                app, ["query", "SELECT country FROM web_view", "--remote"]
-            )
+            result = runner.invoke(app, ["query", "SELECT country FROM web_view", "--remote"])
         assert result.exit_code == 1
         # Shared renderer surfaces the structured reason.
         assert "remote_scan_too_large" in result.output
@@ -66,9 +64,7 @@ class TestFlagOff:
         behaves identically with and without the flag."""
         payload = {"columns": ["id"], "rows": [[1]], "truncated": False}
         with patch("cli.client.api_post", return_value=_resp(200, payload)):
-            r_off = runner.invoke(
-                app, ["query", "SELECT id FROM phys", "--remote", "--json"]
-            )
+            r_off = runner.invoke(app, ["query", "SELECT id FROM phys", "--remote", "--json"])
         with patch("cli.client.api_post", return_value=_resp(200, payload)):
             r_on = runner.invoke(
                 app,
@@ -114,7 +110,7 @@ class TestFlagOff:
         conn.execute(f'CREATE TABLE "{snap_a}" (id INTEGER, country VARCHAR)')
         conn.execute(f"INSERT INTO \"{snap_a}\" VALUES (1, 'CZ'), (2, 'US')")
         conn.execute(f'CREATE TABLE "{snap_b}" (id INTEGER, amount INTEGER)')
-        conn.execute(f"INSERT INTO \"{snap_b}\" VALUES (1, 100), (2, 200)")
+        conn.execute(f'INSERT INTO "{snap_b}" VALUES (1, 100), (2, 200)')
         conn.close()
 
         created = []
@@ -124,8 +120,10 @@ class TestFlagOff:
             return None
 
         body = _over_cap_400(["view_a", "view_b"])
-        with patch("cli.client.api_post", return_value=_resp(400, body)), \
-             patch("cli.commands.query._create_auto_snapshot", side_effect=fake_create):
+        with (
+            patch("cli.client.api_post", return_value=_resp(400, body)),
+            patch("cli.commands.query._create_auto_snapshot", side_effect=fake_create),
+        ):
             result = runner.invoke(
                 app,
                 [
@@ -133,7 +131,8 @@ class TestFlagOff:
                     "SELECT country, amount FROM view_a JOIN view_b USING (id)",
                     "--remote",
                     "--auto-snapshot",
-                    "--format", "json",
+                    "--format",
+                    "json",
                 ],
             )
         assert result.exit_code == 0, result.output
@@ -150,9 +149,7 @@ class TestFlagOff:
         the flag on."""
         body = {"detail": {"reason": "bq_path_not_registered", "path": "bq.x.y"}}
         with patch("cli.client.api_post", return_value=_resp(400, body)):
-            result = runner.invoke(
-                app, ["query", "SELECT 1 FROM x", "--remote", "--auto-snapshot"]
-            )
+            result = runner.invoke(app, ["query", "SELECT 1 FROM x", "--remote", "--auto-snapshot"])
         assert result.exit_code == 1
         assert "bq_path_not_registered" in result.output
 
@@ -203,8 +200,10 @@ class TestAutoSnapshotFallback:
             return None
 
         body = _over_cap_400(["web_view"])
-        with patch("cli.client.api_post", return_value=_resp(400, body)), \
-             patch("cli.commands.query._create_auto_snapshot", side_effect=fake_create):
+        with (
+            patch("cli.client.api_post", return_value=_resp(400, body)),
+            patch("cli.commands.query._create_auto_snapshot", side_effect=fake_create),
+        ):
             result = runner.invoke(
                 app,
                 ["query", sql, "--remote", "--auto-snapshot", "--format", "json"],
@@ -243,16 +242,30 @@ class TestAutoSnapshotFallback:
         snap_dir.mkdir(parents=True)
         future = (datetime.now(timezone.utc) + timedelta(hours=23)).isoformat()
         now = datetime.now(timezone.utc).isoformat()
-        write_meta(snap_dir, SnapshotMeta(
-            name=snap_id, table_id="web_view", select=None, where=None,
-            limit=None, order_by=None, fetched_at=now, effective_as_of=now,
-            rows=1, bytes_local=10, estimated_scan_bytes_at_fetch=0,
-            result_hash_md5="x", expires_at=future,
-        ))
+        write_meta(
+            snap_dir,
+            SnapshotMeta(
+                name=snap_id,
+                table_id="web_view",
+                select=None,
+                where=None,
+                limit=None,
+                order_by=None,
+                fetched_at=now,
+                effective_as_of=now,
+                rows=1,
+                bytes_local=10,
+                estimated_scan_bytes_at_fetch=0,
+                result_hash_md5="x",
+                expires_at=future,
+            ),
+        )
 
         body = _over_cap_400(["web_view"])
-        with patch("cli.client.api_post", return_value=_resp(400, body)), \
-             patch("cli.commands.query._create_auto_snapshot") as mock_create:
+        with (
+            patch("cli.client.api_post", return_value=_resp(400, body)),
+            patch("cli.commands.query._create_auto_snapshot") as mock_create,
+        ):
             result = runner.invoke(
                 app,
                 ["query", sql, "--remote", "--auto-snapshot", "--format", "json"],
@@ -262,9 +275,10 @@ class TestAutoSnapshotFallback:
 
     def test_end_to_end_real_create_chain(self, tmp_config, monkeypatch):
         """Full chain WITHOUT mocking _create_auto_snapshot: the only mock is
-        the network (api_post for /api/query and api_post_arrow for the
-        snapshot materialize). Proves _create_auto_snapshot → _create_snapshot
-        → view registration → local re-run actually works (#616).
+        the network (api_post for /api/query and api_post_arrow_with_headers
+        for the snapshot materialize). Proves _create_auto_snapshot →
+        _create_snapshot → view registration → local re-run actually works
+        (#616).
         """
         import duckdb
         import pyarrow as pa
@@ -281,8 +295,10 @@ class TestAutoSnapshotFallback:
         arrow_table = pa.table({"country": ["CZ", "US", "CZ"]})
         body = _over_cap_400(["web_view"])
 
-        with patch("cli.client.api_post", return_value=_resp(400, body)), \
-             patch("cli.commands.snapshot.api_post_arrow", return_value=arrow_table):
+        with (
+            patch("cli.client.api_post", return_value=_resp(400, body)),
+            patch("cli.commands.snapshot.api_post_arrow_with_headers", return_value=(arrow_table, {})),
+        ):
             result = runner.invoke(
                 app,
                 ["query", sql, "--remote", "--auto-snapshot", "--format", "json"],
@@ -317,16 +333,30 @@ class TestAutoSnapshotFallback:
         snap_dir.mkdir(parents=True)
         past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
         now = datetime.now(timezone.utc).isoformat()
-        write_meta(snap_dir, SnapshotMeta(
-            name=snap_id, table_id="web_view", select=None, where=None,
-            limit=None, order_by=None, fetched_at=now, effective_as_of=now,
-            rows=1, bytes_local=10, estimated_scan_bytes_at_fetch=0,
-            result_hash_md5="x", expires_at=past,
-        ))
+        write_meta(
+            snap_dir,
+            SnapshotMeta(
+                name=snap_id,
+                table_id="web_view",
+                select=None,
+                where=None,
+                limit=None,
+                order_by=None,
+                fetched_at=now,
+                effective_as_of=now,
+                rows=1,
+                bytes_local=10,
+                estimated_scan_bytes_at_fetch=0,
+                result_hash_md5="x",
+                expires_at=past,
+            ),
+        )
 
         body = _over_cap_400(["web_view"])
-        with patch("cli.client.api_post", return_value=_resp(400, body)), \
-             patch("cli.commands.query._create_auto_snapshot") as mock_create:
+        with (
+            patch("cli.client.api_post", return_value=_resp(400, body)),
+            patch("cli.commands.query._create_auto_snapshot") as mock_create,
+        ):
             result = runner.invoke(
                 app,
                 ["query", sql, "--remote", "--auto-snapshot", "--format", "json"],
@@ -364,6 +394,7 @@ class TestDevinFindings:
         # Need a local DuckDB present + the snapshot table so the rewritten
         # query can run without erroring (the fake just intercepts the call).
         import duckdb
+
         snap_id = _auto_snapshot_id("web_view")
         db_dir = tmp_config / "local" / "user" / "duckdb"
         db_dir.mkdir(parents=True)
@@ -373,8 +404,10 @@ class TestDevinFindings:
         conn.close()
 
         body = _over_cap_400(["web_view"])
-        with patch("cli.client.api_post", return_value=_resp(400, body)), \
-             patch("cli.commands.snapshot._create_snapshot", side_effect=fake_create_snapshot):
+        with (
+            patch("cli.client.api_post", return_value=_resp(400, body)),
+            patch("cli.commands.snapshot._create_snapshot", side_effect=fake_create_snapshot),
+        ):
             result = runner.invoke(
                 app,
                 ["query", sql, "--remote", "--auto-snapshot", "--format", "json"],

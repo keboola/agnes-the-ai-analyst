@@ -7,12 +7,13 @@ callers via the same ``_user_group_ids`` lookup.
 
 import json
 import logging
+import math
 import os
 import threading
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 from typing import Optional, List, Dict, Any
 import duckdb
 
@@ -536,6 +537,16 @@ def _flag_default_path(config_keys: tuple[str, ...], fallback: bool) -> bool:
     return fallback
 
 
+def _switch_default_path(config_keys: tuple[str, ...], fallback: Any) -> Any:
+    """`_flag_default_path` without the bool coercion — for `select`-kind
+    switches (e.g. `auth.keboola.multi_project_mode`), whose registry default
+    is a string the panel must render verbatim, not a truthiness."""
+    for s in SWITCHES:
+        if s.config_keys == config_keys:
+            return s.default
+    return fallback
+
+
 _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
     # Both sections became editable alongside `mcp`; declaring their booleans
     # here is what makes the panel render a switch instead of a free-text field,
@@ -572,6 +583,22 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
                 "moderation queue, plus the public suggestion API). Read per "
                 "request, so turning it off hides the nav entries, redirects the "
                 "routes home and 403s the suggestion API immediately."
+            ),
+        },
+    },
+    "access_policies": {
+        "enabled": {
+            "kind": "bool",
+            "default": _flag_default("access_policies", "enabled", False),
+            "hint": (
+                "Table access policies — lets an admin attach one row-filtering "
+                "and column-masking SQL policy per non-distributed table "
+                "(query_mode='remote' or server_only=true), substituted for it "
+                "on every server-side read with the caller's identity bound in. "
+                "Gates ATTACHING a policy only (PUT /api/admin/registry/{id}); "
+                "a table that already carries one stays protected — and the "
+                "distribution interlock stays enforced — regardless of this "
+                "flag's later state. New feature — off by default."
             ),
         },
     },
@@ -638,6 +665,19 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
                 "so users are not shown a setup path that cannot work for them. UI "
                 "only — the MCP protocol endpoints keep serving in-network clients "
                 "regardless."
+            ),
+        },
+        "source_url_runtime_enforce": {
+            "kind": "bool",
+            "default": _flag_default("mcp", "source_url_runtime_enforce", False),
+            "hint": (
+                "Enforce the scheme/literal-IP half of the url policy at the two "
+                "runtime forward seams too, not only when a source is configured "
+                "(#1216). Off by default: an already-enabled legacy source keeps "
+                "forwarding exactly as it does today. Before turning this on, check "
+                "the url_policy_verdict column on the MCP source list for any "
+                "would_refuse row and fix its url first — this switch turns each one "
+                "into a refused call with no other warning."
             ),
         },
     },
@@ -833,6 +873,59 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
                 },
             },
         },
+        "databricks": {
+            "kind": "object",
+            "hint": (
+                "Databricks SQL warehouse connection (query_mode='materialized' rows + "
+                "Unity Catalog metric-view sync). Token comes from the DATABRICKS_TOKEN "
+                "env var / vault secret, never from YAML."
+            ),
+            "fields": {
+                "host": {
+                    "kind": "string",
+                    "hint": (
+                        "Workspace URL, e.g. https://adb-1234567890123456.7.azuredatabricks.net "
+                        "or https://dbc-a1b2c3d4-e5f6.cloud.databricks.com. https-only, no path."
+                    ),
+                },
+                "warehouse_id": {
+                    "kind": "string",
+                    "hint": (
+                        "SQL warehouse ID the Statement Execution API runs on (SQL "
+                        "Warehouses → your warehouse → Connection details)."
+                    ),
+                },
+                "catalog": {
+                    "kind": "string",
+                    "hint": (
+                        "Default Unity Catalog catalog. Registered rows resolve "
+                        "`bucket` as a schema inside it (a dotted bucket "
+                        "'catalog.schema' overrides per row); the semantic-layer "
+                        "sync enumerates its metric views."
+                    ),
+                },
+                "max_bytes_per_materialize": {
+                    "kind": "int",
+                    "default": 10737418240,
+                    "hint": (
+                        "Cost guardrail for query_mode='materialized' Databricks rows. "
+                        "Caps the statement RESULT size via the API's byte_limit (no "
+                        "dry-run primitive exists, unlike BigQuery) — a truncated "
+                        "result is rejected, never written. 0 disables. Default "
+                        "10737418240 = 10 GiB."
+                    ),
+                },
+                "statement_timeout_seconds": {
+                    "kind": "int",
+                    "default": 900,
+                    "hint": (
+                        "Client-side deadline on a materialize statement; on expiry "
+                        "the statement is cancelled on the warehouse and the row "
+                        "errors. 0 disables. Default 900."
+                    ),
+                },
+            },
+        },
     },
     "email": {
         # SMTP fields render via the populated path (always set when email
@@ -894,7 +987,9 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
                     "hint": (
                         "Keboola project this instance is bound to — tokens from any "
                         "other project are rejected. Required for both the OAuth "
-                        "login and the token-header auth."
+                        "login and the token-header auth, unless multi_project_mode "
+                        "is select/auto — there '*' (or empty) means any project the "
+                        "sign-in's introspect lists with an allowed role."
                     ),
                 },
                 "client_id": {
@@ -930,6 +1025,21 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
                         "users only, never provisions). Off by default: a plain "
                         "Storage token carries no interactive factor, so this "
                         "bypasses any MFA/SSO enforced on web logins. See "
+                        "docs/feature-flags.md."
+                    ),
+                },
+                "multi_project_mode": {
+                    "kind": "select",
+                    "options": ["disabled", "select", "auto"],
+                    "default": _switch_default_path(("auth", "keboola", "multi_project_mode"), "disabled"),
+                    "hint": (
+                        "What a Keboola sign-in does with the user's OTHER projects. "
+                        "disabled = the single-project login only. select = discover "
+                        "at login, the user imports chosen projects via "
+                        "/api/auth/keboola/projects. auto = every allowed project is "
+                        "connected on each login (PAT minted + vaulted, connection + "
+                        "chat tools, kbc-<project>-<role> membership sync, semantic "
+                        "layer for master tokens). Needs AGNES_VAULT_KEY. See "
                         "docs/feature-flags.md."
                     ),
                 },
@@ -1670,6 +1780,26 @@ def _known_fields_resolved() -> dict:
     # operator drops it. Same failure mode as the coupled leaves above, one
     # tier up (Devin on #1199).
     fields["instance"]["experience"]["default"] = get_experience()
+    # Same one-tier-up failure for the Keboola multi-project mode: the
+    # recommended deployment sets it ONLY via env
+    # (AGNES_KEBOOLA_MULTI_PROJECT_MODE=auto), so the unset key rendered the
+    # registry's static `disabled` and a routine auth-section save persisted
+    # that into the overlay — invisible while the env var is present, a
+    # silent revert of the whole feature the day the operator drops it
+    # (Devin Review on this PR). Render the RESOLVED mode instead, so a save
+    # writes what is actually in force.
+    from app.switches import switch_value
+
+    fields["auth"]["keboola"]["fields"]["multi_project_mode"]["default"] = switch_value("keboola_multi_project_mode")
+    # The project id is required exactly when the single-project gate is in
+    # force. Under an active discovery mode (`select`/`auto`) it is optional
+    # — unset/`'*'` IS the wildcard — and a static `required: True` rendered
+    # a required marker beside a hint telling the operator to leave it
+    # blank, nudging them to pin a project and silently disable the
+    # wildcard they intended (Devin Review on this PR, sixteenth round).
+    fields["auth"]["keboola"]["fields"]["project_id"]["required"] = (
+        switch_value("keboola_multi_project_mode") == "disabled"
+    )
     return fields
 
 
@@ -1741,6 +1871,40 @@ def _feature_flags_inventory() -> List[Dict[str, Any]]:
             # string-valued row above already renders it (value_label +
             # effective-as-redesign); running it through the boolean
             # ``feature_enabled`` below would coerce "classic" to True.
+            continue
+        if flag.kind != "bool":
+            # Every OTHER select switch resolves its STRING through the
+            # switch registry. The boolean path below coerces any option to
+            # True ("disabled" included — coerce_flag_value only knows
+            # 0/false/no/off/empty), so a three-way mode read as a boolean
+            # told the operator it was on while it was off (Devin Review on
+            # this PR; the experience skip above was keyed by NAME, so the
+            # second select switch fell straight into the trap the comment
+            # there warns about). Same row shape as the leading experience
+            # row: value_label carries the mode, effective mirrors
+            # "resolved away from the default".
+            from app.switches import switch_value
+
+            value = str(switch_value(flag.name))
+            if os.environ.get(flag.env_var) is not None:
+                source = "env"
+            else:
+                probe = get_value(*flag.config_keys, default=_UNSET)
+                source = "default" if probe is _UNSET else "config"
+            out.append(
+                {
+                    "name": flag.name,
+                    "value_label": value,
+                    "effective": value != flag.default,
+                    "source": source,
+                    "default": flag.default,
+                    "env_var": flag.env_var,
+                    "description": flag.description,
+                    "effect": flag.effect,
+                    "editable": flag.editable,
+                    "lock_reason": flag.lock_reason,
+                }
+            )
             continue
         if flag.name in _CHAT_RUNTIME_FLAGS:
             effective, source = _chat_flag_runtime_view(flag)
@@ -2062,7 +2226,7 @@ async def update_server_config(
 # Source types accepted by /api/admin/register-table. Anything else is
 # rejected with 422 — keeps a typo'd source_type from silently landing in
 # table_registry (where it would later confuse the orchestrator scan).
-_VALID_SOURCE_TYPES: tuple[str, ...] = ("keboola", "bigquery", "jira", "local")
+_VALID_SOURCE_TYPES: tuple[str, ...] = ("keboola", "bigquery", "jira", "local", "databricks")
 
 # Explicit allowlist of audit-payload keys whose values are credentials and
 # must be masked. Substring-scan + ad-hoc whitelist (the previous shape) is
@@ -2281,6 +2445,18 @@ class RegisterTableRequest(BaseModel):
         sq = (self.source_query or "").strip() or None
         if self.query_mode != "materialized" and sq:
             raise ValueError("source_query is only valid when query_mode='materialized'")
+        # Databricks phase 1 is materialized-only: the scheduler runs the SQL
+        # on the SQL warehouse and distributes the parquet. 'local' has no
+        # extractor subprocess and 'remote' would need the (experimental)
+        # unity_catalog/delta DuckDB extensions + a _remote_attach allowlist
+        # entry — both follow-up phases, rejected here so a row can't land in
+        # the registry with a mode nothing will ever sync.
+        if self.source_type == "databricks" and self.query_mode != "materialized":
+            raise ValueError(
+                "source_type='databricks' currently supports query_mode='materialized' only "
+                "(the SQL runs on the Databricks SQL warehouse on schedule; register with "
+                "query_mode='materialized' and either a source_query or bucket+source_table)"
+            )
         # BigQuery materialized auto-generates a full-table-dump SQL from
         # `bucket`+`source_table` when source_query is omitted (see
         # `register_table` BQ branch). Keboola materialized: a NULL
@@ -2289,7 +2465,11 @@ class RegisterTableRequest(BaseModel):
         # filter, see `connectors/keboola/storage_api.py:ExportFilter`).
         # Other source_types (e.g. jira) don't support materialized mode
         # and require an explicit source_query if the operator opts in.
-        if self.query_mode == "materialized" and not sq and self.source_type not in ("bigquery", "keboola"):
+        if (
+            self.query_mode == "materialized"
+            and not sq
+            and self.source_type not in ("bigquery", "keboola", "databricks")
+        ):
             raise ValueError(
                 f"query_mode='materialized' for source_type='{self.source_type}' requires a non-empty source_query"
             )
@@ -2498,6 +2678,49 @@ def _generate_materialized_source_query(
             detail=f"bigquery: data_source.bigquery.project {project_id!r} is malformed",
         )
     return f"SELECT * FROM `{project_id}.{bucket}.{source_table}`"
+
+
+def _validate_databricks_register_payload(req: "RegisterTableRequest") -> None:
+    """Enforce Databricks-specific shape on a register/update request.
+
+    The Pydantic model validator already pinned ``query_mode='materialized'``
+    for Databricks rows; this hook server-generates the full-table-dump
+    ``source_query`` from ``bucket``+``source_table`` (+ the configured
+    default catalog) when the admin omitted custom SQL — mirroring the
+    BigQuery register path. Custom SQL passes through untouched: that is
+    where semantic-layer queries live (``SELECT dim, MEASURE(m) FROM
+    <metric_view> GROUP BY dim``).
+    """
+    if req.source_query and req.source_query.strip():
+        return
+    if not (req.bucket and req.source_table):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "databricks materialized requires either source_query (custom "
+                "Databricks SQL — e.g. SELECT dim, MEASURE(m) FROM a metric view) "
+                "or bucket+source_table (server-generates the full-table-dump SQL; "
+                "bucket is the schema, or 'catalog.schema' to override the default catalog)"
+            ),
+        )
+    from app.instance_config import get_value
+    from connectors.databricks.extractor import full_table_sql, split_bucket
+
+    default_catalog = get_value("data_source", "databricks", "catalog", default="") or ""
+    catalog, schema = split_bucket(req.bucket.strip(), default_catalog)
+    if not catalog:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "databricks: no catalog to resolve against — set "
+                "data_source.databricks.catalog in instance.yaml / "
+                "/admin/server-config, or use a dotted bucket 'catalog.schema'"
+            ),
+        )
+    try:
+        req.source_query = full_table_sql(catalog, schema, req.source_table.strip())
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"databricks: {e}") from e
 
 
 def _normalize_bq_source_table(req: "RegisterTableRequest") -> None:
@@ -2860,6 +3083,29 @@ class UpdateTableRequest(BaseModel):
     # record in the update_table handler (the PUT body alone may omit
     # query_mode, so it can't be validated here in isolation).
     server_only: Optional[bool] = None
+    # v116 (table access policies design doc) — PUT lets an admin attach,
+    # replace, or clear (explicit null) the SQL access policy on this row.
+    # The feature flag gate, the SQL validator, and the distribution
+    # interlock (§3.1/§3.2) all run in update_table against the *merged*
+    # record — a PUT body alone can't judge coherence with the row's other
+    # fields (query_mode, server_only, physical source). Persisted through
+    # table_registry_repo().set_access_policy()/.set_policy_mapping(), not
+    # register() — see the strip-tuple comment in update_table below.
+    access_policy_sql: Optional[str] = None
+    access_policy_note: Optional[str] = None
+    policy_mapping: Optional[bool] = None
+
+    @field_validator("access_policy_sql", mode="before")
+    @classmethod
+    def _normalize_access_policy_sql(cls, v):
+        """Mirror source_query's whitespace-only -> None normalization
+        below: a blank string is neither a valid policy body nor an
+        explicit clear-via-null, so treat it as the latter rather than
+        persist an incoherent empty VARCHAR."""
+        if v is None:
+            return None
+        v = str(v).strip()
+        return v or None
 
     @field_validator("sync_strategy", mode="before")
     @classmethod
@@ -3473,6 +3719,10 @@ def register_table(
     is_bigquery = request.source_type == "bigquery"
     if is_bigquery:
         _validate_bigquery_register_payload(request)
+    if request.source_type == "databricks":
+        # Materialized-only (model validator enforced); server-generate the
+        # full-table SQL when the admin supplied bucket+source_table only.
+        _validate_databricks_register_payload(request)
 
     # Phase C: profile_after_sync is no longer passed — the field is
     # deprecated and inert at the runtime layer. The DB column keeps its
@@ -3504,6 +3754,25 @@ def register_table(
                 status_code=400,
                 detail=f"connection_id '{request.connection_id}' not found in source_connections",
             )
+
+    # §3.2 (table access policies design doc) — the physical-source twin.
+    # Must run against the fully-normalized request (after the BQ coercion
+    # above forced query_mode='remote' for a non-materialized BQ row, or
+    # left 'materialized' alone) and BEFORE repo.register() persists
+    # anything — a row this check rejects must never reach the registry,
+    # let alone the BQ branch below that can materialize it. Shared with
+    # update_table via _check_access_policy_physical_source_conflict.
+    _check_access_policy_physical_source_conflict(
+        source_type=request.source_type,
+        connection_id=request.connection_id,
+        bucket=request.bucket,
+        source_table=request.source_table,
+        bq_fqn=request.bq_fqn,
+        source_query=request.source_query,
+        query_mode=request.query_mode,
+        server_only=bool(request.server_only),
+        exclude_id=None,
+    )
 
     repo.register(
         id=table_id,
@@ -3843,6 +4112,229 @@ def register_table_precheck(
     }
 
 
+def _policy_physical_source_signals(row: Dict[str, Any]) -> set:
+    """Every physical-source signal ``row`` (a ``table_registry`` record)
+    carries — the ways a DIFFERENT registry row could resolve to the exact
+    same underlying data (table access policies design doc §3.2, "the
+    physical-source twin"). A row may carry more than one signal at once
+    (e.g. a BigQuery row with both ``bq_fqn`` and ``bucket``/``source_table``
+    set); two rows collide when their signal sets intersect at all.
+    """
+    signals: set = set()
+    bq_fqn = (row.get("bq_fqn") or "").strip().lower()
+    if bq_fqn:
+        signals.add(("bq_fqn", bq_fqn))
+    bucket = (row.get("bucket") or "").strip()
+    source_table = (row.get("source_table") or "").strip()
+    if bucket and source_table:
+        # Namespaced by source_type + connection_id too: two DIFFERENT
+        # source systems (or two Keboola projects behind different
+        # connections) can coincidentally reuse the same bucket/table label
+        # without pointing at the same physical data.
+        signals.add(
+            (
+                "bucket_table",
+                (row.get("source_type") or "").strip().lower(),
+                row.get("connection_id") or "",
+                bucket.lower(),
+                source_table.lower(),
+            )
+        )
+    # Keboola's source_query is a JSON *filter* spec layered atop
+    # bucket/source_table (see the materialized-mode coherence check in
+    # update_table below), not an independent physical pointer — two
+    # unrelated Keboola rows can carry byte-identical filter JSON (starting
+    # with both blank/null). Every other source type's source_query IS the
+    # physical pointer — the design doc's own §3.2 example is a materialized
+    # SELECT against a fully-qualified remote table.
+    source_query = (row.get("source_query") or "").strip()
+    if source_query and (row.get("source_type") or "") != "keboola":
+        signals.add(("source_query", " ".join(source_query.split()).lower()))
+    return signals
+
+
+def _is_distributable_registry_row(row: Dict[str, Any]) -> bool:
+    """Whether ``row`` is the shape ``agnes pull`` downloads —
+    ``query_mode in ('local', 'materialized')`` and not ``server_only``.
+    The single definition both §3.2 directions below are keyed on, so the
+    twin check and the attach check can never drift apart on what
+    "distributable" means.
+    """
+    if (str(row.get("query_mode") or "local")).strip().lower() not in ("local", "materialized"):
+        return False
+    return not row.get("server_only")
+
+
+def _find_policied_physical_source_twin(
+    my_signals: set,
+    *,
+    exclude_id: Optional[str],
+) -> Optional[Dict[str, Any]]:
+    """The first existing registry row that carries ``access_policy_sql``
+    and whose physical-source signals intersect ``my_signals`` — i.e. the
+    policied table a row with these signals would be a distributable twin
+    of. ``None`` when there is no such row.
+    """
+    if not my_signals:
+        return None
+    for other in table_registry_repo().list_all():
+        if other.get("id") == exclude_id or not other.get("access_policy_sql"):
+            continue
+        if my_signals & _policy_physical_source_signals(other):
+            return other
+    return None
+
+
+def _find_distributable_physical_source_twin(
+    my_signals: set,
+    *,
+    exclude_id: Optional[str],
+) -> Optional[Dict[str, Any]]:
+    """The mirror of :func:`_find_policied_physical_source_twin`: the first
+    existing registry row that is itself DISTRIBUTABLE and whose
+    physical-source signals intersect ``my_signals``. ``None`` when there
+    is no such row.
+
+    This is the direction the attach path needs. A row carrying a policy
+    is by construction non-distributable (§3.1 forces ``query_mode=
+    'remote'`` or ``server_only=true``), so
+    ``_check_access_policy_physical_source_conflict`` — which returns
+    early unless the row it is called for is itself distributable — can
+    only ever reject the TWIN's own write. Nothing PUTs a twin that was
+    registered before the policy existed, so without this scan the leak
+    stays open indefinitely.
+    """
+    if not my_signals:
+        return None
+    for other in table_registry_repo().list_all():
+        if other.get("id") == exclude_id or not _is_distributable_registry_row(other):
+            continue
+        if my_signals & _policy_physical_source_signals(other):
+            return other
+    return None
+
+
+def _check_access_policy_physical_source_conflict(
+    *,
+    source_type: Optional[str],
+    connection_id: Optional[str],
+    bucket: Optional[str],
+    source_table: Optional[str],
+    bq_fqn: Optional[str],
+    source_query: Optional[str],
+    query_mode: Optional[str],
+    server_only: bool,
+    exclude_id: Optional[str] = None,
+) -> None:
+    """§3.2 (table access policies design doc) — the physical-source twin.
+
+    Rejects a table-registry row-in-progress (about to be inserted by
+    ``register_table``, or the merged shape ``update_table`` is about to
+    persist) when BOTH:
+
+    - it would itself be distributable (``query_mode in ('local',
+      'materialized')`` and not ``server_only`` — the shape ``agnes pull``
+      downloads), AND
+    - its physical source (``bq_fqn`` / ``(source_type, connection_id,
+      bucket, source_table)`` / non-Keboola ``source_query`` — see
+      ``_policy_physical_source_signals``) matches that of ANY existing
+      registry row carrying ``access_policy_sql``.
+
+    A row that stays undistributed never hands the raw rows to an analyst
+    via ``agnes pull``, so it is never blocked here regardless of
+    physical-source overlap — mirrors the update-time interlock this was
+    extracted from.
+
+    Shared between ``register_table`` (a brand-new row, not yet persisted —
+    call with ``exclude_id=None``) and ``update_table`` (an existing row
+    being edited — call with ``exclude_id=table_id`` so the row doesn't
+    collide with its own already-persisted signals). Mirrors how
+    ``_validate_bigquery_register_payload`` is already shared between the
+    two handlers. The caller MUST run this before persisting the row and
+    (for ``register_table``) before any materialization can run — a row
+    rejected here must never reach disk.
+
+    The ATTACH direction — a policy going onto a row that already has a
+    distributable twin — is the mirror check
+    ``_check_policied_row_has_no_distributable_twin`` below; this one
+    structurally cannot cover it (a policied row is never distributable,
+    so the guard above returns early).
+
+    Raises ``HTTPException(422, "access_policy_physical_source_conflict")``.
+    """
+    if not _is_distributable_registry_row({"query_mode": query_mode, "server_only": server_only}):
+        return
+    my_signals = _policy_physical_source_signals(
+        {
+            "source_type": source_type,
+            "connection_id": connection_id,
+            "bucket": bucket,
+            "source_table": source_table,
+            "bq_fqn": bq_fqn,
+            "source_query": source_query,
+        }
+    )
+    other = _find_policied_physical_source_twin(my_signals, exclude_id=exclude_id)
+    if other is not None:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "access_policy_physical_source_conflict: this table's "
+                f"physical source matches table {other.get('id')!r} "
+                f"({other.get('name')!r}), which has an access policy "
+                "attached -- keep this row server_only=true (or "
+                "query_mode='remote') so the policy can't be routed "
+                "around, or point it at a different physical source"
+            ),
+        )
+
+
+def _check_policied_row_has_no_distributable_twin(merged: Dict[str, Any], *, table_id: str) -> None:
+    """§3.2, the ATTACH direction — refuse to leave a policy on a row that
+    an EXISTING distributable row already resolves to the same physical
+    source as.
+
+    ``_check_access_policy_physical_source_conflict`` above asks "is THIS
+    row a distributable twin of a policied one" and returns early unless
+    the row is itself distributable. A row carrying a policy never is
+    (§3.1 forces ``query_mode='remote'`` or ``server_only=true``), so on
+    the attach path that check always short-circuits: registering
+    ``twin`` (``query_mode='local'``, same bucket/source_table) and only
+    THEN attaching the policy to ``orig`` used to be accepted with no scan
+    at all — and since nothing ever PUTs ``twin`` again, the twin-side
+    interlock never runs and ``agnes pull`` keeps distributing its
+    unfiltered parquet. This is the symmetric scan that closes it.
+
+    Evaluated against the MERGED record on every write that leaves a
+    policy attached — not only the PUT that attaches one — exactly like
+    the §3.1 interlock, so the incoherent shape can't be reached in two
+    steps either. Clearing ``access_policy_sql`` short-circuits (no policy
+    on the merged record, nothing to protect), which keeps the safety
+    valve: an admin can always undo the policy.
+
+    Raises ``HTTPException(422, "access_policy_physical_source_conflict")``.
+    """
+    if not merged.get("access_policy_sql"):
+        return
+    my_signals = _policy_physical_source_signals(merged)
+    other = _find_distributable_physical_source_twin(my_signals, exclude_id=table_id)
+    if other is not None:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "access_policy_physical_source_conflict: table "
+                f"{other.get('id')!r} ({other.get('name')!r}) points at this "
+                "table's physical source and is distributable "
+                f"(query_mode={str(other.get('query_mode') or 'local')!r}, "
+                "server_only=false), so agnes pull would hand out the "
+                "unfiltered rows this policy exists to withhold -- set that "
+                "row server_only=true (or query_mode='remote'), unregister "
+                "it, or point it at a different physical source, then "
+                "attach the policy"
+            ),
+        )
+
+
 @router.put("/registry/{table_id}")
 async def update_table(
     table_id: str,
@@ -3915,6 +4407,17 @@ async def update_table(
             "gotchas",
         ):
             merged.pop(_docs_key, None)
+
+        # v116 — table access policies (access_policy_sql/_note/_updated_at/
+        # _updated_by + policy_mapping) live on table_registry but, like the
+        # docs fields above, are written through their own dedicated setters
+        # (``table_registry_repo().set_access_policy`` / ``.set_policy_mapping``),
+        # not ``register()``. Unlike the docs fields, the interlock below needs
+        # to read these values off ``merged`` first (a PUT that only touches
+        # server_only/query_mode must still be judged against a policy that's
+        # already persisted and simply carried over from ``existing`` here) —
+        # so the strip that keeps ``register()`` from TypeErroring on them runs
+        # much later, immediately before the ``register()`` call itself.
 
         # v74 (#607) — validate the server_only ↔ query_mode invariant
         # against the *merged* record (the PUT body may toggle either field
@@ -3989,6 +4492,33 @@ async def update_table(
                             detail=f"Keboola materialized source_query must be valid JSON: {_e}",
                         ) from _e
 
+        if merged.get("source_type") == "databricks":
+            # Reuse the register-time contract on updates too: the synthetic
+            # runs the model validator (materialized-only gate) and the
+            # payload validator (server-generated source_query), so a PUT
+            # can neither flip a Databricks row out of 'materialized' nor
+            # strand it without runnable SQL.
+            try:
+                synthetic = RegisterTableRequest(
+                    name=merged.get("name") or table_id,
+                    bucket=merged.get("bucket"),
+                    source_table=merged.get("source_table"),
+                    source_query=merged.get("source_query"),
+                    source_type="databricks",
+                    query_mode=merged.get("query_mode") or "materialized",
+                    primary_key=merged.get("primary_key"),
+                    description=merged.get("description"),
+                    folder=merged.get("folder"),
+                    sync_strategy=merged.get("sync_strategy") or "full_refresh",
+                    sync_schedule=merged.get("sync_schedule"),
+                    server_only=bool(merged.get("server_only") or False),
+                )
+            except ValidationError as e:
+                raise HTTPException(status_code=422, detail=str(e)) from e
+            _validate_databricks_register_payload(synthetic)
+            merged["query_mode"] = synthetic.query_mode
+            merged["source_query"] = synthetic.source_query
+
         if merged.get("source_type") == "bigquery":
             # Reuse the register-time validator. It mutates the request to
             # force query_mode='remote' / profile_after_sync=False (or to
@@ -4042,7 +4572,181 @@ async def update_table(
                     detail="bq_fqn only applies to source_type='bigquery'",
                 )
 
+        # v116 (table access policies design doc §3.1/§3.2) — evaluated
+        # against the FINAL, fully-normalized ``merged`` record, i.e. AFTER
+        # the BQ coercion above: a PUT that flips query_mode via BQ
+        # coercion must be judged on the post-coercion value, the same
+        # reason the server_only re-check on the BQ synthetic exists
+        # (Devin Review, #630).
+        if "access_policy_sql" in updates and updates["access_policy_sql"] is not None:
+            # Attaching or replacing a policy in THIS request. Clearing
+            # (explicit null, handled by the interlock below via
+            # ``merged``) always stays possible regardless of the flag —
+            # it is a safety valve, not a new grant — so only an actual
+            # non-null SQL body is flag-gated and SQL-validated here.
+            from app.instance_config import feature_enabled
+
+            if not feature_enabled(
+                "access_policies", "enabled", env_var="AGNES_ACCESS_POLICIES_ENABLED", default=False
+            ):
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "access_policies_disabled: table access policies are not "
+                        "enabled on this instance -- set access_policies.enabled=true "
+                        "(or AGNES_ACCESS_POLICIES_ENABLED=1) before attaching one"
+                    ),
+                )
+
+            from src.access_policy_validate import PolicyValidationError, validate_policy_sql
+
+            _mapping_table_names = {
+                r["name"] for r in table_registry_repo().list_all() if r.get("policy_mapping") and r.get("name")
+            }
+            try:
+                validate_policy_sql(
+                    updates["access_policy_sql"],
+                    table_id=table_id,
+                    table_name=merged.get("name") or table_id,
+                    mapping_table_names=_mapping_table_names,
+                    for_remote=(merged.get("query_mode") == "remote"),
+                )
+            except PolicyValidationError as e:
+                raise HTTPException(status_code=422, detail=f"{e.reason}: {e.detail}") from e
+
+        # §4 (Task 14) — access_policy_note is MANDATORY whenever a non-null
+        # access_policy_sql is attached or replaced. Tasks 2/4 deliberately
+        # left this to the API layer: the repository setter accepts sql and
+        # note independently (a future non-HTTP caller may have its own
+        # reason to write without one), but every write through THIS
+        # endpoint must explain why the policy exists — the inheriting
+        # admin who finds forty lines of SQL joining `user_access` otherwise
+        # has no way to tell "legal requirement" from "hunch", and the safe
+        # move is always "leave it alone", so an unexplained policy
+        # calcifies (§4's own reasoning).
+        #
+        # Evaluated against the MERGED/final record, like the §3.1/§3.2
+        # interlocks below — not merely "did THIS PUT's body include a
+        # note" — so a SEPARATE PUT that blanks only access_policy_note
+        # while access_policy_sql stays attached is caught too (a naive
+        # "only check when this PUT touches sql" rule would miss exactly
+        # that "one toggle away" shape). Clearing the policy itself
+        # (access_policy_sql explicit null) short-circuits this — merged
+        # carries no sql, so nothing to explain — the same safety-valve
+        # carve-out the flag gate above already gives clearing.
+        if merged.get("access_policy_sql") and not (merged.get("access_policy_note") or "").strip():
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "policy_note_required: access_policy_note is required whenever "
+                    "access_policy_sql is set -- explain why this policy exists so the "
+                    "next admin to find it knows whether it's safe to change"
+                ),
+            )
+
+        # §3.1 — the interlock itself: a policy (attached by this PUT, or
+        # already persisted and simply left untouched by it) may only
+        # survive on a merged record that is 'remote' or server_only=true.
+        # One check catches both directions the design doc names —
+        # attaching a policy to a distributed table, AND clearing
+        # server_only / moving query_mode to 'local' on an already-policied
+        # one — because both leave the SAME incoherent shape: a policy on a
+        # row `agnes pull` would otherwise download unfiltered.
+        if merged.get("access_policy_sql") and merged.get("query_mode") != "remote" and not merged.get("server_only"):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "access_policy_requires_undistributed: a table carrying an access "
+                    "policy must stay undistributed (query_mode='remote' or "
+                    "server_only=true), so the policy can't be routed around via agnes "
+                    "pull -- set server_only=true first, attach the policy to a "
+                    "query_mode='remote' table instead, or clear access_policy_sql "
+                    "before making this table distributable"
+                ),
+            )
+
+        # §3.2 — the physical-source twin: a DIFFERENT, distributable row
+        # pointing at the exact same physical source as an existing policied
+        # table would hand every granted analyst (via agnes pull) the raw
+        # rows the policy exists to withhold. Runs on every write to a
+        # distributable row, independent of which fields this particular
+        # PUT changed — the danger is the merged row's current shape, not
+        # the delta. Shared with register_table's own call to the same
+        # helper via _check_access_policy_physical_source_conflict, so a
+        # brand-new twin is caught at registration too, not only here.
+        _check_access_policy_physical_source_conflict(
+            source_type=merged.get("source_type"),
+            connection_id=merged.get("connection_id"),
+            bucket=merged.get("bucket"),
+            source_table=merged.get("source_table"),
+            bq_fqn=merged.get("bq_fqn"),
+            source_query=merged.get("source_query"),
+            query_mode=merged.get("query_mode"),
+            server_only=bool(merged.get("server_only")),
+            exclude_id=table_id,
+        )
+
+        # §3.2, the OTHER direction — the check just above is structurally
+        # blind to it. It returns early unless the row it is called for is
+        # itself distributable, and a policied row never is (the §3.1 check
+        # right above forces remote/server_only), so on the attach path it
+        # can only ever reject the TWIN's own write. A twin registered
+        # BEFORE the policy existed is never PUT again, so nothing would
+        # ever run that check for it: scan for one here instead.
+        _check_policied_row_has_no_distributable_twin(merged, table_id=table_id)
+
+        # §14.6 — the live LIMIT 0 execution probe. Runs LAST among the
+        # policy-write checks: after static validation (rule 1-5, above)
+        # AND after the §3.1/§3.2 interlocks, so a table this PUT would be
+        # rejected for on distribution grounds gets that specific, cheaper
+        # rejection instead of a probe failure — and never pays for a live
+        # DuckDB execution it was always going to reject anyway. Static
+        # analysis alone cannot catch a policy that references a column
+        # the underlying table has since dropped (or never had) — this
+        # turns that failure into a rejected write here, instead of the
+        # first analyst's request.
+        if "access_policy_sql" in updates and updates["access_policy_sql"] is not None:
+            from src.access_policy_validate import PolicyValidationError, probe_policy
+            from src.db import get_analytics_db_readonly
+
+            probe_conn = get_analytics_db_readonly()
+            try:
+                probe_policy(updates["access_policy_sql"], table_id, probe_conn)
+            except PolicyValidationError as e:
+                raise HTTPException(status_code=422, detail=f"{e.reason}: {e.detail}") from e
+            finally:
+                probe_conn.close()
+
+        # Capture the fully-validated policy fields before stripping them
+        # out of ``merged`` (register() doesn't accept them — see the v116
+        # comment above) so the setter calls after register() below persist
+        # exactly what was just validated.
+        _final_access_policy_sql = merged.get("access_policy_sql")
+        _final_access_policy_note = merged.get("access_policy_note")
+        for _policy_key in (
+            "access_policy_sql",
+            "access_policy_note",
+            "access_policy_updated_at",
+            "access_policy_updated_by",
+            "policy_mapping",
+        ):
+            merged.pop(_policy_key, None)
+
         repo.register(id=table_id, **merged)
+
+        # Persist the access-policy fields through their dedicated setters
+        # (Task 2's set_access_policy/set_policy_mapping) — only called when
+        # this PUT actually touched one of them, so an unrelated edit never
+        # re-stamps access_policy_updated_at.
+        if "access_policy_sql" in updates or "access_policy_note" in updates:
+            repo.set_access_policy(
+                table_id,
+                sql=_final_access_policy_sql,
+                note=_final_access_policy_note,
+                updated_by=user.get("email"),
+            )
+        if "policy_mapping" in updates:
+            repo.set_policy_mapping(table_id, bool(updates["policy_mapping"]))
 
     audit_repo().log(
         user_id=user.get("id"),
@@ -4065,6 +4769,282 @@ async def update_table(
     invalidate_for_table(table_id)
 
     return {"id": table_id, "updated": list(updates.keys())}
+
+
+class PolicyPreviewRequest(BaseModel):
+    """Body for ``POST /registry/{table_id}/policy/preview`` (design doc
+    §13.1). ``sql`` is optional — omitted previews the table's currently
+    stored ``access_policy_sql``; given, it previews a CANDIDATE body
+    before it is ever saved. Exactly one of ``as_user`` / ``as_groups``
+    selects the persona to run the policy as: ``as_user`` binds a real,
+    existing user's identity (id/email) AND their LIVE group membership;
+    ``as_groups`` is an ad-hoc group set with no real user behind it — the
+    shape Task 15's persona matrix repeatedly calls this endpoint with, one
+    distinct group-set at a time, per §13.1's "enumerates the distinct
+    group-sets" (an ad-hoc set never needs a real account to exist).
+    """
+
+    sql: Optional[str] = None
+    as_user: Optional[str] = None
+    as_groups: Optional[List[str]] = None
+
+
+# Mirrors ``src.access_policy._PATTERN_METACHARACTERS`` (§6.3) — group names
+# are not validated against any character class elsewhere in the system, so
+# a wildcard-named ad-hoc group here would silently widen a LIKE-adjacent
+# policy the same way a Workspace-synced one would at live-enforcement time.
+# Duplicated rather than imported: that constant is private to the resolver
+# module, and this is the one OTHER place a caller-supplied string is bound
+# as a ``$user_groups`` value instead of being read live from the DB.
+_POLICY_PREVIEW_PATTERN_METACHARACTERS = ("%", "_")
+
+# The only three identity values a policy may reference (§6.2) — mirrors the
+# same closed set ``src/access_policy.py`` and
+# ``src/access_policy_validate.py`` each already check against.
+_POLICY_PREVIEW_KNOWN_VARIABLES = frozenset({"user_email", "user_id", "user_groups"})
+
+_POLICY_PREVIEW_SAMPLE_LIMIT = 20
+
+
+def _sanitize_for_json(obj):
+    """Recursively replace NaN / ±inf floats with None so a preview's sample
+    rows survive JSON serialization -- FastAPI's default encoder rejects
+    these even though Python's stdlib ``json`` accepts them by default, and
+    NaNs show up routinely in DuckDB scans (NULL through certain casts).
+    Same fix as ``app/api/v2_sample.py::_sanitize_for_json`` (duplicated
+    rather than imported -- that one is private to its own module and this
+    is the only other endpoint that hands back raw policy-query row values)."""
+    if isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+        return obj
+    if isinstance(obj, list):
+        return [_sanitize_for_json(x) for x in obj]
+    if isinstance(obj, dict):
+        return {k: _sanitize_for_json(v) for k, v in obj.items()}
+    return obj
+
+
+def _policy_preview_referenced_variables(sql: str) -> set:
+    """Which of the three known ``$name`` variables ``sql`` actually
+    references, so the bind dict only ever carries the keys the policy text
+    uses — DuckDB rejects a named parameter bound but never referenced
+    (§7.1 documents this exact failure mode for the BigQuery push-down; the
+    same strictness applies to a plain parameterized DuckDB query). Mirrors
+    the identical walk already duplicated in ``probe_policy``
+    (``src/access_policy_validate.py``) and ``_referenced_variables``
+    (``src/access_policy.py``) — each module computes its own because the
+    VALUES bound differ per caller (probe: throwaway sentinels; the live
+    resolver: the real caller's identity; here: the admin-chosen preview
+    persona).
+    """
+    import sqlglot
+    from sqlglot import exp
+
+    statement = sqlglot.parse_one(sql, read="duckdb")
+    return {p.name for p in statement.find_all(exp.Placeholder) if p.name in _POLICY_PREVIEW_KNOWN_VARIABLES}
+
+
+@router.post("/registry/{table_id}/policy/preview")
+async def preview_table_policy(
+    table_id: str,
+    request: PolicyPreviewRequest,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Run a stored or candidate access policy as a chosen persona and
+    report what it does (design doc §13.1) — the single-persona primitive
+    admins use to check a policy before trusting it, and that Task 15's
+    admin-UI matrix (multiple personas, union/overlap) is built from
+    repeated calls to.
+
+    Deliberately does NOT route through ``policied_relation``'s admin-bypass
+    path (§12): that bypass exists for LIVE reads, where "is this caller
+    exempt from filtering" is a real authorization decision keyed off the
+    CALLING admin's own credential surface. A preview's entire point is
+    "what would THIS CHOSEN persona see", independent of who is asking for
+    it — so identity/groups are resolved directly from the request (or, for
+    ``as_user``, from that user's own live membership), never from the
+    calling admin's principal.
+
+    Every preview is audited (§13.1: "it shows one person another person's
+    slice, and 'who looked at whose data, when' is the first question asked
+    after an incident").
+    """
+    from src.sql_ident import quote_ident
+
+    row = table_registry_repo().get(table_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Table not found")
+
+    if request.as_user and request.as_groups is not None:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "policy_preview_persona_conflict: choose one persona selector -- "
+                "as_user (an existing user) OR as_groups (an ad-hoc group set), not both"
+            ),
+        )
+    if not request.as_user and request.as_groups is None:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "policy_preview_persona_required: identify a persona to preview as -- "
+                "as_user (an existing user) or as_groups (an ad-hoc group set)"
+            ),
+        )
+
+    is_candidate = request.sql is not None
+    policy_sql = request.sql if is_candidate else row.get("access_policy_sql")
+    if not policy_sql:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "policy_preview_no_policy: this table has no stored access policy, and "
+                "no candidate `sql` was given to preview"
+            ),
+        )
+
+    if is_candidate:
+        from src.access_policy_validate import PolicyValidationError, validate_policy_sql
+
+        mapping_table_names = {
+            r["name"] for r in table_registry_repo().list_all() if r.get("policy_mapping") and r.get("name")
+        }
+        try:
+            validate_policy_sql(
+                policy_sql,
+                table_id=table_id,
+                table_name=row.get("name") or table_id,
+                mapping_table_names=mapping_table_names,
+                for_remote=(row.get("query_mode") == "remote"),
+            )
+        except PolicyValidationError as e:
+            raise HTTPException(status_code=422, detail=f"{e.reason}: {e.detail}") from e
+
+    # Persona resolution -- exactly one of as_user / as_groups was required
+    # above, so exactly one branch below runs.
+    if request.as_user:
+        from src.repositories import user_group_members_repo, users_repo
+
+        target = users_repo().get_by_id(request.as_user) or users_repo().get_by_email(request.as_user)
+        if not target:
+            raise HTTPException(status_code=404, detail=f"user_not_found: no such user {request.as_user!r}")
+        persona_user_id, persona_user_email = target["id"], target["email"]
+        persona_groups = user_group_members_repo().list_group_names_for_user(persona_user_id)
+    else:
+        for group_name in request.as_groups:
+            if any(ch in group_name for ch in _POLICY_PREVIEW_PATTERN_METACHARACTERS):
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"policy_preview_unsafe_group_name: {group_name!r} contains a "
+                        "pattern metacharacter (%, _) and cannot be bound as a group name"
+                    ),
+                )
+        persona_user_id, persona_user_email = None, None
+        persona_groups = list(request.as_groups)
+
+    from src.access_policy_validate import PolicyValidationError, probe_policy
+    from src.db import get_analytics_db_readonly
+
+    analytics_conn = get_analytics_db_readonly()
+    try:
+        try:
+            probed_columns = probe_policy(policy_sql, table_id, analytics_conn)
+        except PolicyValidationError as e:
+            raise HTTPException(status_code=422, detail=f"{e.reason}: {e.detail}") from e
+
+        try:
+            base_rows = analytics_conn.execute(f"DESCRIBE {quote_ident(row['name'])}").fetchall()
+        except Exception:
+            base_rows = []
+        base_names = [r[0] for r in base_rows]
+        probed_names = {c["name"] for c in probed_columns}
+        columns = [{"name": name, "hidden": name not in probed_names} for name in base_names]
+        for probed_col in probed_columns:
+            if probed_col["name"] not in base_names:
+                columns.append({"name": probed_col["name"], "hidden": False})
+
+        try:
+            referenced = _policy_preview_referenced_variables(policy_sql)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=f"policy_preview_failed: could not parse policy SQL: {exc}",
+            ) from exc
+
+        params: Dict[str, Any] = {}
+        if "user_email" in referenced:
+            params["user_email"] = persona_user_email
+        if "user_id" in referenced:
+            params["user_id"] = persona_user_id
+        if "user_groups" in referenced:
+            # An `as_groups` persona was already screened for pattern
+            # metacharacters up in the persona branch. An `as_user`
+            # persona's groups come from the DB, so nothing screened them
+            # — yet the LIVE resolver (`src/access_policy.py::
+            # policied_relation`) raises `PolicyError` for ANY bound group
+            # name carrying one. Without this check, a preview of a user
+            # in a group named e.g. `R&D%` renders a slice the product can
+            # never serve that user: the preview succeeds, every real read
+            # by them fails. Mirrored here exactly as the resolver does it
+            # — only when the policy actually binds `$user_groups`, since
+            # a policy that never references them serves that user fine.
+            for group_name in persona_groups:
+                if any(ch in group_name for ch in _POLICY_PREVIEW_PATTERN_METACHARACTERS):
+                    raise HTTPException(
+                        status_code=422,
+                        detail=(
+                            f"policy_preview_unsafe_live_group_name: {group_name!r} is a live "
+                            "group of this user and contains a pattern metacharacter (%, _), "
+                            "which the policy resolver refuses to bind -- this policy can "
+                            "never be served to this user as things stand; rename the group "
+                            "before relying on the preview"
+                        ),
+                    )
+            params["user_groups"] = persona_groups
+
+        try:
+            rows_total = analytics_conn.execute(f"SELECT COUNT(*) FROM {quote_ident(row['name'])}").fetchone()[0]
+            rows_visible = analytics_conn.execute(
+                f"SELECT COUNT(*) FROM ({policy_sql}) AS __agnes_policy_preview__",
+                params,
+            ).fetchone()[0]
+            sample_cursor = analytics_conn.execute(
+                f"SELECT * FROM ({policy_sql}) AS __agnes_policy_preview__ LIMIT {_POLICY_PREVIEW_SAMPLE_LIMIT}",
+                params,
+            )
+            sample_col_names = [d[0] for d in sample_cursor.description]
+            sample_rows = [dict(zip(sample_col_names, r)) for r in sample_cursor.fetchall()]
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=f"policy_preview_failed: {exc}") from exc
+    finally:
+        analytics_conn.close()
+
+    sample_rows = _sanitize_for_json(sample_rows)
+
+    audit_repo().log(
+        user_id=user.get("id"),
+        action="access_policy.preview",
+        resource=table_id,
+        params=_sanitize_for_audit(
+            {
+                "as_user": request.as_user,
+                "as_groups": request.as_groups,
+                "candidate_sql": request.sql,
+                "rows_visible": int(rows_visible),
+                "rows_total": int(rows_total),
+            }
+        ),
+    )
+
+    return {
+        "columns": columns,
+        "sample_rows": sample_rows,
+        "rows_visible": int(rows_visible),
+        "rows_total": int(rows_total),
+    }
 
 
 class _GotchaItem(BaseModel):
@@ -4523,10 +5503,22 @@ def _build_keboola_discovery_plan(
     # the single-row test stubs working without forcing them to
     # implement list_all.
     try:
-        all_rows = [r for r in repo.list_all() if r.get("source_type") == "keboola"]
+        registry_rows = repo.list_all()
     except AttributeError:
-        all_rows = []
+        registry_rows = []
+    all_rows = [r for r in registry_rows if r.get("source_type") == "keboola"]
     by_name: dict[str, dict] = {(r.get("name") or "").strip().lower(): r for r in all_rows}
+    # §3.2 — one pass over the policied rows, so the physical-source-twin
+    # check below is an O(1) dict hit per discovered entry rather than a
+    # fresh `list_all()` scan each time (discovery routinely walks
+    # hundreds of tables). Same signal vocabulary as the register/update
+    # interlocks, via `_policy_physical_source_signals`.
+    policied_by_signal: dict = {}
+    for row in registry_rows:
+        if not row.get("access_policy_sql"):
+            continue
+        for signal in _policy_physical_source_signals(row):
+            policied_by_signal.setdefault(signal, row)
 
     plan = {"new": [], "existing_match": [], "existing_drift": [], "invalid": []}
     for table in discovered:
@@ -4592,6 +5584,44 @@ def _build_keboola_discovery_plan(
                     "registry_source_table": name_match.get("source_table") or "",
                     "registry_id": name_match.get("id"),
                     "drift_kind": "name_collision",
+                }
+            )
+            continue
+
+        # §3.2 — the physical-source twin. Everything the writer takes out
+        # of `new` is registered as `query_mode='materialized'` with no
+        # `server_only`: the distributable shape `agnes pull` downloads,
+        # and one whose next sync tick writes the raw rows to parquet with
+        # no further admin action. The id/name checks above do NOT cover
+        # this: a policied row that was renamed, or registered under a
+        # hand-picked id, matches neither — so discovery would insert a
+        # twin of it and route the policy around in bulk. Classify it
+        # `invalid` (rather than raising) so one governed table never
+        # aborts a whole discovery run, and the operator sees in the
+        # dry-run exactly which row blocked it and why.
+        my_signals = _policy_physical_source_signals(
+            {
+                "source_type": "keboola",
+                "bucket": bucket,
+                "source_table": source_table,
+            }
+        )
+        policied_twin = next(
+            (policied_by_signal[s] for s in my_signals if s in policied_by_signal),
+            None,
+        )
+        if policied_twin is not None:
+            plan["invalid"].append(
+                {
+                    **entry,
+                    "reason": (
+                        "access_policy_physical_source_conflict: this source is already "
+                        f"registered as {policied_twin.get('id')!r} "
+                        f"({policied_twin.get('name')!r}) with an access policy attached -- "
+                        "auto-discovery would register a distributable copy that routes the "
+                        "policy around; register it by hand with server_only=true if you "
+                        "need a second row"
+                    ),
                 }
             )
             continue

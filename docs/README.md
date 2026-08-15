@@ -34,6 +34,7 @@ Deploying, configuring, and running an Agnes instance.
 - [`runbooks/wal-recovery.md`](runbooks/wal-recovery.md) — incident runbook: recovering `system.duckdb` from a WAL-replay failure
 - [`../SECURITY.md`](../SECURITY.md) — threat model, trust boundaries, known limitations, operator security checklist
 - [`RBAC.md`](RBAC.md) — access control: groups, members, resource grants
+- [`table-access-policies.md`](table-access-policies.md) — per-table SQL policies: row filtering + column masking by caller identity
 - [`auth-google-oauth.md`](auth-google-oauth.md) — Google OAuth setup + operator gotchas
 - [`auth-groups.md`](auth-groups.md) — Google Workspace group sync
 - [`admin/query-modes.md`](admin/query-modes.md) — table registration query modes, and `server_only` for queryable-but-never-distributed tables
