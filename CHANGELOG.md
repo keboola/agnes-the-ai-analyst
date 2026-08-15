@@ -10,6 +10,21 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- **macOS desktop client MVP.** A small Marketplace-first native client can
+  locate an already configured Agnes CLI, show executable-path/version health,
+  browse Marketplace results, inspect item details, and confirm add/remove
+  actions through existing CLI commands. Its My Stack shelf loads the account's
+  actual stack membership through `agnes my-stack show --json`; after a
+  stack change, the open detail sheet exposes the existing Claude Code
+  `/update-agnes-plugins` activation step. One-shot Ask uses a manually entered
+  agent slug; it intentionally does not call the web-session-only `agnes agent
+  list` management command.
+  The client delegates authentication and all Agnes access to the installed
+  CLI; multi-turn history, uploads, credential storage, signing, notarization,
+  and distribution remain out of scope. See `clients/macos/README.md`.
+
 ## [0.83.22] - 2026-08-15
 
 ### Fixed
