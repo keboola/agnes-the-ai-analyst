@@ -381,14 +381,19 @@ class TestSoftDowngradePreservesUserStack:
 
 
 class TestSoftDowngradeClassicFanOut:
-    """Classic (default) sibling of the class above: membership is the
-    subscribe model, so the ``required → available`` downgrade MUST eagerly
-    fan out subscription rows to the group's members — the pre-redesign v49
-    behavior (spec 2026-08-07-default-chrome-ux-parity) — or they silently
-    lose the resource from their stack."""
+    """Classic sibling of the class above: membership is the subscribe
+    model, so the ``required → available`` downgrade MUST eagerly fan out
+    subscription rows to the group's members — the pre-redesign v49 behavior
+    (spec 2026-08-07-default-chrome-ux-parity) — or they silently lose the
+    resource from their stack.
+
+    Classic is no longer the presetless default (Wave 0, 2026-08, coupled the
+    sole remaining `redesign` experience to auto-membership) — forced below
+    via the still-fully-supported explicit per-knob override, which wins over
+    any preset."""
 
     def test_required_to_available_fans_out_subscriptions(self, seeded_app, monkeypatch):
-        monkeypatch.delenv("AGNES_STACK_AUTO_MEMBERSHIP", raising=False)
+        monkeypatch.setenv("AGNES_STACK_AUTO_MEMBERSHIP", "0")
 
         conn = get_system_db()
         gid = _seed_group_with(

@@ -232,26 +232,6 @@ def test_library_lists_only_accessible(seeded_app):
     assert "Hidden From Analyst" not in r.text
 
 
-def test_legacy_library_lists_only_accessible_on_topnav(seeded_app, monkeypatch):
-    """The topnav /library branch is DISTINCT code (main's pre-merge handler:
-    get_accessible_ids filter + admin bypass + collection cards) and it is what
-    every default instance runs — its RBAC filter needs its own pin, not just
-    the rail twin above (this file's autouse fixture forces rail everywhere
-    else)."""
-    monkeypatch.setenv("AGNES_UI_LAYOUT", "topnav")
-    c = seeded_app["client"]
-    _create(seeded_app, "Hidden From Analyst Legacy")
-
-    r = c.get("/library", headers=_auth(seeded_app["analyst_token"]))
-    assert r.status_code == 200
-    assert "Your collections" in r.text, "topnav must render the legacy page"
-    # analyst1 has no COLLECTION grant → the row must be filtered out…
-    assert "Hidden From Analyst Legacy" not in r.text
-    # …while the admin bypass still lists it.
-    a = c.get("/library", headers=_auth(seeded_app["admin_token"]))
-    assert "Hidden From Analyst Legacy" in a.text
-
-
 def test_single_file_artefact_presents_as_file(seeded_app, monkeypatch):
     """One file in an artefact reads AS the file — single-document glyph,
     filename + size in the meta, "File" framing, never "a collection with 1
@@ -446,15 +426,20 @@ def test_library_available_grant_reads_in_stack_and_offers_no_toggle(seeded_app,
 
 
 def test_library_available_grant_classic_is_not_claimed_in_stack(seeded_app, monkeypatch):
-    """CLASSIC (the default): a granted-but-unsubscribed ``available``
-    package is NOT a stack member — membership is required ∪ subscribed, and
-    it also drives query authorization — so the row must not claim
-    "In Stack", must not land in the "In stack only" filter bucket, and
-    points the caller at the Catalog to add it (Devin Review on #1199).
-    A subscribed one renders as a member again."""
+    """CLASSIC: a granted-but-unsubscribed ``available`` package is NOT a
+    stack member — membership is required ∪ subscribed, and it also drives
+    query authorization — so the row must not claim "In Stack", must not
+    land in the "In stack only" filter bucket, and points the caller at the
+    Catalog to add it (Devin Review on #1199). A subscribed one renders as a
+    member again.
+
+    Classic is no longer the presetless default (Wave 0, 2026-08, coupled the
+    sole remaining `redesign` experience to auto-membership) — forced here
+    via the still-fully-supported explicit per-knob override, which wins over
+    any preset."""
     from src.db import get_system_db
 
-    monkeypatch.delenv("AGNES_STACK_AUTO_MEMBERSHIP", raising=False)
+    monkeypatch.setenv("AGNES_STACK_AUTO_MEMBERSHIP", "0")
     conn = get_system_db()
     pkg_id = _grant_package(
         conn, slug="classic-avail-pkg", name="Classic Offered Package", user_id="analyst1", requirement="available"

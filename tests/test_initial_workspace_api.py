@@ -318,8 +318,8 @@ def test_persist_overlay_token_concurrent_writes(clean_env):
     assert errors == [], errors
 
     overlay_text = (_state_dir() / ".env_overlay").read_text()
-    lines = [l for l in overlay_text.splitlines() if l]
-    pairs = dict(l.split("=", 1) for l in lines)
+    lines = [line for line in overlay_text.splitlines() if line]
+    pairs = dict(line.split("=", 1) for line in lines)
     assert pairs.get("AGNES_KEY_A") == "value_a", pairs
     assert pairs.get("AGNES_KEY_B") == "value_b", pairs
 
@@ -918,11 +918,14 @@ def test_server_config_still_renders_after_iw_relocation(web_client):
 
 def test_nav_header_has_initial_workspace_link():
     """The Agent Experience nav group must link the new page (content
-    assertion on the partial — it renders inside every authed page)."""
+    assertion on the partial — it renders inside every authed page).
+
+    Retargeted to ``_app_rail.html`` — rail is the only chrome since Wave 0
+    (2026-08 legacy retirement); ``_app_header.html`` is deleted."""
     from pathlib import Path
 
-    text = Path("app/web/templates/_app_header.html").read_text(encoding="utf-8")
-    assert 'href="/admin/initial-workspace"' in text
+    text = Path("app/web/templates/_app_rail.html").read_text(encoding="utf-8")
+    assert "'href': '/admin/initial-workspace'" in text
     assert "/admin/initial-workspace" in text  # also in the _admin_active set
 
 
@@ -952,14 +955,10 @@ def test_dry_run_errors_on_required_connector_missing_body(monkeypatch):
         "src.connectors_manifest.load_manifest",
         lambda: [_probe_entry("connector-req", required=True)],
     )
-    monkeypatch.setattr(
-        "app.web.setup_instructions._load_connector_body", lambda slug: None
-    )
+    monkeypatch.setattr("app.web.setup_instructions._load_connector_body", lambda slug: None)
     summary = api._compute_render_dry_run()
     assert summary["ok"] is False
-    assert any(
-        "connector-req" in e and "required" in e for e in summary["errors"]
-    ), summary["errors"]
+    assert any("connector-req" in e and "required" in e for e in summary["errors"]), summary["errors"]
 
 
 class _FakePromptMetaRepo:
@@ -1052,16 +1051,11 @@ def test_dry_run_errors_on_token_placeholder_in_non_canonical_bound_file(monkeyp
     monkeypatch.setattr(iw, "resolve_seed_file", fake_resolve)
     monkeypatch.setattr(
         "src.repositories.welcome_template_repo",
-        lambda: _FakePromptMetaRepo(
-            {"source_mode": "git", "git_path": "install-prompt/custom.md.tmpl"}
-        ),
+        lambda: _FakePromptMetaRepo({"source_mode": "git", "git_path": "install-prompt/custom.md.tmpl"}),
     )
     summary = api._compute_render_dry_run()
     assert summary["ok"] is False
-    assert any(
-        "install-prompt/custom.md.tmpl" in e and "{token}" in e
-        for e in summary["errors"]
-    ), summary["errors"]
+    assert any("install-prompt/custom.md.tmpl" in e and "{token}" in e for e in summary["errors"]), summary["errors"]
 
 
 def test_dry_run_canonical_token_hit_downgrades_when_bound_elsewhere(monkeypatch):
@@ -1082,9 +1076,7 @@ def test_dry_run_canonical_token_hit_downgrades_when_bound_elsewhere(monkeypatch
     monkeypatch.setattr(iw, "resolve_seed_file", fake_resolve)
     monkeypatch.setattr(
         "src.repositories.welcome_template_repo",
-        lambda: _FakePromptMetaRepo(
-            {"source_mode": "git", "git_path": "install-prompt/custom.md.tmpl"}
-        ),
+        lambda: _FakePromptMetaRepo({"source_mode": "git", "git_path": "install-prompt/custom.md.tmpl"}),
     )
     summary = api._compute_render_dry_run()
     assert summary["ok"] is True
@@ -1099,9 +1091,7 @@ def test_dry_run_warns_on_optional_connector_missing_body(monkeypatch):
         "src.connectors_manifest.load_manifest",
         lambda: [_probe_entry("connector-opt", required=False)],
     )
-    monkeypatch.setattr(
-        "app.web.setup_instructions._load_connector_body", lambda slug: None
-    )
+    monkeypatch.setattr("app.web.setup_instructions._load_connector_body", lambda slug: None)
     summary = api._compute_render_dry_run()
     assert summary["ok"] is True
     assert summary["errors"] == []
