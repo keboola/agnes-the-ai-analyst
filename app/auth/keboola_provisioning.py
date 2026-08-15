@@ -774,14 +774,22 @@ def sync_group_memberships(
     from src.repositories import user_group_members_repo
 
     members = user_group_members_repo()
-    current = {
-        row["group_id"]
-        for row in members.list_groups_with_meta_for_user(user_id)
-        if row.get("source") == MEMBERSHIP_SOURCE
-    }
+    rows = members.list_groups_with_meta_for_user(user_id)
+    current = {row["group_id"] for row in rows if row.get("source") == MEMBERSHIP_SOURCE}
+    member_of_any_source = {row["group_id"] for row in rows}
     desired = set(desired_group_ids)
     added = removed = 0
     for group_id in sorted(desired - current):
+        if group_id in member_of_any_source:
+            # The pair already exists through another writer (admin,
+            # system_seed, google_sync). ``add_member`` would keep that
+            # source and write nothing — so the report must not count a
+            # membership this login did not add, or `memberships_added`
+            # claims the same admin-assigned pairs afresh on every sign-in
+            # (Devin Review on this PR, eighteenth round). It stays that
+            # source's to manage, exactly like the removals below never
+            # touch it.
+            continue
         members.add_member(user_id=user_id, group_id=group_id, source=MEMBERSHIP_SOURCE, added_by=MEMBERSHIP_ADDED_BY)
         added += 1
     if not allow_removals:

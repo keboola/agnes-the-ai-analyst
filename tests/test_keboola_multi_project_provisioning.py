@@ -358,6 +358,28 @@ class TestAutoProvision:
         assert connection_secrets_repo().get(connection_id) == "pat-516-fresh"
         assert not connection_secrets_repo().has(master_secret_key(connection_id))
 
+    def test_admin_assigned_membership_is_not_recounted_as_added(self, env, pat_mocks):
+        """A pair the admin assigned by hand stays the admin's — and the
+        report must not claim it as freshly added on every sign-in: the
+        add would be an ON CONFLICT no-op, so counting it inflated
+        `memberships_added` forever (Devin Review on this PR, eighteenth
+        round)."""
+        from src.repositories import user_group_members_repo, user_groups_repo
+
+        projects = [P("516", "Agnes - test", "admin")]
+        group = user_groups_repo().ensure("kbc-516-admin", created_by="admin@example.com")
+        user_group_members_repo().add_member(
+            user_id="u1", group_id=group["id"], source="admin", added_by="admin@example.com"
+        )
+
+        summary = kprov.provision_projects(env["user"], projects, projects, "at-1")
+        assert summary.memberships_added == 0
+        rows = {r["group_id"]: r for r in user_group_members_repo().list_groups_with_meta_for_user("u1")}
+        assert rows[group["id"]]["source"] == "admin"
+
+        second = kprov.provision_projects(env["user"], projects, projects, "at-2")
+        assert second.memberships_added == 0
+
     def test_failed_mint_defers_neither_grants_nor_enable_until_a_token_lands(self, env, pat_mocks, monkeypatch):
         """The two background lists ride ONE decision: a connection with no
         storable credential is neither enqueued for the chat-tools enable nor
