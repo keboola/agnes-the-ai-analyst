@@ -749,3 +749,59 @@ class TestSelectModeStash:
         summary = kprov.provision_projects(env["user"], [], projects, "at-2")
         assert summary.outcomes == []
         assert _kbc_memberships("u1") == {"kbc-516-admin"}
+
+
+class TestDefaultConnectionFallback:
+    """Auto-provisioned rows must not displace an admin's connection as the
+    semantic layer's effective default (Devin Review, ninth round): the
+    no-``is_default``-flagged fallback is name-ordered, and login rows are
+    named after Keboola projects, so one could otherwise sort first."""
+
+    def _admin_connection(self, name: str = "Zebra corp", **kwargs):
+        from uuid import uuid4
+
+        from src.repositories import source_connections_repo
+
+        connection_id = str(uuid4())
+        source_connections_repo().create(
+            id=connection_id,
+            name=name,
+            source_type="keboola",
+            config={"stack_url": STACK},
+            created_by="admin@example.com",
+            **kwargs,
+        )
+        return connection_id
+
+    def test_admin_row_beats_earlier_sorting_login_row(self, env, pat_mocks):
+        from connectors.keboola.semantic_layer import _default_keboola_connection
+
+        admin_id = self._admin_connection("Zebra corp")
+        projects = [P("516", "Agnes - test", "admin")]  # sorts before "Zebra corp"
+        kprov.provision_projects(env["user"], projects, projects, "at-1")
+
+        picked = _default_keboola_connection()
+        assert picked is not None and picked["id"] == admin_id
+
+    def test_explicit_default_flag_still_wins(self, env, pat_mocks):
+        from src.repositories import source_connections_repo
+
+        from connectors.keboola.semantic_layer import _default_keboola_connection
+
+        self._admin_connection("Zebra corp")
+        projects = [P("516", "Agnes - test", "admin")]
+        kprov.provision_projects(env["user"], projects, projects, "at-1")
+        login_row = _connection_for("516")
+        source_connections_repo().update(login_row["id"], is_default=True)
+
+        picked = _default_keboola_connection()
+        assert picked is not None and picked["id"] == login_row["id"]
+
+    def test_pure_auto_instance_keeps_name_ordered_fallback(self, env, pat_mocks):
+        from connectors.keboola.semantic_layer import _default_keboola_connection
+
+        projects = [P("516", "Beta project", "admin"), P("7", "Alpha project", "readOnly")]
+        kprov.provision_projects(env["user"], projects, projects, "at-1")
+
+        picked = _default_keboola_connection()
+        assert picked is not None and picked["id"] == _connection_for("7")["id"]

@@ -61,6 +61,12 @@ MEMBERSHIP_ADDED_BY = "system:keboola-sync"
 #: comparison.
 ADMIN_ROLE = "admin"
 
+#: ``config["provisioned_by"]`` marker stamped on every connection this
+#: module creates. Readers: the ownership-repair path below, and the
+#: semantic layer's default-connection fallback, which must never let a
+#: login-auto-provisioned row displace an admin-created connection.
+LOGIN_PROVISIONED_BY = "keboola_login"
+
 #: Reserved per-user-secrets ``source_id`` under which a ``select``-mode
 #: login stashes its pending discovery (OAuth access token + project list,
 #: vault-encrypted) until the user imports. Never collides with derived
@@ -353,7 +359,7 @@ def _mint_and_store_tokens(
     # Read + preflight the stored token once, for both the reuse check (our
     # row) and the dead-credential repair check (a login-provisioned row
     # whose owner lost the project — see below).
-    login_provisioned = config.get("provisioned_by") == "keboola_login"
+    login_provisioned = config.get("provisioned_by") == LOGIN_PROVISIONED_BY
     stored: Optional[str] = None
     if may_storage or login_provisioned:
         try:
@@ -608,7 +614,7 @@ def _provision_one(
                     "project_id": project.id,
                     "project_name": project.name,
                     "user_email": user_email,
-                    "provisioned_by": "keboola_login",
+                    "provisioned_by": LOGIN_PROVISIONED_BY,
                 },
                 created_by=user.get("id"),
             )
@@ -669,7 +675,7 @@ def _provision_one(
     # - source present but DISABLED (or tool-less) → hands off entirely. The
     #   off-switch is an admin decision; auto-granting (or re-enabling) from
     #   a login would widen access the admin deliberately cut.
-    login_provisioned_row = (connection.get("config") or {}).get("provisioned_by") == "keboola_login"
+    login_provisioned_row = (connection.get("config") or {}).get("provisioned_by") == LOGIN_PROVISIONED_BY
     try:
         source_row = mcp_sources_repo().get(derived_source_id(connection["id"]))
         has_tools = bool(tool_registry_repo().list_for_source(derived_source_id(connection["id"])))
