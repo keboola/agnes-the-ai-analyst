@@ -1480,6 +1480,47 @@ class SyncOrchestrator:
                 parts = None
                 out_size = size_bytes or 0
                 if pq_path.exists():
+                    # TODO(#1339): the flat file winning is a precedence choice, not a
+                    # verdict — when both layouts are present the partitioned
+                    # data is almost certainly the fresh one. Flipping it (and
+                    # the matching `app/utils.py::resolve_local_parquet_glob`,
+                    # which prefers the single file the same way) plus removing
+                    # the stale sibling server-side needs a decision about
+                    # in-flight readers, so for now this only warns.
+                    # Existence probe only — deliberately NOT `_hash_table_parts`,
+                    # which full-MD5s every part just to yield a truthy value.
+                    # Two reasons: the dual-layout state can persist
+                    # indefinitely, and `rebuild_source` runs on every Jira
+                    # webhook, so that would re-hash the whole partition dir per
+                    # event while holding `rebuild_mutex()`. And this sits inside
+                    # the try/except wrapping the WHOLE meta_rows loop, so a raise
+                    # here would skip sync_state for every remaining table in the
+                    # source — a diagnostic must never break what it diagnoses,
+                    # hence the OSError guard around a mid-scan prune.
+                    try:
+                        both_layouts = next(table_dir.rglob("*.parquet"), None) is not None
+                    except OSError:
+                        both_layouts = False
+                    if both_layouts:
+                        # Both layouts on disk. Distribution silently freezes:
+                        # the manifest advertises this as a single-file table
+                        # hashed from the STALE parquet, so `agnes pull`
+                        # downloads it and the md5 MATCHES — analysts keep
+                        # getting pre-conversion data indefinitely while the
+                        # server's own view reads the fresh partitions. No
+                        # error surfaces anywhere, which is why this warns
+                        # loudly. Nothing removes the sibling: a Keboola table
+                        # flipped to `sync_strategy: partitioned` leaves the
+                        # old `<table>.parquet` behind, and the client-side
+                        # `_drop_stale_layout` has no server equivalent.
+                        logger.warning(
+                            "%s has BOTH a flat parquet (%s) and a partition dir (%s); "
+                            "serving the flat file — the partitioned data is NOT being "
+                            "distributed. Remove the stale flat parquet.",
+                            table_name,
+                            pq_path,
+                            table_dir,
+                        )
                     # Single-file table: full content MD5 (see docstring).
                     h = hashlib.md5()
                     with open(pq_path, "rb") as f:

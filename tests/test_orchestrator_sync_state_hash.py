@@ -114,6 +114,67 @@ def test_update_sync_state_empty_hash_when_parquet_missing(system_db_path, tmp_p
     assert state["hash"] == ""
 
 
+def test_update_sync_state_warns_when_both_layouts_present(system_db_path, parquet_with_known_md5, tmp_path, caplog):
+    """A flat parquet sitting beside a partition dir freezes distribution
+    SILENTLY, so it has to be logged.
+
+    `_update_sync_state` prefers the flat file, which means the manifest
+    advertises the table as single-file hashed from the STALE parquet. The
+    client downloads it and the md5 MATCHES — `agnes pull` reports success
+    while the analyst keeps receiving pre-conversion data indefinitely and the
+    server's own view reads the fresh partitions. Nothing else surfaces this,
+    and nothing removes the stale sibling (a Keboola table flipped to
+    `sync_strategy: partitioned` leaves it behind; the client-side
+    `_drop_stale_layout` has no server equivalent).
+    """
+    pq_path, _ = parquet_with_known_md5
+    # Same table, now ALSO partitioned: extracts/keboola/data/orders/<part>.
+    part_dir = pq_path.parent / "orders" / "month=2026-06"
+    part_dir.mkdir(parents=True)
+    (part_dir / "data.parquet").write_bytes(b"PAR1fresh-partitioned-dataPAR1")
+
+    with caplog.at_level("WARNING"):
+        _run_update(
+            system_db_path,
+            meta_rows=[("orders", 100, pq_path.stat().st_size, "local")],
+            data_dir=tmp_path,
+        )
+
+    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert any("BOTH a flat parquet" in w and "orders" in w for w in warnings), (
+        f"both-layouts-on-disk must warn — it is otherwise invisible; got {warnings!r}"
+    )
+
+    # Logging only: the warning must not change what gets written. Precedence
+    # is unchanged (flat file still wins, `parts` still NULL) — flipping it is
+    # the deferred follow-up the TODO in `_update_sync_state` describes.
+    conn = duckdb.connect(str(system_db_path))
+    try:
+        state = SyncStateRepository(conn).get_table_state("orders")
+    finally:
+        conn.close()
+    assert state["hash"] == hashlib.md5(pq_path.read_bytes()).hexdigest(), (
+        "the flat file must still win — this change only reports the condition"
+    )
+    assert not state.get("parts"), "parts must still be NULL when the flat file wins"
+
+
+def test_update_sync_state_silent_when_only_one_layout_present(
+    system_db_path, parquet_with_known_md5, tmp_path, caplog
+):
+    """The healthy single-file case must NOT warn, or the signal is noise."""
+    pq_path, _ = parquet_with_known_md5
+    with caplog.at_level("WARNING"):
+        _run_update(
+            system_db_path,
+            meta_rows=[("orders", 100, pq_path.stat().st_size, "local")],
+            data_dir=tmp_path,
+        )
+    assert not [r for r in caplog.records if "BOTH a flat parquet" in r.getMessage()], (
+        "a normal single-file table must not warn"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Partitioned tables: per-part hashing (partitioned distribution).
 # A table stored as a directory of parquet parts (Jira hive

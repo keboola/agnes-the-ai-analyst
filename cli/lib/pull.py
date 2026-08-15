@@ -168,6 +168,14 @@ def _safe_manifest_tables(raw: dict) -> tuple[dict, list[str]]:
 _DOWNLOAD_RETRIES = 2
 _DOWNLOAD_RETRY_BACKOFFS_S = (0.5, 1.0)
 
+
+def _retry_backoff(attempt: int) -> float:
+    """Seconds to wait before re-attempting a failed download. Clamps to the
+    tail of the schedule so `_DOWNLOAD_RETRIES` can be raised (or monkeypatched
+    in tests) without having to extend `_DOWNLOAD_RETRY_BACKOFFS_S` in step."""
+    return _DOWNLOAD_RETRY_BACKOFFS_S[min(attempt, len(_DOWNLOAD_RETRY_BACKOFFS_S) - 1)]
+
+
 # WF-4 (wave 2H) — direct-to-object-storage fetch of a manifest `signed_url`.
 # Bounded connect/read timeouts so a stalled object-store endpoint doesn't
 # hang the whole pull; the app-served fallback below has its own budget.
@@ -625,6 +633,50 @@ def _drop_stale_layout(parquet_dir: Path, tid: str, *, partitioned: bool) -> Non
             shutil.rmtree(stale_dir, ignore_errors=True)
 
 
+def _fetch_part_with_retry(fetch_part, relpath: str, dest: Path, expected: str) -> str | None:
+    """Fetch ONE part into ``dest`` and md5-verify it, retrying a bad fetch on
+    the same bounded budget ``_download_one`` gives a single-file table
+    (``_DOWNLOAD_RETRIES`` extra attempts, ``_DOWNLOAD_RETRY_BACKOFFS_S``
+    between them). Returns ``None`` on success, else the last error string.
+
+    Exists for parity with `_download_one` (#596/#626): the partitioned path
+    added later fetched each part exactly once, so one bad part aborted the
+    whole table's sync.
+
+    Both failure kinds retry, matching `_download_one`: a transport error and a
+    hash mismatch are equally plausible symptoms of one flaky transfer, and the
+    caller cannot tell them apart anyway.
+
+    No empty-hash PAR1 fallback, unlike `_verify_and_promote`: the server
+    derives every part hash from file content in `_hash_table_parts`, so an
+    empty ``expected`` is a malformed manifest and should fail loudly rather
+    than downgrade to a structural check. Verified parts are staged, not
+    promoted — the all-or-nothing swap lives in the caller.
+
+    Note this sits ON TOP of `stream_download`'s own transient-error retries,
+    so a persistently failing part now costs up to (its attempts x these) round
+    trips, serially, before the table gives up.
+    """
+    last_err: str | None = None
+    for attempt in range(_DOWNLOAD_RETRIES + 1):
+        try:
+            fetch_part(relpath, dest)
+            got = _file_md5(dest)
+            if got == expected:
+                return None
+            # Truncated like `_verify_and_promote`'s message — same failure,
+            # same shape, whichever layout the table happens to use.
+            last_err = f"part {relpath} hash mismatch: expected {expected[:12]}, got {got[:12]}"
+        except Exception as exc:
+            last_err = f"part {relpath} fetch failed: {exc}"
+        # Never leave a rejected part's bytes in staging: the next attempt must
+        # not be able to verify a stale file if its fetch dies before writing.
+        dest.unlink(missing_ok=True)
+        if attempt < _DOWNLOAD_RETRIES:
+            time.sleep(_retry_backoff(attempt))
+    return last_err
+
+
 def _sync_partitioned_table(
     tid: str,
     server_parts: list[dict],
@@ -639,8 +691,10 @@ def _sync_partitioned_table(
     Staged-then-swapped: changed parts are fetched into a staging dir and
     md5-verified there; only when EVERY fetched part verifies are they moved
     into the table dir (unchanged parts stay put) and server-dropped parts
-    pruned. On any fetch/verify failure nothing is moved — the prior table dir
-    is left intact. The per-part moves themselves are not one atomic unit, so a
+    pruned. Each part is fetched through ``_fetch_part_with_retry``; only when
+    a part fails every attempt does the table abort, moving nothing and leaving
+    the prior table dir intact. The per-part moves themselves are not one
+    atomic unit, so a
     process crash *during* the swap can leave a mix of old/new parts; that is
     self-healing — ``local_tables`` is only updated on success, so the next
     pull re-detects and re-syncs the affected parts.
@@ -662,10 +716,9 @@ def _sync_partitioned_table(
             relpath, expected = part["path"], part["hash"]
             dest = staging / relpath
             dest.parent.mkdir(parents=True, exist_ok=True)
-            fetch_part(relpath, dest)
-            got = _file_md5(dest)
-            if got != expected:
-                return None, False, f"part {relpath} hash mismatch: expected {expected} got {got}"
+            err = _fetch_part_with_retry(fetch_part, relpath, dest, expected)
+            if err is not None:
+                return None, False, err
             staged[relpath] = dest
         # Every fetched part verified → promote atomically, then prune.
         for relpath, dest in staged.items():
@@ -685,11 +738,13 @@ def _sync_partitioned_table(
             None,
         )
     except Exception as exc:
-        # A transport/IO error (e.g. `stream_download` network blip) or a
-        # promote/prune failure must be RETURNED as a per-table error, not
-        # raised — otherwise one flaky partitioned table would abort the whole
-        # pull and discard tables that already downloaded fine. All-or-nothing
-        # still holds: nothing was promoted, the prior table dir is intact.
+        # Staging/promote/prune IO failures land here; per-part fetch errors do
+        # not (`_fetch_part_with_retry` catches those to retry them, and returns
+        # the last one). Either way the failure must be RETURNED as a per-table
+        # error, not raised — otherwise one flaky partitioned table would abort
+        # the whole pull and discard tables that already downloaded fine.
+        # All-or-nothing still holds: nothing was promoted, the prior table dir
+        # is intact.
         return None, False, f"partitioned sync failed: {exc}"
     finally:
         if staging.exists():
