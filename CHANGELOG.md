@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.83.19] - 2026-08-15
+
 ### Added
 
 - **Web chat: model-suggested follow-ups as one-click buttons.** The workspace prompt now asks the agent to end each answer with a fenced ```next_actions block (one short follow-up prompt per `- ` line); the chat lifts the block out of the reply — it never appears as text, in the transcript or on the clipboard — and renders the lines as buttons under the latest answer. Clicking one submits it as the next message. History reloads restore the buttons under the newest answer, and they age out the moment the conversation moves on. The contract lives in both prompt surfaces: the rendered sandbox prompt (`config/claude_md_template.txt`, `is_sandbox`-gated — a terminal session has nothing that lifts the fence) and the bundled fallback workspace. Slack replies ride the same sandbox sessions with no buttons wired to the trailer, so the Slack sink strips it the way it already strips the sources fence — never applied before persistence, which is where the web client re-extracts the buttons from on reload. `agnes chat <slug>` — the other human surface on these sessions — strips it at render time too (a hold-and-release gate over the live token stream, since a terminal cannot un-print), while the AG-UI wire format and `--once --json` deliberately stay raw for programmatic callers, the same line the sources fence draws.
@@ -54,6 +56,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Removed
 
 - Dead `auth.disabled_providers` example config (never consumed) — superseded by `auth.providers`.
+
+### Internal
+
+- Semantic-layer groundwork: `src/semantic_validation.py` — pure validator core over semantic-model documents (used-object detection, constraint evaluation with static/post-execution split, dialect checks incl. `locally_executable`). No user-visible surface yet; REST/CLI/MCP wiring and the UI land with the storage slice per `docs/superpowers/specs/2026-08-14-semantic-layer-ui-and-agent-parity-design.md`.
 
 ## [0.83.18] - 2026-08-14
 
