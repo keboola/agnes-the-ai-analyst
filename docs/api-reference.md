@@ -1233,8 +1233,15 @@ by-slug surface but keep their grants for a lossless re-link.
 `agnes-live` branch, mints a fresh PAT scoped to `data-app:<slug>` (revoking
 the previous one), decrypts the app's stored secrets, builds the runtime
 `config.json` + container spec, and hands both to the `apps-runner` sidecar.
-A dead/erroring sidecar sets the app's state to `error` and returns 502
-`runner_unavailable`. `POST /reap-idle` is `require_admin`-gated (the
+A failed runner call sets the app's state to `error` (with the runner's own
+message in `state_detail`, which the detail response carries) and returns 502.
+The two causes are reported apart, because they send an operator to different
+places: `runner_unavailable` means the sidecar never answered — it is down,
+unreachable, or slower than the client timeout — while `runner_error: <code>`
+means it answered and named the problem (`image_not_found`,
+`image_not_allowed`, `bad_runner_token`, `docker_error: …`). Collapsing the
+second into the first blames a healthy, responding process; `GET /{slug}/logs`
+reports the same pair the same way. `POST /reap-idle` is `require_admin`-gated (the
 scheduler's shared-secret token resolves to a synthetic Admin user) and
 stops any `running` app idle longer than its own `idle_timeout_s`.
 

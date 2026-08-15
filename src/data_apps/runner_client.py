@@ -6,6 +6,37 @@ from typing import Any, Optional
 import httpx
 
 
+# Read budget for the cheap calls (status/stop/resume/logs). Short on
+# purpose: these do no I/O beyond a local Docker query, so anything slower
+# than this really is a wedged sidecar worth reporting as unavailable.
+_DEFAULT_TIMEOUT = 60.0
+
+# `up` is the outlier. It is the only call that can trigger a cold image
+# pull: the runtime image is ~1.3 GB and on a host that has never run a data
+# app the daemon fetches it *inside* this request. Under the 60 s budget the
+# pull was cut off mid-stream, docker-py's retried `create` then raised
+# ImageNotFound, and the deploy died reporting a missing image that was in
+# fact merely still downloading. Pre-pulling (startup script +
+# agnes-auto-upgrade) is the real fix; this is the backstop for every path
+# that still reaches a cold host, and is tunable because link speed is a
+# per-deployment fact.
+_UP_TIMEOUT_ENV = "APPS_RUNNER_UP_TIMEOUT"
+_UP_TIMEOUT_DEFAULT = 600.0
+
+
+def up_timeout() -> float:
+    """The read budget for ``up``, in seconds.
+
+    Public because it is not only this client's business: the per-app op
+    lease in ``app/api/data_apps.py`` derives its TTL from this value so the
+    lease always outlives the deploy it serializes.
+    """
+    try:
+        return float(os.environ.get(_UP_TIMEOUT_ENV, "") or _UP_TIMEOUT_DEFAULT)
+    except ValueError:
+        return _UP_TIMEOUT_DEFAULT
+
+
 class RunnerUnavailable(RuntimeError):
     pass
 
@@ -30,9 +61,9 @@ class RunnerClient:
         self._token = token or os.environ.get("APPS_RUNNER_TOKEN", "")
         self._transport = transport
 
-    def _request(self, method: str, path: str, **kw: Any) -> dict[str, Any]:
+    def _request(self, method: str, path: str, timeout: float = _DEFAULT_TIMEOUT, **kw: Any) -> dict[str, Any]:
         try:
-            with httpx.Client(transport=self._transport, timeout=60) as c:
+            with httpx.Client(transport=self._transport, timeout=timeout) as c:
                 r = c.request(
                     method,
                     f"{self._base}{path}",
@@ -53,6 +84,7 @@ class RunnerClient:
         return self._request(
             "POST",
             f"/apps/{slug}/up",
+            timeout=up_timeout(),
             json={"spec": spec, "config_json": config_json},
         )
 

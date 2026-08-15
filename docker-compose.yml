@@ -184,6 +184,12 @@ services:
       # while actually running --profile apps gets a safe 401, not a
       # silent auth bypass.
       - APPS_RUNNER_TOKEN=${APPS_RUNNER_TOKEN:-}
+      # HTTP timeout for this sidecar's Docker daemon calls. Listed explicitly
+      # because this service has NO `env_file: .env` — unlike `app`, it sees
+      # only what is named here, so a value an operator puts in .env would
+      # otherwise never reach the process and the knob would be dead. Empty
+      # when unset, which the code reads as "use the default" (600s).
+      - APPS_RUNNER_DOCKER_TIMEOUT=${APPS_RUNNER_DOCKER_TIMEOUT:-}
       - APPS_RUNNER_IMAGE_PREFIX=${APPS_RUNNER_IMAGE_PREFIX:-keboolapublic.azurecr.io/data-app-python-js}
       # Image-prefix allowlist for the chat-sandbox half of the API
       # (/sandboxes/*, used when chat.provider=docker). Separate from the
