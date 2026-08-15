@@ -2309,6 +2309,13 @@ KNOWN_UNTESTED = {
     # shape as the Keboola sibling above: scheduler-driven admin maintenance
     # op, no new repo methods/migration. Behaviour covered in
     # tests/test_databricks_semantic_layer_refresh_endpoint.py.
+    # The handler never touches the backend switch itself; the repo calls its
+    # sync drives (metric_repo().create/find_by_name/list/delete, incl. the
+    # source_ref kwarg) are already parity-proven on both backends by
+    # tests/db_pg/test_config_pg.py::test_metric_source_ref_roundtrip and
+    # tests/db_pg/test_ported_methods_contract.py::test_metrics_yaml_reconcile_prunes_on_both_backends
+    # — cited here so this exclusion is self-verifying rather than resting on
+    # "nothing new here".
     "POST /api/admin/run-databricks-semantic-layer-refresh",
     # K3 local knowledge packaging (#798) — scheduler-driven admin maintenance
     # op, mirrors run-corporate-memory. No dual-backend contract test needed
