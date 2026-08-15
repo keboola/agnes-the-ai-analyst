@@ -127,6 +127,8 @@ dist/
 build/
 out/
 target/
+.build/
+.swiftpm/
 
 # SSH keys
 .ssh/
