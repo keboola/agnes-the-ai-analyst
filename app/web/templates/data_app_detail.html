@@ -172,13 +172,13 @@
       });
       if (!r.ok) {
         const err = await r.json().catch(() => ({}));
-        alert("Failed: " + (err.detail || r.status));
+        await alertModal("Failed: " + (err.detail || r.status));
         return;
       }
       const body = await r.json();
       descEl.textContent = body.effective_description || "—";
     } catch (e) {
-      alert("Network error: " + e.message);
+      await alertModal("Network error: " + e.message);
     }
   });
 })();
@@ -216,14 +216,14 @@
       });
       if (!r.ok) {
         const err = await r.json().catch(() => ({}));
-        alert("Failed: " + (err.detail || r.status));
+        await alertModal("Failed: " + (err.detail || r.status));
         btn.disabled = false;
         btn.textContent = prev;
         return;
       }
       location.reload();
     } catch (e) {
-      alert("Network error: " + e.message);
+      await alertModal("Network error: " + e.message);
       btn.disabled = false;
       btn.textContent = prev;
     }
