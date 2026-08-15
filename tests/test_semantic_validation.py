@@ -616,7 +616,9 @@ class TestCrossModelConstraintScoping:
         return {
             "name": "model_b",
             "datasets": [{"name": "orders_b", "source": "analytics.orders_b"}],
-            "metrics": [{"name": "revenue", "expression": {"dialects": [{"dialect": "DUCKDB"}]}}],
+            "metrics": [
+                {"name": "revenue", "expression": {"dialects": [{"dialect": "DUCKDB", "expression": "SUM(amount)"}]}}
+            ],
         }
 
     def _model_a_constraint_only(self) -> dict:
@@ -738,7 +740,9 @@ class TestExpectedObjectsCaseInsensitive:
         document = {
             "name": "m",
             "datasets": [{"name": "orders", "source": "analytics.orders"}],
-            "metrics": [{"name": "revenue", "expression": {"dialects": [{"dialect": "DUCKDB"}]}}],
+            "metrics": [
+                {"name": "revenue", "expression": {"dialects": [{"dialect": "DUCKDB", "expression": "SUM(amount)"}]}}
+            ],
         }
         result = validate_query(
             "SELECT revenue FROM orders",
@@ -989,3 +993,78 @@ class TestUnexpectedDetectedScope:
         )
         assert result["matched_expected_objects"] == [{"type": "Dataset", "name": "orders"}]
         assert result["missing_expected_objects"] == [{"type": "Metric", "name": "nope"}]
+
+
+class TestLabelOnlyDialectEntries:
+    """Devin Review on PR #1319 (round 7): a dialects[] entry that carries a
+    label but no expression body has nothing to compose -- it must not count
+    as a declared dialect (and so cannot flip locally_executable either way)."""
+
+    def test_label_only_entry_is_not_declared(self):
+        document = {
+            "name": "m",
+            "datasets": [{"name": "orders", "source": "analytics.orders"}],
+            "metrics": [{"name": "revenue", "expression": {"dialects": [{"dialect": "SNOWFLAKE"}]}}],
+        }
+        result = check_dialects(document, ["revenue"], target_engine="duckdb")
+        assert result["sql_dialects"] == []
+        # Not executable: the entry is dropped from the declared labels (there
+        # is no fragment behind it), but a metric whose ONLY entries are
+        # label-only composes on no engine at all -- see
+        # TestUnusableDialectEntriesAreNotSilence. The first version of this
+        # test asserted True here, which encoded exactly that hole (Devin
+        # Review on PR #1327).
+        assert result["locally_executable"] is False
+
+    def test_expression_bearing_entry_still_counts(self):
+        document = {
+            "name": "m",
+            "datasets": [{"name": "orders", "source": "analytics.orders"}],
+            "metrics": [
+                {
+                    "name": "revenue",
+                    "expression": {
+                        "dialects": [
+                            {"dialect": "SNOWFLAKE", "expression": 'SUM("amount")'},
+                            {"dialect": "DUCKDB"},
+                        ]
+                    },
+                }
+            ],
+        }
+        result = check_dialects(document, ["revenue"], target_engine="duckdb")
+        assert result["sql_dialects"] == ["SNOWFLAKE"]
+        assert result["locally_executable"] is False
+
+
+class TestUnusableDialectEntriesAreNotSilence:
+    """Devin Review on PR #1327: dropping label-only entries must not make a
+    metric that declares ONLY such entries read as "declares nothing".
+    Nothing can be composed for it on any engine, so it is not locally
+    executable -- while a metric with no expression block at all stays
+    unflagged, as documented."""
+
+    def _metric_document(self, metric: dict) -> dict:
+        return {
+            "name": "m",
+            "datasets": [{"name": "orders", "source": "analytics.orders"}],
+            "metrics": [metric],
+        }
+
+    def test_only_label_only_entries_is_not_locally_executable(self):
+        document = self._metric_document(
+            {"name": "revenue", "expression": {"dialects": [{"dialect": "SNOWFLAKE"}, {"dialect": "BIGQUERY"}]}}
+        )
+        result = check_dialects(document, ["revenue"], target_engine="duckdb")
+        assert result["sql_dialects"] == []
+        assert result["locally_executable"] is False
+
+    def test_no_expression_block_at_all_stays_unflagged(self):
+        document = self._metric_document({"name": "revenue"})
+        result = check_dialects(document, ["revenue"], target_engine="duckdb")
+        assert result["locally_executable"] is True
+
+    def test_empty_dialects_list_stays_unflagged(self):
+        document = self._metric_document({"name": "revenue", "expression": {"dialects": []}})
+        result = check_dialects(document, ["revenue"], target_engine="duckdb")
+        assert result["locally_executable"] is True
