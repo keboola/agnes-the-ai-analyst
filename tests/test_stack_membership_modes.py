@@ -10,7 +10,7 @@ opt-out (`AGNES_STACK_AUTO_MEMBERSHIP=0`); it is simply no longer what an
 unconfigured instance gets, so `TestClassicMode` below forces it explicitly
 instead of relying on an absent env var:
 
-| concern            | classic (default)                      | auto (flag on)              |
+| concern            | classic (explicit opt-out)             | auto (flag on / the default) |
 |--------------------|----------------------------------------|-----------------------------|
 | stack()            | required ∪ (subscribed ∩ available)    | required ∪ available        |
 | browse().in_stack  | id ∈ required ∪ subscribed             | always True                 |
@@ -73,7 +73,9 @@ def seeded(conn):
 
 
 class TestClassicMode:
-    """Default — no flag, no preset: the pre-redesign subscribe model."""
+    """Explicit per-knob opt-out (`AGNES_STACK_AUTO_MEMBERSHIP=0`, forced
+    below): the pre-redesign subscribe model. No longer the presetless
+    default — see the fixture docstring."""
 
     @pytest.fixture(autouse=True)
     def _default_env(self, monkeypatch):

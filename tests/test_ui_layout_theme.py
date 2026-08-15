@@ -81,7 +81,12 @@ class TestResolvers:
         monkeypatch.delenv("AGNES_INSTANCE_EXPERIENCE", raising=False)
         assert get_ui_layout() == "rail"
 
-    def test_ui_layout_env_rail(self, monkeypatch):
+    def test_configured_rail_value_still_resolves_to_rail(self, monkeypatch):
+        """Explicitly configuring the current value is a harmless no-op —
+        the symmetric case to `test_ui_layout_topnav_value_is_inert` below
+        (the OLD value is also inert): ANY configured value, current or
+        retired, resolves to "rail"."""
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         assert get_ui_layout() == "rail"
 
     def test_ui_layout_typo_falls_back(self, monkeypatch):
@@ -138,16 +143,23 @@ class TestRedesignIsTheOnlyExperience:
     """The redesign contract this wave installs: rail is unconditional, and
     a configured ``topnav``/``classic`` value is tolerated but inert — no
     default-parity guard survives it (Wave 0, 2026-08 legacy retirement).
-    Replaces ``TestDefaultChromeUnchanged`` and the
-    ``TestDefaultContentParity``/``TestDetailPageParity`` topnav-vs-rail
-    pairs, whose entire premise (a second, classic chrome existing to keep
-    parity with) this wave retires."""
+    Replaces ``TestDefaultChromeUnchanged`` and the topnav-vs-rail pairs
+    that used to live in ``TestRedesignedPageContracts`` (formerly
+    ``TestDefaultContentParity``) and ``TestDetailPageParity``, whose
+    entire premise (a second, classic chrome existing to keep parity with)
+    this wave retires."""
 
     def test_default_renders_rail_chrome(self, web_client, admin_cookie):
         html = web_client.get("/library", cookies=admin_cookie).text
         assert 'data-ui-layout="rail"' in html
         assert 'class="rail"' in html  # _app_rail.html rendered
-        assert "_app_header" not in html
+        # NOT `"_app_header" not in html`: the template is deleted, so a
+        # stale include would raise TemplateNotFound at render time rather
+        # than emit that literal — no rendered page could ever contain it,
+        # so that assertion could never fail. Assert on what the header
+        # actually rendered instead (the marker `TestRailOptIn` still uses
+        # to prove the rail, not the header, is what's on screen).
+        assert 'class="app-header"' not in html
 
     def test_topnav_value_is_inert(self, web_client, admin_cookie, monkeypatch):
         monkeypatch.setenv("AGNES_UI_LAYOUT", "topnav")
@@ -1911,7 +1923,7 @@ class TestDetailPageTemplateIsShared:
             )
 
 
-class TestDefaultContentParity:
+class TestRedesignedPageContracts:
     """The redesigned surfaces the topnav/classic chrome used to keep a
     parity twin for (Wave 0, 2026-08 legacy retirement, deleted that twin —
     ``library_legacy.html``, ``marketplace_legacy.html``, the classic /chat
@@ -1922,17 +1934,18 @@ class TestDefaultContentParity:
 
     - ``/library``: the unified Library (``id="lib-search"``)
     - ``/marketplace``: one Browse shelf
-    - ``/chat``: the composer "+" upload menu, the journey checklist, the
-      conversation row menu, the (non-legacy) tour
+    - ``/chat``: the composer "+" upload menu, the rail's own onboarding
+      card (NOT the retired topnav sidebar's ``#chat-journey`` slot), the
+      conversation row menu, and no legacy tour overlay
     """
 
-    def test_rail_library_is_the_unified_library(self, web_client, admin_cookie, monkeypatch):
+    def test_library_is_the_unified_library(self, web_client, admin_cookie, monkeypatch):
         resp = web_client.get("/library", cookies=admin_cookie)
         assert resp.status_code == 200
         assert 'id="lib-search"' in resp.text
         assert "Your collections" not in resp.text
 
-    def test_rail_marketplace_is_one_browse_shelf(self, web_client, admin_cookie, monkeypatch):
+    def test_marketplace_is_one_browse_shelf(self, web_client, admin_cookie, monkeypatch):
         resp = web_client.get("/marketplace", cookies=admin_cookie)
         assert resp.status_code == 200
         assert "data-count-browse" in resp.text
@@ -1964,11 +1977,11 @@ class TestDefaultContentParity:
             conn.close()
         return web_client.get("/chat", cookies=admin_cookie)
 
-    def test_rail_chat_keeps_upload_menu_journey_and_row_menu(self, web_client, admin_cookie, monkeypatch):
-        """Under rail the additions stay: the composer "+" menu and the row
-        menu in the page, the journey checklist as the rail's own
-        ``railGetStarted`` card (chat.html's ``#chat-journey`` div is the
-        TOPNAV sidebar's slot — rail never renders it)."""
+    def test_chat_keeps_upload_menu_journey_and_row_menu(self, web_client, admin_cookie, monkeypatch):
+        """The composer "+" menu and the row menu render on the page; the
+        journey checklist is the rail's own ``railGetStarted`` card
+        (chat.html's ``#chat-journey`` div is the retired topnav sidebar's
+        slot — the live page never renders it)."""
         resp = self._chat(web_client, admin_cookie)
         assert resp.status_code == 200
         assert 'id="chat-plus-menu"' in resp.text
@@ -1978,27 +1991,27 @@ class TestDefaultContentParity:
 
     # ── Wave 2 (spec 2026-08-07-default-chrome-ux-parity): the page rewrites. ──
 
-    def test_rail_profile_is_the_redesigned_page(self, web_client, admin_cookie, monkeypatch):
+    def test_profile_is_the_redesigned_page(self, web_client, admin_cookie, monkeypatch):
         resp = web_client.get("/me/profile", cookies=admin_cookie)
         assert resp.status_code == 200
         assert 'id="pf-name-edit"' in resp.text
 
-    def test_rail_activity_is_the_redesigned_page(self, web_client, admin_cookie, monkeypatch):
+    def test_activity_is_the_redesigned_page(self, web_client, admin_cookie, monkeypatch):
         resp = web_client.get("/me/activity", cookies=admin_cookie)
         assert resp.status_code == 200
         assert "Sessions, token usage, data access, and sync activity" not in resp.text
 
-    def test_rail_agents_is_the_builder(self, web_client, admin_cookie, monkeypatch):
+    def test_agents_is_the_builder(self, web_client, admin_cookie, monkeypatch):
         resp = web_client.get("/agents", cookies=admin_cookie)
         assert resp.status_code == 200
         assert 'id="ag-builder-view"' in resp.text
 
-    def test_rail_ai_connector_stays_consolidated(self, web_client, admin_cookie, monkeypatch):
+    def test_ai_connector_stays_consolidated(self, web_client, admin_cookie, monkeypatch):
         resp = web_client.get("/me/ai-connector", cookies=admin_cookie, follow_redirects=False)
         assert resp.status_code == 302
         assert resp.headers["location"] == "/how-it-works#connect"
 
-    def test_rail_does_not_ship_the_legacy_tour(self, web_client, admin_cookie, monkeypatch):
+    def test_does_not_ship_the_legacy_tour(self, web_client, admin_cookie, monkeypatch):
         resp = web_client.get("/me/profile", cookies=admin_cookie)
         assert 'id="agnesTour"' not in resp.text
         assert "tour_legacy.js" not in resp.text
@@ -2074,13 +2087,6 @@ class TestDetailPageParity:
         assert 'class="detail-page"' in resp.text, "the shared detail template must render"
         assert 'class="lib-sec"' not in resp.text, "the retired legacy collection layout must not leak back in"
 
-    def test_rail_library_detail_is_redesigned(self, web_client, admin_cookie, monkeypatch):
-        col = self._seed_collection(web_client, admin_cookie, "Parity Files Rail")
-        resp = web_client.get(f"/library/{col['slug']}", cookies=admin_cookie)
-        assert resp.status_code == 200
-        assert 'class="detail-page"' in resp.text
-        assert 'class="lib-sec"' not in resp.text
-
     def _seed_table(self, name):
         from src.repositories import table_registry_repo
 
@@ -2103,10 +2109,3 @@ class TestDetailPageParity:
         assert resp.status_code == 200
         assert 'class="detail-page"' in resp.text, "the shared detail template must render"
         assert "td-back" not in resp.text, "the retired legacy table-detail layout must not leak back in"
-
-    def test_rail_catalog_table_detail_is_redesigned(self, web_client, admin_cookie, monkeypatch):
-        self._seed_table("parity_table_rail")
-        resp = web_client.get("/catalog/t/parity_table_rail", cookies=admin_cookie)
-        assert resp.status_code == 200
-        assert 'class="detail-page"' in resp.text
-        assert "td-back" not in resp.text

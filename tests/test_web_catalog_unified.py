@@ -212,6 +212,46 @@ class TestRailClassicCatalogContracts:
         assert "Download locally" not in body
         assert "Remove local copy" not in body
 
+    def test_required_packages_render_before_available_ones_in_the_data_grid(self, seeded_app):
+        """The Data grid groups Required cards first (first-demo feedback,
+        2026-05-19: "bylo by dobre ty required mit vzdy nekde seskupene
+        spolu na jedne strane") — required must cluster at the top instead
+        of being scattered by creation order (``_req_first_key`` in the
+        /catalog route, mirrored at /corporate-memory).
+
+        Classic is what actually exercises this on /catalog: under
+        auto-membership every granted package is already ``in_stack=True``,
+        so none of them render in the Data grid at all — they live on My
+        Stack (a separate route, /stack) instead, and /catalog's own
+        (unused) ``stack_entries`` context var is never rendered by
+        ``catalog_unified.html``. Classic keeps the full granted set in
+        this grid, which is the only mode where the grid's ordering is
+        observable at all.
+
+        Seeded in deliberately-wrong alphabetical AND creation order so the
+        sort has something real to undo: the required package's name
+        ("ZZZ...") would sort LAST if name were the only key, proving the
+        assertion pins the required-first grouping and not an accidental
+        alphabetical coincidence.
+        """
+        avail_slug, req_slug, avail_slug_2 = "rail-classic-a-avail", "rail-classic-z-req", "rail-classic-m-avail"
+        avail_pkg = _make_pkg(avail_slug, "AAA Available")
+        req_pkg = _make_pkg(req_slug, "ZZZ Required")
+        avail_pkg_2 = _make_pkg(avail_slug_2, "MMM Available")
+        _grant("Everyone", "data_package", avail_pkg, requirement="available", users=["analyst1"])
+        _grant("Everyone", "data_package", req_pkg, requirement="required", users=["analyst1"])
+        _grant("Everyone", "data_package", avail_pkg_2, requirement="available", users=["analyst1"])
+
+        body = seeded_app["client"].get("/catalog", headers=_auth(seeded_app["analyst_token"])).text
+        # Cards carry no generic `data-id` — each one's identity in the
+        # rendered grid is its drilldown link (`c.href`, unique per slug).
+        i_req = body.find(f'href="/catalog/p/{req_slug}"')
+        i_a1 = body.find(f'href="/catalog/p/{avail_slug}"')
+        i_a2 = body.find(f'href="/catalog/p/{avail_slug_2}"')
+        assert i_req != -1 and i_a1 != -1 and i_a2 != -1, "all three cards must render in the Data grid"
+        assert i_req < i_a1, f"Required card must render before available card 'AAA' (req@{i_req}, avail@{i_a1})"
+        assert i_req < i_a2, f"Required card must render before available card 'MMM' (req@{i_req}, avail@{i_a2})"
+
 
 class TestRailClassicLedeMatchesTheGrid:
     """The lede must describe what the tabs actually hold.
