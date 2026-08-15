@@ -50262,7 +50262,7 @@
     },
     "/me/cowork": {
       "get": {
-        "description": "Legacy aliases \u2192 /me/ai-connector (which renders the page on default\nchrome and forwards to /how-it-works#connect under the redesign opt-in).\n\n302, not 301: a permanent redirect is cached by the browser forever, so\nit would be very hard to walk back if the routing is revisited.",
+        "description": "Legacy aliases \u2192 /me/ai-connector.\n\n302, not 301: a permanent redirect is cached by the browser forever, so\nit would be very hard to walk back if the routing is revisited.",
         "operationId": "me_mcp_redirect_me_cowork_get",
         "responses": {
           "200": {
@@ -50284,7 +50284,7 @@
     },
     "/me/mcp": {
       "get": {
-        "description": "Legacy aliases \u2192 /me/ai-connector (which renders the page on default\nchrome and forwards to /how-it-works#connect under the redesign opt-in).\n\n302, not 301: a permanent redirect is cached by the browser forever, so\nit would be very hard to walk back if the routing is revisited.",
+        "description": "Legacy aliases \u2192 /me/ai-connector.\n\n302, not 301: a permanent redirect is cached by the browser forever, so\nit would be very hard to walk back if the routing is revisited.",
         "operationId": "me_mcp_redirect_me_mcp_get",
         "responses": {
           "200": {
