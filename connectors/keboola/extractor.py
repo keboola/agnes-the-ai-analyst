@@ -143,10 +143,13 @@ def _open_consolidation_conn(db_path: Optional[str] = None):
     ``/app`` in the shipped image, i.e. the container's overlay on the boot
     disk. Measured on a live instance: one consolidation transiently held
     7.6 GB of spill there (boot disk 26% → 53% and back), on a volume no
-    watchdog tracks, and `cleanup_orphaned_temp_files` only ever sweeps
-    ``{STATE_DIR}/duckdb-tmp`` — so a process killed mid-consolidation
-    strands those GBs permanently. Best-effort: a failing PRAGMA leaves the
-    connection usable on DuckDB's defaults rather than failing the sync.
+    watchdog tracks. Leftovers are not self-healing either —
+    `cleanup_orphaned_temp_files` only ever sweeps ``{STATE_DIR}/duckdb-tmp``,
+    and a container *restart* keeps the overlay, so spill from a process
+    killed mid-consolidation survives until the next image upgrade recreates
+    the container (indefinitely on an instance that does not auto-upgrade).
+    Best-effort: a failing PRAGMA leaves the connection usable on DuckDB's
+    defaults rather than failing the sync.
     """
     conn = _open_duckdb(db_path) if db_path else _open_duckdb(":memory:")
     conn.execute(f"SET memory_limit='{_CONSOLIDATION_MEMORY_LIMIT}'")
