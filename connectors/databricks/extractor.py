@@ -255,11 +255,21 @@ def materialize_query(
     the register route normally pre-generates that SQL, so the derivation
     here is a fallback for legacy rows.
 
-    Concurrency: no per-table lock layer — the only caller is
-    ``_run_materialized_pass``, which runs under ``_run_sync``'s
-    process-wide ``_sync_lock`` (mirrors the Keboola materialize path;
-    registration does not trigger an immediate materialize for Databricks).
-    The atomic tmp → ``os.replace`` swap keeps readers consistent regardless.
+    Concurrency: no per-table lock layer, matching the Keboola materialize
+    path (the BigQuery one carries an in-process + advisory-file lock because
+    an admin *registration* can trigger an immediate materialize there, racing
+    a scheduler tick; no Databricks path does that). Two materializes of the
+    same table cannot overlap system-wide: the only caller is
+    ``_run_materialized_pass``, reached exclusively through the
+    ``data-refresh`` job, and every enqueue of that job — scheduler tick,
+    admin trigger, or a ``tables=[…]`` / ``?source=`` scoped trigger — shares
+    the idempotency key ``"sync"``, which ``JobsRepository.enqueue`` dedups
+    while one is queued/running. (``_run_sync``'s ``_sync_lock`` only adds
+    in-process exclusion on top; on a role-split deployment the job dedup is
+    what actually holds.) The atomic tmp → ``os.replace`` swap keeps readers
+    consistent regardless, and ``extract.duckdb`` registration is fail-soft —
+    the parquet is durable before it is attempted, and the orchestrator's
+    filesystem-fallback scan republishes the row on a later rebuild.
 
     Returns ``{"rows", "size_bytes", "hash", "query_mode": "materialized"}``.
 
