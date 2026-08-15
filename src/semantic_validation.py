@@ -371,7 +371,16 @@ def _declared_dialects(metric: dict[str, Any]) -> list[str]:
     dialects = expression.get("dialects") or []
     if not isinstance(dialects, list):
         return []
-    return [str(d["dialect"]) for d in dialects if isinstance(d, dict) and d.get("dialect")]
+    # An entry must carry BOTH a label and an expression body: a label-only
+    # entry has no fragment to compose, so counting it would claim the metric
+    # runs on that engine when nothing can be built for it — and, for the
+    # target engine, would hold locally_executable at True with nothing behind
+    # it (Devin Review on PR #1319, round 7).
+    return [
+        str(d["dialect"])
+        for d in dialects
+        if isinstance(d, dict) and d.get("dialect") and str(d.get("expression") or "").strip()
+    ]
 
 
 def _canonical_dialect(dialect: str) -> str:
