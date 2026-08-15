@@ -32,7 +32,9 @@ FOOTER_CHROMES = [
     "base.html",
     "base_ds.html",
     "base_index.html",
-    "dashboard.html",
+    # dashboard.html was here until Wave 0 (2026-08): /dashboard became an
+    # unconditional redirect into chat's pre-conversation state, so the
+    # template lost its only renderer and was deleted with it.
     "chat.html",
     "install.html",
 ]
@@ -142,17 +144,26 @@ class TestCopyrightResolver:
 
 
 class TestRenderedFooter:
+    """Rendered against /library.
+
+    These used to render /dashboard, purely as a convenient authed page. That
+    stopped being a page in Wave 0 (2026-08) — it is an unconditional 302 into
+    chat's pre-conversation state now — so the assertions were reading whatever
+    the redirect landed on. /library is an ordinary authed page on the same
+    chrome and renders the same partial.
+    """
+
     def test_credit_reaches_the_page(self, web_client, admin_cookie, monkeypatch):
         """The regression this whole change exists for: a configured credit
         used to be dropped on the floor by the hardcoded proxy attribute."""
         monkeypatch.setenv("AGNES_INSTANCE_COPYRIGHT", "Acme Corp")
-        resp = web_client.get("/dashboard", cookies=admin_cookie)
+        resp = web_client.get("/library", cookies=admin_cookie)
         assert resp.status_code == 200
         assert "Deployed by Acme Corp" in resp.text
 
     def test_unset_credit_invents_nothing(self, web_client, admin_cookie, monkeypatch, no_yaml_config):
         monkeypatch.delenv("AGNES_INSTANCE_COPYRIGHT", raising=False)
-        resp = web_client.get("/dashboard", cookies=admin_cookie)
+        resp = web_client.get("/library", cookies=admin_cookie)
         assert resp.status_code == 200
         assert "Deployed by" not in resp.text
         # The old fallback line must not come back in any form.
@@ -164,12 +175,12 @@ class TestRenderedFooter:
         provenance an operator has on an authed page now that the fixed build
         chip is gone."""
         monkeypatch.setenv("AGNES_INSTANCE_BRAND", "Foundry AI")
-        resp = web_client.get("/dashboard", cookies=admin_cookie)
+        resp = web_client.get("/library", cookies=admin_cookie)
         assert resp.status_code == 200
         assert 'class="site-footer__brand">Foundry AI<' in resp.text
 
     def test_build_slot_present_for_the_version_fetch(self, web_client, admin_cookie):
-        resp = web_client.get("/dashboard", cookies=admin_cookie)
+        resp = web_client.get("/library", cookies=admin_cookie)
         assert resp.status_code == 200
         assert "data-agnes-build" in resp.text
         assert "/api/version" in resp.text
@@ -193,7 +204,6 @@ class TestOnePartialEveryChrome:
     def test_per_chrome_footer_classes_survived(self):
         """`footer_class` is how the chrome-specific CSS (`.footer`,
         `.cloud-chat-empty-foot`) stays on the element after the move."""
-        assert "footer_class = 'footer'" in (TEMPLATES / "dashboard.html").read_text()
         assert "footer_class = 'footer'" in (TEMPLATES / "install.html").read_text()
         assert "footer_class = 'cloud-chat-empty-foot'" in (TEMPLATES / "chat.html").read_text()
 
@@ -226,6 +236,6 @@ class TestBuildChipRetired:
         ), "pre-auth chrome has no footer, so the chip is the only build provenance there"
 
     def test_chip_not_rendered_on_an_authed_page(self, web_client, admin_cookie):
-        resp = web_client.get("/dashboard", cookies=admin_cookie)
+        resp = web_client.get("/library", cookies=admin_cookie)
         assert resp.status_code == 200
         assert "agnes-version-badge" not in resp.text

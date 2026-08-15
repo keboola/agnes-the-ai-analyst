@@ -1,11 +1,10 @@
 {% extends "base_ds.html" %}
-{# Data app detail — the RAIL/paper redesign (the kind-hero anatomy the other
-   detail pages wear). Topnav serves the frozen pre-redesign copy
-   (data_app_detail_legacy.html) via the shared `_detail_template()` switch —
-   the /catalog detail pattern, guarded by
-   tests/test_ui_layout_theme.py::TestDetailPageParity.
+{# Data app detail — the kind-hero anatomy the other detail pages wear. The
+   only copy of this page: the frozen pre-redesign template and the
+   `_detail_template()` switch that chose between them both retired with the
+   topnav chrome (Wave 0, 2026-08 legacy retirement).
 
-   Every id and script of the legacy page is kept verbatim (dda-state-badge,
+   Every id and script of the retired page is kept verbatim (dda-state-badge,
    dda-description, dda-deploy-btn, dda-stop-btn, dda-logs, dda-desc-form,
    dda-desc-input, dda-desc-save) — the scripts below ARE the legacy
    scripts. #}

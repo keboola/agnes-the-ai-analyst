@@ -132,8 +132,8 @@ class TestWebUISmoke:
         resp = web_client.get("/admin/users", cookies=admin_cookie)
         assert resp.status_code == 200
         body = resp.text
-        # Shared header chrome
-        assert "app-header" in body
+        # Shared chrome — the rail, the only one there is since Wave 0 (2026-08).
+        assert 'class="rail' in body
         # User-self menu post-consolidation: Profile + My activity only.
         # Auth debug folded into /me/profile troubleshooting section; the
         # /me/debug nav entry is gone.
@@ -150,12 +150,14 @@ class TestWebUISmoke:
 
     def test_nav_shows_user_self_links_for_non_admin(self, web_client, analyst_cookie):
         """Non-admins see Profile + My activity user-menu links — no admin
-        Tokens entry, no Auth debug entry (folded into /me/profile)."""
-        resp = web_client.get("/dashboard", cookies=analyst_cookie)
-        assert resp.status_code in (200, 302)
-        if resp.status_code == 302:
-            # Dashboard may redirect in some flows; follow it for nav check.
-            resp = web_client.get(resp.headers["location"], cookies=analyst_cookie)
+        Tokens entry, no Auth debug entry (folded into /me/profile).
+
+        Rendered off /library. /dashboard is a redirect since Wave 0 (2026-08),
+        and the follow-the-Location dance this used to do dropped the cookie on
+        the second hop, landing on /login — which has no nav at all, so every
+        `not in` assertion below would have passed for the wrong reason."""
+        resp = web_client.get("/library", cookies=analyst_cookie)
+        assert resp.status_code == 200
         body = resp.text
         assert 'href="/me/profile"' in body
         assert ">Profile<" in body
@@ -170,23 +172,38 @@ class TestWebUISmoke:
         # Non-admins must NOT see the admin Tokens link inside the Admin dropdown.
         assert 'href="/admin/tokens"' not in body
 
-    def test_nav_shows_admin_dropdown_for_admin(self, web_client, admin_cookie):
-        """Admins see the same user-self menu + the Admin dropdown with
-        cross-user Tokens / Tables / Users entries."""
-        resp = web_client.get("/dashboard", cookies=admin_cookie)
-        assert resp.status_code in (200, 302)
-        if resp.status_code == 302:
-            resp = web_client.get(resp.headers["location"], cookies=admin_cookie)
+    def test_nav_shows_admin_surfaces_for_admin(self, web_client, admin_cookie):
+        """Admins see the user-self menu plus a route to the admin area, and
+        the admin area still carries cross-user Tokens / Tables / Users.
+
+        The DOM half and the inventory half are asserted separately on purpose.
+        This used to read every admin href off one page, because the topnav's
+        Admin mega-menu rendered the whole inventory at once. The rail carries
+        a single `/admin` destination and the sidebar renders only the ACTIVE
+        section's body server-side (`test_web_admin_nav.py::
+        test_only_the_active_section_renders_expanded_server_side`), so no
+        single page can show them all — scraping one would just re-encode which
+        section happens to be open.
+        """
+        resp = web_client.get("/admin/users", cookies=admin_cookie)
+        assert resp.status_code == 200
         body = resp.text
         # User-self menu — same as non-admin; Auth debug gone from nav.
         assert 'href="/me/activity"' in body
         assert 'href="/me/debug"' not in body
         assert ">My tokens<" not in body
-        # Admin dropdown — Tables / Tokens / Users / Groups / Resource access / Server config.
+        # The rail's door into the admin area, and the People tab strip.
+        assert 'href="/admin"' in body
         assert 'href="/admin/tokens"' in body
-        assert 'href="/admin/tables"' in body
-        assert ">Tables<" in body
-        assert ">Tokens<" in body
+
+        # The inventory itself — the single source both the sidebar and the
+        # coverage guard read.
+        from app.web.admin_nav import ADMIN_NAV_SECTIONS, _section_entries
+
+        hrefs = {e["href"] for s in ADMIN_NAV_SECTIONS for e in _section_entries(s)}
+        hrefs |= {s["href"] for s in ADMIN_NAV_SECTIONS if s.get("href")}
+        for href in ("/admin/tables", "/admin/tokens", "/admin/users"):
+            assert href in hrefs, f"{href} is not in the admin nav inventory"
 
     def test_profile_renders_account_details(self, web_client, admin_cookie):
         """/me/profile renders a real profile page with email + inline PAT section.
@@ -356,17 +373,17 @@ class TestClaudeSetupPreview:
         assert "3) Verify the login" not in clipboard
         assert "2) Log in" not in clipboard
 
-    def test_dashboard_setup_cta_links_to_setup(self, web_client, admin_cookie):
-        """Dashboard setup CTA shows env-setup-cta and a link to /setup instead
-        of an inline collapsed preview."""
-        resp = web_client.get("/dashboard", cookies=admin_cookie)
-        assert resp.status_code == 200
-        body = resp.text
-        assert "env-setup-cta" in body
-        assert "Open the full setup page" in body
-        assert 'href="/setup"' in body
-        # inline <details> preview block must no longer appear
-        assert 'aria-label="Preview of the clipboard payload"' not in body
+    # `test_dashboard_setup_cta_links_to_setup` was here. It pinned the
+    # `.env-setup-cta` card on /dashboard — a "link to /setup instead of an
+    # inline collapsed preview" — and both halves of the premise are gone:
+    # /dashboard became an unconditional redirect in Wave 0 (2026-08) and its
+    # template, the only place `env-setup-cta` was ever emitted, went with it.
+    # Not re-pinned onto /home or /install: those pages deliberately DO carry
+    # the inline preview (`aria-label="Preview of the clipboard payload"`), so
+    # the rule this asserted does not hold there and restating it would invent
+    # a contract. The clipboard payload itself stays guarded — it is
+    # single-sourced from `_claude_setup_instructions.jinja` and covered by
+    # `tests/test_welcome_template_api.py`.
 
     def test_install_mcp_card_removed(self, web_client):
         """The stale 'Use with Claude Code / MCP' card on /setup has been

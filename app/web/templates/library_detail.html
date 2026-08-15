@@ -71,7 +71,6 @@
 {% block content %}
 {% import "macros/_detail.html" as detail with context %}
 
-{% set _rail = (ui_layout | default('topnav')) == 'rail' %}
 {# Both layouts now return to /library: the former /artefacts surface WAS
    renamed to Library and took over the route, so there is a single index to go
    back to instead of one per layout. #}

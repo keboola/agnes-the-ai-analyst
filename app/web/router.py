@@ -25,7 +25,6 @@ from app.instance_config import (
     FEATURE_FLAGS,
     get_instance_name,
     get_instance_subtitle,
-    get_datasets,
     get_theme,
     get_corporate_memory_config,
     get_home_route,
@@ -65,7 +64,6 @@ from src.repositories import (
     store_entities_repo,
     store_lint_repo,
     store_submissions_repo,
-    sync_settings_repo,
     sync_state_repo,
     table_registry_repo,
     usage_repo,
@@ -300,20 +298,11 @@ templates.env.globals["posthog_user_block"] = _posthog_user_block
 # Without this, base_ds.html emits <link href=""> and the page renders unstyled.
 templates.env.globals["static_url"] = _static_url
 
-# Legacy guided-tour steps (spec 2026-08-07 wave 2): the pre-redesign tour —
-# frozen as _tour_legacy.html + js/tour_legacy.js — reads its server-filtered
-# steps off this global, exactly as before the redesign (the module is the
-# restored pre-redesign app/web/onboarding.py; contract guard:
-# tests/test_onboarding_not_outdated.py). Rail keeps the coach-mark engine.
-from app.web.onboarding import steps_for as _onboarding_steps_for  # noqa: E402
-
-templates.env.globals["onboarding_steps"] = _onboarding_steps_for
-
 
 def _data_apps_nav_enabled() -> bool:
     """Whether the "Apps" primary-nav entry should render. Registered as a
     Jinja global (like `static_url` above) rather than threaded through
-    per-route context, so `_app_header.html` — shared by both `base.html`
+    per-route context, so `_app_rail.html` — shared by both `base.html`
     (built via `_build_context`) and `base_ds.html`/`base_page.html` (built
     via `_chrome_ctx`) — gates consistently regardless of which context
     builder the current page uses. Re-read on every call (not cached at
@@ -424,30 +413,6 @@ def _show_unverified_trust() -> bool:
 templates.env.globals["show_unverified_trust_enabled"] = _show_unverified_trust
 
 
-def _detail_template(base: str) -> str:
-    """Resolve a resource DETAIL page to its layout's template.
-
-    The redesign restructured the detail pages in place (the kind-coloured
-    hero + ``macros/_detail.html`` anatomy). Rail renders those; topnav keeps
-    the pre-redesign page as a frozen ``<base>_legacy.html`` copy — the same
-    contract the /catalog and /library LIST pages follow, extended to the
-    detail level so a default instance's upgrade changes nothing it renders.
-    Every detail render site must resolve through here (guarded by
-    tests/test_ui_layout_theme.py::TestDetailPageParity — a bare
-    ``"<base>.html"`` literal in this module fails the sweep). The handlers
-    are shared: they were verified to pass a superset of the legacy
-    templates' context, so only the template name switches.
-
-    Keyed on the SAME opt-in condition the base templates use for the
-    redesign chrome (rail layout OR paper theme) — the detail anatomy was
-    previously gated in-template on ``is_paper`` alone, and a layout-only
-    key here would strand a paper-without-rail instance on the legacy pages.
-    """
-    if get_ui_layout() == "rail" or get_instance_theme() == "paper":
-        return f"{base}.html"
-    return f"{base}_legacy.html"
-
-
 #: Where a detail page's back link goes in the RAIL layout, per Library
 #: section key. The rail retired Marketplace (/catalog) as a destination —
 #: it is not in the nav and a caller never arrives from it — so a detail
@@ -488,18 +453,21 @@ _RAIL_DETAIL_BACK: dict[str, tuple[str, str]] = {
 
 
 def _detail_back(kind: str, href: str, label: str) -> dict[str, str]:
-    """Resolve a detail page's back link for the current chrome.
+    """Resolve a detail page's back link.
 
-    Topnav instances keep exactly what the caller passes (`href`/`label`) —
-    their nav still carries Marketplace and the classic Catalog, so those
-    remain honest destinations there. Rail instances get the /library
-    section instead (see `_RAIL_DETAIL_BACK`). Registered as a Jinja global
-    rather than threaded through each route's context so every detail
-    template resolves it the same way, including the ones rendered from a
-    minimal context.
+    Always the /library section for the kind (see `_RAIL_DETAIL_BACK`),
+    falling back to the Library itself for a kind with no mapping. The
+    caller-supplied `href`/`label` are the PRE-RAIL destinations (the classic
+    Catalog, Marketplace); they were honest while the topnav carried those
+    rows, and this returned them unchanged on that chrome. Wave 0 (2026-08)
+    retired it, so the branch that read them was unreachable — they are kept
+    in the signature because every call site passes them positionally and
+    they document where the page used to sit.
+
+    Registered as a Jinja global rather than threaded through each route's
+    context so every detail template resolves it the same way, including the
+    ones rendered from a minimal context.
     """
-    if get_ui_layout() != "rail":
-        return {"href": href, "label": label}
     rail = _RAIL_DETAIL_BACK.get(kind)
     if not rail:
         return {"href": "/library", "label": "Library"}
@@ -1136,15 +1104,21 @@ def _compute_data_stats() -> dict:
 async def dashboard(
     request: Request,
     user: dict = Depends(get_current_user),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    # Layout-aware dashboard split. Under the rail chrome the Dashboard IS
-    # Chat's pre-conversation state: /chat with no active conversation
-    # renders the Agnes-centric dashboard (greeting, composer, activity
-    # panels, guided task starters — see chat.html's rail empty-state
-    # blocks), so /dashboard 302s there and the two surfaces can never
-    # drift apart. Topnav falls straight through to the historical
-    # table-inventory render below — byte-for-byte unchanged.
+    # A REDIRECT, not a page. Deliberately a comment and not a docstring: a
+    # handler docstring becomes the endpoint's public OpenAPI `description`
+    # (tests/snapshots/openapi.json), and this is internal rationale.
+    #
+    # The Dashboard IS Chat's pre-conversation state — /chat with no active
+    # conversation renders the greeting, composer, activity panels and guided
+    # task starters (chat.html's empty-state blocks) — so this 302s there and
+    # the two surfaces can never drift apart.
+    #
+    # It used to fall through to a historical table-inventory render for the
+    # topnav chrome. That chrome was retired in Wave 0 (2026-08), which made
+    # the layout test above it unconditionally true and the 53-line body below
+    # it unreachable; both are gone, along with the `dashboard.html` template
+    # that had no other renderer.
     #
     # `can_chat` mirrors the rail nav's own predicate exactly (see
     # _build_context: chat enabled AND has_explicit_grant) so the LANDING and
@@ -1157,70 +1131,13 @@ async def dashboard(
     # it. The Library is the nearest thing to a data-estate home that IS in
     # the nav. has_explicit_grant is stricter than /chat's own can_access
     # guard, so the /chat redirect is loop-safe. 302 (not 308) so a later
-    # layout/grant flip isn't cached permanently by the browser.
-    if get_ui_layout() == "rail":
-        from app.auth.access import has_explicit_grant
-        from app.resource_types import ResourceType
+    # grant flip isn't cached permanently by the browser.
+    from app.auth.access import has_explicit_grant
+    from app.resource_types import ResourceType
 
-        chat_cfg = getattr(request.app.state, "chat_config", None)
-        can_chat = bool(
-            chat_cfg and chat_cfg.enabled and has_explicit_grant(user["id"], ResourceType.CHAT.value, "chat")
-        )
-        return RedirectResponse(url="/chat" if can_chat else "/library", status_code=302)
-
-    sync_repo = sync_state_repo()
-    settings_repo = sync_settings_repo()
-
-    all_states = sync_repo.get_all_states()
-    enabled_datasets = settings_repo.get_enabled_datasets(user["id"])
-    datasets = get_datasets()
-
-    # Headline stats — shared with /stack via _compute_data_stats() so the
-    # two surfaces can't drift. Internal source_type tables (agnes_*) live
-    # in their own card on /catalog and are excluded from the counter.
-    data_stats = _compute_data_stats()
-    total_tables = data_stats["total_tables"]
-    total_rows = data_stats["total_rows"]
-
-    # Build user_info object expected by dashboard template
-    is_admin = is_user_admin(user["id"], conn)
-
-    class UserInfo:
-        def __init__(self):
-            self.exists = True
-            self.is_admin = is_admin
-            # Legacy fields kept so existing templates don't blow up — admin is
-            # implicitly analyst/privileged, non-admins are not. Granular roles
-            # collapsed in v12.
-            self.is_analyst = is_admin
-            self.is_privileged = is_admin
-            self.username = user.get("email", "").split("@")[0]
-            self.home_dir = ""
-            self.groups = []
-
-    ctx = _build_context(
-        request,
-        user=user,
-        conn=conn,
-        user_info=UserInfo(),
-        username=user.get("email", "").split("@")[0],
-        total_tables=total_tables,
-        total_rows=total_rows,
-        sync_states=all_states,
-        enabled_datasets=enabled_datasets,
-        datasets=datasets,
-        account_status="active",
-        account_details=None,
-        telegram_status={"linked": False},
-        data_stats=data_stats,
-        categories=[],
-        metrics_data=[],
-        desktop_status={"linked": False},
-        activity_summary={"total_sessions": 0, "total_queries": 0},
-        knowledge_stats={"total": 0, "approved": 0},
-        user_knowledge_stats={"authored": 0, "votes_given": 0},
-    )
-    return templates.TemplateResponse(request, "dashboard.html", ctx)
+    chat_cfg = getattr(request.app.state, "chat_config", None)
+    can_chat = bool(chat_cfg and chat_cfg.enabled and has_explicit_grant(user["id"], ResourceType.CHAT.value, "chat"))
+    return RedirectResponse(url="/chat" if can_chat else "/library", status_code=302)
 
 
 def _time_of_day_greeting(hour: int | None = None) -> str:
@@ -1281,8 +1198,7 @@ async def home_page(
     # the install-steps + connector prompts + auto-mode card visible —
     # they stay relevant for adding a second machine, a missing connector,
     # or re-running auto-mode setup. Hero copy + the self-mark control
-    # branch on the boolean. The legacy `home_onboarded.html` is kept on
-    # disk for a release as a fallback but no route renders it.
+    # branch on the boolean.
     ctx = _build_context(
         request,
         user=user,
@@ -1376,99 +1292,30 @@ async def how_it_works_page(
 
 @router.get("/me/ai-connector", response_class=HTMLResponse)
 async def me_ai_connector_page(
-    request: Request,
     user: dict = Depends(get_current_user),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """AI Connector — chrome-dependent (spec 2026-08-07 wave 2).
+    """AI Connector — consolidated into /how-it-works#connect.
 
-    Default chrome keeps the pre-redesign standalone page (frozen
-    ``me_cowork_legacy.html``: OAuth connector URL, plugin packages,
-    available tools — including the /mcp-connect token fallback link).
-    Under ANY redesign opt-in — rail layout or paper theme, the same
-    expression the user-menu row keys on — the page stays consolidated into
-    /how-it-works#connect via the 302 the redesign shipped: a paper-on-topnav
-    instance's menu says "Learn how it works", so a bookmark or alias hop
-    must not resurrect the standalone page there (Devin Review on #1200).
-    302, not 301: a permanent redirect is cached by the browser forever, so
-    it would be very hard to walk back if the consolidation is revisited.
+    Redirects there unconditionally (302, not 301: a permanent redirect is
+    cached by the browser forever, so it would be very hard to walk back if
+    the consolidation is revisited).
 
-    Checked before either chrome branch (#1024): with the MCP connector UI
-    hidden (``mcp.connector_ui_enabled: false`` — a VPN/intranet-only instance
-    whose cloud-side MCP clients can never reach the endpoint), this whole
-    page IS the surface being hidden, so both branches bounce home rather
-    than one of them rendering it anyway."""
+    Checked first (#1024): with the MCP connector UI hidden
+    (``mcp.connector_ui_enabled: false`` — a VPN/intranet-only instance whose
+    cloud-side MCP clients can never reach the endpoint), this whole page IS
+    the surface being hidden, so it bounces home instead."""
     from fastapi.responses import RedirectResponse
 
     if not get_mcp_connector_ui_enabled():
         return RedirectResponse("/", status_code=302)
 
-    if get_ui_layout() == "rail" or _is_paper_theme():
-        return RedirectResponse("/how-it-works#connect", status_code=302)
-
-    # Pre-redesign handler body verbatim (the frozen template reads exactly
-    # this context).
-    from app.api.mcp_passthrough import _visible_passthrough_tools
-    from app.api.v2_marketplace import _accessible_plugins, _skills_for_plugin
-    from app.services.journey import mark_journey
-    from src.repositories import mcp_sources_repo
-
-    # "Use Agnes outside this tab" is earned by ARRIVING here — this page is where
-    # every connector lives, and it is the checklist row's own destination. The
-    # row used to tick itself the instant it was clicked, before the reader had
-    # seen anything; the tour's "Connect my AI tools" button already marks it the
-    # same way (tour.js::markUseAnywhereDone). Best-effort and swallowed (see
-    # app/services/journey.py) — a bookkeeping write must never fail a render.
-    mark_journey(user.get("id"), use_anywhere=True)
-
-    # Backend-aware reads (mcp_sources / tool grants live in Postgres on a PG
-    # instance) — a raw DuckDB conn here showed no MCP tools on Cowork.
-    source_names = {s["id"]: s["name"] for s in mcp_sources_repo().list_all(enabled_only=True)}
-    raw_tools = _visible_passthrough_tools(user)
-    passthrough_tools = []
-    for t in raw_tools:
-        sname = source_names.get(t["source_id"])
-        if sname:
-            passthrough_tools.append(
-                {
-                    "exposed_name": t["exposed_name"],
-                    "description": t.get("description"),
-                    "source_name": sname,
-                }
-            )
-
-    skills = []
-    for plugin in _accessible_plugins(user):
-        skills.extend(_skills_for_plugin(plugin["marketplace_id"], plugin["name"]))
-
-    static_tools = [
-        {"name": "server_info", "description": "Check Agnes connectivity and your account email."},
-        {"name": "catalog", "description": "List all tables available to you — name, query_mode, row count."},
-        {"name": "schema", "description": "Show column names and types for a table."},
-        {"name": "describe", "description": "Schema + sample rows for a table in one call."},
-        {"name": "query", "description": "Execute SQL against Agnes data (DuckDB or BigQuery dialect)."},
-        {"name": "skills", "description": "List marketplace skills you can access — includes full SKILL.md body."},
-    ]
-
-    server_url = str(request.base_url).rstrip("/")
-    ctx = _build_context(
-        request,
-        user=user,
-        conn=conn,
-        is_admin=is_user_admin(user["id"], conn),
-        static_tools=static_tools,
-        passthrough_tools=passthrough_tools,
-        skills=skills,
-        server_url=server_url,
-    )
-    return templates.TemplateResponse(request, "me_cowork_legacy.html", ctx)
+    return RedirectResponse("/how-it-works#connect", status_code=302)
 
 
 @router.get("/me/mcp", response_class=HTMLResponse)
 @router.get("/me/cowork", response_class=HTMLResponse)
 async def me_mcp_redirect(request: Request):
-    """Legacy aliases → /me/ai-connector (which renders the page on default
-    chrome and forwards to /how-it-works#connect under the redesign opt-in).
+    """Legacy aliases → /me/ai-connector.
 
     302, not 301: a permanent redirect is cached by the browser forever, so
     it would be very hard to walk back if the routing is revisited.
@@ -1638,11 +1485,7 @@ async def me_connections_page(
         connect_error=CONNECT_ERROR_MESSAGES.get(error_code, CONNECT_ERROR_FALLBACK) if error_code else "",
         retry_source=retry,
     )
-    # Rail renders the redesigned page; topnav keeps the frozen pre-redesign
-    # copy byte-for-byte (the /me/activity pattern —
-    # TestDefaultContentParity).
-    tmpl = "me_connections.html" if get_ui_layout() == "rail" else "me_connections_legacy.html"
-    return templates.TemplateResponse(request, tmpl, ctx)
+    return templates.TemplateResponse(request, "me_connections.html", ctx)
 
 
 @router.get("/me/activity", response_class=HTMLResponse)
@@ -1663,11 +1506,7 @@ async def me_activity_page(
         conn=conn,
         is_admin=is_user_admin(user["id"], conn),
     )
-    # Rail keeps the redesigned page; topnav renders the frozen pre-redesign
-    # copy (spec 2026-08-07 wave 2 — LEGACY_FROZEN closed set,
-    # TestDefaultContentParity guard). Same handler ctx either way.
-    tmpl = "me_activity.html" if get_ui_layout() == "rail" else "me_activity_legacy.html"
-    return templates.TemplateResponse(request, tmpl, ctx)
+    return templates.TemplateResponse(request, "me_activity.html", ctx)
 
 
 @router.get("/me/stats", response_class=HTMLResponse)
@@ -2182,94 +2021,71 @@ async def catalog(
     # curated resources. Data/Memory render server-side here; Plugins +
     # Recipes hydrate client-side from their existing APIs. Uploads
     # (file collections) are private user resources and live on My Stack
-    # (see /stack), not in the shared Catalog. Topnav instances render the
-    # frozen pre-redesign catalog_legacy.html.
-    if get_ui_layout() == "rail":
-        # Memory kind-tab: mirrors the Data grid's contract in BOTH modes —
-        # grant-scoped via ``browse()`` (fixes a pre-existing gap where this
-        # tab enumerated every memory domain with no RBAC check at all);
-        # under auto-membership filtered to entries NOT already in the
-        # caller's stack, under classic the full granted set with its
-        # add-to-stack state — INCLUDING the admin god-mode fork, so the one
-        # page an admin sees applies one scope to both server-rendered kinds
-        # (same ``is_admin_view and not auto_membership`` condition as the
-        # Data grid above; Devin Review on #1199, both rounds).
-        if is_admin_view and not auto_membership:
-            all_mem_entries = resolver.browse_admin(user["id"], ResourceType.MEMORY_DOMAIN)
-        else:
-            all_mem_entries = resolver.browse(user["id"], ResourceType.MEMORY_DOMAIN)
-        addable_mem_entries = [e for e in all_mem_entries if not e.in_stack] if auto_membership else all_mem_entries
-        memory_cards = _unified_memory_cards(addable_mem_entries)
-        # Normalize both server-rendered kinds into the single catalog_card
-        # `c` contract (Plugins + Recipes normalize client-side in the JS twin).
-        data_cards = [_catalog_card_data(e, auto_membership=auto_membership) for e in entries]
-        memory_card_models = [_catalog_card_memory(d, auto_membership=auto_membership) for d in memory_cards]
-        # ── "Recommended for you" — intentionally empty for granted data /
-        #    memory. The Catalog only surfaces resources the caller does NOT
-        #    already have; under auto-membership every granted package is
-        #    already in My Stack, so recommending one here (even as a "not
-        #    yet downloaded" nudge) re-introduces exactly the already-yours
-        #    clutter this reshape removes. The "download a local copy" action
-        #    for granted-but-not-materialized packages lives on My Stack,
-        #    where those cards carry the Download button. A future revision
-        #    may repopulate this row with genuinely not-yet-added shared
-        #    assets (uninstalled plugins / fleamarket), which are not-yours
-        #    by definition.
-        recommended_cards: list = []
-        # Default active kind tab: Data first (if it has addable content),
-        # else Memory, else Plugins — Data/Memory are normally empty post
-        # auto-membership (everything granted is already in My Stack), so
-        # the Catalog naturally centers on Plugins/Recipes.
-        if data_cards:
-            default_kind = "data"
-        elif memory_card_models:
-            default_kind = "memory"
-        else:
-            default_kind = "plugins"
-        ctx = _build_context(
-            request,
-            user=user,
-            is_admin=is_admin_view,
-            entries=entries,
-            data_cards=data_cards,
-            stack_entries=stack_entries_adapted,
-            source_type_chips=source_type_chips,
-            total_registered_tables=total_registered_tables,
-            memory_cards=memory_card_models,
-            recommended_cards=recommended_cards,
-            default_kind=default_kind,
-            # The lede describes what the Data/Memory tabs actually contain,
-            # and that differs by membership mode. Under auto-membership a
-            # grant IS stack membership, so those tabs hold only what you do
-            # NOT have and "granted data lives in My Stack, not here" is true.
-            # Under classic a grant is an invitation you have not accepted, so
-            # the same tabs list granted-but-unsubscribed resources and that
-            # sentence would contradict the grid right under it — the rail +
-            # classic combination this PR makes reachable (Devin on #1199).
-            auto_membership=auto_membership,
-        )
-        return templates.TemplateResponse(request, "catalog_unified.html", ctx)
-
-    # #1206: this page keeps the legacy `_stack_card` macro — its own JS keys on
-    # the `.stack-card__*` class names, so swapping in the unified `catalog_card`
-    # projection here would break add/remove. The macro has no notion on its own
-    # that `in_stack` was re-pointed at the local-download state by the
-    # auto-membership reshape — so a package sat under "My Stack" while its own
-    # button read "Add to stack". The projections that re-point the key now say
-    # so with `in_stack_is_local`, and the macro switches its wording on that
-    # flag rather than on the key name.
+    # (see /stack), not in the shared Catalog.
+    #
+    # Memory kind-tab: mirrors the Data grid's contract in BOTH modes —
+    # grant-scoped via ``browse()`` (fixes a pre-existing gap where this
+    # tab enumerated every memory domain with no RBAC check at all);
+    # under auto-membership filtered to entries NOT already in the
+    # caller's stack, under classic the full granted set with its
+    # add-to-stack state — INCLUDING the admin god-mode fork, so the one
+    # page an admin sees applies one scope to both server-rendered kinds
+    # (same ``is_admin_view and not auto_membership`` condition as the
+    # Data grid above; Devin Review on #1199, both rounds).
+    if is_admin_view and not auto_membership:
+        all_mem_entries = resolver.browse_admin(user["id"], ResourceType.MEMORY_DOMAIN)
+    else:
+        all_mem_entries = resolver.browse(user["id"], ResourceType.MEMORY_DOMAIN)
+    addable_mem_entries = [e for e in all_mem_entries if not e.in_stack] if auto_membership else all_mem_entries
+    memory_cards = _unified_memory_cards(addable_mem_entries)
+    # Normalize both server-rendered kinds into the single catalog_card
+    # `c` contract (Plugins + Recipes normalize client-side in the JS twin).
+    data_cards = [_catalog_card_data(e, auto_membership=auto_membership) for e in entries]
+    memory_card_models = [_catalog_card_memory(d, auto_membership=auto_membership) for d in memory_cards]
+    # ── "Recommended for you" — intentionally empty for granted data /
+    #    memory. The Catalog only surfaces resources the caller does NOT
+    #    already have; under auto-membership every granted package is
+    #    already in My Stack, so recommending one here (even as a "not
+    #    yet downloaded" nudge) re-introduces exactly the already-yours
+    #    clutter this reshape removes. The "download a local copy" action
+    #    for granted-but-not-materialized packages lives on My Stack,
+    #    where those cards carry the Download button. A future revision
+    #    may repopulate this row with genuinely not-yet-added shared
+    #    assets (uninstalled plugins / fleamarket), which are not-yours
+    #    by definition.
+    recommended_cards: list = []
+    # Default active kind tab: Data first (if it has addable content),
+    # else Memory, else Plugins — Data/Memory are normally empty post
+    # auto-membership (everything granted is already in My Stack), so
+    # the Catalog naturally centers on Plugins/Recipes.
+    if data_cards:
+        default_kind = "data"
+    elif memory_card_models:
+        default_kind = "memory"
+    else:
+        default_kind = "plugins"
     ctx = _build_context(
         request,
         user=user,
+        is_admin=is_admin_view,
         entries=entries,
+        data_cards=data_cards,
         stack_entries=stack_entries_adapted,
         source_type_chips=source_type_chips,
         total_registered_tables=total_registered_tables,
+        memory_cards=memory_card_models,
+        recommended_cards=recommended_cards,
+        default_kind=default_kind,
+        # The lede describes what the Data/Memory tabs actually contain,
+        # and that differs by membership mode. Under auto-membership a
+        # grant IS stack membership, so those tabs hold only what you do
+        # NOT have and "granted data lives in My Stack, not here" is true.
+        # Under classic a grant is an invitation you have not accepted, so
+        # the same tabs list granted-but-unsubscribed resources and that
+        # sentence would contradict the grid right under it (Devin on #1199).
+        auto_membership=auto_membership,
     )
-    # Topnav renders the frozen pre-redesign catalog page byte-for-byte
-    # (catalog_legacy.html; the /library pattern — LEGACY_FROZEN closed set,
-    # guarded by tests/test_ui_layout_theme.py::TestDefaultContentParity).
-    return templates.TemplateResponse(request, "catalog_legacy.html", ctx)
+    return templates.TemplateResponse(request, "catalog_unified.html", ctx)
 
 
 def _unified_memory_cards(entries: list) -> list:
@@ -2616,31 +2432,7 @@ async def library_page(
     Rendering is server-side; the toolbar (search, ownership segments, Type +
     Source facets, sort, and the table ⇄ grid switch) is client-side over
     those rows.
-
-    TOPNAV keeps the pre-redesign page: the unified Library above is part of
-    the rail redesign, and a default instance's /library must keep rendering
-    the legacy "Your collections" page byte-for-byte (the /catalog pattern —
-    classic template on topnav, redesigned one under rail; guarded by
-    tests/test_ui_layout_theme.py::TestDefaultContentParity). The legacy
-    branch below is main's pre-merge handler verbatim.
     """
-    if get_ui_layout() != "rail":
-        from src.rbac import get_accessible_ids
-
-        from app.resource_types import ResourceType
-
-        is_admin = is_user_admin(user["id"], conn)
-        accessible_ids = get_accessible_ids(user, ResourceType.COLLECTION.value, conn)  # None => admin/all
-        allowed = None if accessible_ids is None else set(accessible_ids)
-        cf_repo = corpus_files_repo()
-        cards = []
-        for col in file_corpora_repo().list():
-            if not is_admin and allowed is not None and col["id"] not in allowed:
-                continue
-            files = cf_repo.list_for_corpus(col["id"])
-            cards.append({**col, "file_count": len(files)})
-        ctx = _build_context(request, user=user, conn=conn, is_admin=is_admin, collections=cards)
-        return templates.TemplateResponse(request, "library_legacy.html", ctx)
 
     from app.resource_types import ResourceType
     from app.services.artefact_access import (
@@ -3843,7 +3635,7 @@ async def artefacts_redirect():
 
 
 # Entry points: "My agents" in the user dropdown
-# (`app/web/templates/_app_header.html`) plus a Cmd/Ctrl-K palette entry — a
+# (`app/web/templates/_app_rail.html`) plus a Cmd/Ctrl-K palette entry — a
 # per-user resource list, so deliberately not primary nav and not the admin
 # mega-menu (instance-level agent authoring is Studio's /admin/studio/agent).
 # Both links are guarded by `tests/test_web_nav_agents.py`; don't drop them.
@@ -3866,45 +3658,6 @@ async def agents_page(
     than pretending drafts are shared."""
     if not get_agent_profiles_enabled():
         return RedirectResponse("/", status_code=302)
-
-    # Default chrome keeps the pre-redesign "My agents" management page —
-    # the builder above is a redesign surface and its ctx diverged, so the
-    # classic branch reproduces the pre-redesign app/web/agents_page.py
-    # logic verbatim over the same repos, rendering the frozen
-    # agents_legacy.html (spec 2026-08-07 wave 2).
-    if get_ui_layout() != "rail":
-        from app.api.agents_admin import _SELECTED_MODE_FIELDS
-        from app.chat.agent_profile import _MEMORY_BUDGET_CHARS, select_in_budget
-        from src.repositories import agent_memories_repo
-
-        mem_repo = agent_memories_repo()
-
-        def _memories_for_panel(agent_id: str) -> list:
-            """Every memory for `agent_id`, each carrying an `in_budget` flag
-            for active rows — the exact same `select_in_budget` split the
-            spawn path uses, so the panel can never show a memory as "in
-            effect" that a live spawn would actually shadow."""
-            memories = mem_repo.list_for_agent(agent_id)
-            active_rows = mem_repo.list_active(agent_id)
-            in_budget, _shadowed = select_in_budget(active_rows, _MEMORY_BUDGET_CHARS)
-            in_budget_ids = {m["id"] for m in in_budget}
-            return [
-                {**m, "in_budget": (m["id"] in in_budget_ids) if m["status"] == "active" else None} for m in memories
-            ]
-
-        from src.repositories import agents_repo as _agents_repo
-
-        rows = _agents_repo().list_for_user(user["id"])
-        agents = [
-            {
-                **row,
-                "token_ready": all(row.get(field) == "selected" for field in _SELECTED_MODE_FIELDS),
-                "memories": _memories_for_panel(row["id"]),
-            }
-            for row in rows
-        ]
-        ctx = _build_context(request, user=user, agents=agents)
-        return templates.TemplateResponse(request, "agents_legacy.html", ctx)
 
     from app.services.stack_resolver import StackResolver
     from app.resource_types import ResourceType
@@ -4207,32 +3960,13 @@ async def catalog_package_detail(
     # `curated` used to be derived right here from "is the creator currently in
     # the Admin group" — a second copy of the same derivation in
     # data_packages._badges_for, which is precisely how the two could disagree.
-    # Both are gone: the trust claim is now the STORED publisher_kind below,
-    # read off the row like any other column, and rendered by the shared trust
-    # marker every other surface uses.
+    # Both are gone: the trust claim is now the STORED publisher_kind, read off
+    # the row like any other column, and rendered by the shared trust marker
+    # every other surface uses (the amber `pkg-badge--curated` chip lived only
+    # on the frozen pre-redesign page, retired with it).
     from datetime import datetime, timedelta, timezone as _tz
 
     badges: list[str] = []
-
-    # The frozen pre-redesign page states the trust claim through this list
-    # (its amber `pkg-badge--curated` chip); the redesigned page states it
-    # through its own publisher marker instead. Scope the append to the
-    # legacy path so the retired chip cannot resurface on the redesign — and
-    # drive it off the STORED publisher_kind, not the retired live
-    # Admin-membership derivation, so the legacy page keeps the exact visible
-    # state the v114 backfill froze.
-    #
-    # BEFORE the `new` append, not after: the template renders this list in
-    # order, and the page being frozen here rendered "Curated New" (the
-    # pre-redesign router appended curated first — 64cf788). Appending it last
-    # would have flipped a default instance's chips to "New Curated", which is a
-    # visible change on the one page this change set promises to leave alone
-    # (Devin Review on #1195).
-    if (
-        _detail_template("catalog_package_detail").endswith("_legacy.html")
-        and pkg.get("publisher_kind") == "organization"
-    ):
-        badges.append("curated")
 
     created_at = pkg.get("created_at")
     if isinstance(created_at, datetime):
@@ -4252,7 +3986,7 @@ async def catalog_package_detail(
         total_size_display=_human_size(total_size) if total_size else None,
         badges=badges,
     )
-    return templates.TemplateResponse(request, _detail_template("catalog_package_detail"), ctx)
+    return templates.TemplateResponse(request, "catalog_package_detail.html", ctx)
 
 
 @router.get("/library/{slug}/f/{file_id}", response_class=HTMLResponse)
@@ -4354,7 +4088,7 @@ async def library_detail(
         collection_visibility=visibility_for(ResourceType.COLLECTION.value, col["id"]),
         can_share=is_admin or owner_id == user["id"],
     )
-    return templates.TemplateResponse(request, _detail_template("library_detail"), ctx)
+    return templates.TemplateResponse(request, "library_detail.html", ctx)
 
 
 @router.get("/catalog/t/{table_id}", response_class=HTMLResponse)
@@ -4541,7 +4275,7 @@ async def catalog_table_detail(
         sample_questions=(table.get("sample_questions") or []),
         things_to_know=table.get("things_to_know") or "",
     )
-    return templates.TemplateResponse(request, _detail_template("catalog_table_detail"), ctx)
+    return templates.TemplateResponse(request, "catalog_table_detail.html", ctx)
 
 
 @router.get("/catalog/r/{slug}", response_class=HTMLResponse)
@@ -4583,7 +4317,7 @@ async def catalog_recipe_detail(
         recipe=recipe,
         related_tables=related_tables,
     )
-    return templates.TemplateResponse(request, _detail_template("catalog_recipe_detail"), ctx)
+    return templates.TemplateResponse(request, "catalog_recipe_detail.html", ctx)
 
 
 def _human_size(n: int) -> str:
@@ -4800,11 +4534,7 @@ async def corporate_memory(
         pending_review_count=pending_count,
         is_km_admin=is_admin_view,
     )
-    # Rail keeps the redesigned page; topnav renders the frozen
-    # pre-redesign copy byte-for-byte (the /library pattern —
-    # LEGACY_FROZEN closed set, TestDefaultContentParity guard).
-    tmpl = "corporate_memory.html" if get_ui_layout() == "rail" else "corporate_memory_legacy.html"
-    return templates.TemplateResponse(request, tmpl, ctx)
+    return templates.TemplateResponse(request, "corporate_memory.html", ctx)
 
 
 @router.get("/memory/d/{slug}", response_class=HTMLResponse)
@@ -4907,7 +4637,7 @@ async def memory_domain_detail(
         # ?source=library). Same value the view event already carries.
         source=source_hint,
     )
-    return templates.TemplateResponse(request, _detail_template("memory_domain_detail"), ctx)
+    return templates.TemplateResponse(request, "memory_domain_detail.html", ctx)
 
 
 def _chrome_ctx(request: Request, user: Optional[dict]) -> dict:
@@ -4941,7 +4671,6 @@ def _chrome_ctx(request: Request, user: Optional[dict]) -> dict:
         "instance_brand_short": get_instance_brand_short(),
         "workspace_dir": get_workspace_dir_name(),
         "instance_theme": get_instance_theme(),
-        "ui_layout": get_ui_layout(),
         "home_automode": {"show": get_home_automode_visibility()},
         "custom_scripts": get_custom_scripts(),
         # Set here too (not only in _build_context) so the Studio nav link
@@ -5130,7 +4859,7 @@ async def data_app_detail_page(
 
     return templates.TemplateResponse(
         request,
-        _detail_template("data_app_detail"),
+        "data_app_detail.html",
         {
             **_chrome_ctx(request, user),
             "app": serialized,
@@ -5804,13 +5533,7 @@ async def marketplace_listing(
         # verification vocabulary at all (see get_store_verification_enabled).
         store_verification_enabled=get_store_verification_enabled(),
     )
-    # The one-Browse-shelf reshape (Curated/Flea tabs merged) is part of the
-    # rail redesign; topnav keeps the pre-merge two-shelf page byte-for-byte
-    # (the /catalog pattern — guarded by tests/test_ui_layout_theme.py::
-    # TestDefaultContentParity). Same context either way: the legacy template
-    # reads a subset of it.
-    tmpl = "marketplace.html" if get_ui_layout() == "rail" else "marketplace_legacy.html"
-    return templates.TemplateResponse(request, tmpl, ctx)
+    return templates.TemplateResponse(request, "marketplace.html", ctx)
 
 
 @router.get("/marketplace/flea/{entity_id}", response_class=HTMLResponse)
@@ -5934,7 +5657,7 @@ async def marketplace_flea_detail(
         )
         return templates.TemplateResponse(
             request,
-            _detail_template("marketplace_plugin_detail"),
+            "marketplace_plugin_detail.html",
             ctx,
         )
 
@@ -5947,7 +5670,7 @@ async def marketplace_flea_detail(
     )
     return templates.TemplateResponse(
         request,
-        _detail_template("marketplace_item_detail"),
+        "marketplace_item_detail.html",
         ctx,
     )
 
@@ -5977,7 +5700,7 @@ async def marketplace_curated_detail(
     )
     return templates.TemplateResponse(
         request,
-        _detail_template("marketplace_plugin_detail"),
+        "marketplace_plugin_detail.html",
         ctx,
     )
 
@@ -6004,7 +5727,7 @@ async def marketplace_curated_skill_detail(
     )
     return templates.TemplateResponse(
         request,
-        _detail_template("marketplace_item_detail"),
+        "marketplace_item_detail.html",
         ctx,
     )
 
@@ -6031,7 +5754,7 @@ async def marketplace_curated_agent_detail(
     )
     return templates.TemplateResponse(
         request,
-        _detail_template("marketplace_item_detail"),
+        "marketplace_item_detail.html",
         ctx,
     )
 
@@ -6077,7 +5800,7 @@ async def marketplace_flea_skill_detail(
     )
     return templates.TemplateResponse(
         request,
-        _detail_template("marketplace_item_detail"),
+        "marketplace_item_detail.html",
         ctx,
     )
 
@@ -6120,7 +5843,7 @@ async def marketplace_flea_agent_detail(
     )
     return templates.TemplateResponse(
         request,
-        _detail_template("marketplace_item_detail"),
+        "marketplace_item_detail.html",
         ctx,
     )
 
@@ -8458,11 +8181,7 @@ async def profile_page(
         google_group_prefix=os.environ.get("AGNES_GOOGLE_GROUP_PREFIX", "").strip(),
         csrf_token=csrf_token,
     )
-    # Rail keeps the redesigned page; topnav renders the frozen pre-redesign
-    # copy (spec 2026-08-07 wave 2). Current ctx is a superset of what the
-    # legacy template reads (telegram/desktop status are redesign-only).
-    _profile_tmpl = "profile.html" if get_ui_layout() == "rail" else "profile_legacy.html"
-    response = templates.TemplateResponse(request, _profile_tmpl, ctx)
+    response = templates.TemplateResponse(request, "profile.html", ctx)
     _set_web_csrf_cookie(response, request, csrf_token)
     return response
 
@@ -8790,7 +8509,7 @@ async def chat_page(
     """Web chat UI — streams Claude Code sessions over WebSocket.
 
     Goes through ``_build_context`` so the page inherits the standard
-    Agnes chrome from ``base_ds.html``: ``_app_header.html`` (nav),
+    Agnes chrome from ``base_ds.html``: ``_app_rail.html`` (nav),
     ``static_url(...)``-resolved CSS, ``config.INSTANCE_NAME``,
     ``session.user.is_admin`` for the admin dropdown, footer copyright.
     Without this, the head's four ``<link rel="stylesheet" href="">``

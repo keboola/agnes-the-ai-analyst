@@ -528,11 +528,10 @@ class TestRailWorkingSet:
         css = (STATIC / "css" / "rail.css").read_text(encoding="utf-8")
         assert 'html[data-ui-layout="rail"] .rail-history .cloud-chat-list-group-header {' not in css
 
-    def test_topnav_reaches_the_page_too(self, web_client, admin_cookie, monkeypatch):
-        """The rail's link is the rail's; topnav's conversations column needs its
-        own or the page is unreachable in that chrome."""
-        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
-        _enable_chat(web_client, monkeypatch)
-        html = web_client.get("/chat", cookies=admin_cookie).text
-        assert 'class="cloud-chat-sidebar-all" href="/chats"' in html
-        assert "View all chats" in html
+    # `test_topnav_reaches_the_page_too` was here: the topnav's conversations
+    # column carried its own "View all chats" link, because the rail's link was
+    # the rail's alone. Wave 0 (2026-08) retired that chrome, and the rail
+    # answers reachability with a Chats DESTINATION ROW rather than a link
+    # inside the conversation region — deliberately, since a way out cannot
+    # live in the one part of the rail that collapse hides. That row is pinned
+    # by tests/test_ui_layout_theme.py::TestRailChatsDestination.

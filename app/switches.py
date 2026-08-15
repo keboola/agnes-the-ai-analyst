@@ -188,18 +188,21 @@ SWITCHES: tuple[Switch, ...] = (
         config_keys=("instance", "experience"),
         env_var="AGNES_INSTANCE_EXPERIENCE",
         kind="select",
-        options=("classic", "redesign"),
-        default="classic",
+        options=("redesign",),
+        default="redesign",
         effect="live",
         category="product",
         editable=True,
         on_invalid="default",
         description=(
-            "Experience preset — the one-line redesign adoption switch. Changes only the "
-            "DEFAULTS of the coupled knobs (instance.ui_layout → rail, instance.theme → "
-            "paper, features.stack_auto_membership → true under `redesign`); any per-knob "
-            "env/yaml setting still wins, and `classic` (or an absent/invalid value) is "
-            "byte-for-byte the pre-redesign experience."
+            "Experience preset — retired as a choice; `redesign` is now the only option and "
+            "the default. The entry is kept (rather than removed outright) only so existing "
+            "yaml/env values of `instance.experience` don't error — any value other than "
+            "`redesign` (including the old `classic`) falls back to the default via "
+            '`on_invalid="default"`. Still changes only the DEFAULTS of the coupled knobs '
+            "(instance.theme → paper, features.stack_auto_membership → true); any per-knob "
+            "env/yaml setting still wins. Chrome layout is NOT among them — the rail is "
+            "unconditional, independent of this preset."
         ),
     ),
     Switch(
@@ -212,16 +215,18 @@ SWITCHES: tuple[Switch, ...] = (
         category="product",
         editable=True,
         description=(
-            "Stack membership mode. Off (classic, the default): membership is the subscribe "
-            "model — required plus subscribed grants — with the grant-downgrade subscription "
-            "fan-out, exactly the pre-redesign behavior. On: auto-membership — every granted "
-            "resource is in the stack immediately; subscribe/unsubscribe only control the "
-            "local copy. Read per request, so subscriptions are interpreted, never rewritten. "
+            "Stack membership mode. On (auto-membership, the default since Wave 0, 2026-08 — "
+            "`experience` is always `redesign` now): every granted resource is in the stack "
+            "immediately; subscribe/unsubscribe only control the local copy. Off (classic — "
+            "still a fully-supported explicit opt-out, and it always wins over the default): "
+            "membership is the subscribe model — required plus subscribed grants — with the "
+            "grant-downgrade subscription fan-out, exactly the pre-redesign behavior. "
+            "Read per request, so subscriptions are interpreted, never rewritten. "
             "Set in instance.yaml it is cached per process: with role-split or several Uvicorn "
             "workers, saving it here reaches only the process that served the save — restart to "
             "flip the whole deployment, or set AGNES_STACK_AUTO_MEMBERSHIP, which is read fresh. "
             "That matters more here than for a cosmetic switch, because this one gates which "
-            "data a user can reach. The `instance.experience: redesign` preset defaults this to on."
+            "data a user can reach."
         ),
     ),
     Switch(

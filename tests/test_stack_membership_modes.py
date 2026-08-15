@@ -1,9 +1,16 @@
 """Both stack-membership modes, side by side (spec 2026-08-07).
 
-`features.stack_auto_membership` picks the semantics; the CLASSIC default is
-the pre-redesign subscribe model, byte-for-byte:
+`features.stack_auto_membership` picks the semantics; CLASSIC is the
+pre-redesign subscribe model, byte-for-byte. Wave 0 (2026-08 legacy
+retirement) flipped the knob's PRESET-implied default to auto-membership —
+the `redesign` experience (now the only one) couples `stack_auto_membership`
+to True — so an instance with no explicit override gets auto-membership, not
+classic. Classic still exists, fully supported, as an explicit per-knob
+opt-out (`AGNES_STACK_AUTO_MEMBERSHIP=0`); it is simply no longer what an
+unconfigured instance gets, so `TestClassicMode` below forces it explicitly
+instead of relying on an absent env var:
 
-| concern            | classic (default)                      | auto (flag on)              |
+| concern            | classic (explicit opt-out)             | auto (flag on / the default) |
 |--------------------|----------------------------------------|-----------------------------|
 | stack()            | required ∪ (subscribed ∩ available)    | required ∪ available        |
 | browse().in_stack  | id ∈ required ∪ subscribed             | always True                 |
@@ -66,11 +73,18 @@ def seeded(conn):
 
 
 class TestClassicMode:
-    """Default — no flag, no preset: the pre-redesign subscribe model."""
+    """Explicit per-knob opt-out (`AGNES_STACK_AUTO_MEMBERSHIP=0`, forced
+    below): the pre-redesign subscribe model. No longer the presetless
+    default — see the fixture docstring."""
 
     @pytest.fixture(autouse=True)
     def _default_env(self, monkeypatch):
-        monkeypatch.delenv("AGNES_STACK_AUTO_MEMBERSHIP", raising=False)
+        """Classic is no longer the presetless default (Wave 0 coupled the
+        `redesign` experience — the only one left — to auto-membership), so
+        force it via the still-fully-supported explicit per-knob override,
+        which wins over any preset per `feature_enabled`'s env-first
+        resolution."""
+        monkeypatch.setenv("AGNES_STACK_AUTO_MEMBERSHIP", "0")
         monkeypatch.delenv("AGNES_INSTANCE_EXPERIENCE", raising=False)
 
     def test_stack_is_required_plus_subscribed(self, seeded):

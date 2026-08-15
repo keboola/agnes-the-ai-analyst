@@ -128,16 +128,21 @@ class TestBadges:
         assert 'class="detail-badge detail-badge--curated"' not in body
         assert ">Curated<" not in body
 
-    def test_default_theme_hero_keeps_its_amber_curated_badge(self, seeded_app, monkeypatch):
-        """The DEFAULT hero is unchanged — literally: a default instance renders
-        the frozen pre-redesign page (catalog_package_detail_legacy.html via
-        `_detail_template`, see TestDetailPageParity), whose amber
-        `pkg-badge--curated` is the badge it has always shown — now driven by
-        the stored publisher_kind (the shared handler computes `badges`) rather
-        than the creator's live Admin-group membership, so it no longer
-        disappears when an admin leaves the group."""
-        monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
-        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
+    def test_blue_theme_hero_keeps_its_amber_curated_badge(self, seeded_app, monkeypatch):
+        """The non-paper hero still shows the amber Curated chip.
+
+        This used to be the "default theme" case and read the FROZEN
+        pre-redesign page (`catalog_package_detail_legacy.html` via
+        `_detail_template`), whose marker was `pkg-badge--curated`. Both are
+        gone with Wave 0 (2026-08). What survives is the live template's own
+        non-redesign branch, which `macros/_detail.html` still selects on
+        `instance_theme != 'paper'` — so the case is real, it is just no longer
+        the default and it renders `detail-badge--curated`.
+
+        Either way the point is unchanged: the chip is driven by the STORED
+        publisher_kind, not by whether the creator is in the Admin group at this
+        instant, so it no longer disappears when an admin leaves the group."""
+        monkeypatch.setenv("AGNES_INSTANCE_THEME", "blue")
         pid, slug = _seed_pkg(created_by="admin1", publisher_kind="organization")
         _grant_everyone(pid)
         body = (
@@ -148,24 +153,22 @@ class TestBadges:
             )
             .text
         )
-        assert 'class="pkg-badge pkg-badge--curated"' in body
+        assert 'data-badge="curated"' in body
         assert ">Curated<" in body
+        # The paper-only trustmark must not leak onto the blue look.
         assert 'class="ds-trust' not in body
-        assert "detail-badge" not in body, "redesigned badge markup must not reach default instances"
 
-    def test_default_theme_hero_keeps_the_original_badge_order(self, seeded_app, monkeypatch):
+    def test_blue_theme_hero_keeps_the_original_badge_order(self, seeded_app, monkeypatch):
         """ "Curated New", not "New Curated".
 
-        The template renders `badges` in list order, and the page a default
-        instance now serves is the FROZEN pre-redesign one — whose router
-        appended `curated` before `new` (64cf788). Recomputing the list in the
-        other order would flip the chips on a page this change set promises to
-        leave identical (Devin Review on #1195). A freshly seeded package is
-        inside the 30-day window, so both chips render and the order is
-        observable.
+        The template renders `badges` in list order and the router appends
+        `curated` before `new` (64cf788); recomputing the list in the other
+        order would flip the chips (Devin Review on #1195). A freshly seeded
+        package is inside the 30-day window, so both chips render and the order
+        is observable. Asserted on the blue look, which is where the chip row
+        lives — paper renders the `ds-trust` marker instead.
         """
-        monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
-        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
+        monkeypatch.setenv("AGNES_INSTANCE_THEME", "blue")
         pid, slug = _seed_pkg(created_by="admin1", publisher_kind="organization")
         _grant_everyone(pid)
         body = seeded_app["client"].get(f"/catalog/p/{slug}", headers=_auth(seeded_app["analyst_token"])).text
@@ -173,7 +176,7 @@ class TestBadges:
             "premise: a fresh org package renders both chips"
         )
         assert body.index('data-badge="curated"') < body.index('data-badge="new"'), (
-            "badge order flipped — the frozen page rendered Curated before New"
+            "badge order flipped — Curated is appended before New"
         )
 
     def test_user_published_package_shows_no_trust_marker(self, seeded_app):
@@ -218,7 +221,7 @@ class TestBadges:
         )
         assert "New" in r.text
 
-    def test_omits_new_badge_for_old_package(self, seeded_app):
+    def test_omits_new_badge_for_old_package(self, seeded_app, monkeypatch):
         from datetime import datetime, timedelta, timezone
 
         # publisher_kind explicitly: the badge is driven by the STORED value
@@ -227,6 +230,8 @@ class TestBadges:
         # `"Curated" in body`, which passed on the admin nav's "Curated
         # Marketplaces" menu label rather than on any badge — so it asserted
         # nothing about the thing it names (Devin Review on #1195).
+        # Chip row, so the blue look (paper renders the ds-trust marker).
+        monkeypatch.setenv("AGNES_INSTANCE_THEME", "blue")
         pid, slug = _seed_pkg(created_by="admin1", publisher_kind="organization")
         _grant_everyone(pid)
         conn = get_system_db()
@@ -282,7 +287,10 @@ class TestContentSections:
             headers=_auth(seeded_app["analyst_token"]),
         )
         body = r.text
-        assert "Use it when" in body
+        # Heading wording is theme-switched in macros/_detail.html:
+        # "Best for" under paper (the default since Wave 0, 2026-08),
+        # "Use it when" on the blue look. The LIST is what this test is about.
+        assert "Best for" in body
         assert "You need monetary metrics" in body
         # Apostrophes get HTML-escaped by Jinja's autoescape; use plain
         # ASCII text in the assertion fixture to keep this test stable
@@ -299,7 +307,8 @@ class TestContentSections:
             headers=_auth(seeded_app["analyst_token"]),
         )
         body = r.text
-        assert "Skip it when" in body
+        # "Avoid when" under paper, "Skip it when" on blue — see above.
+        assert "Avoid when" in body
         assert "You only need session counts" in body
 
     def test_omits_use_skip_sections_when_empty(self, seeded_app):

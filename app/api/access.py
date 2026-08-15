@@ -811,14 +811,15 @@ async def update_grant_requirement(
 
     The ``required → available`` downgrade path depends on the stack
     membership mode (``features.stack_auto_membership``, spec
-    2026-08-07-default-chrome-ux-parity). Classic (the default): membership
-    is the subscribe model, so the downgrade eagerly fans out
+    2026-08-07-default-chrome-ux-parity; flipped to default-on in Wave 0,
+    2026-08). Auto-membership (the default): both ``required`` and
+    ``available`` are automatically in every granted user's stack
+    (``StackResolver.stack``), so the downgrade only lifts the "always
+    downloaded locally" guarantee and no row is written. Classic (explicit
+    opt-out via ``features.stack_auto_membership: false``): membership is
+    the subscribe model, so the downgrade eagerly fans out
     ``user_stack_subscriptions`` rows to the group's members — the
     pre-redesign v49 behavior — or they would silently lose the resource.
-    Auto-membership: both ``required`` and ``available`` are automatically in
-    every granted user's stack (``StackResolver.stack``), so the downgrade
-    only lifts the "always downloaded locally" guarantee and no row is
-    written.
 
     ``marketplace_plugin`` grants are the one remaining exception: plugin
     visibility is resolved by ``resolve_user_marketplace`` off
@@ -869,13 +870,14 @@ async def update_grant_requirement(
                 plugin_name,
             )
     elif prior == "required" and payload.requirement == "available":
-        # Classic stack mode (spec 2026-08-07-default-chrome-ux-parity, the
-        # default): membership is the subscribe model, so a required →
-        # available downgrade MUST eagerly materialize subscriptions for the
-        # group's members — the pre-redesign v49 fan-out verbatim — or every
-        # member silently loses the resource from their stack. Under
-        # auto-membership the grant itself keeps the resource in every
-        # member's stack, so no row needs writing.
+        # Classic stack mode (spec 2026-08-07-default-chrome-ux-parity,
+        # explicit opt-out via features.stack_auto_membership=false):
+        # membership is the subscribe model, so a required → available
+        # downgrade MUST eagerly materialize subscriptions for the group's
+        # members — the pre-redesign v49 fan-out verbatim — or every member
+        # silently loses the resource from their stack. Under
+        # auto-membership (the default) the grant itself keeps the resource
+        # in every member's stack, so no row needs writing.
         from app.instance_config import get_stack_auto_membership
 
         if not get_stack_auto_membership():

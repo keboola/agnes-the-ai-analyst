@@ -1,8 +1,9 @@
 """Static contract for the experience preset's Terraform → startup-script plumbing.
 
-`experience` is the one-line redesign adoption switch (app >= 0.83.1): it
-flips the app-side DEFAULTS of the coupled knobs (ui_layout → rail, theme →
-paper, features.stack_auto_membership → on). The per-VM module field writes
+`experience` is the one-line adoption switch (app >= 0.83.1): it flips the
+app-side DEFAULTS of the coupled knobs (theme → paper,
+features.stack_auto_membership → on). Chrome layout stopped being one of them
+in Wave 0 (2026-08) — the rail is unconditional. The per-VM module field writes
 `AGNES_INSTANCE_EXPERIENCE` so a VM recreate cannot silently strip the
 preset an instance runs with.
 
@@ -14,7 +15,8 @@ Terraform allowlist must track the app's own accepted set. The app-side set
 lives on the `experience` Switch in `app/switches.py` (kind="select") —
 `get_experience()` resolves through `switch_value`, so the options tuple IS
 the resolver's acceptance set, and an unrecognised value falls back to
-`classic` silently, which is exactly why the Terraform validation exists.
+`redesign` silently, which is exactly why the Terraform validation exists:
+the retired `classic` must fail the plan, not apply and do nothing.
 """
 
 import re
