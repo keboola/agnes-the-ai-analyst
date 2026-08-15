@@ -10,9 +10,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.83.20] - 2026-08-15
+
 ### Internal
 
-- Semantic-layer validator: a `dialects[]` entry now needs both a label and a non-empty `expression` body to count as declared. A label-only entry has no fragment to compose, so counting it claimed a metric ran on that engine with nothing behind it — and for the target engine held `locally_executable` at `True`, the exact silent-wrong-answer the flag exists to prevent. Follow-up to #1319, found by review after that PR merged.
+- Semantic-layer validator: a `dialects[]` entry now needs both a label and a non-empty `expression` body to count as declared, and a metric whose entries all lack a body is reported as not locally executable. A label-only entry has no fragment to compose, so counting it claimed a metric ran on that engine with nothing behind it — while simply dropping such entries turned "declares an engine we cannot use" into silence, holding `locally_executable` at `True` for a metric that composes on no engine at all. Both are the silent-wrong-answer that flag exists to prevent. A metric with no expression block at all stays unflagged. Follow-up to #1319, found by review after that PR merged.
 
 ## [0.83.19] - 2026-08-15
 
