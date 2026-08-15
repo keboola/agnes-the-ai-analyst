@@ -70,11 +70,14 @@ class TestResolver:
         assert ic.get_mcp_connector_ui_enabled() is True  # env > YAML
 
 
-class TestAiConnectorRouteBothChromes:
-    """`/me/ai-connector` branches on chrome (legacy standalone page vs.
-    redesign redirect) — the switch must short-circuit BOTH branches."""
+class TestAiConnectorRouteRedirect:
+    """`/me/ai-connector` is an unconditional redirect (Wave 0, 2026-08 legacy
+    retirement collapsed the legacy-chrome standalone page it used to branch
+    to — `me_cowork_legacy.html` is gone, rail is the only chrome) — the
+    switch must still short-circuit it home when the MCP connector surface
+    is hidden."""
 
-    def test_legacy_chrome_redirects_home_when_disabled(self, seeded_app, monkeypatch):
+    def test_redirects_home_when_disabled(self, seeded_app, monkeypatch):
         monkeypatch.setattr("app.web.router.get_mcp_connector_ui_enabled", lambda: False)
         c = seeded_app["client"]
         resp = c.get(
@@ -85,9 +88,10 @@ class TestAiConnectorRouteBothChromes:
         assert resp.status_code == 302
         assert resp.headers["location"] == "/"
 
-    def test_redesign_chrome_redirects_home_when_disabled(self, seeded_app, monkeypatch):
-        monkeypatch.setattr("app.web.router.get_mcp_connector_ui_enabled", lambda: False)
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+    def test_redirects_to_connect_section_by_default(self, seeded_app):
+        """Default (switch on): redirects to the consolidated connect
+        section — it never renders a page of its own (full redirect-chain
+        contract in tests/test_web_nav_cowork.py)."""
         c = seeded_app["client"]
         resp = c.get(
             "/me/ai-connector",
@@ -95,17 +99,7 @@ class TestAiConnectorRouteBothChromes:
             follow_redirects=False,
         )
         assert resp.status_code == 302
-        assert resp.headers["location"] == "/"
-
-    def test_still_renders_by_default(self, seeded_app):
-        """Sanity: default (unset) stays exactly the current behavior."""
-        c = seeded_app["client"]
-        resp = c.get(
-            "/me/ai-connector",
-            headers=_auth(seeded_app["analyst_token"]),
-            follow_redirects=False,
-        )
-        assert resp.status_code == 200
+        assert resp.headers["location"] == "/how-it-works#connect"
 
 
 class TestMcpConnectPage:
@@ -180,18 +174,22 @@ class TestNavEntriesHiddenOnBothContextBuilders:
     hit before (Studio's #1190 nav-hidden test uses the same two pages)."""
 
     def test_build_context_page_hides_nav_and_palette(self, seeded_app, monkeypatch):
+        """The admin command palette (``_app_scripts.html``, rendered on
+        every page regardless of role — it self-gates at runtime on
+        ``#adminMenu`` presence) is the only nav surface left that names
+        these routes; the rail chrome's own nav never links to them directly
+        (see tests/test_web_nav_cowork.py — /me/ai-connector is reached only
+        via /how-it-works#connect)."""
         c = seeded_app["client"]
         token = seeded_app["analyst_token"]
 
         # Sanity: present by default.
         body = c.get("/dashboard", headers=_auth(token)).text
-        assert 'href="/me/ai-connector"' in body
         assert "href: '/me/ai-connector'" in body
         assert "href: '/mcp-connect'" in body
 
         monkeypatch.setattr("app.web.router.get_mcp_connector_ui_enabled", lambda: False)
         body = c.get("/dashboard", headers=_auth(token)).text
-        assert 'href="/me/ai-connector"' not in body
         assert "href: '/me/ai-connector'" not in body
         assert "href: '/mcp-connect'" not in body
 
@@ -210,25 +208,41 @@ class TestNavEntriesHiddenOnBothContextBuilders:
 
 
 class TestUserMenuKeepsAnOrientationEntry:
-    """The default (non-paper) topnav renders the MCP-only "AI Connector" row
-    where paper renders "Learn how it works". Gating the connector row alone
-    left the default chrome with an entry to NEITHER surface, so hiding MCP
-    silently took `/how-it-works` — which also carries the CLI setup, the
-    first-session narrative and the privacy content — out of the user menu as
-    a side effect. Devin Review on #1024."""
+    """Original concern (Devin Review on #1024): the topnav's default
+    (non-paper) chrome rendered an MCP-only "AI Connector" row where paper
+    rendered "Learn how it works" — gating the connector row alone left the
+    default chrome with an entry to NEITHER surface, so hiding MCP silently
+    took `/how-it-works` (which also carries the CLI setup, the
+    first-session narrative and the privacy content) out of the user menu as
+    a side effect.
 
-    def test_default_chrome_falls_back_to_learn_how_it_works(self, seeded_app, monkeypatch):
+    Wave 0 (2026-08 legacy retirement) deleted that topnav chrome along with
+    the "AI Connector"/"Learn how it works" fallback branch it required —
+    rail is the only chrome now, and its user menu carries ONE unconditional
+    "How {brand} works" → /how-it-works entry with no
+    `can_mcp_connector_ui` gate at all (confirmed: no such conditional
+    wraps it in `_app_rail.html`, and it predates this wave — present since
+    the original #896 redesign commit). There is no fallback branch left to
+    regress, but the switch-independence itself is worth pinning so it
+    cannot quietly grow one back."""
+
+    def test_orientation_entry_survives_the_switch_either_way(self, seeded_app, monkeypatch):
         c = seeded_app["client"]
         token = seeded_app["analyst_token"]
 
-        # Sanity: the connector row is what the default chrome shows by default.
-        body = c.get("/dashboard", headers=_auth(token)).text
-        assert 'href="/me/ai-connector">AI Connector</a>' in body
+        def _rail_orientation_entry_present() -> bool:
+            body = c.get("/how-it-works", headers=_auth(token)).text
+            rail = body.split('<nav class="rail"', 1)[1].split("</nav>", 1)[0]
+            return 'href="/how-it-works"' in rail and ">How Agnes works</a>" in rail
+
+        assert _rail_orientation_entry_present(), "orientation entry must be present with the switch on"
 
         monkeypatch.setattr("app.web.router.get_mcp_connector_ui_enabled", lambda: False)
-        body = c.get("/dashboard", headers=_auth(token)).text
-        assert 'href="/me/ai-connector"' not in body
-        assert 'href="/how-it-works">Learn how it works</a>' in body
+        assert _rail_orientation_entry_present(), (
+            "orientation entry must survive the MCP connector switch being turned off — "
+            "this is the #1024 regression class, now guarded by construction (no shared "
+            "conditional), not by a fallback branch"
+        )
 
 
 class TestInPageConnectorReferencesFollowTheSwitch:
