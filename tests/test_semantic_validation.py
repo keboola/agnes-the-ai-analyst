@@ -1008,7 +1008,13 @@ class TestLabelOnlyDialectEntries:
         }
         result = check_dialects(document, ["revenue"], target_engine="duckdb")
         assert result["sql_dialects"] == []
-        assert result["locally_executable"] is True
+        # Not executable: the entry is dropped from the declared labels (there
+        # is no fragment behind it), but a metric whose ONLY entries are
+        # label-only composes on no engine at all -- see
+        # TestUnusableDialectEntriesAreNotSilence. The first version of this
+        # test asserted True here, which encoded exactly that hole (Devin
+        # Review on PR #1327).
+        assert result["locally_executable"] is False
 
     def test_expression_bearing_entry_still_counts(self):
         document = {
@@ -1029,3 +1035,36 @@ class TestLabelOnlyDialectEntries:
         result = check_dialects(document, ["revenue"], target_engine="duckdb")
         assert result["sql_dialects"] == ["SNOWFLAKE"]
         assert result["locally_executable"] is False
+
+
+class TestUnusableDialectEntriesAreNotSilence:
+    """Devin Review on PR #1327: dropping label-only entries must not make a
+    metric that declares ONLY such entries read as "declares nothing".
+    Nothing can be composed for it on any engine, so it is not locally
+    executable -- while a metric with no expression block at all stays
+    unflagged, as documented."""
+
+    def _metric_document(self, metric: dict) -> dict:
+        return {
+            "name": "m",
+            "datasets": [{"name": "orders", "source": "analytics.orders"}],
+            "metrics": [metric],
+        }
+
+    def test_only_label_only_entries_is_not_locally_executable(self):
+        document = self._metric_document(
+            {"name": "revenue", "expression": {"dialects": [{"dialect": "SNOWFLAKE"}, {"dialect": "BIGQUERY"}]}}
+        )
+        result = check_dialects(document, ["revenue"], target_engine="duckdb")
+        assert result["sql_dialects"] == []
+        assert result["locally_executable"] is False
+
+    def test_no_expression_block_at_all_stays_unflagged(self):
+        document = self._metric_document({"name": "revenue"})
+        result = check_dialects(document, ["revenue"], target_engine="duckdb")
+        assert result["locally_executable"] is True
+
+    def test_empty_dialects_list_stays_unflagged(self):
+        document = self._metric_document({"name": "revenue", "expression": {"dialects": []}})
+        result = check_dialects(document, ["revenue"], target_engine="duckdb")
+        assert result["locally_executable"] is True
