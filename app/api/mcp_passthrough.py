@@ -213,16 +213,37 @@ async def invoke_passthrough_tool(
     try:
         enforce_source_url_runtime_policy(source)
     except SourceUrlRefused as exc:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "error": "mcp_source_url_refused",
-                "message": str(exc),
-                "reason": exc.reason,
-                "admin_report": exc.admin_report_hint,
-                "switch": exc.switch,
-            },
-        ) from exc
+        # The operator-routing facts (reason / admin report / switch) go to an
+        # ADMIN caller and to the log; a non-admin gets the friendly sentence
+        # only. ``exc.reason`` embeds the source's literal network address
+        # (``address_in_blocked_range: 169.254.169.254``), and the sibling
+        # analyst-reachable url-policy gate deliberately withholds exactly
+        # that (``app/api/mcp_user_secrets.py``, per the rbac reviewer on
+        # #1204): this must not become the first place a non-admin learns a
+        # source's address. The pre-existing 502 branch below does surface the
+        # upstream url, but that is a different question (an upstream that
+        # answered) and is not a reason to widen this one (Devin Review on
+        # PR #1301).
+        logger.warning(
+            "mcp passthrough refused for source %s: url failed the runtime policy (%s)",
+            source.get("id"),
+            exc.reason,
+        )
+        detail: Dict[str, Any] = {
+            "error": "mcp_source_url_refused",
+            "message": (
+                str(exc)
+                if authority.is_admin
+                else (
+                    f"{source.get('name') or source.get('id')} is not configured correctly. Ask an admin to check it."
+                )
+            ),
+        }
+        if authority.is_admin:
+            detail["reason"] = exc.reason
+            detail["admin_report"] = exc.admin_report_hint
+            detail["switch"] = exc.switch
+        raise HTTPException(status_code=409, detail=detail) from exc
 
     # Fail-closed guard for per-user sources — shared with the SSE / Streamable
     # transport closures (app/api/mcp/tools_generator) so the pre-forward guard

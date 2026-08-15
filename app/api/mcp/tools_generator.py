@@ -109,7 +109,19 @@ async def _forward_with_gates(
         try:
             enforce_source_url_runtime_policy(source)
         except SourceUrlRefused as exc:
-            raise RuntimeError(str(exc)) from exc
+            # Same split as the REST seam: the verdict (which embeds the
+            # source's literal address) goes to the log, and the tool caller
+            # — an MCP client, never an admin console — gets the friendly
+            # sentence the analyst-reachable url-policy gate already uses
+            # (Devin Review on PR #1301). An admin diagnosing this reads the
+            # url_policy_verdict column, which flagged the row before this
+            # switch was ever turned on.
+            logger.warning(
+                "mcp tool call refused for source %s: url failed the runtime policy (%s)",
+                source.get("id"),
+                exc.reason,
+            )
+            raise RuntimeError(f"{exc.source_name} is not configured correctly. Ask an admin to check it.") from exc
         # Same pre-forward per-user credential guard the REST endpoint runs, so a
         # per_user source without the caller's own credential fails closed with
         # an actionable message rather than an opaque upstream auth error.

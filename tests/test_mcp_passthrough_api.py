@@ -497,6 +497,40 @@ def test_invoke_switch_on_refused_url_returns_409_and_does_not_forward(seeded_ap
     assert r.status_code == 409, r.text
     detail = r.json()["detail"]
     assert detail["error"] == "mcp_source_url_refused"
+    # A NON-ADMIN gets the friendly sentence only: the verdict embeds the
+    # source's literal address, which the sibling analyst-reachable gate
+    # (mcp_user_secrets) deliberately withholds -- this must not become the
+    # first place a non-admin learns it (Devin Review on PR #1301).
+    assert "Ask an admin" in detail["message"]
+    assert "169.254.169.254" not in r.text
+    assert "blocked_range" not in r.text
+    assert "reason" not in detail and "admin_report" not in detail and "switch" not in detail
+    mock.assert_not_called()
+
+
+def test_invoke_switch_on_refused_url_gives_an_admin_the_routing_facts(seeded_app, monkeypatch):
+    """The operator-routing facts (reason / admin report / switch) still reach
+    an ADMIN caller — withholding them from everyone would leave the operator
+    with a dead tool call and no pointer (Devin Review on PR #1301)."""
+    import app.instance_config as ic
+
+    monkeypatch.setattr(ic, "get_mcp_source_url_runtime_enforce", lambda: True)
+    _seed_http_passthrough_tool(
+        source_id="src_url_rest_refused_admin",
+        tool_id="url-rest.refused-admin",
+        exposed_name="refused_admin",
+        url="http://169.254.169.254/mcp",
+    )
+    client = seeded_app["client"]
+    with _patch_upstream_call(text="LEAK") as mock:
+        r = client.post(
+            "/api/mcp/passthrough/tools/url-rest.refused-admin/call",
+            headers={"Authorization": f"Bearer {seeded_app['admin_token']}"},
+            json={"arguments": {}},
+        )
+    assert r.status_code == 409, r.text
+    detail = r.json()["detail"]
+    assert detail["error"] == "mcp_source_url_refused"
     assert "blocked_range" in detail["reason"]
     assert "would_refuse" in detail["admin_report"]
     assert detail["switch"] == "mcp.source_url_runtime_enforce"

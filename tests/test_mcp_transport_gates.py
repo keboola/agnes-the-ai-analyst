@@ -300,8 +300,14 @@ def test_switch_on_a_refused_url_blocks_and_never_dials(seeded_app, monkeypatch)
     )
     fn = _closure("refused_http", caller_id_fn=lambda: "analyst1")
     with _patch_upstream(text="LEAK") as mock:
-        with pytest.raises(RuntimeError, match="url refused"):
+        with pytest.raises(RuntimeError, match="Ask an admin") as excinfo:
             asyncio.run(fn())
+    # The tool caller is an MCP client, never an admin console: the verdict
+    # (which embeds the source's literal address) goes to the log only, the
+    # same line the analyst-reachable url-policy gate draws (Devin Review on
+    # PR #1301).
+    assert "169.254.169.254" not in str(excinfo.value)
+    assert "blocked_range" not in str(excinfo.value)
     mock.assert_not_called()
 
 
