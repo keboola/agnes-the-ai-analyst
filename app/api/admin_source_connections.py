@@ -36,6 +36,7 @@ from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
 from app.auth.access import require_admin
+from app.keboola_identity import project_identity
 from app.secrets_vault import VaultKeyNotConfiguredError, can_store_secrets
 from connectors.keboola.semantic_layer import MasterTokenRequiredError, require_master_token
 from connectors.keboola.storage_api import KeboolaStorageClient, StorageApiError, is_upstream_client_error
@@ -254,22 +255,6 @@ def _reject_disallowed_token_env(token_env: Optional[str]) -> None:
         )
 
 
-def project_identity(payload: Optional[Dict[str, Any]]) -> tuple[Optional[Any], str]:
-    """``(project_id, project_name)`` from a Storage API payload that carries
-    an ``owner`` block — both ``GET /tokens/verify`` and ``GET /v2/storage``
-    do, so one reader serves the token preflights and the /test probe.
-
-    Returns ``(None, "")`` when the payload has no owner id: an identity we
-    cannot read must never be persisted as a *known* identity, or the
-    cross-token check below would compare against a hole and pass anything.
-    """
-    owner = (payload or {}).get("owner") or {}
-    owner_id = owner.get("id")
-    if owner_id is None:
-        return None, ""
-    return owner_id, owner.get("name") or ""
-
-
 def _record_project_identity(connection_id: str, row: Dict[str, Any], payload: Dict[str, Any]) -> None:
     """Persist the upstream project's id + name onto the connection config.
 
@@ -330,8 +315,8 @@ def project_mismatch_message(row: Dict[str, Any], payload: Dict[str, Any], *, wh
         return None
     token_id, token_name = project_identity(payload)
     # Compared as strings: the id round-trips through a JSON config column on
-    # two different backends (DuckDB JSON, PG JSONB), and a 5947 that comes
-    # back as "5947" would otherwise read as a permanent, unfixable mismatch
+    # two different backends (DuckDB JSON, PG JSONB), and a 12345 that comes
+    # back as "12345" would otherwise read as a permanent, unfixable mismatch
     # on a correctly-configured connection. Devin Review on #1242 raised the
     # same risk across endpoints.
     if token_id is None or str(token_id) == str(known_id):

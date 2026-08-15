@@ -45,6 +45,26 @@ _AUTH_DETAIL_BY_REASON = {
     "agent_pat_agent_deleted": "Agent deleted",
 }
 
+# X-StorageApi-Token header rejections → 401 detail. Reasons come from
+# app.auth.keboola_header.resolve_header_user.
+_KEBOOLA_HEADER_DETAIL = {
+    "keboola_user_unknown": "No account exists for this Keboola identity — sign in via the web login first",
+    "not_master_token": "Only a master (admin) Storage API token can authenticate",
+    "no_admin_identity": "The verified token carries no admin identity",
+    "project_mismatch": "The token belongs to a different Keboola project than this instance",
+    "role_forbidden": "This Keboola project role is not permitted on this instance",
+    "deactivated": "Account deactivated",
+    "invalid_token": "Invalid or expired token",
+    "verify_failed": "Could not verify the token against the Keboola stack",
+    "not_configured": "Keboola token authentication is not configured",
+    # Transient-failure reasons ("rate_limited" is special-cased to 429 before
+    # this map): the .get() fallback says "Invalid or expired token", which
+    # would tell a caller hitting an outage to rotate a good credential
+    # (Devin Review on PR #1288). Both must read as retryable.
+    "keboola_verify_error": "Token verification failed unexpectedly — this is a server-side problem, retry later",
+    "keboola_lookup_error": "The token verified but the account lookup failed — this is a server-side problem, retry later",
+}
+
 
 def is_local_dev_mode() -> bool:
     """True when LOCAL_DEV_MODE=1 — unsafe for production, bypasses auth."""
@@ -249,6 +269,28 @@ def get_current_user(
         token = request.cookies.get("access_token")
 
     if not token:
+        # X-StorageApi-Token is consulted ONLY when no bearer credential and
+        # no session cookie are present — a Storage token never shadows an
+        # established Agnes credential (spec precedence rule).
+        sapi_token = request.headers.get("X-StorageApi-Token") if request is not None else None
+        if sapi_token:
+            from app.auth.keboola_header import enabled as keboola_header_enabled
+            from app.auth.keboola_header import resolve_header_user
+
+            if keboola_header_enabled():
+                user, kb_reason = resolve_header_user(sapi_token, request)
+                if user:
+                    _attach_admin_flag(user, conn)
+                    return _stash_user(request, user)
+                if kb_reason == "rate_limited":
+                    raise HTTPException(
+                        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                        detail="Too many token verification attempts — retry later",
+                    )
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail=_KEBOOLA_HEADER_DETAIL.get(kb_reason, "Invalid or expired token"),
+                )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing or invalid Authorization header",
@@ -375,6 +417,17 @@ def require_session_token(request: Request, user: dict = Depends(get_current_use
         token = auth.removeprefix("Bearer ")
     if not token and request:
         token = request.cookies.get("access_token")
+    if not token and request.headers.get("x-storageapi-token"):
+        # A request authenticated by the X-StorageApi-Token header is a
+        # non-interactive service credential (get_current_user resolved it) —
+        # it must never mint PATs, connect MCP, or manage agents, exactly
+        # like a PAT. Without this check the header path would be classified
+        # as an interactive session because only Authorization/cookie are
+        # inspected here.
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This endpoint requires an interactive session, not a Storage API token",
+        )
     if token:
         from app.auth.scheduler_token import is_scheduler_token
 
@@ -392,4 +445,40 @@ def require_session_token(request: Request, user: dict = Depends(get_current_use
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="This endpoint requires an interactive session, not a PAT",
             )
+    return user
+
+
+def reject_keboola_header_credential(user: dict = Depends(get_current_user)) -> dict:
+    """Block the X-StorageApi-Token header credential from routes that mint
+    durable follow-on credentials — a Cowork setup bundle (setup token +
+    pre-baked PAT), or a data-app service/git-push/preview-cookie token.
+
+    Narrower than ``require_session_token``: it rejects ONLY
+    ``token_type == "keboola_token"`` (the header path), not a regular PAT.
+    Blocking PATs here too would be a second, unrelated hardening (tracked
+    separately — #1292) and is out of scope for closing this laundering
+    hole: a Storage API token — a data-plane credential meant for
+    programmatic Storage access, never displayed to the holder as an
+    Agnes login — must never be exchanged for a persistent Agnes PAT or a
+    data-app credential, exactly as ``require_session_token`` already
+    guarantees for the endpoints it gates (token issuance, MCP connect,
+    agent management).
+
+    Applied as a route-level dependency (``dependencies=[Depends(...)]`` on
+    the ``@router`` decorator) rather than a handler parameter, so the
+    handler's own ``user: dict = Depends(get_current_user)`` keeps
+    populating ``user`` — FastAPI's per-request dependency cache dedupes
+    the two ``Depends(get_current_user)`` calls, so auth only runs once.
+
+    Plain ``def`` — same Tier 1 threadpool convention as
+    ``require_session_token`` (PR #188): the body is a synchronous dict
+    read, and ``async def`` would offload nothing while risking blocking
+    the event loop if ``get_current_user`` itself ever grows a blocking
+    call.
+    """
+    if isinstance(user, dict) and user.get("token_type") == "keboola_token":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This endpoint requires an interactive or PAT session, not a Storage API token",
+        )
     return user

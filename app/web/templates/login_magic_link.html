@@ -24,7 +24,8 @@
                     We'll send a magic link to your email. Click it to sign in &mdash; no password needed.
                 </p>
 
-                <form method="POST" action="{{ url_for('email_auth.send_magic_link') }}" class="login-form" style="width: 100%; max-width: 320px;">
+                <form method="POST" action="{{ url_for('email_auth.send_magic_link_web') }}" class="login-form" style="width: 100%; max-width: 320px;">
+                    <input type="hidden" name="next" value="{{ next_path|default('', true) }}">
                     <div class="form-group" style="margin-bottom: 16px;">
                         <label for="email" style="display: block; margin-bottom: 6px; font-weight: 500; font-size: 14px;">Email Address</label>
                         <input type="email"

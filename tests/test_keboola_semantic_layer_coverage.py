@@ -49,7 +49,7 @@ def _dataset_item(table_id, model_uuid="model-1"):
     }
 
 
-def _run(metrics, datasets=(), glossary=(), *, storage_project=("5947", "Demo"), master_project=("5947", "Demo")):
+def _run(metrics, datasets=(), glossary=(), *, storage_project=("12345", "Demo"), master_project=("12345", "Demo")):
     """Run the coverage computation against a fake Metastore and fake token
     identities. Returns the single source entry."""
     from connectors.keboola import semantic_layer
@@ -177,15 +177,15 @@ class TestWarnings:
         assert source["unregistered_tables"] == []
 
     def test_tokens_pointing_at_different_projects_is_a_warning(self, e2e_env):
-        source = _run([], storage_project=("4451", "Other"), master_project=("5947", "Demo"))
+        source = _run([], storage_project=("4451", "Other"), master_project=("12345", "Demo"))
 
         assert source["token_project_mismatch"] is True
         assert "token_project_mismatch" in _warning_codes(source)
         message = next(w["message"] for w in source["warnings"] if w["code"] == "token_project_mismatch")
-        assert "4451" in message and "5947" in message
+        assert "4451" in message and "12345" in message
 
     def test_same_project_on_both_tokens_is_not_a_warning(self, e2e_env):
-        source = _run([], storage_project=("5947", "Demo"), master_project=("5947", "Demo"))
+        source = _run([], storage_project=("12345", "Demo"), master_project=("12345", "Demo"))
 
         assert source["token_project_mismatch"] is False
         assert "token_project_mismatch" not in _warning_codes(source)
@@ -193,7 +193,7 @@ class TestWarnings:
     def test_unknown_storage_identity_does_not_claim_a_mismatch(self, e2e_env):
         """A token we cannot resolve is unknown, not different — claiming a
         mismatch there would send an admin chasing a config error that isn't."""
-        source = _run([], storage_project=None, master_project=("5947", "Demo"))
+        source = _run([], storage_project=None, master_project=("12345", "Demo"))
 
         assert source["token_project_mismatch"] is False
         assert "token_project_mismatch" not in _warning_codes(source)
