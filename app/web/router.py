@@ -453,18 +453,21 @@ _RAIL_DETAIL_BACK: dict[str, tuple[str, str]] = {
 
 
 def _detail_back(kind: str, href: str, label: str) -> dict[str, str]:
-    """Resolve a detail page's back link for the current chrome.
+    """Resolve a detail page's back link.
 
-    Topnav instances keep exactly what the caller passes (`href`/`label`) —
-    their nav still carries Marketplace and the classic Catalog, so those
-    remain honest destinations there. Rail instances get the /library
-    section instead (see `_RAIL_DETAIL_BACK`). Registered as a Jinja global
-    rather than threaded through each route's context so every detail
-    template resolves it the same way, including the ones rendered from a
-    minimal context.
+    Always the /library section for the kind (see `_RAIL_DETAIL_BACK`),
+    falling back to the Library itself for a kind with no mapping. The
+    caller-supplied `href`/`label` are the PRE-RAIL destinations (the classic
+    Catalog, Marketplace); they were honest while the topnav carried those
+    rows, and this returned them unchanged on that chrome. Wave 0 (2026-08)
+    retired it, so the branch that read them was unreachable — they are kept
+    in the signature because every call site passes them positionally and
+    they document where the page used to sit.
+
+    Registered as a Jinja global rather than threaded through each route's
+    context so every detail template resolves it the same way, including the
+    ones rendered from a minimal context.
     """
-    if get_ui_layout() != "rail":
-        return {"href": href, "label": label}
     rail = _RAIL_DETAIL_BACK.get(kind)
     if not rail:
         return {"href": "/library", "label": "Library"}
