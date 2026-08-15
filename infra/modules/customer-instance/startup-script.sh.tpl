@@ -802,6 +802,17 @@ set -a; . "$APP_DIR/.env"; set +a
 export COMPOSE_FILE="$${COMPOSE_FILE:-$COMPOSE_FILE_DEFAULT}"
 
 docker compose $COMPOSE_PROFILES_ARG pull
+%{ if data_apps_enabled ~}
+# Pre-pull the data-app RUNTIME image. It is not a compose service, so the
+# `docker compose pull` above never touches it — which left the very first
+# deploy on a fresh VM fetching ~1.3 GB synchronously inside the runner's
+# `containers.run`. That pull outlived docker-py's HTTP timeout, the daemon
+# tore it down, and the retried `create` raised ImageNotFound: the deploy
+# failed reporting a missing image that was merely still downloading.
+# Best-effort (`|| true`) — a registry hiccup must not fail the whole boot;
+# the deploy path still works, just slowly, on the cold-pull backstop.
+docker pull "$AGNES_DATA_APPS_RUNTIME_IMAGE" || echo "WARN: could not pre-pull data-app runtime image $AGNES_DATA_APPS_RUNTIME_IMAGE"
+%{ endif ~}
 # Retry `up`: on a first boot the app can exceed its healthcheck start window
 # (fresh image, DuckDB->PG data migration, keboola table attach), which makes
 # `up -d` exit non-zero on the dependency gate — and under `set -e` that used

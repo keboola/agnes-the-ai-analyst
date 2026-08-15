@@ -4,6 +4,7 @@ Verify admin-only gating + the round trip through the vault, including
 that connectors/mcp/client._lookup_secret_for_source picks up the
 stored value over the legacy env-var.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -140,6 +141,7 @@ def test_delete_source_also_clears_vault_secret(seeded_app):
 
 def test_health_reports_vault_key_configured(seeded_app, monkeypatch):
     from cryptography.fernet import Fernet
+
     client = seeded_app["client"]
     monkeypatch.setenv("AGNES_VAULT_KEY", Fernet.generate_key().decode())
     assert client.get("/api/health").json()["vault_key_configured"] is True
@@ -164,6 +166,7 @@ def test_set_secret_returns_409_without_vault_key(seeded_app, monkeypatch):
 
 def test_encrypt_secret_blocked_without_key_in_prod(monkeypatch):
     import app.secrets_vault as v
+
     monkeypatch.delenv("AGNES_VAULT_KEY", raising=False)
     monkeypatch.delenv("LOCAL_DEV_MODE", raising=False)
     v._reset_ephemeral_key_for_tests()
@@ -174,16 +177,18 @@ def test_encrypt_secret_blocked_without_key_in_prod(monkeypatch):
 
 def test_encrypt_secret_allowed_in_local_dev_without_key(monkeypatch):
     import app.secrets_vault as v
+
     monkeypatch.delenv("AGNES_VAULT_KEY", raising=False)
     monkeypatch.setenv("LOCAL_DEV_MODE", "1")
     v._reset_ephemeral_key_for_tests()
-    token = v.encrypt_secret("s3cr3t")           # ephemeral OK in local dev
+    token = v.encrypt_secret("s3cr3t")  # ephemeral OK in local dev
     assert v.decrypt_secret(token) == "s3cr3t"
 
 
 def test_encrypt_secret_allowed_with_key(monkeypatch):
     import app.secrets_vault as v
     from cryptography.fernet import Fernet
+
     monkeypatch.setenv("AGNES_VAULT_KEY", Fernet.generate_key().decode())
     monkeypatch.delenv("LOCAL_DEV_MODE", raising=False)
     v._reset_ephemeral_key_for_tests()
@@ -196,23 +201,49 @@ def test_source_serialization_includes_has_vault_secret(seeded_app):
     client = seeded_app["client"]
     headers = {"Authorization": f"Bearer {seeded_app['admin_token']}"}
     # before: no vault secret
-    assert (
-        client.get("/api/admin/mcp-sources/src_v", headers=headers).json()[
-            "has_vault_secret"
-        ]
-        is False
-    )
+    assert client.get("/api/admin/mcp-sources/src_v", headers=headers).json()["has_vault_secret"] is False
     client.put(
         "/api/admin/mcp-sources/src_v/secret",
         headers=headers,
         json={"value": "tok"},
     )
-    assert (
-        client.get("/api/admin/mcp-sources/src_v", headers=headers).json()[
-            "has_vault_secret"
-        ]
-        is True
+    assert client.get("/api/admin/mcp-sources/src_v", headers=headers).json()["has_vault_secret"] is True
+
+
+def test_get_detail_reports_vault_secret_updated_at(seeded_app):
+    """The admin GET detail payload carries when the shared vault secret was
+    last rotated — None before any PUT, an ISO-8601 timestamp after — same
+    style as the pre-existing ``has_vault_secret`` flag, and never the
+    secret value itself."""
+    _seed_source()
+    client = seeded_app["client"]
+    headers = {"Authorization": f"Bearer {seeded_app['admin_token']}"}
+
+    before = client.get("/api/admin/mcp-sources/src_v", headers=headers).json()
+    assert before["vault_secret_updated_at"] is None
+
+    client.put(
+        "/api/admin/mcp-sources/src_v/secret",
+        headers=headers,
+        json={"value": "rotate-me"},
     )
+    after = client.get("/api/admin/mcp-sources/src_v", headers=headers).json()
+    assert after["vault_secret_updated_at"] is not None
+    assert "rotate-me" not in str(after)
+
+
+def test_clear_secret_resets_vault_secret_updated_at(seeded_app):
+    """After DELETE the card must stop claiming a rotation timestamp — the
+    row is gone, not stale."""
+    _seed_source()
+    client = seeded_app["client"]
+    headers = {"Authorization": f"Bearer {seeded_app['admin_token']}"}
+    client.put("/api/admin/mcp-sources/src_v/secret", headers=headers, json={"value": "tok"})
+    assert client.get("/api/admin/mcp-sources/src_v", headers=headers).json()["vault_secret_updated_at"] is not None
+
+    client.delete("/api/admin/mcp-sources/src_v/secret", headers=headers)
+    after = client.get("/api/admin/mcp-sources/src_v", headers=headers).json()
+    assert after["vault_secret_updated_at"] is None
 
 
 def test_list_includes_has_vault_secret(seeded_app):

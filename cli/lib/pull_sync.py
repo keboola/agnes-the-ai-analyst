@@ -302,20 +302,53 @@ def _server_table_url(t: dict) -> str:
     return ""
 
 
-def _server_table_skip(t: dict) -> bool:
-    """Tables the per-type stack sync must skip:
+def _server_table_skip(t: dict, *, skip_materialize: bool = False) -> Optional[str]:
+    """Tables the per-type stack sync must not fetch — returns the skip
+    reason (``"remote"`` / ``"server_only"`` / ``"materialized"`` /
+    ``"parts"``) or ``None``.
+
+    The reason matters to callers because the to_delete loops only prune
+    names absent from the server list: a table that is still listed but
+    newly withheld ("remote"/"server_only"/"parts") must have its
+    previously synced reference pruned at the skip site, while
+    "materialized" is an analyst-side fetch opt-out
+    (``--skip-materialize``) whose state row must be carried forward so
+    the local copy stays tracked for a later pull to update or prune.
+    Skipped rows without a prior state row need neither.
+
+    Reasons in detail:
 
     - remote-mode: no parquet at all (the master DuckDB ATTACH resolves
       them on demand);
+    - server_only: kept fresh server-side and queryable via ``agnes query
+      --remote``, but deliberately withheld from local distribution
+      (#607) — mirrors step 4's ``if info.get("server_only"): continue``
+      in ``cli/lib/pull.py`` so a ``data_packages``/``direct_tables`` row
+      marked ``server_only`` is never fetched into
+      ``<workspace>/.claude/data/_shared/`` either (issue #1324 — this
+      skip used to be missing here, so the typed stack-sync path would
+      download a table the flat-``tables`` step 4 correctly withheld);
+    - materialized, but only when the caller opts in via
+      ``skip_materialize=True`` (mirrors ``agnes pull --skip-materialize``,
+      already honored by step 4's flat-``tables`` loop) — lets an analyst's
+      fast-first-init choice skip multi-GB scheduled-query parquets in the
+      typed manifest sections too, not just the legacy flat dict (#1304);
     - partitioned: distributed as a *directory* of parts (``parts`` set),
       which this single-`{name}.parquet` fetcher can't handle — they are
       synced via the main flat-``tables`` per-part path into
       ``server/parquet/{id}/`` instead. Without this skip, a partitioned
       table in a data package / direct-tables list 404s on
       ``/api/data/{id}/download`` (no single file exists)."""
-    if (t.get("query_mode") or "").lower() == "remote":
-        return True
-    return bool(t.get("parts"))
+    mode = (t.get("query_mode") or "").lower()
+    if mode == "remote":
+        return "remote"
+    if t.get("server_only"):
+        return "server_only"
+    if skip_materialize and mode == "materialized":
+        return "materialized"
+    if t.get("parts"):
+        return "parts"
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -331,6 +364,7 @@ def _sync_table_into(
     table_state: dict,
     fetcher: Callable[[str, Path], None],
     md5_of: Callable[[Path], str],
+    skip_materialize: bool = False,
 ) -> Tuple[Optional[dict], bool]:
     """Materialize one server-side table into ``dest`` (a reference
     inside a package or ``_direct/``). Returns ``(state_entry, did_fetch)``.
@@ -340,10 +374,12 @@ def _sync_table_into(
     re-fetch); otherwise it's fetched once and every package that
     references it links to it.
 
-    Skips remote-mode tables and tables missing both ``id`` and an md5
-    (defensive — a malformed manifest entry shouldn't crash the pull).
+    Skips remote-mode, server_only, and (when ``skip_materialize`` is set)
+    materialized-mode tables — see ``_server_table_skip`` — plus tables
+    missing both ``id`` and an md5 (defensive — a malformed manifest entry
+    shouldn't crash the pull).
     """
-    if _server_table_skip(table):
+    if _server_table_skip(table, skip_materialize=skip_materialize):
         return None, False
     tid = table.get("id")
     if not tid:
@@ -396,6 +432,27 @@ def _delete_table_reference(
             logger.warning("could not unlink orphan shared %s", shared_path)
 
 
+def _drop_tracked_reference(
+    prev: dict,
+    *,
+    default_ref: Path,
+    local_data_dir: Path,
+) -> None:
+    """Delete the on-disk reference a previous sync's state row points at
+    (falling back to the conventional path for rows that predate
+    ``ref_path``), and the shared parquet once no references remain."""
+    ref_path = Path(prev.get("ref_path") or default_ref)
+    shared = Path(prev.get("shared_path") or "")
+    if not shared.exists() and prev.get("table_id"):
+        shared = _shared_path(local_data_dir, prev["table_id"])
+    _delete_table_reference(
+        ref_path=ref_path,
+        shared_path=shared,
+        local_data_dir=local_data_dir,
+        strategy=prev.get("strategy"),
+    )
+
+
 def sync_direct_tables(
     *,
     server_tables: List[dict],
@@ -403,6 +460,7 @@ def sync_direct_tables(
     prev_state: Dict[str, Any],
     fetcher: Callable[[str, Path], None],
     md5_of: Callable[[Path], str],
+    skip_materialize: bool = False,
 ) -> Tuple[Dict[str, Any], TypeReport]:
     """Sync the ``direct_tables`` array.
 
@@ -410,6 +468,10 @@ def sync_direct_tables(
     ``data/_shared/<id>.parquet``. The state dict key is the table's
     ``name`` (used as the on-disk filename) so removes can find the
     correct reference even when ``id`` rotates server-side.
+
+    ``skip_materialize`` mirrors ``agnes pull --skip-materialize`` (#1304)
+    — forwarded to ``_server_table_skip``/``_sync_table_into`` so a
+    ``query_mode='materialized'`` row is omitted here too when set.
     """
     report = TypeReport()
     new_state: Dict[str, Any] = {}
@@ -420,7 +482,30 @@ def sync_direct_tables(
 
     # to_add ∪ to_update
     for name, table in server_names.items():
-        if _server_table_skip(table):
+        skip_reason = _server_table_skip(table, skip_materialize=skip_materialize)
+        if skip_reason:
+            prev_row = prev_state.get(name)
+            if prev_row is None:
+                continue
+            if skip_reason == "materialized":
+                # --skip-materialize is a fetch opt-out, not an unsubscribe:
+                # keep the state row so the copy stays tracked and a later
+                # pull without the flag can still update or prune it.
+                new_state[name] = prev_row
+                continue
+            # Still listed by the server but newly withheld from local
+            # distribution (server_only / remote / parts). The to_delete
+            # loop below can't catch this — it only prunes names absent
+            # from the server list — and dropping the state row without
+            # deleting would orphan the copy on disk with no handle left
+            # to ever remove it. Prune here, mirroring step 4's
+            # server_only prune in cli/lib/pull.py.
+            _drop_tracked_reference(
+                prev_row,
+                default_ref=direct_dir / f"{name}.parquet",
+                local_data_dir=local_data_dir,
+            )
+            report.removed += 1
             continue
         dest = direct_dir / f"{name}.parquet"
         prev = prev_state.get(name)
@@ -433,6 +518,7 @@ def sync_direct_tables(
                 table_state=prev or {},
                 fetcher=fetcher,
                 md5_of=md5_of,
+                skip_materialize=skip_materialize,
             )
         except Exception as exc:
             report.errors.append({"name": name, "error": str(exc)})
@@ -448,15 +534,10 @@ def sync_direct_tables(
     # to_delete = previous − server
     for name in prev_names - set(server_names):
         prev = prev_state.get(name) or {}
-        ref_path = Path(prev.get("ref_path") or (direct_dir / f"{name}.parquet"))
-        shared = Path(prev.get("shared_path") or "")
-        if not shared.exists() and prev.get("table_id"):
-            shared = _shared_path(local_data_dir, prev["table_id"])
-        _delete_table_reference(
-            ref_path=ref_path,
-            shared_path=shared,
+        _drop_tracked_reference(
+            prev,
+            default_ref=direct_dir / f"{name}.parquet",
             local_data_dir=local_data_dir,
-            strategy=prev.get("strategy"),
         )
         report.removed += 1
 
@@ -470,11 +551,16 @@ def sync_data_packages(
     prev_state: Dict[str, Any],
     fetcher: Callable[[str, Path], None],
     md5_of: Callable[[Path], str],
+    skip_materialize: bool = False,
 ) -> Tuple[Dict[str, Any], TypeReport]:
     """Sync the ``data_packages`` array.
 
     State is a 2-level dict keyed by ``slug`` → ``{table_name: entry}``.
     Tables share the canonical ``_shared`` store across packages.
+
+    ``skip_materialize`` mirrors ``agnes pull --skip-materialize`` (#1304)
+    — forwarded to ``_server_table_skip``/``_sync_table_into`` so a
+    ``query_mode='materialized'`` row is omitted here too when set.
     """
     report = TypeReport()
     new_state: Dict[str, Dict[str, Any]] = {}
@@ -490,7 +576,24 @@ def sync_data_packages(
         new_pkg_state: Dict[str, Any] = {}
 
         for name, table in server_table_by_name.items():
-            if _server_table_skip(table):
+            skip_reason = _server_table_skip(table, skip_materialize=skip_materialize)
+            if skip_reason:
+                prev_row = prev_pkg.get(name)
+                if prev_row is None:
+                    continue
+                if skip_reason == "materialized":
+                    # Fetch opt-out, not an unsubscribe — keep the row
+                    # tracked (see sync_direct_tables).
+                    new_pkg_state[name] = prev_row
+                    continue
+                # Newly withheld while still listed — prune the previously
+                # synced reference (see sync_direct_tables).
+                _drop_tracked_reference(
+                    prev_row,
+                    default_ref=pkg_dir / f"{name}.parquet",
+                    local_data_dir=local_data_dir,
+                )
+                report.removed += 1
                 continue
             dest = pkg_dir / f"{name}.parquet"
             prev = prev_pkg.get(name)
@@ -503,6 +606,7 @@ def sync_data_packages(
                     table_state=prev or {},
                     fetcher=fetcher,
                     md5_of=md5_of,
+                    skip_materialize=skip_materialize,
                 )
             except Exception as exc:
                 report.errors.append({"package": slug, "name": name, "error": str(exc)})
@@ -517,16 +621,10 @@ def sync_data_packages(
 
         # Tables in prev but not server → drop references
         for name in set(prev_pkg) - set(server_table_by_name):
-            prev = prev_pkg.get(name) or {}
-            ref_path = Path(prev.get("ref_path") or (pkg_dir / f"{name}.parquet"))
-            shared = Path(prev.get("shared_path") or "")
-            if not shared.exists() and prev.get("table_id"):
-                shared = _shared_path(local_data_dir, prev["table_id"])
-            _delete_table_reference(
-                ref_path=ref_path,
-                shared_path=shared,
+            _drop_tracked_reference(
+                prev_pkg.get(name) or {},
+                default_ref=pkg_dir / f"{name}.parquet",
                 local_data_dir=local_data_dir,
-                strategy=prev.get("strategy"),
             )
             report.removed += 1
 
@@ -538,15 +636,10 @@ def sync_data_packages(
         prev_pkg = prev_state.get(slug) or {}
         pkg_dir = local_data_dir / slug
         for name, prev in prev_pkg.items():
-            ref_path = Path(prev.get("ref_path") or (pkg_dir / f"{name}.parquet"))
-            shared = Path(prev.get("shared_path") or "")
-            if not shared.exists() and prev.get("table_id"):
-                shared = _shared_path(local_data_dir, prev["table_id"])
-            _delete_table_reference(
-                ref_path=ref_path,
-                shared_path=shared,
+            _drop_tracked_reference(
+                prev,
+                default_ref=pkg_dir / f"{name}.parquet",
                 local_data_dir=local_data_dir,
-                strategy=prev.get("strategy"),
             )
             report.removed += 1
         # Drop the (now-empty) package dir.
@@ -709,6 +802,10 @@ class PullStackOptions:
     fetcher: Callable[[str, Path], None]
     md5_of: Callable[[Path], str]
     bundle_fetcher: Callable[[str], bytes]
+    # #1304 — mirrors `agnes pull --skip-materialize`, already honored by
+    # `run_pull`'s step-4 flat-`tables` loop. Defaulted so every existing
+    # caller (tests included) keeps compiling unchanged.
+    skip_materialize: bool = False
 
 
 def run_stack_sync(opts: PullStackOptions) -> SyncReport:
@@ -741,6 +838,7 @@ def run_stack_sync(opts: PullStackOptions) -> SyncReport:
         prev_state=prev_direct,
         fetcher=opts.fetcher,
         md5_of=opts.md5_of,
+        skip_materialize=opts.skip_materialize,
     )
     pkg_state, pkg_report = sync_data_packages(
         server_packages=opts.manifest.get("data_packages") or [],
@@ -748,6 +846,7 @@ def run_stack_sync(opts: PullStackOptions) -> SyncReport:
         prev_state=prev_packages,
         fetcher=opts.fetcher,
         md5_of=opts.md5_of,
+        skip_materialize=opts.skip_materialize,
     )
     mem_state, mem_report = sync_memory_domains(
         server_domains=opts.manifest.get("memory_domains") or [],

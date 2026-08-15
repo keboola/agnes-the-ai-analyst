@@ -682,3 +682,70 @@ def test_count_items_domain_filter_follows_the_junction(k_repo):
     assert k_repo.count_items(domain="ops") == 1
     assert k_repo.count_items(domain="q-team") == 0
     assert k_repo.count_items(domain="no-such-domain") == 0
+
+
+def _domains_repo(k_repo):
+    """The domains repo matching whichever backend `k_repo` is."""
+    if hasattr(k_repo, "conn"):
+        from src.repositories.memory_domains import MemoryDomainsRepository
+
+        return MemoryDomainsRepository(k_repo.conn)
+    from src.repositories.memory_domains_pg import MemoryDomainsPgRepository
+
+    return MemoryDomainsPgRepository(k_repo._engine)
+
+
+def test_contradiction_candidates_follow_the_domain_junction_not_the_scalar(k_repo, ops_domain):
+    """Contradiction candidates must be selected through
+    `knowledge_item_domains`, on BOTH backends.
+
+    v49 replaced the scalar `knowledge_items.domain` with a first-class domain
+    entity, but the PG repo's contradiction query kept matching the scalar,
+    which `replace_domains_for_item` does not maintain. The result was a
+    backend-dependent correctness hole in a *correctness scanner*: on Postgres
+    a moved item stayed a candidate under the domain it LEFT and was never
+    judged under the one it JOINED, so a real contradiction was reported on
+    DuckDB and silently missed on PG.
+
+    Asserted through the public move API rather than by writing the junction
+    directly, so the test fails for any repo that reads the stale column
+    however it got stale.
+    """
+    domains = _domains_repo(k_repo)
+    # Deliberately not one of the starter domains DuckDB seeds (`finance`,
+    # …) — this must be a slug neither backend already has.
+    target = "zz-move-target"
+    domains.create(
+        name="Move target",
+        slug=target,
+        description=None,
+        icon=None,
+        color=None,
+        created_by="system",
+    )
+    _create_with_status(k_repo, "seed", "approved")
+    _create_with_status(k_repo, "mover", "approved")
+
+    # Baseline: both live in `ops`, so `mover` is a candidate there.
+    assert "mover" in {r["id"] for r in k_repo.find_contradiction_candidates(new_item_id="seed", domain="ops")}
+
+    domains.replace_domains_for_item("mover", [target], added_by="system")
+
+    ops_candidates = {r["id"] for r in k_repo.find_contradiction_candidates(new_item_id="seed", domain="ops")}
+    assert "mover" not in ops_candidates, (
+        "a moved item still shows under the domain it left — the query is reading "
+        "the stale v15 scalar instead of the knowledge_item_domains junction"
+    )
+
+    joined_candidates = {r["id"] for r in k_repo.find_contradiction_candidates(new_item_id="seed", domain=target)}
+    assert "mover" in joined_candidates, "a moved item is not judged under the domain it joined"
+
+
+def test_contradiction_candidates_unknown_domain_slug_is_empty(k_repo, ops_domain):
+    """An unknown slug returns nothing on both backends rather than falling
+    back to an unfiltered scan — the DuckDB repo documented this semantic and
+    the PG sibling now shares it."""
+    _create_with_status(k_repo, "seed", "approved")
+    _create_with_status(k_repo, "cand", "approved")
+
+    assert k_repo.find_contradiction_candidates(new_item_id="seed", domain="no-such-domain") == []

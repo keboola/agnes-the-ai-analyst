@@ -2566,7 +2566,7 @@ footer {
     font-weight: var(--font-medium);
 }
 
-.category-tag.finance { background: rgba(16, 183, 127, 0.1); color: #0d9668; }
+.category-tag.finance { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); }
 .category-tag.hr { background: rgba(139, 92, 246, 0.1); color: #7c3aed; }
 .category-tag.sales { background: color-mix(in srgb, var(--ds-primary) 10%, transparent); color: var(--primary); }
 .category-tag.telemetry { background: rgba(245, 159, 10, 0.1); color: #b45309; }
@@ -5954,7 +5954,7 @@ details.section-card > summary {
     color: var(--primary);
     border: 1px solid color-mix(in srgb, var(--ds-primary) 25%, transparent);
 }
-.role-chip.is-core { background: rgba(16, 185, 129, 0.10); color: #047857; border-color: rgba(16, 185, 129, 0.25); }
+.role-chip.is-core { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); border-color: var(--ds-accent-success-line); }
 .grant-list, .group-roles-list {
     list-style: none;
     padding: 0;

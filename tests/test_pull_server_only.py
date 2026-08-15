@@ -3,6 +3,7 @@ but MUST still count it as listed (parquets_total) — mirroring the
 "listed-but-skipped" behavior. A normal `local` table alongside it still
 downloads.
 """
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock
@@ -25,12 +26,18 @@ def test_pull_skips_server_only_but_counts_it(tmp_path, monkeypatch):
     canned_manifest = {
         "tables": {
             "normal_tbl": {
-                "hash": "h_normal", "rows": 0, "size_bytes": 0,
-                "query_mode": "local", "server_only": False,
+                "hash": "h_normal",
+                "rows": 0,
+                "size_bytes": 0,
+                "query_mode": "local",
+                "server_only": False,
             },
             "so_tbl": {
-                "hash": "h_so", "rows": 0, "size_bytes": 0,
-                "query_mode": "local", "server_only": True,
+                "hash": "h_so",
+                "rows": 0,
+                "size_bytes": 0,
+                "query_mode": "local",
+                "server_only": True,
             },
         }
     }
@@ -50,6 +57,7 @@ def test_pull_skips_server_only_but_counts_it(tmp_path, monkeypatch):
 
     def _stream_download(path, target_path, progress_callback=None):
         from pathlib import Path as _P
+
         # path is the server URL path; capture which tid was requested.
         downloaded_tids.append(str(path))
         _P(target_path).write_bytes(b"PAR1" + b"\x00" * 100 + b"PAR1")
@@ -75,9 +83,7 @@ def test_pull_skips_server_only_but_counts_it(tmp_path, monkeypatch):
     # Only the normal table's parquet lands on disk.
     parquet_dir = tmp_path / "server" / "parquet"
     assert (parquet_dir / "normal_tbl.parquet").exists(), "normal local table must download"
-    assert not (parquet_dir / "so_tbl.parquet").exists(), (
-        "server_only table must NOT be downloaded by agnes pull"
-    )
+    assert not (parquet_dir / "so_tbl.parquet").exists(), "server_only table must NOT be downloaded by agnes pull"
 
     # No GET was issued for the server_only tid.
     assert not any("so_tbl" in p for p in downloaded_tids), (
@@ -90,7 +96,8 @@ def test_pull_skips_server_only_but_counts_it(tmp_path, monkeypatch):
 
 
 def test_pull_prunes_stale_parquet_when_table_flips_to_server_only(
-    tmp_path, monkeypatch,
+    tmp_path,
+    monkeypatch,
 ):
     """#630 review: a table downloaded while server_only=false must lose its
     local parquet (and sync-state row) on the first pull after the admin
@@ -99,8 +106,11 @@ def test_pull_prunes_stale_parquet_when_table_flips_to_server_only(
     canned_manifest = {
         "tables": {
             "so_tbl": {
-                "hash": "h_so", "rows": 0, "size_bytes": 0,
-                "query_mode": "local", "server_only": True,
+                "hash": "h_so",
+                "rows": 0,
+                "size_bytes": 0,
+                "query_mode": "local",
+                "server_only": True,
             },
         }
     }
@@ -127,10 +137,14 @@ def test_pull_prunes_stale_parquet_when_table_flips_to_server_only(
     # Pre-flip residue: the parquet landed on a previous pull while the
     # table was still distributed, with a matching sync-state row.
     from cli.config import save_sync_state
-    save_sync_state({
-        "tables": {"so_tbl": {"hash": "h_so", "rows": 0, "size_bytes": 0}},
-        "last_sync": "2026-01-01T00:00:00+00:00",
-    })
+
+    save_sync_state(
+        {
+            "tables": {"so_tbl": {"hash": "h_so", "rows": 0, "size_bytes": 0}},
+            "last_sync": "2026-01-01T00:00:00+00:00",
+        },
+        workspace=tmp_path,
+    )
     parquet_dir = tmp_path / "server" / "parquet"
     parquet_dir.mkdir(parents=True)
     (parquet_dir / "so_tbl.parquet").write_bytes(b"PAR1" + b"\x00" * 100 + b"PAR1")
@@ -138,12 +152,12 @@ def test_pull_prunes_stale_parquet_when_table_flips_to_server_only(
     result = run_pull(server_url="http://x", token="t", workspace=tmp_path)
 
     assert not (parquet_dir / "so_tbl.parquet").exists(), (
-        "stale parquet must be pruned once the manifest marks the table "
-        "server_only"
+        "stale parquet must be pruned once the manifest marks the table server_only"
     )
     assert result.tables_removed == 1
 
     from cli.config import get_sync_state
-    assert "so_tbl" not in get_sync_state().get("tables", {}), (
+
+    assert "so_tbl" not in get_sync_state(workspace=tmp_path).get("tables", {}), (
         "the pruned table's sync-state row must be dropped with the parquet"
     )

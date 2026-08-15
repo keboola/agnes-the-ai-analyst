@@ -537,6 +537,16 @@ def _flag_default_path(config_keys: tuple[str, ...], fallback: bool) -> bool:
     return fallback
 
 
+def _switch_default_path(config_keys: tuple[str, ...], fallback: Any) -> Any:
+    """`_flag_default_path` without the bool coercion — for `select`-kind
+    switches (e.g. `auth.keboola.multi_project_mode`), whose registry default
+    is a string the panel must render verbatim, not a truthiness."""
+    for s in SWITCHES:
+        if s.config_keys == config_keys:
+            return s.default
+    return fallback
+
+
 _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
     # Both sections became editable alongside `mcp`; declaring their booleans
     # here is what makes the panel render a switch instead of a free-text field,
@@ -655,6 +665,19 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
                 "so users are not shown a setup path that cannot work for them. UI "
                 "only — the MCP protocol endpoints keep serving in-network clients "
                 "regardless."
+            ),
+        },
+        "source_url_runtime_enforce": {
+            "kind": "bool",
+            "default": _flag_default("mcp", "source_url_runtime_enforce", False),
+            "hint": (
+                "Enforce the scheme/literal-IP half of the url policy at the two "
+                "runtime forward seams too, not only when a source is configured "
+                "(#1216). Off by default: an already-enabled legacy source keeps "
+                "forwarding exactly as it does today. Before turning this on, check "
+                "the url_policy_verdict column on the MCP source list for any "
+                "would_refuse row and fix its url first — this switch turns each one "
+                "into a refused call with no other warning."
             ),
         },
     },
@@ -970,7 +993,9 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
                     "hint": (
                         "Keboola project this instance is bound to — tokens from any "
                         "other project are rejected. Required for both the OAuth "
-                        "login and the token-header auth."
+                        "login and the token-header auth, unless multi_project_mode "
+                        "is select/auto — there '*' (or empty) means any project the "
+                        "sign-in's introspect lists with an allowed role."
                     ),
                 },
                 "client_id": {
@@ -1006,6 +1031,21 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
                         "users only, never provisions). Off by default: a plain "
                         "Storage token carries no interactive factor, so this "
                         "bypasses any MFA/SSO enforced on web logins. See "
+                        "docs/feature-flags.md."
+                    ),
+                },
+                "multi_project_mode": {
+                    "kind": "select",
+                    "options": ["disabled", "select", "auto"],
+                    "default": _switch_default_path(("auth", "keboola", "multi_project_mode"), "disabled"),
+                    "hint": (
+                        "What a Keboola sign-in does with the user's OTHER projects. "
+                        "disabled = the single-project login only. select = discover "
+                        "at login, the user imports chosen projects via "
+                        "/api/auth/keboola/projects. auto = every allowed project is "
+                        "connected on each login (PAT minted + vaulted, connection + "
+                        "chat tools, kbc-<project>-<role> membership sync, semantic "
+                        "layer for master tokens). Needs AGNES_VAULT_KEY. See "
                         "docs/feature-flags.md."
                     ),
                 },
@@ -1746,6 +1786,26 @@ def _known_fields_resolved() -> dict:
     # operator drops it. Same failure mode as the coupled leaves above, one
     # tier up (Devin on #1199).
     fields["instance"]["experience"]["default"] = get_experience()
+    # Same one-tier-up failure for the Keboola multi-project mode: the
+    # recommended deployment sets it ONLY via env
+    # (AGNES_KEBOOLA_MULTI_PROJECT_MODE=auto), so the unset key rendered the
+    # registry's static `disabled` and a routine auth-section save persisted
+    # that into the overlay — invisible while the env var is present, a
+    # silent revert of the whole feature the day the operator drops it
+    # (Devin Review on this PR). Render the RESOLVED mode instead, so a save
+    # writes what is actually in force.
+    from app.switches import switch_value
+
+    fields["auth"]["keboola"]["fields"]["multi_project_mode"]["default"] = switch_value("keboola_multi_project_mode")
+    # The project id is required exactly when the single-project gate is in
+    # force. Under an active discovery mode (`select`/`auto`) it is optional
+    # — unset/`'*'` IS the wildcard — and a static `required: True` rendered
+    # a required marker beside a hint telling the operator to leave it
+    # blank, nudging them to pin a project and silently disable the
+    # wildcard they intended (Devin Review on this PR, sixteenth round).
+    fields["auth"]["keboola"]["fields"]["project_id"]["required"] = (
+        switch_value("keboola_multi_project_mode") == "disabled"
+    )
     return fields
 
 
@@ -1820,6 +1880,40 @@ def _feature_flags_inventory() -> List[Dict[str, Any]]:
             # string-valued row above already renders it (value_label +
             # effective-as-redesign); running it through the boolean
             # ``feature_enabled`` below would coerce "classic" to True.
+            continue
+        if flag.kind != "bool":
+            # Every OTHER select switch resolves its STRING through the
+            # switch registry. The boolean path below coerces any option to
+            # True ("disabled" included — coerce_flag_value only knows
+            # 0/false/no/off/empty), so a three-way mode read as a boolean
+            # told the operator it was on while it was off (Devin Review on
+            # this PR; the experience skip above was keyed by NAME, so the
+            # second select switch fell straight into the trap the comment
+            # there warns about). Same row shape as the leading experience
+            # row: value_label carries the mode, effective mirrors
+            # "resolved away from the default".
+            from app.switches import switch_value
+
+            value = str(switch_value(flag.name))
+            if os.environ.get(flag.env_var) is not None:
+                source = "env"
+            else:
+                probe = get_value(*flag.config_keys, default=_UNSET)
+                source = "default" if probe is _UNSET else "config"
+            out.append(
+                {
+                    "name": flag.name,
+                    "value_label": value,
+                    "effective": value != flag.default,
+                    "source": source,
+                    "default": flag.default,
+                    "env_var": flag.env_var,
+                    "description": flag.description,
+                    "effect": flag.effect,
+                    "editable": flag.editable,
+                    "lock_reason": flag.lock_reason,
+                }
+            )
             continue
         if flag.name in _CHAT_RUNTIME_FLAGS:
             effective, source = _chat_flag_runtime_view(flag)

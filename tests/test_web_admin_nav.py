@@ -717,9 +717,9 @@ class TestRailCollapsePreference:
         assert 'class="rail rail-icon-mode"' in admin_text
         assert 'class="admin-nav"' in admin_text
 
-        stack_text = c.get("/stack", headers=self._auth(seeded_app["admin_token"])).text
-        assert 'class="rail-icon-mode"' not in stack_text
-        assert 'class="rail"' in stack_text
+        lib_text = c.get("/library", headers=self._auth(seeded_app["admin_token"])).text
+        assert 'class="rail-icon-mode"' not in lib_text
+        assert 'class="rail"' in lib_text
 
     def test_preference_bootstrap_script_renders_on_every_rail_page(self, seeded_app, monkeypatch) -> None:
         """The before-first-paint bootstrap (reads localStorage, applies a
@@ -728,7 +728,7 @@ class TestRailCollapsePreference:
         rail page, not just /admin — the preference applies everywhere."""
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         c = seeded_app["client"]
-        for path in ("/admin/users", "/stack"):
+        for path in ("/admin/users", "/library"):
             text = c.get(path, headers=self._auth(seeded_app["admin_token"])).text
             assert "agnes.rail.collapsed" in text
             assert "document.currentScript.parentNode" in text
@@ -752,17 +752,17 @@ class TestRailCollapsePreference:
         assert 'aria-expanded="false"' in admin_text.split('id="rail-toggle"', 1)[1][:200]
         assert "Expand navigation" in admin_text.split('id="rail-toggle"', 1)[1][:200]
 
-        stack_text = c.get("/stack", headers=self._auth(seeded_app["admin_token"])).text
-        assert 'id="rail-icon-toggle"' not in stack_text
-        assert "js/rail_icon_mode.js" not in stack_text
-        assert stack_text.count('id="rail-toggle"') == 1
-        assert 'aria-expanded="true"' in stack_text.split('id="rail-toggle"', 1)[1][:200]
-        assert "Collapse navigation" in stack_text.split('id="rail-toggle"', 1)[1][:200]
+        lib_text = c.get("/library", headers=self._auth(seeded_app["admin_token"])).text
+        assert 'id="rail-icon-toggle"' not in lib_text
+        assert "js/rail_icon_mode.js" not in lib_text
+        assert lib_text.count('id="rail-toggle"') == 1
+        assert 'aria-expanded="true"' in lib_text.split('id="rail-toggle"', 1)[1][:200]
+        assert "Collapse navigation" in lib_text.split('id="rail-toggle"', 1)[1][:200]
 
     def test_toggle_js_loaded_on_every_rail_page(self, seeded_app, monkeypatch) -> None:
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         c = seeded_app["client"]
-        for path in ("/admin/users", "/stack"):
+        for path in ("/admin/users", "/library"):
             text = c.get(path, headers=self._auth(seeded_app["admin_token"])).text
             assert "js/rail_toggle.js" in text
 
@@ -812,10 +812,10 @@ class TestRailCollapsePreference:
 
         # Same caller, same grant, a non-admin rail page: the lists are there, and
         # so are the standard rail's per-row menus (Pin/Rename/Delete).
-        stack_text = c.get("/stack", headers=self._auth(seeded_app["admin_token"])).text
-        assert 'id="rail-history"' in stack_text
-        assert 'id="nav-chats"' in stack_text
-        assert "js/components/chat_row_menu.js" in stack_text
+        lib_text = c.get("/library", headers=self._auth(seeded_app["admin_token"])).text
+        assert 'id="rail-history"' in lib_text
+        assert 'id="nav-chats"' in lib_text
+        assert "js/components/chat_row_menu.js" in lib_text
 
     def test_the_onboarding_row_is_not_on_admin_pages(self, seeded_app, monkeypatch) -> None:
         """It measures the ANALYST's journey, and it is the only element in the
@@ -837,7 +837,7 @@ class TestRailCollapsePreference:
         assert "js/rail_history.js" in text
 
         # Intact on an app page, ring and all.
-        app_text = c.get("/stack", headers=self._auth(seeded_app["admin_token"])).text
+        lib_text = c.get("/library", headers=self._auth(seeded_app["admin_token"])).text
         for anchor in (
             'id="railGetStarted"',
             'id="rail-getstarted-toggle"',
@@ -845,10 +845,10 @@ class TestRailCollapsePreference:
             'id="rail-getstarted-title"',
             'id="rail-getstarted-count"',
         ):
-            assert anchor in app_text, anchor
+            assert anchor in lib_text, anchor
         # Retired anatomy stays retired — no bar, no chevron.
-        assert "rail-getstarted-bar" not in app_text
-        assert "rail-getstarted-chev" not in app_text
+        assert "rail-getstarted-bar" not in lib_text
+        assert "rail-getstarted-chev" not in lib_text
 
     def test_non_admin_rail_page_keeps_the_full_rail_and_a_plain_admin_link(self, seeded_app, monkeypatch) -> None:
         """A rail page outside /admin/* keeps the full-width rail and the
@@ -858,7 +858,7 @@ class TestRailCollapsePreference:
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         self._enable_chat(seeded_app)
         c = seeded_app["client"]
-        resp = c.get("/stack", headers=self._auth(seeded_app["admin_token"]))
+        resp = c.get("/library", headers=self._auth(seeded_app["admin_token"]))
         assert resp.status_code == 200, resp.text
         text = resp.text
         assert 'class="rail-icon-mode"' not in text

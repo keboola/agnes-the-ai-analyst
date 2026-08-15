@@ -55,6 +55,27 @@ def test_shared_secret_round_trip_both_backends(_env):
     assert repo.get("src_shared") is None
 
 
+def test_shared_secret_get_updated_at_both_backends(_env):
+    """``get_updated_at`` reports None before any upsert and an ISO-8601
+    timestamp after — never the secret value — on both backends. Mirrors
+    ``PerUserSecretsRepository.get_updated_at`` (see
+    ``test_updated_at_null_before_and_set_after_put`` in
+    ``test_parity_mcp_user_secrets.py``), the per-user sibling this admin
+    vault-card timestamp is modeled on."""
+    from src.repositories import shared_secrets_repo
+
+    repo = shared_secrets_repo()
+    assert repo.get_updated_at("src_shared_ts") is None, f"[{_env}] no row yet — expected None"
+
+    repo.upsert("src_shared_ts", "sh-secret-value")
+    updated_at = repo.get_updated_at("src_shared_ts")
+    assert updated_at is not None, f"[{_env}] expected a timestamp after upsert"
+    assert "sh-secret-value" not in updated_at, f"[{_env}] get_updated_at must never leak the secret value"
+
+    repo.delete("src_shared_ts")
+    assert repo.get_updated_at("src_shared_ts") is None, f"[{_env}] deleted row — expected None again"
+
+
 def test_lookup_resolves_per_user_secret_both_backends(_env):
     """scope='per_user' with the caller's own stored secret → that secret,
     resolved through the factory on either backend (the active PG bug)."""

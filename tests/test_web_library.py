@@ -807,3 +807,39 @@ def test_library_own_data_app_row_carries_the_share_control(seeded_app, monkeypa
     row = r.text[row_at : r.text.index("</tr>", row_at)]
     assert 'data-share-type="data_app"' in row, "an owned app row must be shareable"
     assert 'data-share="shareapp"' in row, "the Sharing badge must be the editable control, keyed on the slug"
+
+
+@pytest.mark.parametrize("layout", ["topnav", "rail"])
+def test_data_app_detail_renders_the_recorded_failure_reason(seeded_app, monkeypatch, layout):
+    """A failed deploy stores the runner's own message in `state_detail`.
+
+    It was recorded and returned by the API from the start, but no template
+    rendered it — so the page showed a bare `error` badge while the Logs pane
+    (the obvious next click) 502s for the very same reason. Parametrized over
+    both layouts because the detail pages are a frozen pair: the default
+    instance renders `_legacy`, so a fix on the redesigned copy alone would
+    silently not exist for most installs.
+    """
+    _seed_app(seeded_app, f"errapp{layout}", "Errored App", monkeypatch)
+    monkeypatch.setenv("AGNES_UI_LAYOUT", layout)
+
+    from src.repositories import data_apps_repo
+
+    repo = data_apps_repo()
+    row = repo.get_by_slug(f"errapp{layout}")
+    repo.set_state(row["id"], "error", "image_not_found")
+
+    r = seeded_app["client"].get(f"/apps/detail/errapp{layout}", headers=_auth(seeded_app["admin_token"]))
+    assert r.status_code == 200
+    assert "image_not_found" in r.text, (
+        f"[{layout}] the recorded failure reason must be on the page — without it a failed "
+        "deploy leaves the operator with a bare 'error' and a 502 in the logs pane"
+    )
+
+
+def test_data_app_detail_shows_no_error_row_when_healthy(seeded_app, monkeypatch):
+    """The row is for saying something, not for an empty slot on every app."""
+    _seed_app(seeded_app, "okapp", "Fine App", monkeypatch)
+    r = seeded_app["client"].get("/apps/detail/okapp", headers=_auth(seeded_app["admin_token"]))
+    assert r.status_code == 200
+    assert 'id="dda-state-detail"' not in r.text

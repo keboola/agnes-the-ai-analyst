@@ -58,11 +58,16 @@
        classic (the default): a grant is an invitation you have not accepted
        yet, so the tabs list granted-but-unsubscribed data and memory. The
        auto-membership sentence would then contradict the grid immediately
-       below it. #}
+       below it.
+
+       Both ledes link `/library?stack=in_stack`, NOT `/stack` — the Stack
+       page is retired (#1088); the Library's "In stack only" toggle arrives
+       pressed on that deep link and reads the same StackResolver.browse()
+       rows. #}
     {% if auto_membership %}
-    <p class="lede">Discover and add skills, plugins, and shared resources your colleagues published. Data and memory you've already been granted live in <a href="/stack">My Stack</a>, not here.</p>
+    <p class="lede">Discover and add skills, plugins, and shared resources your colleagues published. Data and memory you've already been granted live in <a href="/library?stack=in_stack">My Stack</a>, not here.</p>
     {% else %}
-    <p class="lede">Discover and add skills, plugins, and shared resources your colleagues published — plus the data and memory you've been granted but not yet added. What you've already added lives in <a href="/stack">My Stack</a>.</p>
+    <p class="lede">Discover and add skills, plugins, and shared resources your colleagues published — plus the data and memory you've been granted but not yet added. What you've already added lives in <a href="/library?stack=in_stack">My Stack</a>.</p>
     {% endif %}
   </div>
   <a class="cc-btn" href="/store/new" id="browse-submit-btn" style="flex-shrink:0">+ Submit a skill or plugin</a>

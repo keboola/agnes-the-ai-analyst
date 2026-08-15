@@ -1389,6 +1389,31 @@ def get_mcp_connector_ui_enabled() -> bool:
     ``/admin/server-config`` inventory panel.
     """
     return feature_enabled("mcp", "connector_ui_enabled", env_var="AGNES_MCP_CONNECTOR_UI_ENABLED", default=True)
+def get_mcp_source_url_runtime_enforce() -> bool:
+    """Whether the DNS-free url-policy check also runs at the two credentialed
+    forward seams, not only when a source is configured (#1216).
+
+    Reads ``mcp.source_url_runtime_enforce`` (env
+    ``AGNES_MCP_SOURCE_URL_RUNTIME_ENFORCE``). **Defaults to False**: a source
+    that is enabled and was registered before ``check_source_url`` existed, or
+    before ``mcp.source_url_strict`` was turned on, keeps forwarding exactly as
+    it does today until an admin opts in — flipping this on for the first time
+    is what turns a working (if policy-violating) integration into a refused
+    one, with no prior warning to whoever calls that tool next.
+
+    Before turning this on, review the ``url_policy_verdict`` column on the
+    admin MCP source list (``GET /api/admin/mcp-sources`` /
+    ``agnes admin mcp source list``) for any ``would_refuse`` row and fix its
+    url first — this switch converts each one from a silent warning into a
+    refused call. See ``app.api.mcp_policy.enforce_source_url_runtime_policy``,
+    the one helper both forward seams share.
+    """
+    return feature_enabled(
+        "mcp",
+        "source_url_runtime_enforce",
+        env_var="AGNES_MCP_SOURCE_URL_RUNTIME_ENFORCE",
+        default=False,
+    )
 
 
 def get_guardrails_blocked_quota_per_day() -> int:

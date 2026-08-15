@@ -2165,234 +2165,24 @@ def _unified_library_cards(user: dict, conn) -> list:
     return cards
 
 
-def _unified_upload_cards(user: dict) -> list:
-    """Uploads OWNED by the caller — the private per-user file collections
-    surfaced on My Stack. Owner-scoped (``created_by``), NOT grant-scoped:
-    a user sees only the uploads they created, so admins do not see every
-    collection here (that's the shared /library surface)."""
-    cards: list = []
-    try:
-        uid = user.get("id")
-        cf_repo = corpus_files_repo()
-        for col in file_corpora_repo().list():
-            if col.get("created_by") != uid:
-                continue
-            try:
-                files = cf_repo.list_for_corpus(col["id"])
-            except Exception:
-                files = []
-            file_count = len(files)
-            # A one-file artefact is presented AS the file (not "a collection
-            # with 1 file"), so carry the lone file's name/type/size for the
-            # card + detail. Two or more → it reads as a collection.
-            first_file = None
-            if file_count == 1:
-                f0 = files[0]
-                first_file = {
-                    "filename": f0.get("filename"),
-                    "file_type": f0.get("file_type"),
-                    "size_bytes": f0.get("size_bytes"),
-                }
-            cards.append(
-                {
-                    "id": col["id"],
-                    "name": col.get("name") or col.get("slug"),
-                    "description": col.get("description") or "",
-                    "slug": col.get("slug"),
-                    "file_count": file_count,
-                    "first_file": first_file,
-                    "created_at": col.get("created_at"),
-                }
-            )
-    except Exception as e:
-        logger.warning("/stack: could not enumerate uploads: %s", e)
-    return cards
-
-
 @router.get("/stack", response_class=HTMLResponse)
-async def my_stack_page(
-    request: Request,
-    user: dict = Depends(get_current_user),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
-):
-    """Unified My Stack (rail layout / #896 prototype IA) — the caller's
-    personal workspace: "Everything in your Stack", one inventory table
-    over every kind — Data (data packages), Plugins (hydrated client-side
-    from /api/marketplace/items?tab=my), Memory (memory domains), Uploads
-    (private file collections). Growing the stack happens on /catalog,
-    which carries the "Recommended for you" row.
+async def my_stack_page(user: dict = Depends(get_current_user)):
+    """My Stack is retired — folded into the Library (#1088).
 
-    Reachable under any layout; the rail's "My Stack" entry points here."""
-    from app.services.stack_resolver import StackResolver
-    from app.resource_types import ResourceType
+    Direction (a) from the issue thread: "the Library absorbs the Stack. No
+    migration of functionality is required — it is already there." /library
+    already renders every kind My Stack did (data packages, memory domains,
+    marketplace plugins, uploads) off the same ``StackResolver.browse()``
+    call, with per-row ``stack_state`` membership controls, and its "In
+    stack only" toggle (the ``?stack=in_stack`` preset this redirect targets)
+    answers the exact question this page existed to answer.
 
-    # No conn: read the effective stack through the factory repos, exactly
-    # like GET /api/stack. Passing the request conn made the resolver read a
-    # connection that didn't observe just-written subscription rows, so the
-    # stack rendered empty even when /api/stack returned entries.
-    resolver = StackResolver()
-    from app.instance_config import get_stack_auto_membership
-
-    # My Stack rows carry the same mode-aware action wording as the
-    # Catalog cards: auto → Download-locally toggle, classic → the
-    # remove-from-stack control (leaving is a membership change there).
-    auto_membership = get_stack_auto_membership()
-    pkg_repo = data_packages_repo()
-
-    def _pkg_table_count(pkg_id: str) -> int:
-        try:
-            return len(pkg_repo.list_tables(pkg_id))
-        except Exception:
-            return 0
-
-    def _adapt_pkg(e):
-        slug = None
-        try:
-            full = pkg_repo.get(e.id)
-            if full:
-                slug = full.get("slug")
-        except Exception:
-            slug = None
-        return _data_package_entry_dict(
-            e,
-            drilldown_url=f"/catalog/p/{slug}" if slug else f"/catalog#{e.id}",
-            table_count=_pkg_table_count(e.id),
-        )
-
-    data_entries = [_adapt_pkg(e) for e in resolver.stack(user["id"], ResourceType.DATA_PACKAGE)]
-
-    memory_entries: list = []
-    try:
-        domains_repo = memory_domains_repo()
-        for e in resolver.stack(user["id"], ResourceType.MEMORY_DOMAIN):
-            slug = None
-            items_count = 0
-            try:
-                d = domains_repo.get(e.id)
-                if d:
-                    slug = d.get("slug")
-                    items_count = len(domains_repo.list_items_of_domain(e.id, limit=10000))
-            except Exception:
-                slug = None
-            memory_entries.append(
-                {
-                    "id": e.id,
-                    "name": e.name,
-                    "description": e.description or "",
-                    "requirement": e.requirement,
-                    "slug": slug,
-                    "items_count": items_count,
-                    "in_stack": True,
-                }
-            )
-    except Exception as e:
-        logger.warning("/stack: could not resolve memory stack: %s", e)
-
-    # Uploads (file collections) are private per-user resources — they live
-    # here on My Stack, not in the shared Catalog. Owner-scoped: a user sees
-    # only the uploads they created (created_by), never group-shared ones.
-    upload_entries = _unified_upload_cards(user)
-
-    # "Added" timestamps for the inventory table: available-tier stack rows
-    # come from user_stack_subscriptions.subscribed_at; uploads from the
-    # collection's created_at; required grants have no subscription row →
-    # the table shows an em-dash.
-    added_map: dict = {}
-    try:
-        for r in user_stack_subscriptions_repo().list_for_user_with_dates(user["id"]):
-            added_map[(r["resource_type"], r["resource_id"])] = r["subscribed_at"]
-    except Exception as e:
-        logger.warning("/stack: could not read subscription dates: %s", e)
-
-    def _added_iso(rt: str, rid: str):
-        dt = added_map.get((rt, rid))
-        return dt.isoformat() if dt is not None else None
-
-    # Normalize into the shared catalog_card `c` contract so My Stack rows
-    # render off the same normalizers as the Catalog cards, enriched with
-    # the inventory-table columns (added_iso · shared_by).
-    data_cards = []
-    for entry in data_entries:
-        c = _catalog_card_data(entry, auto_membership=auto_membership)
-        c["added_iso"] = _added_iso("data_package", entry["id"])
-        c["shared_by"] = entry.get("owner_name")
-        data_cards.append(c)
-    memory_card_models = []
-    for d in memory_entries:
-        c = _catalog_card_memory(d, auto_membership=auto_membership)
-        c["added_iso"] = _added_iso("memory_domain", d["id"])
-        c["shared_by"] = None
-        memory_card_models.append(c)
-    upload_card_models = []
-    for col in upload_entries:
-        c = _catalog_card_upload(col)
-        created = col.get("created_at")
-        c["added_iso"] = created.isoformat() if created is not None else None
-        c["shared_by"] = "You"
-        upload_card_models.append(c)
-
-    # Artefacts tab — everything the caller has added to their Stack (a
-    # `user_stack_subscriptions` row, resource_type='collection'). The
-    # artefact (file_corpora) stays the single source of truth for
-    # title/owner/sharing/updated-date; a membership row never mutates it.
-    # A hard-gone artefact (file_corpora.get() returns None — default
-    # excludes soft-deleted) is skipped entirely rather than rendered as a
-    # tombstone row — a deliberately smaller scope than a full "deleted
-    # artefact" treatment.
-    artefact_cards: list = []
-    try:
-        stack_collection_ids = user_stack_subscriptions_repo().list_for_user(user["id"], ResourceType.COLLECTION.value)
-        if stack_collection_ids:
-            from app.auth.access import can_access_collection
-            from app.services.artefact_access import (
-                build_artefact_access_context,
-                collection_visibility,
-                owner_label_for,
-            )
-
-            access_ctx = build_artefact_access_context(user["id"])
-            cf_repo = corpus_files_repo()
-            for cid in stack_collection_ids:
-                col = file_corpora_repo().get(cid)
-                if not col:
-                    continue
-                accessible = can_access_collection(user["id"], cid)
-                visibility, visibility_label = collection_visibility(access_ctx, cid)
-                try:
-                    files = cf_repo.list_for_corpus(cid)
-                except Exception:
-                    files = []
-                file_count = len(files)
-                first_file = None
-                if file_count == 1:
-                    f0 = files[0]
-                    first_file = {
-                        "filename": f0.get("filename"),
-                        "file_type": f0.get("file_type"),
-                        "size_bytes": f0.get("size_bytes"),
-                    }
-                c = _catalog_card_stack_artefact(
-                    {**col, "file_count": file_count, "first_file": first_file},
-                    visibility=visibility,
-                    visibility_label=visibility_label,
-                    owner_label=owner_label_for(access_ctx, col),
-                    accessible=accessible,
-                )
-                c["added_iso"] = _added_iso("collection", cid)
-                artefact_cards.append(c)
-    except Exception as e:
-        logger.warning("/stack: could not resolve artefact stack: %s", e)
-
-    ctx = _build_context(
-        request,
-        user=user,
-        data_entries=data_entries,
-        data_cards=data_cards,
-        memory_entries=memory_entries,
-        memory_cards=memory_card_models,
-        artefact_cards=artefact_cards,
-    )
-    return templates.TemplateResponse(request, "stack_unified.html", ctx)
+    302, not 308, so a later reversal is not cached permanently — same
+    reasoning as the /corporate-memory and /apps retirements (#1278). Route
+    kept registered (not removed) so old links, bookmarks and the onboarding
+    tour's stored history don't 404.
+    """
+    return RedirectResponse(url="/library?stack=in_stack", status_code=302)
 
 
 # Artefact type facets for the /artefacts toolbar filter. A single-file
@@ -8865,11 +8655,12 @@ def _stack_knowledge_source_count(user: dict) -> int:
 
 def _stack_capability_count(conn: duckdb.DuckDBPyConnection, user: dict) -> int:
     """Count of capabilities actually IN the caller's Stack — the same
-    roster ``GET /api/marketplace/items?tab=my`` serves to /stack's Plugins
-    tab: curated plugins the caller subscribed to (or is required into via
-    a group grant), intersected with what RBAC actually resolves for them,
-    plus their Store installs. NOT ``resolve_allowed_plugins`` alone —
-    that is everything the caller *could* add, not what's in the Stack.
+    roster ``GET /api/marketplace/items?tab=my`` serves to the Library's
+    Plugins section: curated plugins the caller subscribed to (or is
+    required into via a group grant), intersected with what RBAC actually
+    resolves for them, plus their Store installs. NOT
+    ``resolve_allowed_plugins`` alone — that is everything the caller
+    *could* add, not what's in the Stack.
     """
     from src.marketplace_filter import required_plugin_keys, resolve_allowed_plugins
     from src.repositories import user_curated_subscriptions_repo, user_store_installs_repo
@@ -8889,8 +8680,8 @@ async def ask_landing(user: dict = Depends(get_current_user)):
     """Retired surface (#896). ``/ask`` was a visual-only landing hero whose
     composer just forwarded to ``/chat`` — a cosmetic doorstep in front of the
     real chat, and a dead-end for users without a chat grant. The rail IA now
-    lands users on the working chat (``/chat``) or ``/stack``, so ``/ask`` has
-    no job. Kept as a 302 to ``/`` (not deleted) so any bookmarked/linked
+    lands users on the working chat (``/chat``) or the Library, so ``/ask``
+    has no job. Kept as a 302 to ``/`` (not deleted) so any bookmarked/linked
     ``/ask`` resolves through the canonical home route instead of 404ing.
     Its context-line idea lives on in ``/chat``'s empty state, now counting
     the caller's actual Stack (``_stack_knowledge_source_count`` /

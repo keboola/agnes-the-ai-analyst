@@ -309,3 +309,34 @@ def test_up_creates_the_apps_network_despite_a_substring_named_leftover(client):
 
     assert r.status_code == 200
     assert "agnes-apps" in fake.networks_created
+
+
+def test_docker_client_gets_a_pull_sized_timeout(monkeypatch):
+    """docker-py defaults every daemon call to a 60 s HTTP timeout.
+
+    `containers.run` pulls the image inline when it is missing locally, so on
+    a host that has never run a data app that 60 s covers fetching ~1.3 GB.
+    When it expires the pull is torn down, the retried `create` raises
+    ImageNotFound, and the sidecar answers 400 `image_not_found` — blaming a
+    missing image for what was a truncated download. The client must allow a
+    pull-sized budget, and it must be tunable per deployment.
+    """
+    import docker
+
+    import services.apps_runner.api as api
+
+    seen = {}
+
+    def _from_env(**kwargs):
+        seen.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(docker, "from_env", _from_env)
+
+    api._docker()
+    assert seen.get("timeout", 60) >= 300, f"pull-sized budget required; got {seen.get('timeout')}"
+
+    seen.clear()
+    monkeypatch.setenv("APPS_RUNNER_DOCKER_TIMEOUT", "900")
+    api._docker()
+    assert seen.get("timeout") == 900
