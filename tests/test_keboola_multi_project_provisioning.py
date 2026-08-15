@@ -46,12 +46,14 @@ def env(e2e_env, monkeypatch):
 @pytest.fixture
 def pat_mocks(monkeypatch):
     """Fake the two upstream calls: PAT mint returns ``pat-{project_id}``,
-    and the PAT's verify reports that project as owner (master token only
-    for MASTER_PROJECTS)."""
-    minted: dict[str, bool] = {}
+    and any ``pat-*`` token's verify reports that project as owner (master
+    token only for MASTER_PROJECTS). ``pat_mocks`` records every mint as
+    ``(project_id, read_only)`` — order and COUNT matter (a re-login must
+    reuse, not re-mint)."""
+    minted: list[tuple[str, bool]] = []
 
     def fake_exchange(access_token, project_id, *, read_only):
-        minted[project_id] = read_only
+        minted.append((project_id, read_only))
         return f"pat-{project_id}"
 
     monkeypatch.setattr(kp, "exchange_project_pat", fake_exchange)
@@ -103,7 +105,7 @@ class TestAutoProvision:
             assert connection_secrets_repo().get(row["id"]) == f"pat-{pid}"
 
         # Admin's PAT is writable; everyone else's read-only.
-        assert pat_mocks == {"516": False, "7": True}
+        assert pat_mocks == [("516", False), ("7", True)]
 
         # Master slot only where the minted token verified as master.
         from app.api.admin_source_connections import master_secret_key
@@ -122,8 +124,12 @@ class TestAutoProvision:
         created_ids = {o.connection_id for o in summary.outcomes}
         assert set(summary.connections_needing_chat_tools) == created_ids
 
-    def test_relogin_is_idempotent(self, env, pat_mocks):
-        from src.repositories import source_connections_repo
+    def test_relogin_is_idempotent_and_reuses_tokens(self, env, pat_mocks):
+        """A re-login must not create duplicates — and must not mint fresh
+        PATs either: every mint leaves the superseded, still-valid token
+        orphaned upstream, where nothing can revoke it (Devin Review on
+        this PR). A stored token that still verifies is reused."""
+        from src.repositories import connection_secrets_repo, source_connections_repo
 
         projects = [P("516", "Agnes - test", "admin"), P("7", "Beta", "readOnly")]
         first = kprov.provision_projects(env["user"], projects, projects, "at-1")
@@ -133,6 +139,45 @@ class TestAutoProvision:
         assert {o.connection_id for o in first.outcomes} == {o.connection_id for o in second.outcomes}
         assert second.memberships_added == 0 and second.memberships_removed == 0
         assert not any(o.connection_created for o in second.outcomes)
+        # Only the FIRST login minted; the second reused the stored tokens.
+        assert pat_mocks == [("516", False), ("7", True)]
+        assert all(o.token_reused for o in second.outcomes)
+        for outcome in second.outcomes:
+            assert connection_secrets_repo().get(outcome.connection_id) == f"pat-{outcome.project_id}"
+
+    def test_stale_stored_token_is_replaced_by_a_fresh_mint(self, env, pat_mocks, monkeypatch):
+        """When the stored token no longer verifies (revoked upstream), the
+        re-login mints a replacement instead of reusing the dead one."""
+        from src.repositories import connection_secrets_repo
+
+        projects = [P("516", "Agnes - test", "admin")]
+        kprov.provision_projects(env["user"], projects, projects, "at-1")
+
+        real_verify = KeboolaStorageClient.verify_token
+
+        def dead_stored(self):
+            if self.token == "pat-516":
+                from connectors.keboola.storage_api import StorageApiError
+
+                raise StorageApiError("token was revoked", status=401)
+            return real_verify(self)
+
+        # The replacement mint must produce a distinguishable token.
+        monkeypatch.setattr(kp, "exchange_project_pat", lambda tok, pid, *, read_only: f"pat-{pid}-fresh")
+
+        def fresh_verify(self):
+            if self.token == "pat-516":
+                from connectors.keboola.storage_api import StorageApiError
+
+                raise StorageApiError("token was revoked", status=401)
+            pid = self.token.split("-")[1]
+            return {"isMasterToken": pid in MASTER_PROJECTS, "owner": {"id": int(pid), "name": "P"}}
+
+        monkeypatch.setattr(KeboolaStorageClient, "verify_token", fresh_verify)
+        summary = kprov.provision_projects(env["user"], projects, projects, "at-2")
+        assert summary.outcomes[0].token_stored is True
+        assert summary.outcomes[0].token_reused is False
+        assert connection_secrets_repo().get(summary.outcomes[0].connection_id) == "pat-516-fresh"
 
     def test_lost_project_removes_membership_but_keeps_the_connection(self, env, pat_mocks):
         both = [P("516", "Agnes - test", "admin"), P("7", "Beta", "readOnly")]
@@ -217,6 +262,55 @@ class TestAutoProvision:
         assert by_id["7"].error == "pat_exchange: pat_exchange_denied"
         # Membership still reflects BOTH projects — upstream access exists.
         assert _kbc_memberships("u1") == {"kbc-516-admin", "kbc-7-readonly"}
+
+    def test_group_ensure_hiccup_never_strips_membership(self, env, pat_mocks, monkeypatch):
+        """A transient failure while ensuring a role group leaves the desired
+        set incomplete — the sync may add, but must NOT remove memberships
+        the user still holds upstream (Devin Review on this PR)."""
+        both = [P("516", "Agnes - test", "admin"), P("7", "Beta", "readOnly")]
+        kprov.provision_projects(env["user"], both, both, "at-1")
+        assert _kbc_memberships("u1") == {"kbc-516-admin", "kbc-7-readonly"}
+
+        def flaky_ensure(project):
+            raise RuntimeError("db hiccup")
+
+        monkeypatch.setattr(kprov, "_ensure_group", flaky_ensure)
+        summary = kprov.provision_projects(env["user"], both, both, "at-2")
+        assert summary.membership_removals_safe is False
+        assert summary.memberships_removed == 0
+        assert _kbc_memberships("u1") == {"kbc-516-admin", "kbc-7-readonly"}
+
+    def test_concurrent_create_race_reconciles_to_one_connection(self, env, pat_mocks, monkeypatch):
+        """Two logins can both miss the find and both insert (no unique
+        constraint on the project identity — Devin Review on this PR): the
+        loser deletes its own fresh row and adopts the canonical one."""
+        from src.repositories import connection_secrets_repo, source_connections_repo
+
+        # The rival row that "the other login" inserted inside our race
+        # window. Id sorts before any uuid4 hex, so it is the canonical row.
+        source_connections_repo().create(
+            id="!rival",
+            name="Rival copy",
+            source_type="keboola",
+            config={"stack_url": STACK, "project_id": "99", "project_name": "Raced project"},
+        )
+        # Simulate the window: the initial find sees nothing…
+        monkeypatch.setattr(kprov, "_find_connection", lambda stack, pid: None)
+        projects = [P("99", "Raced project", "admin")]
+        summary = kprov.provision_projects(env["user"], projects, projects, "at-1")
+
+        # …but the post-create reconcile collapses back to the rival row.
+        outcome = summary.outcomes[0]
+        assert outcome.connection_id == "!rival"
+        assert outcome.connection_created is False
+        rows = [
+            row
+            for row in source_connections_repo().list(source_type="keboola")
+            if str((row.get("config") or {}).get("project_id")) == "99"
+        ]
+        assert len(rows) == 1 and rows[0]["id"] == "!rival"
+        # The empty-slot rule then lands the token on the canonical row.
+        assert connection_secrets_repo().get("!rival") == "pat-99"
 
     def test_vault_unconfigured_skips_connections_but_syncs_membership(self, env, pat_mocks, monkeypatch):
         monkeypatch.setattr("app.secrets_vault.can_store_secrets", lambda: False)

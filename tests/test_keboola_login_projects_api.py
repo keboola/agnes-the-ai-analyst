@@ -1,5 +1,5 @@
 """The select-mode project surface: GET /api/auth/keboola/projects and
-POST /api/auth/keboola/projects/import (session-user auth, own stash only).
+POST /api/auth/keboola/projects (session-user auth, own stash only).
 """
 
 from __future__ import annotations
@@ -94,7 +94,7 @@ class TestImportDiscoveredProjects:
             "at-1",
         )
         resp = select_env["client"].post(
-            f"{BASE}/import", json={"project_ids": ["516"]}, headers=_auth(select_env["analyst_token"])
+            BASE, json={"project_ids": ["516"]}, headers=_auth(select_env["analyst_token"])
         )
         assert resp.status_code == 200
         body = resp.json()
@@ -109,14 +109,14 @@ class TestImportDiscoveredProjects:
     def test_outside_select_mode_is_409(self, seeded_app, monkeypatch):
         monkeypatch.setattr(kv, "multi_project_mode", lambda: "auto")
         resp = seeded_app["client"].post(
-            f"{BASE}/import", json={"project_ids": ["516"]}, headers=_auth(seeded_app["analyst_token"])
+            BASE, json={"project_ids": ["516"]}, headers=_auth(seeded_app["analyst_token"])
         )
         assert resp.status_code == 409
         assert resp.json()["detail"] == "not_select_mode"
 
     def test_without_stash_is_409_discovery_expired(self, select_env):
         resp = select_env["client"].post(
-            f"{BASE}/import", json={"project_ids": ["516"]}, headers=_auth(select_env["analyst_token"])
+            BASE, json={"project_ids": ["516"]}, headers=_auth(select_env["analyst_token"])
         )
         assert resp.status_code == 409
         assert resp.json()["detail"]["error"] == "discovery_expired"
@@ -127,13 +127,13 @@ class TestImportDiscoveredProjects:
         analyst = users_repo().get_by_email("analyst@test.com")
         kprov.store_pending_discovery(analyst, [kp.DiscoveredProject(id="516", name="A", role="admin")], "at-1")
         resp = select_env["client"].post(
-            f"{BASE}/import", json={"project_ids": ["999"]}, headers=_auth(select_env["analyst_token"])
+            BASE, json={"project_ids": ["999"]}, headers=_auth(select_env["analyst_token"])
         )
         assert resp.status_code == 400
         assert resp.json()["detail"]["error"] == "unknown_project"
 
     def test_empty_selection_is_400(self, select_env):
         resp = select_env["client"].post(
-            f"{BASE}/import", json={"project_ids": []}, headers=_auth(select_env["analyst_token"])
+            BASE, json={"project_ids": []}, headers=_auth(select_env["analyst_token"])
         )
         assert resp.status_code == 400

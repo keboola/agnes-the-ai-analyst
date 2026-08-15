@@ -8,11 +8,12 @@ and import a chosen subset; the import runs the same provisioning core the
 ``auto`` mode uses at login (``app.auth.keboola_provisioning``).
 
 Surface (session/JWT user auth — each caller only ever sees and imports
-their OWN discovery):
+their OWN discovery; POST-to-collection = "connect these discovered
+projects", keeping the URL verb-free per the API design rules):
 
-  GET  /api/auth/keboola/projects         — mode + discovered projects
-                                            (imported flag per project)
-  POST /api/auth/keboola/projects/import  — provision selected project ids
+  GET  /api/auth/keboola/projects  — mode + discovered projects
+                                     (imported flag per project)
+  POST /api/auth/keboola/projects  — provision selected project ids
 
 REST-only by design (classified ``_EXEMPT`` in the triple-surface ratchet):
 this is a continuation of the browser OAuth login, bound to a short-lived
@@ -80,7 +81,7 @@ async def list_discovered_projects(user: dict = Depends(get_current_user)) -> Di
     }
 
 
-@router.post("/projects/import")
+@router.post("/projects")
 async def import_discovered_projects(
     body: ImportBody,
     background_tasks: BackgroundTasks,

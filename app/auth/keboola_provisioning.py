@@ -95,6 +95,8 @@ class ProjectOutcome:
     master_token_stored: bool = False
     group_id: Optional[str] = None
     group_name: Optional[str] = None
+    #: True when a still-valid stored token made minting unnecessary.
+    token_reused: bool = False
     error: Optional[str] = None
 
 
@@ -111,6 +113,11 @@ class ProvisionSummary:
     semantic_sync_needed: bool = False
     memberships_added: int = 0
     memberships_removed: int = 0
+    #: Cleared when any project's role group could not be ensured — the
+    #: desired set is then incomplete, and removing memberships against an
+    #: incomplete picture would strip access the user still holds upstream
+    #: (Devin Review on this PR). Additions stay safe either way.
+    membership_removals_safe: bool = True
 
     def as_dict(self) -> Dict[str, Any]:
         return {
@@ -133,25 +140,36 @@ def group_name_for(project_id: str, role: str) -> str:
     return f"kbc-{project_id}-{role_slug(role)}"
 
 
-def _find_connection(stack_url: str, project_id: str) -> Optional[Dict[str, Any]]:
-    """The Keboola connection bound to ``(stack_url, project_id)``, if any.
-
-    One connection per project per stack is the invariant this module keeps
-    (the semantic-layer sync dedupes on exactly that identity); rows without
-    a recorded ``project_id`` are an admin's half-configured business and are
-    never matched or touched.
-    """
+def _find_connections(stack_url: str, project_id: str) -> List[Dict[str, Any]]:
+    """Every Keboola connection bound to ``(stack_url, project_id)``, sorted
+    by id so all callers agree on which row is canonical when a race left a
+    duplicate behind (see the reconcile in ``_provision_one``)."""
     from src.repositories import source_connections_repo
 
     stack = stack_url.rstrip("/")
+    rows = []
     for row in source_connections_repo().list(source_type="keboola"):
         config = row.get("config") or {}
         if (config.get("stack_url") or "").rstrip("/") != stack:
             continue
         known = config.get("project_id")
         if known is not None and str(known) == str(project_id):
-            return row
-    return None
+            rows.append(row)
+    rows.sort(key=lambda r: str(r.get("id")))
+    return rows
+
+
+def _find_connection(stack_url: str, project_id: str) -> Optional[Dict[str, Any]]:
+    """The canonical Keboola connection bound to ``(stack_url, project_id)``.
+
+    One connection per project per stack is the invariant this module keeps
+    (the semantic-layer sync dedupes on exactly that identity); rows without
+    a recorded ``project_id`` are an admin's half-configured business and are
+    never matched or touched. Should duplicates ever exist, every caller
+    deterministically picks the same (smallest-id) row.
+    """
+    rows = _find_connections(stack_url, project_id)
+    return rows[0] if rows else None
 
 
 def is_project_connected(project_id: str) -> bool:
@@ -228,6 +246,21 @@ def apply_tool_grants(connection_id: str, group_id: str, role: str) -> int:
     return granted
 
 
+def _verify_project_token(stack_url: str, token: str) -> Optional[Dict[str, Any]]:
+    """``/tokens/verify`` payload for ``token``, or None on any upstream
+    failure (logged redacted — never the token, never a proxy-echoed body)."""
+    import requests as _requests
+
+    from connectors.keboola.storage_api import KeboolaStorageClient, StorageApiError
+
+    client = KeboolaStorageClient(url=stack_url, token=token)
+    try:
+        return client.verify_token()
+    except (StorageApiError, _requests.RequestException) as exc:
+        logger.info("keboola auto-provision: token verify failed: %s", client._redact(exc))
+        return None
+
+
 def _mint_and_store_tokens(
     connection: Dict[str, Any],
     project: kp.DiscoveredProject,
@@ -236,22 +269,75 @@ def _mint_and_store_tokens(
     user_email: str,
     outcome: ProjectOutcome,
 ) -> None:
-    """Mint the project PAT, preflight it, and vault what we are allowed to.
+    """Mint the project PAT (only when it buys anything), preflight it, and
+    vault what we are allowed to.
 
-    Sets ``outcome.token_stored`` / ``master_token_stored`` / ``error``.
-    The PAT is verified against the stack before anything is stored: a token
-    that opens a DIFFERENT project than the one this connection is bound to
-    must never land in its vault slot (same invariant as the admin secret
-    endpoint's project-mismatch preflight).
+    Sets ``outcome.token_stored`` / ``master_token_stored`` / ``token_reused``
+    / ``error``. The PAT is verified against the stack before anything is
+    stored: a token that opens a DIFFERENT project than the one this
+    connection is bound to must never land in its vault slot (same invariant
+    as the admin secret endpoint's project-mismatch preflight).
+
+    Reuse before mint: ``auto`` mode runs on EVERY login, and a fresh PAT
+    each time would pile up still-valid orphaned credentials upstream —
+    nothing here can revoke a superseded token (the platform surface has no
+    delete). So when the stored token still verifies for this project, and
+    minting could not improve the master slot (slot already filled, stored
+    token IS a master, the role could not mint one, or the slot is not ours
+    to write), nothing is minted at all. (Devin Review on this PR.)
     """
-    import requests as _requests
-
     from app.keboola_identity import project_identity
-    from connectors.keboola.storage_api import KeboolaStorageClient, StorageApiError
     from src.keboola_chat_tools import derived_source_id
     from src.repositories import connection_secrets_repo, mcp_sources_repo, shared_secrets_repo
 
+    from app.api.admin_source_connections import master_secret_key
+
     connection_id = connection["id"]
+    secrets = connection_secrets_repo()
+    may_storage = _may_write_secret(connection, user_email, slot_key=connection_id)
+    may_master = _may_write_secret(connection, user_email, slot_key=master_secret_key(connection_id))
+    if not (may_storage or may_master):
+        # Neither slot is ours to touch (admin-managed row with both filled)
+        # — minting would only create an upstream credential nobody stores.
+        return
+    if not may_storage and project.role != ADMIN_ROLE:
+        # Only the master slot is writable, and a non-admin's PAT is minted
+        # read-only — that can never verify as a master token, so there is
+        # nothing a mint could store.
+        return
+
+    if may_storage:
+        stored: Optional[str] = None
+        try:
+            stored = secrets.get(connection_id) if secrets.has(connection_id) else None
+        except Exception:
+            stored = None
+        if stored:
+            info = _verify_project_token(stack_url, stored)
+            stored_id, _ = project_identity(info) if info is not None else (None, "")
+            if info is not None and stored_id is not None and str(stored_id) == str(project.id):
+                stored_master = bool(info.get("isMasterToken"))
+                try:
+                    master_present = secrets.has(master_secret_key(connection_id))
+                except Exception:
+                    master_present = False
+                if stored_master and may_master and not master_present:
+                    # The stored token can fill the empty master slot itself.
+                    try:
+                        secrets.upsert(master_secret_key(connection_id), stored)
+                        outcome.master_token_stored = True
+                        master_present = True
+                    except Exception:
+                        logger.warning(
+                            "keboola auto-provision: could not store the master token for connection %s",
+                            connection_id,
+                            exc_info=True,
+                        )
+                if master_present or stored_master or project.role != ADMIN_ROLE or not may_master:
+                    outcome.token_reused = True
+                    return
+            # Stored token is stale/foreign — fall through and mint fresh.
+
     try:
         pat = kp.exchange_project_pat(access_token, project.id, read_only=project.role != ADMIN_ROLE)
     except kp.KeboolaProjectApiError as exc:
@@ -259,16 +345,10 @@ def _mint_and_store_tokens(
         logger.warning("keboola auto-provision: PAT mint failed for project %s: %s", project.id, exc.reason)
         return
 
-    client = KeboolaStorageClient(url=stack_url, token=pat)
-    try:
-        info = client.verify_token()
-    except (StorageApiError, _requests.RequestException) as exc:
+    info = _verify_project_token(stack_url, pat)
+    if info is None:
         outcome.error = "pat_verify_failed"
-        logger.warning(
-            "keboola auto-provision: minted PAT for project %s failed verify: %s",
-            project.id,
-            client._redact(exc),
-        )
+        logger.warning("keboola auto-provision: minted PAT for project %s failed verify", project.id)
         return
     verified_id, verified_name = project_identity(info)
     if verified_id is None or str(verified_id) != str(project.id):
@@ -281,10 +361,7 @@ def _mint_and_store_tokens(
         return
     is_master = bool(info.get("isMasterToken"))
 
-    from app.api.admin_source_connections import master_secret_key
-
-    secrets = connection_secrets_repo()
-    if _may_write_secret(connection, user_email, slot_key=connection_id):
+    if may_storage:
         try:
             secrets.upsert(connection_id, pat)
             outcome.token_stored = True
@@ -320,7 +397,7 @@ def _mint_and_store_tokens(
             except Exception:
                 logger.debug("could not refresh project_name on connection %s", connection_id)
 
-    if is_master and _may_write_secret(connection, user_email, slot_key=master_secret_key(connection_id)):
+    if is_master and may_master:
         try:
             secrets.upsert(master_secret_key(connection_id), pat)
             outcome.master_token_stored = True
@@ -364,6 +441,10 @@ def _provision_one(
         outcome.group_id = group["id"]
         outcome.group_name = group["name"]
     except Exception:
+        # The desired membership set is now incomplete — the sync may still
+        # ADD, but must not REMOVE against a partial picture (Devin Review
+        # on this PR; see ProvisionSummary.membership_removals_safe).
+        summary.membership_removals_safe = False
         logger.warning("keboola auto-provision: could not ensure group for project %s", project.id, exc_info=True)
 
     connection = _find_connection(stack_url, project.id)
@@ -398,6 +479,26 @@ def _provision_one(
                 exc_info=True,
             )
             return outcome
+        # Two concurrent logins can both miss the find above and both insert
+        # — there is no unique constraint on (stack_url, project_id) (Devin
+        # Review on this PR). Re-read and let the smallest id win: both
+        # racers agree on the winner, and the loser deletes only the row IT
+        # just created, before any secret lands in it. Provisioning then
+        # continues against the canonical row (the empty-slot rule stores
+        # the token there if it is still missing).
+        rivals = _find_connections(stack_url, project.id)
+        if rivals and connection is not None and rivals[0]["id"] != connection["id"]:
+            try:
+                source_connections_repo().delete(connection["id"])
+            except Exception:
+                logger.warning(
+                    "keboola auto-provision: could not remove the duplicate connection %s for project %s",
+                    connection["id"],
+                    project.id,
+                    exc_info=True,
+                )
+            connection = rivals[0]
+            outcome.connection_created = False
     if connection is None:
         outcome.error = "connection_create_failed"
         return outcome
@@ -449,12 +550,18 @@ def _has_storage_token(connection_id: str) -> bool:
         return False
 
 
-def sync_group_memberships(user_id: str, desired_group_ids: List[str]) -> tuple[int, int]:
+def sync_group_memberships(
+    user_id: str, desired_group_ids: List[str], *, allow_removals: bool = True
+) -> tuple[int, int]:
     """Diff the user's ``source='keboola_sync'`` memberships to the desired
     set: additions for projects gained, removals for projects lost upstream.
     Rows from any other source (admin, system_seed, google_sync) are never
     touched; a pair an admin already owns stays the admin's (``add_member``
-    keeps the original source on conflict)."""
+    keeps the original source on conflict).
+
+    ``allow_removals=False`` (a group-ensure hiccup left the desired set
+    incomplete): a write blip may only fail to add, never strip access the
+    user still holds upstream — the next clean login reconciles fully."""
     from src.repositories import user_group_members_repo
 
     members = user_group_members_repo()
@@ -468,6 +575,15 @@ def sync_group_memberships(user_id: str, desired_group_ids: List[str]) -> tuple[
     for group_id in sorted(desired - current):
         members.add_member(user_id=user_id, group_id=group_id, source=MEMBERSHIP_SOURCE, added_by=MEMBERSHIP_ADDED_BY)
         added += 1
+    if not allow_removals:
+        if current - desired:
+            logger.warning(
+                "keboola auto-provision: keeping %d keboola_sync membership(s) for user %s — "
+                "the desired set is incomplete this pass (a role group could not be ensured)",
+                len(current - desired),
+                user_id,
+            )
+        return added, 0
     for group_id in sorted(current - desired):
         if members.remove_member(user_id, group_id, require_source=MEMBERSHIP_SOURCE):
             removed += 1
@@ -529,6 +645,7 @@ def provision_projects(
             group = _ensure_group(project)
             summary.desired_group_ids.append(group["id"])
         except Exception:
+            summary.membership_removals_safe = False  # incomplete desired set — see the dataclass note
             logger.warning(
                 "keboola auto-provision: could not ensure group for connected project %s",
                 project.id,
@@ -537,7 +654,9 @@ def provision_projects(
 
     try:
         summary.memberships_added, summary.memberships_removed = sync_group_memberships(
-            str(user.get("id")), summary.desired_group_ids
+            str(user.get("id")),
+            summary.desired_group_ids,
+            allow_removals=summary.membership_removals_safe,
         )
     except Exception:
         # Fail-soft, same posture as the Google group sync: a membership

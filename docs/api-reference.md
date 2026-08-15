@@ -1058,13 +1058,13 @@ A `multi_project_mode: select` Keboola sign-in stashes the discovered
 projects (vault-encrypted, 15-minute TTL) for a user-driven import; these
 endpoints serve and act on the caller's OWN stash (session/JWT auth).
 `GET /projects` lists the discovery with an `imported` flag per project;
-`POST /projects/import` provisions the selected ids through the same core
+`POST /projects` (POST-to-collection — connect these discovered projects)
+provisions the selected ids through the same core
 the `auto` mode runs at login (PAT mint + vault, connection, chat tools,
 `kbc-<project>-<role>` membership). REST-only by design — see the standing
 credential-provisioning exemption in CONTRIBUTING.md.
 
 - /api/auth/keboola/projects
-- /api/auth/keboola/projects/import
 
 ### `/api/catalog` — Public catalog
 

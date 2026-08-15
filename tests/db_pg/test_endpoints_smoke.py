@@ -93,6 +93,37 @@ class TestAuthSmoke:
         assert "access_token" in r.json()
 
 
+class TestKeboolaLoginProjectsSmoke:
+    """Select-mode Keboola project import surface. Depth per this file's
+    contract: status + top-level shape. The default mode is ``disabled``,
+    so the GET answers an empty discovery and the POST refuses with the
+    mode conflict — deterministic on both backends with no Keboola config."""
+
+    COVERED_ROUTES = {
+        "GET /api/auth/keboola/projects",
+        "POST /api/auth/keboola/projects",
+    }
+
+    def test_projects_listing_default_mode(self, seeded_app_both):
+        r = seeded_app_both["client"].get("/api/auth/keboola/projects", headers=_analyst_headers(seeded_app_both))
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["mode"] == "disabled"
+        assert body["discovery_available"] is False
+        assert body["projects"] == []
+
+    def test_projects_listing_requires_auth(self, seeded_app_both):
+        assert seeded_app_both["client"].get("/api/auth/keboola/projects").status_code == 401
+
+    def test_import_outside_select_mode_conflicts(self, seeded_app_both):
+        r = seeded_app_both["client"].post(
+            "/api/auth/keboola/projects",
+            json={"project_ids": ["1"]},
+            headers=_analyst_headers(seeded_app_both),
+        )
+        assert r.status_code == 409, r.text
+
+
 class TestCliAuthRescopeSmoke:
     """v106 — the `agnes init --as-admin` opt-up endpoint."""
 

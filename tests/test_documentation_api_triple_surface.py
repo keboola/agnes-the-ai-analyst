@@ -530,7 +530,6 @@ _KEBOOLA_LOGIN_PROJECTS_REASON = (
 
 _EXEMPT: dict[str, str] = {
     "/api/auth/keboola/projects": _KEBOOLA_LOGIN_PROJECTS_REASON,
-    "/api/auth/keboola/projects/import": _KEBOOLA_LOGIN_PROJECTS_REASON,
     "/api/me/display-name": (
         "self-service display-name edit (issue #1036) — UI-only affordance on "
         "/profile; a one-field personal profile edit with no CLI/MCP analogue"

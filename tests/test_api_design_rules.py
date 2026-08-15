@@ -216,6 +216,11 @@ _CREATOR_POST_ALLOWLIST = frozenset(
         # Config upserts — update existing config, not create a new resource
         "/api/admin/server-config",
         "/api/sync/settings",
+        # Select-mode Keboola project import — idempotent provisioning upsert
+        # over the caller's discovered projects (rows are found-or-created,
+        # re-importing reconciles in place) answering a report, not a fresh
+        # resource; the slow tail continues in a background task.
+        "/api/auth/keboola/projects",
         # Consent toggle upsert — sets the caller's own opt-in flag (200), not
         # a resource create. GET on the same path returns the current state.
         "/api/studio/memory-mining/consent",

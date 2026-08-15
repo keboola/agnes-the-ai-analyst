@@ -28852,12 +28852,10 @@
         "tags": [
           "auth"
         ]
-      }
-    },
-    "/api/auth/keboola/projects/import": {
+      },
       "post": {
         "description": "Provision the selected subset of the caller's discovered projects.\n\n409 ``not_select_mode`` outside select mode (``auto`` imports at login;\n``disabled`` never discovers). 409 ``discovery_expired`` when there is\nno live stash \u2014 sign in with Keboola again. 400 for ids that were never\ndiscovered. Per-project failures are reported in the response, not as an\nHTTP error; the slow tail (chat-tools introspection, semantic-layer\nrefresh) continues as a background task after the response.",
-        "operationId": "import_discovered_projects_api_auth_keboola_projects_import_post",
+        "operationId": "import_discovered_projects_api_auth_keboola_projects_post",
         "parameters": [
           {
             "in": "header",
@@ -28892,7 +28890,7 @@
               "application/json": {
                 "schema": {
                   "additionalProperties": true,
-                  "title": "Response Import Discovered Projects Api Auth Keboola Projects Import Post",
+                  "title": "Response Import Discovered Projects Api Auth Keboola Projects Post",
                   "type": "object"
                 }
               }

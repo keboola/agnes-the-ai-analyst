@@ -12,7 +12,7 @@ hand-copied tokens anywhere.
 | Mode | Behavior |
 |---|---|
 | `disabled` (default) | The single-project provider exactly as shipped — nothing discovers, nothing provisions. Admin-managed connections only. A `single` value from older configs resolves here (same behavior) via the switch's invalid-value fallback. |
-| `select` | Discovery at login; the filtered project list + the OAuth access token are stashed vault-encrypted per user (15-min TTL) and the user imports chosen projects via `GET/POST /api/auth/keboola/projects[/import]`. Already-imported projects still get membership-synced at every login. |
+| `select` | Discovery at login; the filtered project list + the OAuth access token are stashed vault-encrypted per user (15-min TTL) and the user imports chosen projects via `GET/POST /api/auth/keboola/projects`. Already-imported projects still get membership-synced at every login. |
 | `auto` | Trusted auto-provision: every allowed project is connected/refreshed on each login. |
 
 `auth.keboola.project_id` composes orthogonally: a concrete id keeps the
