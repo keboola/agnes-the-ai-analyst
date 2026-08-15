@@ -21,21 +21,21 @@ COMPOSE_HOST_MOUNT = Path(__file__).resolve().parents[1] / "docker-compose.host-
 CA_PATH = "/etc/ssl/certs/ca-certificates.crt"
 
 
-class _OverrideLoader(yaml.SafeLoader):
-    """SafeLoader that tolerates the Compose-spec ``!override`` merge tag.
-
-    ``docker-compose.host-mount.yml`` tags every ``volumes:`` list with
-    ``!override`` (replace the base list instead of appending to it), which
-    plain ``yaml.safe_load`` refuses to construct. The tag carries no meaning
-    for these guards — they only inspect the sequence it decorates.
-    """
+class _ComposeTagLoader(yaml.SafeLoader):
+    """`yaml.safe_load` chokes on the Compose-spec merge tags (`!override`,
+    `!reset`), which the host-mount overlay uses on every service. Keep the
+    tagged node's value and drop the tag."""
 
 
-_OverrideLoader.add_constructor("!override", lambda loader, node: loader.construct_sequence(node, deep=True))
+_ComposeTagLoader.add_multi_constructor("!", lambda loader, suffix, node: loader.construct_sequence(node, deep=True))
+
+
+def _load_overlay(path: Path) -> dict:
+    return yaml.load(path.read_text(), Loader=_ComposeTagLoader)
 
 
 def _load(path):
-    return yaml.load(path.read_text(), Loader=_OverrideLoader)["services"]
+    return _load_overlay(path)["services"]
 
 
 def _service(name):
@@ -193,4 +193,92 @@ def test_services_others_wait_on_declare_a_start_period():
     assert not missing, (
         f"services gating others via service_healthy but declaring no healthcheck start_period: {missing}. "
         "Their dependents will be created and never started whenever boot outruns interval x retries."
+    )
+
+
+def test_host_mount_overlay_covers_apps_runner():
+    """Every service that touches /data must be bound the same way.
+
+    The host-mount overlay `!override`s the base `data:` named volume with a
+    direct `/data` bind, per service. apps-runner was added to the stack after
+    this overlay was last touched and never got an entry, so on every
+    Terraform-deployed VM the sidecar wrote under a Docker-managed volume while
+    the app read the host disk. The data-app containers still start
+    (`_resolve_host_path` translates whatever mount it finds), but the two
+    processes disagree about where `${DATA_DIR}/apps/<slug>` is — and that
+    directory holds each app's service JWT in plaintext, which the app deletes
+    on teardown and therefore silently failed to delete.
+
+    The docker socket has to survive the override too: `!override` replaces the
+    entire list, and a sidecar without the socket can do nothing at all.
+    """
+    overlay = _load_overlay(COMPOSE_HOST_MOUNT)
+
+    svc = overlay.get("services", {}).get("apps-runner")
+    assert svc is not None, (
+        "apps-runner is missing from docker-compose.host-mount.yml — it would keep the "
+        "base `data:` named volume while every other service binds the host /data"
+    )
+
+    volumes = [str(v) for v in svc.get("volumes", [])]
+    assert any(v.startswith("/data:/data") for v in volumes), (
+        f"apps-runner must bind the host /data like its peers; got {volumes!r}"
+    )
+    assert any("docker.sock" in v for v in volumes), (
+        f"the !override dropped the docker socket — the sidecar needs it; got {volumes!r}"
+    )
+
+
+def test_host_mount_overlay_covers_every_base_service_that_mounts_data():
+    """A ratchet, so the next /data-touching service can't repeat this.
+
+    Any base service mounting the `data:` named volume must either be
+    overridden here or be deliberately listed as exempt below.
+    """
+    base = yaml.safe_load(COMPOSE.read_text())
+    overlay = _load_overlay(COMPOSE_HOST_MOUNT)
+
+    # data-migrate lives in docker-compose.postgres.yml and is overridden in
+    # docker-compose.postgres-host-mount.yml — referencing it here breaks
+    # validation on the baseline chain (see the note in the overlay).
+    exempt = {"data-migrate"}
+
+    on_named_volume = {
+        name
+        for name, svc in (base.get("services") or {}).items()
+        if any(str(v).startswith("data:/") for v in (svc.get("volumes") or []))
+    }
+    overridden = set((overlay.get("services") or {}).keys()) | exempt
+    missing = sorted(on_named_volume - overridden)
+    assert not missing, (
+        f"services {missing} mount the `data:` named volume but have no host-mount override — "
+        "on a bind-mounted deployment they land on a filesystem no other service can see"
+    )
+
+
+def test_apps_runner_env_knobs_are_actually_reachable():
+    """apps-runner has no `env_file: .env`, so it sees ONLY the variables named
+    in its compose `environment:` block.
+
+    Every env var the sidecar's code reads must therefore be listed there, or
+    the setting is a dead knob: documented, unit-tested against os.environ, and
+    silently unreachable on a real deployment. (`app` is the opposite case — it
+    does carry `env_file: .env`, so its own knobs need no listing.)
+    """
+    import re
+
+    src = Path(__file__).resolve().parents[1] / "services" / "apps_runner"
+    read_by_code = set()
+    for py in src.glob("*.py"):
+        read_by_code |= set(re.findall(r'os\.environ\.get\(\s*"(APPS_RUNNER_[A-Z_]+)"', py.read_text()))
+        read_by_code |= set(re.findall(r'_ENV\s*=\s*"(APPS_RUNNER_[A-Z_]+)"', py.read_text()))
+
+    svc = _service("apps-runner")
+    assert not svc.get("env_file"), "premise moved — apps-runner now has an env_file, relax this guard"
+    declared = {e.split("=", 1)[0] for e in svc.get("environment", [])}
+
+    missing = sorted(read_by_code - declared)
+    assert not missing, (
+        f"apps-runner reads {missing} but compose never passes them in — with no env_file, "
+        "a value set in .env never reaches the process and the knob does nothing"
     )

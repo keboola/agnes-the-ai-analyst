@@ -74,6 +74,9 @@ COMPOSE_PROFILES="$(_env_get COMPOSE_PROFILES)"
 # flag below (NOT via COMPOSE_PROFILES: compose ignores that env var whenever any
 # --profile flag — e.g. `--profile tls` — is present; the two are not merged).
 DATA_APPS_ENABLED="$(_env_get AGNES_DATA_APPS_ENABLED)"
+# The runtime image data apps actually run. Pre-pulled below so the first
+# deploy on this host isn't a 1.3 GB fetch inside the runner's request.
+DATA_APPS_RUNTIME_IMAGE="$(_env_get AGNES_DATA_APPS_RUNTIME_IMAGE)"
 export AGNES_TAG STATE_DIR COMPOSE_FILE SCHEDULER_API_TOKEN COMPOSE_PROFILES
 
 STATE_DIR="${STATE_DIR:-/data/state}"
@@ -312,6 +315,23 @@ docker builder prune -f --filter until=168h >/dev/null 2>&1 || true
 # failure visible in syslog instead of silently masking it.
 docker compose pull >/dev/null 2>&1 \
   || logger -t agnes-auto-upgrade "WARN: docker compose pull failed — proceeding with locally available images"
+
+# The data-app RUNTIME image is not a compose service, so the pull above never
+# sees it. Without this the first deploy on a host fetches ~1.3 GB inline
+# inside the runner's `containers.run`; that pull outlives docker-py's HTTP
+# timeout, the daemon tears it down, and the retried `create` raises
+# ImageNotFound — a deploy failing over an image that was merely still
+# downloading. Pulling it here (not only in the startup script) also means a
+# `runtime_image` bump lands on the next tick instead of waiting for a VM
+# recreate. Same best-effort posture as the compose pull above.
+if [ -n "$DATA_APPS_RUNTIME_IMAGE" ]; then
+    case "$DATA_APPS_ENABLED" in
+      1|true|TRUE|yes|on)
+        docker pull "$DATA_APPS_RUNTIME_IMAGE" >/dev/null 2>&1 \
+          || logger -t agnes-auto-upgrade "WARN: could not pre-pull data-app runtime image $DATA_APPS_RUNTIME_IMAGE"
+        ;;
+    esac
+fi
 
 # ---------------------------------------------------------------------------
 # Role-split (m-tier) rolling-recreate support (spec §3.8/§3.9).
