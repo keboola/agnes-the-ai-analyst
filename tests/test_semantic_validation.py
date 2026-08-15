@@ -616,7 +616,9 @@ class TestCrossModelConstraintScoping:
         return {
             "name": "model_b",
             "datasets": [{"name": "orders_b", "source": "analytics.orders_b"}],
-            "metrics": [{"name": "revenue", "expression": {"dialects": [{"dialect": "DUCKDB"}]}}],
+            "metrics": [
+                {"name": "revenue", "expression": {"dialects": [{"dialect": "DUCKDB", "expression": "SUM(amount)"}]}}
+            ],
         }
 
     def _model_a_constraint_only(self) -> dict:
@@ -738,7 +740,9 @@ class TestExpectedObjectsCaseInsensitive:
         document = {
             "name": "m",
             "datasets": [{"name": "orders", "source": "analytics.orders"}],
-            "metrics": [{"name": "revenue", "expression": {"dialects": [{"dialect": "DUCKDB"}]}}],
+            "metrics": [
+                {"name": "revenue", "expression": {"dialects": [{"dialect": "DUCKDB", "expression": "SUM(amount)"}]}}
+            ],
         }
         result = validate_query(
             "SELECT revenue FROM orders",
@@ -989,3 +993,39 @@ class TestUnexpectedDetectedScope:
         )
         assert result["matched_expected_objects"] == [{"type": "Dataset", "name": "orders"}]
         assert result["missing_expected_objects"] == [{"type": "Metric", "name": "nope"}]
+
+
+class TestLabelOnlyDialectEntries:
+    """Devin Review on PR #1319 (round 7): a dialects[] entry that carries a
+    label but no expression body has nothing to compose -- it must not count
+    as a declared dialect (and so cannot flip locally_executable either way)."""
+
+    def test_label_only_entry_is_not_declared(self):
+        document = {
+            "name": "m",
+            "datasets": [{"name": "orders", "source": "analytics.orders"}],
+            "metrics": [{"name": "revenue", "expression": {"dialects": [{"dialect": "SNOWFLAKE"}]}}],
+        }
+        result = check_dialects(document, ["revenue"], target_engine="duckdb")
+        assert result["sql_dialects"] == []
+        assert result["locally_executable"] is True
+
+    def test_expression_bearing_entry_still_counts(self):
+        document = {
+            "name": "m",
+            "datasets": [{"name": "orders", "source": "analytics.orders"}],
+            "metrics": [
+                {
+                    "name": "revenue",
+                    "expression": {
+                        "dialects": [
+                            {"dialect": "SNOWFLAKE", "expression": 'SUM("amount")'},
+                            {"dialect": "DUCKDB"},
+                        ]
+                    },
+                }
+            ],
+        }
+        result = check_dialects(document, ["revenue"], target_engine="duckdb")
+        assert result["sql_dialects"] == ["SNOWFLAKE"]
+        assert result["locally_executable"] is False
