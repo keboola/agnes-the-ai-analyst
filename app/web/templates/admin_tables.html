@@ -5885,7 +5885,7 @@
         if (rows.length && visibleCols.length) {
             html += '<div style="margin-top:8px; max-height:220px; overflow:auto; '
                  + 'border:1px solid var(--ds-border); border-radius:6px;">';
-            html += '<table class="registry-table"><thead><tr>';
+            html += '<table class="data-table"><thead><tr>';
             visibleCols.forEach(function(c) { html += '<th>' + escapeHtml(c) + '</th>'; });
             html += '</tr></thead><tbody>';
             rows.slice(0, 10).forEach(function(row) {
