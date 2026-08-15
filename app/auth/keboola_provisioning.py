@@ -37,6 +37,7 @@ No token material in logs or outcome errors, ever.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -350,16 +351,15 @@ def _mint_and_store_tokens(
         repairing = True
         may_storage = True
 
-    if not (may_storage or may_master):
-        # Neither slot is ours to touch (a healthy row owned by someone
-        # else, or an admin-managed row with both filled) — minting would
-        # only create an upstream credential nobody stores.
-        return
-    if not may_storage and (project.role != ADMIN_ROLE or master_unobtainable):
-        # Only the master slot is writable, and this mint cannot fill it: a
-        # non-admin's PAT is minted read-only (never a master token), and a
-        # recorded non-master outcome says an admin's would not be one
-        # either. Nothing a mint could store.
+    if not may_storage:
+        # No storage slot to land in ⇒ no mint, full stop. A master-slot-only
+        # chase looks tempting (foreign healthy row, empty master, admin
+        # role), but when the platform answers with a non-master PAT there is
+        # nowhere to put it — a freshly minted, unrevocable credential stored
+        # NOWHERE, the exact orphan the reuse rule exists to prevent (Devin
+        # Review on this PR, fourth round). The master slot still fills on
+        # the OWNER's own login (their reuse/mint path may store both slots),
+        # or by an admin storing one via the secret endpoint.
         return
 
     if may_storage and stored_valid and not repairing:
@@ -729,6 +729,30 @@ def provision_projects(
     return summary
 
 
+async def run_login_provisioning(
+    user: Dict[str, Any], discovery: List[kp.DiscoveredProject], access_token: str
+) -> None:
+    """The WHOLE ``auto``-mode provisioning as the post-response tail.
+
+    The callback keeps only the discovery gate inline: per-project
+    provisioning makes up to three upstream round-trips per project
+    (stored-token verify, PAT mint, minted-PAT verify — 10 s timeouts), so a
+    user who reaches many projects would otherwise wait through — or be
+    proxy-timed-out of — their own sign-in (Devin Review on this PR, fourth
+    round). The trade is honest and small: group memberships land moments
+    after the redirect rather than before it, so the very first page load
+    may not yet see a brand-new project's tables; the next request does.
+    Never raises — this runs after the response, where an exception could
+    not reach the user anyway.
+    """
+    try:
+        summary = await asyncio.to_thread(provision_projects, user, discovery, discovery, access_token)
+    except Exception:  # noqa: BLE001 — post-response: log, never propagate
+        logger.warning("keboola auto-provision: login provisioning failed", exc_info=True)
+        return
+    await finish_login_provisioning(summary)
+
+
 async def finish_login_provisioning(summary: ProvisionSummary) -> None:
     """The slow tail, run AFTER the login response: enable chat tools for
     fresh connections (MCP introspection — first run downloads the server),
@@ -766,7 +790,6 @@ async def finish_login_provisioning(summary: ProvisionSummary) -> None:
         # (admin-disabled or otherwise not this flow's to widen). Off the
         # event loop: this tail runs as a post-response BackgroundTask on
         # the loop, and the grant writes are plain sync DB calls.
-        import asyncio
 
         for grant in summary.deferred_grants:
             if grant["connection_id"] != connection_id:

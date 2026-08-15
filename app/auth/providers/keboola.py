@@ -176,20 +176,22 @@ async def keboola_callback(request: Request):
         except UserDeactivatedError:
             return RedirectResponse(url="/login?error=deactivated", status_code=302)
 
-        # Provisioning never blocks a login that already passed its gates:
-        # PAT minting + connection/group writes run per-project fail-soft in
-        # the threadpool; the slow tail (chat-tools MCP introspection,
-        # semantic-layer refresh) rides a post-response background task.
+        # Provisioning never blocks a login that already passed its gates.
+        # auto: the WHOLE per-project pass (PAT mint/verify round-trips, up
+        # to ~10 s each) plus the slow tail (chat-tools MCP introspection,
+        # semantic-layer refresh) rides a post-response background task —
+        # a user who reaches many projects must not wait through, or be
+        # proxy-timed-out of, their own sign-in (Devin Review on this PR).
+        # Memberships therefore land moments after the redirect, not before
+        # it. select: the stash + membership sync for already-connected
+        # projects are cheap (no upstream HTTP) and MUST be readable the
+        # instant the user lands on the projects page, so they stay inline.
         provisioning_tail: BackgroundTask | None = None
         if discovery:
             mode = kv.multi_project_mode()
             try:
                 if mode == "auto":
-                    summary = await run_in_threadpool(
-                        kprov.provision_projects, user, discovery, discovery, access_token
-                    )
-                    if summary.connections_needing_chat_tools or summary.semantic_sync_needed:
-                        provisioning_tail = BackgroundTask(kprov.finish_login_provisioning, summary)
+                    provisioning_tail = BackgroundTask(kprov.run_login_provisioning, user, discovery, access_token)
                 elif mode == "select":
                     # Membership stays synced for already-imported projects;
                     # the rest wait for the user's import decision against

@@ -289,7 +289,9 @@ SWITCHES: tuple[Switch, ...] = (
         description=(
             "Accept a Keboola Storage API token in the X-StorageApi-Token header as API "
             "authentication. The token is verified against the configured stack per request "
-            "(60s cache), must be a master token for the bound project, and maps only to an "
+            "(60s cache), must be a master token for the bound project (on a wildcard "
+            "multi-project instance — project_id '*'/unset with multi_project_mode "
+            "select/auto — for ANY project on the stack), and maps only to an "
             "EXISTING user — it never provisions accounts. Off by default: a plain Storage "
             "token carries no interactive factor, so enabling this bypasses any MFA/SSO the "
             "organization enforces on web logins. It also grants that user's full Agnes "
@@ -322,7 +324,11 @@ SWITCHES: tuple[Switch, ...] = (
             "synced, semantic layer refreshed where the token is a master token). With "
             "auth.keboola.project_id set to '*' (or unset) the login gate itself widens to "
             "'any project the introspect lists with an allowed role'; a concrete project_id "
-            "keeps the single-project gate and narrows discovery to that project."
+            "keeps the single-project gate and narrows discovery to that project. NOTE: on "
+            "such a wildcard instance the widening applies to BOTH active modes (select and "
+            "auto) and — when allow_token_header is also on — to X-StorageApi-Token API auth "
+            "too: an existing user's master token from any project on the stack "
+            "authenticates."
         ),
     ),
     Switch(

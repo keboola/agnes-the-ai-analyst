@@ -336,6 +336,15 @@ class TestAutoProvision:
         # Bob still gets his membership.
         assert _kbc_memberships("u2") == {"kbc-516-admin"}
 
+        # Even with the master slot EMPTY, a foreign healthy row mints
+        # nothing: a non-master answer would have no slot to land in — a
+        # freshly minted credential stored nowhere (Devin Review, 4th round).
+        from app.api.admin_source_connections import master_secret_key
+
+        connection_secrets_repo().delete(master_secret_key(connection_id))
+        kprov.provision_projects(bob, projects, projects, "at-3")
+        assert pat_mocks == [("516", False)]  # still exactly one mint ever
+
     def test_group_ensure_hiccup_never_strips_membership(self, env, pat_mocks, monkeypatch):
         """A transient failure while ensuring a role group leaves the desired
         set incomplete — the sync may add, but must NOT remove memberships
