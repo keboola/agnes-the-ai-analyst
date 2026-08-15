@@ -26,29 +26,17 @@
   <link rel="stylesheet" href="/static/vendor/highlight.min.css" />
   <script src="/static/vendor/marked.min.js"></script>
   <script src="/static/vendor/highlight.min.js"></script>
-  {# Anti-FOUC: pre-paint the persisted sidebar-collapsed state before
-     first render so a mini-mode user doesn't see the full sidebar flash
-     while chat.js boots. #}
-  <script>
-    (function () {
-      try {
-        // Pre-paint sidebar-collapsed state. The chat shell isn't in
-        // the DOM yet, so we stamp <html data-chat-sidebar="mini">
-        // and let chat.css's selectors target either the shell
-        // (after parse) or the html attribute as a transitional
-        // signal. chat.js promotes this to a class on the shell once
-        // the page is interactive.
-        // Rail has no mini-collapse (the column is a slide-open panel and
-        // the un-collapse toggle is hidden), so never pre-paint mini there —
-        // a stored flag from a topnav session must not carry into rail.
-        var c = localStorage.getItem("agnes-chat-sidebar-collapsed");
-        var railLayout = document.documentElement.getAttribute("data-ui-layout") === "rail";
-        if (c === "1" && !railLayout) {
-          document.documentElement.setAttribute("data-chat-sidebar", "mini");
-        }
-      } catch (_) { /* private mode / storage disabled — no-op */ }
-    })();
-  </script>
+  {# The anti-FOUC pre-paint for the chat sidebar's mini state was here. It
+     stamped `data-chat-sidebar="mini"` on <html> before first render, and
+     already skipped the rail — "rail has no mini-collapse; a stored flag from
+     a topnav session must not carry into rail". With the rail the only chrome
+     (Wave 0, 2026-08) that skip is unconditional, so the block could never
+     stamp anything, and the `.cloud-chat-sidebar` it pre-painted is not
+     rendered by any template any more.
+
+     chat.js still CLEARS the attribute on boot (`removeAttribute`), which is
+     the right direction to keep: it costs nothing and cleans up after a
+     browser that cached the old markup. #}
 {% endblock %}
 
 {# Use full container so the chat shell can stretch edge-to-edge —

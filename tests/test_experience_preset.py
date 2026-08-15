@@ -96,7 +96,9 @@ class TestPresetImpliedDefaults:
         assert ic.get_instance_theme() == "blue"
         assert ic.get_stack_auto_membership() is False
 
-    def test_per_knob_setting_beats_classic_too(self, monkeypatch):
+    def test_per_knob_setting_wins_without_the_preset_set(self, monkeypatch):
+        """Was `..._beats_classic_too`, from when `classic` was a preset a knob
+        could out-rank. There is no `classic` any more — the name outlived it."""
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         monkeypatch.setenv("AGNES_STACK_AUTO_MEMBERSHIP", "1")
         assert ic.get_ui_layout() == "rail"
@@ -171,3 +173,40 @@ def test_the_preset_itself_resolves_its_panel_default(monkeypatch):
 # itself (theme -> paper, ui_layout -> rail, stack_auto_membership -> True)
 # is still exercised by `test_default_experience_is_the_redesign_world` above
 # and by `test_redesign_preset_flips_the_defaults` below.
+
+
+class TestRetiredKnobsWarnAtBoot:
+    """CONFIGURATION.md, instance.yaml.example and the design-system reference
+    all promise "a one-time startup warning" for a configured `ui_layout`.
+
+    `_warn_once` fires on the FIRST call to the resolver, which — without a
+    deliberate warm — was whatever request happened to render a page first. The
+    warning then landed minutes into the log interleaved with traffic, or never
+    at all on an instance nobody opened, while three documents told the operator
+    to look at boot. `create_app()` calls the resolvers so the promise holds.
+    """
+
+    def test_retired_ui_layout_warns_during_create_app(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "topnav")
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TESTING", "1")
+        monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-key-min-32-characters!!")
+        for d in ("state", "analytics", "extracts"):
+            (tmp_path / d).mkdir(exist_ok=True)
+
+        ic._warned_once_keys.clear()
+        seen: list[tuple[str, str]] = []
+        real = ic._warn_once
+        monkeypatch.setattr(ic, "_warn_once", lambda k, m: (seen.append((k, m)), real(k, m))[1])
+
+        from src.db import close_system_db
+
+        close_system_db()
+        from app.main import create_app
+
+        create_app()
+        close_system_db()
+
+        assert any(k == "ui_layout" for k, _ in seen), (
+            f"no boot warning for the retired ui_layout — the docs promise one; saw {seen}"
+        )
