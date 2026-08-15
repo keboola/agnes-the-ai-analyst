@@ -13,7 +13,7 @@ import threading
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 from typing import Optional, List, Dict, Any
 import duckdb
 
@@ -853,6 +853,59 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
                 "project_id": {
                     "kind": "string",
                     "hint": "Keboola project ID (numeric, but kept as string in YAML).",
+                },
+            },
+        },
+        "databricks": {
+            "kind": "object",
+            "hint": (
+                "Databricks SQL warehouse connection (query_mode='materialized' rows + "
+                "Unity Catalog metric-view sync). Token comes from the DATABRICKS_TOKEN "
+                "env var / vault secret, never from YAML."
+            ),
+            "fields": {
+                "host": {
+                    "kind": "string",
+                    "hint": (
+                        "Workspace URL, e.g. https://adb-1234567890123456.7.azuredatabricks.net "
+                        "or https://dbc-a1b2c3d4-e5f6.cloud.databricks.com. https-only, no path."
+                    ),
+                },
+                "warehouse_id": {
+                    "kind": "string",
+                    "hint": (
+                        "SQL warehouse ID the Statement Execution API runs on (SQL "
+                        "Warehouses → your warehouse → Connection details)."
+                    ),
+                },
+                "catalog": {
+                    "kind": "string",
+                    "hint": (
+                        "Default Unity Catalog catalog. Registered rows resolve "
+                        "`bucket` as a schema inside it (a dotted bucket "
+                        "'catalog.schema' overrides per row); the semantic-layer "
+                        "sync enumerates its metric views."
+                    ),
+                },
+                "max_bytes_per_materialize": {
+                    "kind": "int",
+                    "default": 10737418240,
+                    "hint": (
+                        "Cost guardrail for query_mode='materialized' Databricks rows. "
+                        "Caps the statement RESULT size via the API's byte_limit (no "
+                        "dry-run primitive exists, unlike BigQuery) — a truncated "
+                        "result is rejected, never written. 0 disables. Default "
+                        "10737418240 = 10 GiB."
+                    ),
+                },
+                "statement_timeout_seconds": {
+                    "kind": "int",
+                    "default": 900,
+                    "hint": (
+                        "Client-side deadline on a materialize statement; on expiry "
+                        "the statement is cancelled on the warehouse and the row "
+                        "errors. 0 disables. Default 900."
+                    ),
                 },
             },
         },
@@ -2088,7 +2141,7 @@ async def update_server_config(
 # Source types accepted by /api/admin/register-table. Anything else is
 # rejected with 422 — keeps a typo'd source_type from silently landing in
 # table_registry (where it would later confuse the orchestrator scan).
-_VALID_SOURCE_TYPES: tuple[str, ...] = ("keboola", "bigquery", "jira", "local")
+_VALID_SOURCE_TYPES: tuple[str, ...] = ("keboola", "bigquery", "jira", "local", "databricks")
 
 # Explicit allowlist of audit-payload keys whose values are credentials and
 # must be masked. Substring-scan + ad-hoc whitelist (the previous shape) is
@@ -2307,6 +2360,18 @@ class RegisterTableRequest(BaseModel):
         sq = (self.source_query or "").strip() or None
         if self.query_mode != "materialized" and sq:
             raise ValueError("source_query is only valid when query_mode='materialized'")
+        # Databricks phase 1 is materialized-only: the scheduler runs the SQL
+        # on the SQL warehouse and distributes the parquet. 'local' has no
+        # extractor subprocess and 'remote' would need the (experimental)
+        # unity_catalog/delta DuckDB extensions + a _remote_attach allowlist
+        # entry — both follow-up phases, rejected here so a row can't land in
+        # the registry with a mode nothing will ever sync.
+        if self.source_type == "databricks" and self.query_mode != "materialized":
+            raise ValueError(
+                "source_type='databricks' currently supports query_mode='materialized' only "
+                "(the SQL runs on the Databricks SQL warehouse on schedule; register with "
+                "query_mode='materialized' and either a source_query or bucket+source_table)"
+            )
         # BigQuery materialized auto-generates a full-table-dump SQL from
         # `bucket`+`source_table` when source_query is omitted (see
         # `register_table` BQ branch). Keboola materialized: a NULL
@@ -2315,7 +2380,11 @@ class RegisterTableRequest(BaseModel):
         # filter, see `connectors/keboola/storage_api.py:ExportFilter`).
         # Other source_types (e.g. jira) don't support materialized mode
         # and require an explicit source_query if the operator opts in.
-        if self.query_mode == "materialized" and not sq and self.source_type not in ("bigquery", "keboola"):
+        if (
+            self.query_mode == "materialized"
+            and not sq
+            and self.source_type not in ("bigquery", "keboola", "databricks")
+        ):
             raise ValueError(
                 f"query_mode='materialized' for source_type='{self.source_type}' requires a non-empty source_query"
             )
@@ -2524,6 +2593,49 @@ def _generate_materialized_source_query(
             detail=f"bigquery: data_source.bigquery.project {project_id!r} is malformed",
         )
     return f"SELECT * FROM `{project_id}.{bucket}.{source_table}`"
+
+
+def _validate_databricks_register_payload(req: "RegisterTableRequest") -> None:
+    """Enforce Databricks-specific shape on a register/update request.
+
+    The Pydantic model validator already pinned ``query_mode='materialized'``
+    for Databricks rows; this hook server-generates the full-table-dump
+    ``source_query`` from ``bucket``+``source_table`` (+ the configured
+    default catalog) when the admin omitted custom SQL — mirroring the
+    BigQuery register path. Custom SQL passes through untouched: that is
+    where semantic-layer queries live (``SELECT dim, MEASURE(m) FROM
+    <metric_view> GROUP BY dim``).
+    """
+    if req.source_query and req.source_query.strip():
+        return
+    if not (req.bucket and req.source_table):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "databricks materialized requires either source_query (custom "
+                "Databricks SQL — e.g. SELECT dim, MEASURE(m) FROM a metric view) "
+                "or bucket+source_table (server-generates the full-table-dump SQL; "
+                "bucket is the schema, or 'catalog.schema' to override the default catalog)"
+            ),
+        )
+    from app.instance_config import get_value
+    from connectors.databricks.extractor import full_table_sql, split_bucket
+
+    default_catalog = get_value("data_source", "databricks", "catalog", default="") or ""
+    catalog, schema = split_bucket(req.bucket.strip(), default_catalog)
+    if not catalog:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "databricks: no catalog to resolve against — set "
+                "data_source.databricks.catalog in instance.yaml / "
+                "/admin/server-config, or use a dotted bucket 'catalog.schema'"
+            ),
+        )
+    try:
+        req.source_query = full_table_sql(catalog, schema, req.source_table.strip())
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"databricks: {e}") from e
 
 
 def _normalize_bq_source_table(req: "RegisterTableRequest") -> None:
@@ -3522,6 +3634,10 @@ def register_table(
     is_bigquery = request.source_type == "bigquery"
     if is_bigquery:
         _validate_bigquery_register_payload(request)
+    if request.source_type == "databricks":
+        # Materialized-only (model validator enforced); server-generate the
+        # full-table SQL when the admin supplied bucket+source_table only.
+        _validate_databricks_register_payload(request)
 
     # Phase C: profile_after_sync is no longer passed — the field is
     # deprecated and inert at the runtime layer. The DB column keeps its
@@ -4290,6 +4406,33 @@ async def update_table(
                             status_code=422,
                             detail=f"Keboola materialized source_query must be valid JSON: {_e}",
                         ) from _e
+
+        if merged.get("source_type") == "databricks":
+            # Reuse the register-time contract on updates too: the synthetic
+            # runs the model validator (materialized-only gate) and the
+            # payload validator (server-generated source_query), so a PUT
+            # can neither flip a Databricks row out of 'materialized' nor
+            # strand it without runnable SQL.
+            try:
+                synthetic = RegisterTableRequest(
+                    name=merged.get("name") or table_id,
+                    bucket=merged.get("bucket"),
+                    source_table=merged.get("source_table"),
+                    source_query=merged.get("source_query"),
+                    source_type="databricks",
+                    query_mode=merged.get("query_mode") or "materialized",
+                    primary_key=merged.get("primary_key"),
+                    description=merged.get("description"),
+                    folder=merged.get("folder"),
+                    sync_strategy=merged.get("sync_strategy") or "full_refresh",
+                    sync_schedule=merged.get("sync_schedule"),
+                    server_only=bool(merged.get("server_only") or False),
+                )
+            except ValidationError as e:
+                raise HTTPException(status_code=422, detail=str(e)) from e
+            _validate_databricks_register_payload(synthetic)
+            merged["query_mode"] = synthetic.query_mode
+            merged["source_query"] = synthetic.source_query
 
         if merged.get("source_type") == "bigquery":
             # Reuse the register-time validator. It mutates the request to

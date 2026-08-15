@@ -10687,7 +10687,7 @@
   "info": {
     "description": "Self-hosted AI harness: governed data access, skills marketplace, corporate memory, and agent workspaces",
     "title": "AI Harness",
-    "version": "0.83.14"
+    "version": "0.83.24"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -23746,6 +23746,57 @@
         "tags": [
           "admin"
         ]
+      }
+    },
+    "/api/admin/run-databricks-semantic-layer-refresh": {
+      "post": {
+        "description": "Sync the configured Databricks workspace's Unity Catalog metric views\ninto metric_definitions. See connectors/databricks/semantic_layer.py for\nthe mapping/prune logic.\n\n409 if a sync is already in flight. 400 when the sync fails for a reason\nthe admin controls \u2014 Databricks not configured, or a request the\nworkspace refuses (4xx). 502 only when the upstream is unreachable or\nanswers 5xx.",
+        "operationId": "run_databricks_semantic_layer_refresh_api_admin_run_databricks_semantic_layer_refresh_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Run Databricks Semantic Layer Refresh"
       }
     },
     "/api/admin/run-jira-consistency-check": {
