@@ -17,7 +17,25 @@ import yaml
 
 COMPOSE = Path(__file__).resolve().parents[1] / "docker-compose.yml"
 COMPOSE_PROD = Path(__file__).resolve().parents[1] / "docker-compose.prod.yml"
+COMPOSE_HOST_MOUNT = Path(__file__).resolve().parents[1] / "docker-compose.host-mount.yml"
 CA_PATH = "/etc/ssl/certs/ca-certificates.crt"
+
+
+class _OverrideLoader(yaml.SafeLoader):
+    """SafeLoader that tolerates the Compose-spec ``!override`` merge tag.
+
+    ``docker-compose.host-mount.yml`` tags every ``volumes:`` list with
+    ``!override`` (replace the base list instead of appending to it), which
+    plain ``yaml.safe_load`` refuses to construct. The tag carries no meaning
+    for these guards — they only inspect the sequence it decorates.
+    """
+
+
+_OverrideLoader.add_constructor("!override", lambda loader, node: loader.construct_sequence(node, deep=True))
+
+
+def _load(path):
+    return yaml.load(path.read_text(), Loader=_OverrideLoader)["services"]
 
 
 def _service(name):
@@ -39,6 +57,48 @@ def test_every_build_service_has_prod_image_override():
     assert not missing, (
         f"build: services with no image override in docker-compose.prod.yml: {sorted(missing)} "
         "— on a source-less prod VM these force a build and abort boot"
+    )
+
+
+def test_every_data_volume_service_has_host_mount_override():
+    """Every service mounting the ``data`` named volume must get a
+    ``volumes: !override`` entry in docker-compose.host-mount.yml.
+
+    The overlay swaps the ``data`` named volume for a direct ``/data`` host
+    bind — per service, because ``!override`` replaces one service's list.
+    A service the overlay forgets keeps the named volume, so its ``/data`` is
+    a DIFFERENT filesystem from every other container's, silently.
+
+    That is not theoretical: ``apps-runner`` was missing here since it was
+    added, so the sidecar wrote each data app's ``config.json`` into the
+    named volume while the app container read ``/data`` off the host. The
+    runtime container still worked (``_resolve_host_path`` in
+    ``services/apps_runner/api.py`` maps the sidecar's own path back to a
+    daemon-visible one), which is exactly why it went unnoticed — but
+    ``app.api.data_apps._rmtree_config_dir`` deletes
+    ``${DATA_DIR}/apps/<slug>`` from the APP's filesystem, hit
+    ``FileNotFoundError``, and swallowed it. The config.json it promises to
+    remove — carrying a service JWT and git credentials in plaintext — was
+    never deleted on any host-mount deployment.
+
+    Same bug class as ``test_every_build_service_has_prod_image_override``
+    above: a service added to the base file, forgotten in an overlay.
+    """
+    base = _load(COMPOSE)
+    overlay = _load(COMPOSE_HOST_MOUNT)
+
+    def _mounts_data_volume(service):
+        return any(isinstance(v, str) and v.split(":")[0] == "data" for v in (service.get("volumes") or []))
+
+    def _binds_host_data(service):
+        return any(isinstance(v, str) and v.split(":")[0] == "/data" for v in (service.get("volumes") or []))
+
+    expected = {n for n, s in base.items() if isinstance(s, dict) and _mounts_data_volume(s)}
+    missing = sorted(n for n in expected if not _binds_host_data(overlay.get(n) or {}))
+    assert not missing, (
+        f"services mounting the `data` named volume with no /data bind in "
+        f"docker-compose.host-mount.yml: {missing} — on a host-mount deployment their "
+        "/data is a separate filesystem from every other container's"
     )
 
 
