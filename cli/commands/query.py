@@ -402,6 +402,14 @@ def _query_remote(sql: str, fmt: str, limit: int, *, auto_snapshot: bool = False
 
     data = resp.json()
     _output(data["columns"], data["rows"], fmt)
+    # Table access policies (§10): `row_scope` is present when a table this
+    # query touched has an access policy applied — this result is the
+    # caller's own scoped slice, not the whole table. "Silent partial scope
+    # is forbidden" (command-ux.md) applies to row filtering as much as to
+    # source scope, so this is unconditional, not opt-in. Written to STDERR
+    # so json/csv stdout stays pure, same convention as the notices below.
+    if data.get("row_scope"):
+        typer.echo(f"[scope] {data['row_scope']['note']}", err=True)
     if data.get("truncated"):
         typer.echo(f"(truncated at {limit} rows)", err=True)
     # BigQuery dry-run scan estimate — present only for query_mode='remote'

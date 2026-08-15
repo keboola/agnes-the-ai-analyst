@@ -364,6 +364,52 @@ class TableRegistryRepository:
             [description, table_id],
         )
 
+    def set_access_policy(
+        self,
+        table_id: str,
+        sql: Optional[str],
+        note: Optional[str],
+        updated_by: str,
+    ) -> None:
+        """Set (or clear) the SQL access policy attached to a table
+        (table access policies design doc, §4/§13).
+
+        ``sql=None`` clears all four ``access_policy_*`` columns —
+        ``access_policy_updated_at``/``_by`` included — so a cleared table
+        reads back exactly as one that never had a policy. Setting a policy
+        always re-stamps ``access_policy_updated_at`` to "now"; ``audit_log``
+        remains the authoritative history, this column is UI convenience.
+        """
+        if sql is None:
+            self.conn.execute(
+                """UPDATE table_registry
+                   SET access_policy_sql = NULL,
+                       access_policy_note = NULL,
+                       access_policy_updated_at = NULL,
+                       access_policy_updated_by = NULL
+                   WHERE id = ?""",
+                [table_id],
+            )
+            return
+        self.conn.execute(
+            """UPDATE table_registry
+               SET access_policy_sql = ?,
+                   access_policy_note = ?,
+                   access_policy_updated_at = ?,
+                   access_policy_updated_by = ?
+               WHERE id = ?""",
+            [sql, note, datetime.now(timezone.utc), updated_by, table_id],
+        )
+
+    def set_policy_mapping(self, table_id: str, value: bool) -> None:
+        """Mark (or unmark) a table as referenceable from another table's
+        access-policy body (a "mapping table", e.g. a user->cost-center
+        lookup — table access policies design doc §15)."""
+        self.conn.execute(
+            "UPDATE table_registry SET policy_mapping = ? WHERE id = ?",
+            [bool(value), table_id],
+        )
+
     def get(self, table_id: str) -> Optional[Dict[str, Any]]:
         result = self.conn.execute("SELECT * FROM table_registry WHERE id = ?", [table_id]).fetchone()
         if not result:
