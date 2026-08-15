@@ -400,24 +400,45 @@ class TestBackgroundRefreshSingleFlight:
 
     def test_second_concurrent_caller_skips(self, monkeypatch):
         import asyncio
+        import threading
 
         import app.api.keboola_semantic_layer_refresh as kslr
 
         calls = []
+        release = threading.Event()
 
         def fake_sync():
             calls.append(1)
+            # Hold the run in flight until the test releases it. An
+            # instantly-returning fake would NOT guarantee overlap: on
+            # Python 3.13 the executor future can resolve before the
+            # awaiting task ever yields, so two gather()ed callers run
+            # strictly one after the other — and a second refresh AFTER a
+            # completed one is correct behavior, not the duplicate this
+            # test exists to catch.
+            release.wait(timeout=10)
             return {"status": "ok"}
 
         monkeypatch.setattr(kslr, "sync_semantic_layer", fake_sync)
 
-        async def run_two():
-            await asyncio.gather(
-                kslr.run_semantic_layer_refresh_background(trigger="login-a"),
-                kslr.run_semantic_layer_refresh_background(trigger="login-b"),
-            )
+        async def run_overlapped():
+            first = asyncio.ensure_future(kslr.run_semantic_layer_refresh_background(trigger="login-a"))
+            try:
+                for _ in range(1000):
+                    if calls:
+                        break
+                    await asyncio.sleep(0.005)
+                assert calls, "the first caller never entered the sync"
+                # The overlapping caller must return immediately (skip) —
+                # one that queued behind the in-flight run would still be
+                # waiting when this times out.
+                await asyncio.wait_for(kslr.run_semantic_layer_refresh_background(trigger="login-b"), timeout=5)
+                assert not first.done()
+            finally:
+                release.set()
+            await first
 
-        asyncio.run(run_two())
+        asyncio.run(run_overlapped())
         assert len(calls) == 1
 
     def test_claim_clears_after_a_failed_run(self, monkeypatch):
