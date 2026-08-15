@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.83.21] - 2026-08-15
+
 ### Fixed
 
 - **A remote BigQuery table named after a SQL keyword no longer corrupts the query it appears in.** The BQ-native rewriter's alternation and both table-selection scans in `app/api/query.py` now carry the same `(?!\s+by\b)` keyword suppression #1323 gave the name-guard fallback (via the shared `_name_reference_re`), so a registered table named e.g. `order` no longer rewrites the keyword half of `ORDER BY`/`GROUP BY`/`PARTITION BY` — previously `FROM order ORDER BY x` corrupted to ``FROM `proj.ds.tbl` `proj.ds.tbl` BY x``. A keyword-named local table also no longer forces every BQ query containing an innocent `ORDER BY` onto the slower cross-source fallback path (#1322).
