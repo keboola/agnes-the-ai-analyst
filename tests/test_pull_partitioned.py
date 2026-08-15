@@ -111,6 +111,19 @@ def test_sync_partitioned_fresh_download(tmp_path):
     assert entry["rows"] == 42
 
 
+def _varying_bad(attempts):
+    """A fetcher whose bytes are wrong AND different every attempt — i.e. the
+    corruption-in-transit shape, which must consume the whole retry budget.
+    (Identical wrong bytes twice is a different signal; see the stable-bytes
+    test below.)"""
+
+    def fetch_part(relpath, dest):
+        attempts["n"] += 1
+        dest.write_bytes(b"CORRUPT-%d" % attempts["n"])
+
+    return fetch_part
+
+
 def test_sync_partitioned_all_or_nothing_on_hash_mismatch(tmp_path, no_sleep):
     """If a part's downloaded bytes never match its hash, NOTHING is swapped in
     and the prior table dir is left intact (no silent partial view). The retry
@@ -121,12 +134,7 @@ def test_sync_partitioned_all_or_nothing_on_hash_mismatch(tmp_path, no_sleep):
     server = [_sp("month=2026-06/data.parquet", b"correct")]
     attempts = {"n": 0}
 
-    # fetcher writes WRONG bytes → hash mismatch, every time
-    def always_bad(relpath, dest):
-        attempts["n"] += 1
-        dest.write_bytes(b"CORRUPT")
-
-    entry, changed, err = _sync_partitioned_table("issues", server, {}, tmp_path, always_bad, "R", rows=1)
+    entry, changed, err = _sync_partitioned_table("issues", server, {}, tmp_path, _varying_bad(attempts), "R", rows=1)
 
     assert entry is None and "mismatch" in err
     assert changed is False
@@ -269,13 +277,53 @@ def test_sync_partitioned_honors_the_shared_retry_budget(tmp_path, no_sleep, mon
     server = [_sp("month=2026-06/data.parquet", b"correct")]
     attempts = {"n": 0}
 
-    def always_bad(relpath, dest):
-        attempts["n"] += 1
-        dest.write_bytes(b"CORRUPT")
-
-    _sync_partitioned_table("issues", server, {}, tmp_path, always_bad, "R", rows=1)
+    _sync_partitioned_table("issues", server, {}, tmp_path, _varying_bad(attempts), "R", rows=1)
 
     assert attempts["n"] == 5, f"expected 4 retries + 1 initial, got {attempts['n']}"
+
+
+def test_sync_partitioned_stops_early_when_server_bytes_are_stable(tmp_path, no_sleep):
+    """Observed in production: a part rewritten server-side without `sync_state`
+    being re-hashed publishes a stale hash, so the server serves the SAME
+    correct-but-unexpected bytes on every read. Verified live — three downloads
+    two seconds apart returned byte-identical content that matched none of the
+    manifest hash.
+
+    Re-reading identical bytes a third time cannot change the outcome, so the
+    loop stops at two, and the error has to name the real cause: a plain "hash
+    mismatch" reads like corruption and sends people hunting a transfer bug."""
+    server = [_sp("month=2025-06/data.parquet", b"what-the-manifest-claims")]
+    attempts = {"n": 0}
+
+    def stable_but_wrong(relpath, dest):
+        attempts["n"] += 1
+        dest.write_bytes(b"what-the-server-actually-has")
+
+    entry, changed, err = _sync_partitioned_table("issues", server, {}, tmp_path, stable_but_wrong, "R", rows=1)
+
+    assert entry is None and changed is False
+    assert attempts["n"] == 2, (
+        f"identical wrong bytes twice is deterministic — a third read is wasted; got {attempts['n']}"
+    )
+    assert "stale" in err and "rebuild" in err, (
+        f"the error must name the stale published hash, not just 'mismatch'; got {err!r}"
+    )
+
+
+def test_sync_partitioned_transport_errors_still_use_the_full_budget(tmp_path, no_sleep):
+    """The early exit is keyed on identical HASHES, not on repeated failure —
+    two dropped connections are no evidence the third will drop, so transport
+    errors must still spend every attempt."""
+    server = [_sp("month=2026-06/data.parquet", b"correct")]
+    attempts = {"n": 0}
+
+    def always_drops(relpath, dest):
+        attempts["n"] += 1
+        raise ConnectionError("connection reset")
+
+    _sync_partitioned_table("issues", server, {}, tmp_path, always_drops, "R", rows=1)
+
+    assert attempts["n"] == _DOWNLOAD_RETRIES + 1
 
 
 def test_sync_partitioned_retry_backs_off_between_attempts(tmp_path, monkeypatch):
@@ -285,9 +333,7 @@ def test_sync_partitioned_retry_backs_off_between_attempts(tmp_path, monkeypatch
     monkeypatch.setattr("cli.lib.pull.time.sleep", lambda s: slept.append(s), raising=False)
     server = [_sp("month=2026-06/data.parquet", b"correct")]
 
-    _sync_partitioned_table(
-        "issues", server, {}, tmp_path, _fetcher({"month=2026-06/data.parquet": b"CORRUPT"}), "R", rows=1
-    )
+    _sync_partitioned_table("issues", server, {}, tmp_path, _varying_bad({"n": 0}), "R", rows=1)
 
     # Derived from the helper, not sliced from the tuple: raising
     # _DOWNLOAD_RETRIES past the end of the schedule is a supported change (the
