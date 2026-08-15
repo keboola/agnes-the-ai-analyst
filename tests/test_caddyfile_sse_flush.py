@@ -20,6 +20,18 @@ from pathlib import Path
 _ROOT = Path(__file__).resolve().parent.parent
 
 
+def _is_directive_start(text: str, j: int) -> bool:
+    """True when the `reverse_proxy` at *j* is an actual directive rather than
+    a mention inside a `#` comment.
+
+    This parser pairs the token with the next `{`, so a comment that merely
+    NAMES reverse_proxy (the Caddyfile has several) would pair with whatever
+    braced block came next and assert on config that was never a proxy.
+    """
+    line_start = text.rfind("\n", 0, j) + 1
+    return text[line_start:j].strip() == ""
+
+
 def _app_proxy_blocks(text: str) -> list[str]:
     """Return the body of every `reverse_proxy ...app/api... { ... }` block."""
     blocks = []
@@ -28,6 +40,9 @@ def _app_proxy_blocks(text: str) -> list[str]:
         j = text.find("reverse_proxy", i)
         if j == -1:
             break
+        if not _is_directive_start(text, j):
+            i = j + len("reverse_proxy")
+            continue
         brace = text.find("{", j)
         if brace == -1:
             break
