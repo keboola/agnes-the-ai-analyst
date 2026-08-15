@@ -86,6 +86,20 @@ class SharedSecretsPgRepository:
             ).fetchone()
         return row is not None
 
+    def get_updated_at(self, source_id: str) -> Optional[str]:
+        """ISO-8601 timestamp of the last upsert for ``source_id``, or
+        ``None`` when no secret is stored. Never returns the secret value.
+
+        Signature-compatible with
+        ``app.secrets_vault.SharedSecretsRepository.get_updated_at``.
+        """
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                sa.text("SELECT updated_at FROM mcp_secrets WHERE source_id = :source_id"),
+                {"source_id": source_id},
+            ).fetchone()
+        return row[0].isoformat() if row and row[0] is not None else None
+
 
 class SystemSecretsPgRepository:
     """Server-wide system secrets keyed by ``name`` (PG).

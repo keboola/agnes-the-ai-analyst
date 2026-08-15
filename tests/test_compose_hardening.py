@@ -282,3 +282,34 @@ def test_apps_runner_env_knobs_are_actually_reachable():
         f"apps-runner reads {missing} but compose never passes them in — with no env_file, "
         "a value set in .env never reaches the process and the knob does nothing"
     )
+
+
+def test_egress_proxy_declares_a_liveness_probe():
+    """A dead egress proxy must not stay dead and unnoticed (#1250).
+
+    The proxy exited (code 3) and stayed down with nothing surfacing it.
+    Security-wise that is fail-CLOSED, not fail-open — ``agnes-apps-internal``
+    is ``internal: true`` and is the sandboxes' only network, so a dead proxy
+    means no egress rather than unfiltered egress. What was missing is the
+    signal: every sandbox silently loses outbound access while the service
+    reports nothing, and ``restart: unless-stopped`` cannot rescue a process
+    that exits on a config error rather than crashing.
+
+    The probe is a TCP connect against the listener, NOT an HTTP request: the
+    proxy speaks raw CONNECT/absolute-form and serves no health path, so a
+    request probe would mark a perfectly healthy proxy unhealthy. It reads the
+    port from ``EGRESS_LISTEN`` so the probe cannot drift away from the bind.
+    """
+    svc = yaml.safe_load(COMPOSE.read_text())["services"]["egress-proxy"]
+
+    health = svc.get("healthcheck") or {}
+    assert health, "egress-proxy declares no healthcheck — a dead proxy silently kills sandbox egress"
+
+    probe = " ".join(health.get("test") or [])
+    assert "EGRESS_LISTEN" in probe, (
+        "the liveness probe must derive its port from EGRESS_LISTEN, else it drifts from the bind"
+    )
+    assert "http" not in probe.lower(), (
+        "the proxy serves no health path — an HTTP probe reports a healthy proxy as unhealthy"
+    )
+    assert health.get("start_period"), "without start_period the first probes race the proxy's own boot"

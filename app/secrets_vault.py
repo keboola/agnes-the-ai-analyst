@@ -254,6 +254,21 @@ class SharedSecretsRepository:
         ).fetchone()
         return row is not None
 
+    def get_updated_at(self, source_id: str) -> Optional[str]:
+        """ISO-8601 timestamp of the last upsert for ``source_id``, or
+        ``None`` when no secret is stored. Never returns the secret value.
+
+        Mirrors ``PerUserSecretsRepository.get_updated_at`` — same shape,
+        one fewer key column (the shared vault has one row per source, not
+        per ``(source, user)``). Powers the "last rotated" label on the
+        admin vault-secret card.
+        """
+        row = self.conn.execute(
+            "SELECT updated_at FROM mcp_secrets WHERE source_id = ?",
+            [source_id],
+        ).fetchone()
+        return row[0].isoformat() if row and row[0] is not None else None
+
 
 # ---------------------------------------------------------------------------
 # Repository — server-wide system secrets (system_secrets table)

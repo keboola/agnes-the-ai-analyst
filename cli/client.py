@@ -730,6 +730,19 @@ class _RangeNotHonored(Exception):
     request. Caller catches and falls back to the single-stream path."""
 
 
+class _RangeNotSatisfiable(Exception):
+    """Internal sentinel — server returned 416 Range Not Satisfiable to a
+    resume (or otherwise mis-ranged) request: our offset no longer lines
+    up with what the server has, e.g. a stale/oversized leftover part or
+    tmp file, or the source changed size between attempts. Caller drops
+    whatever partial bytes it was resuming from and retries the same
+    target from scratch — see `_download_chunk` / `_download_single_stream`.
+    """
+
+    def __init__(self, message: str = "server returned 416 Range Not Satisfiable") -> None:
+        super().__init__(message)
+
+
 def _download_chunk(
     client: httpx.Client,
     path: str,
@@ -739,18 +752,56 @@ def _download_chunk(
     progress_callback,
 ) -> None:
     """Stream `bytes=start-end` to `part_path`. Caller deals with retry +
-    cleanup. Raises on any failure (HTTPStatusError on non-206 response,
-    httpx.* on transport blip, `_RangeNotHonored` if server returned 200
-    instead of 206 — chunked path can't trust that result)."""
-    headers = {"Range": f"bytes={start}-{end}"}
+    cleanup. Raises on any failure (HTTPStatusError on non-206/416
+    response, httpx.* on transport blip, `_RangeNotHonored` if server
+    returned 200 instead of 206 — chunked path can't trust that result —
+    `_RangeNotSatisfiable` if server returned 416 to our Range).
+
+    Resume (issue #1309): if `part_path` already holds `have` bytes from
+    an earlier failed attempt at this SAME `(start, end)` — the caller's
+    retry loop calls us again for the same chunk without clearing the
+    file — request only the missing tail (`bytes={start+have}-{end}`)
+    and append rather than re-fetching + overwriting bytes we already
+    have. `have == 0` (no part file, or a first attempt) requests
+    `bytes={start}-{end}` exactly as before this resume support existed.
+    A `have` bigger than the range itself is a stale/corrupt leftover —
+    never used to compute a negative or inverted range; treated the same
+    as no leftover at all (restart at `start`). `have` exactly equal to
+    the range length means an earlier attempt already wrote every byte
+    of this chunk — nothing left to fetch.
+    """
+    range_len = end - start + 1
+    have = 0
+    if part_path.exists():
+        try:
+            have = part_path.stat().st_size
+        except OSError:
+            have = 0
+        if have > range_len:
+            # Stale/corrupt leftover bigger than what we're about to
+            # request — restart clean rather than compute a negative or
+            # inverted range from it.
+            have = 0
+    if have and have >= range_len:
+        return
+    resume = have > 0
+    headers = {"Range": f"bytes={start + have}-{end}"}
     with client.stream("GET", path, headers=headers) as response:
-        # Server didn't honor the Range — RFC says it MAY return 200 with
-        # the full body. We can't safely splice that into one part of N,
-        # so we abort the whole chunked path and let the caller fall back.
+        if response.status_code == 416:
+            # Our offset doesn't line up with what the server has. Don't
+            # touch part_path here — the caller (`_attempt_chunk`) owns
+            # clearing it before the next retry.
+            raise _RangeNotSatisfiable()
+        # Server didn't honor the Range at all (fresh or resume) — RFC
+        # says it MAY return 200 with the full body instead. We can't
+        # safely splice that into one part of N, and must never append
+        # it onto bytes we already hold, so abort the whole chunked path
+        # and let the caller fall back to a clean single-stream download.
         if response.status_code == 200:
             raise _RangeNotHonored()
         response.raise_for_status()
-        with open(part_path, "wb") as f:
+        mode = "ab" if resume else "wb"
+        with open(part_path, mode) as f:
             for piece in response.iter_bytes(chunk_size=65536):
                 f.write(piece)
                 if progress_callback and piece:
@@ -769,6 +820,10 @@ def _download_chunked(
 
     Raises `_RangeNotHonored` on the first 200-instead-of-206 response so
     the caller can fall back. All other exceptions propagate.
+
+    Each chunk's own retry loop (`_attempt_chunk`, below) resumes from
+    whatever bytes a prior failed attempt already wrote to that chunk's
+    part file instead of restarting it — see `_download_chunk`.
 
     Cleanup discipline: every part file we create gets removed before
     return (success or failure). The destination is written via the
@@ -823,6 +878,16 @@ def _download_chunked(
             except _RangeNotHonored:
                 # Don't retry — server policy, not a transport blip.
                 raise
+            except _RangeNotSatisfiable as exc:
+                # 416: whatever partial bytes we were resuming from no
+                # longer line up with what the server has. Drop them so
+                # the next attempt asks for the whole range fresh, then
+                # retry like any other transient failure.
+                part_paths[i].unlink(missing_ok=True)
+                last_exc = exc
+                if attempt == _RETRY_ATTEMPTS:
+                    break
+                time.sleep(_RETRY_BACKOFFS_S[min(attempt, len(_RETRY_BACKOFFS_S) - 1)])
             except Exception as exc:
                 last_exc = exc
                 if attempt == _RETRY_ATTEMPTS or not _is_transient(exc):
@@ -875,7 +940,24 @@ def _download_single_stream(
     progress_callback,
 ) -> int:
     """Original single-stream path with retry. Used when chunking is
-    disabled (small file, no range support, or fallback after 200-on-Range)."""
+    disabled (small file, no range support, or fallback after 200-on-Range).
+
+    Resume (issue #1309): if `<target>.<pid>.tmp` already holds `have`
+    bytes from an earlier failed attempt in THIS SAME retry loop, request
+    only the missing tail (`bytes={have}-`, open-ended — the total size
+    isn't tracked here) and append instead of re-streaming the whole
+    body. A fresh attempt (no tmp file yet, `have == 0`) sends no Range
+    header at all — byte-for-byte the same request as before this resume
+    support existed. Two server responses fall back to a full truncate-
+    and-rewrite rather than trusting/appending what comes back:
+      - 200: the server ignored the Range and is sending the FULL body
+        from byte 0 — written in "wb" (not "ab") mode.
+      - 416: our offset doesn't line up with what the server has (a
+        stale/oversized leftover — there's no total size to bounds-check
+        against up front, so this is also how "too big" gets caught — or
+        the source changed) — the partial file is dropped and the next
+        retry attempt starts clean.
+    """
     # Same dead-PID reap as `_download_chunked` so leftovers from
     # crashed prior pulls don't accumulate indefinitely.
     _reap_dead_pid_leftovers(target_path)
@@ -886,12 +968,25 @@ def _download_single_stream(
     tmp_path = Path(f"{target_path}.{os.getpid()}.tmp")
     last_exc: Optional[Exception] = None
     for attempt in range(_RETRY_ATTEMPTS + 1):
+        have = 0
+        if tmp_path.exists():
+            try:
+                have = tmp_path.stat().st_size
+            except OSError:
+                have = 0
+        resume = have > 0
+        headers = {"Range": f"bytes={have}-"} if resume else None
         try:
-            tmp_path.unlink(missing_ok=True)
-            with client.stream("GET", path) as response:
+            with client.stream("GET", path, headers=headers) as response:
+                if resume and response.status_code == 416:
+                    raise _RangeNotSatisfiable()
                 response.raise_for_status()
-                total = 0
-                with open(tmp_path, "wb") as f:
+                resumed = resume and response.status_code == 206
+                if not resumed:
+                    tmp_path.unlink(missing_ok=True)
+                mode = "ab" if resumed else "wb"
+                total = have if resumed else 0
+                with open(tmp_path, mode) as f:
                     for chunk in response.iter_bytes(chunk_size=65536):
                         f.write(chunk)
                         total += len(chunk)
@@ -899,6 +994,12 @@ def _download_single_stream(
                             progress_callback(len(chunk))
             os.replace(tmp_path, target_path)
             return total
+        except _RangeNotSatisfiable as exc:
+            tmp_path.unlink(missing_ok=True)
+            last_exc = exc
+            if attempt == _RETRY_ATTEMPTS:
+                break
+            time.sleep(_RETRY_BACKOFFS_S[min(attempt, len(_RETRY_BACKOFFS_S) - 1)])
         except Exception as exc:
             last_exc = exc
             if attempt == _RETRY_ATTEMPTS or not _is_transient(exc):
@@ -929,7 +1030,18 @@ def stream_download(path: str, target_path: str, progress_callback=None) -> int:
       target file never exists in a half-written state.
     - Retries up to `_RETRY_ATTEMPTS` on transient errors (network blip,
       5xx); 4xx (auth/404) is raised immediately.
-    - No hash check here — that's the caller's job (manifest hash).
+    - No hash check here — that's the caller's job (manifest hash), and
+      remains the final arbiter regardless of which path below served
+      the bytes or how many times it resumed.
+
+    Resume on retry (issue #1309): a within-call retry (chunked or
+    single-stream) probes how many bytes the previous attempt already
+    wrote — its `.partN` file or `.tmp` file — and requests only the
+    missing tail via `Range`, appending rather than restarting from byte
+    0. Falls back to a full truncate-and-rewrite if the server answers
+    200 (ignored the Range entirely) or 416 (the offset no longer lines
+    up with what the server has, e.g. a stale/oversized leftover or a
+    source that changed between attempts).
 
     Threading: the chunked path uses a ThreadPoolExecutor sized to the
     parallelism. httpx.Client.stream() is safe to call concurrently from
