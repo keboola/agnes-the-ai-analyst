@@ -548,9 +548,7 @@ private struct AgentRunCard: View {
             Text("(No answer returned.)")
               .foregroundStyle(AgnesTheme.textMuted)
           } else {
-            Text(result.answer)
-              .foregroundStyle(AgnesTheme.textSecondary)
-              .textSelection(.enabled)
+            AgentMarkdownView(markdown: result.answer)
           }
         }
         .font(.system(size: 14))

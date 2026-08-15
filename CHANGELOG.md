@@ -23,7 +23,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   `/update-agnes-plugins` activation step. Agent Runs executes a manually
   entered slug through `agnes chat --once --json`, retains structured AG-UI
   events, tool activity, raw JSON, duration, token usage, and budget in a local
-  inspector, and uses request-scoped subprocess cancellation so Marketplace
+  inspector. Agent answers render Markdown natively, including headings,
+  emphasis, links, lists, quotes, fenced code, dividers, and horizontally
+  scrollable tables, rather than exposing their formatting markers as plain
+  text. The client uses request-scoped subprocess cancellation so Marketplace
   reads can continue concurrently. It intentionally does not call the
   web-session-only `agnes agent list` management command and labels each prompt
   as an isolated run because the current JSON CLI offers only best-effort

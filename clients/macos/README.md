@@ -14,6 +14,9 @@ accounts, tokens, or server configuration itself.
 - Runs a manually entered agent slug as an isolated one-shot task and retains a
   local, in-memory run record with answer, lifecycle, tool activity, duration,
   raw AG-UI JSON, token usage, and budget.
+- Renders agent Markdown as native selectable macOS content: headings, inline
+  emphasis/code/links, lists, quotes, fenced code blocks, dividers, and
+  horizontally scrollable tables.
 - Keeps Marketplace and agent execution in separate process lanes. Stop sends
   SIGINT only to the selected run's subprocess, not to an unrelated CLI read.
 - Shows the exact, read-only CLI runtime contract in the UI so the current
