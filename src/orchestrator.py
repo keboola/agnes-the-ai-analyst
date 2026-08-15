@@ -119,7 +119,7 @@ def _capture_orchestrator_exception(exc: BaseException, **props) -> None:
 from src.identifier_validation import (
     _SAFE_IDENTIFIER,  # noqa: F401  (re-exported for any historical caller)
 )
-from src.identifier_validation import (
+from src.identifier_validation import (  # noqa: E402
     validate_identifier as _validate_identifier,
 )
 
@@ -1479,6 +1479,26 @@ class SyncOrchestrator:
                 file_hash = ""
                 parts = None
                 out_size = size_bytes or 0
+                # #1339: a table can have BOTH a flat `<table>.parquet` file
+                # AND a `<table>/` partition directory at once — e.g. a
+                # partitioned-pull migration that wrote fresh parts but left
+                # the old flat file in place. TODO(#1339): whether the flat
+                # file should keep winning (as it does below, unchanged) or
+                # the directory should, and whether the stale sibling should
+                # be deleted, are open human decisions this fix does not
+                # make — it only stops the collision from being invisible.
+                both_layouts = pq_path.exists() and table_dir.is_dir()
+                if both_layouts:
+                    logger.error(
+                        "Table %r in source %r has BOTH a flat parquet (%s) "
+                        "and a partition directory (%s) — serving the flat "
+                        "file (precedence unchanged), which may be stale "
+                        "relative to the partitioned data. See #1339.",
+                        table_name,
+                        source_name,
+                        pq_path,
+                        table_dir,
+                    )
                 if pq_path.exists():
                     # TODO(#1339): the flat file winning is a precedence choice, not a
                     # verdict — when both layouts are present the partitioned
@@ -1543,6 +1563,20 @@ class SyncOrchestrator:
                     hash=file_hash,
                     parts=parts,
                 )
+                if both_layouts:
+                    # Record it on the row too — not just the log — so it
+                    # stops being invisible to `GET /api/admin/registry` /
+                    # `agnes admin list-tables`. Same set_error() contract
+                    # every other per-table sync failure uses; it only
+                    # flips status/error and leaves the rows/hash just
+                    # written above untouched, so the bytes served here stay
+                    # byte-for-byte identical to the flat-only case.
+                    repo.set_error(
+                        table_name,
+                        f"Both a flat parquet ({pq_path}) and a partition "
+                        f"directory ({table_dir}) exist for this table; "
+                        f"serving the flat file, which may be stale. See #1339.",
+                    )
         except Exception as e:
             logger.warning("Could not update sync_state: %s", e)
 

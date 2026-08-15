@@ -1241,8 +1241,21 @@ class KnowledgePgRepository:
         ]
         params: Dict[str, Any] = {"id": new_item_id, "limit": limit}
         if domain:
-            sql_parts.append(" AND domain = :d")
-            params["d"] = domain
+            # Junction-only read, same as every other domain filter in this
+            # repo and as the DuckDB sibling. This one was missed by the v49
+            # migration and still matched the scalar `knowledge_items.domain`
+            # the first-class domain entity replaced: on Postgres a moved item
+            # was judged for contradictions under the domain it LEFT and never
+            # under the one it joined, so a real contradiction went unreported
+            # on one backend and was found on the other.
+            domain_id = self._resolve_domain_slug(domain)
+            if domain_id is None:
+                return []  # unknown slug → empty, mirror the DuckDB repo
+            sql_parts.append(
+                " AND EXISTS (SELECT 1 FROM knowledge_item_domains kid "
+                "WHERE kid.item_id = knowledge_items.id AND kid.domain_id = :domain_id)"
+            )
+            params["domain_id"] = domain_id
         sql_parts.append(" ORDER BY updated_at DESC LIMIT :limit")
         with self._engine.connect() as conn:
             rows = conn.execute(sa.text("".join(sql_parts)), params).mappings().all()

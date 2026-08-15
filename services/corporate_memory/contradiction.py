@@ -58,11 +58,31 @@ def find_candidates(
     candidates from all domains are returned (the LLM still judges each).
     """
     item_id = new_item.get("id", "")
-    return repo.find_contradiction_candidates(
+    domain = new_item.get("domain")
+    candidates = repo.find_contradiction_candidates(
         new_item_id=item_id,
-        domain=new_item.get("domain"),
+        domain=domain,
         limit=max_candidates,
     )
+    if len(candidates) == max_candidates:
+        # #63: the repo's `ORDER BY updated_at DESC LIMIT ?` silently dropped
+        # older approved items once this domain's corpus outgrew the cap —
+        # a fail-open on a contradiction *scanner*: it can report "no
+        # contradictions" over a corpus it never fully read. This does NOT
+        # fix that (domain sharding / the Batch API are a cost decision for
+        # a human — see the "Consider domain sharding (V2 TODO)" warning
+        # below), it only stops the truncation from being invisible.
+        # TODO(#63): decide sharding vs. Batch API vs. raising the cap.
+        logger.warning(
+            "Contradiction candidate scan for domain %r hit the cap "
+            "(returned %d candidates, limit=%d) — the corpus may hold more "
+            "approved items than were scanned; items beyond the cap were "
+            "not judged for contradictions.",
+            domain,
+            len(candidates),
+            max_candidates,
+        )
+    return candidates
 
 
 def _build_resolution(judgment: dict) -> dict | None:

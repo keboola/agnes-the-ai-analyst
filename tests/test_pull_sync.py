@@ -18,18 +18,14 @@ Covers Section 10.3 of the unified-stack spec:
 from __future__ import annotations
 
 import hashlib
-import os
 import shutil
 from pathlib import Path
 from typing import Dict, List
-from unittest.mock import patch
 
 import pytest
 
 from cli.lib.pull_sync import (
     PullStackOptions,
-    SyncReport,
-    _count_references,
     _link_or_copy,
     _safe_segment,
     audit_invariants,
@@ -67,26 +63,30 @@ class _FakeServer:
             body = self.responses.get(url) or (b"PAR1" + url.encode())
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(body)
+
         return _fetcher
 
     def make_bundle_fetcher(self):
         def _bundle_fetcher(slug: str) -> bytes:
             self.bundle_calls.append(slug)
             return self.bundles.get(slug, f"# {slug} bundle\n".encode())
+
         return _bundle_fetcher
 
     def make_md5(self):
         def _md5(p: Path) -> str:
             return hashlib.md5(Path(p).read_bytes()).hexdigest()
+
         return _md5
 
 
-def _table(id_: str, name: str, md5: str = "", query_mode: str = "local") -> dict:
+def _table(id_: str, name: str, md5: str = "", query_mode: str = "local", server_only: bool = False) -> dict:
     return {
         "id": id_,
         "name": name,
         "md5": md5 or hashlib.md5((b"PAR1" + f"/api/data/{id_}/download".encode())).hexdigest(),
         "query_mode": query_mode,
+        "server_only": server_only,
         "parquet_url": f"/api/data/{id_}/download",
     }
 
@@ -133,13 +133,19 @@ class TestSyncDirectTables:
         fetcher = server.make_fetcher()
         md5 = server.make_md5()
         state1, _ = sync_direct_tables(
-            server_tables=tables, local_data_dir=local_data,
-            prev_state={}, fetcher=fetcher, md5_of=md5,
+            server_tables=tables,
+            local_data_dir=local_data,
+            prev_state={},
+            fetcher=fetcher,
+            md5_of=md5,
         )
         assert len(server.fetch_calls) == 1
         state2, report = sync_direct_tables(
-            server_tables=tables, local_data_dir=local_data,
-            prev_state=state1, fetcher=fetcher, md5_of=md5,
+            server_tables=tables,
+            local_data_dir=local_data,
+            prev_state=state1,
+            fetcher=fetcher,
+            md5_of=md5,
         )
         # No new fetch on idempotent re-pull.
         assert len(server.fetch_calls) == 1
@@ -154,8 +160,11 @@ class TestSyncDirectTables:
         fetcher = server.make_fetcher()
         md5 = server.make_md5()
         state1, _ = sync_direct_tables(
-            server_tables=[t], local_data_dir=local_data,
-            prev_state={}, fetcher=fetcher, md5_of=md5,
+            server_tables=[t],
+            local_data_dir=local_data,
+            prev_state={},
+            fetcher=fetcher,
+            md5_of=md5,
         )
         # Server flips md5 + payload.
         t2 = dict(t)
@@ -169,8 +178,11 @@ class TestSyncDirectTables:
             return hashlib.md5(content).hexdigest()
 
         state2, report = sync_direct_tables(
-            server_tables=[t2], local_data_dir=local_data,
-            prev_state=state1, fetcher=fetcher, md5_of=_md5_aware,
+            server_tables=[t2],
+            local_data_dir=local_data,
+            prev_state=state1,
+            fetcher=fetcher,
+            md5_of=_md5_aware,
         )
         assert report.updated == 1
         assert report.added == 0
@@ -182,13 +194,19 @@ class TestSyncDirectTables:
         local_data.mkdir(parents=True, exist_ok=True)
         t = _table("t1", "orders")
         state1, _ = sync_direct_tables(
-            server_tables=[t], local_data_dir=local_data,
-            prev_state={}, fetcher=server.make_fetcher(), md5_of=server.make_md5(),
+            server_tables=[t],
+            local_data_dir=local_data,
+            prev_state={},
+            fetcher=server.make_fetcher(),
+            md5_of=server.make_md5(),
         )
         # Server drops the table.
         state2, report = sync_direct_tables(
-            server_tables=[], local_data_dir=local_data,
-            prev_state=state1, fetcher=server.make_fetcher(), md5_of=server.make_md5(),
+            server_tables=[],
+            local_data_dir=local_data,
+            prev_state=state1,
+            fetcher=server.make_fetcher(),
+            md5_of=server.make_md5(),
         )
         assert report.removed == 1
         assert not (local_data / "_direct" / "orders.parquet").exists()
@@ -200,12 +218,70 @@ class TestSyncDirectTables:
         local_data.mkdir(parents=True, exist_ok=True)
         t = _table("t_remote", "remote_tbl", query_mode="remote")
         state, report = sync_direct_tables(
-            server_tables=[t], local_data_dir=local_data,
-            prev_state={}, fetcher=server.make_fetcher(), md5_of=server.make_md5(),
+            server_tables=[t],
+            local_data_dir=local_data,
+            prev_state={},
+            fetcher=server.make_fetcher(),
+            md5_of=server.make_md5(),
         )
         assert report.added == 0
         assert server.fetch_calls == []
         assert "remote_tbl" not in state
+
+    def test_server_only_tables_skipped(self, server, local_dir):
+        """#1324: a server_only row must never be fetched into
+        `.claude/data/_shared` by the typed stack-sync path — mirrors the
+        flat-`tables` step 4 skip in `cli/lib/pull.py`."""
+        local_data = local_dir / "data"
+        local_data.mkdir(parents=True, exist_ok=True)
+        t = _table("t_so", "server_only_tbl", server_only=True)
+        state, report = sync_direct_tables(
+            server_tables=[t],
+            local_data_dir=local_data,
+            prev_state={},
+            fetcher=server.make_fetcher(),
+            md5_of=server.make_md5(),
+        )
+        assert report.added == 0
+        assert server.fetch_calls == []
+        assert "server_only_tbl" not in state
+        assert not (local_data / "_shared" / "t_so.parquet").exists()
+
+    def test_skip_materialize_omits_materialized_tables(self, server, local_dir):
+        """#1304: `skip_materialize=True` must omit `query_mode='materialized'`
+        rows from the typed stack-sync path too, not just step 4's flat dict."""
+        local_data = local_dir / "data"
+        local_data.mkdir(parents=True, exist_ok=True)
+        t = _table("t_mat", "big_materialized", query_mode="materialized")
+        state, report = sync_direct_tables(
+            server_tables=[t],
+            local_data_dir=local_data,
+            prev_state={},
+            fetcher=server.make_fetcher(),
+            md5_of=server.make_md5(),
+            skip_materialize=True,
+        )
+        assert report.added == 0
+        assert server.fetch_calls == []
+        assert "big_materialized" not in state
+
+    def test_materialized_tables_sync_by_default(self, server, local_dir):
+        """Counterpart: `skip_materialize` defaults to False, so a
+        materialized table syncs exactly like any other local-mode table
+        unless the caller opts in."""
+        local_data = local_dir / "data"
+        local_data.mkdir(parents=True, exist_ok=True)
+        t = _table("t_mat", "big_materialized", query_mode="materialized")
+        state, report = sync_direct_tables(
+            server_tables=[t],
+            local_data_dir=local_data,
+            prev_state={},
+            fetcher=server.make_fetcher(),
+            md5_of=server.make_md5(),
+        )
+        assert report.added == 1
+        assert (local_data / "_direct" / "big_materialized.parquet").exists()
+        assert "big_materialized" in state
 
 
 # ---------------------------------------------------------------------------
@@ -314,16 +390,72 @@ class TestSyncDataPackages:
         pkg = {"slug": "sales", "tables": [_table("t1", "orders")]}
         fetcher = server.make_fetcher()
         state1, _ = sync_data_packages(
-            server_packages=[pkg], local_data_dir=local_data,
-            prev_state={}, fetcher=fetcher, md5_of=server.make_md5(),
+            server_packages=[pkg],
+            local_data_dir=local_data,
+            prev_state={},
+            fetcher=fetcher,
+            md5_of=server.make_md5(),
         )
         assert len(server.fetch_calls) == 1
         state2, report = sync_data_packages(
-            server_packages=[pkg], local_data_dir=local_data,
-            prev_state=state1, fetcher=fetcher, md5_of=server.make_md5(),
+            server_packages=[pkg],
+            local_data_dir=local_data,
+            prev_state=state1,
+            fetcher=fetcher,
+            md5_of=server.make_md5(),
         )
         assert len(server.fetch_calls) == 1
         assert report.added + report.updated + report.removed == 0
+
+    def test_server_only_tables_skipped(self, server, local_dir):
+        """#1324: same server_only skip as direct_tables, for a packaged table."""
+        local_data = local_dir / "data"
+        local_data.mkdir(parents=True, exist_ok=True)
+        pkg = {"slug": "sales", "tables": [_table("t_so", "server_only_tbl", server_only=True)]}
+        state, report = sync_data_packages(
+            server_packages=[pkg],
+            local_data_dir=local_data,
+            prev_state={},
+            fetcher=server.make_fetcher(),
+            md5_of=server.make_md5(),
+        )
+        assert report.added == 0
+        assert server.fetch_calls == []
+        assert state["sales"] == {}
+        assert not (local_data / "_shared" / "t_so.parquet").exists()
+        assert not (local_data / "sales" / "server_only_tbl.parquet").exists()
+
+    def test_skip_materialize_omits_materialized_tables(self, server, local_dir):
+        """#1304: `skip_materialize=True` reaches the data_packages loop too."""
+        local_data = local_dir / "data"
+        local_data.mkdir(parents=True, exist_ok=True)
+        pkg = {"slug": "sales", "tables": [_table("t_mat", "big_materialized", query_mode="materialized")]}
+        state, report = sync_data_packages(
+            server_packages=[pkg],
+            local_data_dir=local_data,
+            prev_state={},
+            fetcher=server.make_fetcher(),
+            md5_of=server.make_md5(),
+            skip_materialize=True,
+        )
+        assert report.added == 0
+        assert server.fetch_calls == []
+        assert state["sales"] == {}
+
+    def test_materialized_tables_sync_by_default(self, server, local_dir):
+        local_data = local_dir / "data"
+        local_data.mkdir(parents=True, exist_ok=True)
+        pkg = {"slug": "sales", "tables": [_table("t_mat", "big_materialized", query_mode="materialized")]}
+        state, report = sync_data_packages(
+            server_packages=[pkg],
+            local_data_dir=local_data,
+            prev_state={},
+            fetcher=server.make_fetcher(),
+            md5_of=server.make_md5(),
+        )
+        assert report.added == 1
+        assert (local_data / "sales" / "big_materialized.parquet").exists()
+        assert "big_materialized" in state["sales"]
 
 
 # ---------------------------------------------------------------------------
@@ -350,13 +482,17 @@ class TestSyncMemoryDomains:
         domain = {"slug": "sales-playbook", "md5": "h1"}
         bundle = server.make_bundle_fetcher()
         state1, _ = sync_memory_domains(
-            server_domains=[domain], local_memory_dir=mem,
-            prev_state={}, bundle_fetcher=bundle,
+            server_domains=[domain],
+            local_memory_dir=mem,
+            prev_state={},
+            bundle_fetcher=bundle,
         )
         assert server.bundle_calls == ["sales-playbook"]
         state2, report = sync_memory_domains(
-            server_domains=[domain], local_memory_dir=mem,
-            prev_state=state1, bundle_fetcher=bundle,
+            server_domains=[domain],
+            local_memory_dir=mem,
+            prev_state=state1,
+            bundle_fetcher=bundle,
         )
         assert len(server.bundle_calls) == 1  # no re-fetch
         assert report.added + report.updated == 0
@@ -384,11 +520,15 @@ class TestSyncMemoryDomains:
         bundle = server.make_bundle_fetcher()
         state1, _ = sync_memory_domains(
             server_domains=[{"slug": "x", "md5": "h"}],
-            local_memory_dir=mem, prev_state={}, bundle_fetcher=bundle,
+            local_memory_dir=mem,
+            prev_state={},
+            bundle_fetcher=bundle,
         )
         state2, report = sync_memory_domains(
             server_domains=[],
-            local_memory_dir=mem, prev_state=state1, bundle_fetcher=bundle,
+            local_memory_dir=mem,
+            prev_state=state1,
+            bundle_fetcher=bundle,
         )
         assert report.removed == 1
         assert not (mem / "x" / "bundle.md").exists()
@@ -408,8 +548,7 @@ class TestWindowsFallback:
         src.write_bytes(b"PAR1" + b"x")
         dst = local_data / "pkg" / "alias.parquet"
 
-        monkeypatch.setattr("cli.lib.pull_sync.os.symlink",
-                            lambda *a, **kw: (_ for _ in ()).throw(OSError("nope")))
+        monkeypatch.setattr("cli.lib.pull_sync.os.symlink", lambda *a, **kw: (_ for _ in ()).throw(OSError("nope")))
         strategy = _link_or_copy(src, dst)
         assert strategy == "hardlink"
         assert dst.exists()
@@ -417,7 +556,10 @@ class TestWindowsFallback:
         assert dst.stat().st_ino == src.stat().st_ino
 
     def test_symlink_and_hardlink_fail_falls_back_to_copy(
-        self, server, local_dir, monkeypatch,
+        self,
+        server,
+        local_dir,
+        monkeypatch,
     ):
         local_data = local_dir / "data"
         (local_data / "_shared").mkdir(parents=True)
@@ -425,10 +567,8 @@ class TestWindowsFallback:
         src.write_bytes(b"PAR1" + b"abc")
         dst = local_data / "pkg" / "alias.parquet"
 
-        monkeypatch.setattr("cli.lib.pull_sync.os.symlink",
-                            lambda *a, **kw: (_ for _ in ()).throw(OSError("a")))
-        monkeypatch.setattr("cli.lib.pull_sync.os.link",
-                            lambda *a, **kw: (_ for _ in ()).throw(OSError("b")))
+        monkeypatch.setattr("cli.lib.pull_sync.os.symlink", lambda *a, **kw: (_ for _ in ()).throw(OSError("a")))
+        monkeypatch.setattr("cli.lib.pull_sync.os.link", lambda *a, **kw: (_ for _ in ()).throw(OSError("b")))
         strategy = _link_or_copy(src, dst)
         assert strategy == "copy"
         assert dst.exists()
@@ -473,8 +613,10 @@ class TestInvariants:
         local_data.mkdir(parents=True, exist_ok=True)
         state, _ = sync_direct_tables(
             server_tables=[_table("t1", "orders")],
-            local_data_dir=local_data, prev_state={},
-            fetcher=server.make_fetcher(), md5_of=server.make_md5(),
+            local_data_dir=local_data,
+            prev_state={},
+            fetcher=server.make_fetcher(),
+            md5_of=server.make_md5(),
         )
         violations = audit_invariants(local_data, {"direct_tables": state})
         assert violations == []
@@ -518,7 +660,7 @@ class TestRunStackSync:
         )
         report = run_stack_sync(opts)
         assert report.direct_tables.added == 1
-        assert report.data_packages.added == 4   # 2 + 2 references
+        assert report.data_packages.added == 4  # 2 + 2 references
         assert report.memory_domains.added == 1
         # Unique parquets in _shared: t_direct, t1, t_cust, t_camp.
         shared_files = list((local_dir / "data" / "_shared").iterdir())
@@ -559,8 +701,10 @@ class TestRunStackSync:
             "memory_domains": [],
         }
         opts1 = PullStackOptions(
-            manifest=manifest_v1, local_dir=local_dir,
-            fetcher=server.make_fetcher(), md5_of=server.make_md5(),
+            manifest=manifest_v1,
+            local_dir=local_dir,
+            fetcher=server.make_fetcher(),
+            md5_of=server.make_md5(),
             bundle_fetcher=server.make_bundle_fetcher(),
         )
         run_stack_sync(opts1)
@@ -573,8 +717,10 @@ class TestRunStackSync:
             "memory_domains": [],
         }
         opts2 = PullStackOptions(
-            manifest=manifest_v2, local_dir=local_dir,
-            fetcher=server.make_fetcher(), md5_of=server.make_md5(),
+            manifest=manifest_v2,
+            local_dir=local_dir,
+            fetcher=server.make_fetcher(),
+            md5_of=server.make_md5(),
             bundle_fetcher=server.make_bundle_fetcher(),
         )
         report = run_stack_sync(opts2)
@@ -601,8 +747,10 @@ class TestRunStackSync:
             "memory_domains": [],
         }
         opts = PullStackOptions(
-            manifest=manifest, local_dir=local_dir,
-            fetcher=server.make_fetcher(), md5_of=server.make_md5(),
+            manifest=manifest,
+            local_dir=local_dir,
+            fetcher=server.make_fetcher(),
+            md5_of=server.make_md5(),
             bundle_fetcher=server.make_bundle_fetcher(),
         )
         run_stack_sync(opts)
@@ -615,6 +763,60 @@ class TestRunStackSync:
         # pkg-b has 9 references.
         b_files = list((local_dir / "data" / "pkg-b").iterdir())
         assert len(b_files) == 9
+
+    def test_skip_materialize_option_reaches_both_typed_sections(self, server, local_dir):
+        """#1304: `PullStackOptions.skip_materialize=True` must omit
+        materialized rows from BOTH `direct_tables` and `data_packages`."""
+        manifest = {
+            "direct_tables": [
+                _table("t_direct", "ops"),
+                _table("t_mat_direct", "big_direct", query_mode="materialized"),
+            ],
+            "data_packages": [
+                {
+                    "slug": "sales",
+                    "tables": [
+                        _table("t1", "orders"),
+                        _table("t_mat_pkg", "big_pkg", query_mode="materialized"),
+                    ],
+                },
+            ],
+            "memory_domains": [],
+        }
+        opts = PullStackOptions(
+            manifest=manifest,
+            local_dir=local_dir,
+            fetcher=server.make_fetcher(),
+            md5_of=server.make_md5(),
+            bundle_fetcher=server.make_bundle_fetcher(),
+            skip_materialize=True,
+        )
+        report = run_stack_sync(opts)
+        assert report.direct_tables.added == 1  # ops only, not big_direct
+        assert report.data_packages.added == 1  # orders only, not big_pkg
+        assert not (local_dir / "data" / "_direct" / "big_direct.parquet").exists()
+        assert not (local_dir / "data" / "sales" / "big_pkg.parquet").exists()
+        assert (local_dir / "data" / "_direct" / "ops.parquet").exists()
+        assert (local_dir / "data" / "sales" / "orders.parquet").exists()
+
+    def test_skip_materialize_defaults_to_false(self, server, local_dir):
+        """Counterpart: omitting `skip_materialize` on `PullStackOptions`
+        keeps the pre-existing behavior — a materialized row still syncs."""
+        manifest = {
+            "direct_tables": [_table("t_mat", "big_direct", query_mode="materialized")],
+            "data_packages": [],
+            "memory_domains": [],
+        }
+        opts = PullStackOptions(
+            manifest=manifest,
+            local_dir=local_dir,
+            fetcher=server.make_fetcher(),
+            md5_of=server.make_md5(),
+            bundle_fetcher=server.make_bundle_fetcher(),
+        )
+        report = run_stack_sync(opts)
+        assert report.direct_tables.added == 1
+        assert (local_dir / "data" / "_direct" / "big_direct.parquet").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -658,15 +860,21 @@ class TestSyncSanitizesTableNames:
         local_data.mkdir(parents=True, exist_ok=True)
         pkg = {"slug": "internal", "tables": [_table("agnes_audit", "Agnes audit log")]}
         state, report = sync_data_packages(
-            server_packages=[pkg], local_data_dir=local_data,
-            prev_state={}, fetcher=server.make_fetcher(), md5_of=server.make_md5(),
+            server_packages=[pkg],
+            local_data_dir=local_data,
+            prev_state={},
+            fetcher=server.make_fetcher(),
+            md5_of=server.make_md5(),
         )
         assert report.added == 1
         assert (local_data / "internal" / "Agnes_audit_log.parquet").exists()
         # Idempotent re-pull: no refetch, no error, state stable.
         state2, report2 = sync_data_packages(
-            server_packages=[pkg], local_data_dir=local_data,
-            prev_state=state, fetcher=server.make_fetcher(), md5_of=server.make_md5(),
+            server_packages=[pkg],
+            local_data_dir=local_data,
+            prev_state=state,
+            fetcher=server.make_fetcher(),
+            md5_of=server.make_md5(),
         )
         assert report2.added == 0
         assert report2.updated == 0
@@ -679,8 +887,11 @@ class TestSyncSanitizesTableNames:
         local_data.mkdir(parents=True, exist_ok=True)
         pkg = {"slug": "mixed", "tables": [_table("t_ok", "orders"), _table("t_bad", "///")]}
         state, report = sync_data_packages(
-            server_packages=[pkg], local_data_dir=local_data,
-            prev_state={}, fetcher=server.make_fetcher(), md5_of=server.make_md5(),
+            server_packages=[pkg],
+            local_data_dir=local_data,
+            prev_state={},
+            fetcher=server.make_fetcher(),
+            md5_of=server.make_md5(),
         )
         assert report.added == 1
         assert (local_data / "mixed" / "orders.parquet").exists()
@@ -699,8 +910,10 @@ class TestSyncSanitizesTableNames:
             shutil.rmtree(local_data / "sales", ignore_errors=True)
             state, report = sync_data_packages(
                 server_packages=[{"slug": "sales", "tables": order}],
-                local_data_dir=local_data, prev_state={},
-                fetcher=server.make_fetcher(), md5_of=server.make_md5(),
+                local_data_dir=local_data,
+                prev_state={},
+                fetcher=server.make_fetcher(),
+                md5_of=server.make_md5(),
             )
             # One table synced; no crash, no double-write.
             assert report.added == 1
@@ -718,16 +931,233 @@ class TestStackSyncSkipsPartitioned:
 
     def test_skip_remote(self):
         from cli.lib.pull_sync import _server_table_skip
-        assert _server_table_skip({"query_mode": "remote"}) is True
+
+        assert _server_table_skip({"query_mode": "remote"}) == "remote"
 
     def test_skip_partitioned(self):
         from cli.lib.pull_sync import _server_table_skip
-        assert _server_table_skip({
-            "query_mode": "local",
-            "parts": [{"path": "month=2026-06/data.parquet", "hash": "aa", "size_bytes": 1}],
-        }) is True
+
+        assert (
+            _server_table_skip(
+                {
+                    "query_mode": "local",
+                    "parts": [{"path": "month=2026-06/data.parquet", "hash": "aa", "size_bytes": 1}],
+                }
+            )
+            == "parts"
+        )
 
     def test_single_file_not_skipped(self):
         from cli.lib.pull_sync import _server_table_skip
-        assert _server_table_skip({"query_mode": "local"}) is False
-        assert _server_table_skip({"query_mode": "local", "parts": None}) is False
+
+        assert _server_table_skip({"query_mode": "local"}) is None
+        assert _server_table_skip({"query_mode": "local", "parts": None}) is None
+
+
+class TestStackSyncSkipsServerOnly:
+    """#1324: step 8 (typed `direct_tables` / `data_packages`) must skip
+    `server_only` rows the same way step 4's flat-`tables` loop already
+    does (`cli/lib/pull.py`'s `if info.get("server_only"): continue`), so
+    a server_only table is never downloaded into `.claude/data/_shared`."""
+
+    def test_skip_server_only(self):
+        from cli.lib.pull_sync import _server_table_skip
+
+        assert _server_table_skip({"query_mode": "local", "server_only": True}) == "server_only"
+
+    def test_server_only_false_not_skipped(self):
+        from cli.lib.pull_sync import _server_table_skip
+
+        assert _server_table_skip({"query_mode": "local", "server_only": False}) is None
+
+    def test_server_only_absent_not_skipped(self):
+        from cli.lib.pull_sync import _server_table_skip
+
+        assert _server_table_skip({"query_mode": "local"}) is None
+
+
+class TestStackSyncSkipsMaterializedWhenOptedIn:
+    """#1304: `agnes pull --skip-materialize` must reach the typed manifest
+    sections too, not just step 4's flat `tables` dict."""
+
+    def test_materialized_skipped_when_flag_set(self):
+        from cli.lib.pull_sync import _server_table_skip
+
+        assert _server_table_skip({"query_mode": "materialized"}, skip_materialize=True) == "materialized"
+
+    def test_materialized_not_skipped_by_default(self):
+        from cli.lib.pull_sync import _server_table_skip
+
+        assert _server_table_skip({"query_mode": "materialized"}) is None
+
+    def test_materialized_not_skipped_when_flag_explicitly_false(self):
+        from cli.lib.pull_sync import _server_table_skip
+
+        assert _server_table_skip({"query_mode": "materialized"}, skip_materialize=False) is None
+
+    def test_flag_does_not_affect_other_query_modes(self):
+        """skip_materialize=True must not accidentally widen to local/remote."""
+        from cli.lib.pull_sync import _server_table_skip
+
+        assert _server_table_skip({"query_mode": "local"}, skip_materialize=True) is None
+        assert _server_table_skip({"query_mode": "remote"}, skip_materialize=True) == "remote"  # already skipped anyway
+
+
+class TestStackSyncPrunesNewlyWithheldTables:
+    """A skipped-but-still-listed table must not leak on disk.
+
+    The to_delete loops only prune names absent from the server list, so a
+    previously synced table the server *still lists* but newly withholds
+    (flipped to server_only — the granted-but-not-materialized package
+    transition `app/api/sync.py` produces — or to remote) must be pruned at
+    the skip site. Silently dropping its state row instead would leave the
+    reference and the `_shared` parquet on disk forever with no handle left
+    for any later pull to remove them (Devin review on #1331)."""
+
+    def test_direct_table_flipped_to_server_only_is_pruned(self, server, local_dir):
+        local_data = local_dir / "data"
+        local_data.mkdir(parents=True, exist_ok=True)
+        state1, _ = sync_direct_tables(
+            server_tables=[_table("t1", "orders")],
+            local_data_dir=local_data,
+            prev_state={},
+            fetcher=server.make_fetcher(),
+            md5_of=server.make_md5(),
+        )
+        assert (local_data / "_shared" / "t1.parquet").exists()
+        state2, report = sync_direct_tables(
+            server_tables=[_table("t1", "orders", server_only=True)],
+            local_data_dir=local_data,
+            prev_state=state1,
+            fetcher=server.make_fetcher(),
+            md5_of=server.make_md5(),
+        )
+        assert report.removed == 1
+        assert "orders" not in state2
+        assert not (local_data / "_direct" / "orders.parquet").exists()
+        assert not (local_data / "_shared" / "t1.parquet").exists()
+
+    def test_direct_table_flipped_to_remote_is_pruned(self, server, local_dir):
+        local_data = local_dir / "data"
+        local_data.mkdir(parents=True, exist_ok=True)
+        state1, _ = sync_direct_tables(
+            server_tables=[_table("t1", "orders")],
+            local_data_dir=local_data,
+            prev_state={},
+            fetcher=server.make_fetcher(),
+            md5_of=server.make_md5(),
+        )
+        state2, report = sync_direct_tables(
+            server_tables=[_table("t1", "orders", query_mode="remote")],
+            local_data_dir=local_data,
+            prev_state=state1,
+            fetcher=server.make_fetcher(),
+            md5_of=server.make_md5(),
+        )
+        assert report.removed == 1
+        assert "orders" not in state2
+        assert not (local_data / "_direct" / "orders.parquet").exists()
+        assert not (local_data / "_shared" / "t1.parquet").exists()
+
+    def test_never_synced_server_only_table_is_a_plain_skip(self, server, local_dir):
+        """No prior state row → nothing to prune, nothing to report."""
+        local_data = local_dir / "data"
+        local_data.mkdir(parents=True, exist_ok=True)
+        state, report = sync_direct_tables(
+            server_tables=[_table("t1", "orders", server_only=True)],
+            local_data_dir=local_data,
+            prev_state={},
+            fetcher=server.make_fetcher(),
+            md5_of=server.make_md5(),
+        )
+        assert state == {}
+        assert report.added == report.updated == report.removed == 0
+        assert server.fetch_calls == []
+
+    def test_package_table_flipped_to_server_only_is_pruned(self, server, local_dir):
+        local_data = local_dir / "data"
+        local_data.mkdir(parents=True, exist_ok=True)
+        pkg = {"slug": "sales-bundle", "tables": [_table("t1", "orders")]}
+        state1, _ = sync_data_packages(
+            server_packages=[pkg],
+            local_data_dir=local_data,
+            prev_state={},
+            fetcher=server.make_fetcher(),
+            md5_of=server.make_md5(),
+        )
+        assert (local_data / "sales-bundle" / "orders.parquet").exists()
+        flipped = {"slug": "sales-bundle", "tables": [_table("t1", "orders", server_only=True)]}
+        state2, report = sync_data_packages(
+            server_packages=[flipped],
+            local_data_dir=local_data,
+            prev_state=state1,
+            fetcher=server.make_fetcher(),
+            md5_of=server.make_md5(),
+        )
+        assert report.removed == 1
+        assert state2["sales-bundle"] == {}
+        assert not (local_data / "sales-bundle" / "orders.parquet").exists()
+        assert not (local_data / "_shared" / "t1.parquet").exists()
+
+
+class TestSkipMaterializePreservesTrackedState:
+    """`--skip-materialize` is a fetch opt-out, not an unsubscribe: a
+    previously synced materialized table keeps both its files AND its state
+    row under the flag, so a later pull without the flag can still update
+    or prune the copy instead of orphaning it."""
+
+    def test_state_row_carried_forward_and_files_kept(self, server, local_dir):
+        local_data = local_dir / "data"
+        local_data.mkdir(parents=True, exist_ok=True)
+        t = _table("t1", "orders", query_mode="materialized")
+        state1, _ = sync_direct_tables(
+            server_tables=[t],
+            local_data_dir=local_data,
+            prev_state={},
+            fetcher=server.make_fetcher(),
+            md5_of=server.make_md5(),
+        )
+        state2, report = sync_direct_tables(
+            server_tables=[t],
+            local_data_dir=local_data,
+            prev_state=state1,
+            fetcher=server.make_fetcher(),
+            md5_of=server.make_md5(),
+            skip_materialize=True,
+        )
+        assert report.added == report.updated == report.removed == 0
+        assert state2["orders"] == state1["orders"]
+        assert (local_data / "_direct" / "orders.parquet").exists()
+        assert (local_data / "_shared" / "t1.parquet").exists()
+
+    def test_later_pull_without_flag_can_still_prune(self, server, local_dir):
+        local_data = local_dir / "data"
+        local_data.mkdir(parents=True, exist_ok=True)
+        t = _table("t1", "orders", query_mode="materialized")
+        state1, _ = sync_direct_tables(
+            server_tables=[t],
+            local_data_dir=local_data,
+            prev_state={},
+            fetcher=server.make_fetcher(),
+            md5_of=server.make_md5(),
+        )
+        state2, _ = sync_direct_tables(
+            server_tables=[t],
+            local_data_dir=local_data,
+            prev_state=state1,
+            fetcher=server.make_fetcher(),
+            md5_of=server.make_md5(),
+            skip_materialize=True,
+        )
+        # Server drops the table; the carried-forward row is the handle the
+        # to_delete loop needs.
+        state3, report = sync_direct_tables(
+            server_tables=[],
+            local_data_dir=local_data,
+            prev_state=state2,
+            fetcher=server.make_fetcher(),
+            md5_of=server.make_md5(),
+        )
+        assert report.removed == 1
+        assert not (local_data / "_direct" / "orders.parquet").exists()
+        assert not (local_data / "_shared" / "t1.parquet").exists()

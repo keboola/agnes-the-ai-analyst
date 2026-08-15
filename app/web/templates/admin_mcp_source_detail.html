@@ -330,6 +330,29 @@
     </div>
   </div>
 
+  <!-- Per-user secret coverage — who has connected their OWN credential for
+       this source, and when. Never the secret value. Independent of `scope`:
+       PUT …/my-secret is not scope-gated, so a source flipped away from
+       per_user can still carry rows here — worth showing, not hiding. -->
+  <div class="src-card">
+    <div class="src-card-head">
+      <h3>Per-user secret coverage</h3>
+      <span id="peruser-count" style="font-size: 12px; color: var(--ds-text-secondary);"></span>
+    </div>
+    <div class="src-card-body" style="padding:0;">
+      <table class="ds-table" id="peruser-table">
+        <thead>
+          <tr>
+            <th>User</th>
+            <th>Connected</th>
+          </tr>
+        </thead>
+        <tbody id="peruser-tbody"></tbody>
+      </table>
+      <div id="peruser-empty" class="empty-row">No analyst has connected their own secret for this source yet.</div>
+    </div>
+  </div>
+
   <!-- Your connection card — per_user sources only. Same my-secret API the
        /me/connections page uses, surfaced inline so an admin can register,
        connect their own token, and introspect without leaving this page.
@@ -514,14 +537,45 @@ function renderConfigSummary() {
   document.getElementById("cfg-auth-secret-env").textContent = source.auth_secret_env || "—";
   document.getElementById("cfg-enabled").textContent = (source.enabled === false) ? "no" : "yes";
   renderSecretStatus();
+  renderPerUserCoverage();
   renderMyConnection();
+}
+
+// Who has connected their OWN secret for this source, and when — identity +
+// timestamp only, straight off the GET detail payload's `per_user_secrets`
+// (never a secret value; the server never returns one).
+function renderPerUserCoverage() {
+  const tbody = document.getElementById("peruser-tbody");
+  const empty = document.getElementById("peruser-empty");
+  const count = document.getElementById("peruser-count");
+  if (!tbody || !empty || !count) return;
+  const rows = (source && Array.isArray(source.per_user_secrets)) ? source.per_user_secrets : [];
+  count.textContent = rows.length ? `${rows.length} user(s)` : "";
+  if (!rows.length) {
+    tbody.innerHTML = "";
+    empty.style.display = "block";
+    return;
+  }
+  empty.style.display = "none";
+  tbody.innerHTML = "";
+  for (const r of rows) {
+    const tr = document.createElement("tr");
+    const label = r.name || r.email || r.user_id;
+    const emailSuffix = (r.email && r.name) ? ` <span style="color:var(--ds-text-muted)">(${esc(r.email)})</span>` : "";
+    const since = r.updated_at ? esc(r.updated_at.slice(0, 10)) : "—";
+    tr.innerHTML = `<td>${esc(label)}${emailSuffix}</td><td>${since}</td>`;
+    tbody.appendChild(tr);
+  }
 }
 
 function renderSecretStatus() {
   const el = document.getElementById("secret-status");
   if (!el || !source) return;
   if (source.has_vault_secret) {
-    el.textContent = "Vault secret set";
+    // Same "(since YYYY-MM-DD)" convention renderMyConnection() below already
+    // uses for the per-user connection card — one date format on this page.
+    const since = source.vault_secret_updated_at ? ` (since ${source.vault_secret_updated_at.slice(0, 10)})` : "";
+    el.textContent = "Vault secret set" + since;
     el.style.color = "var(--ds-accent-success-ink)";
   } else if (source.auth_secret_env) {
     el.textContent = `Host env var (legacy): ${source.auth_secret_env}`;
