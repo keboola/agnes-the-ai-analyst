@@ -112,7 +112,7 @@ def proxy_env(e2e_env, monkeypatch):
     from fastapi.testclient import TestClient
 
     client = TestClient(app)
-    return {"client": client, "owner_pat": pats["owner1"], "other_pat": pats["other1"], "data_dir": data_dir}
+    return {"client": client, "app": app, "owner_pat": pats["owner1"], "other_pat": pats["other1"], "data_dir": data_dir}
 
 
 def _set_data_apps_config(data_dir, **overrides) -> None:
@@ -497,7 +497,7 @@ def test_error_state_returns_409_with_detail(client_granted, fake_runner):
     assert r.json()["state_detail"] == "boom"
 
 
-def test_running_app_upstream_unreachable_sets_error(client_granted, fake_runner, monkeypatch, running_app):
+def _refuse_connections(monkeypatch):
     import app.api.data_apps_proxy as proxy_api
 
     def _broken_client():
@@ -508,12 +508,60 @@ def test_running_app_upstream_unreachable_sets_error(client_granted, fake_runner
 
     monkeypatch.setattr(proxy_api, "_upstream_client", _broken_client)
 
+
+def test_unreachable_while_the_container_is_up_does_not_latch_error(
+    client_granted, fake_runner, monkeypatch, running_app
+):
+    """A container that is up but not yet listening is STARTING, not broken.
+
+    `error` is a latch — nothing clears it but a redeploy — so latching on a
+    refused connection let one badly-timed request brick a healthy app. The
+    window is wide: a first deploy clones, installs and builds before
+    anything listens, while the row reads `running` from the moment the
+    runner accepted the container. Watched live on a running instance: the
+    app served 200 inside its container while Agnes answered `app_error /
+    container unreachable` to every caller.
+    """
+    fake_runner._status = {"container": "running", "ready": False}
+    _refuse_connections(monkeypatch)
+
+    r = client_granted.get("/apps/s/hello")
+    assert r.status_code == 503, "a starting app gets the waking page, not an error"
+
+    from src.repositories import data_apps_repo
+
+    assert data_apps_repo().get_by_slug("s")["state"] == "running", "state must not be latched"
+
+
+def test_unreachable_with_a_dead_container_still_sets_error(client_granted, fake_runner, monkeypatch, running_app):
+    """The latch is still right when the container is genuinely gone."""
+    fake_runner._status = {"container": "stopped", "ready": False}
+    _refuse_connections(monkeypatch)
+
     r = client_granted.get("/apps/s/hello")
     assert r.status_code == 502
 
     from src.repositories import data_apps_repo
 
-    assert data_apps_repo().get_by_slug("s")["state"] == "error"
+    row = data_apps_repo().get_by_slug("s")
+    assert row["state"] == "error"
+    assert "stopped" in (row["state_detail"] or ""), "the detail should name what the container was"
+
+
+def test_unreachable_with_a_dead_runner_says_nothing_about_the_app(
+    client_granted, dead_runner, monkeypatch, running_app
+):
+    """If the runner itself is down we know nothing about the container, and
+    guessing `error` would blame the app for the sidecar's outage — with a
+    latch the user can only clear by redeploying."""
+    _refuse_connections(monkeypatch)
+
+    r = client_granted.get("/apps/s/hello")
+    assert r.status_code == 502
+
+    from src.repositories import data_apps_repo
+
+    assert data_apps_repo().get_by_slug("s")["state"] == "running"
 
 
 def test_get_apps_slug_redirects_to_trailing_slash(client_granted, running_app):
@@ -709,6 +757,9 @@ def test_preview_token_authorizes_iframe(proxy_client, fake_runner, respx_upstre
     tok = mint_preview("s", ttl_s=1800)
     r = proxy_client.get("/apps/s/hello", headers={"cookie": tok.cookie})
     assert r.status_code == 200, r.text
+    # Body, not just status: a 401 here is redirected to `/login`, which also
+    # answers 200, so status alone passes whether or not the token was read.
+    assert r.text == "hello from app"
 
 
 def test_expired_preview_token_403(proxy_client, running_app, mint_preview):
@@ -752,3 +803,391 @@ def test_stranger_with_no_token_at_all_gets_401(proxy_client, running_app):
     r = proxy_client.get("/apps/s/", follow_redirects=False)
     assert r.status_code == 302
     assert r.headers["location"].startswith("/login")
+
+
+def test_a_live_but_silent_container_latches_once_the_grace_window_passes(
+    client_granted, fake_runner, monkeypatch, running_app
+):
+    """ "Starting" has to be time-bounded.
+
+    The runner reports `running | paused | stopped | absent`, so a container
+    whose app process died or wedged WITHOUT the container exiting still
+    reads `running`. Treating that as "starting" forever would trade a
+    permanent latch for a permanent spinner — no better, and harder to
+    diagnose (Devin Review on this PR).
+    """
+    from datetime import datetime, timedelta, timezone
+
+    import app.api.data_apps_proxy as proxy_api
+    from src.repositories import data_apps_repo
+
+    fake_runner._status = {"container": "running", "ready": False}
+    _refuse_connections(monkeypatch)
+    monkeypatch.setattr(
+        proxy_api,
+        "_within_start_grace",
+        lambda row: False,
+        raising=True,
+    )
+
+    r = client_granted.get("/apps/s/hello")
+    assert r.status_code == 502
+    row = data_apps_repo().get_by_slug("s")
+    assert row["state"] == "error"
+    assert "not listening" in (row["state_detail"] or ""), "the detail must not blame the container's state"
+    _ = (datetime, timedelta, timezone)
+
+
+def test_a_paused_container_wakes_instead_of_latching(client_granted, fake_runner, monkeypatch, running_app):
+    """`paused` is the pause-mode sleep state, not a fault — recording an
+    error there would make the caller redeploy to clear something that only
+    needed a resume."""
+    from src.repositories import data_apps_repo
+
+    fake_runner._status = {"container": "paused", "ready": False}
+    _refuse_connections(monkeypatch)
+
+    r = client_granted.get("/apps/s/hello")
+    assert r.status_code == 503, "a paused app gets the waking page"
+    assert data_apps_repo().get_by_slug("s")["state"] != "error"
+
+
+def test_the_grace_window_reads_the_deploy_timestamp():
+    """Measured from when the boot began, not from now-ish defaults."""
+    from datetime import datetime, timedelta, timezone
+
+    from app.api.data_apps_proxy import _within_start_grace
+
+    fresh = datetime.now(timezone.utc) - timedelta(seconds=5)
+    stale = datetime.now(timezone.utc) - timedelta(hours=3)
+    assert _within_start_grace({"last_deploy_at": fresh}) is True
+    assert _within_start_grace({"last_deploy_at": stale}) is False
+    assert _within_start_grace({"last_deploy_at": None, "updated_at": fresh}) is True
+    # A naive stamp from a DB session ahead of UTC lands in the "future";
+    # the window is symmetric so a clock offset either way still reads as
+    # recent rather than instantly expired (Devin Review on this PR).
+    future = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(minutes=2)
+    assert _within_start_grace({"last_deploy_at": future}) is True
+    # No clock at all → not provably still starting.
+    assert _within_start_grace({}) is False
+    assert _within_start_grace({"last_deploy_at": "not-a-timestamp"}) is False
+
+
+def test_the_grace_window_follows_a_wake_not_only_a_deploy():
+    """`last_deploy_at` is written only by `POST /{slug}/deploy`; the auto-wake
+    path never refreshes it. Measuring from it alone would give a woken app a
+    grace computed from a deploy days old, so the first refused connection
+    after a wake would latch instead of holding (Devin Review on this PR)."""
+    from datetime import datetime, timedelta, timezone
+
+    from app.api.data_apps_proxy import _within_start_grace
+
+    old_deploy = datetime.now(timezone.utc) - timedelta(days=3)
+    just_woken = datetime.now(timezone.utc) - timedelta(seconds=10)
+    assert _within_start_grace({"last_deploy_at": old_deploy, "updated_at": just_woken}) is True
+    # ...and a stale row on both clocks is still out of grace.
+    assert _within_start_grace({"last_deploy_at": old_deploy, "updated_at": old_deploy}) is False
+
+
+def test_a_preview_token_can_poll_readiness(proxy_client, fake_runner, running_app, mint_preview):
+    """The holding page's poll must work for the credential the holding page
+    is served to.
+
+    `_waking_response` is rendered by the proxy, which accepts a
+    `data-app-preview:<slug>` token — but `/readiness`, the endpoint its poll
+    loop hits, resolved through `get_current_user`, which rejects that scope
+    outright. So an in-chat preview iframe got a holding page whose poll 401'd
+    forever and never noticed the app come up (Devin Review on this PR).
+    """
+    tok = mint_preview("s", ttl_s=1800)
+    r = proxy_client.get("/api/data-apps/s/readiness", headers={"cookie": tok.cookie})
+    assert r.status_code == 200, r.text
+    assert "ready" in r.json()
+
+
+def test_the_preview_cookie_is_scoped_to_a_path_the_poll_actually_uses(mint_preview, running_app):
+    """The sibling test above sets `cookie:` by hand, so it passes under ANY
+    `Path=` — including one a browser would never send.
+
+    That is not a nitpick: the cookie was minted `Path=/apps/<slug>/` while the
+    holding page polls `/api/data-apps/<slug>/readiness`. A browser only
+    attaches a cookie whose `Path` is a prefix of the request path, so the real
+    poll went out with no credential, 401'd, and the template's `catch`
+    swallowed it — the preview spun forever while the app was up, which is the
+    exact failure the preview scope was added to fix (Devin Review on this PR).
+
+    So assert the scoping itself, against the URL the page really polls.
+    """
+    from http.cookies import SimpleCookie
+
+    from app.api.data_apps import preview_cookie_name
+    from app.api.data_apps_proxy import _readiness_poll_url
+
+    cookie = SimpleCookie()
+    cookie.load(mint_preview("s", ttl_s=1800).cookie)
+    path = cookie[preview_cookie_name("s")]["path"]
+
+    poll_url = _readiness_poll_url(_FakeRequest(subdomain=False), "s")
+    assert poll_url.startswith(path), (
+        f"cookie Path={path!r} does not cover the readiness poll {poll_url!r} — "
+        "a browser will not attach the credential"
+    )
+    # The pin that makes the wide path safe lives in the token scope, not here.
+    assert "HttpOnly" in mint_preview("s").cookie
+
+
+class _FakeRequest:
+    """Minimal stand-in for `_readiness_poll_url`'s only input."""
+
+    def __init__(self, *, subdomain: bool) -> None:
+        self.scope = {"agnes_data_app_subdomain": subdomain}
+
+
+def test_a_preview_token_for_another_app_cannot_poll_readiness(proxy_client, fake_runner, running_app, mint_preview):
+    """The scope pin is what makes skipping the grant check safe."""
+    _create_app_row(slug="other2", state="running")
+    tok = mint_preview("other2", ttl_s=1800)
+    r = proxy_client.get("/api/data-apps/s/readiness", headers={"cookie": tok.cookie}, follow_redirects=False)
+    assert r.status_code in (401, 403), r.text
+
+
+def test_a_legacy_named_preview_cookie_still_authorizes(
+    proxy_client, fake_runner, respx_upstream, running_app, mint_preview
+):
+    """A preview open across the upgrade that introduced the per-app cookie
+    name must not break: its browser holds the credential under the old bare
+    `adp_preview` name, and the token behind it is still valid for the rest of
+    its TTL. The reader accepts either name; the scope check is what decides.
+
+    Asserted on the upstream's own body, not just a 200: a 401 on this path is
+    turned into a redirect to `/login` by the app-wide browser-friendly error
+    handler, and that page answers 200 too — so status alone would pass
+    whether or not the cookie was ever read.
+    """
+    tok = mint_preview("s", ttl_s=1800)
+    r = proxy_client.get("/apps/s/hello", headers={"cookie": f"adp_preview={tok.jwt}"})
+    assert r.status_code == 200, r.text
+    assert r.text == "hello from app", "served the login page, not the app — the cookie was not accepted"
+
+
+def test_a_legacy_named_cookie_is_still_pinned_to_its_own_slug(proxy_client, fake_runner, running_app, mint_preview):
+    """The rollout fallback must not become a way around the slug pin."""
+    _create_app_row(slug="other3", state="running")
+    tok = mint_preview("other3", ttl_s=1800)
+    r = proxy_client.get(
+        "/api/data-apps/s/readiness", headers={"cookie": f"adp_preview={tok.jwt}"}, follow_redirects=False
+    )
+    assert r.status_code in (401, 403), r.text
+
+
+def test_an_anonymous_probe_cannot_tell_a_real_slug_from_a_missing_one(proxy_client, running_app):
+    """Readiness must resolve the caller BEFORE the registry read.
+
+    With auth moved from the `Depends` chain into the handler body, a
+    lookup-first ordering answered an anonymous `GET /readiness` 404 for a
+    made-up slug and 401 for a real one — a credential-free way to enumerate
+    which hosted apps exist on the instance (Devin Review on this PR). Both
+    must answer the same 401 the old `Depends(get_current_user)` signature
+    enforced.
+    """
+    real = proxy_client.get("/api/data-apps/s/readiness", follow_redirects=False)
+    fake = proxy_client.get("/api/data-apps/no-such-app/readiness", follow_redirects=False)
+    assert real.status_code == 401, real.text
+    assert fake.status_code == 401, (
+        f"an unknown slug answered {fake.status_code} while a real one answers 401 — "
+        "anonymous callers can enumerate app slugs"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Subdomain-mode readiness CORS — route-scoped, per-app, never app-wide.
+# ---------------------------------------------------------------------------
+
+
+def test_readiness_answers_cors_for_the_apps_own_subdomain_origin(
+    proxy_client, proxy_env, fake_runner, running_app, mint_preview
+):
+    """On a subdomain-served instance the holding page lives on
+    `https://<slug>.<base>` and its poll must be able to READ the readiness
+    JSON from the main host — a credentialed cross-origin simple GET, so the
+    response headers are the entire CORS surface needed."""
+    tok = mint_preview("s", ttl_s=1800)
+
+    # No subdomain_base configured -> no CORS grant, even for a matching shape.
+    r = proxy_client.get(
+        "/api/data-apps/s/readiness",
+        headers={"cookie": tok.cookie, "origin": "https://s.apps.example.com"},
+    )
+    assert r.status_code == 200, r.text
+    assert "access-control-allow-origin" not in r.headers
+
+    _set_data_apps_config(proxy_env["data_dir"], subdomain_base="apps.example.com")
+    r = proxy_client.get(
+        "/api/data-apps/s/readiness",
+        headers={"cookie": tok.cookie, "origin": "https://s.apps.example.com"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.headers.get("access-control-allow-origin") == "https://s.apps.example.com"
+    assert r.headers.get("access-control-allow-credentials") == "true"
+    assert "origin" in (r.headers.get("vary") or "").lower()
+
+
+def test_readiness_cors_is_pinned_to_the_apps_own_origin(
+    proxy_client, proxy_env, fake_runner, running_app, mint_preview
+):
+    """A sibling app's subdomain — user-authored code — must not be able to
+    read another app's readiness, and non-subdomain origins get nothing."""
+    _set_data_apps_config(proxy_env["data_dir"], subdomain_base="apps.example.com")
+    tok = mint_preview("s", ttl_s=1800)
+    for origin in (
+        "https://other.apps.example.com",  # a sibling app's own origin
+        "https://evil.example.com",
+        "https://s.apps.example.com.evil.com",  # suffix-spoof
+        "ftp://s.apps.example.com",
+    ):
+        r = proxy_client.get(
+            "/api/data-apps/s/readiness",
+            headers={"cookie": tok.cookie, "origin": origin},
+        )
+        assert r.status_code == 200, r.text
+        assert "access-control-allow-origin" not in r.headers, f"origin {origin} must not be CORS-readable"
+        # Refusals still declare the answer varies by Origin: without it, a
+        # URL-keyed cache could store THIS header-less variant and replay it
+        # to the app's own origin, wedging the holding page (Devin on #1321).
+        # Substring: GZipMiddleware folds its own "Accept-Encoding" into Vary.
+        assert "Origin" in r.headers.get("vary", ""), f"origin {origin} refusal must still carry Vary: Origin"
+
+
+def test_readiness_cors_grant_is_withheld_under_wildcard_cors(
+    proxy_client, proxy_env, fake_runner, running_app, mint_preview, monkeypatch
+):
+    """With CORS_ORIGINS='*' the app-wide middleware stamps a credential-less
+    `ACAO: *` over handler headers while a handler-set `Allow-Credentials`
+    would survive — a browser-invalid pair. The helper withholds the grant
+    entirely (the poll is broken under the wildcard either way; main.py logs
+    a dedicated error), leaving only `Vary: Origin` (Devin on #1321)."""
+    _set_data_apps_config(proxy_env["data_dir"], subdomain_base="apps.example.com")
+    # The verdict is captured on app.state at build time (same read the
+    # middleware sees); flip it there — a request-time env change must NOT
+    # move the helper, that divergence is the bug this pins.
+    proxy_env["app"].state.cors_has_wildcard = True
+    tok = mint_preview("s", ttl_s=1800)
+    r = proxy_client.get(
+        "/api/data-apps/s/readiness",
+        headers={"cookie": tok.cookie, "origin": "https://s.apps.example.com"},
+    )
+    assert r.status_code == 200, r.text
+    # The grant marker is Allow-ORIGIN: the app-wide middleware contributes a
+    # bare Allow-Credentials on every Origin-carrying response under an
+    # explicit-origins config (Starlette puts it in simple_headers), which is
+    # inert without a matching Allow-Origin — what must NOT appear is the
+    # helper's per-app origin echo.
+    assert "access-control-allow-origin" not in r.headers
+    assert "Origin" in r.headers.get("vary", "")
+
+
+def test_data_app_subdomains_get_no_app_wide_cors(proxy_env):
+    """The one readable response is the readiness poll's — NOT every endpoint.
+
+    The first cut allowed `*.{subdomain_base}` app-wide via CORSMiddleware's
+    `allow_origin_regex` with `allow_credentials=True`. Data-app subdomains
+    serve user-authored JS, and the session cookie already rides from them to
+    the main host (`Domain=.<parent>`, same-site) — so that policy let any
+    hosted app's code read every authenticated Agnes endpoint as its viewer
+    (Devin Review on this PR). The middleware must not reflect those origins
+    even when `subdomain_base` is configured at app-build time.
+    """
+    from fastapi.testclient import TestClient
+
+    from app.main import create_app
+
+    _set_data_apps_config(proxy_env["data_dir"], subdomain_base="apps.example.com")
+    _create_app_row(slug="corsapp", state="created")
+    client = TestClient(create_app())
+
+    r = client.get(
+        "/api/data-apps/corsapp",
+        headers={"Authorization": f"Bearer {proxy_env['owner_pat']}", "origin": "https://corsapp.apps.example.com"},
+    )
+    assert r.status_code == 200, r.text
+    assert "access-control-allow-origin" not in r.headers, (
+        "an authenticated control-plane response is CORS-readable from a data-app "
+        "subdomain — the app-wide credentialed origin grant is back"
+    )
+
+
+def test_a_slug_that_would_break_the_cookie_header_is_refused(mint_preview, running_app):
+    """The slug is interpolated into a `Set-Cookie` NAME, so it is re-checked
+    at mint rather than trusted to have come from a validated create — a
+    header assembled from an unvalidated name is the shape CRLF injection
+    needs. Refusing is right here: there is no safe cookie to emit, and
+    silently mangling the name would hand back a credential no request can
+    ever carry.
+
+    And the refusal must be SIDE-EFFECT-FREE: the check first ran after the
+    JWT was minted and the `access_tokens` row persisted, so each rejected
+    slug below left a live, orphaned 30-minute credential in the DB that
+    nothing would ever hand out or revoke (Devin Review on this PR).
+    """
+    from app.api.data_apps import _mint_preview_token
+    from src.repositories import access_token_repo, data_apps_repo, users_repo
+
+    row = dict(data_apps_repo().get_by_slug("s"))
+    requester = users_repo().get_by_id(row["owner_user_id"])
+    for bad in ("s\r\nSet-Cookie: admin=1", "s; Domain=evil.example.com", "s=x", "s app"):
+        row["slug"] = bad
+        with pytest.raises(ValueError):
+            _mint_preview_token(row, requester)
+
+    orphans = [
+        t
+        for t in access_token_repo().list_for_user(requester["id"], include_revoked=False)
+        if (t.get("name") or "").startswith("data-app-preview:")
+    ]
+    assert orphans == [], f"a refused mint must not leave a live credential row behind: {orphans}"
+
+
+def test_the_waking_page_polls_a_relative_url_on_the_path_form(client_granted, fake_runner, sleeping_app):
+    """No host pinned into the page when it is not needed."""
+    r = client_granted.get("/apps/s/", headers={"accept": "text/html"})
+    assert r.status_code == 503
+    assert 'fetch("/api/data-apps/s/readiness", { credentials: "include" })' in r.text
+
+
+def test_the_waking_page_polls_an_absolute_url_on_a_subdomain(monkeypatch):
+    """`DataAppSubdomainMiddleware` rewrites EVERY path on `<slug>.<base>` to
+    `/apps/<slug>/…` with no `/api` carve-out, so a relative poll came back as
+    this very page: `r.json()` threw, the `catch` swallowed it, and the page
+    spun forever while the app was up (Devin Review on this PR).
+
+    A middleware carve-out would be the wrong fix — an app may serve its own
+    `/api/*`, as the scaffolded dashboard does.
+    """
+    import app.instance_config as public_url_mod
+    from app.api.data_apps_proxy import _readiness_poll_url
+
+    monkeypatch.setattr(public_url_mod, "get_public_url", lambda: "https://agnes.example.com/", raising=True)
+
+    class _Req:
+        scope = {"agnes_data_app_subdomain": "s"}
+
+    assert _readiness_poll_url(_Req(), "s") == "https://agnes.example.com/api/data-apps/s/readiness"
+
+    class _PathReq:
+        scope: dict = {}
+
+    assert _readiness_poll_url(_PathReq(), "s") == "/api/data-apps/s/readiness"
+
+
+def test_the_subdomain_poll_falls_back_rather_than_guessing_a_host(monkeypatch):
+    """With no configured public URL there is nothing to point at — keep the
+    previous (relative) behaviour instead of inventing an origin."""
+    import app.instance_config as public_url_mod
+    from app.api.data_apps_proxy import _readiness_poll_url
+
+    monkeypatch.setattr(public_url_mod, "get_public_url", lambda: "", raising=True)
+
+    class _Req:
+        scope = {"agnes_data_app_subdomain": "s"}
+
+    assert _readiness_poll_url(_Req(), "s") == "/api/data-apps/s/readiness"

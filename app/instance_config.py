@@ -795,6 +795,34 @@ def get_instance_subtitle() -> str:
     return get_value("instance", "subtitle", default="")
 
 
+def get_instance_copyright() -> str:
+    """Attribution for the shared page footer — the organization that *deploys*
+    this instance, rendered as "Deployed by {value}".
+
+    Three-way distinct from its neighbours: :func:`get_instance_name` is the
+    deployment's display name (page titles, email subjects),
+    :func:`get_instance_brand` is the *product* (which the footer renders on
+    its own left side), and this is the *operator credit*.
+
+    The empty default is load-bearing: the footer omits the attribution line
+    entirely rather than falling back to a name nobody chose, which keeps the
+    OSS distribution vendor-neutral. Mirrors :func:`get_instance_support`.
+
+    ``instance.copyright`` shipped in ``instance.yaml.example`` and every
+    footer template read it as ``config.INSTANCE_COPYRIGHT`` long before this
+    resolver existed — but the context builder hardcoded ``""``, so the YAML
+    key was inert and every chrome rendered the literal ``'AI Harness'``
+    fallback no matter what the operator configured.
+
+    Resolution: ``AGNES_INSTANCE_COPYRIGHT`` env > ``instance.copyright``
+    YAML > ``""``.
+    """
+    raw = os.environ.get("AGNES_INSTANCE_COPYRIGHT")
+    if raw is None:
+        raw = get_value("instance", "copyright", default="")
+    return (raw or "").strip()
+
+
 def get_instance_brand() -> str:
     """Product-name brand string surfaced to end users in the analyst-facing
     UI (``/home`` hero copy, ``/setup``, ``/login``, the clipboard setup

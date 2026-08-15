@@ -68,6 +68,14 @@
     {# A Collection is a CONTAINER of files — draw two overlapping sheets, not a
        single document, so it never reads as one file (see #896 Artefacts). #}
     <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M9 7h6l4 4v9a1 1 0 0 1-1 1H9a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M15 7v4h4" stroke="currentColor" stroke-width="1.6"/><path d="M6 16H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h6l1 1" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  {%- elif kind == 'app' -%}
+    {# A hosted data app — a browser window with a title bar. Deliberately not
+       the 'plugins' puzzle piece (that reads as "extends something else") and
+       not 'doc': this is a running thing you open, not a file you read. Also
+       deliberately NOT the four-tile grid: that shape is the toolbar's
+       grid-view toggle on this very page, and one glyph must not mean both
+       "a data app" and "switch layout". #}
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5" stroke="currentColor" stroke-width="1.6"/><path d="M3.5 9h17" stroke="currentColor" stroke-width="1.6"/><circle cx="6.6" cy="6.8" r="0.9" fill="currentColor"/></svg>
   {%- elif kind == 'doc' -%}
     {# Single document — a one-file artefact presented AS the file (see the
        adaptive `_catalog_card_upload`); distinct from the two-sheet library. #}

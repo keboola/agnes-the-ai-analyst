@@ -482,12 +482,10 @@
       {{ knowledge_layer_banner(orient_label='See how ' ~ (instance_brand_short or 'Agnes') ~ ' works') }}
     </div>
 
-    {# Footer credit — pinned to the very bottom of the page. Config-driven
-       (INSTANCE_COPYRIGHT): the public distribution carries no vendor
-       branding — an instance puts its own name here via config. #}
-    <footer class="cloud-chat-empty-foot">
-      <p class="footer-copy">&copy; {{ now().year if now is defined else 2026 }} {{ config.INSTANCE_COPYRIGHT or 'AI Harness' }}</p>
-    </footer>
+    {# Shared footer partial, pinned to the very bottom of the empty state.
+       `footer_class` keeps the `.cloud-chat-empty-foot` rules (rail ordering,
+       margin-top:auto, muted 12.5px type) on the element. See _footer.html. #}
+    {% with footer_class = 'cloud-chat-empty-foot' %}{% include '_footer.html' %}{% endwith %}
   </section>
 </div>
 {% endblock %}

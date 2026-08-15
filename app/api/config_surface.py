@@ -62,6 +62,13 @@ _KNOB_CATALOGUE: list[dict[str, Any]] = [
         "default": "",
     },
     {
+        "key": "instance_copyright",
+        "resolver": "get_instance_copyright",
+        "env_var": "AGNES_INSTANCE_COPYRIGHT",
+        "yaml_path": "instance.copyright",
+        "default": "",
+    },
+    {
         "key": "instance_brand",
         "resolver": "get_instance_brand",
         "env_var": "AGNES_INSTANCE_BRAND",

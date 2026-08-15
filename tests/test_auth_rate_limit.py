@@ -8,7 +8,6 @@ order-dependence. Limits live in ``app.auth.providers.*`` and
 
 from __future__ import annotations
 
-import os
 import tempfile
 import uuid
 
@@ -21,6 +20,7 @@ def fresh_db(monkeypatch):
     with tempfile.TemporaryDirectory() as tmp:
         monkeypatch.setenv("DATA_DIR", tmp)
         from src.db import close_system_db
+
         close_system_db()
         yield tmp
         close_system_db()
@@ -33,9 +33,11 @@ def app_with_ratelimit(monkeypatch, fresh_db):
     monkeypatch.setenv("JWT_SECRET_KEY", "test-jwt-secret-key-minimum-32-chars!!")
     monkeypatch.setenv("AGNES_AUTH_RATELIMIT_ENABLED", "1")
     from app.auth.rate_limit import limiter
+
     limiter.enabled = True
     limiter.reset()
     from app.main import app
+
     return TestClient(app)
 
 
@@ -44,20 +46,22 @@ def _seed_admin(fresh_db, password: str | None = None):
     from src.db import SYSTEM_ADMIN_GROUP, get_system_db
     from src.repositories.user_group_members import UserGroupMembersRepository
     from src.repositories.users import UserRepository
+
     conn = get_system_db()
     try:
         uid = str(uuid.uuid4())
         password_hash = None
         if password:
             from argon2 import PasswordHasher
+
             password_hash = PasswordHasher().hash(password)
         UserRepository(conn).create(
-            id=uid, email="admin@test", name="Admin",
+            id=uid,
+            email="admin@test",
+            name="Admin",
             password_hash=password_hash,
         )
-        admin_gid = conn.execute(
-            "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP]
-        ).fetchone()[0]
+        admin_gid = conn.execute("SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP]).fetchone()[0]
         UserGroupMembersRepository(conn).add_member(uid, admin_gid, source="system_seed")
         return uid
     finally:
@@ -97,6 +101,18 @@ def test_email_send_link_rate_limited_after_5_requests(app_with_ratelimit, fresh
     assert statuses[5] == 429, f"expected 6th request to 429, got {statuses[5]}"
 
 
+def test_email_send_link_web_shares_budget_with_json(app_with_ratelimit, fresh_db):
+    """The JSON /send-link and the HTML-form /send-link/web must share ONE
+    5/min bucket (slowapi shared_limit scope), or an abuser gets 10/min to the
+    same address by alternating endpoints (Devin review on #1288). Five JSON
+    calls exhaust the budget; the very next /send-link/web call 429s."""
+    for i in range(5):
+        assert app_with_ratelimit.post("/auth/email/send-link", json={"email": f"v{i}@example.com"}).status_code == 200
+    # Budget spent — the web variant, sharing the same scope, must 429.
+    resp = app_with_ratelimit.post("/auth/email/send-link/web", data={"email": "v-web@example.com"})
+    assert resp.status_code == 429, f"expected shared-budget 429 on the web variant, got {resp.status_code}"
+
+
 def test_bootstrap_rate_limited_after_3_requests(app_with_ratelimit, fresh_db):
     """4th /auth/bootstrap inside the per-minute window → 429.
 
@@ -113,9 +129,7 @@ def test_bootstrap_rate_limited_after_3_requests(app_with_ratelimit, fresh_db):
     # First request 200 (bootstrap path), subsequent 403 (already bootstrapped),
     # but the count includes ALL requests — 4th must be 429 regardless of
     # business-logic outcome of requests 2-3.
-    assert statuses[3] == 429, (
-        f"expected 4th /bootstrap to 429, got {statuses[3]} (full sequence: {statuses})"
-    )
+    assert statuses[3] == 429, f"expected 4th /bootstrap to 429, got {statuses[3]} (full sequence: {statuses})"
 
 
 def test_password_reset_rate_limited_after_5_requests(app_with_ratelimit, fresh_db):
@@ -214,9 +228,11 @@ def test_rate_limit_disabled_via_env(monkeypatch, fresh_db):
     monkeypatch.setenv("TESTING", "1")
     monkeypatch.setenv("JWT_SECRET_KEY", "test-jwt-secret-key-minimum-32-chars!!")
     from app.auth.rate_limit import limiter
+
     limiter.enabled = False  # mirrors what the env-var would do at module load
     limiter.reset()
     from app.main import app
+
     client = TestClient(app)
     statuses = [
         client.post(

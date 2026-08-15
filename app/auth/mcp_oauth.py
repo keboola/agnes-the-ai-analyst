@@ -656,12 +656,20 @@ def _login_url(request: Request, pending: str) -> str:
     base = _base_url(request=request)
     consent_path = f"/api/mcp/oauth/consent?pending={pending}"
     # Prefer Google OAuth if available, fall back to email magic-link.
+    from app.auth.provider_registry import provider_allowed
     from app.auth.providers.google import is_available as google_available
 
-    if google_available():
+    if google_available() and provider_allowed("google"):
         from urllib.parse import quote
 
         return f"{base}/auth/google/login?next={quote(consent_path)}"
+
+    from app.auth.providers.keboola import is_available as keboola_available
+
+    if keboola_available() and provider_allowed("keboola"):
+        from urllib.parse import quote
+
+        return f"{base}/auth/keboola/login?next={quote(consent_path)}"
     from urllib.parse import quote
 
     return f"{base}/login?next={quote(consent_path)}"

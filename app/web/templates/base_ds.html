@@ -148,16 +148,20 @@
             {% block content %}{% endblock %}
         </main>
 
-        <footer>
-            {# Footer credit is config-driven on every chrome (INSTANCE_COPYRIGHT):
-               the public distribution carries no vendor branding — an instance puts
-               its own name here via config. #}
-            <p>&copy; {{ now().year if now is defined else 2026 }} {{ config.INSTANCE_COPYRIGHT or 'AI Harness' }}</p>
-        </footer>
+        {# Shared footer partial — product + build on the left, the operator
+           credit (INSTANCE_COPYRIGHT) on the right when configured. Carries
+           the build string that used to live in the fixed bottom-right chip;
+           see _footer.html for why the old `© year name` line went away.
+
+           In a BLOCK because a chrome with a sticky column has to be able to
+           move it: the footer's height is scroll the sticky element's
+           containing block does not cover, so a footer parked outside that
+           block drags the column up over its last stretch (see
+           `page_footer` in base_admin.html). Chromes that relocate it
+           override this block to empty and include the partial themselves. #}
+        {% block page_footer %}{% include '_footer.html' %}{% endblock %}
     </div>
     {% endblock %}
-
-    {% include '_version_badge.html' ignore missing %}
 
     {# Deferred module scripts (e.g. chip-input) opt in here so they
        don't load on every page. #}

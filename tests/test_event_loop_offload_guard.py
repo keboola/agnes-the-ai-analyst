@@ -27,6 +27,12 @@ from app.api.catalog import (
     list_catalog_tables,
     refresh_profile,
 )
+from app.api.cowork_bundle import (
+    exchange_setup_token,
+    generate_bundle,
+    list_setup_tokens,
+    revoke_setup_token,
+)
 from app.api.claude_md import (
     admin_get_workspace_template,
     admin_preview_workspace_template,
@@ -49,6 +55,11 @@ from app.auth.dependencies import (
     get_current_user,
     get_optional_user,
     require_session_token,
+)
+from app.marketplace_server.router import (
+    cowork_plugin_zip,
+    marketplace_info,
+    marketplace_zip,
 )
 from app.resource_types import ResourceType
 
@@ -105,6 +116,18 @@ _OFFLOADED_API_HANDLERS = [
     update_sync_settings,
     get_table_subscriptions,
     update_table_subscriptions,
+    # Marketplace / Cowork package serving (the Cowork-package-download-hang
+    # fix): these bodies walk plugin trees, hash every file and build ZIPs in
+    # memory with zero awaits. As ``async def`` a single large-plugin build
+    # froze the whole event loop — health checks, every other request, and
+    # the download itself when queued behind another build.
+    marketplace_info,
+    marketplace_zip,
+    cowork_plugin_zip,
+    generate_bundle,
+    list_setup_tokens,
+    revoke_setup_token,
+    exchange_setup_token,
 ]
 
 

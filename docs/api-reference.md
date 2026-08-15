@@ -730,6 +730,19 @@ section for the full operator flow. CLI: `agnes admin analytics migrate
 - /api/admin/mcp-tools/{tool_id}
 - /api/admin/mcp-tools/{tool_id}/grants
 - /api/admin/mcp-tools/{tool_id}/grants/{group_id}
+- /api/admin/mcp-sources/{source_id}/grants
+- /api/admin/mcp-sources/{source_id}/grants/{group_id}
+
+`POST …/mcp-sources/{source_id}/grants` grants a group **every** tool registered
+under one source, and `DELETE …/grants/{group_id}` revokes the set. Per-tool
+grants suit an upstream curated a few tools at a time; a connected Keboola
+project registers around forty at once, and granting those one page at a time is
+the friction the chat-tools switch exists to remove. Idempotent per tool, refuses
+(409 `no_tools_registered`) rather than reporting success over a source with no
+tools, and returns `granted` / `already_granted` / `total` separately — "granted
+0 of 37" and "granted 37 of 37" are different news. CLI: `agnes admin mcp source
+grant <src> --group <id> [--revoke]`. Not MCP-exposed: a tool an agent can call
+that widens which tools a group may call is a privilege-escalation seam.
 
 ### `/api/admin/memory-domains` — Knowledge domain management (admin)
 
@@ -799,6 +812,19 @@ authoring-suggestions queue (never an admin-direct write).
 - /api/admin/adoption/users/{user_id}/series
 - /api/admin/adoption/users/{user_id}/top-skills
 - /api/admin/adoption/users/{user_id}/top-tools
+
+### `/api/admin/dashboard` — Admin dashboard signals (admin)
+
+- /api/admin/dashboard/signals
+
+  The "Needs fixing" zone of the `/admin` dashboard — failed syncs, broken
+  marketplace syncs, and tools erroring above threshold. Fetched by the page
+  after first paint rather than rendered inline, because these read the
+  unbounded `sync_history` / `usage_events` tables;
+  memoised behind a short process-local TTL. Clear signals are OMITTED rather
+  than returned at `count: 0`, so an empty `signals` array is the healthy
+  state. A signal whose resolver raised comes back with `failed: true` so a
+  broken check never reads as all-clear. Admin-only.
 
 ### `/api/admin/reports` — Marketplace usage digest (admin)
 
@@ -924,6 +950,10 @@ on an upstream that annotates nothing that is all of them — the caller needs t
 see that before promising analysts anything. A registration failure returns 502
 and rolls back the previous chat-tools state; a failed local config write
 propagates instead of being dressed up as an upstream problem.
+A connection carrying `config.workspace_schema` passes it through as
+`KBC_WORKSPACE_SCHEMA`, which is what makes a non-master (read-only) token able
+to run `query_data` — with a master token Keboola creates the workspace itself,
+so it stays absent.
 `DELETE` removes both (idempotent), and deleting the connection itself does the
 same. Keboola-only; 400 without a resolvable token — a source that connected
 anonymously would fail every call at the far end instead. Enabling is idempotent
@@ -1200,6 +1230,26 @@ analogue) drive the in-chat split-pane preview iframe on top of this grant.
 
 - /api/data/{table_id}/check-access
 - /api/data/{table_id}/download
+
+### `/api/attachments` — Connector-catalogued attachment binaries
+
+- /api/attachments/{source}/{attachment_id}/download — streams one attachment
+  file a connector stored on the server, looked up by id in the source's
+  declared catalogue table (`src/attachment_sources.py`; `jira` is the first
+  source: the `attachments` catalogue's `local_path`). RBAC is table-level — read access to
+  the catalogue table via `can_access_table`, the same gate as the parquet
+  download; a catalogue table marked `server_only` refuses with 403
+  `attachment_table_server_only`, keeping its binaries on the server just as
+  it keeps its parquet. Misses stay distinguishable from denials: 404
+  `attachment_not_found` (no such row) / `attachment_not_stored` (row exists,
+  no bytes on the server — over-size skip, transform-time miss, or removed
+  since; fall back to the upstream system for these) vs the RBAC 403 — and
+  both stay distinguishable from malfunctions: a catalogued file the server
+  cannot OPEN (permissions/I-O) answers 503 `attachment_unreadable`, never a
+  404 that would send callers upstream while the outage looks normal. Every
+  fetch, granted or denied, is audited as `attachment.download`. Consumed by
+  `agnes attachment get <source> <id>`; no MCP analogue (binary byte-stream,
+  mirrors the `/api/data/{table_id}/download` channel).
 
 ### `/api/debug` — Debug utilities
 
@@ -1616,5 +1666,5 @@ CLI: `agnes agent webhooks list|add|delete <slug> ...` (`add` takes `--url` and 
 
 - /api/admin/config-surface — read this instance's complete configurable surface: every config knob with its resolved value + source (env/yaml/default), the registered Initial Workspace Template, the registered marketplaces, and `infra_repo_url`. Also exposed as `agnes admin config-surface` and an MCP tool.
 - /api/marketplaces/{marketplace_id}/plugins — admin-only: list a marketplace's plugins. Each row includes `admin_disabled`, which drives the `/admin/marketplaces` Details-modal switch and the DISABLED pill.
-- /api/marketplaces/{marketplace_id}/plugins/{plugin_name}/disable — admin-only: disable any registered plugin (not just built-ins) instance-wide. The plugin is then hidden from every served and admin surface for all callers — served feed, browse page, my-stack, synthetic served marketplace, the `/admin/access` grant UI, and v2 `/skills` — except the Details modal, where it can be re-enabled. Disabling also clears `is_system`.
+- /api/marketplaces/{marketplace_id}/plugins/{plugin_name}/disable — admin-only: disable any registered plugin (not just built-ins) instance-wide. The plugin is then hidden from every served and admin surface for all callers — served feed, browse page, my-stack, synthetic served marketplace, the group Access tab's grant UI, and v2 `/skills` — except the Details modal, where it can be re-enabled. Disabling also clears `is_system`.
 - /api/marketplaces/{marketplace_id}/plugins/{plugin_name}/enable — admin-only: re-enable a previously disabled plugin. Does **not** restore a previously-cleared `is_system`. The disabled state persists across restarts / sync re-seed until explicitly re-enabled.

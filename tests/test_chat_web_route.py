@@ -319,3 +319,60 @@ def test_chrome_ctx_matches_build_context_can_chat_and_config():
     assert chrome["config"] is not None
     assert hasattr(chrome["config"], "INSTANCE_NAME")
     assert hasattr(chrome["config"], "LOGO_SVG")
+
+
+def test_build_context_is_a_superset_of_chrome_ctx():
+    """Drift guard for #996: ``_build_context`` composes ``_chrome_ctx`` (the
+    single owner of every chrome-level key), so it must carry EVERY key
+    ``_chrome_ctx`` provides, with the same value for the same request/user.
+
+    This is the structural fix for the bug class the two spot-checks above
+    (``can_chat`` / ``config``) each caught by hand after the fact: a chrome
+    key added to ``_chrome_ctx`` but forgotten in ``_build_context`` (or vice
+    versa) used to render as Jinja-undefined — falsy/empty, nothing raising —
+    on whichever builder's pages missed it. Once a new key only has to be
+    added in one place, this test either stays green for free or fails loudly
+    the moment someone reintroduces a hand-copied, independently-computed key
+    in only one of the two builders.
+    """
+    from types import SimpleNamespace as _NS
+
+    from starlette.requests import Request
+    from app.web.router import _build_context, _chrome_ctx
+
+    app = _NS(state=_NS(chat_config=_NS(enabled=True)))
+    scope = {
+        "type": "http",
+        "app": app,
+        "method": "GET",
+        "path": "/admin/studio",
+        "query_string": b"",
+        "headers": [],
+        "server": ("test", 80),
+        "scheme": "http",
+        "client": ("1.2.3.4", 9),
+    }
+    request = Request(scope)
+
+    full = _build_context(request, user=TEST_USER)
+    chrome = _chrome_ctx(request, TEST_USER)
+
+    missing = set(chrome) - set(full)
+    assert not missing, f"_build_context is missing chrome key(s) _chrome_ctx provides: {sorted(missing)}"
+
+    # A handful of chrome values are callables / freshly-built classes
+    # (`get_flashed_messages`, `url_for`, `config`) — two independently
+    # constructed closures/classes are never `==` to each other even when
+    # behaviorally identical, so compare those by calling/introspecting
+    # instead of raw equality. Everything else compares directly.
+    for key, chrome_value in chrome.items():
+        if key in ("get_flashed_messages", "url_for", "config"):
+            continue
+        assert full[key] == chrome_value, (
+            f"key {key!r} disagrees between _build_context and _chrome_ctx: {full[key]!r} != {chrome_value!r}"
+        )
+
+    assert full["get_flashed_messages"]() == chrome["get_flashed_messages"]()
+    assert full["url_for"]("static", filename="app.js") == chrome["url_for"]("static", filename="app.js")
+    assert full["config"].INSTANCE_NAME == chrome["config"].INSTANCE_NAME
+    assert full["config"].LOGO_SVG == chrome["config"].LOGO_SVG

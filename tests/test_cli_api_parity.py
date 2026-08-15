@@ -1739,3 +1739,106 @@ class TestKeboolaChatToolsParity:
         delta_cli = self._snapshot(conn_id)
 
         assert delta_api == delta_cli == (None, None, [])
+
+
+class TestMCPSourceBulkGrantParity:
+    """``POST/DELETE /api/admin/mcp-sources/{id}/grants`` ↔
+    ``agnes admin mcp source grant [--revoke]``.
+
+    Both paths must land the same `tool_grants` rows AND the same audit line.
+    A CLI that granted without auditing, or that resolved the source
+    differently, would widen access with a thinner trail than the API.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _stable_vault_key(self, monkeypatch):
+        from cryptography.fernet import Fernet
+
+        from app.secrets_vault import _reset_ephemeral_key_for_tests
+
+        monkeypatch.setenv("AGNES_VAULT_KEY", Fernet.generate_key().decode())
+        _reset_ephemeral_key_for_tests()
+        yield
+        _reset_ephemeral_key_for_tests()
+
+    def _seed(self, parity_env):
+        """A source with two registered tools, and a group to grant them to."""
+        from src.repositories import mcp_sources_repo, tool_registry_repo, user_groups_repo
+
+        source_id = "src_parity_bulk_grant"
+        mcp_sources_repo().upsert(
+            id=source_id,
+            name="Parity bulk grant",
+            transport="stdio",
+            command="true",
+            args=[],
+            scope="shared",
+        )
+        repo = tool_registry_repo()
+        for name in ("alpha", "beta"):
+            repo.upsert(
+                tool_id=f"{source_id}__{name}",
+                source_id=source_id,
+                original_name=name,
+                exposed_name=f"parity_{name}",
+                mode="passthrough",
+            )
+        gid = user_groups_repo().get_by_name("Everyone")["id"]
+        return source_id, gid
+
+    def _snapshot(self, source_id: str, gid: str):
+        from src.repositories import tool_registry_repo
+
+        repo = tool_registry_repo()
+        return sorted(
+            t["tool_id"] for t in repo.list_for_source(source_id) if gid in repo.grants_for_tool(t["tool_id"])
+        )
+
+    def test_grant_parity(self, parity_env):
+        source_id, gid = self._seed(parity_env)
+
+        r = parity_env["client"].post(
+            f"/api/admin/mcp-sources/{source_id}/grants",
+            json={"group_id": gid},
+            headers=_auth(parity_env["admin_token"]),
+        )
+        assert r.status_code == 200, r.text
+        conn = get_system_db()
+        api_state = self._snapshot(source_id, gid)
+        api_audit = _snapshot_audit_actions(conn, prefix="mcp_source.grant")
+        conn.close()
+
+        parity_env["client"].delete(
+            f"/api/admin/mcp-sources/{source_id}/grants/{gid}",
+            headers=_auth(parity_env["admin_token"]),
+        )
+        conn = get_system_db()
+        _reset_audit_log(conn)
+        conn.close()
+        assert self._snapshot(source_id, gid) == []
+
+        parity_env["run_cli"](["admin", "mcp", "source", "grant", source_id, "--group", gid])
+        conn = get_system_db()
+        cli_state = self._snapshot(source_id, gid)
+        cli_audit = _snapshot_audit_actions(conn, prefix="mcp_source.grant")
+        conn.close()
+
+        assert api_state == cli_state
+        assert api_audit == cli_audit
+        assert len(api_state) == 2
+
+    def test_revoke_parity(self, parity_env):
+        source_id, gid = self._seed(parity_env)
+        client, token = parity_env["client"], parity_env["admin_token"]
+
+        client.post(f"/api/admin/mcp-sources/{source_id}/grants", json={"group_id": gid}, headers=_auth(token))
+        assert client.delete(
+            f"/api/admin/mcp-sources/{source_id}/grants/{gid}", headers=_auth(token)
+        ).status_code == 204
+        api_state = self._snapshot(source_id, gid)
+
+        client.post(f"/api/admin/mcp-sources/{source_id}/grants", json={"group_id": gid}, headers=_auth(token))
+        parity_env["run_cli"](["admin", "mcp", "source", "grant", source_id, "--group", gid, "--revoke"])
+        cli_state = self._snapshot(source_id, gid)
+
+        assert api_state == cli_state == []

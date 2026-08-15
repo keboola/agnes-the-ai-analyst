@@ -266,3 +266,36 @@ def test_can_access_ignores_the_pause_when_asked_about_another_admin(system_conn
     finally:
         elevation.reset_caller_for_request(ctok)
         elevation.reset_for_request(ptok)
+
+
+class TestRequestIsNoninteractive:
+    """The elevation middleware treats a request as non-interactive (exempt
+    from the instance-wide paused default) via request_is_noninteractive.
+    An X-StorageApi-Token header counts ONLY when it is the actual credential;
+    a session-cookie request merely carrying it must stay interactive, or an
+    admin could slip past a paused default by adding the header (Devin #1288)."""
+
+    def test_bearer_is_noninteractive(self):
+        from app.auth.elevation import request_is_noninteractive
+
+        assert request_is_noninteractive(authorization="Bearer x", has_session_cookie=False, has_sapi_header=False)
+        # Bearer wins even alongside a cookie (bearer has get_current_user precedence).
+        assert request_is_noninteractive(authorization="Bearer x", has_session_cookie=True, has_sapi_header=False)
+
+    def test_sole_sapi_header_is_noninteractive(self):
+        from app.auth.elevation import request_is_noninteractive
+
+        assert request_is_noninteractive(authorization="", has_session_cookie=False, has_sapi_header=True)
+
+    def test_sapi_header_with_session_cookie_stays_interactive(self):
+        from app.auth.elevation import request_is_noninteractive
+
+        # The fix: a cookie-authenticated request carrying the header must NOT
+        # be exempted from the paused default.
+        assert not request_is_noninteractive(authorization="", has_session_cookie=True, has_sapi_header=True)
+
+    def test_plain_session_is_interactive(self):
+        from app.auth.elevation import request_is_noninteractive
+
+        assert not request_is_noninteractive(authorization="", has_session_cookie=True, has_sapi_header=False)
+        assert not request_is_noninteractive(authorization="", has_session_cookie=False, has_sapi_header=False)

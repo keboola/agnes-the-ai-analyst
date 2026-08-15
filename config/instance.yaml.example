@@ -15,7 +15,10 @@ config_version: 1
 instance:
   name: "AI Harness"
   subtitle: "Your Organization"
-  copyright: "Your Organization"
+  copyright: "Your Organization"   # Footer credit, rendered "Deployed by <this>".
+                                     # Leave unset and the footer shows only the
+                                     # product name + running build — it never
+                                     # invents an attribution.
   # brand: "Agnes"                   # Product-name brand string used in analyst-facing UI copy
                                      # (/home hero, /setup, /login messages, clipboard setup
                                      # script). Default "Agnes". Set to e.g. "Foundry AI" to
@@ -235,8 +238,29 @@ auth:
   #
   # username_strip_domain: false
   # username_prefix: ""
-  # disabled_providers:            # Hide auth methods from login page
-  #   - "email"                    # Disable email magic link (use when Google OAuth is configured)
+  # providers: [google, email, password, keboola]
+  #                                 # Which login methods this instance offers.
+  #                                 # Unset = every configured provider (default).
+  #                                 # Explicit empty list is rejected. Excluded
+  #                                 # providers' endpoints return 404. Env
+  #                                 # override: AGNES_AUTH_PROVIDERS (comma-sep).
+
+  # --- Keboola login (optional) ---
+  # Lets users sign in with their Keboola platform identity. The OAuth
+  # client (client_id/client_secret) is issued by Keboola for your stack —
+  # ask your Keboola contact; it is not self-service. The token-header API
+  # auth (auth.keboola.allow_token_header switch) works without any OAuth
+  # client. Membership in project_id is the trust boundary: ANYONE that
+  # project admits (including guest/readOnly collaborators) can sign in and
+  # self-provision unless allowed_roles narrows it.
+  # keboola:
+  #   client_id: "${KEBOOLA_OAUTH_CLIENT_ID}"
+  #   client_secret: "${KEBOOLA_OAUTH_CLIENT_SECRET}"
+  #   stack_url: ""                 # default: data_source.keboola.stack_url
+  #   oauth_host: ""                # default: stack_url (OAuth lives on the connection host)
+  #   project_id: ""                # REQUIRED — tokens from other projects are rejected
+  #   allowed_roles: []             # e.g. [admin, share]; empty/unset = any project role
+  #   allow_token_header: false     # X-StorageApi-Token API auth; see docs/feature-flags.md
 
 # --- Security (optional) ---
 # security:

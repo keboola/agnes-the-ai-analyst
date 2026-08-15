@@ -82,6 +82,23 @@ def resolve_from_cookie(cookie_value: str | None, *, bearer_auth: bool = False) 
     return default_elevation() == PAUSED
 
 
+def request_is_noninteractive(*, authorization: str, has_session_cookie: bool, has_sapi_header: bool) -> bool:
+    """True when a request authenticates via a NON-interactive credential, so
+    the instance-wide elevation default must not apply (it has no cookie jar to
+    re-elevate with). Two such credentials:
+
+    - ``Authorization: Bearer`` — CLI, PATs, service tokens.
+    - the ``X-StorageApi-Token`` header, but ONLY when it is actually the
+      credential: ``get_current_user`` consults it just when there is no bearer
+      and no session cookie, so a request carrying an ``access_token`` cookie
+      authenticated interactively even if it also sends the header. Merely
+      adding the header must not exempt a paused admin from the default.
+    """
+    if authorization.lower().startswith("bearer "):
+        return True
+    return has_sapi_header and not has_session_cookie
+
+
 def set_paused_for_request(paused: bool):
     """Set the request-scoped flag; returns the contextvar token so the
     middleware can reset it after the response."""

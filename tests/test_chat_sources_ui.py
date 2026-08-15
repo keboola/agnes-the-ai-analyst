@@ -64,18 +64,22 @@ def _code_only(text: str) -> str:
 
 def test_both_render_paths_strip_the_fence():
     """History and the live turn must agree — a reload that suddenly showed the
-    raw block would read as a different answer."""
+    raw block would read as a different answer. Both trailers ride the shared
+    renderAnswerMarkdown helper now."""
     js = _read(CHAT_JS)
-    assert js.count("renderMarkdownSafe(stripSourcesFence(") == 2, (
-        "each of renderMessage() and finalizeAssistantMessage() must strip the fence"
+    assert "renderMarkdownSafe(stripNextActionsFence(stripSourcesFence(" in js, (
+        "renderAnswerMarkdown must strip sources first, then next_actions"
     )
+    assert "renderAnswerMarkdown(m.content)" in js, "renderMessage must use the helper"
+    assert "renderAnswerMarkdown(content)" in js, "finalizeAssistantMessage must use the helper"
 
 
 def test_the_clipboard_keeps_the_fence():
-    """attachMessageActions is handed the ORIGINAL content in both paths."""
+    """attachMessageActions is handed content with the SOURCES fence intact.
+    (next_actions is stripped — suggestions are chrome; provenance is not.)"""
     js = _read(CHAT_JS)
-    assert 'attachMessageActions(article, m.content || "")' in js
-    assert "attachMessageActions(currentAssistantArticle, content)" in js
+    assert "attachMessageActions(currentAssistantArticle, stripNextActionsFence(content))" in js
+    assert 'attachMessageActions(article, stripNextActionsFence(m.content || ""))' in js
     assert "attachMessageActions(currentAssistantArticle, stripSourcesFence" not in js
     assert "attachMessageActions(article, stripSourcesFence" not in js
 
@@ -198,7 +202,7 @@ def test_the_fence_regex_removes_the_block_and_nothing_else():
         pytest.skip("node not available")
     js = _read(CHAT_JS)
     open_decl = re.search(r"const _SOURCES_OPEN_RE = .*?;", js)
-    close_decl = re.search(r'const _SOURCES_CLOSE = .*?;', js)
+    close_decl = re.search(r"const _SOURCES_CLOSE = .*?;", js)
     assert open_decl and close_decl, "the fence constants moved — re-point this guard"
     decl = type("D", (), {"group": lambda self, _n: open_decl.group(0) + "\n" + close_decl.group(0)})()
     fn = js[js.index("function stripSourcesFence") : js.index("const _CLAIM_LABEL")]
@@ -235,9 +239,9 @@ def test_the_fence_regex_removes_the_block_and_nothing_else():
 def _chat_js() -> str:
     import pathlib
 
-    return (
-        pathlib.Path(__file__).resolve().parents[1] / "app" / "web" / "static" / "js" / "chat.js"
-    ).read_text(encoding="utf-8")
+    return (pathlib.Path(__file__).resolve().parents[1] / "app" / "web" / "static" / "js" / "chat.js").read_text(
+        encoding="utf-8"
+    )
 
 
 class TestEveryProvenanceBlockIsRemoved:
@@ -299,7 +303,7 @@ class TestAnUnsourcedFigureIsNotSilent:
         — a greeting included — grew a "none declared" row. (Devin Review.)"""
         js = _chat_js()
         fn = js[js.index("function _bubbleHasFigure") : js.index("function renderSourcesChips")]
-        assert '.msg-body' in fn, "the query must be scoped to the rendered answer"
+        assert ".msg-body" in fn, "the query must be scoped to the rendered answer"
         assert 'closest("button' in fn, "an icon inside a control still counts as a figure"
 
     def test_the_figure_check_covers_both_mermaid_forms(self):
