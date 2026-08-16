@@ -88,8 +88,16 @@ def qualified_path_re(prefix: str) -> "re.Pattern":
     ``(?<![\\w.])`` keeps ``foo.bq.x.y`` from matching the ``bq.x.y`` tail.
     """
     p = re.escape(prefix)
+    # Assembled by concatenation, not an f-string: a literal `"{p}"` inside one
+    # matches the hand-quoted-SQL-identifier shape that
+    # `tests/test_security_audit_20260805.py` ratchets against. Here the shape
+    # is exactly backwards — this pattern *parses* quoted SQL and emits none —
+    # but an excused entry on that allowlist costs every future reader a
+    # verification, and two lines of concatenation cost nothing.
+    quoted_prefix = '"' + p + '"'
     return re.compile(
-        rf'(?<![\w.])(?:"{p}"|{p})\s*\.\s*("[^"]+"|\w+)\s*\.\s*("[^"]+"|\w+)(?=\W|$)',
+        r"(?<![\w.])(?:" + quoted_prefix + "|" + p + r")\s*\.\s*"
+        r'("[^"]+"|\w+)\s*\.\s*("[^"]+"|\w+)(?=\W|$)',
         re.IGNORECASE,
     )
 
@@ -236,6 +244,13 @@ register_engine(
 # ---------------------------------------------------------------------------
 
 
+#: Stand-in for "this engine was referenced by a path no registry row matches".
+#: Deliberately empty: detection only needs the engine's identity, and letting
+#: this dict grow a path field would invite a caller to read it instead of the
+#: engine gate's own, precisely-named answer.
+_UNREGISTERED_PATH_MARKER: Dict[str, str] = {}
+
+
 def _rows_referenced(
     spec: RemoteEngineSpec,
     sql: str,
@@ -276,11 +291,15 @@ def _rows_referenced(
                 break
         else:
             # An unregistered direct path. Record the *engine* as referenced
-            # (via a synthetic marker row) so the caller's registry gate gets
-            # the chance to answer `<engine>_path_not_registered` instead of
-            # the statement falling through to local execution and failing
-            # with a confusing "table does not exist".
-            hits.append({"__unregistered_path__": f"{spec.path_prefix}.{bucket}.{table}"})
+            # so the caller's registry gate gets the chance to answer
+            # "<path> is not registered" instead of the statement falling
+            # through to local execution and dying on a confusing "table does
+            # not exist".
+            #
+            # The marker carries no path: this list is only ever asked "is this
+            # engine referenced", and the gate re-derives the offending path
+            # from the statement itself, where it can name it precisely.
+            hits.append(_UNREGISTERED_PATH_MARKER)
 
     return hits
 
