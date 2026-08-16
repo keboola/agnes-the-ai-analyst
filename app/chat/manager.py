@@ -254,6 +254,13 @@ class LiveSession:
     #: made a reconnect skip everything said since (review on #1145).
     #: Cleared on respawn: the request_id belongs to the dead runner.
     pending_approvals: dict = field(default_factory=dict)
+    #: Question cards (AskUserQuestion round-trip) raised but not yet
+    #: answered, keyed by request_id. Same lifecycle rules as
+    #: ``pending_approvals`` — outside the turn buffer, replayed to newly
+    #: seated sinks, retired on respawn — kept as a separate dict because
+    #: retirement and unattended-resolution must broadcast/deliver
+    #: question-typed frames, not approval-typed ones.
+    pending_questions: dict = field(default_factory=dict)
     turn_in_flight: bool = False
     # Linger task: fires _linger_then_pause after the last sink detaches.
     linger_task: Optional[asyncio.Task] = None
@@ -350,6 +357,15 @@ def _approval_attended(live: "LiveSession") -> bool:
     implements both halves.
     """
     return any(getattr(e.sink, "supports_approvals", False) for e in live.sinks)
+
+
+#: Push-only sinks (the Slack bridge) advertise a poster method per card
+#: kind; the fan-out looks the right one up by the request frame's type so an
+#: approval nudge and a question nudge each get their own copy.
+_CARD_POSTER_ATTR = {
+    "approval_request": "_post_approval_request",
+    "question_request": "_post_question_request",
+}
 
 
 class ChatManager:
@@ -1083,9 +1099,13 @@ class ChatManager:
         ``attended`` is re-derived rather than replayed: the stamp records who
         was attached when the request was RAISED, which is not a claim about
         who is attached now.
+
+        Pending question cards ride along for the same reason: a browser
+        attaching mid-question must get the card back or the AskUserQuestion
+        call stalls until the gate's timeout with nothing on screen.
         """
         attended = _approval_attended(live)
-        for frame in list(live.pending_approvals.values()):
+        for frame in list(live.pending_approvals.values()) + list(live.pending_questions.values()):
             with contextlib.suppress(Exception):
                 await sink.send_json({**frame, "attended": attended})
 
@@ -1100,14 +1120,15 @@ class ChatManager:
         (Devin Review on #1157). Idempotent: a card already marked unattended
         is not re-posted, and the Slack bridge dedupes by request_id anyway.
         """
-        if not live.pending_approvals or _approval_attended(live):
+        if (not live.pending_approvals and not live.pending_questions) or _approval_attended(live):
             return
-        for frame in list(live.pending_approvals.values()):
+        for frame in list(live.pending_approvals.values()) + list(live.pending_questions.values()):
             if frame.get("attended") is False:
                 continue
             frame["attended"] = False
+            poster_attr = _CARD_POSTER_ATTR.get(frame.get("type"), "_post_approval_request")
             for entry in list(live.sinks):
-                poster = getattr(entry.sink, "_post_approval_request", None)
+                poster = getattr(entry.sink, poster_attr, None)
                 if poster is not None:
                     with contextlib.suppress(Exception):
                         await poster(frame)
@@ -2072,12 +2093,15 @@ class ChatManager:
             except json.JSONDecodeError:
                 continue
             live.last_activity = datetime.now(timezone.utc)
-            if frame.get("type") == "approval_request":
+            if frame.get("type") in ("approval_request", "question_request"):
                 # Stamped BEFORE the fan-out so every sink sees the same
                 # envelope (frame_seq contract) and a push-only sink can tell
                 # whether someone is already looking at a card: the Slack
-                # bridge posts its "approve this on the web" nudge only when
-                # nobody is.
+                # bridge posts its "answer this on the web" nudge only when
+                # nobody is. Question cards ride the same capability flag as
+                # approval cards (``supports_approvals``): both are the same
+                # kind of interactive web card, so a sink that can draw one
+                # can draw the other.
                 frame["attended"] = _approval_attended(live)
             if frame.get("type") == "assistant_message":
                 # Stamp provenance BEFORE the fan-out, so the live turn and a
@@ -2131,7 +2155,13 @@ class ChatManager:
                     live.pending_approvals[rid] = frame
             elif ftype == "approval_resolved":
                 live.pending_approvals.pop(frame.get("request_id"), None)
-            if ftype == "approval_request":
+            elif ftype == "question_request":
+                rid = frame.get("request_id")
+                if rid:
+                    live.pending_questions[rid] = frame
+            elif ftype == "question_resolved":
+                live.pending_questions.pop(frame.get("request_id"), None)
+            if ftype in ("approval_request", "question_request"):
                 # `attended` is stamped BEFORE the fan-out (the frame_seq
                 # contract wants one envelope for every sink), but _broadcast
                 # is also where a dead sink is discovered: a browser that
@@ -2146,9 +2176,10 @@ class ChatManager:
                     frame["attended"] = False
                     rid = frame.get("request_id")
                     if rid:
-                        live.pending_approvals[rid] = frame
+                        pending = live.pending_approvals if ftype == "approval_request" else live.pending_questions
+                        pending[rid] = frame
                     for entry in list(live.sinks):
-                        poster = getattr(entry.sink, "_post_approval_request", None)
+                        poster = getattr(entry.sink, _CARD_POSTER_ATTR[ftype], None)
                         if poster is not None:
                             with contextlib.suppress(Exception):
                                 await poster(frame)
@@ -2539,6 +2570,18 @@ class ChatManager:
                     "reason": "the sandbox restarted before this was answered",
                 },
             )
+        retired_questions = list(live.pending_questions)
+        live.pending_questions.clear()
+        for request_id in retired_questions:
+            await self._broadcast(
+                live,
+                {
+                    "type": "question_resolved",
+                    "request_id": request_id,
+                    "decision": "cancelled",
+                    "reason": "the sandbox restarted before this was answered",
+                },
+            )
 
     async def _resolve_if_unattended(self, live: "LiveSession", frame: dict) -> None:
         """Answer an ``approval_request`` that nobody can ever answer.
@@ -2573,17 +2616,22 @@ class ChatManager:
         request_id = str(frame.get("request_id", ""))
         if not request_id or live.handle is None:
             return
+        is_question = frame.get("type") == "question_request"
         logger.info(
-            "approval request %s on %s auto-denied — agent-API session has no client that can answer",
+            "%s request %s on %s auto-resolved — agent-API session has no client that can answer",
+            "question" if is_question else "approval",
             request_id,
             live.chat_id,
         )
         write_audit(
             user_email=live.user_email,
-            action="chat.approval_decision",
+            action="chat.question_answer" if is_question else "chat.approval_decision",
             details={"session_id": live.chat_id, "request_id": request_id, "decision": runner.UNATTENDED},
         )
-        await self._deliver_local_approval(live, request_id, runner.UNATTENDED)
+        if is_question:
+            await self._deliver_local_question(live, request_id, unattended=True)
+        else:
+            await self._deliver_local_approval(live, request_id, runner.UNATTENDED)
 
     async def _deliver_local_approval(self, live: "LiveSession", request_id: str, decision: str) -> None:
         payload = json.dumps({"type": "approval_decision", "request_id": request_id, "decision": decision}) + "\n"
@@ -2599,6 +2647,132 @@ class ChatManager:
             # pending request either way (review finding on #1145).
             logger.warning(
                 "approval decision for %s could not be written to the sandbox; "
+                "the pending request will fall through to the gate's own timeout",
+                live.chat_id,
+                exc_info=True,
+            )
+            return
+        live.last_activity = datetime.now(timezone.utc)
+
+    @staticmethod
+    def _harden_question_answers(answers) -> "Optional[dict]":
+        """Coerce a client-supplied answers payload to a bounded str→str dict,
+        or ``None`` when nothing usable survives. The runner's QuestionGate
+        revalidates with the same rules; hardening here as well keeps junk
+        (and unbounded payloads) off the sandbox stdin entirely."""
+        if not isinstance(answers, dict):
+            return None
+        cleaned: dict[str, str] = {}
+        for key, value in answers.items():
+            if len(cleaned) >= 8:
+                break
+            if not isinstance(key, str) or not isinstance(value, str):
+                continue
+            text = value.strip()
+            if not text:
+                continue
+            cleaned[key[:2000]] = text[:4000]
+        return cleaned or None
+
+    async def deliver_question_answer(
+        self,
+        chat_id: str,
+        request_id: str,
+        *,
+        answers: "Optional[dict]" = None,
+        dismissed: bool = False,
+        sender_email: Optional[str] = None,
+    ) -> None:
+        """Route a user's answer to a pending AskUserQuestion card to
+        ``chat_id``'s runner.
+
+        Mirrors :meth:`deliver_approval_decision`: owner path writes one
+        ``question_answer`` stdin frame; non-owner path rides the inbound
+        control stream (``command="question"``). Anything that isn't a
+        usable answers dict hardens to a dismissal — in particular a client
+        can never smuggle the manager-only ``unattended`` resolution through
+        here. Audited without the answer text (an "Other" answer is free
+        text the user typed; the request_id ties the audit row to the
+        question if needed).
+        """
+        clean = self._harden_question_answers(answers)
+        if clean is None:
+            dismissed = True
+        write_audit(
+            user_email=sender_email or "",
+            action="chat.question_answer",
+            details={
+                "session_id": chat_id,
+                "request_id": request_id,
+                "decision": "dismissed" if dismissed else "answered",
+            },
+        )
+        live = self._live.get(chat_id)
+        if live is not None and live.handle is not None:
+            await self._deliver_local_question(
+                live, request_id, answers=None if dismissed else clean, dismissed=dismissed
+            )
+            return
+        # No local runner — forward only when another gateway positively owns
+        # the session (same posture as deliver_approval_decision).
+        try:
+            owner = await asyncio.to_thread(routing.owner_of, chat_id)
+        except Exception:
+            owner = None
+        if owner is not None and owner != routing.this_gateway_id():
+            try:
+                await inbound.publish_control(
+                    chat_id,
+                    "question",
+                    extra={
+                        "request_id": request_id,
+                        "answers": None if dismissed else clean,
+                        "dismissed": dismissed,
+                        "sender": sender_email or "",
+                    },
+                )
+            except inbound.InboundPublishFailed:
+                logger.warning(
+                    "cross-gateway question answer for %s could not be published (owner %s); "
+                    "the pending request will fall through to the gate's own timeout",
+                    chat_id,
+                    owner,
+                )
+            return
+        logger.info(
+            "question answer for %s dropped — no live runner and no other gateway owns it",
+            chat_id,
+        )
+
+    async def _deliver_local_question(
+        self,
+        live: "LiveSession",
+        request_id: str,
+        *,
+        answers: "Optional[dict]" = None,
+        dismissed: bool = False,
+        unattended: bool = False,
+    ) -> None:
+        """Write one ``question_answer`` frame to the runner's stdin.
+        ``unattended`` is manager-originated only (see
+        :meth:`_resolve_if_unattended`) — client input can never set it."""
+        frame: dict = {"type": "question_answer", "request_id": request_id}
+        if unattended:
+            frame["unattended"] = True
+        elif dismissed or not answers:
+            frame["dismissed"] = True
+        else:
+            frame["answers"] = answers
+        payload = json.dumps(frame) + "\n"
+        try:
+            async with live._stdin_lock:
+                live.handle.stdin.write(payload.encode("utf-8"))
+                await live.handle.stdin.drain()
+        except Exception:
+            # Same posture as _deliver_local_approval: the QuestionGate's own
+            # timeout resolves the pending request if the write is lost.
+            logger.warning(
+                "question answer for %s could not be written to the sandbox; "
                 "the pending request will fall through to the gate's own timeout",
                 live.chat_id,
                 exc_info=True,
@@ -2795,6 +2969,27 @@ class ChatManager:
                                     logger.exception("inbound consumer: approval delivery failed for %s", chat_id)
                             else:
                                 logger.info("inbound consumer: dropping approval for %s (no live runner)", chat_id)
+                        elif command == "question":
+                            # Question answer forwarded from a non-owning
+                            # gateway — same posture as "approval" above. The
+                            # publisher already hardened the answers dict;
+                            # _deliver_local_question re-derives dismissed
+                            # from an empty/missing one.
+                            if live.handle is not None:
+                                try:
+                                    entry_answers = entry.get("answers")
+                                    await self._deliver_local_question(
+                                        live,
+                                        str(entry.get("request_id", "")),
+                                        answers=entry_answers if isinstance(entry_answers, dict) else None,
+                                        dismissed=bool(entry.get("dismissed")),
+                                    )
+                                except Exception:
+                                    logger.exception("inbound consumer: question delivery failed for %s", chat_id)
+                            else:
+                                logger.info(
+                                    "inbound consumer: dropping question answer for %s (no live runner)", chat_id
+                                )
                         else:
                             logger.warning(
                                 "inbound consumer: unknown control command %r for %s (seq %s) — skipped",
