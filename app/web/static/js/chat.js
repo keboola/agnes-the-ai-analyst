@@ -792,6 +792,14 @@ async function loadSidebar() {
   const list = await api("/api/chat/sessions");
   _sessionsCache = list;
   const ul = $("chat-list");
+  // No list at all: the rail gates its whole chat chrome on `can_chat`
+  // (_app_rail.html), which reads has_explicit_grant — while this route and
+  // the chat API gate on can_access, where god-mode short-circuits. So an
+  // admin without an explicit chat grant gets a fully WORKING /chat with no
+  // sidebar to draw into; bail after caching the fetch (the Cmd+K palette
+  // and openSession's title lookup read _sessionsCache). rail_history.js
+  // guards its renderer on the same condition.
+  if (!ul) return;
   // The rail gives pinned conversations a SECTION of their own above the feed
   // (<ul id="pinned-chat-list">, _app_rail.html) — so when that list is present
   // the pinned rows go there and _groupSessionsByDate is asked not to hoist a
