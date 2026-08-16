@@ -9,7 +9,7 @@ import json
 import logging
 import os
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -253,7 +253,7 @@ def transform_organization(raw_org: dict) -> dict:
     record: dict[str, Any] = {
         "org_id": None if org_id is None else str(org_id),
         "name": raw_org.get("name"),
-        "_synced_at": datetime.now(timezone.utc).isoformat(),
+        "_synced_at": datetime.now(UTC).isoformat(),
     }
     record.update(extract_organization_details(raw_org))
     return record
@@ -340,7 +340,7 @@ def apply_schema(df: pd.DataFrame, schema: dict) -> pa.Table:
     preventing DuckDB union errors when querying with glob patterns.
     """
     # Ensure all schema columns exist
-    for col in schema.keys():
+    for col in schema:
         if col not in df.columns:
             df[col] = None
 
@@ -355,7 +355,7 @@ def apply_schema(df: pd.DataFrame, schema: dict) -> pa.Table:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
     # Reorder columns to match schema
-    df = df[[col for col in schema.keys()]]
+    df = df[[col for col in schema]]
 
     # Convert to PyArrow with explicit schema
     pa_schema = get_pyarrow_schema(schema)
@@ -779,7 +779,7 @@ def write_hive_parquet(table: pa.Table, table_dir: Path, month_key: str) -> Path
 def get_month_key(dt: datetime | None) -> str:
     """Get month key (YYYY-MM) from datetime, defaulting to current month."""
     if dt is None:
-        dt = datetime.now(timezone.utc)
+        dt = datetime.now(UTC)
     return dt.strftime("%Y-%m")
 
 
