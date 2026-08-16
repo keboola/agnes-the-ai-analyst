@@ -4,6 +4,7 @@ import contextlib as _contextlib
 import hashlib as _hashlib
 import os
 import shutil as _shutil
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -59,16 +60,21 @@ _REAL_LOCAL_BIN = _REAL_HOME / ".local" / "bin"
 # ---------------------------------------------------------------------------
 # Pre-flight disk guard
 # ---------------------------------------------------------------------------
-# A full local run writes tens of GB of DuckDB/parquet/pgserver fixtures into
-# pytest's basetemp (see the retention note in pytest.ini). When the disk runs
-# out mid-run the suite does not fail cleanly: every teardown raises
-# `OSError: [Errno 28]`, burying the real result under thousands of errors, and
-# the machine is left wedged at 100% full.
+# With `tmp_path_retention_policy = failed` (pytest.ini), a PASSING test's tmp
+# dir is deleted at its own teardown, so a healthy full run's basetemp peak is
+# only failures + in-flight tests + session-scoped fixture dirs — single-digit
+# GB, where retaining every dir until session end used to accumulate ~38-40 GB
+# per run. The guard survives the collapse because the collapse is conditional
+# on tests passing: a broken environment that fails tests wholesale retains
+# every failing test's dir and trends back toward the old sum-of-all-tests
+# footprint. When the disk runs out mid-run the suite does not fail cleanly:
+# every teardown raises `OSError: [Errno 28]`, burying the real result under
+# thousands of errors, and the machine is left wedged at 100% full.
 #
 # Thresholds are tuned so the abort floor only catches runs that are already
 # doomed. CI shards the suite eight ways (`--splits 8`) and runs far leaner than
 # a single local invocation — a local-sized threshold must never abort a shard.
-DISK_WARN_GB = 60
+DISK_WARN_GB = 10
 DISK_ABORT_GB = 5
 
 
@@ -86,8 +92,9 @@ def disk_guard_verdict(*, free_bytes: int) -> tuple[str, str]:
     if free_gb < DISK_ABORT_GB:
         return "abort", (
             f"Only {free_gb:.1f} GB free on the pytest basetemp filesystem "
-            f"({_tf.gettempdir()}). A full run needs ~{DISK_WARN_GB} GB and will "
-            f"fill the disk, producing thousands of Errno 28 teardown errors "
+            f"({_tf.gettempdir()}). A full run wants ~{DISK_WARN_GB} GB of "
+            f"headroom (failing tests retain their tmp dirs) and will fill "
+            f"the disk, producing thousands of Errno 28 teardown errors "
             f"instead of a usable result.\n"
             f"  Free space, then re-run. Stale fixtures from previous runs:\n"
             f"    rm -rf {os.path.join(_tf.gettempdir(), 'pytest-of-*')}\n"
@@ -97,7 +104,8 @@ def disk_guard_verdict(*, free_bytes: int) -> tuple[str, str]:
     if free_gb < DISK_WARN_GB:
         return "warn", (
             f"Low disk: {free_gb:.1f} GB free, a full run wants ~{DISK_WARN_GB} GB "
-            f"of basetemp scratch. Consider running a subset, or clean up with "
+            f"of basetemp headroom (failing tests retain their tmp dirs). "
+            f"Consider running a subset, or clean up with "
             f"`rm -rf {os.path.join(_tf.gettempdir(), 'pytest-of-*')}`."
         )
 
@@ -315,6 +323,58 @@ def _reset_module_caches():
         _cw.WARMUP_STATE = None
     except (ImportError, AttributeError):
         pass
+
+
+def singleton_outlives_tmp(db_path: str | None, basetemp: str) -> bool:
+    """Whether a cached DuckDB singleton path must be closed at test teardown.
+
+    True when the path points into pytest's basetemp (its tmp dir is deleted
+    by ``tmp_path_retention_policy = failed`` on pass, and pytest REUSES the
+    freed numbered dir name for the next same-named test — so a surviving
+    handle desyncs the path-keyed singleton in src/db.py from disk), or when
+    its parent dir is already gone (same desync via any other tmp scheme).
+    False for the shared default DATA_DIR, whose singleton legitimately spans
+    tests. Pure so it can be tested without touching the real singletons.
+    """
+    if not db_path:
+        return False
+    path = str(db_path)
+    if path.startswith(basetemp.rstrip(os.sep) + os.sep):
+        return True
+    return not os.path.isdir(os.path.dirname(path))
+
+
+@pytest.fixture(autouse=True)
+def _close_tmp_db_singletons(tmp_path_factory):
+    """Close src/db.py's process-global DuckDB connections when they point
+    into pytest's basetemp, so no live handle outlives its tmp_path dir.
+
+    This is the invariant that makes ``tmp_path_retention_policy = failed``
+    (pytest.ini) safe: that policy deletes each PASSING test's tmp_path in
+    its teardown, and pytest then hands the same numbered dir name to the
+    next test with the same (truncated) name. ``get_system_db()`` reopens
+    only on path CHANGE, so without this close the stale handle over the
+    unlinked file keeps serving — and the next seeded_app fixture seeds
+    into yesterday's DB: `Duplicate key "id: admin1"` (~57 spurious errors
+    across the suite, the failure mode that forced the policy back to
+    ``all`` before this fixture existed).
+
+    Singletons on the shared default DATA_DIR are left open — closing them
+    every test would re-run schema checks for no benefit, and their dir is
+    never deleted mid-session. ``close_singleton_connections()`` covers all
+    the path-keyed globals (system, operational, analytics, DuckLake).
+    """
+    yield
+    _db = sys.modules.get("src.db")
+    if _db is None:
+        return  # src.db never imported → no singleton can exist
+
+    basetemp = str(tmp_path_factory.getbasetemp())
+    if any(
+        singleton_outlives_tmp(p, basetemp)
+        for p in (_db._system_db_path, _db._operational_db_path, _db._analytics_db_path)
+    ):
+        _db.close_singleton_connections()
 
 
 @pytest.fixture

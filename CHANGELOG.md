@@ -10,6 +10,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Internal
+
+- **A full local pytest run no longer needs ~40 GB of scratch disk.** `tmp_path_retention_policy = failed` (pytest.ini) now deletes each passing test's tmp dir at teardown, collapsing peak basetemp usage from sum-of-all-tests to failures + in-flight (~0.4 GB measured over a full run). The flip was previously tried and reverted because the process-global DuckDB connection singletons in `src/db.py` (`get_system_db()` & siblings) are keyed by path, and pytest reuses a deleted numbered dir name for the next same-named test — the surviving handle then served the unlinked file and later tests hit `Duplicate key "id: admin1"` in `seeded_app`. A new autouse fixture (`_close_tmp_db_singletons` in `tests/conftest.py`, decision predicate `singleton_outlives_tmp` with its own unit + end-to-end regression tests) closes any singleton pointing into pytest's basetemp at each test's teardown, restoring the invariant that no live handle outlives its tmp dir. The pre-flight disk guard's `DISK_WARN_GB` drops 60 → 10 to match the new footprint.
+
+- **`tests/db_pg/test_jobs_contract.py` no longer fails on machines outside UTC.** Its `_naive` helper stripped tzinfo without converting, so a Postgres session rendering `timestamptz` in the machine's local zone made lease-expiry comparisons off by the UTC offset; tz-aware values are now normalized to UTC first.
+
 ## [0.83.26] - 2026-08-16
 
 ### Fixed
