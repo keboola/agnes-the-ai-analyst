@@ -10,6 +10,22 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- **`agnes query --remote` now answers against Databricks, not just BigQuery.** Register a table with `--source-type databricks --query-mode remote --bucket <schema> --source-table <table>` and an analyst's statement ships to the SQL warehouse as-is: no sync, no parquet, and — because Databricks SQL is the target dialect, not a transpile target — `MEASURE()` over a Unity Catalog metric view works exactly as it does in the Databricks UI. Registered bare names and `dbx."<catalog>.<schema>"."<table>"` paths are rewritten to backticked three-part paths, registry-gated, and RBAC-checked on the caller's grants (keyed on registry id, so rows where `id != name` are not silently denied). Every table the statement names must be registered and granted — checked by parsing the statement (sqlglot, `databricks` dialect) rather than pattern-matching identifiers, because the query executes under a workspace PAT that can typically read the whole workspace: a fully-qualified `` `main`.`hr`.`payroll` `` or a bare `hr.payroll` riding along with a legitimate name is an unauthorized read, not a typo, and an unparseable statement is refused rather than forwarded. Cost guardrail is `data_source.databricks.max_bytes_per_remote_query` (default 1 GiB) with `remote_query_timeout_seconds` (default 120) — and it means something different from BigQuery's cap, which is why it is a separate setting: Databricks has no dry-run, so the cap bounds the bytes the warehouse may *return*, not the bytes it scans. A capped result raises `remote_scan_too_large` rather than coming back quietly short.
+
+- **`query_mode='remote'` Databricks rows can optionally be attached into DuckDB** (`data_source.databricks.attach_enabled`, default off, EXPERIMENTAL). This installs the `uc_catalog` + `delta` community extensions and ATTACHes the workspace's Unity Catalog, giving each remote row a local master view so it can be JOINed against local parquets — the one thing the warehouse path cannot do, since it refuses cross-source statements. Both extensions and `DATABRICKS_TOKEN` were added to the `_remote_attach` allowlists in `src/orchestrator_security.py`; the workspace endpoint is subject to `AGNES_REMOTE_ATTACH_HOST_ALLOWLIST` like every other credentialed ATTACH. Off by default because it installs community extensions and sends a live PAT to the endpoint. **Not verified against a live Databricks workspace** — see `docs/DATA_SOURCES.md`.
+
+### Changed
+
+- **Remote-engine selection moved behind one seam** (`src/remote_engines.py`). Detection of which registered `query_mode='remote'` rows a statement touches, the identifier primitives the RBAC name-scans share (`mask_backticks`, `name_reference_re`), the reserved-keyword set, and the bare-name rewriter are now defined once and used by both engines — previously each existed only in `app/api/query.py`, written against BigQuery. Behaviour for BigQuery is unchanged (the aliases keep every call site intact); what is new is that a statement naming remote tables on two engines is refused with `remote_cross_engine_unsupported` instead of being silently planned for one of them, and a statement joining a remote Databricks table with server-side-only data is refused with `remote_cross_source_unsupported` instead of failing deep inside DuckDB.
+
+- **`source_type='databricks'` accepts `query_mode='remote'`** at `POST /api/admin/register-table` and `agnes admin register-table`. `local` stays rejected — nothing would ever populate it.
+
+- **`/api/v2/scan` and `/api/v2/estimate` refuse a `query_mode='remote'` row on an engine they cannot execute**, instead of falling through to the local-parquet branch and 404-ing as if the table were merely un-synced. Same for snapshot `--from-query`, which is BigQuery-only and now says so (`snapshot_engine_unsupported`) with the command that does work.
+
+- **An access policy on a table bound for an external engine denies the query** (`policy_unsupported_on_remote_engine`) rather than being dropped. BigQuery has a transpile-and-bind path that carries the policy across the engine boundary; Databricks does not yet, and forwarding the unfiltered statement would return exactly the rows the policy exists to hide.
+
 ## [0.83.26] - 2026-08-16
 
 ### Fixed

@@ -1326,6 +1326,11 @@ class SyncOrchestrator:
 
         rows = conn.execute(f"SELECT alias, extension, url, token_env FROM {source_name}._remote_attach").fetchall()
 
+        # Local import: the Databricks connector pulls in `requests` at module
+        # scope, and the orchestrator must stay importable on an instance that
+        # has no Databricks configured at all.
+        from connectors.databricks.attach import UC_EXTENSION, attach_unity_catalog
+
         for alias, extension, url, token_env in rows:
             # Identifier sanity (defense against weird input). The hard
             # security boundary is the allowlist a few lines down.
@@ -1397,6 +1402,31 @@ class SyncOrchestrator:
 
                     apply_bq_session_settings(conn)
                     conn.execute(f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, READ_ONLY)")
+                elif extension == UC_EXTENSION:
+                    # Unity Catalog needs the PAT and the workspace endpoint
+                    # together, which the generic TOKEN branch below cannot
+                    # express. Same credential-egress rules apply — the host
+                    # comes out of `url`, so `is_attach_host_allowed` reads the
+                    # real workspace host with no special casing.
+                    if not is_attach_host_allowed(url):
+                        logger.error(
+                            "Remote attach %s: url host %r is not in %s; refusing to send credential from %s.",
+                            alias,
+                            url,
+                            "AGNES_REMOTE_ATTACH_HOST_ALLOWLIST",
+                            token_env,
+                        )
+                        continue
+                    if not attach_host_allowlist_configured():
+                        logger.warning(
+                            "Remote attach %s: sending credential (%s) to connector-chosen "
+                            "url %r with no AGNES_REMOTE_ATTACH_HOST_ALLOWLIST configured — "
+                            "set it in production to pin allowed hosts.",
+                            alias,
+                            token_env,
+                            url,
+                        )
+                    attach_unity_catalog(conn, alias=alias, url=url, token=token)
                 elif token:
                     # #F10 — never ship a real credential to a connector-chosen
                     # host that the operator has not approved.
