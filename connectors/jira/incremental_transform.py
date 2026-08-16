@@ -12,18 +12,15 @@ import re
 from pathlib import Path
 
 import pandas as pd
-import pyarrow.parquet as pq
 
 # Import transform functions from batch transform
 from .file_lock import parquet_month_lock
-from .validation import is_valid_issue_key, safe_join_under
 from .transform import (
     ATTACHMENTS_SCHEMA,
     CHANGELOG_SCHEMA,
     COMMENTS_SCHEMA,
     HIVE_PARTITION_PREFIX,
     ISSUELINKS_SCHEMA,
-    PARQUET_WRITE_OPTIONS,
     REMOTE_LINKS_SCHEMA,
     apply_schema,
     get_month_key,
@@ -34,7 +31,9 @@ from .transform import (
     transform_issue,
     transform_issuelinks,
     transform_remote_links,
+    write_parquet_atomic,
 )
+from .validation import is_valid_issue_key, safe_join_under
 
 logger = logging.getLogger(__name__)
 
@@ -101,20 +100,54 @@ def load_parquet_month(parquet_dir: Path, month_key: str) -> pd.DataFrame | None
     """
     hive_file = _hive_dir(parquet_dir, month_key) / "data.parquet"
     if hive_file.exists():
-        try:
-            return pd.read_parquet(hive_file)
-        except Exception as e:
-            logger.warning(f"Failed to read {hive_file}: {e}")
-        return None
+        return _read_or_raise(hive_file)
 
     # Backward-compat: flat file from before hive migration
     flat_file = _flat_path(parquet_dir, month_key)
     if flat_file.exists():
-        try:
-            return pd.read_parquet(flat_file)
-        except Exception as e:
-            logger.warning(f"Failed to read {flat_file}: {e}")
+        return _read_or_raise(flat_file)
     return None
+
+
+class UnreadablePartitionError(RuntimeError):
+    """A partition file exists but could not be read.
+
+    Distinct from "no partition", which is a legitimate empty state. See
+    :func:`_read_or_raise` for why the difference has to be fatal.
+    """
+
+
+def _read_or_raise(path: Path) -> pd.DataFrame:
+    """Read *path*, or raise — never answer "no data" for a file that is there.
+
+    This used to `logger.warning(...)` and return ``None``, which conflated two
+    very different answers: *"there is no partition"* (legitimately empty) and
+    *"there is a partition and I cannot read it"* (unknown contents). Callers in
+    `transform_single_issue` feed the result to `upsert_dataframe`, which treats
+    ``None`` as an empty frame and returns only the record being upserted — so
+    the whole month was republished with a SINGLE row, losing every other issue,
+    behind nothing louder than a WARNING. Nothing restored them: the SLA poller
+    revisits only tickets whose `status_category != 'Done'`.
+
+    Atomic publishing (`write_parquet_atomic`) removes the most likely producer
+    of an unreadable partition, but not the rest — disk errors, a truncated
+    restore, a half-finished `rsync`, a filesystem where `os.replace` is not
+    atomic (NFS, some overlay mounts). Those all arrive through this same path,
+    so the read error has to stop the write rather than silently redefine it.
+
+    Failing here costs one issue's transform, under the month lock its callers
+    already hold; the operator repairs the partition (the raw JSON is intact, so
+    a batch re-transform rebuilds it) instead of discovering months later that
+    the history is gone.
+    """
+    try:
+        return pd.read_parquet(path)
+    except Exception as e:
+        raise UnreadablePartitionError(
+            f"{path} exists but could not be read ({e}). Refusing to treat it as empty — "
+            f"overwriting would drop every row it holds. Repair or remove the file "
+            f"(a batch re-transform rebuilds it from the raw JSON)."
+        ) from e
 
 
 def save_parquet_month(
@@ -148,9 +181,9 @@ def save_parquet_month(
             logger.info(f"Removed legacy flat file {flat}")
         return output_path
 
-    hive_dir.mkdir(parents=True, exist_ok=True)
     table = apply_schema(df, schema)
-    pq.write_table(table, output_path, **PARQUET_WRITE_OPTIONS)
+    # Atomic publish — readers glob this directory while it is being written.
+    write_parquet_atomic(table, output_path)
     logger.info(f"Saved {len(df)} records to {output_path}")
 
     # Remove the legacy flat file now that hive layout is written.
