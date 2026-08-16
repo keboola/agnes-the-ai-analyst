@@ -1307,8 +1307,14 @@ class TestConcurrentPublishSafety:
     def test_temp_name_is_per_process(self, tmp_path: Path, org_env: None) -> None:
         from connectors.jira import organizations as orgs
 
+        # Patched on `transform`, not `organizations`: the temp+replace publish moved
+        # into the shared `write_parquet_atomic` helper there, so this module no
+        # longer imports `pq` at all. The guarantee under test is unchanged — that
+        # the temp name carries this process's pid.
+        from connectors.jira import transform as jira_transform
+
         seen: list[str] = []
-        real_write = orgs.pq.write_table
+        real_write = jira_transform.pq.write_table
 
         def _spy(table, where, **kw):
             seen.append(Path(where).name)
@@ -1319,7 +1325,7 @@ class TestConcurrentPublishSafety:
             patch.object(orgs, "get_jira_service", return_value=svc),
             patch.object(orgs, "update_meta"),
             patch.object(orgs.time, "sleep"),
-            patch.object(orgs.pq, "write_table", side_effect=_spy),
+            patch.object(jira_transform.pq, "write_table", side_effect=_spy),
         ):
             orgs.refresh_organizations(extract_dir=tmp_path)
 
