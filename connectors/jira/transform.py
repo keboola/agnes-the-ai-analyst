@@ -581,7 +581,7 @@ def transform_comments(raw_issue: dict, *, preserve_on_incomplete: bool = True) 
     carries. Batch/full-rebuild callers therefore pass
     ``preserve_on_incomplete=False`` and get the partial list.
     """
-    if preserve_on_incomplete and raw_issue.get("_comments_incomplete") is True:
+    if preserve_on_incomplete and comments_are_incomplete(raw_issue):
         return None
 
     issue_key = raw_issue.get("key")
@@ -873,6 +873,19 @@ def is_deleted(raw_issue: dict) -> bool:
     keeps the next one from drifting.
     """
     return bool(raw_issue.get("_deleted_at"))
+
+
+def comments_are_incomplete(raw_issue: dict) -> bool:
+    """True when this issue's embedded comment list is a KNOWN-TRUNCATED subset.
+
+    `complete_issue_comments` (service.py) sets the ``_comments_incomplete``
+    marker after a page-fetch failure mid-pagination. This helper is the single
+    source for the marker's semantics: `transform_comments` consults it for its
+    preserve-on-incomplete contract, and payload builders test it directly
+    instead of running the whole comment transform a second time just to see
+    whether it answers ``None``.
+    """
+    return raw_issue.get("_comments_incomplete") is True
 
 
 def transform_all(

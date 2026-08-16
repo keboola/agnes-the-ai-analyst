@@ -106,32 +106,43 @@ def fetch_sla_and_status(base_url: str, auth: tuple[str, str], issue_key: str) -
         return None
 
 
-def find_open_issues(parquet_dir: Path) -> list[str]:
+def find_open_issues(parquet_dir: Path) -> tuple[list[str], int]:
+    """Open-ticket keys from the issues parquets, plus the unreadable-file count.
+
+    Skipping an unreadable partition is right for making progress — the other
+    months' tickets still get polled — but it silently removes every open
+    ticket of that month from the working set, so their raw JSON stops being
+    refreshed and their SLA data goes stale at the source. The count exists so
+    `run()` can fold that into `failed` instead of the poll getting faster and
+    greener as the hole grows.
+    """
     issues_dir = parquet_dir / "issues"
     if not issues_dir.exists():
         logger.error(f"Issues Parquet directory not found: {issues_dir}")
-        return []
+        return [], 0
 
     # Recursive: matches both flat (<table>/<YYYY-MM>.parquet) and hive
     # (<table>/month=<YYYY-MM>/data.parquet) Jira parquet layouts.
     parquet_files = sorted(issues_dir.rglob("*.parquet"))
     if not parquet_files:
         logger.error(f"No Parquet files found in {issues_dir}")
-        return []
+        return [], 0
 
     logger.info(f"Reading {len(parquet_files)} Parquet files from {issues_dir}")
 
     columns = ["issue_key", "status_category"]
     dfs = []
+    unreadable = 0
     for pf in parquet_files:
         try:
             df = pd.read_parquet(pf, columns=columns)
             dfs.append(df)
         except Exception as e:
-            logger.warning(f"Failed to read {pf}: {e}")
+            unreadable += 1
+            logger.error(f"Failed to read {pf} — its open tickets are not being polled: {e}")
 
     if not dfs:
-        return []
+        return [], unreadable
 
     all_issues = pd.concat(dfs, ignore_index=True)
     logger.info(f"Total issues in Parquet: {len(all_issues)}")
@@ -139,7 +150,7 @@ def find_open_issues(parquet_dir: Path) -> list[str]:
     open_issues = all_issues[all_issues["status_category"] != "Done"]
     issue_keys = open_issues["issue_key"].tolist()
     logger.info(f"Open issues: {len(issue_keys)}")
-    return issue_keys
+    return issue_keys, unreadable
 
 
 def update_issue_sla(
@@ -284,33 +295,30 @@ def run(dry_run: bool = False, verbose: bool = False) -> dict:
             "dry_run": dry_run,
         }
 
-    open_issues = find_open_issues(parquet_dir)
+    open_issues, unreadable_partitions = find_open_issues(parquet_dir)
+
+    stats = {
+        "open_issues": len(open_issues),
+        "updated": 0,
+        "healed": 0,
+        "skipped": 0,
+        # Unreadable partitions removed their open tickets from the working set,
+        # where the refreshed-minus-written delta below can never see them —
+        # they are failures from the start, and dry runs report them too.
+        # (`find_open_issues` already named each file at ERROR.)
+        "failed": unreadable_partitions,
+        "elapsed_sec": 0.0,
+        "dry_run": dry_run,
+    }
 
     if not open_issues:
         logger.info("No open issues found")
-        return {
-            "open_issues": 0,
-            "updated": 0,
-            "healed": 0,
-            "skipped": 0,
-            "failed": 0,
-            "elapsed_sec": 0.0,
-            "dry_run": dry_run,
-        }
+        return stats
 
     if dry_run:
         logger.info(f"Dry run: would poll {len(open_issues)} open issues")
-        return {
-            "open_issues": len(open_issues),
-            "updated": 0,
-            "healed": 0,
-            "skipped": 0,
-            "failed": 0,
-            "elapsed_sec": 0.0,
-            "dry_run": True,
-        }
+        return stats
 
-    stats = {"updated": 0, "skipped": 0, "failed": 0, "healed": 0}
     start_time = time.time()
 
     # Phase 1 — refresh each ticket's raw JSON. No parquet is touched here, so the
@@ -337,6 +345,18 @@ def run(dry_run: bool = False, verbose: bool = False) -> dict:
     # is a hive DIRECTORY key, never a column in the parquet, so there is nothing
     # here to read it back from.
     written = transform_issues(refreshed, raw_dir=raw_dir)
+    # Set-based, not length-based: `find_open_issues` concats every parquet file
+    # without dedup, the same key legitimately sits in two partitions, and
+    # `transform_issues` dedups — a length delta would read that as a permanent
+    # phantom failure. `written` is a subset of `refreshed`, so this is exactly
+    # the tickets whose parquet write did not land; the per-month isolation
+    # already logged why, and this fold is the only failure signal left.
+    unapplied = len(set(refreshed) - set(written))
+    if unapplied:
+        stats["failed"] += unapplied
+        logger.error(
+            f"{unapplied} refreshed ticket(s) did not land in parquet — see 'Could not apply month' errors above"
+        )
     if refreshed:
         logger.info(f"Applied {len(written)} of {len(refreshed)} refreshed ticket(s)")
 
@@ -384,15 +404,8 @@ def run(dry_run: bool = False, verbose: bool = False) -> dict:
     logger.info(f"Time: {elapsed:.1f}s")
     logger.info("=" * 60)
 
-    return {
-        "open_issues": len(open_issues),
-        "updated": stats["updated"],
-        "healed": stats["healed"],
-        "skipped": stats["skipped"],
-        "failed": stats["failed"],
-        "elapsed_sec": elapsed,
-        "dry_run": False,
-    }
+    stats["elapsed_sec"] = elapsed
+    return stats
 
 
 def main():

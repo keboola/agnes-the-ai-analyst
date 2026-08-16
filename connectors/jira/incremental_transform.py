@@ -24,7 +24,9 @@ from .transform import (
     ISSUELINKS_SCHEMA,
     REMOTE_LINKS_SCHEMA,
     apply_schema,
+    comments_are_incomplete,
     get_month_key,
+    is_deleted,
     issues_schema,
     transform_attachments,
     transform_changelog,
@@ -325,6 +327,16 @@ def _build_issue_payload(issue_key: str, raw_dir: Path, attachments_dir: Path) -
     with open(json_path) as f:
         raw_issue = json.load(f)
 
+    if is_deleted(raw_issue):
+        # A deletion webhook landing between the poller's two phases (or during
+        # a webhook-side attachment download) already removed this issue's rows;
+        # rebuilding from the marked JSON would resurrect them, and nothing ever
+        # re-deletes a resurrected row. Skipping costs one unapplied tick in the
+        # poller's stats for that cycle; the ghost leaves the open set with the
+        # deletion.
+        logger.info(f"Skipping {issue_key}: raw JSON is marked _deleted_at")
+        return None
+
     issue_record = transform_issue(raw_issue)
     issue_record["_raw_file"] = json_path.name
     created_at = issue_record.get("created_at")
@@ -339,7 +351,11 @@ def _build_issue_payload(issue_key: str, raw_dir: Path, attachments_dir: Path) -
         # rather than a None-means-incomplete list means the reader never has to
         # reconstruct which of two Optionals is live.
         comments=transform_comments(raw_issue, preserve_on_incomplete=False) or [],
-        comments_incomplete=transform_comments(raw_issue) is None,
+        # The marker check directly, NOT `transform_comments(raw_issue) is None`:
+        # same answer, but that spelling ran the entire comment transform a
+        # second time just for the None-ness — 4x per ticket per poll cycle
+        # once the batch's two passes are counted.
+        comments_incomplete=comments_are_incomplete(raw_issue),
         attachments=transform_attachments(raw_issue, attachments_dir),
         changelog=transform_changelog(raw_issue),
         issuelinks=transform_issuelinks(raw_issue),
@@ -405,12 +421,18 @@ def _has_stored_rows(existing: pd.DataFrame | None, issue_key: str) -> bool:
 # rows alone — which is what makes the two "preserve on fetch failure" rules a
 # per-issue decision without giving either table its own write path.
 _TABLES = (
-    ("issues", lambda p, _e: [p.issue]),
     ("comments", _comment_records),
     ("attachments", lambda p, _e: p.attachments),
     ("changelog", lambda p, _e: p.changelog),
     ("issuelinks", lambda p, _e: p.issuelinks),
     ("remote_links", _remote_link_records),
+    # `issues` deliberately LAST. Its status flip is what removes a ticket from
+    # `find_open_issues`' retry set, so it must land only after every other
+    # table did: a mid-sequence failure (one table's partition unreadable) then
+    # leaves the ticket open and the next poll retries the whole month. With
+    # `issues` first, a ticket healing to Done would be dropped from the poll
+    # at the failure point, freezing its remaining tables forever.
+    ("issues", lambda p, _e: [p.issue]),
 )
 
 
@@ -577,8 +599,10 @@ def _apply_month(
                 )
                 continue
             payloads.append(payload)
-            applied.append(issue_key)
         _apply_payloads(payloads, month_key, output_dir)
+        # Only after the apply: a crashed month must not report its keys as
+        # applied — the applied/refreshed delta is the poller's failure signal.
+        applied.extend(p.issue_key for p in payloads)
     logger.info(f"Applied {len(payloads)} issue(s) to month {month_key} in one pass")
 
 
@@ -661,6 +685,8 @@ def _handle_deletion(
     """Handle issue deletion by removing from all monthly files."""
     found = False
 
+    # Order here is free to differ from `_TABLES`: removing rows has no
+    # status-flip to sequence around, so `issues` need not go last.
     for table_name, schema in [
         ("issues", issues_schema()),
         ("comments", COMMENTS_SCHEMA),
