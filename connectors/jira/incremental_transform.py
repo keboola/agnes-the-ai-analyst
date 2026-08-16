@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 import pandas as pd
@@ -67,18 +68,38 @@ def upsert_dataframe(
     Returns:
         Updated DataFrame
     """
+    return upsert_dataframe_many(existing_df, new_records, key_column, [issue_key])
+
+
+def upsert_dataframe_many(
+    existing_df: pd.DataFrame | None,
+    new_records: list[dict],
+    key_column: str,
+    issue_keys: list[str],
+) -> pd.DataFrame:
+    """Upsert several issues' records in one pass.
+
+    Same contract as :func:`upsert_dataframe`, widened from one key to many:
+    every row whose ``key_column`` is in *issue_keys* is dropped, then
+    *new_records* is appended. That is what lets a month's whole batch land in a
+    single read-modify-write instead of one per issue.
+
+    ``issue_keys`` must list every issue the caller is replacing, INCLUDING any
+    whose ``new_records`` came back empty — that is the deletion case, and
+    deriving the key set from the records instead would silently skip it.
+    """
     new_df = pd.DataFrame(new_records) if new_records else pd.DataFrame()
 
     if existing_df is None or existing_df.empty:
         return new_df
 
+    keep = existing_df[~existing_df[key_column].isin(issue_keys)].copy()
     if new_df.empty:
-        # Remove issue from existing data (deletion case)
-        return existing_df[existing_df[key_column] != issue_key].copy()
+        # Removing the issues from existing data (deletion case)
+        return keep
 
-    # Remove old records for this issue, add new ones
-    filtered = existing_df[existing_df[key_column] != issue_key]
-    return pd.concat([filtered, new_df], ignore_index=True)
+    # Old records for these issues dropped above; add the new ones
+    return pd.concat([keep, new_df], ignore_index=True)
 
 
 def _hive_dir(parquet_dir: Path, month_key: str) -> Path:
@@ -257,6 +278,307 @@ def migrate_flat_to_hive(table_dir: Path) -> list[str]:
     return migrated
 
 
+@dataclass
+class _IssuePayload:
+    """One issue's raw JSON, already transformed into per-table records.
+
+    Built without touching a lock or a parquet file, so a batch can build many of
+    these and land them together. The month is derived here, from the issue's own
+    `created_at` — it is not something a caller can look up, because `month` is a
+    hive DIRECTORY key and never a column in the file.
+    """
+
+    issue_key: str
+    month_key: str
+    created_at_missing: bool
+    issue: dict
+    comments: list[dict]
+    comments_incomplete: bool
+    attachments: list[dict]
+    changelog: list[dict]
+    issuelinks: list[dict]
+    remote_links: list[dict] | None
+
+
+def _build_issue_payload(issue_key: str, raw_dir: Path, attachments_dir: Path) -> _IssuePayload | None:
+    """Read one issue's JSON and transform it. ``None`` if it cannot be used.
+
+    Pure with respect to the parquet tree: no locks taken, nothing written. The
+    batch path calls this *inside* the month lock so a webhook landing mid-run is
+    either already visible here or still blocked on the lock and applies after us.
+    """
+    if not is_valid_issue_key(issue_key):
+        logger.error(f"Refusing transform for malformed issue key: {issue_key!r}")
+        return None
+    try:
+        json_path = safe_join_under(raw_dir / "issues", f"{issue_key}.json")
+    except ValueError as e:
+        logger.error(f"Path traversal blocked in transform for {issue_key!r}: {e}")
+        return None
+    if not json_path.exists():
+        logger.error(f"Issue JSON not found: {json_path}")
+        return None
+
+    with open(json_path) as f:
+        raw_issue = json.load(f)
+
+    issue_record = transform_issue(raw_issue)
+    issue_record["_raw_file"] = json_path.name
+    created_at = issue_record.get("created_at")
+
+    return _IssuePayload(
+        issue_key=issue_key,
+        month_key=get_month_key(created_at),
+        created_at_missing=created_at is None,
+        issue=issue_record,
+        # Always the full transformed list. Whether it may be WRITTEN is the
+        # separate `comments_incomplete` flag below — keeping them as two fields
+        # rather than a None-means-incomplete list means the reader never has to
+        # reconstruct which of two Optionals is live.
+        comments=transform_comments(raw_issue, preserve_on_incomplete=False) or [],
+        comments_incomplete=transform_comments(raw_issue) is None,
+        attachments=transform_attachments(raw_issue, attachments_dir),
+        changelog=transform_changelog(raw_issue),
+        issuelinks=transform_issuelinks(raw_issue),
+        remote_links=transform_remote_links(raw_issue),
+    )
+
+
+def _comment_records(payload: _IssuePayload, existing: pd.DataFrame | None) -> list[dict] | None:
+    """Rows to write for this issue's comments, or ``None`` to preserve what is stored.
+
+    `complete_issue_comments` marks an issue `_comments_incomplete` when it hit a
+    page-fetch failure mid-pagination. The upsert is an issue-scoped
+    delete-then-insert, so writing the known-truncated list would replace a
+    previously-complete stored thread with a shorter one.
+
+    Unless there is nothing to preserve: on a first fetch the marker would
+    otherwise mean no comment row is ever written. `month_key` is only a genuine
+    signal when `created_at` parsed — `get_month_key(None)` falls back to the
+    CURRENT month, so probing an unrelated (empty) month would read "nothing
+    stored" and write the partial list THERE while the real thread sits in the
+    creation month; views glob `month=*`, so they would double-count.
+    """
+    if not payload.comments_incomplete:
+        return payload.comments
+    if payload.created_at_missing or _has_stored_rows(existing, payload.issue_key) or not payload.comments:
+        logger.warning(
+            f"Skipping comments upsert for {payload.issue_key}: pagination incomplete "
+            f"(fetch failure). Existing rows preserved."
+        )
+        return None
+    logger.warning(
+        f"Writing {len(payload.comments)} partially-fetched comments for "
+        f"{payload.issue_key}: pagination incomplete (fetch failure), but no stored rows "
+        f"to preserve."
+    )
+    return payload.comments
+
+
+def _remote_link_records(payload: _IssuePayload, _existing: pd.DataFrame | None) -> list[dict] | None:
+    if payload.remote_links is None:
+        # The writer (save_issue / backfill / backfill_remote_links) skipped the
+        # _remote_links overlay due to a Jira fetch failure. Preserve the existing
+        # parquet rows for this issue instead of wiping them.
+        logger.warning(
+            f"Skipping remote_links upsert for {payload.issue_key}: overlay absent "
+            f"(fetch failure). Existing rows preserved."
+        )
+        return None
+    return payload.remote_links
+
+
+def _has_stored_rows(existing: pd.DataFrame | None, issue_key: str) -> bool:
+    return (
+        existing is not None
+        and not existing.empty
+        and "issue_key" in existing.columns
+        and bool((existing["issue_key"] == issue_key).any())
+    )
+
+
+# Every table this transform maintains, as (name, schema, selector). The selector
+# returns the rows to write for one issue, or None to leave that issue's stored
+# rows alone — which is what makes the two "preserve on fetch failure" rules a
+# per-issue decision without giving either table its own write path.
+_TABLES = (
+    ("issues", lambda p, _e: [p.issue]),
+    ("comments", _comment_records),
+    ("attachments", lambda p, _e: p.attachments),
+    ("changelog", lambda p, _e: p.changelog),
+    ("issuelinks", lambda p, _e: p.issuelinks),
+    ("remote_links", _remote_link_records),
+)
+
+
+def _table_schemas() -> dict:
+    return {
+        "issues": issues_schema(),
+        "comments": COMMENTS_SCHEMA,
+        "attachments": ATTACHMENTS_SCHEMA,
+        "changelog": CHANGELOG_SCHEMA,
+        "issuelinks": ISSUELINKS_SCHEMA,
+        "remote_links": REMOTE_LINKS_SCHEMA,
+    }
+
+
+def _apply_payloads(payloads: list[_IssuePayload], month_key: str, output_dir: Path) -> None:
+    """Land every payload in *month_key*: one load and one save per table.
+
+    The caller holds ``parquet_month_lock``. This is the single write path — both
+    `transform_single_issue` (one payload) and `transform_issues` (many) go
+    through it, so the per-issue rules cannot drift between them.
+
+    `_meta` is deliberately NOT refreshed here — see
+    `app.worker.kinds._run_jira_refresh`, which does it once per coalesced rebuild
+    instead of once per event. Doing it per write cost a write-open of
+    extract.duckdb plus a full count over every partition of all six tables;
+    DuckDB is single-writer, and the same event enqueues a rebuild that ATTACHes
+    that file, so the two raced — a lost ATTACH is only logged, and the rebuild
+    then swaps in a freshly built analytics DB with no Jira views, so the tables
+    vanish until a later rebuild wins. The parquet written here is queryable
+    regardless: the extract views glob `month=*` per query.
+    """
+    if not payloads:
+        return
+    schemas = _table_schemas()
+
+    for name, records_of in _TABLES:
+        table_dir = output_dir / name
+        existing = load_parquet_month(table_dir, month_key)
+        keys: list[str] = []
+        records: list[dict] = []
+        for payload in payloads:
+            rows = records_of(payload, existing)
+            if rows is None:
+                continue  # the selector logged why
+            keys.append(payload.issue_key)
+            records.extend(rows)
+        if keys:
+            save_parquet_month(
+                upsert_dataframe_many(existing, records, "issue_key", keys),
+                schemas[name],
+                table_dir,
+                month_key,
+            )
+
+
+def transform_issues(
+    issue_keys: list[str],
+    raw_dir: Path | None = None,
+    output_dir: Path | None = None,
+    attachments_dir: Path | None = None,
+) -> list[str]:
+    """Transform many issues, one read-modify-write per table per month.
+
+    `transform_single_issue` is the right granularity for a webhook — one event,
+    one issue. A caller holding a LIST of issues was calling it per key, which
+    rewrites that key's whole month partition across all six tables. `poll_sla`
+    (every open ticket, every cycle) is the caller this exists for;
+    `consistency_check` has the same shape but still shells out to the CLI per
+    key, so converting it is a separate change. A month
+    holding N of them was therefore rewritten N times, re-emitting bytes the
+    previous key had just written.
+
+    The month is derived from each issue's own `created_at`, never supplied by the
+    caller: `month` is a hive DIRECTORY key, so it is not a column any caller can
+    read back, and a caller repairing missing rows has no parquet to read it from
+    anyway.
+
+    Returns the keys that were applied. A key whose JSON is missing or malformed is
+    skipped and logged rather than sinking its batch.
+
+    Lock discipline: takes ONLY ``parquet_month_lock``, never an issue lock inside
+    it, since `file_lock.py` documents the nesting as issue (outer) -> month
+    (inner) and the webhook path relies on it. Payloads are rebuilt *inside* the
+    lock so a concurrent webhook cannot land between the read and the write.
+    """
+    raw_dir = raw_dir or DEFAULT_RAW_DIR
+    output_dir = output_dir or DEFAULT_OUTPUT_DIR
+    attachments_dir = attachments_dir or (raw_dir / "attachments")
+    # De-duplicate first. `_apply_payloads` extends its record list once per
+    # payload, so a key appearing twice is deleted once and re-inserted twice —
+    # the function this replaces was idempotent under repetition and this must be
+    # too. Repeats are not hypothetical: the same `issue_key` legitimately sits in
+    # two partitions when `created_at` is missing (the current-month fallback
+    # documented in `_comment_records`), and a half-finished flat->hive migration
+    # lets `rglob("*.parquet")` see one month twice.
+    issue_keys = list(dict.fromkeys(issue_keys))
+    if not issue_keys:
+        return []
+
+    # Group first, on a throwaway pass, so each month is opened once. The payloads
+    # built here are deliberately DISCARDED: the authoritative ones are rebuilt
+    # under the month lock below, which is what keeps a concurrent webhook safe.
+    # Re-reading a handful of KB of JSON is far cheaper than the rewrites this
+    # avoids.
+    by_month: dict[str, list[str]] = {}
+    for issue_key in issue_keys:
+        try:
+            payload = _build_issue_payload(issue_key, raw_dir, attachments_dir)
+        except Exception as e:
+            logger.error(f"Error transforming {issue_key}: {e}", exc_info=True)
+            continue
+        if payload is None:
+            continue
+        by_month.setdefault(payload.month_key, []).append(issue_key)
+
+    applied: list[str] = []
+    for month_key in sorted(by_month):
+        try:
+            _apply_month(by_month[month_key], month_key, raw_dir, output_dir, attachments_dir, applied)
+        except Exception as e:
+            # Per-month fault isolation, the same contract `migrate_flat_to_hive`
+            # states for its own pass. Without it an `UnreadablePartitionError` from
+            # one corrupt partition propagates out of the whole run: every month
+            # after it in sort order goes unwritten, AND the caller's coalesced
+            # `jira-refresh` enqueue is skipped — so the months that DID write are
+            # never announced to the catalog. One bad month costs that month.
+            logger.error(f"Could not apply month {month_key}: {e}", exc_info=True)
+
+    return applied
+
+
+def _apply_month(
+    issue_keys: list[str],
+    month_key: str,
+    raw_dir: Path,
+    output_dir: Path,
+    attachments_dir: Path,
+    applied: list[str],
+) -> None:
+    """Rebuild one month's payloads under its lock and land them."""
+    with parquet_month_lock(output_dir, month_key):
+        payloads: list[_IssuePayload] = []
+        for issue_key in issue_keys:
+            try:
+                payload = _build_issue_payload(issue_key, raw_dir, attachments_dir)
+            except Exception as e:
+                logger.error(f"Error transforming {issue_key}: {e}", exc_info=True)
+                continue
+            if payload is None:
+                continue
+            if payload.month_key != month_key:
+                # Rare but reachable: `get_month_key(None)` falls back to the
+                # CURRENT month, so an issue with an absent/unparseable
+                # `created_at` can be grouped under one month in pass 1 and
+                # another in pass 2 when a ~45-minute run straddles a month
+                # boundary. Skipping is the safe direction — writing it here
+                # would file it in the wrong hive directory, and the views glob
+                # `month=*`, so it would double-count. Say so rather than
+                # letting it vanish into the applied/refreshed delta.
+                logger.warning(
+                    f"Skipping {issue_key}: grouped under {month_key} but its "
+                    f"created_at now resolves to {payload.month_key}. It will be "
+                    f"picked up by its own month on the next pass."
+                )
+                continue
+            payloads.append(payload)
+            applied.append(issue_key)
+        _apply_payloads(payloads, month_key, output_dir)
+    logger.info(f"Applied {len(payloads)} issue(s) to month {month_key} in one pass")
+
+
 def transform_single_issue(
     issue_key: str,
     raw_dir: Path | None = None,
@@ -307,153 +629,20 @@ def transform_single_issue(
         return False
 
     try:
-        # Load raw issue data
-        with open(json_path) as f:
-            raw_issue = json.load(f)
-
-        # Transform issue
-        issue_record = transform_issue(raw_issue)
-        issue_record["_raw_file"] = json_path.name
-
-        # Determine month
-        created_at = issue_record.get("created_at")
-        month_key = get_month_key(created_at)
-        logger.info(f"Updating {issue_key} in month {month_key}")
-
-        # Transform related data
-        comments_records = transform_comments(raw_issue)
-        # The partially-fetched list behind a `_comments_incomplete` marker. It is
-        # only written when there are no stored rows for this issue to preserve
-        # (see below) — otherwise the marker wins and the stored thread stands.
-        partial_comments_records = (
-            transform_comments(raw_issue, preserve_on_incomplete=False) if comments_records is None else None
-        )
-        attachments_records = transform_attachments(raw_issue, attachments_dir)
-        changelog_records = transform_changelog(raw_issue)
-
-        # Transform link/remote data outside lock (minimize hold time)
-        issuelinks_records = transform_issuelinks(raw_issue)
-        remote_links_records = transform_remote_links(raw_issue)
+        # One payload, then the shared apply path — the same one
+        # `transform_issues` uses, so the per-issue rules for an
+        # incomplete comment thread and an absent remote-links overlay cannot
+        # drift between the single and batched callers.
+        payload = _build_issue_payload(issue_key, raw_dir, attachments_dir)
+        if payload is None:
+            return False
 
         # Parquet read-modify-write under per-month lock to prevent
         # "last writer wins" race when concurrent webhooks touch the
         # same monthly partition (see issue #205).
-        with parquet_month_lock(output_dir, month_key):
-            updated_paths = []
-
-            # Issues
-            existing_issues = load_parquet_month(output_dir / "issues", month_key)
-            updated_issues = upsert_dataframe(existing_issues, [issue_record], "issue_key", issue_key)
-            path = save_parquet_month(updated_issues, issues_schema(), output_dir / "issues", month_key)
-            updated_paths.append(path)
-
-            # Comments
-            if comments_records is not None:
-                existing_comments = load_parquet_month(output_dir / "comments", month_key)
-                updated_comments = upsert_dataframe(existing_comments, comments_records, "issue_key", issue_key)
-                path = save_parquet_month(updated_comments, COMMENTS_SCHEMA, output_dir / "comments", month_key)
-                updated_paths.append(path)
-            else:
-                # complete_issue_comments (service.py) hit a page-fetch failure
-                # mid-pagination and marked the issue `_comments_incomplete`.
-                # This upsert is an issue-scoped delete-then-insert, so writing
-                # the known-truncated list would overwrite a previously-complete
-                # stored comment thread with a shorter one. Preserve existing
-                # rows instead — the same contract as the remote_links skip below.
-                #
-                # Unless there is nothing to preserve: on an issue's FIRST fetch
-                # the marker would otherwise mean no comment row is ever written
-                # (the JSON keeps the marker, so every later re-transform reads it
-                # again). With no stored rows for this issue, the partial list
-                # cannot regress anything and is strictly better than none.
-                existing_comments = load_parquet_month(output_dir / "comments", month_key)
-                has_stored_comments = (
-                    existing_comments is not None
-                    and not existing_comments.empty
-                    and "issue_key" in existing_comments.columns
-                    and bool((existing_comments["issue_key"] == issue_key).any())
-                )
-                # `month_key` above is only a genuine signal when `created_at`
-                # parsed; get_month_key(None) falls back to the CURRENT
-                # month, which is not necessarily where this issue's
-                # comments really live (realistic via the webhook fallback
-                # path — see _embedded_comments_are_complete). Probing an
-                # unrelated (empty) month would read "nothing stored" and
-                # write the partial list THERE, while the genuine thread
-                # sits in the true creation month — same issue_key with
-                # comment rows in two partitions; views glob month=*, so
-                # they'd double-count. Without a reliable month to probe,
-                # treat it the same as "something is stored" and preserve
-                # (Devin Review on #1283).
-                if created_at is None or has_stored_comments or not partial_comments_records:
-                    logger.warning(
-                        f"Skipping comments upsert for {issue_key}: pagination incomplete "
-                        f"(fetch failure). Existing rows preserved."
-                    )
-                else:
-                    logger.warning(
-                        f"Writing {len(partial_comments_records)} partially-fetched comments for "
-                        f"{issue_key}: pagination incomplete (fetch failure), but no stored rows "
-                        f"to preserve."
-                    )
-                    updated_comments = upsert_dataframe(
-                        existing_comments, partial_comments_records, "issue_key", issue_key
-                    )
-                    path = save_parquet_month(updated_comments, COMMENTS_SCHEMA, output_dir / "comments", month_key)
-                    updated_paths.append(path)
-
-            # Attachments
-            existing_attachments = load_parquet_month(output_dir / "attachments", month_key)
-            updated_attachments = upsert_dataframe(existing_attachments, attachments_records, "issue_key", issue_key)
-            path = save_parquet_month(updated_attachments, ATTACHMENTS_SCHEMA, output_dir / "attachments", month_key)
-            updated_paths.append(path)
-
-            # Changelog
-            existing_changelog = load_parquet_month(output_dir / "changelog", month_key)
-            updated_changelog = upsert_dataframe(existing_changelog, changelog_records, "issue_key", issue_key)
-            path = save_parquet_month(updated_changelog, CHANGELOG_SCHEMA, output_dir / "changelog", month_key)
-            updated_paths.append(path)
-
-            # Issue links
-            existing_issuelinks = load_parquet_month(output_dir / "issuelinks", month_key)
-            updated_issuelinks = upsert_dataframe(existing_issuelinks, issuelinks_records, "issue_key", issue_key)
-            path = save_parquet_month(updated_issuelinks, ISSUELINKS_SCHEMA, output_dir / "issuelinks", month_key)
-            updated_paths.append(path)
-
-            # Remote links
-            if remote_links_records is not None:
-                existing_remote_links = load_parquet_month(output_dir / "remote_links", month_key)
-                updated_remote_links = upsert_dataframe(
-                    existing_remote_links, remote_links_records, "issue_key", issue_key
-                )
-                path = save_parquet_month(
-                    updated_remote_links, REMOTE_LINKS_SCHEMA, output_dir / "remote_links", month_key
-                )
-                updated_paths.append(path)
-            else:
-                # The writer (save_issue / backfill / backfill_remote_links) skipped
-                # the _remote_links overlay due to a Jira fetch failure. Preserve the
-                # existing parquet rows for this issue instead of wiping them.
-                logger.warning(
-                    f"Skipping remote_links upsert for {issue_key}: overlay absent "
-                    f"(fetch failure). Existing rows preserved."
-                )
-
-        # `_meta` is deliberately NOT refreshed here — see `app.worker.kinds._run_jira_refresh`,
-        # which does it once per coalesced rebuild instead of once per event.
-        #
-        # The parquet write above is already visible to readers: the views inside
-        # extract.duckdb are `read_parquet('.../<table>/month=*/*.parquet',
-        # hive_partitioning=true)` and the glob is evaluated per query, so a rewritten
-        # partition — or an entirely new month — is served on the next SELECT with no
-        # rebuild at all. `_meta` carries only the catalog's row/size numbers.
-        #
-        # Refreshing it here cost a write-open of extract.duckdb plus a full count over
-        # every partition of all six tables, on every single event. DuckDB is
-        # single-writer, and the same event enqueues a rebuild that ATTACHes that file,
-        # so the two raced: a lost ATTACH is only logged, and the rebuild then swaps in
-        # a freshly built analytics DB that has no Jira views — the tables vanish until
-        # a later rebuild wins.
+        logger.info(f"Updating {issue_key} in month {payload.month_key}")
+        with parquet_month_lock(output_dir, payload.month_key):
+            _apply_payloads([payload], payload.month_key, output_dir)
         logger.info(f"Successfully updated {issue_key} in Parquet files")
         return True
 

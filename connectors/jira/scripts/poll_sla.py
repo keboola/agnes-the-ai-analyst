@@ -48,14 +48,13 @@ import pandas as pd
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from connectors.jira.scripts.backfill_sla import (  # noqa: E402
+from app.logging_config import setup_logging
+from connectors.jira.file_lock import issue_json_lock
+from connectors.jira.incremental_transform import transform_issues
+from connectors.jira.scripts.backfill_sla import (
     configured_field_ids,
     load_config,
 )
-from connectors.jira.incremental_transform import transform_single_issue  # noqa: E402
-from connectors.jira.file_lock import issue_json_lock  # noqa: E402
-
-from app.logging_config import setup_logging  # noqa: E402
 
 setup_logging(__name__)
 logger = logging.getLogger(__name__)
@@ -108,12 +107,6 @@ def fetch_sla_and_status(base_url: str, auth: tuple[str, str], issue_key: str) -
 
 
 def find_open_issues(parquet_dir: Path) -> list[str]:
-    """
-    Read Parquet issues and return keys of open tickets (status_category != 'Done').
-
-    Open tickets are the ones whose field values can still change, so they are the
-    ones worth re-fetching each poll cycle.
-    """
     issues_dir = parquet_dir / "issues"
     if not issues_dir.exists():
         logger.error(f"Issues Parquet directory not found: {issues_dir}")
@@ -242,17 +235,13 @@ def update_issue_sla(
                 pass
             raise
 
-        # Re-transform to Parquet (inside lock to prevent stale reads).
-        # `raw_dir` is the directory this function just wrote the JSON into; without
-        # it the transform resolves `$DATA_DIR/extracts/<source>/raw` instead and
-        # fails with "Issue JSON not found" wherever that differs from JIRA_DATA_DIR
-        # — the same reader/writer split fixed on the webhook path. `output_dir`
-        # stays unset on purpose: its default is the served extract layout, while
-        # this module's `parquet_dir` is the legacy Data Broker root.
-        success = transform_single_issue(issue_key=issue_key, raw_dir=raw_dir)
-        if not success:
-            logger.error(f"Failed to transform {issue_key} after field refresh")
-            return "failed"
+        # The parquet write is deliberately NOT done here. `run()` batches it:
+        # it groups the whole poll by month and applies each month in one
+        # read-modify-write per table (`transform_issues`). The JSON above is
+        # durable and is exactly what that pass reads, so nothing is lost by
+        # returning now — and this issue's lock is released before any month lock
+        # is taken, which is what keeps `file_lock.py`'s documented
+        # issue(outer) -> month(inner) nesting intact.
 
     return "healed" if is_healed else "updated"
 
@@ -324,11 +313,32 @@ def run(dry_run: bool = False, verbose: bool = False) -> dict:
     stats = {"updated": 0, "skipped": 0, "failed": 0, "healed": 0}
     start_time = time.time()
 
+    # Phase 1 — refresh each ticket's raw JSON. No parquet is touched here, so the
+    # only lock held is that issue's own `issue_json_lock`.
+    refreshed: list[str] = []
     for i, issue_key in enumerate(sorted(open_issues), 1):
         logger.info(f"[{i}/{len(open_issues)}] Polling {issue_key}...")
         result = update_issue_sla(issue_key, raw_dir, base_url, auth)
         stats[result] += 1
+        if result in ("updated", "healed"):
+            refreshed.append(issue_key)
         time.sleep(0.5)  # gentle on the Jira API
+
+    # Phase 2 — land them, one read-modify-write per table per month.
+    #
+    # This used to run inside phase 1: every ticket called `transform_single_issue`,
+    # which rewrites its month's SIX partitions in full. A month holding N polled
+    # tickets was therefore rewritten N times per cycle, re-emitting bytes the
+    # previous ticket had just written — the dominant cost of a poll, and enough
+    # churn that `sync_state`'s hashes could never settle against it.
+    #
+    # `transform_issues` derives each issue's month from its own `created_at` and
+    # does the grouping itself. It is deliberately not this module's job: `month`
+    # is a hive DIRECTORY key, never a column in the parquet, so there is nothing
+    # here to read it back from.
+    written = transform_issues(refreshed, raw_dir=raw_dir)
+    if refreshed:
+        logger.info(f"Applied {len(written)} of {len(refreshed)} refreshed ticket(s)")
 
     elapsed = time.time() - start_time
 
