@@ -78,24 +78,9 @@ services:
     volumes: !override
       - /data:/data
 
-  apps-runner:
-    # The sidecar writes each data app's `config.json` under
-    # `/data/apps/<slug>/`, and the app container deletes that directory when
-    # the app is deleted (`_rmtree_config_dir` in app/api/data_apps.py) —
-    # the file holds a service JWT and git credentials in plaintext. Without
-    # this override the sidecar keeps the `data` named volume while every
-    # other container binds the host `/data`, so the two halves address
-    # different filesystems: writes land in the volume, the app's delete finds
-    # nothing, swallows FileNotFoundError, and the credentials stay on disk
-    # forever. (Deploys still worked, which is why it went unnoticed —
-    # `_resolve_host_path` in services/apps_runner/api.py maps the sidecar's
-    # own mount back to a daemon-visible path either way.)
-    #
-    # Restate the docker socket: `!override` replaces the whole list, and
-    # without the socket the sidecar cannot talk to the daemon at all.
-    volumes: !override
-      - /data:/data
-      - /var/run/docker.sock:/var/run/docker.sock
+  # apps-runner's override lives BELOW caddy — one service, one key. A second
+  # `apps-runner:` block here made this file invalid YAML (duplicate mapping
+  # key), which every `docker compose` call on a deployed VM rejects outright.
 
   caddy:
     # Caddy was originally inheriting `data:/srv:ro` from the base
