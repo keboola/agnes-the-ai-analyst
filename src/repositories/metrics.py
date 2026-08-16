@@ -42,7 +42,12 @@ class MetricRepository(MetricYamlMixin):
         description: Optional[str] = None,
         type: str = "sum",
         unit: Optional[str] = None,
-        grain: str = "monthly",
+        # No default: a grain nobody declared is a claim about the metric's
+        # time dimension that the reader cannot tell apart from a declared one,
+        # and `agnes catalog --metrics --show` prints `Grain:` unconditionally.
+        # Callers that genuinely want "monthly" when their input omits it pass
+        # it explicitly (app/api/metrics.py, _orchestration_mixins.py).
+        grain: Optional[str] = None,
         table_name: Optional[str] = None,
         tables: Optional[List[str]] = None,
         expression: Optional[str] = None,

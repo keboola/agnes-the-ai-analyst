@@ -39,7 +39,8 @@ class MetricPgRepository(MetricYamlMixin):
         description: Optional[str] = None,
         type: str = "sum",
         unit: Optional[str] = None,
-        grain: str = "monthly",
+        # No default — see the DuckDB sibling in metrics.py for why.
+        grain: Optional[str] = None,
         table_name: Optional[str] = None,
         tables: Optional[List[str]] = None,
         expression: Optional[str] = None,
