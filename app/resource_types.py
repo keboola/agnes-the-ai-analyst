@@ -260,15 +260,19 @@ def _semantic_model_blocks() -> List[Block]:
     """Project ``semantic_models`` into the (block → items) shape rendered
     by the admin /access page. ``resource_id`` is ``semantic_models.id``.
 
-    NOTE: this registers ``SEMANTIC_MODEL`` as a directly grantable resource
-    type, following the ``DATA_PACKAGE`` entry above — but nothing in the
-    export/search RBAC gate (``app/api/semantic_models.py``) reads a direct
-    ``resource_grants(SEMANTIC_MODEL, ...)`` row today: that gate checks the
-    linked-package grant via ``list_packages_for_model`` instead. A grant
-    created here through /admin/access is therefore inert until a future
-    task wires a direct-grant fallback into the export/search check (the
-    same way ``can_access_table`` layers per-table grants under the
-    data-package stack).
+    This registers ``SEMANTIC_MODEL`` as a directly grantable resource type,
+    following the ``DATA_PACKAGE`` entry above, and the export/search RBAC
+    gate reads it: ``_can_access_semantic_model``
+    (``app/api/semantic_models.py``) checks a direct
+    ``resource_grants(SEMANTIC_MODEL, ...)`` row first and falls back to the
+    linked-package grant via ``list_packages_for_model`` — the same way
+    ``can_access_table`` layers per-table grants under the data-package
+    stack. So a grant created here through /admin/access does take effect.
+
+    Pinned by ``test_export_succeeds_via_a_direct_model_grant`` in
+    ``tests/test_semantic_models_api.py``, whose own docstring records why
+    the guard is worth having: a control that is offered but never read is
+    worse than one that is absent.
     """
     from src.repositories import semantic_model_repo
 

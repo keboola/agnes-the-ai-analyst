@@ -5,10 +5,11 @@ Task 10).
 RBAC model under test: admin CRUD lives at ``/api/admin/semantic-models``
 and ``/api/admin/semantic-sources`` (``require_admin``); the export and
 search endpoints live at the un-prefixed ``/api/semantic-models/*`` and are
-gated on the linked data package's grant instead — any authenticated user
-who can reach a Data Package the model is linked to can read it, matching
-the spec's ownership rule that a semantic model rides the same visibility
-as the tables/packages it belongs to.
+gated on a grant instead — a direct ``semantic_model`` grant, or a grant on
+any Data Package the model is linked to. That matches the spec's ownership
+rule that a semantic model rides the same visibility as the tables/packages
+it belongs to, without making the directly grantable resource type that
+/admin/access offers a control nothing reads.
 """
 
 from __future__ import annotations
