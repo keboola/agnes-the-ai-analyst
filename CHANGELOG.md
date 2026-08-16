@@ -24,6 +24,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 - **`/api/v2/scan` and `/api/v2/estimate` refuse a `query_mode='remote'` row on an engine they cannot execute**, instead of falling through to the local-parquet branch and 404-ing as if the table were merely un-synced. Same for snapshot `--from-query`, which is BigQuery-only and now says so (`snapshot_engine_unsupported`) with the command that does work.
 
+- **`GET /api/v2/schema/<id>` answers for a remote Databricks row**, reading the columns from Unity Catalog instead of 404-ing on a parquet that will never exist — the repo's own agent rails say to run `agnes schema` before writing any query, and a 404 there reads as "not synced yet" and sends the caller hunting for a sync that is never going to happen. `sql_flavor` is reported as `databricks` with matching `where_dialect_hints`, and `agnes catalog`'s `fetch_via` / `sql_flavor` follow the execution engine for the same reason (a remote row previously advertised itself as "already local").
+
 - **An access policy on a table bound for an external engine denies the query** (`policy_unsupported_on_remote_engine`) rather than being dropped. BigQuery has a transpile-and-bind path that carries the policy across the engine boundary; Databricks does not yet, and forwarding the unfiltered statement would return exactly the rows the policy exists to hide.
 
 ## [0.83.26] - 2026-08-16
