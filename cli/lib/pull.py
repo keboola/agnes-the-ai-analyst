@@ -41,6 +41,7 @@ from pathlib import Path
 import httpx
 
 from cli.client import api_get, api_post, stream_download
+from src.distribution import CONTENT_MD5_HEADER
 from cli.config import get_sync_state, save_sync_state
 from cli.snapshot_meta import list_snapshots
 from src.sql_ident import quote_ident
@@ -646,6 +647,21 @@ def _fetch_part_with_retry(fetch_part, relpath: str, dest: Path, expected: str) 
     (``_DOWNLOAD_RETRIES`` extra attempts, ``_DOWNLOAD_RETRY_BACKOFFS_S``
     between them). Returns ``None`` on success, else the last error string.
 
+    ``expected`` (the manifest hash) is a CACHE KEY, not the integrity arbiter.
+    The manifest is a snapshot taken at rebuild time and is fetched in a separate
+    request from the parts, so on a dataset being rewritten in between the two can
+    legitimately disagree — which is not corruption. When the server tags the
+    response with ``X-Agnes-Content-MD5`` (the md5 of the bytes it actually sent,
+    hashed from the same open descriptor it streamed) and the received bytes match
+    THAT, the transfer was perfect and the manifest was merely stale, so the part is
+    accepted instead of failing the whole table.
+
+    The caller still records the MANIFEST hash for this part, not the served one.
+    That record is compared only against the next manifest (`_diff_parts`), so it
+    is answering "which published version have I reconciled against" — recording
+    the served hash instead would make every subsequent pull see local != server
+    and re-fetch the same part until the server happened to rebuild.
+
     Exists for parity with `_download_one` (#596/#626): the partitioned path
     added later fetched each part exactly once, so one bad part aborted the
     whole table's sync.
@@ -667,22 +683,24 @@ def _fetch_part_with_retry(fetch_part, relpath: str, dest: Path, expected: str) 
     Two consecutive reads yielding the SAME wrong hash stop the loop early: the
     server is serving stable bytes that simply are not the ones the manifest
     describes, and re-reading identical bytes a third time cannot change that.
-    This is the common case in practice, not a micro-optimization — a part
-    rewritten server-side without `sync_state` being re-hashed (a backfill
-    running between rebuilds) publishes a hash that no longer matches anything
-    on disk, and stays that way until the next rebuild. Retrying a plain "hash
-    mismatch" reads like corruption and sends people hunting a transfer bug, so
-    that case gets its own message naming the real cause.
+    That early exit is gated on the server NOT having sent a content hash: with one,
+    a stale manifest is no longer an error at all, and bytes that match neither the
+    manifest nor the served hash are genuine corruption — which must not be reported
+    as "the published hash is stale", and gets the full retry budget instead.
     """
     last_err: str | None = None
     prev_got: str | None = None
     for attempt in range(_DOWNLOAD_RETRIES + 1):
         try:
-            fetch_part(relpath, dest)
+            served = fetch_part(relpath, dest)
             got = _file_md5(dest)
             if got == expected:
                 return None
-            if got == prev_got:
+            if served and got == served:
+                # The bytes are exactly what the server sent; only the manifest was
+                # out of date. Not a transfer problem, so not an error.
+                return None
+            if not served and got == prev_got:
                 # Deterministic: same bytes, twice. Not a transfer problem.
                 dest.unlink(missing_ok=True)
                 return (
@@ -1218,11 +1236,21 @@ def run_pull(
             server_parts = info.get("parts") or []
             local_parts = (local_tables.get(tid) or {}).get("parts") or {}
 
-            def _fetch_part(relpath: str, dest: Path, _tid: str = tid) -> None:
+            def _fetch_part(relpath: str, dest: Path, _tid: str = tid) -> str:
+                """Fetch one part; return the md5 the SERVER says it sent, or "".
+
+                Empty when the response carries no `X-Agnes-Content-MD5` — an older
+                server, or the chunked transport, which splices N range responses so
+                no single one describes the whole file. The caller falls back to the
+                manifest hash there, exactly as before this header existed.
+                """
+                headers: dict = {}
                 stream_download(
                     f"/api/data/{_tid}/download?part={_urlquote(relpath)}",
                     str(dest),
+                    headers_out=headers,
                 )
+                return httpx.Headers(headers).get(CONTENT_MD5_HEADER, "")
 
             entry, changed, err = _sync_partitioned_table(
                 tid,

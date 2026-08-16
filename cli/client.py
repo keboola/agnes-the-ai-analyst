@@ -938,6 +938,7 @@ def _download_single_stream(
     path: str,
     target_path: str,
     progress_callback,
+    headers_out: dict | None = None,
 ) -> int:
     """Original single-stream path with retry. Used when chunking is
     disabled (small file, no range support, or fallback after 200-on-Range).
@@ -981,6 +982,13 @@ def _download_single_stream(
                 if resume and response.status_code == 416:
                     raise _RangeNotSatisfiable()
                 response.raise_for_status()
+                if headers_out is not None:
+                    # Last attempt wins: on a resume the earlier attempt's header
+                    # describes bytes we only partly kept. Kept as `httpx.Headers`
+                    # so lookups stay case-insensitive — a plain dict would pin
+                    # callers to whatever casing httpx happened to yield.
+                    headers_out.clear()
+                    headers_out.update(httpx.Headers(response.headers))
                 resumed = resume and response.status_code == 206
                 if not resumed:
                     tmp_path.unlink(missing_ok=True)
@@ -1010,7 +1018,7 @@ def _download_single_stream(
     raise last_exc
 
 
-def stream_download(path: str, target_path: str, progress_callback=None) -> int:
+def stream_download(path: str, target_path: str, progress_callback=None, headers_out: dict | None = None) -> int:
     """Stream a file to `target_path` atomically and with retries.
 
     Two paths:
@@ -1030,9 +1038,15 @@ def stream_download(path: str, target_path: str, progress_callback=None) -> int:
       target file never exists in a half-written state.
     - Retries up to `_RETRY_ATTEMPTS` on transient errors (network blip,
       5xx); 4xx (auth/404) is raised immediately.
-    - No hash check here — that's the caller's job (manifest hash), and
-      remains the final arbiter regardless of which path below served
-      the bytes or how many times it resumed.
+    - No hash check here — that's the caller's job. Pass `headers_out` to
+      receive the response headers of the single-stream path; a partition
+      part is served with `X-Agnes-Content-MD5`, the md5 of the bytes that
+      response actually carried, which `cli/lib/pull.py` prefers over the
+      manifest hash as the integrity arbiter. Deliberately NOT populated on
+      the chunked path: those bytes are spliced from N range responses, so
+      no single response describes the whole file, and the caller correctly
+      falls back to the manifest hash there (chunking only engages well
+      above any partition-part size).
 
     Resume on retry (issue #1309): a within-call retry (chunked or
     single-stream) probes how many bytes the previous attempt already
@@ -1063,8 +1077,8 @@ def stream_download(path: str, target_path: str, progress_callback=None) -> int:
         client = _get_shared_client()
     except Exception:
         with get_client(timeout=300.0) as client:
-            return _stream_download_via(client, path, target_path, progress_callback)
-    return _stream_download_via(client, path, target_path, progress_callback)
+            return _stream_download_via(client, path, target_path, progress_callback, headers_out)
+    return _stream_download_via(client, path, target_path, progress_callback, headers_out)
 
 
 def _stream_download_via(
@@ -1072,6 +1086,7 @@ def _stream_download_via(
     path: str,
     target_path: str,
     progress_callback,
+    headers_out: dict | None = None,
 ) -> int:
     """The shared body of `stream_download` parameterized on the client.
     Split out so tests can inject a fake client."""
@@ -1120,6 +1135,7 @@ def _stream_download_via(
             path,
             target_path,
             progress_callback,
+            headers_out,
         )
     except httpx.HTTPStatusError:
         # 4xx / 5xx response from the server — re-raise verbatim so the
