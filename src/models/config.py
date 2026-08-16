@@ -29,7 +29,11 @@ class MetricDefinition(Base):
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     type: Mapped[str] = mapped_column(String, server_default=text("'sum'"), nullable=False)
     unit: Mapped[str | None] = mapped_column(String, nullable=True)
-    grain: Mapped[str] = mapped_column(String, server_default=text("'monthly'"), nullable=False)
+    # Nullable since 0065_metric_grain_nullable: a metric whose creator
+    # declared no grain reports none rather than an invented "monthly". The
+    # server default stays — it is inert for the repositories, whose INSERTs
+    # name the column explicitly.
+    grain: Mapped[str | None] = mapped_column(String, server_default=text("'monthly'"), nullable=True)
     table_name: Mapped[str | None] = mapped_column(String, nullable=True)
     tables: Mapped[list[str] | None] = mapped_column(ARRAY(String), nullable=True)
     expression: Mapped[str | None] = mapped_column(String, nullable=True)
