@@ -10,7 +10,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.83.26] - 2026-08-16
+
 ### Fixed
+
+- **The admin `/access` page's semantic-model grants were documented as inert; they are not.** `_semantic_model_blocks` (`app/resource_types.py`) carried a NOTE saying nothing reads a direct `resource_grants(SEMANTIC_MODEL, …)` row and that a grant made there stays inert "until a future task" — but `_can_access_semantic_model` (`app/api/semantic_models.py`) checks exactly that row first, before falling back to the linked-package grant, and `test_export_succeeds_via_a_direct_model_grant` has pinned it all along. The comment described the state before that fallback landed and would have talked the next reader out of a control that works. Comment corrected on both sides (the test module's own docstring said the same thing); no behaviour change.
 
 - **Deployed instances stopped upgrading entirely — a duplicate service key made `docker-compose.host-mount.yml` unparseable.** The overlay carried two `apps-runner:` blocks under `services:` (the second added alongside the sidecar's host-`/data` bind, 40 lines below an override that already existed), and compose refuses such a file outright: `mapping key "apps-runner" already defined`. Because `agnes-auto-upgrade.sh` re-fetches these overlays from `main` on every 5-minute tick, the malformed file reached every running instance within minutes of merge — no release, no rollback path — and from then on every `docker compose` call on those hosts failed. Instances kept serving, but froze on whatever image they were running: the upgrade tick logged a pull warning and died before its drift check, so nothing recreated and nothing said why. The two blocks were identical in effect (`volumes: !override` with `/data` and the docker socket), so this keeps the documented one. New guard `tests/test_compose_overlays_parse.py` parses every `docker-compose*.yml` with a duplicate-key-rejecting loader — `yaml.safe_load` silently keeps the last duplicate, which is how this passed review.
 
