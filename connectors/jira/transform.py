@@ -858,6 +858,23 @@ def get_attachment_path(issue_key: str, attachment_id: str, filename: str) -> st
     return f"{prefix}/{suffix}/{attachment_id}_{filename}"
 
 
+def is_deleted(raw_issue: dict) -> bool:
+    """True when a deletion webhook has marked this issue's stored JSON.
+
+    `service.py` handles an issue-deleted webhook by stamping `_deleted_at`
+    into the JSON and removing the issue's parquet rows; the file itself is
+    kept for audit. Every consumer that republishes from raw JSON must honor
+    the marker: deletion webhooks fire once and the consistency check skips
+    marked JSONs, so a resurrected row would never be re-deleted and would be
+    invisible to the checker.
+
+    ``.get``, not ``in``: an explicit ``null`` counts as not-deleted, matching
+    the pre-existing reader in the consistency check; this helper is what
+    keeps the next one from drifting.
+    """
+    return bool(raw_issue.get("_deleted_at"))
+
+
 def transform_all(
     raw_dir: Path,
     output_dir: Path,
@@ -907,10 +924,19 @@ def transform_all(
     json_files = list(issues_dir.glob("*.json"))
     logger.info(f"Processing {len(json_files)} issue files...")
 
+    deleted_by_month: dict[str, int] = {}
     for json_file in json_files:
         try:
             with open(json_file) as f:
                 raw_issue = json.load(f)
+
+            # A rebuild republishing deleted issues would resurrect rows nothing
+            # ever re-deletes — the full contract lives on `is_deleted`. Tracked
+            # by month so the all-deleted case below can be called out.
+            if is_deleted(raw_issue):
+                month_key = get_month_key(parse_datetime(raw_issue.get("fields", {}).get("created")))
+                deleted_by_month[month_key] = deleted_by_month.get(month_key, 0) + 1
+                continue
 
             # Transform issue
             issue_record = transform_issue(raw_issue)
@@ -964,6 +990,21 @@ def transform_all(
 
         except Exception as e:
             logger.error(f"Error processing {json_file}: {e}")
+
+    if deleted_by_month:
+        logger.info(f"Skipped {sum(deleted_by_month.values())} issue(s) marked _deleted_at")
+    # A month whose issues are since ALL deleted never reaches the write loop, so
+    # whatever is on disk for it — including a corrupt partition an operator came
+    # here to repair — is left untouched. Rewriting it is not an option (the only
+    # rows we could publish are deleted issues'), so say what the remedy is
+    # instead of exiting 0 and letting "repaired" be assumed.
+    for month_key in sorted(set(deleted_by_month) - set(issues_by_month)):
+        logger.warning(
+            f"month={month_key}: all {deleted_by_month[month_key]} issue(s) are deleted; "
+            f"existing partitions are left untouched. If you are repairing a corrupt "
+            f"partition in this month, remove the file instead — every row it held "
+            f"belongs to a deleted issue."
+        )
 
     # Create output directories
     (output_dir / "issues").mkdir(parents=True, exist_ok=True)

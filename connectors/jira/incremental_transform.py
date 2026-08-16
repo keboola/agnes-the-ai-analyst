@@ -145,8 +145,11 @@ def _read_or_raise(path: Path) -> pd.DataFrame:
     except Exception as e:
         raise UnreadablePartitionError(
             f"{path} exists but could not be read ({e}). Refusing to treat it as empty — "
-            f"overwriting would drop every row it holds. Repair or remove the file "
-            f"(a batch re-transform rebuilds it from the raw JSON)."
+            f"overwriting would drop every row it holds. Rebuild it with the batch "
+            f"re-transform: see connectors/jira/README.md, 'Batch Transform (Initial "
+            f"Load / Recovery)' — --attachments-dir is required, or attachments history "
+            f"loses local_path. Deleting the file instead has the next write republish "
+            f"the month with only its own records."
         ) from e
 
 

@@ -25,6 +25,7 @@ write.
 """
 
 import ast
+import logging
 import os
 from pathlib import Path
 
@@ -33,10 +34,13 @@ import pytest
 
 from connectors.jira import incremental_transform as jira_incremental
 from connectors.jira import transform as jira_transform
+from tests.test_jira_hive_parquet import _make_raw_issue, _write_raw_issues
 
 CONNECTOR_ROOT = Path(__file__).resolve().parent.parent / "connectors" / "jira"
 SCHEMA = {"issue_key": "string"}
 MONTH = "2025-06"
+# What a killed write leaves behind: the magic bytes, no footer.
+FOOTERLESS = b"PAR1" + b"\x00" * 64
 
 
 def _write_hive(table_dir: Path, *keys: str) -> None:
@@ -67,7 +71,7 @@ def _boom(_table, where, **_kwargs):
     and only then raise. If that path is the live file, the month is now
     unreadable; if it is a temp, nothing published is harmed.
     """
-    Path(where).write_bytes(b"PAR1" + b"\x00" * 64)
+    Path(where).write_bytes(FOOTERLESS)
     raise OSError("disk full mid-write")
 
 
@@ -163,7 +167,7 @@ def test_a_corrupt_partition_raises_instead_of_reading_as_empty(tmp_path: Path) 
     _write_month(out, "SUPPORT-1", "SUPPORT-2")
     dest = out / f"month={MONTH}" / "data.parquet"
 
-    dest.write_bytes(b"PAR1" + b"\x00" * 64)  # footerless, as a killed write leaves it
+    dest.write_bytes(FOOTERLESS)
     with pytest.raises(jira_incremental.UnreadablePartitionError):
         jira_incremental.load_parquet_month(out, MONTH)
 
@@ -181,14 +185,43 @@ def test_a_corrupt_partition_is_never_overwritten_with_a_single_row(tmp_path: Pa
     out = tmp_path / "issues"
     _write_month(out, "SUPPORT-1", "SUPPORT-2", "SUPPORT-3")
     dest = out / f"month={MONTH}" / "data.parquet"
-    corrupt = b"PAR1" + b"\x00" * 64
-    dest.write_bytes(corrupt)
+    dest.write_bytes(FOOTERLESS)
 
     with pytest.raises(jira_incremental.UnreadablePartitionError):
         existing = jira_incremental.load_parquet_month(out, MONTH)
         jira_incremental.upsert_dataframe(existing, [{"issue_key": "SUPPORT-9"}], "issue_key", "SUPPORT-9")
 
-    assert dest.read_bytes() == corrupt, "the corrupt partition was overwritten anyway"
+    assert dest.read_bytes() == FOOTERLESS, "the corrupt partition was overwritten anyway"
+
+
+def test_the_webhook_wrapper_reports_false_and_leaves_the_corrupt_bytes(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The same guarantee one layer up, through the wrapper the webhook actually
+    calls: `transform_single_issue` against a corrupt month answers False (its
+    blanket `except Exception` absorbs `UnreadablePartitionError`), writes
+    nothing to any table, and leaves the bad bytes for an operator. Pinned so a
+    future "resilience" change that catches the error and treats the month as
+    empty cannot quietly recreate the one-row-month collapse on the webhook path.
+    """
+    raw_dir = tmp_path / "raw"
+    out = tmp_path / "parquet"
+    _write_raw_issues(raw_dir, [_make_raw_issue("PROJ-1", f"{MONTH}-15T00:00:00.000+0000")])
+    dest = out / "issues" / f"month={MONTH}" / "data.parquet"
+    dest.parent.mkdir(parents=True)
+    dest.write_bytes(FOOTERLESS)
+
+    with caplog.at_level(logging.ERROR):
+        ok = jira_incremental.transform_single_issue(
+            issue_key="PROJ-1", raw_dir=raw_dir, output_dir=out, attachments_dir=tmp_path / "att"
+        )
+
+    assert ok is False
+    # Pin the cause: the refusal tripped the wrapper, not some fixture accident
+    # failing an earlier transform step behind the same blanket except.
+    assert "could not be read" in caplog.text
+    assert dest.read_bytes() == FOOTERLESS, "the corrupt partition was overwritten anyway"
+    assert not (out / "comments").exists(), "a partial write escaped before the failure"
 
 
 # --------------------------------------------------------------------------------
