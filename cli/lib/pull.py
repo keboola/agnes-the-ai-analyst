@@ -27,6 +27,7 @@ exit. That's the cheapest adapter that doesn't bleed into client.py.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import os
 import re
@@ -37,13 +38,14 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from urllib.parse import quote
 
 import httpx
 
 from cli.client import api_get, api_post, stream_download
-from src.distribution import CONTENT_MD5_HEADER
 from cli.config import get_sync_state, save_sync_state
 from cli.snapshot_meta import list_snapshots
+from src.distribution import CONTENT_MD5_HEADER
 from src.sql_ident import quote_ident
 
 
@@ -641,6 +643,26 @@ def _drop_stale_layout(parquet_dir: Path, tid: str, *, partitioned: bool) -> Non
             shutil.rmtree(stale_dir, ignore_errors=True)
 
 
+def _fetch_part_via_download(table_id: str, relpath: str, dest: Path) -> str:
+    """Fetch one part; return the md5 the SERVER says it sent, or "".
+
+    Empty when the response carries no `X-Agnes-Content-MD5` — an older server,
+    or the chunked transport, which splices N range responses so no single one
+    describes the whole file. The caller falls back to the manifest hash there,
+    exactly as before this header existed.
+
+    Module-level (not a closure in `run_pull`) so tests can exercise the header
+    seam directly — the test file's banner carries the full why.
+    """
+    headers: dict = {}
+    stream_download(
+        f"/api/data/{table_id}/download?part={quote(relpath)}",
+        str(dest),
+        headers_out=headers,
+    )
+    return httpx.Headers(headers).get(CONTENT_MD5_HEADER, "")
+
+
 def _fetch_part_with_retry(fetch_part, relpath: str, dest: Path, expected: str) -> str | None:
     """Fetch ONE part into ``dest`` and md5-verify it, retrying a bad fetch on
     the same bounded budget ``_download_one`` gives a single-file table
@@ -1229,35 +1251,18 @@ def run_pull(
         # parquet_dir/{tid}/. Only changed parts are fetched; the swap is
         # all-or-nothing (a failed part leaves the prior dir intact, never a
         # silently-partial view); server-dropped parts are pruned.
-        from urllib.parse import quote as _urlquote
 
         for tid in partitioned_tids:
             info = server_tables[tid]
             server_parts = info.get("parts") or []
             local_parts = (local_tables.get(tid) or {}).get("parts") or {}
 
-            def _fetch_part(relpath: str, dest: Path, _tid: str = tid) -> str:
-                """Fetch one part; return the md5 the SERVER says it sent, or "".
-
-                Empty when the response carries no `X-Agnes-Content-MD5` — an older
-                server, or the chunked transport, which splices N range responses so
-                no single one describes the whole file. The caller falls back to the
-                manifest hash there, exactly as before this header existed.
-                """
-                headers: dict = {}
-                stream_download(
-                    f"/api/data/{_tid}/download?part={_urlquote(relpath)}",
-                    str(dest),
-                    headers_out=headers,
-                )
-                return httpx.Headers(headers).get(CONTENT_MD5_HEADER, "")
-
             entry, changed, err = _sync_partitioned_table(
                 tid,
                 server_parts,
                 local_parts,
                 parquet_dir,
-                _fetch_part,
+                functools.partial(_fetch_part_via_download, tid),
                 info.get("hash", ""),
                 rows=info.get("rows", 0),
             )
@@ -2104,7 +2109,7 @@ def _register_stack_views(conn, workspace: Path, claimed: set[str]) -> None:
     stops a stray file, a pre-sanitization-era sync, or manual tampering
     from putting an unsafe name there.
     """
-    import duckdb  # noqa: F401  (duckdb.Error below)
+    import duckdb
 
     from cli.lib.local_tables import stack_reference_files
 

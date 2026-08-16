@@ -10,10 +10,11 @@ import sys
 import threading
 import time
 import traceback
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any
 
 import httpx
 
@@ -208,7 +209,7 @@ def _log_traceback(exc: BaseException, *, context: str) -> Path:
     must not mask the original error)."""
     try:
         with open(_LOG_FILE, "a", encoding="utf-8") as f:
-            ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            ts = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
             f.write(f"\n=== {ts} {context} ===\n")
             traceback.print_exception(type(exc), exc, exc.__traceback__, file=f)
     except Exception:
@@ -399,7 +400,7 @@ def get_client(timeout: float = 30.0) -> httpx.Client:
 # handshake cost — and never raise. The CLI must not crash on `agnes
 # pull` because of an h2 import error.
 
-_SHARED_CLIENT: Optional[httpx.Client] = None
+_SHARED_CLIENT: httpx.Client | None = None
 _SHARED_CLIENT_LOCK = threading.Lock()
 
 
@@ -529,7 +530,7 @@ class ApiSseError(Exception):
         self.body = body
 
 
-def api_post_sse(path: str, json: Optional[dict] = None) -> Iterator[dict]:
+def api_post_sse(path: str, json: dict | None = None) -> Iterator[dict]:
     """POST ``path`` and yield each Server-Sent Event on the
     ``text/event-stream`` response as a parsed dict.
 
@@ -571,47 +572,48 @@ def api_post_sse(path: str, json: Optional[dict] = None) -> Iterator[dict]:
     """
     malformed_count = 0
     try:
-        with get_client(
-            timeout=httpx.Timeout(
-                connect=_SSE_CONNECT_TIMEOUT_S,
-                read=_SSE_READ_TIMEOUT_S,
-                write=30.0,
-                pool=_SSE_CONNECT_TIMEOUT_S,
-            )
-        ) as client:
-            with client.stream("POST", path, json=json) as response:
-                if response.status_code >= 400:
-                    response.read()
-                    try:
-                        body = response.json()
-                    except Exception:
-                        body = response.text
-                    raise ApiSseError(response.status_code, body)
-                data_lines: list[str] = []
-                for line in response.iter_lines():
-                    if line == "":
-                        # Blank line: record boundary. Dispatch only if we
-                        # actually buffered a data field since the last
-                        # dispatch — a stray blank line (or one between
-                        # comment/event/id-only lines) is a no-op.
-                        if data_lines:
-                            payload = "\n".join(data_lines)
-                            data_lines = []
-                            try:
-                                event = _json.loads(payload)
-                            except ValueError:
-                                malformed_count += 1
-                                continue
-                            yield event
-                        continue
-                    if not line.startswith("data:"):
-                        # event:/id:/retry:/comment lines — metadata we
-                        # don't need to reconstruct.
-                        continue
-                    value = line[len("data:") :]
-                    if value.startswith(" "):
-                        value = value[1:]
-                    data_lines.append(value)
+        with (
+            get_client(
+                timeout=httpx.Timeout(
+                    connect=_SSE_CONNECT_TIMEOUT_S,
+                    read=_SSE_READ_TIMEOUT_S,
+                    write=30.0,
+                    pool=_SSE_CONNECT_TIMEOUT_S,
+                )
+            ) as client,
+            client.stream("POST", path, json=json) as response,
+        ):
+            if response.status_code >= 400:
+                response.read()
+                try:
+                    body = response.json()
+                except Exception:
+                    body = response.text
+                raise ApiSseError(response.status_code, body)
+            data_lines: list[str] = []
+            for line in response.iter_lines():
+                if line == "":
+                    # Blank line: record boundary. Dispatch only if we
+                    # actually buffered a data field since the last
+                    # dispatch — a stray blank line (or one between
+                    # comment/event/id-only lines) is a no-op.
+                    if data_lines:
+                        payload = "\n".join(data_lines)
+                        data_lines = []
+                        try:
+                            event = _json.loads(payload)
+                        except ValueError:
+                            malformed_count += 1
+                            continue
+                        yield event
+                    continue
+                if not line.startswith("data:"):
+                    # event:/id:/retry:/comment lines — metadata we
+                    # don't need to reconstruct.
+                    continue
+                value = line[len("data:") :]
+                value = value.removeprefix(" ")
+                data_lines.append(value)
     except httpx.HTTPError as exc:
         raise _translate_transport_error(
             exc,
@@ -863,7 +865,7 @@ def _download_chunked(
         p.unlink(missing_ok=True)
 
     def _attempt_chunk(i: int, start: int, end: int) -> None:
-        last_exc: Optional[Exception] = None
+        last_exc: Exception | None = None
         for attempt in range(_RETRY_ATTEMPTS + 1):
             try:
                 _download_chunk(
@@ -967,7 +969,7 @@ def _download_single_stream(
     # invocations against the same target dir must not yank each
     # other's in-progress writes.
     tmp_path = Path(f"{target_path}.{os.getpid()}.tmp")
-    last_exc: Optional[Exception] = None
+    last_exc: Exception | None = None
     for attempt in range(_RETRY_ATTEMPTS + 1):
         have = 0
         if tmp_path.exists():
@@ -984,9 +986,10 @@ def _download_single_stream(
                 response.raise_for_status()
                 if headers_out is not None:
                     # Last attempt wins: on a resume the earlier attempt's header
-                    # describes bytes we only partly kept. Kept as `httpx.Headers`
-                    # so lookups stay case-insensitive — a plain dict would pin
-                    # callers to whatever casing httpx happened to yield.
+                    # describes bytes we only partly kept. Going through
+                    # `httpx.Headers` normalizes keys to lowercase in the plain
+                    # dict; readers re-wrap in `httpx.Headers` for
+                    # case-insensitive lookups.
                     headers_out.clear()
                     headers_out.update(httpx.Headers(response.headers))
                 resumed = resume and response.status_code == 206
@@ -1045,8 +1048,11 @@ def stream_download(path: str, target_path: str, progress_callback=None, headers
       manifest hash as the integrity arbiter. Deliberately NOT populated on
       the chunked path: those bytes are spliced from N range responses, so
       no single response describes the whole file, and the caller correctly
-      falls back to the manifest hash there (chunking only engages well
-      above any partition-part size).
+      falls back to the manifest hash there. At the default 50 MiB
+      AGNES_PULL_CHUNK_THRESHOLD_BYTES chunking engages well above any
+      partition-part size today — but an operator lowering the threshold
+      below a part's size, or a part outgrowing the server's 8 MiB
+      buffering cap, reverts that part to manifest-only verification.
 
     Resume on retry (issue #1309): a within-call retry (chunked or
     single-stream) probes how many bytes the previous attempt already
