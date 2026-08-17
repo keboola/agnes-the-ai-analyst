@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.83.32] - 2026-08-17
+
 ### Added
 
 - **Tunnel recipe for exposing agents (or the full connector) from a VPN/intranet-only instance (#1024).** A VPN-only Agnes instance can't be reached by cloud-based AI clients (Claude.ai, ChatGPT). `docs/DEPLOYMENT.md` now documents two operator-run outbound-tunnel patterns (Cloudflare Tunnel or Tailscale Funnel, templates under `infra/examples/vpn-agent-tunnel/`): an agent-only tunnel exposing just the Bearer-PAT-authenticated, owner-scoped agent-as-API runtime surface (recommended for VPN-only instances that still want external automation), or the existing full OAuth MCP connector for operators who want the whole "Claude as my assistant" experience despite being VPN-only. Operators who'd rather not tunnel at all already have `mcp.connector_ui_enabled` (#1291) to hide the misleading connector instructions instead.
