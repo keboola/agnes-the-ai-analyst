@@ -4236,3 +4236,223 @@ def test_the_rebuilt_slack_bridge_uses_the_documented_public_url(manager: ChatMa
         )
 
     asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+# Question-answer routing (AskUserQuestion round-trip — mirrors the
+# approval-decision routing suite above)
+# ---------------------------------------------------------------------------
+
+
+def _question_answers_written(handle) -> list[dict]:
+    """Every question_answer frame the manager wrote to the runner's stdin."""
+    out = []
+    for line in b"".join(handle._stdin_buf).decode().splitlines():
+        try:
+            frame = json.loads(line)
+        except ValueError:
+            continue
+        if frame.get("type") == "question_answer":
+            out.append(frame)
+    return out
+
+
+async def _pump_one_question_request(mgr: ChatManager, live, *, request_id: str = "ques-1"):
+    """Run the pump over a single question_request frame and stop."""
+    pump = asyncio.create_task(mgr._pump_subprocess_to_ws(live))
+    live.handle.emit(
+        {
+            "type": "question_request",
+            "request_id": request_id,
+            "questions": [
+                {
+                    "question": "Which color?",
+                    "header": "Color",
+                    "options": [{"label": "Red"}, {"label": "Blue"}],
+                    "multiSelect": False,
+                }
+            ],
+            "timeout_seconds": 300,
+        }
+    )
+    await _wait_until(lambda: bool(live.pending_questions))
+    pump.cancel()
+    try:
+        await pump
+    except asyncio.CancelledError:
+        pass
+
+
+def test_question_answer_local_delivery(manager: ChatManager):
+    """With a live local runner, the answer is written to its stdin — no
+    cross-gateway publish, and the manager-only `unattended` resolution can
+    never ride a client answer."""
+
+    async def _run():
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        handle = FakeHandle()
+        live = MagicMock()
+        live.handle = handle
+        live._stdin_lock = asyncio.Lock()
+        manager._live[s.id] = live
+        with patch("app.chat.inbound.publish_control", new=AsyncMock()) as pub:
+            await manager.deliver_question_answer(
+                s.id, "ques-1", answers={"Which color?": "Red"}, sender_email="u@x"
+            )
+        pub.assert_not_called()
+        written = _question_answers_written(handle)
+        assert written == [
+            {"type": "question_answer", "request_id": "ques-1", "answers": {"Which color?": "Red"}}
+        ]
+
+    asyncio.run(_run())
+
+
+def test_question_answer_hardens_junk_to_dismissed(manager: ChatManager):
+    """A payload with no usable str→str entries degrades to a dismissal
+    rather than reaching the sandbox as-is."""
+
+    async def _run():
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        handle = FakeHandle()
+        live = MagicMock()
+        live.handle = handle
+        live._stdin_lock = asyncio.Lock()
+        manager._live[s.id] = live
+        await manager.deliver_question_answer(
+            s.id, "ques-2", answers={"k": 42, 3: "v", "s": "   "}, sender_email="u@x"
+        )
+        written = _question_answers_written(handle)
+        assert written == [{"type": "question_answer", "request_id": "ques-2", "dismissed": True}]
+
+    asyncio.run(_run())
+
+
+def test_question_answer_forwarded_to_remote_owner(manager: ChatManager):
+    """No local runner but another gateway owns the session → ride the inbound
+    control stream (command='question')."""
+
+    async def _run():
+        with (
+            patch("app.chat.routing.owner_of", return_value="gw-other"),
+            patch("app.chat.routing.this_gateway_id", return_value="gw-me"),
+            patch("app.chat.inbound.publish_control", new=AsyncMock()) as pub,
+        ):
+            await manager.deliver_question_answer(
+                "chat_remote", "ques-3", answers={"q": "a"}, sender_email="u@x"
+            )
+        pub.assert_awaited_once()
+        assert pub.await_args.args[1] == "question"
+        extra = pub.await_args.kwargs["extra"]
+        assert extra["request_id"] == "ques-3"
+        assert extra["answers"] == {"q": "a"}
+        assert extra["dismissed"] is False
+
+    asyncio.run(_run())
+
+
+def test_question_answer_publish_failure_does_not_escape(manager: ChatManager):
+    """Same posture as approvals: a coordination hiccup on the WS reader path
+    must cost the answer, not the caller's chat window."""
+
+    async def _run():
+        from app.chat import inbound
+
+        with (
+            patch("app.chat.routing.owner_of", return_value="gw-other"),
+            patch("app.chat.routing.this_gateway_id", return_value="gw-me"),
+            patch(
+                "app.chat.inbound.publish_control",
+                new=AsyncMock(side_effect=inbound.InboundPublishFailed("down")),
+            ),
+        ):
+            await manager.deliver_question_answer(
+                "chat_remote", "ques-4", answers={"q": "a"}, sender_email="u@x"
+            )
+
+    asyncio.run(_run())
+
+
+def test_slack_origin_question_waits_for_a_client(manager: ChatManager):
+    """A Slack-origin session has no card-capable sink, but the user is one
+    "Continue on web" click away — the question stays pending (the gate's
+    own timeout is the backstop) and rides ``pending_questions`` so a
+    browser attaching later replays the card."""
+
+    async def _run():
+        from tests.chat_fakes import FakeWS
+
+        s = await manager.create_session(
+            user_email="u@x", surface=Surface.SLACK_DM, slack_channel_id="C1", slack_thread_ts=None
+        )
+        live = _attach_fake_live_with_fake_handle(manager, s.id, "u@x", FakeWS(), surface=Surface.SLACK_DM.value)
+        await _pump_one_question_request(manager, live)
+
+        assert _question_answers_written(live.handle) == [], "a Slack session must not be auto-resolved"
+        pending = list(live.pending_questions.values())
+        assert pending and pending[0]["attended"] is False
+
+    asyncio.run(_run())
+
+
+def test_agent_api_one_shot_resolves_question_unattended(manager: ChatManager):
+    """The agent-API one-shot path has a HeadlessSink by construction and no
+    human who could ever attach a browser — the question resolves immediately
+    as `unattended`, which the runner turns into an actionable deny."""
+
+    async def _run():
+        from app.chat.headless import HeadlessSink
+
+        s = await manager.create_session(user_email="u@x", surface=Surface.API)
+        live = _attach_fake_live_with_fake_handle(manager, s.id, "u@x", HeadlessSink(), surface=Surface.API.value)
+        await _pump_one_question_request(manager, live)
+
+        assert _question_answers_written(live.handle) == [
+            {"type": "question_answer", "request_id": "ques-1", "unattended": True}
+        ]
+
+    asyncio.run(_run())
+
+
+def test_install_runner_retires_pending_questions(manager: ChatManager):
+    """A handle swap broadcasts a question_resolved for every pending card —
+    a request_id belongs to the process that raised it, and a fresh gate
+    drops unknown ids silently (same rule as pending approvals)."""
+
+    async def _run():
+        from tests.chat_fakes import FakeWS
+
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        ws = FakeWS()
+        live = _attach_fake_live_with_fake_handle(manager, s.id, "u@x", ws)
+        live.pending_questions["ques-9"] = {"type": "question_request", "request_id": "ques-9"}
+        await manager._install_runner(live, FakeHandle())
+        assert live.pending_questions == {}
+        resolved = [f for f in ws.sent if f.get("type") == "question_resolved"]
+        assert resolved and resolved[0]["request_id"] == "ques-9"
+        assert resolved[0]["decision"] == "cancelled"
+
+    asyncio.run(_run())
+
+
+def test_new_sink_gets_pending_question_replayed(manager: ChatManager):
+    """A browser attaching mid-question receives the pending card (with
+    re-derived attendance), or the AskUserQuestion call stalls invisibly."""
+
+    async def _run():
+        from tests.chat_fakes import FakeWS
+
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        live = _attach_fake_live_with_fake_handle(manager, s.id, "u@x", FakeWS())
+        live.pending_questions["ques-7"] = {
+            "type": "question_request",
+            "request_id": "ques-7",
+            "questions": [],
+            "attended": False,
+        }
+        late = FakeWS()
+        await manager._replay_pending_approvals_to(live, late)
+        replayed = [f for f in late.sent if f.get("type") == "question_request"]
+        assert replayed and replayed[0]["request_id"] == "ques-7"
+
+    asyncio.run(_run())

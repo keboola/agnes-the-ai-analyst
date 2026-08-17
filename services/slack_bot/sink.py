@@ -125,6 +125,10 @@ class SlackSinkBridge:
             await self._post_approval_request(data)
         elif t == "approval_resolved":
             await self._post_approval_resolved(data)
+        elif t == "question_request":
+            await self._post_question_request(data)
+        elif t == "question_resolved":
+            await self._post_question_resolved(data)
         elif t == "done":
             await self._strip_stop_button()
         # ready, runner_ready, token, tool_call, tool_result: silently ignored
@@ -197,6 +201,57 @@ class SlackSinkBridge:
             "timeout": "_(approval expired — the command was not run)_",
             "unattended": "_(nobody could approve it — the command was not run)_",
         }.get(decision, "_(approval closed)_")
+        await send_thread_reply(self._channel, self._thread_ts, text)
+
+    async def _post_question_request(self, data: dict) -> None:
+        """Nudge the thread that the agent is waiting on an AskUserQuestion
+        answer, with the Continue-on-web button — the exact posture of
+        ``_post_approval_request``: Slack renders no question card of its
+        own, the answer comes back over the web WebSocket."""
+        if data.get("attended"):
+            return
+        self._pending_approvals.add(str(data.get("request_id", "")))
+        lines = [":question: *Agnes is asking you a question*"]
+        for q in data.get("questions") or []:
+            text = str((q or {}).get("question", "")).strip() if isinstance(q, dict) else ""
+            if text:
+                # Agent-authored text bound for mrkdwn: same backtick-stripping
+                # posture as the approval nudge's command fence.
+                lines.append("• {}".format(text[:400].replace("`", "'")))
+        if self._web_base:
+            lines.append("Open the chat on the web to answer; it expires on its own if nobody answers.")
+        else:
+            lines.append(
+                "This deployment has no public web URL configured, so there is nowhere to answer it — "
+                "the agent will continue without an answer when it times out. Ask an operator to set "
+                "PUBLIC_URL (or server.public_url in instance.yaml)."
+            )
+        text = "\n".join(lines)
+        link = continue_on_web_block(web_base=self._web_base, chat_id=self._chat_id)
+        if link is None:
+            await send_thread_reply(self._channel, self._thread_ts, text)
+        else:
+            await post_thread_reply_with_blocks(
+                self._channel,
+                self._thread_ts,
+                text,
+                [{"type": "section", "text": {"type": "mrkdwn", "text": text}}, link],
+            )
+
+    async def _post_question_resolved(self, data: dict) -> None:
+        """Close the loop on a question this bridge announced — same
+        silence rule as ``_post_approval_resolved``."""
+        request_id = str(data.get("request_id", ""))
+        if request_id not in self._pending_approvals:
+            return
+        self._pending_approvals.discard(request_id)
+        decision = str(data.get("decision", ""))
+        text = {
+            "answered": "_(answered on the web)_",
+            "dismissed": "_(dismissed without an answer)_",
+            "timeout": "_(question expired — the agent continued without an answer)_",
+            "unattended": "_(nobody could answer — the agent continued without an answer)_",
+        }.get(decision, "_(question closed)_")
         await send_thread_reply(self._channel, self._thread_ts, text)
 
     async def _strip_stop_button(self) -> None:
