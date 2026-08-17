@@ -3248,3 +3248,114 @@ html[data-ui-layout="rail"] .cloud-chat-shell.has-thread .cloud-chat-main::after
   color: var(--ds-accent-danger-ink);
   border: 1px solid var(--ds-accent-danger-line);
 }
+
+/* --- Question card (question_request / question_resolved frames — the
+       AskUserQuestion tool round-trip) --- */
+.cloud-chat-question {
+  border-color: var(--ds-accent-info-line);
+  background: var(--ds-accent-info-bg);
+}
+
+.cloud-chat-question-body {
+  margin-top: var(--space-2);
+}
+
+.cloud-chat-question-q {
+  display: flex;
+  gap: var(--space-2);
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+
+.cloud-chat-question-chip {
+  padding: 1px var(--space-2);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--ds-accent-info-line);
+  color: var(--ds-accent-info-ink);
+  font-size: 0.8em;
+  white-space: nowrap;
+}
+
+.cloud-chat-question-text {
+  font-weight: 600;
+}
+
+.cloud-chat-question-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  align-items: stretch;
+}
+
+.cloud-chat-question-opt {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  max-width: 260px;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--ds-border);
+  background: var(--ds-surface);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.cloud-chat-question-opt[aria-pressed="true"] {
+  border-color: var(--ds-accent-info-ink);
+  outline: 1px solid var(--ds-accent-info-ink);
+}
+
+.cloud-chat-question-opt-label {
+  font-weight: 600;
+}
+
+.cloud-chat-question-opt-desc {
+  font-size: 0.85em;
+  color: var(--ds-text-muted);
+}
+
+.cloud-chat-question-other {
+  flex: 1 1 160px;
+  min-width: 120px;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--ds-border);
+  background: var(--ds-surface);
+  font: inherit;
+}
+
+.cloud-chat-question-actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+  align-items: center;
+}
+
+.cloud-chat-question-btn {
+  padding: 4px var(--space-3);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--ds-border);
+  background: var(--ds-surface);
+  cursor: pointer;
+  font: inherit;
+}
+
+.cloud-chat-question-btn.is-submit {
+  border-color: var(--ds-accent-info-line);
+  color: var(--ds-accent-info-ink);
+}
+
+.cloud-chat-question-btn:disabled,
+.cloud-chat-question-opt:disabled,
+.cloud-chat-question-other:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.cloud-chat-question-answer-summary {
+  font-size: 0.85em;
+  color: var(--ds-text-muted);
+}
