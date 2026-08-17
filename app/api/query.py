@@ -1,6 +1,7 @@
 """Query endpoint — execute SQL against server DuckDB."""
 
 import contextlib
+import dataclasses
 import functools
 import json
 import logging
@@ -1453,8 +1454,28 @@ def execute_query(
         # to a Databricks warehouse. Referencing both engines at once is
         # refused inside the planner — there is no join layer between them.
         _dbx_plan = _databricks_remote_plan(request.sql, sql_lower, conn, user, allowed)
-        if _dbx_plan is not None:
-            _assert_no_policied_remote_engine(policied_table_ids, "Databricks")
+        if _dbx_plan is not None and policied_table_ids:
+            # The statement runs on the warehouse, so the policy has to travel
+            # with it: substituted into the SQL and its identity values bound
+            # as request parameters. Any failure below denies (§17) — there is
+            # no branch that forwards the unfiltered statement.
+            try:
+                _apply_databricks_policies(
+                    _dbx_plan,
+                    request.sql,
+                    user,
+                    allowed=allowed,
+                    is_admin=_caller_is_unrestricted_admin(user, conn),
+                )
+            except PolicyNameCollision as exc:
+                raise HTTPException(
+                    status_code=400,
+                    detail={"reason": "policy_name_collision", "table": exc.table_id, "fix": "rename your CTE"},
+                )
+            except PolicyIdentityUnresolvable:
+                raise HTTPException(status_code=403, detail={"reason": "policy_identity_unresolvable"})
+            except PolicyError as exc:
+                raise HTTPException(status_code=500, detail={"reason": "policy_error", "table": exc.table_id})
 
         # ---- #160 BQ remote-row guardrail + RBAC patch -------------------
         dry_run_set, name_lookups, blocked_bq_path = (
@@ -2348,7 +2369,127 @@ def _databricks_remote_plan(sql: str, sql_lower: str, sys_conn, user, allowed):
     except DatabricksRemoteError as exc:
         raise HTTPException(status_code=exc.status, detail=exc.detail())
 
-    return {"sql": native_sql, "settings": settings, "tables": [n for n, _c, _s, _t in name_lookups]}
+    return {
+        "sql": native_sql,
+        "settings": settings,
+        "tables": [n for n, _c, _s, _t in name_lookups],
+        "name_lookups": name_lookups,
+        "default_catalog": default_catalog,
+        "parameters": [],
+    }
+
+
+def _databricks_policy_resolver(*, name_lookups, default_catalog: str):
+    """A ``rewrite_sql`` ``resolve`` callable that returns Databricks-dialect
+    policy bodies, native-path-rewritten, with the array-valued variable
+    already expanded into scalar markers.
+
+    Doing the expansion HERE, per policy body, rather than over the finished
+    statement is deliberate. ``bind_policy_parameters`` has to parse and
+    re-render whatever it is handed; handing it the whole caller statement
+    would round-trip the analyst's SQL through sqlglot a second time for no
+    reason. A policy body is small, admin-authored and already validated, and
+    the BigQuery arm likewise round-trips only the body (via its transpile).
+
+    The returned relation's ``params`` are the *generated scalar* parameters,
+    so ``rewrite_sql``'s own param merge produces a flat ``name -> value`` dict
+    with no list left in it — which is precisely what the Statement Execution
+    API can bind.
+    """
+    from connectors.databricks.policy_params import (
+        DatabricksPolicyBindingError,
+        bind_policy_parameters,
+    )
+    from connectors.databricks.remote import rewrite_to_native
+
+    def resolve(table_id: str, principal):
+        relation = policied_relation(table_id, principal, dialect="databricks")
+        if not relation.policied:
+            return relation
+        try:
+            body_sql, parameters = bind_policy_parameters(relation.relation_sql, relation.params)
+        except DatabricksPolicyBindingError as exc:
+            raise PolicyError(relation.table_id) from exc
+        return dataclasses.replace(
+            relation,
+            relation_sql=rewrite_to_native(body_sql, name_lookups, default_catalog),
+            params={p["name"]: p["value"] for p in parameters},
+        )
+
+    return resolve
+
+
+def _apply_databricks_policies(plan: dict, sql: str, principal, *, allowed, is_admin: bool) -> list[str]:
+    """Rewrite ``plan`` in place so a policied table is read through its
+    policy, and return the policied registry ids.
+
+    Ordering mirrors the BigQuery arm (§7.3) for the same reason: the policy
+    substitution runs FIRST, over the caller's own bare table names, and the
+    bare-name -> ``\\`catalog\\`.\\`schema\\`.\\`table\\``` pass runs SECOND over the whole
+    substituted result, so the spliced body's own ``FROM <name>`` resolves too.
+    Reversing them would leave the AST rewrite nothing to match.
+
+    The gate then runs a SECOND time, on the substituted statement. The first
+    pass only saw the caller's SQL; the policy body can name tables the caller
+    never wrote (a ``policy_mapping`` join, §15). Without this pass such a name
+    would ship to the warehouse unchecked and resolve against whatever the
+    default catalog holds. Re-gating makes an unregistered table inside a
+    policy body deny, rather than silently read something.
+    """
+    from connectors.databricks.remote import DatabricksRemoteError, guardrail_inputs, rewrite_to_native
+
+    default_catalog = plan["default_catalog"]
+    name_lookups = plan["name_lookups"]
+
+    # The policy body is rewritten to native paths BEFORE it is spliced, and
+    # the spliced statement is then rewritten with the policied table's own
+    # name excluded. Both halves matter:
+    #
+    #   `rewrite_sql` aliases the substituted subquery with the table's own
+    #   name (its rule 2, so a caller's `orders_raw.country` qualifier still
+    #   resolves), and the name rewriter replaces EVERY occurrence of a
+    #   registered name outside backticks. Rewriting the spliced statement
+    #   wholesale therefore rewrites the alias too, producing
+    #   `... ) AS `main`.`sales`.`orders_raw`` — a three-part path in alias
+    #   position, which is a syntax error, caught by
+    #   TestAccessPolicyInterlock rather than by review.
+    #
+    # After the exclusion the policied name survives only where it should: as
+    # the subquery's alias and as column qualifiers pointing at it.
+    try:
+        resolve = _databricks_policy_resolver(name_lookups=name_lookups, default_catalog=default_catalog)
+        spliced_sql, policy_params, policied_table_ids = rewrite_sql(
+            sql,
+            principal,
+            resolve=resolve,
+            dialect="databricks",
+        )
+        if not policied_table_ids:
+            return []
+
+        policied_names = {
+            str((table_registry_repo().get(tid) or {}).get("name") or "").lower() for tid in policied_table_ids
+        }
+        outer_lookups = [entry for entry in name_lookups if entry[0].lower() not in policied_names]
+        native_sql = rewrite_to_native(spliced_sql, outer_lookups, default_catalog)
+        _lookups, blocked = guardrail_inputs(
+            native_sql,
+            native_sql.lower(),
+            allowed=allowed,
+            is_admin=is_admin,
+            default_catalog=default_catalog,
+        )
+    except DatabricksRemoteError as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.detail())
+    if blocked is not None:
+        # §17: a policied read that cannot be fully verified denies. Reporting
+        # the gate's own reason would name tables from inside the policy body
+        # (§16), so this collapses to the table-scoped policy error.
+        raise PolicyError(policied_table_ids[0])
+
+    plan["sql"] = native_sql
+    plan["parameters"] = [{"name": k, "value": v, "type": "STRING"} for k, v in policy_params.items()]
+    return policied_table_ids
 
 
 def _execute_databricks_plan(plan: dict, limit: int, user_id: str):
@@ -2367,11 +2508,11 @@ def _execute_databricks_plan(plan: dict, limit: int, user_id: str):
     Databricks cost is bounded by ``max_bytes_per_remote_query`` +
     ``remote_query_timeout_seconds`` instead.
 
-    Access policies are not applied here and cannot be: a policied table is by
-    definition one that never leaves the server, and this path forwards the
-    statement to an external warehouse. ``_assert_no_policied_remote_engine``
-    refuses that combination before planning, so reaching this function means
-    no policy is in play.
+    When the statement touches a policied table, ``_apply_databricks_policies``
+    has already rewritten ``plan["sql"]`` to read through the policy body and
+    filled ``plan["parameters"]`` with the identity values it binds. Those
+    travel as Statement Execution API request parameters, never as spliced SQL
+    text — the same guarantee the DuckDB and BigQuery arms give (§6.2).
     """
     from connectors.databricks.remote import DatabricksRemoteError, execute_select
 
@@ -2384,6 +2525,7 @@ def _execute_databricks_plan(plan: dict, limit: int, user_id: str):
                 limit=limit,
                 cap_bytes=_databricks_remote_cap_bytes(),
                 timeout_s=_databricks_statement_timeout_s(),
+                parameters=plan.get("parameters") or None,
             )
     except QuotaExceededError as exc:
         raise HTTPException(
@@ -2400,31 +2542,14 @@ def _execute_databricks_plan(plan: dict, limit: int, user_id: str):
         raise HTTPException(status_code=exc.status, detail=exc.detail())
 
 
-def _assert_no_policied_remote_engine(policied_table_ids, engine_label: str) -> None:
-    """Refuse a table access policy on a statement bound for an external engine.
-
-    §17 of the access-policy design says every failure denies; there is no
-    "run it unfiltered" branch anywhere on a policied read. BigQuery has a
-    dedicated transpile-and-bind path (``_execute_policied_remote_bq``) that
-    keeps the policy attached across the engine boundary. Databricks has no
-    such path yet, so the only correct answer is to refuse — silently shipping
-    the unfiltered statement to the warehouse would leak exactly the rows the
-    policy exists to hide.
-    """
-    if not policied_table_ids:
-        return
-    raise HTTPException(
-        status_code=400,
-        detail={
-            "reason": "policy_unsupported_on_remote_engine",
-            "engine": engine_label,
-            "tables": list(policied_table_ids),
-            "message": (
-                f"This query touches an access-policied table and would execute on {engine_label}, "
-                "where Agnes cannot enforce the policy. Refused."
-            ),
-        },
-    )
+# `_assert_no_policied_remote_engine` lived here and refused any policied read
+# bound for Databricks, because only BigQuery had a path that carried the
+# policy across the engine boundary. Databricks has one now
+# (`_apply_databricks_policies`), so both registered remote engines enforce
+# rather than refuse and the helper had no caller left. A future engine does
+# not get to inherit a generic refusal: it has to answer the same question
+# these two did — how does the policy travel, and how do its values bind
+# without being spliced into SQL text.
 
 
 # The reserved-keyword set and the table-reference-position regex moved to
@@ -2920,6 +3045,84 @@ def _execute_policied_remote_bq(
     return table
 
 
+def _materialize_databricks_select(
+    sql: str,
+    sql_lower: str,
+    conn,
+    user,
+    allowed,
+    *,
+    quota,
+    policied_table_ids,
+    policy_info: dict | None,
+):
+    """Materialize a Databricks SELECT to a full ``pyarrow.Table`` for
+    ``agnes snapshot create --from-query``.
+
+    Shares the planner with the interactive path — same registry gate, same
+    RBAC, same cross-source refusal, same policy substitution — and differs in
+    exactly two ways, both because a snapshot is a materialize and not a
+    preview: no ``LIMIT n + 1`` wrap (the caller wants every row the predicate
+    selects), and the size bound is the scan endpoint's own
+    ``api.scan.max_result_bytes`` rather than the interactive remote-query cap.
+    """
+    from app.api.v2_scan import _databricks_scan_timeout_s, _max_result_bytes
+    from connectors.databricks.remote import DatabricksRemoteError, execute_scan_to_arrow
+
+    plan = _databricks_remote_plan(sql, sql_lower, conn, user, allowed)
+    if plan is None:
+        # `resolve_single_engine` said databricks, so the only way the planner
+        # declines is the ATTACH path having a local view for every row — in
+        # which case this is an ordinary local query and the caller's own
+        # DuckDB branch handles it.
+        return None
+    if policied_table_ids:
+        try:
+            _apply_databricks_policies(
+                plan,
+                sql,
+                user,
+                allowed=allowed,
+                is_admin=_caller_is_unrestricted_admin(user, conn),
+            )
+        except PolicyNameCollision as exc:
+            raise HTTPException(
+                status_code=400,
+                detail={"reason": "policy_name_collision", "table": exc.table_id, "fix": "rename your CTE"},
+            )
+        except PolicyIdentityUnresolvable:
+            raise HTTPException(status_code=403, detail={"reason": "policy_identity_unresolvable"})
+        except PolicyError as exc:
+            raise HTTPException(status_code=500, detail={"reason": "policy_error", "table": exc.table_id})
+        if policy_info is not None:
+            policy_info["policied_table_ids"] = list(policied_table_ids)
+
+    _audit_uid, _audit_email = _identity_for_audit(user)
+    user_id = _audit_email or _audit_uid or "anon"
+    try:
+        with quota.acquire(user=user_id):
+            return execute_scan_to_arrow(
+                plan["sql"],
+                settings=plan["settings"],
+                cap_bytes=_max_result_bytes(),
+                timeout_s=_databricks_scan_timeout_s(),
+                parameters=plan.get("parameters") or None,
+            )
+    except QuotaExceededError as exc:
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "reason": "concurrent_scans_exceeded",
+                "kind": exc.kind,
+                "current": exc.current,
+                "limit": exc.limit,
+                "retry_after_seconds": exc.retry_after_seconds,
+            },
+        )
+    except DatabricksRemoteError as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.detail())
+
+
 def _arrow_table_to_rows(table, limit: int) -> tuple[list, list, bool]:
     """Convert a fully-materialized ``pyarrow.Table`` into the same
     ``(columns, rows, truncated)`` shape a DuckDB cursor's
@@ -3239,7 +3442,11 @@ def _bq_quota_and_cap_guard(
 
 
 def run_remote_select_to_arrow(conn, user, sql, bq, quota, *, policy_info: dict | None = None):
-    """Materialize a raw SELECT against BigQuery into an Arrow table (#616).
+    """Materialize a raw SELECT against a remote engine into an Arrow table (#616).
+
+    Databricks statements branch out early to ``_materialize_databricks_select``
+    and never reach the BigQuery machinery below; everything from the SELECT-only
+    guard and the policy rewrite upward is shared.
 
     Backs the snapshot ``from_query`` mode used by ``agnes query --remote
     --auto-snapshot``: the analyst has explicitly opted into materializing a
@@ -3311,24 +3518,43 @@ def run_remote_select_to_arrow(conn, user, sql, bq, quota, *, policy_info: dict 
         except PolicyError as exc:
             raise HTTPException(status_code=500, detail={"reason": "policy_error", "table": exc.table_id})
 
-        # Snapshot materialize is BigQuery-only. A Databricks statement would
-        # otherwise silently skip the registry gate below (which only knows BQ
-        # rows) and then fail deep inside DuckDB with "table does not exist",
-        # since a `query_mode='remote'` Databricks row has no local view.
-        # Refuse up front with the command that does work.
+        # Which engine materializes this snapshot. Both registered remote
+        # engines can; anything else is refused up front with the command that
+        # does work, rather than skipping the BQ-only registry gate below and
+        # then failing deep inside DuckDB with "table does not exist" (a
+        # `query_mode='remote'` row has no local view on any engine).
         from src.remote_engines import CrossEngineError, referenced_remote_rows, resolve_single_engine
 
         try:
             _engine = resolve_single_engine(referenced_remote_rows(sql, sql_lower))
         except CrossEngineError as exc:
             raise HTTPException(status_code=400, detail=exc.detail())
+        if _engine == "databricks":
+            _dbx_table = _materialize_databricks_select(
+                sql,
+                sql_lower,
+                conn,
+                user,
+                allowed,
+                quota=quota,
+                policied_table_ids=policied_table_ids,
+                policy_info=policy_info,
+            )
+            # `None` means the planner declined because the experimental Unity
+            # Catalog ATTACH gave DuckDB a local view for every referenced row.
+            # That is an ordinary local query — fall through, don't return an
+            # empty result.
+            if _dbx_table is not None:
+                return _dbx_table
         if _engine is not None and _engine != "bigquery":
             raise HTTPException(
                 status_code=400,
                 detail={
                     "reason": "snapshot_engine_unsupported",
                     "engine": _engine,
-                    "message": (f"Snapshots can only be materialized from BigQuery; this query runs on {_engine}."),
+                    "message": (
+                        f"Snapshots can only be materialized from BigQuery or Databricks; this query runs on {_engine}."
+                    ),
                     "hint": (
                         "Run it with `agnes query --remote` for an interactive answer, or register "
                         "it as a query_mode='materialized' table so the scheduler syncs it."

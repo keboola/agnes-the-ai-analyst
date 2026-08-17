@@ -178,6 +178,7 @@ class DatabricksStatementClient:
         schema: Optional[str] = None,
         byte_limit: Optional[int] = None,
         timeout_s: float = 900.0,
+        parameters: Optional[List[Dict[str, Any]]] = None,
     ) -> "ArrowResult":
         """Run a bulk statement; return an :class:`ArrowResult` whose
         ``iter_batches()`` lazily streams ``pyarrow.RecordBatch`` objects
@@ -187,6 +188,9 @@ class DatabricksStatementClient:
         producing result bytes past the cap and flags the manifest
         ``truncated`` — the caller must check ``ArrowResult.truncated`` and
         treat a truncated bulk result as a failed extraction, never as data.
+
+        ``parameters`` binds ``:name`` markers in ``statement`` through the
+        API's own parameter mechanism (see ``_submit_payload``).
         """
         payload = self._submit_payload(
             statement,
@@ -194,6 +198,7 @@ class DatabricksStatementClient:
             fmt="ARROW_STREAM",
             catalog=catalog,
             schema=schema,
+            parameters=parameters,
         )
         if byte_limit is not None and byte_limit > 0:
             payload["byte_limit"] = int(byte_limit)
@@ -221,6 +226,7 @@ class DatabricksStatementClient:
         fmt: str,
         catalog: Optional[str],
         schema: Optional[str],
+        parameters: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         payload: Dict[str, Any] = {
             "statement": statement,
@@ -234,6 +240,13 @@ class DatabricksStatementClient:
             payload["catalog"] = catalog
         if schema:
             payload["schema"] = schema
+        if parameters:
+            # The API's own named-parameter mechanism: each entry is
+            # ``{"name": ..., "value": ..., "type": ...}`` and binds a ``:name``
+            # marker in the statement. Values travel as request fields, never
+            # spliced into SQL text — the whole point on the access-policy path,
+            # where the bound values are the caller's identity.
+            payload["parameters"] = list(parameters)
         return payload
 
     def _run_to_terminal(self, payload: Dict[str, Any], statement: str, *, timeout_s: float) -> Dict[str, Any]:

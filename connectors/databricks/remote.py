@@ -443,6 +443,131 @@ def wrap_with_limit(sql: str, limit: int) -> str:
     return f"SELECT * FROM (\n{sql}\n) AS agnes_remote_q LIMIT {int(limit)}"
 
 
+def _build_client(settings: Dict[str, Any]) -> Any:
+    from connectors.databricks.client import DatabricksStatementClient
+
+    return DatabricksStatementClient(
+        host=settings["host"],
+        token=settings["token"],
+        warehouse_id=settings["warehouse_id"],
+    )
+
+
+def _translate_submit_failure(exc: Exception, *, timeout_s: float) -> "DatabricksRemoteError":
+    """Map a client-level failure onto the typed error the API layer renders.
+
+    Shared by the interactive (``execute_select``) and materialize
+    (``execute_scan_to_arrow``) paths so a warehouse timeout or an upstream
+    5xx reads the same on both — the two differ in how much they fetch, never
+    in what a failure means.
+    """
+    from connectors.databricks.client import DatabricksApiError, DatabricksStatementTimeoutError
+
+    if isinstance(exc, DatabricksStatementTimeoutError):
+        return DatabricksRemoteError(
+            "remote_statement_timeout",
+            f"The Databricks statement did not finish within {timeout_s:.0f}s and was cancelled.",
+            status=504,
+            hint=(
+                "Narrow the query, or register it as a materialized table so the "
+                "scheduler runs it off the interactive path."
+            ),
+        )
+    if isinstance(exc, DatabricksApiError):
+        # Databricks classifies user SQL errors as 400s. Anything else is the
+        # workspace's problem, not the analyst's, and must not read like a
+        # syntax error in their query.
+        status = 400 if (exc.status or 0) < 500 else 502
+        return DatabricksRemoteError(
+            "databricks_query_failed" if status == 400 else "databricks_upstream_error",
+            str(exc),
+            status=status,
+        )
+    raise exc
+
+
+def _too_large(cap_bytes: int, *, cap_label: str) -> "DatabricksRemoteError":
+    return DatabricksRemoteError(
+        "remote_scan_too_large",
+        (
+            f"The Databricks result exceeded the {cap_bytes:,}-byte {cap_label} "
+            "and was refused (a truncated result is not an answer)."
+        ),
+        status=400,
+        cap_bytes=cap_bytes,
+        hint=(
+            "Add a narrower WHERE / fewer columns, or register the query as a "
+            "materialized table (`agnes admin register-table --query-mode materialized`) "
+            "so it syncs on a schedule instead."
+        ),
+    )
+
+
+def execute_scan_to_arrow(
+    sql: str,
+    *,
+    settings: Dict[str, Any],
+    cap_bytes: int,
+    timeout_s: float,
+    parameters: Optional[List[Dict[str, Any]]] = None,
+    client: Any = None,
+):
+    """Run a Databricks-native SELECT and return the FULL result as a
+    ``pyarrow.Table`` — the materialize shape ``/api/v2/scan`` and
+    ``agnes snapshot create`` need.
+
+    Deliberately not ``execute_select`` with a large limit. That path wraps the
+    statement in ``LIMIT n + 1`` to detect "more rows exist", which is exactly
+    wrong here: a snapshot wants every row the predicate selects, and an
+    ``n + 1`` probe on a materialize-sized fetch would silently cap it. The
+    caller's own byte cap (``api.scan.max_result_bytes``) is the bound instead,
+    and a result that hits it is refused rather than shortened — same rule as
+    the interactive path, different limit.
+
+    ``parameters`` binds Databricks named-parameter markers (``:name``); the
+    access-policy path uses it so a policy's identity values never reach the
+    warehouse as spliced SQL text.
+    """
+    import pyarrow as pa
+
+    from connectors.databricks.client import DatabricksApiError
+
+    if client is None:
+        client = _build_client(settings)
+
+    try:
+        result = client.execute_to_arrow_batches(
+            sql,
+            byte_limit=cap_bytes if cap_bytes and cap_bytes > 0 else None,
+            timeout_s=timeout_s,
+            parameters=parameters,
+        )
+    except Exception as exc:
+        raise _translate_submit_failure(exc, timeout_s=timeout_s) from exc
+
+    if result.truncated:
+        raise _too_large(cap_bytes, cap_label="scan result cap")
+
+    batches = []
+    try:
+        for batch in result.iter_batches():
+            batches.append(batch)
+    except DatabricksApiError as exc:
+        raise DatabricksRemoteError(
+            "databricks_result_fetch_failed",
+            f"The Databricks statement succeeded but its result could not be fetched: {exc}",
+            status=502,
+            hint="Retry the query; presigned result links are short-lived.",
+        ) from exc
+
+    if batches:
+        return pa.Table.from_batches(batches)
+    # An empty result still has to carry its column names — a zero-row Arrow
+    # table with no schema would surface downstream as "no such column".
+    names = [str(c.get("name", "")) for c in result.schema_columns]
+    return pa.table({n: pa.array([], type=pa.string()) for n in names}) if names else pa.table({})
+
+
 def execute_select(
     sql: str,
     *,
@@ -450,6 +575,7 @@ def execute_select(
     limit: int,
     cap_bytes: int,
     timeout_s: float,
+    parameters: Optional[List[Dict[str, Any]]] = None,
     client: Any = None,
 ) -> Tuple[List[str], List[List[Any]], bool, int]:
     """Run a Databricks-native SELECT; return ``(columns, rows, truncated, bytes)``.
@@ -463,20 +589,16 @@ def execute_select(
     silently shortened result would be the worst possible failure mode for an
     analyst — a plausible number that is simply wrong.
 
+    ``parameters`` binds Databricks named-parameter markers (``:name``); the
+    access-policy path uses it so a policy's identity values never reach the
+    warehouse as spliced SQL text.
+
     ``client`` is injectable for tests; production builds one from ``settings``.
     """
-    from connectors.databricks.client import (
-        DatabricksApiError,
-        DatabricksStatementClient,
-        DatabricksStatementTimeoutError,
-    )
+    from connectors.databricks.client import DatabricksApiError
 
     if client is None:
-        client = DatabricksStatementClient(
-            host=settings["host"],
-            token=settings["token"],
-            warehouse_id=settings["warehouse_id"],
-        )
+        client = _build_client(settings)
 
     statement = wrap_with_limit(sql, limit + 1)
     try:
@@ -484,43 +606,13 @@ def execute_select(
             statement,
             byte_limit=cap_bytes if cap_bytes and cap_bytes > 0 else None,
             timeout_s=timeout_s,
+            parameters=parameters,
         )
-    except DatabricksStatementTimeoutError as exc:
-        raise DatabricksRemoteError(
-            "remote_statement_timeout",
-            f"The Databricks statement did not finish within {timeout_s:.0f}s and was cancelled.",
-            status=504,
-            hint=(
-                "Narrow the query, or register it as a materialized table so the "
-                "scheduler runs it off the interactive path."
-            ),
-        ) from exc
-    except DatabricksApiError as exc:
-        # Databricks classifies user SQL errors as 400s. Anything else is the
-        # workspace's problem, not the analyst's, and must not read like a
-        # syntax error in their query.
-        status = 400 if (exc.status or 0) < 500 else 502
-        raise DatabricksRemoteError(
-            "databricks_query_failed" if status == 400 else "databricks_upstream_error",
-            str(exc),
-            status=status,
-        ) from exc
+    except Exception as exc:
+        raise _translate_submit_failure(exc, timeout_s=timeout_s) from exc
 
     if result.truncated:
-        raise DatabricksRemoteError(
-            "remote_scan_too_large",
-            (
-                f"The Databricks result exceeded the {cap_bytes:,}-byte remote-query cap "
-                "and was refused (a truncated result is not an answer)."
-            ),
-            status=400,
-            cap_bytes=cap_bytes,
-            hint=(
-                "Add a narrower WHERE / fewer columns, or register the query as a "
-                "materialized table (`agnes admin register-table --query-mode materialized`) "
-                "so it syncs on a schedule instead."
-            ),
-        )
+        raise _too_large(cap_bytes, cap_label="remote-query cap")
 
     columns: List[str] = [str(c.get("name", "")) for c in result.schema_columns]
     rows: List[List[Any]] = []
