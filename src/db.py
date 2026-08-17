@@ -61,8 +61,12 @@ _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 # for one SQL row/column-filtering policy per table (see `_v115_to_v116`),
 # 117 semantic_models / semantic_sources / data_package_semantic_models —
 # the canonical Ossie semantic-layer document store (see `_v116_to_v117`),
-# 118 adds user_journey_state.agent_created (see `_v117_to_v118`).
-SCHEMA_VERSION = 118
+# 118 adds user_journey_state.agent_created (see `_v117_to_v118`),
+# 119 adds tool_registry.projection_map — the admin's choice of which
+# materialized columns carry a linked app's id / url / name, replacing a
+# hardcoded alias list that only knew one upstream's column names (see
+# `_v118_to_v119`).
+SCHEMA_VERSION = 119
 
 # v96: data_apps registry (hosted user web apps). Extracted as a shared
 # module-level constant so the fresh-install DDL (appended to
@@ -5946,6 +5950,7 @@ def _v63_to_v64(conn: duckdb.DuckDBPyConnection) -> None:
             pii_fields       JSON,                       -- array of column names to redact on output
             rate_limit_pm    INTEGER,                    -- per-minute, per-user (NULL = unlimited)
             schedule         VARCHAR,                    -- materialize only, e.g. 'every 6h'
+            projection_map   JSON,                       -- {"id": col, "url": col, "name": col} for the linked-apps projection
             enabled          BOOLEAN NOT NULL DEFAULT true,
             created_at       TIMESTAMP NOT NULL DEFAULT current_timestamp,
             updated_at       TIMESTAMP NOT NULL DEFAULT current_timestamp
@@ -7468,6 +7473,31 @@ def _v117_to_v118(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("UPDATE schema_version SET version = 118")
 
 
+def _v118_to_v119(conn: duckdb.DuckDBPyConnection) -> None:
+    """v118→v119: add ``tool_registry.projection_map``.
+
+    The linked-apps projection asked a hardcoded alias list which materialized
+    column carried an app's id (``id``/``app_id``/``config_id``) and which its
+    URL. That list was written against one upstream; the next MCP server names
+    its columns differently and every row is silently skipped — the projection
+    reports "0 new, 0 updated", which reads as "the upstream has nothing"
+    rather than "nothing here is named what I expected". Live example: a
+    Keboola data-app lister emits ``data_app_id`` + ``configuration_id``, so
+    all six rows were dropped while the wizard said the fetch succeeded.
+
+    The mapping is per-tool because it describes THAT tool's output shape, and
+    it belongs to the admin who designated the tool as a lister. NULL keeps the
+    old alias behaviour, so no instance changes until someone chooses.
+
+    Idempotent: ``PRAGMA table_info`` skips the ALTER when the column already
+    exists, matching the neighbouring steps.
+    """
+    existing_cols = {row[1] for row in conn.execute("PRAGMA table_info('tool_registry')").fetchall()}
+    if "projection_map" not in existing_cols:
+        conn.execute("ALTER TABLE tool_registry ADD COLUMN projection_map JSON")
+    conn.execute("UPDATE schema_version SET version = 119")
+
+
 def _add_store_entity_trust_columns(conn: duckdb.DuckDBPyConnection) -> None:
     """The v111 column DDL on its own, with no version stamp.
 
@@ -8503,6 +8533,9 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # onboarding step ("Create your first agent"). No-op on fresh
             # installs — _SYSTEM_SCHEMA already declares the column.
             _v117_to_v118(conn)
+            # v118→v119: tool_registry.projection_map. No-op on fresh
+            # installs — _SYSTEM_SCHEMA already declares the column.
+            _v118_to_v119(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -8792,6 +8825,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v116_to_v117(conn)
             if current < 118:
                 _v117_to_v118(conn)
+            if current < 119:
+                _v118_to_v119(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

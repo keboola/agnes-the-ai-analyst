@@ -1275,3 +1275,102 @@ class TestAdminOverviewBehavioral:
         else:
             rows = body
         assert isinstance(rows, list), f"Expected list of activity rows, got {type(rows)!r}: {body!r}"
+
+
+class TestToolProjectionMapBehavioral:
+    """The admin's choice of which materialized columns carry a linked app's
+    id/url/name — stored per tool, honoured by the linked-apps projection.
+
+    Before this existed the projection asked a hardcoded alias list, so an
+    upstream naming its columns anything else had every row dropped while the
+    wizard reported "0 new, 0 updated" — an empty-looking result over rows
+    that were sitting right there.
+    """
+
+    COVERED_ROUTES = {
+        "PUT /api/admin/mcp-tools/{tool_id}/projection-map",
+    }
+
+    @staticmethod
+    def _register_tool(client, headers):
+        src = client.post(
+            "/api/admin/mcp-sources",
+            json={"name": "kbc_lister", "transport": "stdio", "command": "kbc-mcp"},
+            headers=headers,
+        )
+        assert src.status_code == 201, src.text
+        source_id = src.json()["id"]
+        r = client.post(
+            "/api/admin/mcp-tools",
+            json={
+                "source_id": source_id,
+                "original_name": "get_data_apps",
+                "exposed_name": "kbc_data_apps",
+                "mode": "materialize",
+                "schedule": "daily 04:00",
+            },
+            headers=headers,
+        )
+        assert r.status_code == 201, r.text
+        return r.json()["tool_id"]
+
+    def test_mapping_is_stored_and_cleared(self, seeded_app_both):
+        s = seeded_app_both
+        client, headers = s["client"], _admin_headers(s)
+        tool_id = self._register_tool(client, headers)
+
+        r = client.put(
+            f"/api/admin/mcp-tools/{tool_id}/projection-map",
+            json={"projection_map": {"id": "data_app_id", "url": "deployment_url"}},
+            headers=headers,
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["projection_map"] == {"id": "data_app_id", "url": "deployment_url"}
+        got = client.get(f"/api/admin/mcp-tools/{tool_id}", headers=headers).json()
+        assert got["projection_map"]["id"] == "data_app_id"
+
+        r = client.put(
+            f"/api/admin/mcp-tools/{tool_id}/projection-map",
+            json={"projection_map": None},
+            headers=headers,
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["projection_map"] is None
+
+    def test_unknown_field_is_rejected(self, seeded_app_both):
+        """A typo'd field must not be stored as a mapping nothing will read."""
+        s = seeded_app_both
+        client, headers = s["client"], _admin_headers(s)
+        tool_id = self._register_tool(client, headers)
+
+        r = client.put(
+            f"/api/admin/mcp-tools/{tool_id}/projection-map",
+            json={"projection_map": {"identifier": "data_app_id"}},
+            headers=headers,
+        )
+        assert r.status_code == 400, r.text
+        assert "identifier" in r.json()["detail"]
+
+    def test_blank_column_does_not_pin_a_field_to_nothing(self, seeded_app_both):
+        """`map_row` treats a named column as authoritative — "" must not be named."""
+        s = seeded_app_both
+        client, headers = s["client"], _admin_headers(s)
+        tool_id = self._register_tool(client, headers)
+
+        r = client.put(
+            f"/api/admin/mcp-tools/{tool_id}/projection-map",
+            json={"projection_map": {"id": "data_app_id", "url": "   "}},
+            headers=headers,
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["projection_map"] == {"id": "data_app_id"}
+
+    def test_missing_tool_is_404(self, seeded_app_both):
+        s = seeded_app_both
+        client, headers = s["client"], _admin_headers(s)
+        r = client.put(
+            "/api/admin/mcp-tools/nope.nothing/projection-map",
+            json={"projection_map": {"id": "x"}},
+            headers=headers,
+        )
+        assert r.status_code == 404
