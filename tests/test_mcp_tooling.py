@@ -83,7 +83,7 @@ class TestProgressiveTool:
         registry: dict[str, str] = {}
         tool = progressive_tool(mcp, registry)
 
-        @tool()
+        @tool(read_only=True)
         def sample(x: int = 1) -> dict:
             """Do the thing.
 
@@ -102,7 +102,7 @@ class TestProgressiveTool:
         registry: dict[str, str] = {}
         tool = progressive_tool(mcp, registry)
 
-        @tool()
+        @tool(read_only=True)
         def brief() -> dict:
             """Just this."""
             return {}
@@ -113,7 +113,7 @@ class TestProgressiveTool:
         mcp = self._mcp()
         tool = progressive_tool(mcp, {})
 
-        @tool()
+        @tool(read_only=True)
         def add_one(x: int) -> dict:
             """Add one.
 

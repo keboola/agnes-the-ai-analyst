@@ -1118,13 +1118,50 @@
   }
 
   /* ── Server calls ── */
+  /* Short machine codes the store returns in `detail` — sometimes as a bare
+     string (`detail="conflict_owner_name"`), sometimes as `{code: …}`. Map them
+     to sentences here. Wording is kept in step with the sibling authoring
+     surfaces (store_upload.html, store_edit.html) so one rejection does not
+     grow three different phrasings. */
+  var ERROR_MESSAGES = {
+    conflict_owner_name:
+      'You already have an item with this name. Each owner needs unique names — pick a different one, or delete the existing item first.',
+    conflict_global_suffix:
+      'That name conflicts with another user’s published slug. Pick a different one.',
+    invalid_name_format:
+      'Name must be lowercase letters, digits and hyphens only, starting with a letter (max 64 characters).',
+    title_required: 'Title is required.',
+    title_too_long: 'Title is too long — max 100 characters.',
+    tagline_too_long: 'Short description is too long — max 200 characters.',
+    missing_name:
+      'Name is required. Either fill it in here or add a `name:` field to your frontmatter.',
+    invalid_type: 'Pick one of: skill, agent, or plugin.',
+    invalid_category: 'Pick a category from your own groups, or leave it blank.',
+    entity_not_found: 'That item no longer exists.',
+    not_owner: 'You don’t own this item, so you can’t change it.',
+    prior_version_pending:
+      'A previous edit is still under review. Wait for the verdict before saving.',
+    type_locked:
+      'Cannot change the type. Publish a new item if you need a different form factor.',
+  };
+  /* Look a code up before showing it. Unknown codes fall through to the raw
+     token so debugging stays possible — but with a readable prefix. */
+  function humanizeError(code) {
+    if (!code) return '';
+    var s = String(code);
+    if (ERROR_MESSAGES[s]) return ERROR_MESSAGES[s];
+    // Codes carrying a parameter, e.g. "unknown_type:foo".
+    var head = s.split(':', 1)[0];
+    if (ERROR_MESSAGES[head]) return ERROR_MESSAGES[head];
+    return s;
+  }
   /* The store returns rich errors: a plain string, a FastAPI validation list
      ([{loc,msg}]), or a structured guardrail object
      ({code, checks:{<phase>:{issues:[{hint|code}]}}}). Flatten any of them into
      one readable line so the builder never shows "[object Object]". */
   function errMessage(detail, status) {
     if (detail == null) return 'HTTP ' + status;
-    if (typeof detail === 'string') return detail;
+    if (typeof detail === 'string') return humanizeError(detail);
     if (Array.isArray(detail)) return detail.map(function (d) { return d.msg || d.code || JSON.stringify(d); }).join('; ');
     if (detail.checks) {
       var msgs = [];
@@ -1133,7 +1170,8 @@
       });
       if (msgs.length) return msgs.join(' ');
     }
-    return detail.code || detail.detail || ('HTTP ' + status);
+    if (detail.code) return humanizeError(detail.code);
+    return detail.detail || ('HTTP ' + status);
   }
   /* The flattened message is for a one-line receipt; the STRUCTURE is what the
      problem list needs (per-issue field + code), so carry both. */

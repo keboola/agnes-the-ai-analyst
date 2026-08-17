@@ -68,7 +68,7 @@ def _mcp_error(context: str, exc: V2ClientError) -> str:
 # ── tools ──────────────────────────────────────────────────────────────────
 
 
-@tool()
+@tool(read_only=True)
 def server_info() -> dict:
     """Return the configured Agnes server URL and your account email.
 
@@ -92,7 +92,7 @@ def server_info() -> dict:
     return info
 
 
-@tool()
+@tool(read_only=True)
 def catalog() -> dict:
     """List all tables available to you (RBAC-filtered).
 
@@ -113,7 +113,7 @@ def catalog() -> dict:
         raise ValueError(_mcp_error("catalog", exc)) from exc
 
 
-@tool()
+@tool(read_only=True)
 def collections_list() -> dict:
     """List the file Collections you can access (RBAC-filtered).
 
@@ -127,7 +127,7 @@ def collections_list() -> dict:
         raise ValueError(_mcp_error("collections_list", exc)) from exc
 
 
-@tool()
+@tool(read_only=True)
 def collection_get(collection_id: str) -> dict:
     """Show one Collection's detail plus its files and per-file status.
 
@@ -140,7 +140,7 @@ def collection_get(collection_id: str) -> dict:
         raise ValueError(_mcp_error("collection_get", exc)) from exc
 
 
-@tool()
+@tool(read_only=True)
 def collections_search(query: str, k: int = 10, collection_id: str = "") -> dict:
     """Hybrid search across your accessible file Collections (RBAC-filtered). Matching is whole word, there is no wildcard, and file names are a fallback, consulted only when no passage explains the question better — so an empty result is a wording miss far more often than an access problem; read the response's ``hint`` before concluding anything from it.
 
@@ -178,7 +178,7 @@ def collections_search(query: str, k: int = 10, collection_id: str = "") -> dict
         raise ValueError(_mcp_error("collections_search", exc)) from exc
 
 
-@tool()
+@tool(read_only=True)
 def knowledge_search(query: str, k: int = 10) -> dict:
     """One query across documents, the knowledge base, and the data catalog. Matching is whole word, there is no wildcard, and file names are a fallback, consulted only when no passage explains the question better — so an empty result is a wording miss far more often than an access problem; read the response's ``hint`` before concluding anything from it.
 
@@ -236,7 +236,7 @@ def knowledge_search(query: str, k: int = 10) -> dict:
         }
 
 
-@tool()
+@tool(read_only=True)
 def collection_file_read(collection_id: str, file_id: str) -> dict:
     """Read one file's text straight, without guessing search terms.
 
@@ -268,7 +268,7 @@ def collection_file_read(collection_id: str, file_id: str) -> dict:
         raise ValueError(_mcp_error("collection_file_read", exc)) from exc
 
 
-@tool()
+@tool(read_only=False)
 def collections_reingest(collection_id: str, file_id: str) -> dict:
     """Re-run ingestion for one file in a Collection (requires access to the collection).
 
@@ -286,7 +286,7 @@ def collections_reingest(collection_id: str, file_id: str) -> dict:
         raise ValueError(_mcp_error("collections_reingest", exc)) from exc
 
 
-@tool()
+@tool(read_only=True)
 def schema(table_id: str) -> dict:
     """Show column names, types, and SQL dialect hints for a table.
 
@@ -306,7 +306,7 @@ def schema(table_id: str) -> dict:
         raise ValueError(_mcp_error(f"schema({table_id})", exc)) from exc
 
 
-@tool()
+@tool(read_only=True)
 def describe(table_id: str, rows: int = 5) -> dict:
     """Show schema plus sample rows for a table.
 
@@ -338,7 +338,7 @@ def describe(table_id: str, rows: int = 5) -> dict:
     )
 
 
-@tool()
+@tool(read_only=True)
 def query(sql: str, limit: int = 1000) -> dict:
     """Execute a SQL query against Agnes data.
 
@@ -376,7 +376,7 @@ def query(sql: str, limit: int = 1000) -> dict:
     return ensure_output_size(result, "query")
 
 
-@tool()
+@tool(read_only=True)
 def query_local(sql: str, limit: int = 1000) -> dict:
     """Execute a SQL query directly against the local DuckDB cache.
 
@@ -437,7 +437,7 @@ def query_local(sql: str, limit: int = 1000) -> dict:
     )
 
 
-@tool()
+@tool(read_only=False)
 def chat_upload_file(
     file_path: str,
     kind: str = "data",
@@ -507,7 +507,11 @@ def chat_upload_file(
     return r.json()
 
 
-@tool()
+# Destructive because a pull PRUNES: tables the caller has lost access to are
+# removed locally and their snapshot views blocked. Server-driven revocation
+# rather than a requested delete, but the hint describes what the tool may do
+# to local state, and this is not a purely additive update.
+@tool(read_only=False, destructive=True, idempotent=True)
 def pull(skip_materialize: bool = False) -> dict:
     """Sync the latest data from the Agnes server to local disk.
 
@@ -605,7 +609,7 @@ def _is_data_apps_disabled(exc: V2ClientError) -> bool:
     return isinstance(body, dict) and body.get("detail") == "data_apps_disabled"
 
 
-@tool()
+@tool(read_only=True)
 def data_apps_list(kind: Literal["", "hosted", "linked"] = "") -> dict:
     """List data apps you can see (RBAC-filtered).
 
@@ -628,7 +632,7 @@ def data_apps_list(kind: Literal["", "hosted", "linked"] = "") -> dict:
         raise ValueError(_mcp_error("data_apps_list", exc)) from exc
 
 
-@tool()
+@tool(read_only=True)
 def data_app_get(slug: str) -> dict:
     """Show one hosted data app's detail.
 
@@ -647,7 +651,7 @@ def data_app_get(slug: str) -> dict:
         raise ValueError(_mcp_error(f"data_app_get({slug})", exc)) from exc
 
 
-@tool()
+@tool(read_only=False, open_world=True)
 def data_app_deploy(slug: str, sha: str = "", mode: Literal["", "dev"] = "") -> dict:
     """Deploy (or redeploy) a hosted data app — app owner or Admin only.
 
@@ -677,7 +681,7 @@ def data_app_deploy(slug: str, sha: str = "", mode: Literal["", "dev"] = "") -> 
         raise ValueError(_mcp_error(f"data_app_deploy({slug})", exc)) from exc
 
 
-@tool()
+@tool(read_only=False)
 def data_app_create(slug: str, name: str, description: str = "") -> dict:
     """Create a new hosted data app (the registry row plus its git repo).
 
@@ -705,7 +709,7 @@ def data_app_create(slug: str, name: str, description: str = "") -> dict:
         raise ValueError(_mcp_error(f"data_app_create({slug})", exc)) from exc
 
 
-@tool()
+@tool(read_only=False)
 def data_app_create_draft(slug: str, branch: str = "init") -> dict:
     """Create a draft of a prod data app on an iteration branch — owner/Admin only.
 
@@ -729,7 +733,7 @@ def data_app_create_draft(slug: str, branch: str = "init") -> dict:
         raise ValueError(_mcp_error(f"data_app_create_draft({slug})", exc)) from exc
 
 
-@tool()
+@tool(read_only=False, destructive=True)
 def data_app_delete_draft(slug: str, draft_slug: str) -> dict:
     """Tear down a draft of a prod data app — app owner or Admin only.
 
@@ -752,7 +756,7 @@ def data_app_delete_draft(slug: str, draft_slug: str) -> dict:
     return {"status": "deleted"}
 
 
-@tool()
+@tool(read_only=False)
 def data_app_git_credential(slug: str) -> dict:
     """Mint a fresh git push credential for a data app — app owner or Admin only.
 
@@ -770,7 +774,7 @@ def data_app_git_credential(slug: str) -> dict:
         raise ValueError(_mcp_error(f"data_app_git_credential({slug})", exc)) from exc
 
 
-@tool()
+@tool(read_only=True)
 def data_app_logs(slug: str, tail: int = 200) -> dict:
     """Show the last N lines of runner logs for a hosted data app — owner/Admin only.
 
@@ -787,7 +791,7 @@ def data_app_logs(slug: str, tail: int = 200) -> dict:
         raise ValueError(_mcp_error(f"data_app_logs({slug})", exc)) from exc
 
 
-@tool()
+@tool(read_only=False, idempotent=True)
 def data_app_set_description(slug: str, description: str) -> dict:
     """Set the admin description override on a managed (linked) data app.
 
@@ -808,7 +812,7 @@ def data_app_set_description(slug: str, description: str) -> dict:
         raise ValueError(_mcp_error(f"data_app_set_description({slug})", exc)) from exc
 
 
-@tool()
+@tool(read_only=False)
 def agnes_data_app_preview(slug: str, url: str = "") -> dict:
     """Open or refresh the in-chat split-pane preview of a hosted data app.
 
@@ -855,7 +859,7 @@ def agnes_data_app_preview(slug: str, url: str = "") -> dict:
     return {"render": "data_app_preview", "slug": slug, "url": url}
 
 
-@tool()
+@tool(read_only=False, idempotent=True)
 def agnes_data_app_refresh(slug: str) -> dict:
     """Force-reload the in-chat preview pane for a hosted data app.
 
@@ -871,7 +875,7 @@ def agnes_data_app_refresh(slug: str) -> dict:
     return {"render": "data_app_preview_refresh", "slug": slug}
 
 
-@tool()
+@tool(read_only=False, destructive=True)
 def agnes_data_app_close(slug: str) -> dict:
     """Tear down the in-chat preview pane for a hosted data app.
 
@@ -888,7 +892,7 @@ def agnes_data_app_close(slug: str) -> dict:
     return {"render": "data_app_preview_close", "slug": slug}
 
 
-@tool()
+@tool(read_only=True)
 def agnes_data_app_credentials(slug: str) -> dict:
     """Show the shareable URL for a hosted data app — a terminal render directive.
 
@@ -947,7 +951,7 @@ def _registered_tool_doc(tool_name: str):
     return doc.strip() if isinstance(doc, str) and doc.strip() else None
 
 
-@tool()
+@tool(read_only=True)
 def tool_docs(tool_name: str) -> dict:
     """Return the full reference documentation (docstring) for one registered MCP tool — arguments, return shape, and usage tips beyond the short description shown in the tool list."""
     doc = TOOL_DOCS.get(tool_name)

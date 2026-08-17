@@ -36,6 +36,7 @@ const STEP_KEYS = [
   "stack_setup_done",
   "catalog_discovered",
   "use_anywhere",
+  "agent_created",
 ];
 
 const DEFAULT_JOURNEY = {
@@ -44,6 +45,7 @@ const DEFAULT_JOURNEY = {
   explored_stack: false,
   catalog_discovered: false,
   use_anywhere: false,
+  agent_created: false,
   onboarded: false,
   successful_answers: 0,
 };
@@ -115,11 +117,11 @@ const STEP_META = {
     why: "Upload a file only you have, or share what you built so your team — and their agents — can use it too.",
     href: "/library",
     tour: { id: WELCOME_TOUR, step: "add" },
-    // No "Or build an agent of your own" link here. Agents has a PERMANENT rail
-    // destination and TOURS.agents explains the concept on first arrival, so a
-    // second route to it inside a five-row setup card was a duplicate that broke
-    // the list in half — it rendered as a full-width link between two steps, so
-    // the reader had to work out that it was not itself a step.
+    // No loose "Or build an agent of your own" link here. That link used to
+    // hang off this row and rendered full-width BETWEEN two steps, so the
+    // reader had to work out that the thing mid-list was not itself a step.
+    // Agents is a step now (`agent_created`, last) — a row, keyed and tracked
+    // like every other, which is the shape that was missing.
   },
   // Deliberately NOT a sixth step. This one covers "Agnes beyond this browser
   // tab" in both directions — where you ask her from (the MCP connector) and
@@ -143,6 +145,15 @@ const STEP_META = {
       // see subActionHtml. Every other sub-action renders unconditionally.
       gate: "telegram",
     },
+  },
+  // Last, because it is the one step that presumes the others: an agent is
+  // built OUT OF the stack, so it only means anything once there is something
+  // in it. TOURS.agents still runs as a coach-mark on /agents — that one shows
+  // WHERE, this shows what is done.
+  agent_created: {
+    label: "Create your first agent",
+    why: "An agent is a named specialist scoped to part of your stack — it answers with only what you point it at, and you can hand it to your team or call it as an API.",
+    href: "/agents",
   },
 };
 

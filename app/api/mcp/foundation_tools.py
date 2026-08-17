@@ -406,7 +406,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=True)
     async def semantic_model_search(query: str, k: int = 10) -> dict:
         """Search canonical Ossie semantic models by slug/name/description.
 
@@ -430,7 +430,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=True)
     async def semantic_model_get(slug: str) -> dict:
         """Read one semantic model's full Ossie document, byte-for-byte.
 
@@ -487,7 +487,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=False)
     async def collections_reingest(collection_id: str, file_id: str) -> dict:
         """Re-run ingestion for one file in a Collection (requires access to the collection).
 
@@ -668,7 +668,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=False, idempotent=True)
     async def stack_subscribe(resource_type: Literal["data_package", "memory_domain"], resource_id: str) -> dict:
         """Subscribe to a data package or memory domain granted to you.
 
@@ -704,7 +704,7 @@ def register_foundation_tools(
             body["next_step"] = "Run `agnes pull` to download the new tables."
         return body
 
-    @tool()
+    @tool(read_only=False, destructive=True, idempotent=True)
     async def stack_unsubscribe(resource_type: Literal["data_package", "memory_domain"], resource_id: str) -> dict:
         """Unsubscribe from a data package or memory domain.
 
@@ -756,7 +756,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=False, idempotent=True)
     async def stack_artefact_add(corpus_id: str) -> dict:
         """Add an artefact (file Collection) to your Stack.
 
@@ -778,7 +778,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=False, destructive=True, idempotent=True)
     async def stack_artefact_remove(corpus_id: str) -> dict:
         """Remove an artefact from your Stack — drops the default agent's
         access only. The artefact itself, its files, ownership, and sharing
@@ -798,7 +798,7 @@ def register_foundation_tools(
             r.raise_for_status()
         return {"removed": True}
 
-    @tool()
+    @tool(read_only=False, idempotent=True)
     async def store_rate(entity_id: str, vote: Annotated[int, Field(ge=-1, le=1)]) -> dict:
         """Rate a store / marketplace entity thumbs up/down (#398).
 
@@ -850,7 +850,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=False)
     async def store_publish_markdown(
         name: str,
         skill_md: str,
@@ -966,7 +966,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=False, idempotent=True)
     async def marketplace_add(item_id: str) -> dict:
         """Add a marketplace item (plugin, skill, or agent) to the caller's stack.
 
@@ -997,7 +997,7 @@ def register_foundation_tools(
             "next_step": "Run /update-agnes-plugins in Claude Code (or `agnes update`) to activate it.",
         }
 
-    @tool()
+    @tool(read_only=False, destructive=True, idempotent=True)
     async def marketplace_remove(item_id: str) -> dict:
         """Remove a marketplace item from the caller's stack.
 
@@ -1022,7 +1022,7 @@ def register_foundation_tools(
             "next_step": "Run /update-agnes-plugins in Claude Code (or `agnes update`) to apply it.",
         }
 
-    @tool()
+    @tool(read_only=False)
     async def store_update(
         entity_id: str,
         description: str = "",
@@ -1068,7 +1068,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=False, destructive=True)
     async def store_delete(entity_id: str) -> dict:
         """Delete an owned Flea Market entity (owner or admin).
 
@@ -1090,7 +1090,7 @@ def register_foundation_tools(
             r.raise_for_status()
         return {"deleted": True, "entity_id": entity_id}
 
-    @tool()
+    @tool(read_only=True)
     async def admin_store_lint_findings(include_dismissed: bool = False) -> dict:
         """List advisory skill-lint findings across the store (admin only).
 
@@ -1113,7 +1113,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=False)
     async def admin_store_lint_audit(force: bool = False) -> dict:
         """Run a full skill-lint audit over published skills now (admin only).
 
@@ -1137,7 +1137,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=False, destructive=True, idempotent=True)
     async def admin_store_lint_dismiss(entity_id: str, rule_id: str) -> dict:
         """Dismiss one advisory finding until the entity's content changes (admin only).
 
@@ -1197,7 +1197,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=False)
     async def contribute_skill(skill_md: str, grant_group: str = "Admin") -> dict:
         """Publish a SKILL.md into the Agnes Contributed marketplace (admin only).
 
@@ -1215,7 +1215,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=False, destructive=True)
     async def delete_contributed_skill(name: str) -> dict:
         """Remove a contributed skill by plugin name (admin only).
 
@@ -1279,7 +1279,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return {"connections": r.json()}
 
-    @tool()
+    @tool(read_only=True)
     async def admin_semantic_layer_coverage() -> dict:
         """How much of each Keboola project's semantic layer reaches Agnes (admin only).
 
@@ -1358,7 +1358,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=False)
     async def admin_knowledge_digest_create(
         slug: str,
         title: str,
@@ -1402,7 +1402,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=False)
     async def admin_knowledge_digest_update(
         digest_id: str,
         title: str | None = None,
@@ -1444,7 +1444,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=False, destructive=True)
     async def admin_knowledge_digest_delete(digest_id: str) -> dict:
         """Delete a maintained digest (admin only).
 
@@ -1468,7 +1468,7 @@ def register_foundation_tools(
             r.raise_for_status()
         return {"deleted": digest_id}
 
-    @tool()
+    @tool(read_only=False)
     async def chat_upload_file(
         file_path: str,
         kind: str = "data",
@@ -1520,7 +1520,7 @@ def register_foundation_tools(
             "local stdio MCP tool which reads your local filesystem."
         )
 
-    @tool()
+    @tool(read_only=True, open_world=True)
     async def my_secret_test(source_id: str) -> dict:
         """Verify your own stored credential for a per_user MCP source.
 
@@ -1605,7 +1605,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=False)
     async def admin_job_enqueue(kind: str, payload: dict | None = None, idempotency_key: str = "") -> dict:
         """Enqueue a job on the wave-2B worker runtime (admin only).
 
@@ -1634,7 +1634,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=False, destructive=True)
     async def admin_analytics_migrate(to: Literal["ducklake", "legacy"]) -> dict:
         """Migrate the analytics query surface between backends (admin only).
 
@@ -1697,7 +1697,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=False, open_world=True)
     async def agent_ask(slug: str, prompt: str, timeout_s: int = 120) -> dict:
         """One-shot synchronous request/response over one of your agents.
 
@@ -1804,7 +1804,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=False, open_world=True)
     async def data_app_deploy(slug: str, sha: str = "", mode: Literal["", "dev"] = "") -> dict:
         """Deploy (or redeploy) a hosted data app — app owner or Admin only.
 
@@ -1841,7 +1841,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=False)
     async def data_app_create(slug: str, name: str, description: str = "") -> dict:
         """Create a new hosted data app (the registry row plus its git repo).
 
@@ -1874,7 +1874,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=False)
     async def data_app_create_draft(slug: str, branch: str = "init") -> dict:
         """Create a draft of a prod data app on an iteration branch — app owner or Admin only.
 
@@ -1902,7 +1902,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=False, destructive=True)
     async def data_app_delete_draft(slug: str, draft_slug: str) -> dict:
         """Tear down a draft of a prod data app — app owner or Admin only.
 
@@ -1929,7 +1929,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return {"status": "deleted"}
 
-    @tool()
+    @tool(read_only=False)
     async def data_app_git_credential(slug: str) -> dict:
         """Mint a fresh git push credential for a data app — app owner or Admin only.
 
@@ -1971,7 +1971,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=False, idempotent=True)
     async def data_app_set_description(slug: str, description: str) -> dict:
         """Set the admin description override on a managed (linked) data app.
 
@@ -2011,7 +2011,7 @@ def register_foundation_tools(
         except Exception:
             return False
 
-    @tool()
+    @tool(read_only=False)
     async def agnes_data_app_preview(slug: str, url: str = "") -> dict:
         """Open or refresh the in-chat split-pane preview of a hosted data app.
 
@@ -2061,7 +2061,7 @@ def register_foundation_tools(
         # itself via a same-origin re-fetch of the grant endpoint.
         return {"render": "data_app_preview", "slug": slug, "url": url}
 
-    @tool()
+    @tool(read_only=False, idempotent=True)
     async def agnes_data_app_refresh(slug: str) -> dict:
         """Force-reload the in-chat preview pane for a hosted data app.
 
@@ -2077,7 +2077,7 @@ def register_foundation_tools(
         """
         return {"render": "data_app_preview_refresh", "slug": slug}
 
-    @tool()
+    @tool(read_only=False, destructive=True)
     async def agnes_data_app_close(slug: str) -> dict:
         """Tear down the in-chat preview pane for a hosted data app.
 
@@ -2094,7 +2094,7 @@ def register_foundation_tools(
         """
         return {"render": "data_app_preview_close", "slug": slug}
 
-    @tool()
+    @tool(read_only=True)
     async def agnes_data_app_credentials(slug: str) -> dict:
         """Show the shareable URL for a hosted data app — the TERMINAL
         render of a reply (spec §7): never follow this tool's result with
