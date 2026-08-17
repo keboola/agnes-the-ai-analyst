@@ -390,3 +390,158 @@ class TestTheWarningStripDoesNotSweepEveryMetastore:
         # …and the Semantic layer page still wants the full report.
         full = (Path(__file__).resolve().parents[1] / "app/web/templates/admin_semantic_layer.html").read_text()
         assert "warnings_only" not in full
+
+
+def _run_multi(models, items_by_model, *, project=("12345", "Demo")):
+    """Run the coverage computation against a Metastore exposing SEVERAL
+    models. ``items_by_model`` maps model uuid -> {item_type: [items]}.
+
+    Deliberately separate from ``_run``: that helper hard-codes one model and
+    ignores the ``model_uuid`` argument, which is exactly the blindness under
+    test here — a fake that answers the same list for every model cannot tell
+    a per-model loop from a ``models[0]`` read.
+    """
+    from connectors.keboola import semantic_layer
+
+    fake_metastore = MagicMock()
+
+    def list_items(item_type, model_uuid=None):
+        if item_type == "semantic-model":
+            return list(models)
+        return list((items_by_model.get(model_uuid) or {}).get(item_type) or [])
+
+    fake_metastore.list_items.side_effect = list_items
+
+    with (
+        patch.object(
+            semantic_layer,
+            "_enumerate_master_sources",
+            return_value=[
+                {
+                    "connection_id": "conn-1",
+                    "name": "Demo project",
+                    "stack_url": "https://connection.keboola.com",
+                    "token": "master-tok",
+                }
+            ],
+        ),
+        patch.object(semantic_layer, "_connection_storage_token", return_value="storage-tok"),
+        patch.object(
+            semantic_layer,
+            "_project_identity",
+            side_effect=lambda url, token: {"id": project[0], "name": project[1]},
+        ),
+        patch("connectors.keboola.metastore_client.MetastoreClient", return_value=fake_metastore),
+    ):
+        result = semantic_layer.compute_semantic_coverage()
+
+    assert len(result["sources"]) == 1
+    return result["sources"][0]
+
+
+class TestEveryModelIsReported:
+    """A project exposes more than one model the moment a model shared from
+    another project is linked into it, and `sync_semantic_layer` imports every
+    one of them. A report built from `models[0]` describes one model and stays
+    silent about the rest — contradicting the importer standing next to it,
+    which is worse than reporting nothing.
+    """
+
+    def test_metrics_of_every_model_are_counted(self, e2e_env):
+        _register_keboola_table("in.c-example_source", "orders", "crm_orders")
+        _register_keboola_table("in.c-shared", "invoices", "fin_invoices")
+
+        source = _run_multi(
+            [_model_item("model-1", "core"), _model_item("model-2", "shared")],
+            {
+                "model-1": {
+                    "semantic-dataset": [_dataset_item("in.c-example_source.orders", "model-1")],
+                    "semantic-metric": [
+                        _metric_item("total_revenue", 'SUM("amount")', "in.c-example_source.orders", "model-1")
+                    ],
+                },
+                "model-2": {
+                    "semantic-dataset": [_dataset_item("in.c-shared.invoices", "model-2")],
+                    "semantic-metric": [
+                        _metric_item("invoice_count", 'COUNT("id")', "in.c-shared.invoices", "model-2")
+                    ],
+                },
+            },
+        )
+
+        assert source["metrics"] == {"upstream": 2, "importable": 2}
+        assert _warning_codes(source) == set()
+
+    def test_every_model_is_named_in_the_report(self, e2e_env):
+        source = _run_multi(
+            [_model_item("model-1", "core"), _model_item("model-2", "shared")],
+            {"model-1": {}, "model-2": {}},
+        )
+
+        assert [(m["uuid"], m["name"]) for m in source["models"]] == [
+            ("model-1", "core"),
+            ("model-2", "shared"),
+        ]
+
+    def test_glossary_is_summed_across_models(self, e2e_env):
+        source = _run_multi(
+            [_model_item("model-1", "core"), _model_item("model-2", "shared")],
+            {
+                "model-1": {"semantic-glossary": [{"id": "g1", "attributes": {"term": "MRR", "definition": "…"}}]},
+                "model-2": {"semantic-glossary": [{"id": "g2", "attributes": {"term": "ARR", "definition": "…"}}]},
+            },
+        )
+
+        assert source["glossary"]["upstream"] == 2
+
+    def test_a_second_models_unregistered_table_is_named(self, e2e_env):
+        """The unregistered-table list is the admin's to-do list. A table only
+        the second model references must appear on it."""
+        _register_keboola_table("in.c-example_source", "orders", "crm_orders")
+
+        source = _run_multi(
+            [_model_item("model-1", "core"), _model_item("model-2", "shared")],
+            {
+                "model-1": {
+                    "semantic-dataset": [_dataset_item("in.c-example_source.orders", "model-1")],
+                    "semantic-metric": [
+                        _metric_item("total_revenue", 'SUM("amount")', "in.c-example_source.orders", "model-1")
+                    ],
+                },
+                "model-2": {
+                    "semantic-dataset": [_dataset_item("in.c-nowhere.ghosts", "model-2")],
+                    "semantic-metric": [_metric_item("ghost_count", 'COUNT("id")', "in.c-nowhere.ghosts", "model-2")],
+                },
+            },
+        )
+
+        assert source["metrics"] == {"upstream": 2, "importable": 1}
+        assert source["unregistered_tables"] == ["in.c-nowhere.ghosts"]
+
+    def test_a_name_claimed_by_an_earlier_model_is_a_conflict(self, e2e_env):
+        """Mirrors the sync's own `claimed_names` tie-break: two linked models
+        each publishing `revenue` land ONE row, first model wins. A report that
+        counted both as importable would promise a metric that never arrives.
+        """
+        _register_keboola_table("in.c-example_source", "orders", "crm_orders")
+        _register_keboola_table("in.c-shared", "invoices", "fin_invoices")
+
+        source = _run_multi(
+            [_model_item("model-1", "core"), _model_item("model-2", "shared")],
+            {
+                "model-1": {
+                    "semantic-dataset": [_dataset_item("in.c-example_source.orders", "model-1")],
+                    "semantic-metric": [
+                        _metric_item("revenue", 'SUM("amount")', "in.c-example_source.orders", "model-1")
+                    ],
+                },
+                "model-2": {
+                    "semantic-dataset": [_dataset_item("in.c-shared.invoices", "model-2")],
+                    "semantic-metric": [_metric_item("revenue", 'SUM("total")', "in.c-shared.invoices", "model-2")],
+                },
+            },
+        )
+
+        assert source["metrics"] == {"upstream": 2, "importable": 1}
+        assert [c["metric"] for c in source["conflicts"]] == ["revenue"]
+        assert "name_conflict" in _warning_codes(source)

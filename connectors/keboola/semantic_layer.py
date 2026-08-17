@@ -1704,6 +1704,11 @@ def compute_semantic_coverage(*, warnings_only: bool = False) -> dict:
     Constraints are not fetched — they only decorate a successfully mapped row
     (``merge_constraints``) and cannot change a skip decision, so the extra
     round-trip buys nothing here.
+
+    Counts span EVERY model a project publishes, walked in the same order and
+    with the same per-model scoping and first-claim name tie-break as
+    ``sync_semantic_layer`` — the report's whole value is that it predicts what
+    that sync will do, so any divergence between the two is a defect here.
     """
     import requests
 
@@ -1743,6 +1748,7 @@ def compute_semantic_coverage(*, warnings_only: bool = False) -> dict:
             "project": None,
             "storage_project": None,
             "token_project_mismatch": False,
+            "models": [],
             "metrics": {"upstream": 0, "importable": 0},
             "glossary": {"upstream": 0},
             "blocked": [],
@@ -1819,74 +1825,110 @@ def compute_semantic_coverage(*, warnings_only: bool = False) -> dict:
             if not models:
                 sources.append(entry)
                 continue
-            model_uuid = models[0]["id"]
-            entry["model"] = {"uuid": model_uuid, "name": (models[0].get("attributes") or {}).get("name") or ""}
-            datasets = metastore.list_items("semantic-dataset", model_uuid)
-            metrics = metastore.list_items("semantic-metric", model_uuid)
-            relationships = metastore.list_items("semantic-relationship", model_uuid)
-            entry["glossary"]["upstream"] = len(metastore.list_items("semantic-glossary", model_uuid))
+            # EVERY model, in the same order the sync walks them (`sorted` on
+            # the immutable uuid). Reading `models[0]` described one model and
+            # stayed silent about the rest, while the write loop below has
+            # imported all of them since multi-model projects became reachable
+            # — a report that contradicts the code it reports on is worse than
+            # no report.
+            models_by_uuid = {m["id"]: m for m in models if m.get("id")}
+            model_uuids = sorted(models_by_uuid)
+            entry["models"] = [
+                {"uuid": uuid, "name": (models_by_uuid[uuid].get("attributes") or {}).get("name") or ""}
+                for uuid in model_uuids
+            ]
+            per_model = [
+                (
+                    uuid,
+                    {
+                        "semantic-dataset": metastore.list_items("semantic-dataset", uuid),
+                        "semantic-metric": metastore.list_items("semantic-metric", uuid),
+                        "semantic-relationship": metastore.list_items("semantic-relationship", uuid),
+                        "semantic-glossary": metastore.list_items("semantic-glossary", uuid),
+                    },
+                )
+                for uuid in model_uuids
+            ]
         except (MetastoreApiError, requests.RequestException) as e:
             entry["error"] = f"Metastore fetch failed: {e}"
             entry["warnings"].append({"code": "fetch_failed", "message": entry["error"]})
             sources.append(entry)
             continue
 
-        dataset_lookup = dataset_lookup_by_table_id(datasets)
-        relationship_lookup = relationship_lookup_by_dataset(relationships)
-
+        upstream_metrics = 0
         importable = 0
         unregistered: set[str] = set()
-        for item in metrics:
-            row, reason = build_metric_row(
-                item,
-                table_lookup,
-                dataset_lookup,
-                [],
-                model_uuid,
-                relationship_lookup=relationship_lookup,
-                column_lookup=column_lookup,
-            )
-            if row is not None:
-                # Mapping cleanly is not enough to land: the sync refuses to
-                # take a name another source already holds, and that check
-                # happens after the mapper, so counting mapped rows alone
-                # overstates coverage by exactly the number of conflicts.
-                # Found live — a Keboola `mrr` never landed because the
-                # bundled yaml starter pack already owned that name, and the
-                # sync's own `skipped_unresolved_table` counter read 0.
-                existing = metric_repository.find_by_name(row["name"])
-                if not _is_owned_by_source(existing, row["id"], {conn_id}, adopt_null=(conn_id == default_id)):
-                    entry["conflicts"].append(
+        # Names claimed by an EARLIER model in this same walk. The sync keeps
+        # the identical set (`claimed_names`) and lets the first model win, so
+        # counting a second model's same-named metric as importable would
+        # promise the admin a row the sync will never write.
+        claimed_names: set[str] = set()
+
+        # Datasets and relationships are model-scoped, exactly as in the sync:
+        # each model's metrics resolve against its OWN objects, never a merged
+        # pool, or a dataset in one model could silently satisfy a metric in
+        # another.
+        for model_uuid, model_items in per_model:
+            dataset_lookup = dataset_lookup_by_table_id(model_items["semantic-dataset"])
+            relationship_lookup = relationship_lookup_by_dataset(model_items["semantic-relationship"])
+            metrics = model_items["semantic-metric"]
+            upstream_metrics += len(metrics)
+            entry["glossary"]["upstream"] += len(model_items["semantic-glossary"])
+
+            for item in metrics:
+                row, reason = build_metric_row(
+                    item,
+                    table_lookup,
+                    dataset_lookup,
+                    [],
+                    model_uuid,
+                    relationship_lookup=relationship_lookup,
+                    column_lookup=column_lookup,
+                )
+                if row is not None:
+                    # Mapping cleanly is not enough to land: the sync refuses to
+                    # take a name another source already holds, and that check
+                    # happens after the mapper, so counting mapped rows alone
+                    # overstates coverage by exactly the number of conflicts.
+                    # Found live — a Keboola `mrr` never landed because the
+                    # bundled yaml starter pack already owned that name, and the
+                    # sync's own `skipped_unresolved_table` counter read 0.
+                    existing = metric_repository.find_by_name(row["name"])
+                    if row["name"] in claimed_names or not _is_owned_by_source(
+                        existing, row["id"], {conn_id}, adopt_null=(conn_id == default_id)
+                    ):
+                        entry["conflicts"].append(
+                            {
+                                "metric": row["name"],
+                                "held_by": (existing or {}).get("source") or "",
+                                "held_id": (existing or {}).get("id") or "",
+                            }
+                        )
+                        continue
+                    importable += 1
+                    claimed_names.add(row["name"])
+                    continue
+                attrs = item.get("attributes") or {}
+                if reason == "unresolved_table":
+                    unregistered.add(attrs.get("dataset") or "")
+                elif reason in DEFINITION_BLOCKED_REASONS:
+                    entry["blocked"].append(
                         {
-                            "metric": row["name"],
-                            "held_by": (existing or {}).get("source") or "",
-                            "held_id": (existing or {}).get("id") or "",
+                            "metric": attrs.get("name") or "",
+                            "dataset": attrs.get("dataset") or "",
+                            "reason": reason,
                         }
                     )
-                    continue
-                importable += 1
-                continue
-            attrs = item.get("attributes") or {}
-            if reason == "unresolved_table":
-                unregistered.add(attrs.get("dataset") or "")
-            elif reason in DEFINITION_BLOCKED_REASONS:
-                entry["blocked"].append(
-                    {
-                        "metric": attrs.get("name") or "",
-                        "dataset": attrs.get("dataset") or "",
-                        "reason": reason,
-                    }
-                )
 
-        entry["metrics"] = {"upstream": len(metrics), "importable": importable}
+        entry["metrics"] = {"upstream": upstream_metrics, "importable": importable}
         entry["unregistered_tables"] = sorted(t for t in unregistered if t)
 
-        if metrics and importable == 0:
+        if upstream_metrics and importable == 0:
             entry["warnings"].append(
                 {
                     "code": "no_metrics_bound",
                     "message": (
-                        f"None of the {len(metrics)} metrics this project publishes can bind to a registered table."
+                        f"None of the {upstream_metrics} metrics this project publishes can bind to a registered table."
                     ),
                 }
             )
