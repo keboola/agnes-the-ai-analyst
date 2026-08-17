@@ -19,6 +19,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 - `ticket_repo().revoke_session_scopes(session_id, scopes)` (both backends) revokes a session's tickets in the named scopes only. The existing `revoke_session` is scope-blind, which is wrong for a caller holding a long-lived credential in one scope while rotating short-lived egress tickets in others: sweeping the whole session would delete the credential the caller just authenticated with, and the embedded engine has no way to be handed a replacement — its ticket-response schema is `{llm, mcp}` and it keeps using the credential baked into its session JWT, so a scope-blind revoke would `401` every turn after the first. An empty scope list deletes nothing rather than degrading to "match everything".
 
+## [0.83.34] - 2026-08-17
+
+### Added
+
+- **Architecture figures: the whole platform on one page.** `ARCHITECTURE.md` now opens with a layered diagram of the nine planes — surfaces, the authorization boundary, the `api`/`gateway`/`worker` application plane, the agent + LLM path, knowledge & governance, dual-backend app state, the analytics data plane, connectors, external systems — plus two companion figures for the cycles a layered view flattens: the analyst loop (manifest → `agnes pull` → laptop → Claude Code → `agnes push` → corporate memory → the next session's stack) and query routing (which engine actually executes a statement, and the cost guardrail on each remote one). The SVGs live in `docs/diagrams/` and are produced by `scripts/dev/gen_architecture_diagrams.py`, which measures every drawn line against its box and exits non-zero rather than shipping clipped text — the failure mode a hand-edited SVG hides. Also corrects the stale schema version in `docs/architecture.md` (109 → 118, the actual `SCHEMA_VERSION`).
+
 ## [0.83.33] - 2026-08-17
 
 ### Fixed
