@@ -34,6 +34,23 @@ wherever the marker stood — ``ARRAY_CONTAINS(:user_groups, col)`` is the
 idiom §6.5 recommends, but a policy using ``:user_groups`` any other way
 (``SIZE()``, an ``EXPLODE``, a join against a mapping table) keeps working
 without this module knowing the surrounding shape.
+
+Dependency coupling worth knowing before bumping sqlglot
+--------------------------------------------------------
+Group-based policies on this engine rest on two sqlglot behaviours, and
+``pyproject.toml`` pins only a floor (``sqlglot>=30.0.0``):
+
+1. writing DuckDB ``$user_groups`` to the ``databricks`` dialect renders
+   ``:user_groups`` — the API's own marker syntax;
+2. reading that back with ``dialect="databricks"`` yields an
+   ``exp.Placeholder`` whose ``.name`` is ``user_groups``.
+
+Drift in either one makes the substitution below find nothing, which raises
+:class:`DatabricksPolicyBindingError` and denies every group-based policy on
+Databricks. Fail-closed, so not a leak — but a wide outage to be triggered by
+a dependency bump, which is why
+``TestSqlglotCoupling`` pins both directions separately rather than only
+through the end-to-end path. Verified on sqlglot 30.17.0.
 """
 
 from __future__ import annotations

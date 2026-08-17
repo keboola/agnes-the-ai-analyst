@@ -1245,3 +1245,60 @@ class TestAuditTrail:
         errors = [row for row in rows if str(row.get("result", "")).startswith("error.")]
         assert errors, f"refusal left no audit row; snapshot.estimate rows: {rows}"
         assert errors[0]["result"] == "error.400"
+
+
+class TestSqlglotCoupling:
+    """Pin the two sqlglot behaviours group-based policies rest on.
+
+    `pyproject.toml` pins only a floor (`sqlglot>=30.0.0`), so a minor bump can
+    land at any time — this repo bumps dependencies routinely. If either
+    direction drifts, `bind_policy_parameters` finds no marker to substitute
+    and every group-based policy on Databricks denies: fail-closed, so not a
+    leak, but a wide outage whose cause would be invisible from the symptom.
+
+    Asserted in BOTH directions separately, not just through the end-to-end
+    path, so a bump that breaks one fails with a message naming which.
+    """
+
+    def test_write_direction_dollar_becomes_colon(self):
+        """DuckDB `$name` must render as Databricks' own `:name` marker."""
+        import sqlglot
+
+        out = sqlglot.transpile(
+            "SELECT * FROM t WHERE list_contains($user_groups, region)",
+            read="duckdb",
+            write="databricks",
+        )[0]
+        assert ":user_groups" in out, f"sqlglot no longer writes $name as :name — got {out!r}"
+        assert "$user_groups" not in out
+
+    def test_read_direction_colon_parses_back_as_a_named_placeholder(self):
+        """...and reading it back must yield a Placeholder whose `.name` is the
+        bare variable. This is the half nothing asserted in isolation, and it
+        is the half `bind_policy_parameters` matches on."""
+        import sqlglot
+        from sqlglot import exp
+
+        tree = sqlglot.parse_one(
+            "SELECT * FROM t WHERE ARRAY_CONTAINS(:user_groups, region)", dialect="databricks"
+        )
+        placeholders = [n for n in tree.find_all(exp.Placeholder)]
+        assert placeholders, "sqlglot no longer parses :name as a Placeholder in the databricks dialect"
+        assert [p.name for p in placeholders] == ["user_groups"]
+
+    def test_the_round_trip_holds_end_to_end(self):
+        """Both directions composed, which is what the feature actually uses."""
+        from src.access_policy import _transpile_policy_to_databricks
+
+        body = _transpile_policy_to_databricks(
+            "SELECT * FROM t WHERE list_contains($user_groups, region)", table_id="t"
+        )
+        sql, params = bind_policy_parameters(body, {"user_groups": ["eu-team"]})
+        assert "ARRAY(:agnes_policy_group_user_groups_0)" in sql
+        assert [p["value"] for p in params] == ["eu-team"]
+
+    def test_a_broken_round_trip_denies_rather_than_dropping_the_filter(self):
+        """The failure mode the coupling note promises: if the marker cannot be
+        found, the group filter must NOT silently vanish."""
+        with pytest.raises(DatabricksPolicyBindingError):
+            bind_policy_parameters("SELECT * FROM t WHERE 1 = 1", {"user_groups": ["eu-team"]})
