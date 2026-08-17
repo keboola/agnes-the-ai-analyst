@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Removed
+
+- **Three `instance.yaml` options that have done nothing since March are gone from the documentation.** `auth.username_strip_domain`, `auth.username_prefix` and the top-level `username_mapping` shaped the Linux OS account the legacy webapp created under `/home/` for each analyst; that webapp — and with it every reader of the three keys — was deleted back in v0.11.0, but the commented block in `config/instance.yaml.example` survived and kept describing them as live. Nothing changes at runtime, because nothing read them: an instance that sets any of the three today already gets no effect from it, and one that removes them gets no effect either. Removing the block ends the misdirection it caused — it told operators that stripping the domain is "safe when `allowed_domain` ensures all users share a single domain", implying multi-domain instances must turn it off, and warned that changing either option "will invalidate all existing analyst accounts", which reads as an irreversible knob when in fact the setting is inert. `docs/CONFIGURATION.md` loses its `username_mapping` line for the same reason.
+
 ## [0.83.29] - 2026-08-17
 
 ### Added
