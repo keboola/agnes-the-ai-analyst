@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.83.28] - 2026-08-17
+
 ### Added
 
 - **Every MCP tool now declares what it does to state.** `tools/list` on both surfaces — the HTTP foundation transports and the CLI stdio server — carries `title`, `readOnlyHint`, `destructiveHint` and `openWorldHint` per tool, so a client can tell a reader (`catalog`, `schema`, `query`) from a writer (`stack_subscribe`) from something that removes what you had (`stack_unsubscribe`, `store_delete`, `pull`, which prunes tables you have lost access to). A client that auto-approves read-only calls previously had nothing to go on, and both the Anthropic and OpenAI connector directories check for the annotations. Registering a tool without deciding is no longer possible: `read_only` is a required argument of the shared registration decorator, and a read-only tool can never be flagged destructive.
