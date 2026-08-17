@@ -2,6 +2,7 @@
 
 import contextlib as _contextlib
 import hashlib as _hashlib
+import logging
 import os
 import re as _re
 import shutil as _shutil
@@ -198,7 +199,7 @@ def pytest_sessionstart(session):
 # It is still deliberately NOT ``tmp_path_retention_count = 0``, whose startup
 # sweep deletes the CURRENT session's dir mid-run. Session end in the
 # controller runs after every teardown, so no live handle can be desynced —
-# which is the same invariant ``_close_tmp_db_singletons`` establishes per-test
+# which is the same invariant ``_close_tmp_handles`` establishes per-test
 # to make the retention policy safe.
 
 
@@ -452,29 +453,87 @@ def _reset_module_caches():
         pass
 
 
-def singleton_outlives_tmp(db_path: str | None, basetemp: str) -> bool:
-    """Whether a cached DuckDB singleton path must be closed at test teardown.
+def handle_outlives_tmp(path: str | None, basetemp: str) -> bool:
+    """Whether a process-global handle's file path must be released at test
+    teardown.
 
     True when the path points into pytest's basetemp (its tmp dir is deleted
     by ``tmp_path_retention_policy = failed`` on pass, and pytest REUSES the
     freed numbered dir name for the next same-named test — so a surviving
-    handle desyncs the path-keyed singleton in src/db.py from disk), or when
-    its parent dir is already gone (same desync via any other tmp scheme).
-    False for the shared default DATA_DIR, whose singleton legitimately spans
-    tests. Pure so it can be tested without touching the real singletons.
+    handle desyncs path-keyed state from disk), or when its parent dir is
+    already gone (same desync via any other tmp scheme). False for the shared
+    default DATA_DIR, whose handles legitimately span tests. Pure so it can
+    be tested without touching the real singletons. Only for filesystem
+    paths — the parent-dir heuristic misfires on DSN strings.
     """
-    if not db_path:
+    if not path:
         return False
-    path = str(db_path)
+    path = str(path)
     if path.startswith(basetemp.rstrip(os.sep) + os.sep):
         return True
     return not os.path.isdir(os.path.dirname(path))
 
 
+def close_tmp_handles(basetemp: str) -> None:
+    """Release every process-global handle that points into ``basetemp``.
+
+    Teardown body of the ``_close_tmp_handles`` autouse fixture, factored
+    out so tests/test_tmp_db_singleton_guard.py can drive it directly. Three
+    handle classes, all real prior failures of the same invariant:
+
+    - **Root-logger FileHandlers** — e.g. the corporate-memory collector's
+      ``main()`` adds one under DATA_DIR and never removes it; a test
+      calling it under a tmp DATA_DIR leaked a handler that bled every later
+      log record into that test's dir, and once retention deletes the dir,
+      the next root-logger emit raises FileNotFoundError out of
+      ``logger.info()`` (FileHandler's lazy ``_open`` is outside logging's
+      error-swallowing) — CI shard-5 failure on PR #1370.
+    - **src/db.py DuckDB singletons** — the original `Duplicate key
+      "id: admin1"` desync (see pytest.ini). The path globals are reset
+      after closing: ``close_singleton_connections()`` clears only the
+      connections, and a stale tmp path would otherwise re-trigger this
+      close on every later test, needlessly bouncing singletons that live
+      on the shared default DATA_DIR (Devin review on PR #1370).
+    - **src/ducklake_session singletons** — keyed by ``(catalog_dsn,
+      data_path)``; a file-catalog session under a tmp DATA_DIR desyncs the
+      same way. Key elements are matched by basetemp prefix only (a
+      Postgres DSN is not a filesystem path). ``close_ducklake_sessions()``
+      resets its own keys.
+    """
+    prefix = basetemp.rstrip(os.sep) + os.sep
+
+    root_logger = logging.getLogger()
+    for handler in list(root_logger.handlers):
+        base_filename = getattr(handler, "baseFilename", None)
+        if base_filename and handle_outlives_tmp(str(base_filename), basetemp):
+            root_logger.removeHandler(handler)
+            with _contextlib.suppress(Exception):
+                handler.close()
+
+    _db = sys.modules.get("src.db")
+    if _db is not None and any(
+        handle_outlives_tmp(p, basetemp)
+        for p in (_db._system_db_path, _db._operational_db_path, _db._analytics_db_path)
+    ):
+        _db.close_singleton_connections()
+        _db._system_db_path = None
+        _db._operational_db_path = None
+        _db._analytics_db_path = None
+
+    _dl = sys.modules.get("src.ducklake_session")
+    if _dl is not None and any(
+        element and str(element).startswith(prefix)
+        for key in (_dl._read_key, _dl._write_key, _dl._shared_file_key)
+        for element in (key or ())
+    ):
+        _dl.close_ducklake_sessions()
+
+
 @pytest.fixture(autouse=True)
-def _close_tmp_db_singletons(tmp_path_factory):
-    """Close src/db.py's process-global DuckDB connections when they point
-    into pytest's basetemp, so no live handle outlives its tmp_path dir.
+def _close_tmp_handles(tmp_path_factory):
+    """Release process-global handles (DuckDB singletons, DuckLake sessions,
+    root-logger FileHandlers) that point into pytest's basetemp, so no live
+    handle outlives its tmp_path dir.
 
     This is the invariant that makes ``tmp_path_retention_policy = failed``
     (pytest.ini) safe: that policy deletes each PASSING test's tmp_path in
@@ -486,22 +545,13 @@ def _close_tmp_db_singletons(tmp_path_factory):
     across the suite, the failure mode that forced the policy back to
     ``all`` before this fixture existed).
 
-    Singletons on the shared default DATA_DIR are left open — closing them
+    Handles on the shared default DATA_DIR are left open — closing them
     every test would re-run schema checks for no benefit, and their dir is
-    never deleted mid-session. ``close_singleton_connections()`` covers all
-    the path-keyed globals (system, operational, analytics, DuckLake).
+    never deleted mid-session. See ``close_tmp_handles`` for the handle
+    classes and the per-class rationale.
     """
     yield
-    _db = sys.modules.get("src.db")
-    if _db is None:
-        return  # src.db never imported → no singleton can exist
-
-    basetemp = str(tmp_path_factory.getbasetemp())
-    if any(
-        singleton_outlives_tmp(p, basetemp)
-        for p in (_db._system_db_path, _db._operational_db_path, _db._analytics_db_path)
-    ):
-        _db.close_singleton_connections()
+    close_tmp_handles(str(tmp_path_factory.getbasetemp()))
 
 
 @pytest.fixture
