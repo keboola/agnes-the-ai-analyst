@@ -10,6 +10,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.83.35] - 2026-08-17
+
+### Changed
+
+- **Web chat: the AskUserQuestion card now reads as a first-class conversational element.** The card drops the monospace tool-block header (and its red ❓) and the washed-out info tint for a plain surface panel with the brand accent: options render as an equal-height grid of selectable cards with a corner check on the selected state, the "Other…" free-text answer is a peer cell of the same grid instead of a floating input, Submit is a filled primary button whose disabled state is visibly parked rather than half-faded, and a resolved card echoes each answer as a chip beside the outcome badge.
+
 ## [0.83.34] - 2026-08-17
 
 ### Added
