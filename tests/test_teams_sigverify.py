@@ -295,6 +295,36 @@ def test_failed_first_fetch_does_not_block_immediate_retry(monkeypatch):
     assert second is True
 
 
+def test_concurrent_unknown_kid_requests_share_one_jwks_fetch(monkeypatch):
+    """Teams webhooks are handled concurrently — a burst of requests with an
+    unknown/bogus kid arriving together must collapse into a single JWKS
+    fetch, not one per request (which would defeat the throttle guard)."""
+    key = _rsa_keypair()
+    jwk = _jwk_for(key, "kid-1")
+    calls = {"jwks": 0}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url) == sigverify.BOTFRAMEWORK_OPENID_CONFIG_URL:
+            return httpx.Response(200, json={"jwks_uri": JWKS_URI})
+        calls["jwks"] += 1
+        await asyncio.sleep(0.05)  # widen the race window between coroutines
+        return httpx.Response(200, json={"keys": [jwk]})
+
+    monkeypatch.setattr(
+        sigverify, "_http_client", lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler), timeout=10)
+    )
+    token = _token(key, "kid-1")
+
+    async def _run_concurrently():
+        return await asyncio.gather(
+            *[sigverify.verify_bot_framework_token(f"Bearer {token}", APP_ID) for _ in range(5)]
+        )
+
+    results = asyncio.run(_run_concurrently())
+    assert results == [True] * 5
+    assert calls["jwks"] == 1
+
+
 def test_unknown_kid_throttled_does_not_refetch_every_request(monkeypatch):
     key = _rsa_keypair()
     jwk = _jwk_for(key, "kid-1")

@@ -19,6 +19,7 @@ Spec: https://learn.microsoft.com/en-us/azure/bot-service/rest-api/bot-framework
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -45,6 +46,10 @@ _JWKS_CACHE: dict[str, dict[str, Any]] = {}
 # trip on every single one. `0.0` (never fetched yet) always refetches.
 _LAST_REFETCH_AT: float = 0.0
 _MIN_REFETCH_INTERVAL_SECONDS = 60.0
+# Serializes refreshes so concurrent inbound Activity POSTs with unknown
+# `kid`s collapse into a single fetch instead of each starting their own —
+# Teams webhooks are handled concurrently, so this isn't hypothetical.
+_JWKS_REFRESH_LOCK = asyncio.Lock()
 
 
 def _http_client() -> httpx.AsyncClient:
@@ -128,10 +133,15 @@ async def verify_bot_framework_token(authorization_header: str | None, app_id: s
         return False
 
     if kid not in _JWKS_CACHE:
-        never_fetched = not _JWKS_CACHE and _LAST_REFETCH_AT == 0.0
-        stale_enough = (time.monotonic() - _LAST_REFETCH_AT) >= _MIN_REFETCH_INTERVAL_SECONDS
-        if never_fetched or stale_enough:
-            await _refresh_jwks_cache()
+        async with _JWKS_REFRESH_LOCK:
+            # Re-check after acquiring the lock: a concurrent coroutine may
+            # have already refreshed the cache (and found this kid, or
+            # already spent this window's fetch) while we were waiting.
+            if kid not in _JWKS_CACHE:
+                never_fetched = not _JWKS_CACHE and _LAST_REFETCH_AT == 0.0
+                stale_enough = (time.monotonic() - _LAST_REFETCH_AT) >= _MIN_REFETCH_INTERVAL_SECONDS
+                if never_fetched or stale_enough:
+                    await _refresh_jwks_cache()
         if kid not in _JWKS_CACHE:
             return False
 
