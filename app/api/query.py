@@ -2423,11 +2423,16 @@ def _apply_databricks_policies(plan: dict, sql: str, principal, *, allowed, is_a
     """Rewrite ``plan`` in place so a policied table is read through its
     policy, and return the policied registry ids.
 
-    Ordering mirrors the BigQuery arm (§7.3) for the same reason: the policy
-    substitution runs FIRST, over the caller's own bare table names, and the
-    bare-name -> ``\\`catalog\\`.\\`schema\\`.\\`table\\``` pass runs SECOND over the whole
-    substituted result, so the spliced body's own ``FROM <name>`` resolves too.
-    Reversing them would leave the AST rewrite nothing to match.
+    Like the BigQuery arm (§7.3) the policy substitution runs over the
+    caller's own BARE table names — a prior name-to-native pass would leave the
+    AST rewrite nothing to match, since it turns the caller's reference into a
+    backtick path sqlglot no longer recognises as the same table.
+
+    Where this diverges from BigQuery is *which* text gets the native rewrite,
+    and it has to: the policy body is rewritten inside the resolver, before
+    splicing, and the spliced statement is then rewritten with the policied
+    table's own name excluded. See the comment below for why one wholesale
+    pass over the result does not work here.
 
     The gate then runs a SECOND time, on the substituted statement. The first
     pass only saw the caller's SQL; the policy body can name tables the caller
