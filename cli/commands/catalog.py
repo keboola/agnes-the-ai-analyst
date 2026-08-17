@@ -148,3 +148,40 @@ def _show_one_metric(metric_id: str, as_json: bool) -> None:
         typer.echo("Notes:")
         for note in m["notes"]:
             typer.echo(f"  - {note}")
+    _echo_constraints(m.get("validation"))
+
+
+def _echo_constraints(validation) -> None:
+    """Print the rules that govern this metric, if any.
+
+    This surface is where `cli/templates/global_rails.md` sends agents for the
+    canonical definition, under "Never invent metric SQL". Printing the SQL
+    while dropping the constraint attached to it hands the agent an
+    authoritative-looking answer with its own caveat removed — so an
+    unrecognized shape is dumped verbatim rather than skipped for not matching
+    the one shape this renderer knows.
+    """
+    if isinstance(validation, str):
+        # DuckDB hands JSON columns back as text on some read paths.
+        try:
+            validation = json_lib.loads(validation)
+        except (ValueError, TypeError):
+            pass
+    if not validation:
+        return
+
+    typer.echo("Constraints:")
+    rules = validation.get("rules") if isinstance(validation, dict) else None
+    if not isinstance(rules, list):
+        typer.echo(f"  {json_lib.dumps(validation, indent=2, default=str)}")
+        return
+
+    for rule in rules:
+        if not isinstance(rule, dict):
+            typer.echo(f"  - {rule}")
+            continue
+        name = rule.get("name") or "(unnamed)"
+        qualifiers = ", ".join(str(v) for v in (rule.get("constraint_type"), rule.get("severity")) if v)
+        head = f"{name} ({qualifiers})" if qualifiers else name
+        body = rule.get("rule")
+        typer.echo(f"  - {head}: {body}" if body else f"  - {head}")

@@ -3,6 +3,7 @@
 import contextlib as _contextlib
 import hashlib as _hashlib
 import os
+import re as _re
 import shutil as _shutil
 import sys
 from pathlib import Path
@@ -39,6 +40,46 @@ if _xdist_worker and os.path.normpath(os.environ["DATA_DIR"]) == _default_data_d
 os.makedirs(os.path.join(os.environ["DATA_DIR"], "notifications"), exist_ok=True)
 os.makedirs(os.path.join(os.environ["DATA_DIR"], "state"), exist_ok=True)
 
+# ---------------------------------------------------------------------------
+# Small DuckDB blocks for every test-created database
+# ---------------------------------------------------------------------------
+# DuckDB allocates storage in 256 KiB blocks by default, so a freshly created
+# system.duckdb (~217 CREATE TABLEs at the current schema version) weighs
+# ~7 MB before a single row of test data. Multiplied across the suite this
+# dominated basetemp: a retained full-run dir measured 51 GB, of which 47 GB
+# was 5,126 per-test system.duckdb files (~9 MB average). 16 KiB blocks cut
+# the fresh file to ~3.7 MB and — the DDL being I/O-bound — schema init from
+# ~0.95 s to ~0.28 s per fresh DB.
+#
+# Wrapped HERE in the test harness rather than env-gated inside
+# src/duckdb_conn._open_duckdb: DuckDB refuses a second connection to the
+# same path with a different config ("Can't open a connection to same
+# database file with a different configuration than existing connections"),
+# so the option must reach EVERY duckdb.connect() in the process — direct
+# connects in tests included — or none of them. Patching the module
+# attribute before any src/ import guarantees that consistency and leaves
+# production code untouched. Subprocess-spawned CLIs still create
+# default-block DBs; those are a small minority of the suite's databases.
+#
+# ``AGNES_TEST_DUCKDB_BLOCK_SIZE`` overrides the size — any power of two in
+# DuckDB's accepted [16384, 262144] range — and ``0`` disables the wrapper.
+_TEST_DUCKDB_BLOCK_SIZE = os.environ.get("AGNES_TEST_DUCKDB_BLOCK_SIZE", "16384")
+
+if _TEST_DUCKDB_BLOCK_SIZE != "0" and not getattr(duckdb.connect, "_agnes_small_blocks", False):
+    _orig_duckdb_connect = duckdb.connect
+
+    def _connect_with_small_blocks(*args, **kwargs):
+        # `config` is only ever passed as a keyword in this codebase; if a
+        # caller someday passes it positionally (3rd arg), stay out of the way.
+        if len(args) < 3:
+            config = dict(kwargs.get("config") or {})
+            config.setdefault("default_block_size", _TEST_DUCKDB_BLOCK_SIZE)
+            kwargs["config"] = config
+        return _orig_duckdb_connect(*args, **kwargs)
+
+    _connect_with_small_blocks._agnes_small_blocks = True  # type: ignore[attr-defined]
+    duckdb.connect = _connect_with_small_blocks
+
 # Real-home shell configs that `agnes init` (cli/lib/shortcut.py) can append
 # launcher blocks to. Resolved at import time — before any test monkeypatches
 # HOME — so the guard below always watches the developer's *actual* rc files,
@@ -74,6 +115,11 @@ _REAL_LOCAL_BIN = _REAL_HOME / ".local" / "bin"
 # Thresholds are tuned so the abort floor only catches runs that are already
 # doomed. CI shards the suite eight ways (`--splits 8`) and runs far leaner than
 # a single local invocation — a local-sized threshold must never abort a shard.
+# The number has come down twice, each time because the footprint it guarded
+# against shrank: 60 → 30 once every test-created DuckDB moved to 16 KiB blocks
+# (~28 GB in-flight for a full local run), then 30 → 10 once passing tests stop
+# retaining their tmp dirs at all (~0.4 GB peak). What 10 GB buys now is room
+# for the dirs *failing* tests keep, not for the run itself.
 DISK_WARN_GB = 10
 DISK_ABORT_GB = 5
 
@@ -131,6 +177,87 @@ def pytest_sessionstart(session):
         reporter = session.config.pluginmanager.get_plugin("terminalreporter")
         if reporter is not None:
             reporter.write_line(f"disk guard: {message}", yellow=True)
+
+
+# ---------------------------------------------------------------------------
+# Post-success basetemp sweep
+# ---------------------------------------------------------------------------
+# The retention settings in pytest.ini bound how many PAST sessions survive,
+# but a passing run still leaves its own basetemp behind until the NEXT run's
+# startup sweep. Deleting it right after a fully green session costs nothing —
+# the artifacts exist for debugging failures, and there are none. Failed or
+# interrupted runs keep their dir (covered by the retention sweep), and
+# ``AGNES_KEEP_BASETEMP=1`` keeps even a passing run's.
+#
+# ``tmp_path_retention_policy = failed`` now handles the bulk of it per-test,
+# so what reaches this sweep is the remainder: session-scoped fixture dirs and
+# anything a failing test kept before a later green run. The two are not
+# redundant — the policy cannot delete a dir the session still holds, and this
+# cannot delete a dir mid-run.
+#
+# It is still deliberately NOT ``tmp_path_retention_count = 0``, whose startup
+# sweep deletes the CURRENT session's dir mid-run. Session end in the
+# controller runs after every teardown, so no live handle can be desynced —
+# which is the same invariant ``_close_tmp_db_singletons`` establishes per-test
+# to make the retention policy safe.
+
+
+def basetemp_sweep_verdict(
+    *,
+    exitstatus: int,
+    is_xdist_worker: bool,
+    user_basetemp: bool,
+    basetemp: Path | None,
+    keep_env: str = "",
+) -> bool:
+    """Decide whether the just-finished session's basetemp should be removed.
+
+    Pure so it can be tested without a real session; the caller supplies the
+    session facts. Only a fully passing run (``exitstatus == 0``), judged in
+    the xdist controller, using pytest's own numbered ``pytest-of-*/pytest-N``
+    directory (never a user-specified ``--basetemp``), is swept.
+    """
+    if is_xdist_worker:
+        return False
+    if keep_env.strip().lower() not in ("", "0", "false"):
+        return False
+    if exitstatus != 0:
+        return False
+    if user_basetemp:
+        return False
+    if basetemp is None:
+        return False
+    # Belt and suspenders: only ever delete pytest's own numbered dirs.
+    if not _re.fullmatch(r"pytest-\d+", basetemp.name):
+        return False
+    if not basetemp.parent.name.startswith("pytest-of-"):
+        return False
+    return True
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Remove the current session's basetemp after a fully green run."""
+    factory = getattr(session.config, "_tmp_path_factory", None)
+    # Read the private attr instead of calling getbasetemp() — the getter
+    # would CREATE the directory in a run that never touched tmp_path.
+    basetemp = getattr(factory, "_basetemp", None) if factory is not None else None
+    if not basetemp_sweep_verdict(
+        exitstatus=exitstatus,
+        is_xdist_worker=bool(os.environ.get("PYTEST_XDIST_WORKER")),
+        user_basetemp=bool(session.config.option.basetemp),
+        basetemp=basetemp,
+        keep_env=os.environ.get("AGNES_KEEP_BASETEMP", ""),
+    ):
+        return
+    # Workers have finished their teardowns by the time the controller gets
+    # here; a worker process still holding an open handle is harmless on
+    # POSIX (unlink succeeds), and ignore_errors covers the rest.
+    _shutil.rmtree(basetemp, ignore_errors=True)
+    reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+    if reporter is not None:
+        reporter.write_line(
+            f"basetemp swept after green run: {basetemp} (AGNES_KEEP_BASETEMP=1 to keep)",
+        )
 
 
 def _shell_config_fingerprints() -> dict:

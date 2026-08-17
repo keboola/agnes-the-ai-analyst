@@ -104,3 +104,140 @@ def test_stdio_server_exposes_data_app_family():
     from cli.mcp import server as stdio_server
 
     assert set(DATA_APP_TOOL_NAMES) <= _tool_names(stdio_server.mcp)
+
+
+# --- Behaviour annotations (CON-1) ---------------------------------------
+#
+# Both the Anthropic and the OpenAI directory submissions check that every tool
+# declares what it does to state. A client that auto-approves read-only calls
+# also relies on the flag, so an unannotated tool is a safety gap and not just a
+# submission blocker. `progressive_tool` makes `read_only` a required keyword;
+# these lock the result in place from the outside.
+
+
+def _tools_by_name(mcp) -> dict:
+    return {t.name: t for t in asyncio.run(mcp.list_tools())}
+
+
+def test_every_foundation_tool_declares_its_behaviour():
+    pytest.importorskip("mcp", reason="mcp package not installed")
+    from app.api import mcp_http
+    from app.api.mcp.foundation_tools import FOUNDATION_TOOL_NAMES
+
+    tools = _tools_by_name(mcp_http.mcp)
+    for name in FOUNDATION_TOOL_NAMES:
+        ann = getattr(tools[name], "annotations", None)
+        assert ann is not None, f"{name} carries no annotations"
+        assert ann.title, f"{name} has no human-readable title"
+        assert ann.readOnlyHint is not None, f"{name} does not declare readOnlyHint"
+        assert ann.destructiveHint is not None, f"{name} does not declare destructiveHint"
+        assert ann.openWorldHint is not None, f"{name} does not declare openWorldHint"
+
+
+def test_a_read_only_tool_is_never_marked_destructive():
+    """The invariant `progressive_tool` enforces — a reader destroys nothing."""
+    pytest.importorskip("mcp", reason="mcp package not installed")
+    from app.api import mcp_http
+    from app.api.mcp.foundation_tools import FOUNDATION_TOOL_NAMES
+
+    tools = _tools_by_name(mcp_http.mcp)
+    for name in FOUNDATION_TOOL_NAMES:
+        ann = tools[name].annotations
+        if ann.readOnlyHint:
+            assert ann.destructiveHint is False, f"{name} is read-only but flagged destructive"
+
+
+"""Verbs a tool title may open with — the action the caller is authorizing."""
+_TITLE_VERBS = {
+    "list",
+    "get",
+    "search",
+    "read",
+    "create",
+    "update",
+    "delete",
+    "add",
+    "remove",
+    "browse",
+    "subscribe",
+    "unsubscribe",
+    "rate",
+    "publish",
+    "deploy",
+    "enqueue",
+    "migrate",
+    "ask",
+    "upload",
+    "dismiss",
+    "reingest",
+    "contribute",
+    "describe",
+    "query",
+    "refresh",
+    "close",
+    "preview",
+    "audit",
+    "set",
+    "test",
+    "sync",
+    "check",
+    "run",
+    "open",
+    "show",
+}
+
+
+def test_every_tool_title_says_what_calling_it_does():
+    """A tool picker renders the title, so the title has to name an action.
+
+    Agnes names tools `resource_action` (`collections_list` → "Collections
+    List"): the verb is last rather than first, which is not OpenAI's
+    `get_order_status` shape but does say what the call does. What genuinely
+    told the reader nothing was the dozen bare nouns — `catalog`, `schema`,
+    `skills`. Renaming the tools would break every configured client, so the
+    action lives in the title instead (`TITLE_OVERRIDES` in src/mcp_tooling.py).
+
+    So this enforces the invariant that actually matters — a title names an
+    action SOMEWHERE — and deliberately does not require verb-first, which
+    would be a cosmetic rewrite of 51 working titles.
+    """
+    pytest.importorskip("mcp", reason="mcp package not installed")
+    from app.api import mcp_http
+    from app.api.mcp.foundation_tools import FOUNDATION_TOOL_NAMES
+
+    tools = _tools_by_name(mcp_http.mcp)
+    offenders = []
+    for name in FOUNDATION_TOOL_NAMES:
+        title = tools[name].annotations.title or ""
+        if not any(word.lower() in _TITLE_VERBS for word in title.split(" ")):
+            offenders.append(f"{name} → {title!r}")
+    assert not offenders, (
+        "these titles name no action, so a tool picker shows a bare noun; add a "
+        "TITLE_OVERRIDES entry in src/mcp_tooling.py: " + ", ".join(offenders)
+    )
+
+
+def test_stdio_and_http_agree_on_shared_tool_behaviour():
+    """A tool of the same name must mean the same thing on both surfaces.
+
+    The stdio server is hand-maintained, so nothing but a test stops
+    `stack_unsubscribe` from being destructive over HTTP and read-only over
+    stdio — exactly the drift the name-parity guards above already prevent for
+    the tool *list*.
+    """
+    pytest.importorskip("mcp", reason="mcp package not installed")
+    from app.api import mcp_http
+    from cli.mcp import server as stdio_server
+
+    http_tools = _tools_by_name(mcp_http.mcp)
+    stdio_tools = _tools_by_name(stdio_server.mcp)
+
+    shared = set(http_tools) & set(stdio_tools)
+    assert shared, "expected the two surfaces to share tools"
+    for name in sorted(shared):
+        h, s = http_tools[name].annotations, stdio_tools[name].annotations
+        assert s is not None, f"stdio {name} carries no annotations"
+        assert (h.readOnlyHint, h.destructiveHint) == (s.readOnlyHint, s.destructiveHint), (
+            f"{name} declares different behaviour on stdio vs HTTP"
+        )
+        assert h.title == s.title, f"{name} is titled differently on stdio vs HTTP"

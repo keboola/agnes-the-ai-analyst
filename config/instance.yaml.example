@@ -462,6 +462,18 @@ data_source:
   #                                      # statement is cancelled on the warehouse. Default 900. 0 disables.
   #   semantic_layer_catalogs: []        # Optional extra catalogs (list or comma string) the metric-view
   #                                      # sync should enumerate; defaults to [catalog].
+  #   max_bytes_per_remote_query: 1073741824
+  #                                      # Cost guardrail for interactive `agnes query --remote` against
+  #                                      # query_mode='remote' rows. Caps the bytes the warehouse may RETURN
+  #                                      # (byte_limit) — not bytes scanned, which Databricks does not expose.
+  #                                      # A capped result is refused, never returned short. Default 1 GiB.
+  #   remote_query_timeout_seconds: 120  # Deadline on an interactive remote query (a human is waiting).
+  #   attach_enabled: false              # EXPERIMENTAL. Attach Unity Catalog into DuckDB via the uc_catalog +
+  #                                      # delta community extensions so remote Databricks tables can be
+  #                                      # JOINed against local parquets. Off by default: it installs
+  #                                      # community extensions and sends the PAT to the workspace endpoint
+  #                                      # — pin it with AGNES_REMOTE_ATTACH_HOST_ALLOWLIST. Without it,
+  #                                      # remote rows still work; every statement runs on the warehouse.
 
 # --- OpenMetadata catalog (optional) ---
 # Enriches table and column metadata from OpenMetadata REST API.

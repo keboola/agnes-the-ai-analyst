@@ -582,6 +582,7 @@ def test_get_journey_defaults(api_client: TestClient, logged_in_user):
         "explored_stack": False,
         "catalog_discovered": False,
         "use_anywhere": False,
+        "agent_created": False,
         "onboarded": False,
         "successful_answers": 0,
     }
@@ -642,6 +643,7 @@ def test_put_journey_can_reset_explicit_false(api_client: TestClient, logged_in_
         "explored_stack": False,
         "catalog_discovered": False,
         "use_anywhere": False,
+        "agent_created": False,
         "onboarded": False,
         "successful_answers": 0,
     }

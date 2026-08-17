@@ -25,6 +25,14 @@ _COMMUNITY_EXTENSIONS: frozenset[str] = frozenset(
     {
         "keboola",
         "bigquery",
+        # Unity Catalog ATTACH for Databricks `query_mode='remote'` rows.
+        # `uc_catalog` reads table data through `delta`, so both must be
+        # loadable or the ATTACH resolves nothing. Allowlisted, not enabled:
+        # an extract only carries a `uc_catalog` _remote_attach row when the
+        # operator set `data_source.databricks.attach_enabled`, so on every
+        # other instance these two names are simply never requested.
+        "uc_catalog",
+        "delta",
     }
 )
 
@@ -38,6 +46,7 @@ _DEFAULT_TOKEN_ENVS: frozenset[str] = frozenset(
         "KBC_STORAGE_TOKEN",
         "KEBOOLA_STORAGE_TOKEN",
         "GOOGLE_APPLICATION_CREDENTIALS",  # path, not a secret value
+        "DATABRICKS_TOKEN",  # workspace PAT for the Unity Catalog ATTACH
     }
 )
 

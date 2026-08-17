@@ -10,12 +10,11 @@ Verifies:
 """
 
 import json
-import os
+import logging
 from pathlib import Path
 
 import duckdb
 import pyarrow.parquet as pq
-import pytest
 
 from connectors.jira.incremental_transform import (
     load_parquet_month,
@@ -25,10 +24,10 @@ from connectors.jira.incremental_transform import (
 )
 from connectors.jira.transform import ISSUES_SCHEMA, transform_all
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_raw_issue(key: str, created: str, month: str | None = None) -> dict:
     """Minimal raw Jira issue JSON."""
@@ -59,6 +58,7 @@ def _write_raw_issues(raw_dir: Path, issues: list[dict]) -> None:
 # transform_all — hive layout
 # ---------------------------------------------------------------------------
 
+
 class TestTransformAllHiveLayout:
     def test_hive_dirs_created(self, tmp_path):
         """transform_all must write month=YYYY-MM/ subdirectories."""
@@ -86,6 +86,46 @@ class TestTransformAllHiveLayout:
         flat_files = list((output_dir / "issues").glob("*.parquet"))
         assert flat_files == [], f"Flat parquet files still present: {flat_files}"
 
+    def test_deleted_issues_are_not_republished(self, tmp_path):
+        """The batch rebuild must honor the `_deleted_at` marker (the full
+        contract lives on `is_deleted` in transform.py) — resurrected rows
+        would never be re-deleted."""
+        raw_dir = tmp_path / "raw"
+        output_dir = tmp_path / "output"
+        live = _make_raw_issue("PROJ-1", "2026-01-10T10:00:00.000+0000")
+        deleted = _make_raw_issue("PROJ-2", "2026-01-15T10:00:00.000+0000")
+        deleted["_deleted_at"] = "2026-02-01T00:00:00+00:00"
+        _write_raw_issues(raw_dir, [live, deleted])
+
+        counts = transform_all(raw_dir=raw_dir, output_dir=output_dir)
+
+        assert counts["issues"] == 1
+        published = pq.read_table(output_dir / "issues" / "month=2026-01" / "data.parquet")
+        assert published.column("issue_key").to_pylist() == ["PROJ-1"]
+
+    def test_an_all_deleted_month_is_left_untouched_and_warned_about(self, tmp_path, caplog):
+        """A month whose issues are since ALL deleted never reaches the write
+        loop, so a corrupt partition there survives the documented repair.
+        Deliberate — the only rows we could publish are deleted issues' — but
+        it must not be silent: the operator's remedy is to remove the file,
+        and the warning is what tells them so."""
+        raw_dir = tmp_path / "raw"
+        output_dir = tmp_path / "output"
+        deleted = _make_raw_issue("PROJ-1", "2026-01-10T10:00:00.000+0000")
+        deleted["_deleted_at"] = "2026-02-01T00:00:00+00:00"
+        _write_raw_issues(raw_dir, [deleted])
+        corrupt = output_dir / "issues" / "month=2026-01" / "data.parquet"
+        corrupt.parent.mkdir(parents=True)
+        corrupt.write_bytes(b"PAR1" + b"\x00" * 64)
+
+        with caplog.at_level(logging.WARNING):
+            counts = transform_all(raw_dir=raw_dir, output_dir=output_dir)
+
+        assert counts["issues"] == 0
+        assert corrupt.read_bytes() == b"PAR1" + b"\x00" * 64, "the repair touched a month it must not rewrite"
+        assert "month=2026-01" in caplog.text
+        assert "remove the file" in caplog.text
+
     def test_zstd_compression_used(self, tmp_path):
         """Parquet files must use ZSTD compression."""
         raw_dir = tmp_path / "raw"
@@ -96,9 +136,7 @@ class TestTransformAllHiveLayout:
 
         pf = pq.read_metadata(output_dir / "issues" / "month=2026-01" / "data.parquet")
         compressions = {
-            pf.row_group(i).column(j).compression
-            for i in range(pf.num_row_groups)
-            for j in range(pf.num_columns)
+            pf.row_group(i).column(j).compression for i in range(pf.num_row_groups) for j in range(pf.num_columns)
         }
         assert compressions == {"ZSTD"}, f"Expected ZSTD, got: {compressions}"
 
@@ -133,14 +171,16 @@ class TestTransformAllHiveLayout:
         output_dir = tmp_path / "output"
         issue = _make_raw_issue("PROJ-1", "2026-03-01T10:00:00.000+0000")
         issue["fields"]["comment"] = {
-            "comments": [{
-                "id": "c1",
-                "author": {"emailAddress": "a@x.com", "displayName": "A"},
-                "updateAuthor": {"emailAddress": "a@x.com", "displayName": "A"},
-                "body": "hello",
-                "created": "2026-03-01T10:00:00.000+0000",
-                "updated": "2026-03-01T10:00:00.000+0000",
-            }],
+            "comments": [
+                {
+                    "id": "c1",
+                    "author": {"emailAddress": "a@x.com", "displayName": "A"},
+                    "updateAuthor": {"emailAddress": "a@x.com", "displayName": "A"},
+                    "body": "hello",
+                    "created": "2026-03-01T10:00:00.000+0000",
+                    "updated": "2026-03-01T10:00:00.000+0000",
+                }
+            ],
             "total": 1,
         }
         _write_raw_issues(raw_dir, [issue])
@@ -156,6 +196,7 @@ class TestTransformAllHiveLayout:
 # ---------------------------------------------------------------------------
 # save_parquet_month / load_parquet_month — hive layout
 # ---------------------------------------------------------------------------
+
 
 class TestHiveParquetMonthly:
     def test_save_writes_hive_dir(self, tmp_path):
@@ -207,9 +248,7 @@ class TestHiveParquetMonthly:
 
         pf = pq.read_metadata(tmp_path / "month=2026-04" / "data.parquet")
         compressions = {
-            pf.row_group(i).column(j).compression
-            for i in range(pf.num_row_groups)
-            for j in range(pf.num_columns)
+            pf.row_group(i).column(j).compression for i in range(pf.num_row_groups) for j in range(pf.num_columns)
         }
         assert compressions == {"ZSTD"}
 
@@ -217,6 +256,7 @@ class TestHiveParquetMonthly:
 # ---------------------------------------------------------------------------
 # migrate_flat_to_hive
 # ---------------------------------------------------------------------------
+
 
 class TestMigrateFlatToHive:
     def test_migrates_flat_to_hive(self, tmp_path):
@@ -278,10 +318,12 @@ class TestMigrateFlatToHive:
 # extract_init — view uses hive_partitioning=true
 # ---------------------------------------------------------------------------
 
+
 class TestExtractInitHiveView:
     def test_view_uses_hive_partitioning(self, tmp_path):
         """init_extract creates views reading month=*/*.parquet with hive_partitioning=true."""
         import pandas as pd
+
         from connectors.jira.extract_init import init_extract
 
         output_dir = tmp_path / "jira"
@@ -294,6 +336,7 @@ class TestExtractInitHiveView:
         hive_dir.mkdir(parents=True)
         df = pd.DataFrame([{"issue_key": "PROJ-1", "summary": "Hello"}])
         from connectors.jira.transform import apply_schema
+
         t = apply_schema(df, ISSUES_SCHEMA)
         pq.write_table(t, hive_dir / "data.parquet")
 
@@ -301,6 +344,7 @@ class TestExtractInitHiveView:
 
         # The view must be readable and expose the data
         from src.duckdb_conn import _open_duckdb
+
         conn = _open_duckdb(str(output_dir / "extract.duckdb"))
         try:
             rows = conn.execute("SELECT issue_key FROM issues").fetchall()
@@ -311,6 +355,7 @@ class TestExtractInitHiveView:
     def test_view_reads_count_by_month(self, tmp_path):
         """View created by init_extract supports count-by-month query via hive cols."""
         import pandas as pd
+
         from connectors.jira.extract_init import init_extract
         from connectors.jira.transform import apply_schema
 
@@ -328,11 +373,10 @@ class TestExtractInitHiveView:
         init_extract(output_dir)
 
         from src.duckdb_conn import _open_duckdb
+
         conn = _open_duckdb(str(output_dir / "extract.duckdb"))
         try:
-            rows = conn.execute(
-                "SELECT month, count(*) AS cnt FROM issues GROUP BY month ORDER BY month"
-            ).fetchall()
+            rows = conn.execute("SELECT month, count(*) AS cnt FROM issues GROUP BY month ORDER BY month").fetchall()
             assert rows == [("2026-05", 2), ("2026-06", 1)]
         finally:
             conn.close()
@@ -341,6 +385,7 @@ class TestExtractInitHiveView:
 # ---------------------------------------------------------------------------
 # Full pipeline: transform_single_issue with hive layout
 # ---------------------------------------------------------------------------
+
 
 class TestIncrementalHivePipeline:
     def test_incremental_writes_hive_layout(self, tmp_path):

@@ -84,30 +84,79 @@ class ToolCallResult:
     """Normalized tool call result.
 
     ``text`` is the concatenated text of all returned ``TextContent`` blocks
-    (the common case for our connectors). ``data`` is ``text`` parsed as JSON
-    when the upstream returns a JSON document, else None.
+    (the common case for our connectors). ``data`` is the response's JSON —
+    ``structuredContent`` when the upstream returns it, else ``text`` parsed
+    as JSON, else None.
+
+    ``structured_present`` and ``block_types`` exist for the error paths:
+    "this tool returned nothing parseable" is unactionable without knowing
+    what *did* arrive, and the alternative — reproducing the call by hand
+    against the upstream — needs credentials the failing job has and the
+    operator often does not.
     """
 
     text: str
     data: Optional[Any]
     is_error: bool
+    structured_present: bool = False
+    block_types: tuple[str, ...] = ()
 
 
-def _to_call_result(content_blocks: List[Any], *, is_error: bool = False) -> ToolCallResult:
-    """Reduce MCP content blocks to text + parsed JSON (best-effort)."""
+def _parse_json(text: str) -> Optional[Any]:
+    try:
+        return json.loads(text)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return None
+
+
+def _to_call_result(
+    content_blocks: List[Any],
+    *,
+    structured: Optional[Any] = None,
+    is_error: bool = False,
+) -> ToolCallResult:
+    """Reduce an MCP tool result to text + parsed JSON (best-effort).
+
+    Three shapes count as "returned JSON", in priority order:
+
+    1. ``structuredContent`` — the spec's own channel for machine-readable
+       output. Authoritative even when the text also parses: a server may
+       render a *summary* into the text while the structured half carries the
+       full rows, so preferring the text could silently truncate.
+    2. the concatenated text as one JSON document — the historical shape, and
+       what most servers still do.
+    3. one JSON document per block — valid JSON objects joined by ``\\n`` are
+       not a valid document, so a per-block emitter parsed as nothing before.
+       Only when EVERY non-empty block parses: one JSON block sitting next to
+       a line of prose is not a table, and guessing which half is data would
+       invent rows.
+    """
     text_parts: List[str] = []
+    block_types: List[str] = []
     for block in content_blocks:
+        block_types.append(str(getattr(block, "type", None) or type(block).__name__))
         t = getattr(block, "text", None)
         if t is not None:
             text_parts.append(t)
     text = "\n".join(text_parts)
+
     data: Optional[Any] = None
-    if text:
-        try:
-            data = json.loads(text)
-        except (json.JSONDecodeError, TypeError, ValueError):
-            data = None
-    return ToolCallResult(text=text, data=data, is_error=is_error)
+    if structured is not None:
+        data = structured
+    elif text:
+        data = _parse_json(text)
+        if data is None and len(text_parts) > 1:
+            per_block = [_parse_json(part) for part in text_parts]
+            if all(item is not None for item in per_block):
+                data = per_block
+
+    return ToolCallResult(
+        text=text,
+        data=data,
+        is_error=is_error,
+        structured_present=structured is not None,
+        block_types=tuple(block_types),
+    )
 
 
 def _lookup_secret_for_source(
@@ -769,7 +818,11 @@ async def call_tool_async(
     async with _open_session(source, caller_user_id=caller_user_id) as session:
         result = await session.call_tool(tool_name, arguments or {})
         is_error = bool(getattr(result, "isError", False))
-        return _to_call_result(result.content, is_error=is_error)
+        return _to_call_result(
+            result.content,
+            structured=getattr(result, "structuredContent", None),
+            is_error=is_error,
+        )
 
 
 def call_tool(

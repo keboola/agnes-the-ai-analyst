@@ -218,7 +218,7 @@ def register_foundation_tools(
     """
     tool = progressive_tool(mcp, TOOL_DOCS)
 
-    @tool()
+    @tool(read_only=True)
     async def server_info() -> dict:
         """Return Agnes server health and your account email.
 
@@ -240,7 +240,7 @@ def register_foundation_tools(
                 pass
         return result
 
-    @tool()
+    @tool(read_only=True)
     async def catalog() -> dict:
         """List all tables available to you (RBAC-filtered).
 
@@ -258,7 +258,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=True)
     async def collections_list() -> dict:
         """List the file Collections you can access (RBAC-filtered).
 
@@ -272,7 +272,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=True)
     async def collection_get(collection_id: str) -> dict:
         """Show one Collection's detail plus its files and per-file status.
 
@@ -288,7 +288,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=True)
     async def collections_search(query: str, k: int = 10, collection_id: str = "") -> dict:
         """Hybrid search across your accessible file Collections (RBAC-filtered). Matching is whole word, there is no wildcard, and file names are a fallback, consulted only when no passage explains the question better — so an empty result is a wording miss far more often than an access problem; read the response's ``hint`` before concluding anything from it.
 
@@ -342,7 +342,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=True)
     async def knowledge_search(query: str, k: int = 10) -> dict:
         """One query across documents, the knowledge base, and the data catalog. Matching is whole word, there is no wildcard, and file names are a fallback, consulted only when no passage explains the question better — so an empty result is a wording miss far more often than an access problem; read the response's ``hint`` before concluding anything from it.
 
@@ -383,7 +383,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=True)
     async def glossary_search(query: str, k: int = 10) -> dict:
         """Search Keboola-imported business-term definitions (glossary).
 
@@ -406,7 +406,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=True)
     async def semantic_model_search(query: str, k: int = 10) -> dict:
         """Search canonical Ossie semantic models by slug/name/description.
 
@@ -430,7 +430,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=True)
     async def semantic_model_get(slug: str) -> dict:
         """Read one semantic model's full Ossie document, byte-for-byte.
 
@@ -450,7 +450,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return {"slug": slug, "document": r.text}
 
-    @tool()
+    @tool(read_only=True)
     async def collection_file_read(collection_id: str, file_id: str) -> dict:
         """Read one file's text straight, without guessing search terms.
 
@@ -487,7 +487,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=False)
     async def collections_reingest(collection_id: str, file_id: str) -> dict:
         """Re-run ingestion for one file in a Collection (requires access to the collection).
 
@@ -509,7 +509,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=True)
     async def schema(table_id: str) -> dict:
         """Show column names, types, and SQL dialect hints for a table.
 
@@ -524,7 +524,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=True)
     async def describe(table_id: str, rows: int = 5) -> dict:
         """Show schema plus sample rows for a table.
 
@@ -559,7 +559,7 @@ def register_foundation_tools(
             hint="lower `rows` or select specific columns with the query tool",
         )
 
-    @tool()
+    @tool(read_only=True)
     async def query(sql: str, limit: int = 1000) -> dict:
         """Execute a SQL query against Agnes data.
 
@@ -589,7 +589,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return ensure_output_size(r.json(), "query")
 
-    @tool()
+    @tool(read_only=True)
     async def skills() -> dict:
         """List all skills from marketplace plugins you are authorised to access.
 
@@ -614,7 +614,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=True)
     async def chat_skills() -> dict:
         """List skills + slash commands invokable in your web chat sandbox.
 
@@ -638,7 +638,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=True)
     async def stack_browse(resource_type: Literal["data_package", "memory_domain"]) -> dict:
         """List every data package or memory domain your groups are granted.
 
@@ -668,7 +668,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=False, idempotent=True)
     async def stack_subscribe(resource_type: Literal["data_package", "memory_domain"], resource_id: str) -> dict:
         """Subscribe to a data package or memory domain granted to you.
 
@@ -704,7 +704,7 @@ def register_foundation_tools(
             body["next_step"] = "Run `agnes pull` to download the new tables."
         return body
 
-    @tool()
+    @tool(read_only=False, destructive=True, idempotent=True)
     async def stack_unsubscribe(resource_type: Literal["data_package", "memory_domain"], resource_id: str) -> dict:
         """Unsubscribe from a data package or memory domain.
 
@@ -733,7 +733,7 @@ def register_foundation_tools(
             r.raise_for_status()
         return {"unsubscribed": True}
 
-    @tool()
+    @tool(read_only=True)
     async def stack_artefacts_candidates() -> dict:
         """List artefacts (file Collections) you could add to your Stack.
 
@@ -756,7 +756,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=False, idempotent=True)
     async def stack_artefact_add(corpus_id: str) -> dict:
         """Add an artefact (file Collection) to your Stack.
 
@@ -778,7 +778,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=False, destructive=True, idempotent=True)
     async def stack_artefact_remove(corpus_id: str) -> dict:
         """Remove an artefact from your Stack — drops the default agent's
         access only. The artefact itself, its files, ownership, and sharing
@@ -798,7 +798,7 @@ def register_foundation_tools(
             r.raise_for_status()
         return {"removed": True}
 
-    @tool()
+    @tool(read_only=False, idempotent=True)
     async def store_rate(entity_id: str, vote: Annotated[int, Field(ge=-1, le=1)]) -> dict:
         """Rate a store / marketplace entity thumbs up/down (#398).
 
@@ -824,7 +824,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=True)
     async def store_status(entity_id: str) -> dict:
         """Check the review-pipeline status of a flea-market entity you own (owner or admin only).
 
@@ -850,7 +850,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=False)
     async def store_publish_markdown(
         name: str,
         skill_md: str,
@@ -893,7 +893,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=True)
     async def marketplace_search(
         query: str = "",
         type: str = "",
@@ -940,7 +940,7 @@ def register_foundation_tools(
                 items.extend(r.json().get("items", []))
         return {"items": items, "total": len(items)}
 
-    @tool()
+    @tool(read_only=True)
     async def marketplace_detail(item_id: str) -> dict:
         """Show full details for one marketplace item (curated or flea).
 
@@ -966,7 +966,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=False, idempotent=True)
     async def marketplace_add(item_id: str) -> dict:
         """Add a marketplace item (plugin, skill, or agent) to the caller's stack.
 
@@ -997,7 +997,7 @@ def register_foundation_tools(
             "next_step": "Run /update-agnes-plugins in Claude Code (or `agnes update`) to activate it.",
         }
 
-    @tool()
+    @tool(read_only=False, destructive=True, idempotent=True)
     async def marketplace_remove(item_id: str) -> dict:
         """Remove a marketplace item from the caller's stack.
 
@@ -1022,7 +1022,7 @@ def register_foundation_tools(
             "next_step": "Run /update-agnes-plugins in Claude Code (or `agnes update`) to apply it.",
         }
 
-    @tool()
+    @tool(read_only=False)
     async def store_update(
         entity_id: str,
         description: str = "",
@@ -1068,7 +1068,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=False, destructive=True)
     async def store_delete(entity_id: str) -> dict:
         """Delete an owned Flea Market entity (owner or admin).
 
@@ -1090,7 +1090,7 @@ def register_foundation_tools(
             r.raise_for_status()
         return {"deleted": True, "entity_id": entity_id}
 
-    @tool()
+    @tool(read_only=True)
     async def admin_store_lint_findings(include_dismissed: bool = False) -> dict:
         """List advisory skill-lint findings across the store (admin only).
 
@@ -1113,7 +1113,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=False)
     async def admin_store_lint_audit(force: bool = False) -> dict:
         """Run a full skill-lint audit over published skills now (admin only).
 
@@ -1137,7 +1137,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=False, destructive=True, idempotent=True)
     async def admin_store_lint_dismiss(entity_id: str, rule_id: str) -> dict:
         """Dismiss one advisory finding until the entity's content changes (admin only).
 
@@ -1161,7 +1161,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=True)
     async def documentation_api() -> str:
         """Return the curated Agnes REST API reference as Markdown.
 
@@ -1178,7 +1178,7 @@ def register_foundation_tools(
         except OSError:
             return "# API reference unavailable\n\nThe source markdown file is missing from this deployment."
 
-    @tool()
+    @tool(read_only=True)
     async def list_contributed_skills() -> dict:
         """List all plugins in the Agnes Contributed marketplace (admin only).
 
@@ -1197,7 +1197,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=False)
     async def contribute_skill(skill_md: str, grant_group: str = "Admin") -> dict:
         """Publish a SKILL.md into the Agnes Contributed marketplace (admin only).
 
@@ -1215,7 +1215,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=False, destructive=True)
     async def delete_contributed_skill(name: str) -> dict:
         """Remove a contributed skill by plugin name (admin only).
 
@@ -1231,7 +1231,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return {"deleted": name, "status": r.status_code}
 
-    @tool()
+    @tool(read_only=True)
     async def admin_config_surface() -> dict:
         """Return the complete per-instance configuration surface (admin only).
 
@@ -1256,7 +1256,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=True)
     async def admin_source_connections_list(source_type: str = "") -> dict:
         """List named source connections (multi-project Keboola support).
 
@@ -1279,7 +1279,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return {"connections": r.json()}
 
-    @tool()
+    @tool(read_only=True)
     async def admin_semantic_layer_coverage() -> dict:
         """How much of each Keboola project's semantic layer reaches Agnes (admin only).
 
@@ -1307,7 +1307,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=True)
     async def admin_knowledge_digests_list() -> dict:
         """List all maintained digests (admin only).
 
@@ -1334,7 +1334,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=True)
     async def admin_knowledge_digest_get(digest_id: str) -> dict:
         """Show one maintained digest's full detail (admin only).
 
@@ -1358,7 +1358,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=False)
     async def admin_knowledge_digest_create(
         slug: str,
         title: str,
@@ -1402,7 +1402,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=False)
     async def admin_knowledge_digest_update(
         digest_id: str,
         title: str | None = None,
@@ -1444,7 +1444,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=False, destructive=True)
     async def admin_knowledge_digest_delete(digest_id: str) -> dict:
         """Delete a maintained digest (admin only).
 
@@ -1468,7 +1468,7 @@ def register_foundation_tools(
             r.raise_for_status()
         return {"deleted": digest_id}
 
-    @tool()
+    @tool(read_only=False)
     async def chat_upload_file(
         file_path: str,
         kind: str = "data",
@@ -1520,7 +1520,7 @@ def register_foundation_tools(
             "local stdio MCP tool which reads your local filesystem."
         )
 
-    @tool()
+    @tool(read_only=True, open_world=True)
     async def my_secret_test(source_id: str) -> dict:
         """Verify your own stored credential for a per_user MCP source.
 
@@ -1556,7 +1556,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=True)
     async def admin_jobs_list(status: str = "", kind: str = "", limit: int = 50) -> dict:
         """List jobs on the wave-2B durable job queue (admin only).
 
@@ -1589,7 +1589,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=True)
     async def admin_job_get(job_id: str) -> dict:
         """Show one job's full detail, incl. payload and error (admin only).
 
@@ -1605,7 +1605,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=False)
     async def admin_job_enqueue(kind: str, payload: dict | None = None, idempotency_key: str = "") -> dict:
         """Enqueue a job on the wave-2B worker runtime (admin only).
 
@@ -1634,7 +1634,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=False, destructive=True)
     async def admin_analytics_migrate(to: Literal["ducklake", "legacy"]) -> dict:
         """Migrate the analytics query surface between backends (admin only).
 
@@ -1670,7 +1670,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=True)
     async def agent_list() -> dict:
         """List your own agent profiles.
 
@@ -1697,7 +1697,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=False, open_world=True)
     async def agent_ask(slug: str, prompt: str, timeout_s: int = 120) -> dict:
         """One-shot synchronous request/response over one of your agents.
 
@@ -1732,7 +1732,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=True)
     async def agent_usage(slug: str, period: str = "") -> dict:
         """Show one of your agents' monthly token usage against its budget.
 
@@ -1763,7 +1763,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=True)
     async def data_apps_list(kind: Literal["", "hosted", "linked"] = "") -> dict:
         """List data apps you can see (RBAC-filtered).
 
@@ -1787,7 +1787,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=True)
     async def data_app_get(slug: str) -> dict:
         """Show one hosted data app's detail.
 
@@ -1804,7 +1804,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=False, open_world=True)
     async def data_app_deploy(slug: str, sha: str = "", mode: Literal["", "dev"] = "") -> dict:
         """Deploy (or redeploy) a hosted data app — app owner or Admin only.
 
@@ -1841,7 +1841,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=False)
     async def data_app_create(slug: str, name: str, description: str = "") -> dict:
         """Create a new hosted data app (the registry row plus its git repo).
 
@@ -1874,7 +1874,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=False)
     async def data_app_create_draft(slug: str, branch: str = "init") -> dict:
         """Create a draft of a prod data app on an iteration branch — app owner or Admin only.
 
@@ -1902,7 +1902,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=False, destructive=True)
     async def data_app_delete_draft(slug: str, draft_slug: str) -> dict:
         """Tear down a draft of a prod data app — app owner or Admin only.
 
@@ -1929,7 +1929,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return {"status": "deleted"}
 
-    @tool()
+    @tool(read_only=False)
     async def data_app_git_credential(slug: str) -> dict:
         """Mint a fresh git push credential for a data app — app owner or Admin only.
 
@@ -1950,7 +1950,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=True)
     async def data_app_logs(slug: str, tail: int = 200) -> dict:
         """Show the last N lines of runner logs for a hosted data app — app owner or Admin only.
 
@@ -1971,7 +1971,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=False, idempotent=True)
     async def data_app_set_description(slug: str, description: str) -> dict:
         """Set the admin description override on a managed (linked) data app.
 
@@ -2011,7 +2011,7 @@ def register_foundation_tools(
         except Exception:
             return False
 
-    @tool()
+    @tool(read_only=False)
     async def agnes_data_app_preview(slug: str, url: str = "") -> dict:
         """Open or refresh the in-chat split-pane preview of a hosted data app.
 
@@ -2061,7 +2061,7 @@ def register_foundation_tools(
         # itself via a same-origin re-fetch of the grant endpoint.
         return {"render": "data_app_preview", "slug": slug, "url": url}
 
-    @tool()
+    @tool(read_only=False, idempotent=True)
     async def agnes_data_app_refresh(slug: str) -> dict:
         """Force-reload the in-chat preview pane for a hosted data app.
 
@@ -2077,7 +2077,7 @@ def register_foundation_tools(
         """
         return {"render": "data_app_preview_refresh", "slug": slug}
 
-    @tool()
+    @tool(read_only=False, destructive=True)
     async def agnes_data_app_close(slug: str) -> dict:
         """Tear down the in-chat preview pane for a hosted data app.
 
@@ -2094,7 +2094,7 @@ def register_foundation_tools(
         """
         return {"render": "data_app_preview_close", "slug": slug}
 
-    @tool()
+    @tool(read_only=True)
     async def agnes_data_app_credentials(slug: str) -> dict:
         """Show the shareable URL for a hosted data app — the TERMINAL
         render of a reply (spec §7): never follow this tool's result with
@@ -2127,7 +2127,7 @@ def register_foundation_tools(
             "password": None,
         }
 
-    @tool()
+    @tool(read_only=True)
     async def tool_docs(tool_name: str) -> dict:
         """Return the full reference documentation (docstring) for one registered MCP tool — arguments, return shape, and usage tips beyond the short description shown in the tool list."""
         doc = TOOL_DOCS.get(tool_name)
