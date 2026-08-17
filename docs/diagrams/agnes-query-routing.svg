@@ -1,0 +1,66 @@
+<svg viewBox="0 0 1500 470" role="img" aria-label="Query routing: agnes query with scope auto runs locally when a synced view exists, otherwise server-side; remote tables go to BigQuery or Databricks under cost guardrails; access policies rewrite every server-side read." xmlns="http://www.w3.org/2000/svg" fill="none" style="font-variant-ligatures:none" color="#0B2545"><rect x="0" y="0" width="1500" height="470" fill="#FFFFFF"/>
+<text x="26" y="28" font-family="'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, serif" font-size="19" fill="currentColor" font-weight="600" fill-opacity="0.95">Where a query actually runs</text>
+<text x="26" y="48" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.55">one statement, four destinations — chosen by the table's query_mode, not by the caller;   outlined in blue = runs on the server</text>
+<rect x="26" y="84" width="330" height="86" rx="6" fill="currentColor" fill-opacity="0.035" stroke="currentColor" stroke-opacity="0.22"/>
+<text x="39" y="105" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="12.5" fill="currentColor" font-weight="600" fill-opacity="0.95">agnes query "SELECT …"</text>
+<text x="39" y="125" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">scope=auto is the default</text>
+<text x="39" y="141" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">scope=local / scope=server override it</text>
+<text x="39" y="157" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">stderr prints a [scope] note either way</text>
+<rect x="420" y="84" width="300" height="70" rx="6" fill="currentColor" fill-opacity="0.035" stroke="currentColor" stroke-opacity="0.22"/>
+<text x="433" y="105" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="12.5" fill="currentColor" font-weight="600" fill-opacity="0.95">local view exists</text>
+<text x="433" y="125" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">runs in the laptop's DuckDB over</text>
+<text x="433" y="141" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">pulled parquet — no server hop</text>
+<line x1="360" y1="127" x2="412" y2="119" stroke="#0369A1" stroke-opacity="0.7" stroke-width="1.4"/>
+<polygon points="418,119 412,115.3 412,122.7" fill="#0369A1" fill-opacity="0.7"/>
+<rect x="420" y="176" width="300" height="70" rx="6" fill="currentColor" fill-opacity="0.035" stroke="currentColor" stroke-opacity="0.22"/>
+<text x="433" y="197" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="12.5" fill="currentColor" font-weight="600" fill-opacity="0.95">no local data</text>
+<text x="433" y="217" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">same statement re-runs server-side</text>
+<text x="433" y="233" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">against analytics views</text>
+<line x1="360" y1="127" x2="412" y2="211" stroke="#0369A1" stroke-opacity="0.7" stroke-width="1.4"/>
+<polygon points="418,211 412,207.3 412,214.7" fill="#0369A1" fill-opacity="0.7"/>
+<rect x="420" y="268" width="300" height="70" rx="6" fill="currentColor" fill-opacity="0.035" stroke="currentColor" stroke-opacity="0.22"/>
+<text x="433" y="289" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="12.5" fill="currentColor" font-weight="600" fill-opacity="0.95">query_mode = remote</text>
+<text x="433" y="309" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">remote_engines picks the engine;</text>
+<text x="433" y="325" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">nothing was ever downloaded</text>
+<line x1="360" y1="127" x2="412" y2="303" stroke="#0369A1" stroke-opacity="0.7" stroke-width="1.4"/>
+<polygon points="418,303 412,299.3 412,306.7" fill="#0369A1" fill-opacity="0.7"/>
+<rect x="420" y="360" width="300" height="70" rx="6" fill="currentColor" fill-opacity="0.035" stroke="currentColor" stroke-opacity="0.22"/>
+<text x="433" y="381" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="12.5" fill="currentColor" font-weight="600" fill-opacity="0.95">too big to fetch</text>
+<text x="433" y="401" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">agnes snapshot create, estimate first</text>
+<text x="433" y="417" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">→ a filtered local subset</text>
+<line x1="360" y1="127" x2="412" y2="395" stroke="#0369A1" stroke-opacity="0.7" stroke-width="1.4"/>
+<polygon points="418,395 412,391.3 412,398.7" fill="#0369A1" fill-opacity="0.7"/>
+<rect x="800" y="84" width="320" height="70" rx="6" fill="currentColor" fill-opacity="0.035" stroke="currentColor" stroke-opacity="0.22"/>
+<text x="813" y="105" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="12.5" fill="currentColor" font-weight="600" fill-opacity="0.95">laptop DuckDB</text>
+<text x="813" y="125" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">parquet + snapshots</text>
+<text x="813" y="141" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">zero marginal cost</text>
+<line x1="723" y1="119" x2="792" y2="119" stroke="#0369A1" stroke-opacity="0.8" stroke-width="1.4"/>
+<polygon points="798,119 792,115.3 792,122.7" fill="#0369A1" fill-opacity="0.8"/>
+<rect x="800" y="176" width="320" height="70" rx="6" fill="#0369A1" fill-opacity="0.07" stroke="#0369A1" stroke-opacity="0.7"/>
+<text x="813" y="197" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="12.5" fill="#0369A1" font-weight="600">server analytics plane</text>
+<text x="813" y="217" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">legacy analytics.duckdb or</text>
+<text x="813" y="233" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">the DuckLake catalog</text>
+<line x1="723" y1="211" x2="792" y2="211" stroke="#0369A1" stroke-opacity="0.8" stroke-width="1.4"/>
+<polygon points="798,211 792,207.3 792,214.7" fill="#0369A1" fill-opacity="0.8"/>
+<rect x="800" y="268" width="320" height="70" rx="6" fill="#0369A1" fill-opacity="0.07" stroke="#0369A1" stroke-opacity="0.7"/>
+<text x="813" y="289" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="12.5" fill="#0369A1" font-weight="600">BigQuery</text>
+<text x="813" y="309" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">dry-run scan cap (5 GiB)</text>
+<text x="813" y="325" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">Storage Read API push-down</text>
+<line x1="723" y1="303" x2="792" y2="303" stroke="#0369A1" stroke-opacity="0.8" stroke-width="1.4"/>
+<polygon points="798,303 792,299.3 792,306.7" fill="#0369A1" fill-opacity="0.8"/>
+<rect x="800" y="360" width="320" height="70" rx="6" fill="#0369A1" fill-opacity="0.07" stroke="#0369A1" stroke-opacity="0.7"/>
+<text x="813" y="381" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="12.5" fill="#0369A1" font-weight="600">Databricks</text>
+<text x="813" y="401" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">Statement Execution API</text>
+<text x="813" y="417" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">byte_limit; capped ⇒ refused</text>
+<line x1="723" y1="395" x2="792" y2="395" stroke="#0369A1" stroke-opacity="0.8" stroke-width="1.4"/>
+<polygon points="798,395 792,391.3 792,398.7" fill="#0369A1" fill-opacity="0.8"/>
+<rect x="1160" y="176" width="314" height="102" rx="6" fill="currentColor" fill-opacity="0.035" stroke="currentColor" stroke-opacity="0.3" stroke-dasharray="5 4"/>
+<text x="1173" y="197" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="12.5" fill="currentColor" font-weight="600" fill-opacity="0.95">on every server-side read</text>
+<text x="1173" y="217" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">a table access policy (if attached)</text>
+<text x="1173" y="233" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">is substituted for the table —</text>
+<text x="1173" y="249" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">rows filtered, columns masked by</text>
+<text x="1173" y="265" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">$user_email / $user_groups</text>
+<line x1="1126" y1="211" x2="1154" y2="211" stroke="currentColor" stroke-opacity="0.3" stroke-width="1" stroke-dasharray="5 4"/>
+<line x1="1126" y1="303" x2="1150" y2="303" stroke="currentColor" stroke-opacity="0.3" stroke-width="1" stroke-dasharray="5 4"/>
+<line x1="1150" y1="211" x2="1150" y2="303" stroke="currentColor" stroke-opacity="0.3" stroke-width="1" stroke-dasharray="5 4"/>
+</svg>

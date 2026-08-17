@@ -12,6 +12,7 @@ This module only matters for the SDK fallback — which is what runs when
 the extension errors on alias tables (keboola/duckdb-extension#17), and
 for any feature that forces the SDK path (incremental, where_filters).
 """
+
 from __future__ import annotations
 
 import logging
@@ -22,15 +23,15 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from src.parquet_publish import atomic_publish
+
 logger = logging.getLogger(__name__)
 
 
 # ───────────────────────────── DATE32 conversion ──────────────────────────────
 
 
-def convert_date_columns_to_date32(
-    table: pa.Table, date_columns: List[str]
-) -> pa.Table:
+def convert_date_columns_to_date32(table: pa.Table, date_columns: List[str]) -> pa.Table:
     """Cast the listed columns to PyArrow `date32`.
 
     String columns are parsed via pandas with `errors='coerce'` so invalid
@@ -76,9 +77,10 @@ def convert_date_columns_to_date32(
                 invalid_mask = series.notna() & parsed.isna()
                 examples = series[invalid_mask].head(3).tolist()
                 logger.warning(
-                    "Column %r: %d invalid date values converted to NULL. "
-                    "Examples: %s",
-                    field.name, invalid_count, examples,
+                    "Column %r: %d invalid date values converted to NULL. Examples: %s",
+                    field.name,
+                    invalid_count,
+                    examples,
                 )
             new_columns.append(pa.array(parsed.dt.date, type=target))
             new_fields.append(pa.field(field.name, target))
@@ -89,7 +91,9 @@ def convert_date_columns_to_date32(
             except Exception as e:
                 logger.warning(
                     "Column %r: failed to cast %s to date32, keeping original. Error: %s",
-                    field.name, col.type, e,
+                    field.name,
+                    col.type,
+                    e,
                 )
                 new_columns.append(col)
                 new_fields.append(field)
@@ -103,9 +107,7 @@ def convert_date_columns_to_date32(
 # ───────────────────────────── schema enforcement ─────────────────────────────
 
 
-def apply_schema_to_table(
-    table: pa.Table, target_schema: pa.Schema
-) -> pa.Table:
+def apply_schema_to_table(table: pa.Table, target_schema: pa.Schema) -> pa.Table:
     """Apply `target_schema` to `table`, handling type mismatches gracefully.
 
     - Columns not in `target_schema` keep their inferred type.
@@ -184,7 +186,10 @@ def _try_pandas_fallback(
         except Exception as e:
             logger.warning(
                 "Column %r: cannot cast %s to %s, keeping original. Error: %s",
-                name, col.type, target, e,
+                name,
+                col.type,
+                target,
+                e,
             )
             return None
 
@@ -196,13 +201,19 @@ def _try_pandas_fallback(
         except Exception as e:
             logger.warning(
                 "Column %r: cannot cast %s to %s, keeping original. Error: %s",
-                name, col.type, target, e,
+                name,
+                col.type,
+                target,
+                e,
             )
             return None
 
     logger.warning(
         "Column %r: cannot cast %s to %s, keeping original. Error: %s",
-        name, col.type, target, cast_err,
+        name,
+        col.type,
+        target,
+        cast_err,
     )
     return None
 
@@ -211,10 +222,20 @@ def _try_pandas_fallback(
 
 
 _BOOL_MAP = {
-    "true": True, "false": False, "True": True, "False": False,
-    "TRUE": True, "FALSE": False, "1": True, "0": False,
-    "yes": True, "no": False, "Yes": True, "No": False,
-    "YES": True, "NO": False,
+    "true": True,
+    "false": False,
+    "True": True,
+    "False": False,
+    "TRUE": True,
+    "FALSE": False,
+    "1": True,
+    "0": False,
+    "yes": True,
+    "no": False,
+    "Yes": True,
+    "No": False,
+    "YES": True,
+    "NO": False,
 }
 
 
@@ -238,7 +259,9 @@ def _convert_column(series: pd.Series, dtype: str, col_name: str = "") -> pd.Ser
             mask = series.notna() & converted.isna()
             logger.warning(
                 "Column %r: %d invalid numeric values → NULL. Examples: %s",
-                col_name, invalid, series[mask].head(3).tolist(),
+                col_name,
+                invalid,
+                series[mask].head(3).tolist(),
             )
         return converted.astype(dtype)
 
@@ -248,7 +271,9 @@ def _convert_column(series: pd.Series, dtype: str, col_name: str = "") -> pd.Ser
         if len(unknown) > 0:
             logger.warning(
                 "Column %r: %d unknown boolean values → NULL. Examples: %s",
-                col_name, len(unknown), unknown.head(3).tolist(),
+                col_name,
+                len(unknown),
+                unknown.head(3).tolist(),
             )
         return series.map(_BOOL_MAP).astype(dtype)
 
@@ -306,7 +331,11 @@ def csv_to_parquet(
         merged[b"table_id"] = table_id.encode()
         table = table.replace_schema_metadata(merged)
 
-    pq.write_table(table, parquet_path, compression="snappy")
+    # Published atomically (#1359) — this backs `_extract_via_legacy`'s
+    # non-empty branch and `extract_incremental`'s first-sync branch, both of
+    # which write straight to the served `<table>.parquet` path.
+    with atomic_publish(parquet_path) as tmp_dest:
+        pq.write_table(table, tmp_dest, compression="snappy")
 
     return {
         "rows": table.num_rows,

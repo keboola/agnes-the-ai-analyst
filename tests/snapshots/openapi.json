@@ -6692,6 +6692,27 @@
         "title": "PreviewResponse",
         "type": "object"
       },
+      "ProjectionMapRequest": {
+        "description": "Which materialized columns carry a linked app's id / url / name.\n\nA separate endpoint from ``PUT /mcp-tools/{id}`` on purpose: the admin\npicks these AFTER a fetch, against the columns the tool actually emitted,\nand clearing the mapping has to be expressible \u2014 which the tool-update\npath cannot do (its upsert preserves the mapping precisely so a reclassify\ndoes not wipe it).",
+        "properties": {
+          "projection_map": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Projection Map"
+          }
+        },
+        "title": "ProjectionMapRequest",
+        "type": "object"
+      },
       "PromptGetResponse": {
         "properties": {
           "base_sha": {
@@ -19950,6 +19971,79 @@
           }
         },
         "summary": "Remove Mcp Tool Grant",
+        "tags": [
+          "admin-mcp"
+        ]
+      }
+    },
+    "/api/admin/mcp-tools/{tool_id}/projection-map": {
+      "put": {
+        "description": "Set (or clear, with a null map) the tool's projection column mapping.",
+        "operationId": "set_mcp_tool_projection_map_api_admin_mcp_tools__tool_id__projection_map_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "tool_id",
+            "required": true,
+            "schema": {
+              "title": "Tool Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectionMapRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Mcp Tool Projection Map",
         "tags": [
           "admin-mcp"
         ]

@@ -76,6 +76,25 @@ def test_version_is_a_point_release_not_a_range(manifest):
     assert v != "latest"
 
 
+def test_version_matches_pyproject(manifest):
+    """The listing's version must equal the package version it describes.
+
+    `server.json` carries its own copy of the version and only a comment asked
+    anyone to keep the two in step — so a release cut that bumped
+    `pyproject.toml` alone left the published listing advertising an older
+    Agnes. That happened: 0.83.30 shipped with the listing still on 0.83.29.
+    Registry versions are immutable, so a wrong one is not editable after
+    publish — it can only be superseded.
+    """
+    pyproject = Path("pyproject.toml").read_text(encoding="utf-8")
+    m = re.search(r'(?m)^version\s*=\s*"([^"]+)"', pyproject)
+    assert m, "no version found in pyproject.toml"
+    assert manifest["version"] == m.group(1), (
+        f"server.json says {manifest['version']!r} but pyproject.toml says "
+        f"{m.group(1)!r} — bump both in the release-cut commit."
+    )
+
+
 def test_the_remote_is_streamable_http(manifest):
     remotes = manifest.get("remotes") or []
     assert remotes, "a remote server needs a `remotes` entry, not `packages`"
