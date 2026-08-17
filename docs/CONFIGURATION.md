@@ -214,8 +214,6 @@ users:
   admin@acme.com:
     display_name: "John Doe"
     km_admin: true              # Corporate Memory admin (optional)
-
-username_mapping: {}            # Map webapp email -> server username if different
 ```
 
 ### Datasets
