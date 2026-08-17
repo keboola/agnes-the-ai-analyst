@@ -1279,9 +1279,7 @@ class TestSqlglotCoupling:
         import sqlglot
         from sqlglot import exp
 
-        tree = sqlglot.parse_one(
-            "SELECT * FROM t WHERE ARRAY_CONTAINS(:user_groups, region)", dialect="databricks"
-        )
+        tree = sqlglot.parse_one("SELECT * FROM t WHERE ARRAY_CONTAINS(:user_groups, region)", dialect="databricks")
         placeholders = [n for n in tree.find_all(exp.Placeholder)]
         assert placeholders, "sqlglot no longer parses :name as a Placeholder in the databricks dialect"
         assert [p.name for p in placeholders] == ["user_groups"]
@@ -1302,3 +1300,205 @@ class TestSqlglotCoupling:
         found, the group filter must NOT silently vanish."""
         with pytest.raises(DatabricksPolicyBindingError):
             bind_policy_parameters("SELECT * FROM t WHERE 1 = 1", {"user_groups": ["eu-team"]})
+
+
+# ---------------------------------------------------------------------------
+# 12. Sixth review round
+# ---------------------------------------------------------------------------
+
+
+class TestTimeoutConfiguration:
+    """`scan_timeout_seconds` reads like every other guardrail knob.
+
+    Both siblings on this connector — `max_bytes_per_materialize` and
+    `statement_timeout_seconds` in `app/api/sync.py` — guard the numeric
+    conversion and treat `0` as "disable". The scan reader did neither: a
+    typo silently reverted to 900 with no warning, and so did a deliberate
+    `0`, which is the opposite of what an operator setting it means.
+    """
+
+    def _reader(self, monkeypatch, **values):
+        import app.api.query as q
+        import app.api.v2_scan as vs
+
+        def fake(*path, default=None):
+            return values.get(".".join(path), default)
+
+        monkeypatch.setattr(vs, "get_value", fake)
+        monkeypatch.setattr(q, "get_value", fake)
+        return vs
+
+    def test_unset_uses_the_documented_defaults(self, monkeypatch):
+        vs = self._reader(monkeypatch)
+        assert vs._databricks_scan_timeout_s() == 900.0
+        assert vs._databricks_estimate_timeout_s() == 120.0
+
+    def test_zero_disables_the_scan_deadline(self, monkeypatch):
+        """A snapshot is a materialize, and `0` is how its sibling knob is
+        documented to remove the ceiling. Reverting to 900 would cancel the
+        very fetch the operator lengthened the budget for."""
+        vs = self._reader(monkeypatch, **{"data_source.databricks.scan_timeout_seconds": 0})
+        assert vs._databricks_scan_timeout_s() is None
+
+    def test_a_disabled_deadline_reaches_the_client_as_no_deadline(self, monkeypatch):
+        """`None` has to survive the whole way down, not just out of the
+        reader — the client is where a falsy timeout becomes "poll forever"."""
+        import time
+
+        from connectors.databricks.client import DatabricksStatementClient
+
+        client = DatabricksStatementClient.__new__(DatabricksStatementClient)
+        captured = {}
+
+        def fake_post(path, payload):
+            captured["deadline_set"] = True
+            return {"status": {"state": "SUCCEEDED"}, "statement_id": "s1"}
+
+        monkeypatch.setattr(client, "_post_json", fake_post, raising=False)
+        # A deadline computed from `None` would raise TypeError here; the
+        # contract is that it is simply never computed.
+        before = time.monotonic()
+        client._run_to_terminal({}, "SELECT 1", timeout_s=None)
+        assert captured["deadline_set"]
+        assert time.monotonic() - before < 5
+
+    def test_a_non_numeric_value_warns_and_keeps_the_deadline(self, monkeypatch, caplog):
+        """A typo must not be the thing that removes the ceiling — the
+        distinction between "operator meant 0" and "operator fat-fingered it"
+        is exactly what the guard buys."""
+        vs = self._reader(monkeypatch, **{"data_source.databricks.scan_timeout_seconds": "twenty"})
+        with caplog.at_level("WARNING"):
+            assert vs._databricks_scan_timeout_s() == 900.0
+        assert "scan_timeout_seconds" in caplog.text
+
+    def test_the_estimate_deadline_delegates_to_the_interactive_reader(self, monkeypatch):
+        """`--estimate` has a person waiting on it, so it shares `/api/query`'s
+        budget — and shares its READER, so the two cannot drift on what a bad
+        or zero value means. Zero stays 120 here on purpose: an interactive
+        request must never be unbounded."""
+        import app.api.v2_scan as vs
+
+        vs2 = self._reader(monkeypatch, **{"data_source.databricks.remote_query_timeout_seconds": 0})
+        assert vs2._databricks_estimate_timeout_s() == 120.0
+
+        vs3 = self._reader(monkeypatch, **{"data_source.databricks.remote_query_timeout_seconds": 45})
+        assert vs3._databricks_estimate_timeout_s() == 45.0
+        assert vs is vs2 is vs3
+
+    def test_the_admin_hint_documents_the_zero_semantics(self):
+        """The knob is settable from /admin/server-config, where the hint is
+        the only documentation an operator sees."""
+        from app.api.admin import _KNOWN_FIELDS
+
+        hint = _KNOWN_FIELDS["data_source"]["databricks"]["fields"]["scan_timeout_seconds"]["hint"]
+        assert "0 disables" in hint
+
+
+class TestPolicyBodyRewriteStaysInTablePosition:
+    """The body rewrite touches table references and nothing else.
+
+    The outer pass guards this by excluding the policied name from the textual
+    rewriter. The body cannot use that guard — the body is precisely where the
+    policied table must be rewritten — so it works over the AST instead.
+    """
+
+    LOOKUPS = [
+        ("orders_raw", "main", "sales", "orders_raw"),
+        ("region_map", "main", "ref", "region_map"),
+    ]
+
+    def _rewrite(self, sql: str) -> str:
+        from connectors.databricks.remote import rewrite_policy_body_to_native
+
+        return rewrite_policy_body_to_native(sql, self.LOOKUPS, "main")
+
+    def test_a_qualifier_style_body_does_not_become_a_four_part_column(self):
+        """The finding, verbatim. `main.sales.orders_raw.country` is a
+        four-part column reference; Spark tolerates it, but it is produced by
+        the same mechanism that made a three-part path show up in alias
+        position, which is a hard syntax error."""
+        out = self._rewrite("SELECT orders_raw.country FROM orders_raw WHERE orders_raw.country = 'CZ'")
+        assert "`main`.`sales`.`orders_raw`.country" not in out
+        assert out.count("`main`.`sales`.`orders_raw`") == 1
+        assert "orders_raw.country" in out
+
+    def test_the_table_itself_is_still_rewritten(self):
+        """The half that must not regress: an unrewritten body resolves against
+        whatever the warehouse's default context holds."""
+        out = self._rewrite("SELECT * FROM orders_raw")
+        assert "FROM `main`.`sales`.`orders_raw`" in out
+
+    def test_a_string_literal_naming_the_table_is_left_alone(self):
+        """The textual rewriter masks backticks, not quotes."""
+        out = self._rewrite("SELECT * FROM orders_raw WHERE note = 'about orders_raw'")
+        assert "'about orders_raw'" in out
+
+    def test_a_cte_keeps_its_local_name(self):
+        """A CTE the policy defines is a local name — the same exclusion the
+        save-time validator makes when it checks table references."""
+        out = self._rewrite("WITH orders_raw AS (SELECT 1 AS a) SELECT * FROM orders_raw")
+        assert "`main`.`sales`" not in out
+
+    def test_an_alias_survives_the_rewrite(self):
+        out = self._rewrite("SELECT o.country FROM orders_raw AS o")
+        assert "`main`.`sales`.`orders_raw` AS o" in out
+        assert "o.country" in out
+
+    def test_a_mapping_table_join_is_rewritten_too(self):
+        """§15's `policy_mapping` idiom — a table only the POLICY names."""
+        out = self._rewrite("SELECT * FROM orders_raw o JOIN region_map m ON o.r = m.r")
+        assert "`main`.`sales`.`orders_raw`" in out
+        assert "`main`.`ref`.`region_map`" in out
+
+    def test_an_already_qualified_path_is_untouched(self):
+        out = self._rewrite("SELECT * FROM `main`.`sales`.`orders_raw`")
+        assert out.count("`main`.`sales`.`orders_raw`") == 1
+
+    def test_the_dbx_path_form_is_rewritten_without_a_textual_pass(self):
+        out = self._rewrite('SELECT * FROM dbx."main.sales"."orders_raw"')
+        assert "`main`.`sales`.`orders_raw`" in out
+        assert "dbx" not in out
+
+    def test_a_bound_marker_survives_the_round_trip(self):
+        """The rewrite runs AFTER `bind_policy_parameters`, so it must not
+        disturb the markers that carry the caller's identity."""
+        out = self._rewrite("SELECT * FROM orders_raw WHERE email = :user_email")
+        assert ":user_email" in out
+
+    def test_an_unparseable_body_denies(self):
+        """§17 — every failure denies. Returning the body unrewritten would
+        ship a bare name to resolve against the default catalog."""
+        from connectors.databricks.remote import DatabricksPolicyRewriteError
+
+        with pytest.raises(DatabricksPolicyRewriteError):
+            self._rewrite("SELECT * FROM (((")
+
+    def test_an_unsafe_registry_segment_is_still_refused(self):
+        """Moving off the textual path must not drop `quote_dbx_path`'s
+        safe-alphabet check — that is what stops a backtick in a registry row
+        from breaking out of the quoting."""
+        from connectors.databricks.remote import rewrite_policy_body_to_native
+
+        with pytest.raises(DatabricksRemoteError) as exc:
+            rewrite_policy_body_to_native(
+                "SELECT * FROM orders_raw", [("orders_raw", "main", "sa`les", "orders_raw")], "main"
+            )
+        assert exc.value.reason == "databricks_unsafe_identifier"
+
+    def test_end_to_end_a_qualifier_policy_ships_a_clean_statement(self, seeded_app, warehouse, monkeypatch):
+        """Through `/api/query`, which is where a malformed body would actually
+        reach the warehouse."""
+        wh, _settings = warehouse
+        TestPolicyEnforcement()._setup(monkeypatch, "SELECT * FROM orders_raw WHERE orders_raw.country = 'CZ'")
+
+        c = seeded_app["client"]
+        r = c.post(
+            "/api/query",
+            json={"sql": "SELECT country, n FROM orders_raw"},
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        assert r.status_code == 200, r.text
+        submitted = wh.statements[-1]
+        assert "`main`.`sales`.`orders_raw`.country" not in submitted
+        assert "country = 'CZ'" in submitted
+        assert ") AS orders_raw" in submitted

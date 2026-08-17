@@ -682,20 +682,43 @@ def _databricks_estimate_timeout_s() -> float:
     is what an analyst runs BEFORE deciding whether to fetch, so it has a
     person waiting on it. Letting it inherit the 900 s materialize budget
     would hold a request thread for fifteen minutes to answer "should I bother".
+
+    Delegates to `/api/query`'s reader rather than re-reading the key, so the
+    two interactive callers cannot drift apart on what a bad or zero value
+    means. (Function-local import: the module-level dependency runs
+    query → v2_scan, and reversing it at import time would cycle.)
     """
-    return float(get_value("data_source", "databricks", "remote_query_timeout_seconds", default=120) or 120)
+    from app.api.query import _databricks_statement_timeout_s
+
+    return _databricks_statement_timeout_s()
 
 
-def _databricks_scan_timeout_s() -> float:
-    """Statement timeout for the scan path.
+def _databricks_scan_timeout_s() -> Optional[float]:
+    """Statement timeout for the scan path, or ``None`` for no deadline.
 
     Deliberately NOT `data_source.databricks.remote_query_timeout_seconds`
     (default 120), which bounds an *interactive* answer someone is waiting on.
     A snapshot fetch is a materialize — the analyst expects it to take a while
     — so it gets its own, longer budget, and the byte cap remains the control
     that bounds size.
+
+    `0` disables the deadline, the same meaning the sibling materialize knob
+    `statement_timeout_seconds` carries in `app/api/sync.py` — an operator who
+    sets it wants an unbounded fetch, not a silent snap back to 900. A
+    non-numeric value warns and uses the default: a typo must not be the thing
+    that removes the deadline.
     """
-    return float(get_value("data_source", "databricks", "scan_timeout_seconds", default=900.0) or 900.0)
+    raw = get_value("data_source", "databricks", "scan_timeout_seconds", default=900)
+    try:
+        t = float(raw) if raw is not None else 900.0
+    except (TypeError, ValueError):
+        logger.warning(
+            "data_source.databricks.scan_timeout_seconds is not numeric (%r); "
+            "using the 900s default. Set a number of seconds or 0 to disable.",
+            raw,
+        )
+        t = 900.0
+    return t if t > 0 else None
 
 
 def _run_bq_scan(bq: BqAccess, sql: str, *, user: dict | None = None) -> tuple[pa.Table, dict]:

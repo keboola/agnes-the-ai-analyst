@@ -958,7 +958,7 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
                         "the interactive timeout on purpose: a snapshot is a "
                         "materialize, not an answer someone is waiting on. Its SIZE "
                         "bound is api.scan.max_result_bytes, not "
-                        "max_bytes_per_remote_query. Default 900."
+                        "max_bytes_per_remote_query. 0 disables. Default 900."
                     ),
                 },
                 "semantic_layer_catalogs": {

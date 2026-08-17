@@ -177,7 +177,7 @@ class DatabricksStatementClient:
         catalog: Optional[str] = None,
         schema: Optional[str] = None,
         byte_limit: Optional[int] = None,
-        timeout_s: float = 900.0,
+        timeout_s: Optional[float] = 900.0,
         parameters: Optional[List[Dict[str, Any]]] = None,
     ) -> "ArrowResult":
         """Run a bulk statement; return an :class:`ArrowResult` whose
@@ -249,7 +249,12 @@ class DatabricksStatementClient:
             payload["parameters"] = list(parameters)
         return payload
 
-    def _run_to_terminal(self, payload: Dict[str, Any], statement: str, *, timeout_s: float) -> Dict[str, Any]:
+    def _run_to_terminal(
+        self, payload: Dict[str, Any], statement: str, *, timeout_s: Optional[float]
+    ) -> Dict[str, Any]:
+        # Falsy (`0` or `None`) means "no deadline" — the operator disabled it
+        # via `scan_timeout_seconds: 0`. A negative value is treated the same
+        # rather than producing a deadline already in the past.
         deadline = time.monotonic() + timeout_s if timeout_s and timeout_s > 0 else None
         doc = self._post_json(_STATEMENTS_PATH, payload)
         while True:

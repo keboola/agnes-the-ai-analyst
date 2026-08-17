@@ -2530,7 +2530,11 @@ def _databricks_policy_resolver(*, name_lookups, default_catalog: str):
         DatabricksPolicyBindingError,
         bind_policy_parameters,
     )
-    from connectors.databricks.remote import rewrite_to_native, row_target
+    from connectors.databricks.remote import (
+        DatabricksPolicyRewriteError,
+        rewrite_policy_body_to_native,
+        row_target,
+    )
 
     def _body_lookups(policied_id: str):
         """Lookups for rewriting ONE policy body: the caller's, plus the
@@ -2567,8 +2571,7 @@ def _databricks_policy_resolver(*, name_lookups, default_catalog: str):
             # NOT PolicyError: `rewrite_sql` swallows that, which would drop
             # the policy and execute the caller's unfiltered statement.
             raise _PolicyResolutionFailed(relation.table_id) from exc
-        return dataclasses.replace(
-            relation,
+        try:
             # `_body_lookups` and not the caller-derived `name_lookups`: the
             # policied row's own path has to come from the ROW, because
             # `guardrail_inputs` records a lookup only for a registered name
@@ -2578,7 +2581,22 @@ def _databricks_policy_resolver(*, name_lookups, default_catalog: str):
             # at all, so the policy body's own `FROM orders_raw` stayed bare
             # and shipped unqualified, to resolve against whatever the
             # warehouse's default context holds.
-            relation_sql=rewrite_to_native(body_sql, _body_lookups(relation.table_id), default_catalog),
+            #
+            # The AST rewriter and not `rewrite_to_native`: the textual one
+            # replaces every occurrence of the name, and in a policy body the
+            # policied name is also what qualifies its own columns, so
+            # `WHERE orders_raw.country = …` became a four-part column
+            # reference. The outer pass avoids this by excluding the policied
+            # name; the body cannot, because the body is where that table must
+            # actually be rewritten.
+            native_body = rewrite_policy_body_to_native(body_sql, _body_lookups(relation.table_id), default_catalog)
+        except DatabricksPolicyRewriteError as exc:
+            # Same reasoning as the binding failure above: anything other than
+            # the non-swallowed type would execute the caller's SQL unfiltered.
+            raise _PolicyResolutionFailed(relation.table_id) from exc
+        return dataclasses.replace(
+            relation,
+            relation_sql=native_body,
             # The WHOLE API entry is the value, not just its ``value`` field.
             # `bind_policy_parameters` omits ``value`` entirely for a NULL bind
             # (that is how the Statement Execution API binds SQL NULL, and it
