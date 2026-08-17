@@ -1252,6 +1252,8 @@
                       onclick="closeRegisterNewTableMenu(); openRegisterModal('bigquery')">BigQuery</button>
               <button class="tbl-register__item" type="button" data-register-source="keboola"
                       onclick="closeRegisterNewTableMenu(); openRegisterModal('keboola')">Keboola</button>
+              <button class="tbl-register__item" type="button" data-register-source="snowflake"
+                      onclick="closeRegisterNewTableMenu(); openRegisterModal('snowflake')">Snowflake</button>
               <a class="tbl-register__item" href="docs/connectors/jira.md"
                  onclick="closeRegisterNewTableMenu()">Jira (webhook-driven — see docs)</a>
             </div>
@@ -1991,6 +1993,145 @@
                         <button class="btn btn-secondary" onclick="closeRegisterKeboolaModal()">Cancel</button>
                         <button class="btn btn-primary" id="registerKeboolaSubmitBtn"
                                 onclick="registerKeboolaTable()">Register</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ── Snowflake Register Modal ── -->
+            <div class="ds-drawer ds-drawer--wide" id="registerSnowflakeModal" role="dialog" aria-modal="true" aria-labelledby="registerSnowflakeModal-title">
+                <div class="ds-drawer__backdrop" onclick="closeRegisterSnowflakeModal()"></div>
+                <div class="ds-drawer__panel">
+                    <div class="ds-drawer__head"><div class="ds-drawer__head-main">
+                        <h2 class="ds-drawer__title" id="registerSnowflakeModal-title">Register a Snowflake table</h2>
+                        <p class="ds-drawer__sub">Point Agnes at a Snowflake table or view. Live queries run through the DuckDB Snowflake extension; synced writes a parquet on a schedule.</p>
+                        </div>
+                        <button class="ds-drawer__x" aria-label="Close" onclick="closeRegisterSnowflakeModal()">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <line x1="18" y1="6" x2="6" y2="18"/>
+                                <line x1="6" y1="6" x2="18" y2="18"/>
+                            </svg>
+                        </button>
+                    </div>
+                    <div class="ds-drawer__body">
+                        <div class="form-group">
+                            <label class="form-label">How should analysts access this data?</label>
+                            <div class="sf-access-radio-group" style="display:flex; gap:12px; margin-top:6px;">
+                                <label class="sync-option-card" style="flex:1; padding:12px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
+                                    <input type="radio" name="sfAccessMode" value="live" checked onchange="onSfAccessModeChange()">
+                                    <strong>Live from Snowflake</strong>
+                                    <div style="font-size:12px; color:var(--text-secondary); margin-top:4px;">
+                                        Each analyst query goes to Snowflake through the DuckDB extension. Always current.
+                                        Latency ≈ seconds; 0 disk on the analyst machine. Best for huge tables or when freshness matters.
+                                    </div>
+                                </label>
+                                <label class="sync-option-card" style="flex:1; padding:12px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
+                                    <input type="radio" name="sfAccessMode" value="synced" onchange="onSfAccessModeChange()">
+                                    <strong>Synced locally</strong>
+                                    <div style="font-size:12px; color:var(--text-secondary); margin-top:4px;">
+                                        Agnes runs a SELECT on a schedule and ships a parquet. Query latency &lt;100&nbsp;ms; disk = snapshot size. Best when speed beats freshness.
+                                    </div>
+                                </label>
+                            </div>
+                        </div>
+                        <div class="form-group sf-access-synced" style="display:none;">
+                            <label class="form-label">What to sync?</label>
+                            <div class="sf-sync-radio-group" style="display:flex; gap:12px; margin-top:6px;">
+                                <label class="sync-option-card" style="flex:1; padding:12px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
+                                    <input type="radio" name="sfSyncMode" value="whole" checked onchange="onSfSyncModeChange()">
+                                    <strong>Whole table</strong>
+                                    <div style="font-size:12px; color:var(--text-secondary); margin-top:4px;">
+                                        Agnes runs <code>SELECT *</code> automatically. Disk + sync cost = full table size.
+                                    </div>
+                                </label>
+                                <label class="sync-option-card" style="flex:1; padding:12px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
+                                    <input type="radio" name="sfSyncMode" value="custom" onchange="onSfSyncModeChange()">
+                                    <strong>Custom query</strong>
+                                    <div style="font-size:12px; color:var(--text-secondary); margin-top:4px;">
+                                        You write the SELECT — filter, project, or aggregate before the sync. Cuts disk + cost.
+                                    </div>
+                                </label>
+                            </div>
+                        </div>
+                        <div class="form-group sf-source-table">
+                            <label class="form-label" for="sfSchema">Schema (or database.schema)</label>
+                            <input type="text" class="form-input" id="sfSchema" placeholder="e.g. PUBLIC">
+                            <div class="form-hint">Snowflake schema name. Use <code>DATABASE.SCHEMA</code> to override the configured database. This becomes the <code>bucket</code> value in the registry.</div>
+                        </div>
+                        <div class="form-group sf-source-table">
+                            <label class="form-label" for="sfSourceTable">Source Table / View</label>
+                            <input type="text" class="form-input" id="sfSourceTable" placeholder="e.g. orders">
+                            <div class="form-hint">Table or view name within the schema. Live access and whole-table sync work for both tables and views.</div>
+                        </div>
+                        <div class="form-group sf-source-custom" style="display:none;">
+                            <label class="form-label" for="sfSourceQuery">
+                                SQL
+                                <button type="button" class="btn btn-secondary btn-sm"
+                                        onclick="prefillFromSnowflakeTable('sfSourceQuery')" style="float:right; margin-top:-3px;"
+                                        title="Prefill SELECT * FROM sf.&#34;schema&#34;.&#34;table&#34; so you only edit the WHERE / projection">
+                                    Use table as base
+                                </button>
+                            </label>
+                            <textarea class="form-textarea" id="sfSourceQuery" rows="8"
+                                placeholder="SELECT date, SUM(revenue) AS revenue&#10;FROM sf.&#34;PUBLIC&#34;.&#34;ORDERS&#34;&#10;WHERE date >= DATEADD(day, -90, CURRENT_DATE())&#10;GROUP BY 1"></textarea>
+                            <div class="form-hint">
+                                SELECT statement, no trailing semicolon. Use DuckDB Snowflake-extension identifiers
+                                (<code>sf.&#34;schema&#34;.&#34;table&#34;</code>).
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label" for="sfViewName">View Name</label>
+                            <input type="text" class="form-input" id="sfViewName" placeholder="orders">
+                            <div class="form-hint">Name analysts use to query the data. Defaults to the source table.</div>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label" for="sfDescription">Description <span class="optional">(optional)</span></label>
+                            <textarea class="form-textarea" id="sfDescription" placeholder="Brief description of the table contents..."></textarea>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label" for="sfFolder">Folder <span class="optional">(optional)</span></label>
+                            <input type="text" class="form-input" id="sfFolder" placeholder="e.g. crm, finance, marketing">
+                            <div class="form-hint">Logical grouping for catalog organization</div>
+                        </div>
+                        <div class="form-group sf-access-synced" style="display:none;">
+                            <label class="form-label" for="sfSyncSchedule">Sync Schedule <span class="optional">(optional, default <code>every 1h</code>)</span></label>
+                            <input type="text" class="form-input" id="sfSyncSchedule" placeholder="every 6h">
+                            <div class="form-hint">
+                                How often Agnes refreshes the local copy. Examples:
+                                <code>every 15m</code>, <code>every 6h</code>,
+                                <code>daily 03:00</code>, <code>daily 07:00,13:00,18:00</code>,
+                                <code>cron 0 5 7 * *</code> (UTC).
+                            </div>
+                        </div>
+                        <div class="form-group sf-access-synced" style="display:none;">
+                            <label class="form-label">
+                                <input type="checkbox" id="sfServerOnly">
+                                Server-only (don't distribute to laptops)
+                            </label>
+                            <div class="form-hint">Keep the parquet server-side and
+                                queryable via <code>agnes query --remote</code>, but skip
+                                it in <code>agnes pull</code>. Use for large tables.
+                                Only applies to synced tables — live ones have no server parquet.</div>
+                        </div>
+                        <div class="form-group" id="sfPrecheckSummary" style="display:none;">
+                            <div class="form-label">Source check</div>
+                            <div class="form-hint" id="sfPrecheckSummaryText"></div>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Data Packages <span class="optional">(optional)</span></label>
+                            <div class="chip-input"
+                                 data-source-url="/api/admin/data-packages"
+                                 data-allow-create="true"
+                                 data-name="sf_package_ids"
+                                 data-placeholder="Type to search or create…"
+                                 data-chip-input="data_package"></div>
+                            <div class="form-hint">Bundle this table into one or more Data Packages so analysts can opt-in to it as a group.</div>
+                        </div>
+                    </div>
+                    <div class="ds-drawer__foot">
+                        <button class="btn btn-secondary" onclick="closeRegisterSnowflakeModal()">Cancel</button>
+                        <button class="btn btn-primary" id="registerSnowflakeSubmitBtn" onclick="registerSnowflakeTable()">
+                            Register Table
+                        </button>
                     </div>
                 </div>
             </div>
@@ -3873,6 +4014,9 @@
         if (arg === 'keboola') {
             return _openKeboolaTabRegisterModal();
         }
+        if (arg === 'snowflake') {
+            return _openSnowflakeRegisterModal();
+        }
         // Fallback when called with no argument — pick by instance type.
         if (DATA_SOURCE_TYPE === 'bigquery') {
             return _openBqRegisterModal({});
@@ -3959,6 +4103,39 @@
 
     function closeRegisterKeboolaModal() {
         document.getElementById('registerKeboolaModal').classList.remove('is-open');
+    }
+
+    // ── Snowflake tab register modal ─────────────────────────────────
+
+    function _openSnowflakeRegisterModal(table) {
+        table = table || {};
+        var modal = document.getElementById('registerSnowflakeModal');
+        if (!modal) return;
+        var accessRadio = modal.querySelector('input[name="sfAccessMode"][value="live"]');
+        if (accessRadio) accessRadio.checked = true;
+        var syncRadio = modal.querySelector('input[name="sfSyncMode"][value="whole"]');
+        if (syncRadio) syncRadio.checked = true;
+        document.getElementById('sfSchema').value = table.bucket || '';
+        document.getElementById('sfSourceTable').value = table.source_table || table.name || '';
+        document.getElementById('sfViewName').value = table.name || '';
+        document.getElementById('sfDescription').value = '';
+        document.getElementById('sfFolder').value = '';
+        document.getElementById('sfSyncSchedule').value = '';
+        document.getElementById('sfSourceQuery').value = '';
+        var summary = document.getElementById('sfPrecheckSummary');
+        if (summary) summary.style.display = 'none';
+        var serverOnly = document.getElementById('sfServerOnly');
+        if (serverOnly) serverOnly.checked = false;
+        onSfAccessModeChange();
+        var btn = document.getElementById('registerSnowflakeSubmitBtn');
+        btn.disabled = false;
+        btn.textContent = 'Register Table';
+        btn.onclick = registerSnowflakeTable;
+        modal.classList.add('is-open');
+    }
+
+    function closeRegisterSnowflakeModal() {
+        document.getElementById('registerSnowflakeModal').classList.remove('is-open');
     }
 
     function _getKbSyncMode() {
@@ -4778,6 +4955,116 @@
         });
     }
 
+    // ── Snowflake register helpers ──────────────────────────────────
+
+    function _getSfAccessMode() {
+        var el = document.querySelector('input[name="sfAccessMode"]:checked');
+        return el ? el.value : 'live';
+    }
+
+    function _getSfSyncMode() {
+        var el = document.querySelector('input[name="sfSyncMode"]:checked');
+        return el ? el.value : 'whole';
+    }
+
+    function _buildSnowflakePayload() {
+        var accessMode = _getSfAccessMode();
+        var syncMode = _getSfSyncMode();
+        var viewName = document.getElementById('sfViewName').value.trim();
+        var description = document.getElementById('sfDescription').value.trim() || null;
+        var folder = document.getElementById('sfFolder').value.trim() || null;
+        var syncSchedule = document.getElementById('sfSyncSchedule').value.trim() || null;
+        var serverOnlyEl = document.getElementById('sfServerOnly');
+        var serverOnly = !!(serverOnlyEl && serverOnlyEl.checked);
+        var schema = document.getElementById('sfSchema').value.trim();
+        var sourceTable = document.getElementById('sfSourceTable').value.trim();
+
+        if (accessMode === 'synced' && syncMode === 'custom') {
+            return {
+                name: viewName,
+                source_type: 'snowflake',
+                query_mode: 'materialized',
+                source_query: document.getElementById('sfSourceQuery').value.trim(),
+                profile_after_sync: false,
+                server_only: serverOnly,
+                description: description,
+                folder: folder,
+                sync_schedule: syncSchedule,
+            };
+        }
+        if (accessMode === 'synced' && syncMode === 'whole') {
+            return {
+                name: viewName || sourceTable,
+                source_type: 'snowflake',
+                query_mode: 'materialized',
+                bucket: schema,
+                source_table: sourceTable,
+                source_query: 'SELECT * FROM sf."' + schema.replace(/"/g, '""') + '"."' + sourceTable.replace(/"/g, '""') + '"',
+                profile_after_sync: false,
+                server_only: serverOnly,
+                description: description,
+                folder: folder,
+                sync_schedule: syncSchedule,
+            };
+        }
+        return {
+            name: viewName || sourceTable,
+            source_type: 'snowflake',
+            query_mode: 'remote',
+            bucket: schema,
+            source_table: sourceTable,
+            profile_after_sync: false,
+            description: description,
+            folder: folder,
+            sync_schedule: syncSchedule,
+        };
+    }
+
+    function onSfAccessModeChange() {
+        var accessMode = _getSfAccessMode();
+        var syncedFields = document.querySelectorAll('.sf-access-synced');
+        syncedFields.forEach(function(el) {
+            el.style.display = (accessMode === 'synced') ? '' : 'none';
+        });
+        if (accessMode === 'synced') {
+            onSfSyncModeChange();
+        } else {
+            document.querySelectorAll('.sf-source-table').forEach(function(el) {
+                el.style.display = '';
+            });
+            document.querySelectorAll('.sf-source-custom').forEach(function(el) {
+                el.style.display = 'none';
+            });
+        }
+    }
+
+    function onSfSyncModeChange() {
+        var syncMode = _getSfSyncMode();
+        var tableFields = document.querySelectorAll('.sf-source-table');
+        var customFields = document.querySelectorAll('.sf-source-custom');
+        tableFields.forEach(function(el) {
+            el.style.display = (syncMode === 'whole') ? '' : 'none';
+        });
+        customFields.forEach(function(el) {
+            el.style.display = (syncMode === 'custom') ? '' : 'none';
+        });
+    }
+
+    function prefillFromSnowflakeTable(textareaId) {
+        var ta = document.getElementById(textareaId || 'sfSourceQuery');
+        var ref = prompt('Enter the source as schema.table:');
+        if (!ref) return;
+        ref = ref.trim().replace(/^"|"$/g, '');
+        var parts = ref.split('.');
+        if (parts.length < 2) {
+            showToast('Enter at least schema.table', 'error');
+            return;
+        }
+        var table = parts.pop().replace(/"/g, '""');
+        var schema = parts.join('.').replace(/"/g, '""');
+        ta.value = 'SELECT *\nFROM sf."' + schema + '"."' + table + '"\nWHERE -- filter or aggregate before the COPY runs\nLIMIT 1000';
+    }
+
     // The discover / list-tables / prefill helpers are shared between the
     // Register and Edit modals. The default datalist + input ids match the
     // Register modal; Edit-modal callers pass their own ids so the
@@ -4992,6 +5279,82 @@
     // the new BQ-tab modal.
     function openBigQueryRegisterModal() {
         openRegisterModal('bigquery');
+    }
+
+    // ── Snowflake register flow (two-step precheck → confirm) ─────────
+
+    function registerSnowflakeTable() {
+        var btn = document.getElementById('registerSnowflakeSubmitBtn');
+        btn.disabled = true;
+        _registerSnowflakeTable(btn);
+    }
+
+    function _registerSnowflakeTable(btn) {
+        btn.textContent = 'Checking source...';
+        var payload = _buildSnowflakePayload();
+        var summary = document.getElementById('sfPrecheckSummary');
+        var summaryText = document.getElementById('sfPrecheckSummaryText');
+
+        fetch('/api/admin/register-table/precheck', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        })
+        .then(function(r) {
+            if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || 'Precheck failed'); });
+            return r.json();
+        })
+        .then(function(data) {
+            if (summary && summaryText) {
+                summary.style.display = '';
+                var t = data.table || {};
+                summaryText.textContent = t.note || 'Validated';
+            }
+            btn.disabled = false;
+            btn.textContent = 'Register';
+            btn.onclick = function() { _confirmRegisterSnowflakeTable(btn, payload); };
+        })
+        .catch(function(err) {
+            showToast('Precheck failed: ' + err.message, 'error');
+            btn.disabled = false;
+            btn.textContent = 'Register Table';
+        });
+    }
+
+    function _confirmRegisterSnowflakeTable(btn, payload) {
+        btn.disabled = true;
+        btn.textContent = 'Registering...';
+        fetch('/api/admin/register-table', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        })
+        .then(function(r) {
+            return r.json().then(function(d) {
+                if (!r.ok) {
+                    var msg = d.detail || d.message || 'Registration failed';
+                    if (d.errors && d.errors.length) {
+                        msg += ' (' + d.errors.length + ' error' + (d.errors.length > 1 ? 's' : '') + ')';
+                    }
+                    throw new Error(msg);
+                }
+                closeRegisterSnowflakeModal();
+                if (r.status === 202) {
+                    showToast('Registration accepted, materializing in background', 'success');
+                } else {
+                    showToast('Queryable as ' + (d.view_name || d.id || payload.name), 'success');
+                }
+                loadRegistry();
+            });
+        })
+        .catch(function(err) {
+            showToast('Registration failed: ' + err.message, 'error');
+        })
+        .finally(function() {
+            btn.disabled = false;
+            btn.textContent = 'Register Table';
+            btn.onclick = registerSnowflakeTable;
+        });
     }
 
     // ── Edit Modal ──────────────────────────────────────────────
