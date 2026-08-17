@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.83.32] - 2026-08-17
+
 ### Added
 
 - **The linked-apps wizard now asks which columns carry an app's id, URL and name.** The projection that turns a lister tool's materialized rows into linked data apps used a hardcoded alias list (`id`/`app_id`/`config_id`, `url`/`app_url`/`deployment_url`) written against the first upstream that fitted it. A server naming its columns anything else had every row dropped for want of an id, and the wizard reported "0 new, 0 updated" — indistinguishable from an upstream with nothing to offer, and pointing the reader at the wrong end of the problem. Live case: a Keboola data-app lister emits `data_app_id` + `configuration_id` and no `name` at all, so all six of its apps were discarded behind a successful-looking fetch. After a fetch, step 2 now lists the columns the tool actually emitted and lets an admin map each field (pre-filled by a heuristic, `auto` keeps the guesses), saved per tool via `PUT /api/admin/mcp-tools/{tool_id}/projection-map` and applied on the next fetch. A named column is authoritative even when empty — falling back to a guess would make a mapping look applied while another column supplied the value. Existing instances are unaffected until someone chooses: an unset mapping is exactly today's behaviour, and re-registering a tool preserves the mapping rather than silently un-mapping it (schema v119, `tool_registry.projection_map`).
@@ -18,6 +20,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Fixed
 
 - **A v119 upgrade from an old stamp no longer crashes on a table it has not created yet.** The step that adds `tool_registry.projection_map` called `PRAGMA table_info` straight away, and DuckDB raises `CatalogException` for a missing table rather than returning an empty result — so a database replaying the ladder from far enough back (v68 and v73 both do) aborted mid-migration instead of upgrading. The step now checks `information_schema` first and degrades to a no-op, still stamping the version so a declined step cannot stall the ladder.
+
+## [0.83.31] - 2026-08-17
+
+### Fixed
+
+- **The MCP Registry listing can no longer advertise a version Agnes is not.** `server.json` carries its own copy of the version and only a comment asked anyone to keep it in step with `pyproject.toml`, so a release cut that bumped the package alone left the listing behind — which is exactly what happened at 0.83.30, published while the listing still said 0.83.29. Registry versions are immutable, so a wrong one cannot be corrected after publish, only superseded. `tests/test_mcp_registry_manifest.py` now asserts the two match.
+
+### Removed
+
+- **Three `instance.yaml` options that have done nothing since March are gone from the documentation.** `auth.username_strip_domain`, `auth.username_prefix` and the top-level `username_mapping` shaped the Linux OS account the legacy webapp created under `/home/` for each analyst; that webapp — and with it every reader of the three keys — was deleted back in v0.11.0, but the commented block in `config/instance.yaml.example` survived and kept describing them as live. Nothing changes at runtime, because nothing read them: an instance that sets any of the three today already gets no effect from it, and one that removes them gets no effect either. Removing the block ends the misdirection it caused — it told operators that stripping the domain is "safe when `allowed_domain` ensures all users share a single domain", implying multi-domain instances must turn it off, and warned that changing either option "will invalidate all existing analyst accounts", which reads as an irreversible knob when in fact the setting is inert. `docs/CONFIGURATION.md` loses its `username_mapping` line for the same reason.
 
 ## [0.83.30] - 2026-08-17
 
