@@ -18,7 +18,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
-- **Admin / Tables: the primary `+ Register new table` button now opens the Databricks modal directly when the instance data source is Databricks**, instead of always opening the source dropdown.
+- **Admin / Tables: the primary `+ Register new table` button opens the Databricks register modal directly only when Databricks is the sole connected source.** When additional sources are connected, the dropdown remains reachable so the other source options can still be selected.
 
 ## [0.83.30] - 2026-08-17
 

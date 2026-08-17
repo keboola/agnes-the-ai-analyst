@@ -3819,11 +3819,18 @@
     // Replaces the per-connector tab nav. The user picks the connector
     // here only to choose which register modal to open; otherwise the
     // page is package-centric and source_type is just an inline tag.
+    function _dbxIsOnlyConnectedSource() {
+        var active = CONNECTED_SOURCE_TYPES.filter(Boolean);
+        return active.length === 0 ||
+            (active.length === 1 && active[0] === 'databricks');
+    }
+
     function toggleRegisterNewTableMenu(evt) {
         if (evt) evt.stopPropagation();
-        // When the instance has a single primary source type, open that
-        // register modal directly instead of the source dropdown.
-        if (DATA_SOURCE_TYPE === 'databricks') {
+        // When the instance has Databricks as its only configured source,
+        // open the Databricks register modal directly. If other sources are
+        // also connected, keep the dropdown reachable so they can be chosen.
+        if (DATA_SOURCE_TYPE === 'databricks' && _dbxIsOnlyConnectedSource()) {
             return openRegisterModal();
         }
         var menu = document.getElementById('registerNewTableMenu');
