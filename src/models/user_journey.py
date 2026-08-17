@@ -25,6 +25,10 @@ class UserJourneyState(Base):
     explored_stack: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
     catalog_discovered: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
     use_anywhere: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+    # v116 — the sixth checklist step, "Create your first agent". Declared in
+    # the same position as the canonical DuckDB DDL (src/db.py) so a fresh
+    # `create_all()` on Postgres lays the table out the same way.
+    agent_created: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
     onboarded: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
     successful_answers: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default="now()")

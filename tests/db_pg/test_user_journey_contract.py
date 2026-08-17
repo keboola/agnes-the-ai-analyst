@@ -65,6 +65,7 @@ def test_get_defaults_for_unknown_user(repo):
         "explored_stack": False,
         "catalog_discovered": False,
         "use_anywhere": False,
+        "agent_created": False,
         "onboarded": False,
         "successful_answers": 0,
     }
@@ -73,12 +74,14 @@ def test_get_defaults_for_unknown_user(repo):
 def test_update_partial_upsert(repo):
     result = repo.update("user_a", first_asked=True)
     assert result["first_asked"] is True
+    assert result["agent_created"] is False
     assert result["onboarded"] is False
     assert result["successful_answers"] == 0
 
     # Second partial update preserves the previously-set field.
-    result2 = repo.update("user_a", onboarded=True, successful_answers=3)
+    result2 = repo.update("user_a", agent_created=True, onboarded=True, successful_answers=3)
     assert result2["first_asked"] is True
+    assert result2["agent_created"] is True
     assert result2["onboarded"] is True
     assert result2["successful_answers"] == 3
 
@@ -99,7 +102,7 @@ def test_update_does_not_bleed_across_users(repo):
 
 
 def test_reset(repo):
-    repo.update("user_a", onboarded=True, successful_answers=5)
+    repo.update("user_a", agent_created=True, onboarded=True, successful_answers=5)
     repo.reset("user_a")
     assert repo.get("user_a") == {
         "first_asked": False,
@@ -107,6 +110,7 @@ def test_reset(repo):
         "explored_stack": False,
         "catalog_discovered": False,
         "use_anywhere": False,
+        "agent_created": False,
         "onboarded": False,
         "successful_answers": 0,
     }
@@ -114,3 +118,11 @@ def test_reset(repo):
 
 def test_reset_unknown_user_is_noop(repo):
     repo.reset("nobody")  # must not raise
+
+
+def test_agent_created_field_is_present_and_writable(repo):
+    """agent_created is the sixth onboarding step; it must round-trip on both
+    backends and default to False when the row is absent."""
+    assert repo.get("agent_user")["agent_created"] is False
+    repo.update("agent_user", agent_created=True)
+    assert repo.get("agent_user")["agent_created"] is True

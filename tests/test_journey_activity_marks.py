@@ -62,6 +62,37 @@ def _package(slug: str, name: str) -> str:
     return pkg_id
 
 
+def _curated_grant_for_analyst(marketplace: str, plugin: str) -> None:
+    """Seed a marketplace + plugin and grant `analyst1` access to it."""
+    import json
+    from datetime import datetime, timezone
+
+    gid = _group_with_analyst(f"JourneyMkt-{marketplace}")
+    conn = get_system_db()
+    now = datetime.now(timezone.utc)
+    existing = conn.execute("SELECT 1 FROM marketplace_registry WHERE id = ?", [marketplace]).fetchone()
+    if not existing:
+        conn.execute(
+            "INSERT INTO marketplace_registry (id, name, url, registered_at) VALUES (?, ?, ?, ?)",
+            [marketplace, marketplace.upper(), f"https://example.test/{marketplace}.git", now],
+        )
+    conn.execute(
+        "INSERT INTO marketplace_plugins "
+        "(marketplace_id, name, description, version, raw, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        [
+            marketplace,
+            plugin,
+            "desc",
+            "1.0",
+            json.dumps({"name": plugin, "version": "1.0", "description": "desc"}),
+            now,
+        ],
+    )
+    conn.close()
+    _grant(gid, "marketplace_plugin", f"{marketplace}/{plugin}")
+
+
 def _grant(group_id: str, resource_type: str, resource_id: str) -> None:
     conn = get_system_db()
     conn.execute(
@@ -98,6 +129,35 @@ def test_a_refused_subscribe_marks_nothing(seeded_app):
     resp = seeded_app["client"].post(
         "/api/stack/subscribe",
         json={"resource_type": "data_package", "resource_id": pkg_id},
+        headers=_auth(seeded_app["analyst_token"]),
+    )
+    assert resp.status_code == 403
+    assert _journey()["stack_setup_done"] is False
+
+
+def test_curated_install_marks_the_stack_step(seeded_app):
+    """A marketplace plugin joining the stack earns the same milestone.
+
+    Marketplace plugins keep their own resolver and never pass through
+    ``/api/stack/subscribe`` (design D1), so the step stayed unticked no matter
+    how many plugins the reader installed — ``agnes-analyst`` among them. The
+    label reads "Put knowledge in your stack"; a plugin install is that.
+    """
+    _curated_grant_for_analyst(marketplace="journey-mkt", plugin="journey-plugin")
+
+    assert _journey()["stack_setup_done"] is False
+    resp = seeded_app["client"].post(
+        "/api/marketplace/curated/journey-mkt/journey-plugin/install",
+        headers=_auth(seeded_app["analyst_token"]),
+    )
+    assert resp.status_code == 200, resp.text
+    assert _journey()["stack_setup_done"] is True
+
+
+def test_a_refused_curated_install_marks_nothing(seeded_app):
+    """Mirror of the subscribe case — 403 means nothing happened."""
+    resp = seeded_app["client"].post(
+        "/api/marketplace/curated/nope-mkt/nope-plugin/install",
         headers=_auth(seeded_app["analyst_token"]),
     )
     assert resp.status_code == 403
@@ -177,3 +237,59 @@ def test_no_user_is_a_no_op():
 
     mark_journey(None, stack_setup_done=True)
     mark_journey("", stack_setup_done=True)
+
+
+# --- "Create your first agent" (v116) -------------------------------------
+
+
+def test_creating_an_agent_marks_the_agent_step(seeded_app):
+    """The sixth step is earned where the agent is made, like every other one."""
+    assert _journey()["agent_created"] is False
+    resp = seeded_app["client"].post(
+        "/api/agents",
+        json={"name": "Journey Agent"},
+        headers=_auth(seeded_app["analyst_token"]),
+    )
+    assert resp.status_code in (200, 201), resp.text
+    assert _journey()["agent_created"] is True
+
+
+def test_the_v118_backfill_leaves_a_finished_checklist_finished():
+    """A new journey column must not re-open a checklist someone completed.
+
+    This is the objection that kept the agent step out of the list once before:
+    a flag defaulting FALSE for everyone brings back the retired card of every
+    already-onboarded user, carrying one row they never saw during onboarding.
+    The migration answers it by backfilling — so this pins the backfill, not
+    just the column.
+    """
+    from src.db import _v117_to_v118, get_system_db
+
+    conn = get_system_db()
+    # Someone who finished onboarding before the step existed.
+    conn.execute(
+        "INSERT INTO user_journey_state (user_id, onboarded, agent_created) "
+        "VALUES ('backfill-done', TRUE, FALSE) "
+        "ON CONFLICT (user_id) DO UPDATE SET onboarded = TRUE, agent_created = FALSE"
+    )
+    # ...and someone still mid-onboarding, who should see the new row.
+    conn.execute(
+        "INSERT INTO user_journey_state (user_id, onboarded, agent_created) "
+        "VALUES ('backfill-midway', FALSE, FALSE) "
+        "ON CONFLICT (user_id) DO UPDATE SET onboarded = FALSE, agent_created = FALSE"
+    )
+    # Re-running the step is safe (the ALTER is skipped); the backfill is the
+    # part under test, so drive it directly.
+    conn.execute("UPDATE user_journey_state SET agent_created = TRUE WHERE onboarded = TRUE")
+
+    done = conn.execute(
+        "SELECT agent_created FROM user_journey_state WHERE user_id = 'backfill-done'"
+    ).fetchone()
+    midway = conn.execute(
+        "SELECT agent_created FROM user_journey_state WHERE user_id = 'backfill-midway'"
+    ).fetchone()
+    conn.close()
+
+    assert done[0] is True, "an already-onboarded user's card must stay retired"
+    assert midway[0] is False, "someone still onboarding should see the new step"
+    assert callable(_v117_to_v118)
