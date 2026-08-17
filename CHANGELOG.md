@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- **One corrupt parquet no longer makes the Jira consistency check re-transform the entire issue corpus every 30 minutes while reporting success.** Three independently reasonable decisions chained into an unbounded churn loop: every part was read in a single `read_parquet([...])`, so one unreadable file failed all of them; the failure degraded to an empty set, which is indistinguishable from a genuinely empty corpus, so *every* non-deleted issue looked missing from parquet; and that fix path had no threshold, so it shelled out one 120-second subprocess per key — order 10⁴ — each rewriting whole month partitions across all six Jira tables. It never converged, because the corrupt file failed identically on the next run. Meanwhile the run reported `status: success` at `alert_level: INFO`, since neither keyed on anything this touched. Now: each part is read in isolation so a corrupt month costs its own rows (matching what `poll_sla.py` already did); the parquet-lag fix path honors the same `AUTO_FIX_THRESHOLD` the JSON branch always had; and a read failure is no longer silent — `scan_parquet_keys` distinguishes "no parquets" from "could not read parquets", the paths that failed are reported under `discrepancies.parquet_read_failed`, and both that and the pre-existing-but-inert `transform_failed` now reach `alert_level`/`status`, so a run that fixed nothing cannot claim success (#1363).
+
 ## [0.83.30] - 2026-08-17
 
 ### Fixed

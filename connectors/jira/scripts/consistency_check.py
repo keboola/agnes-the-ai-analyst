@@ -141,6 +141,7 @@ class JiraConsistencyChecker:
             "auto_backfilled": [],
             "backfill_failed": [],
             "transform_failed": [],
+            "parquet_read_failed": [],
         }
 
     def fetch_jira_keys(self, max_age_days: int = 30) -> set[str]:
@@ -261,24 +262,34 @@ class JiraConsistencyChecker:
         logger.info(f"Found {len(issue_keys)} issues in raw JSON")
         return issue_keys
 
-    def scan_parquet_keys(self, month: str | None = None) -> set[str]:
+    def scan_parquet_keys(self, month: str | None = None) -> tuple[set[str], list[str]]:
         """
         Query Parquet files for distinct issue keys using DuckDB.
+
+        Reads each file individually — mirrors ``find_open_issues`` in
+        ``scripts/poll_sla.py`` — so a single corrupt partition costs only
+        its own rows. The old combined ``read_parquet([...])`` over every
+        file at once meant one bad file failed the WHOLE read, and the
+        caller could not tell "no Parquet files exist" apart from "some
+        Parquet files could not be read": both returned an empty set.
 
         Args:
             month: Optional month filter (e.g., "2026-02")
 
         Returns:
-            Set of issue keys from Parquet files
+            Tuple of (issue keys found, paths that failed to read). An empty
+            keys set together with a non-empty failure list means the scan
+            could not read some/all Parquet data — callers must NOT treat
+            that the same as a genuinely empty corpus.
         """
         if not HAS_DUCKDB:
             logger.warning("DuckDB not available, skipping Parquet validation")
-            return set()
+            return set(), []
 
         issues_dir = self.config.parquet_dir / "issues"
         if not issues_dir.exists():
             logger.warning(f"Parquet directory not found: {issues_dir}")
-            return set()
+            return set(), []
 
         # Collect parquet files across both the flat (<YYYY-MM>.parquet) and
         # hive (month=<YYYY-MM>/data.parquet) layouts.
@@ -292,29 +303,32 @@ class JiraConsistencyChecker:
             files = sorted(issues_dir.rglob("*.parquet"))
 
         if not files:
-            return set()
+            return set(), []
 
-        files_sql = "[" + ",".join("'" + str(p).replace("'", "''") + "'" for p in files) + "]"
-
+        con = duckdb.connect()
         try:
-            con = duckdb.connect()
+            con.execute("SET GLOBAL TimeZone='UTC'")
+        except duckdb.Error:
+            pass
+
+        issue_keys: set[str] = set()
+        failed_files: list[str] = []
+        for pf in files:
+            quoted_path = "'" + str(pf).replace("'", "''") + "'"
             try:
-                con.execute("SET GLOBAL TimeZone='UTC'")
-            except duckdb.Error:
-                pass
-            result = con.execute(f"""
-                SELECT DISTINCT issue_key
-                FROM read_parquet({files_sql}, union_by_name=true)
-            """).fetchall()
+                result = con.execute(f"SELECT DISTINCT issue_key FROM read_parquet({quoted_path})").fetchall()
+                issue_keys.update(row[0] for row in result)
+            except Exception as e:
+                failed_files.append(str(pf))
+                logger.error(f"Failed to read {pf} — its issues will appear as missing in Parquet: {e}")
 
-            issue_keys = {row[0] for row in result}
-            self.stats["parquet_count"] = len(issue_keys)
-            logger.info(f"Found {len(issue_keys)} issues in Parquet files")
-            return issue_keys
-
-        except Exception as e:
-            logger.error(f"Error querying Parquet files: {e}")
-            return set()
+        self.stats["parquet_count"] = len(issue_keys)
+        logger.info(f"Found {len(issue_keys)} issues in Parquet files")
+        if failed_files:
+            logger.error(
+                f"Could not read {len(failed_files)} of {len(files)} Parquet file(s): {', '.join(failed_files)}"
+            )
+        return issue_keys, failed_files
 
     def detect_discrepancies(
         self,
@@ -522,7 +536,8 @@ class JiraConsistencyChecker:
         try:
             jira_keys = self.fetch_jira_keys(max_age_days)
             json_keys = self.scan_json_keys()
-            parquet_keys = self.scan_parquet_keys()
+            parquet_keys, parquet_read_failed = self.scan_parquet_keys()
+            self.stats["parquet_read_failed"] = parquet_read_failed
         except Exception as e:
             logger.error(f"Error fetching data: {e}")
             return {"status": "error", "error": str(e)}
@@ -558,11 +573,22 @@ class JiraConsistencyChecker:
                 f"({self.AUTO_FIX_THRESHOLD}), manual review required"
             )
 
-        # Fix Parquet transform lag (always safe to re-transform)
+        # Fix Parquet transform lag (always safe to re-transform) — but only up
+        # to the same threshold as missing_in_json. A lag in the thousands is
+        # not a lag, it's a broken read (see scan_parquet_keys): shelling out
+        # once per key for that many issues is what turned one corrupt Parquet
+        # file into an unbounded re-transform loop running every 30 minutes,
+        # forever.
         if auto_fix and not dry_run and missing_in_parquet:
-            logger.info(f"Transforming {len(missing_in_parquet)} issues with Parquet lag")
-            transformed, transform_failed = self.transform_issues(missing_in_parquet)
-            self.stats["transform_failed"].extend(transform_failed)
+            if len(missing_in_parquet) <= self.AUTO_FIX_THRESHOLD:
+                logger.info(f"Transforming {len(missing_in_parquet)} issues with Parquet lag")
+                transformed, transform_failed = self.transform_issues(missing_in_parquet)
+                self.stats["transform_failed"].extend(transform_failed)
+            else:
+                logger.error(
+                    f"Found {len(missing_in_parquet)} issues missing in Parquet - exceeds threshold "
+                    f"({self.AUTO_FIX_THRESHOLD}), manual review required"
+                )
 
         # One coalesced rebuild for whatever the fixes just wrote. `transform_issues`
         # shells out to `connectors.jira.incremental_transform`, which writes parquet
@@ -578,9 +604,23 @@ class JiraConsistencyChecker:
 
         # Calculate final stats
         duration = time.time() - start_time
-        alert_level = self.get_alert_level(len(missing_in_json))
 
-        status = "success" if len(self.stats["backfill_failed"]) == 0 else "partial_success"
+        # Score the larger of the two gaps. This used to score missing_in_json
+        # only, so a Parquet-side gap — including one inflated to corpus size
+        # by an unreadable Parquet file — never moved this needle.
+        alert_level = self.get_alert_level(max(len(missing_in_json), len(missing_in_parquet)))
+
+        # A read failure or a failed fix attempt is a broken pipeline, not a
+        # size-scored gap — it must never hide behind a small missing-issue
+        # count just because nothing (successfully) got fixed.
+        if self.stats["parquet_read_failed"]:
+            alert_level = "ERROR"
+        elif self.stats["transform_failed"] and alert_level == "INFO":
+            alert_level = "WARNING"
+
+        status = "success"
+        if self.stats["backfill_failed"] or self.stats["transform_failed"] or self.stats["parquet_read_failed"]:
+            status = "partial_success"
 
         # Build report
         report = {
@@ -597,6 +637,7 @@ class JiraConsistencyChecker:
                 "missing_in_json": missing_in_json,
                 "missing_in_parquet": missing_in_parquet,
                 "deleted_in_jira": self.stats["deleted_in_jira"],
+                "parquet_read_failed": self.stats["parquet_read_failed"],
             },
             "actions": {
                 "auto_backfilled": self.stats["auto_backfilled"],
@@ -636,6 +677,8 @@ class JiraConsistencyChecker:
             logger.info(f"Auto-backfilled: {len(self.stats['auto_backfilled'])}")
         if self.stats["backfill_failed"]:
             logger.error(f"Backfill failed: {len(self.stats['backfill_failed'])}")
+        if self.stats["parquet_read_failed"]:
+            logger.error(f"Parquet read failed: {len(self.stats['parquet_read_failed'])} file(s)")
         logger.info("=" * 60)
 
         return report
