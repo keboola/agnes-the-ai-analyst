@@ -187,11 +187,15 @@ Real-time webhook-based connector that updates parquet files incrementally.
 
 ## Databricks Connector
 
-Runs registered SQL on a Databricks SQL warehouse (Statement Execution API,
-Arrow result stream — no Databricks SDK) and distributes the result as
-parquet through the standard materialized-row path, plus syncs the
-workspace's Unity Catalog **metric views** (Databricks's semantic layer)
-into Agnes's `metric_definitions` registry.
+Talks to a Databricks SQL warehouse over the Statement Execution API (Arrow
+result stream — no Databricks SDK), in two modes, and syncs the workspace's
+Unity Catalog **metric views** (Databricks's semantic layer) into Agnes's
+`metric_definitions` registry.
+
+| Mode | What happens | Use it for |
+|---|---|---|
+| `materialized` | The scheduler runs the row's SQL on the warehouse and writes a parquet, distributed like any other materialized row. | Anything queried repeatedly. Cheap, cached, `agnes pull`-able, joinable with local data. |
+| `remote` | Nothing syncs. Each analyst statement ships to the warehouse and the rows come back. | Ad-hoc questions, tables too large to materialize, and `MEASURE()` over a metric view — which only evaluates on Databricks compute. |
 
 ### Requirements
 
@@ -209,18 +213,20 @@ data_source:
     catalog: "main"                             # default Unity Catalog catalog
     # max_bytes_per_materialize: 10737418240    # result-size cap, 0 disables
     # statement_timeout_seconds: 900            # client-side deadline, 0 disables
+    # max_bytes_per_remote_query: 1073741824    # `--remote` result cap, 0 disables
+    # remote_query_timeout_seconds: 120         # `--remote` deadline
+    # attach_enabled: false                     # EXPERIMENTAL Unity Catalog ATTACH
 ```
 
 Works as a secondary source next to any primary `data_source.type` — the
 block's presence is what enables `source_type=databricks` registrations
 (same rule as any secondary source).
 
-### Registering tables (materialized-only)
+### Registering tables
 
-Phase 1 supports `query_mode='materialized'` only; `local`/`remote` are
-rejected at register time (`remote` would need the experimental DuckDB
-`unity_catalog`/`delta` extensions plus a `_remote_attach` allowlist entry —
-a follow-up phase). Two shapes:
+`query_mode` may be `materialized` or `remote`; `local` is rejected at
+register time (no extractor subprocess would ever populate it). Materialized
+rows come in two shapes:
 
 ```bash
 # Custom SQL — this is where semantic-layer queries live:
@@ -243,6 +249,100 @@ manifest + `agnes pull` distribution.
 (unlike BigQuery), so `max_bytes_per_materialize` caps the statement
 **result** size via the API's `byte_limit`. A result truncated at the cap is
 rejected with a structured error — never written as data.
+
+### Remote rows (`query_mode='remote'`)
+
+```bash
+agnes admin register-table --name orders --source-type databricks \
+    --query-mode remote --bucket sales --source-table orders_raw
+```
+
+No `--source-query`: the statement that runs is the analyst's.
+`bucket`+`source_table` are what a bare reference to the row gets rewritten
+into.
+
+```bash
+agnes query --remote "SELECT country, COUNT(*) FROM orders GROUP BY 1"
+agnes query --remote "SELECT o_date, MEASURE(\`Total Revenue\`) FROM revenue_kpis GROUP BY o_date"
+```
+
+The statement is sent to the warehouse in **Databricks SQL**, not DuckDB
+flavor and not transpiled — a query that works in the Databricks UI works
+here. Agnes rewrites only table identifiers: a registered bare name, or a
+direct `dbx."<catalog>.<schema>"."<table>"` path, becomes
+`` `catalog`.`schema`.`table` ``.
+
+**Every table the statement names must be registered and granted.** The query
+runs under the workspace PAT, which can typically read the whole workspace, so
+Agnes parses the statement (sqlglot, `databricks` dialect) and checks each
+table reference against the registry and the caller's grants. A path Agnes does
+not recognise — `` `main`.`hr`.`payroll` ``, a bare `hr.payroll`, an
+unregistered name — is refused (`databricks_table_not_registered`), even when
+it rides along with a legitimate one in the same JOIN, and even for an admin:
+the admin bypass covers *grants*, never registration. CTEs defined in the
+statement are of course fine. A statement Agnes cannot parse is refused
+(`databricks_sql_unparseable`) rather than forwarded — an unparseable statement
+is precisely the one whose references cannot be checked.
+
+**Cost guardrail, and how it differs from BigQuery's.** BigQuery prices a
+statement before running it, so Agnes can refuse an over-cap query having
+spent nothing. Databricks has no dry-run. What it has is `byte_limit`, so
+`max_bytes_per_remote_query` (default 1 GiB) caps **the bytes the warehouse
+may return** — not the bytes it scanned to produce them. Hitting the cap
+raises `remote_scan_too_large`; the result is never returned short, because a
+plausible number that is quietly missing rows is the worst possible answer.
+Warehouse compute is bounded by `remote_query_timeout_seconds` (default 120).
+`bytes_scanned` in the query response therefore means *returned* bytes for
+Databricks rows and *scanned* bytes for BigQuery ones.
+
+**What a remote row cannot do.** The statement runs entirely on the
+warehouse, so it cannot see anything that only exists on this server:
+
+- Joining a remote Databricks table with a local/materialized table is
+  refused (`remote_cross_source_unsupported`) unless the Unity Catalog ATTACH
+  below is enabled. Materialize the Databricks side and join locally.
+- A statement naming remote tables on two engines (Databricks + BigQuery) is
+  refused (`remote_cross_engine_unsupported`). There is no join layer between
+  them.
+- `agnes snapshot create` and `/api/v2/scan` are BigQuery-only paths and say
+  so rather than 404-ing as if the table were un-synced.
+- A table carrying an **access policy** cannot be queried this way
+  (`policy_unsupported_on_remote_engine`). BigQuery has a path that transpiles
+  the policy and binds it as parameters; Databricks does not yet, and
+  forwarding the unfiltered statement would return exactly the rows the policy
+  exists to hide.
+
+### Unity Catalog ATTACH (experimental, off by default)
+
+```yaml
+data_source:
+  databricks:
+    attach_enabled: true   # default false
+```
+
+Installs the `uc_catalog` + `delta` DuckDB community extensions and ATTACHes
+the workspace's Unity Catalog under the `dbx` alias, giving each
+`query_mode='remote'` row a local master view. That buys the one thing the
+warehouse path cannot do — JOINing a Databricks table against local parquets
+— at the cost of much weaker pushdown (predicates the warehouse resolves in
+seconds become Delta file scans). All-Databricks statements keep using the
+warehouse path even when this is on.
+
+Off by default for three reasons worth knowing before turning it on:
+
+1. It installs community extensions from the DuckDB community repository at
+   rebuild time.
+2. The ATTACH sends a live workspace PAT to the endpoint. Pin it with
+   `AGNES_REMOTE_ATTACH_HOST_ALLOWLIST` — the same control that governs every
+   other credentialed ATTACH, and it applies here.
+3. **It has not been verified against a live Databricks workspace.** The
+   `_remote_attach` contract, the view DDL, the opt-in gate, the identifier
+   refusals, and the credential-egress allowlist are covered by tests; whether
+   `uc_catalog` installs, authenticates, and returns rows against a real
+   workspace is not. Treat the first enablement as a trial.
+
+With it off — the default — remote rows still work; every statement simply
+runs on the SQL warehouse.
 
 ### Semantic-layer sync (Unity Catalog metric views)
 

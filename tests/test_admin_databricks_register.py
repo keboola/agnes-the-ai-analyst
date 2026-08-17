@@ -1,5 +1,10 @@
-"""Admin API contract for source_type='databricks' rows (phase 1:
-query_mode='materialized' only, server-generated full-table SQL).
+"""Admin API contract for source_type='databricks' rows.
+
+Two modes are registrable: 'materialized' (scheduler runs the SQL on the
+warehouse and distributes a parquet, with the full-table SQL server-generated
+when the admin supplies bucket+source_table only) and 'remote' (nothing syncs;
+the analyst's statement ships to the warehouse per query). 'local' stays
+rejected — no extractor would ever populate it.
 
 Shares the seeded_app fixture; the freshly-bootstrapped test instance has
 data_source.type='local', so _validate_source_type_configured stays
@@ -36,17 +41,54 @@ def test_register_materialized_with_custom_sql(seeded_app):
     assert "MEASURE" in row["source_query"]
 
 
-def test_register_rejects_non_materialized_modes(seeded_app):
+def test_register_rejects_local_mode(seeded_app):
+    """'local' would create a registry row nothing can ever populate: there is
+    no Databricks extractor subprocess, only the materialize pass and the
+    per-query warehouse path."""
     c = seeded_app["client"]
     token = seeded_app["admin_token"]
-    for mode in ("local", "remote"):
-        r = c.post(
-            "/api/admin/register-table",
-            json=_payload(name=f"dbx_{mode}", query_mode=mode, source_query=None),
-            headers=_auth(token),
-        )
-        assert r.status_code == 422, f"{mode}: {r.text}"
-        assert "materialized" in r.text
+    r = c.post(
+        "/api/admin/register-table",
+        json=_payload(name="dbx_local", query_mode="local", source_query=None),
+        headers=_auth(token),
+    )
+    assert r.status_code == 422, r.text
+    assert "materialized" in r.text
+
+
+def test_register_remote_needs_bucket_and_source_table(seeded_app):
+    """A remote row carries no SQL — bucket+source_table are what a bare
+    reference to it gets rewritten into."""
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = c.post(
+        "/api/admin/register-table",
+        json=_payload(name="dbx_remote_bad", query_mode="remote", source_query=None, bucket=None),
+        headers=_auth(token),
+    )
+    assert r.status_code == 422, r.text
+    assert "bucket" in r.text
+
+
+def test_register_remote_row_stores_no_source_query(seeded_app):
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = c.post(
+        "/api/admin/register-table",
+        json=_payload(
+            name="dbx_remote",
+            query_mode="remote",
+            source_query=None,
+            bucket="sales",
+            source_table="orders_raw",
+        ),
+        headers=_auth(token),
+    )
+    assert r.status_code in (200, 201), r.text
+    listed = c.get("/api/admin/registry", headers=_auth(token)).json()
+    row = next(t for t in listed["tables"] if t["name"] == "dbx_remote")
+    assert row["query_mode"] == "remote"
+    assert not row.get("source_query")
 
 
 def test_register_server_generates_full_table_sql_from_dotted_bucket(seeded_app):

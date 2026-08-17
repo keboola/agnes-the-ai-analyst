@@ -48,8 +48,20 @@ _table_rows_cache = TTLCache(maxsize=1, ttl_seconds=300)
 _TABLE_ROWS_KEY = "all"
 
 
-def _flavor_for(source_type: str) -> str:
-    return "bigquery" if source_type == "bigquery" else "duckdb"
+def _flavor_for(source_type: str, query_mode: str = "") -> str:
+    """Which SQL dialect a caller should write for this row.
+
+    Follows the execution engine, not the source: a materialized Databricks
+    row is a local parquet queried by DuckDB, so it is `duckdb` — only a
+    `query_mode='remote'` row's statement actually reaches the warehouse. The
+    schema endpoint applies the same rule (`app/api/v2_schema.py`); the two
+    must agree or an agent is told one dialect and validated against another.
+    """
+    if source_type == "bigquery":
+        return "bigquery"
+    if source_type == "databricks" and query_mode == "remote":
+        return "databricks"
+    return "duckdb"
 
 
 # Generic ``where_examples`` templates the catalog surfaces as a starting
@@ -79,7 +91,7 @@ def _examples_for(source_type: str, known_columns: list[str] | None) -> list[str
     return [predicate for predicate, required in _BQ_WHERE_TEMPLATES if all(c in cols for c in required)]
 
 
-def _fetch_hint(table_id: str, source_type: str, server_only: bool = False) -> str:
+def _fetch_hint(table_id: str, source_type: str, server_only: bool = False, query_mode: str = "") -> str:
     if server_only:
         # Materialized/local on the server but NOT synced to the analyst laptop
         # (`agnes pull` skips server_only rows), so it has no local view — the
@@ -89,6 +101,12 @@ def _fetch_hint(table_id: str, source_type: str, server_only: bool = False) -> s
         return "server-only — not synced locally; query via `agnes query --remote`"
     if source_type == "bigquery":
         return f"agnes snapshot create {table_id} --select <cols> --where '<BQ predicate>' --limit <N>"
+    if query_mode == "remote":
+        # A remote row on any other engine has no parquet and no local view,
+        # so "already local" below would send the caller straight into a
+        # failing local query — the same misroute #898 fixed for internal
+        # tables. Snapshot-create is BigQuery-only, hence the separate hint.
+        return "remote — no local copy; query via `agnes query --remote`"
     if source_type == "internal":
         # Internal tables live in the server state backend and reach the
         # analyst laptop only after the scheduled usage export lands in the
@@ -187,6 +205,18 @@ def _hint_for_row(
         }
 
     if query_mode != "remote":
+        return {
+            "rough_size_hint": None,
+            "entity_type": None,
+            "known_columns": [],
+            "metadata_freshness": "not_applicable",
+        }
+
+    # A remote row on an engine with no metadata cache. `never_fetched` would
+    # imply a refresh is pending; nothing is scheduled to fetch this, so say so
+    # — the BQ metadata cache is BigQuery's, and Databricks exposes no
+    # equivalent size/partition metadata through the Statement Execution API.
+    if source_type != "bigquery":
         return {
             "rough_size_hint": None,
             "entity_type": None,
@@ -380,7 +410,7 @@ def build_catalog(conn: duckdb.DuckDBPyConnection, user: dict) -> dict:
                 # as structured metadata so tooling doesn't have to parse the
                 # free-text description.
                 "server_only": bool(r.get("server_only")),
-                "sql_flavor": _flavor_for(r.get("source_type") or ""),
+                "sql_flavor": _flavor_for(r.get("source_type") or "", r.get("query_mode") or ""),
                 "where_examples": (
                     [] if policy_restricted else _examples_for(r.get("source_type") or "", hint.get("known_columns"))
                 ),
@@ -388,6 +418,7 @@ def build_catalog(conn: duckdb.DuckDBPyConnection, user: dict) -> dict:
                     r["id"],
                     r.get("source_type") or "",
                     bool(r.get("server_only")),
+                    r.get("query_mode") or "",
                 ),
                 "rough_size_hint": hint.get("rough_size_hint"),
                 "rows": hint.get("rows"),
