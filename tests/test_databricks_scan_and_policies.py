@@ -1065,3 +1065,143 @@ class TestSecondReviewRound:
 
         mixed = "SELECT * FROM orders_raw JOIN customers USING (id)"
         assert _policy_parse_dialect(mixed, mixed.lower()) == "duckdb"
+
+
+class TestThirdReviewRound:
+    """The most serious finding of the three review rounds, plus two smaller.
+
+    `rewrite_sql` swallows `PolicyError` from its `resolve` callable — that
+    exception doubles as the registry's "no such table" signal, and swallowing
+    it is what keeps a query naming a CTE working. But the engine resolvers
+    raise the SAME type for genuine failures (a transpile error, a group name
+    carrying a LIKE metacharacter, a parameter-binding failure), so a policied
+    table dropped out of the substitution silently and the caller's OWN
+    unfiltered statement executed — returned with a 200. §17 says every policy
+    failure denies; that one admitted.
+    """
+
+    def test_a_lost_policied_table_denies(self):
+        """The positive invariant: whatever the first pass flagged, the engine
+        pass must still be filtering. Anything it lost is a silent drop."""
+        from app.api.query import _assert_policy_substitution_complete
+
+        _assert_policy_substitution_complete(["a", "b"], ["a", "b"])  # complete
+        _assert_policy_substitution_complete([], [])  # nothing policied
+        _assert_policy_substitution_complete(None, ["a"])  # first pass unknown
+
+        with pytest.raises(PolicyError) as exc:
+            _assert_policy_substitution_complete(["a", "b"], ["a"])
+        assert exc.value.table_id == "b"
+
+    def test_the_invariant_catches_a_total_drop(self):
+        """The exact shape the bug produced: the engine pass returns nothing,
+        which used to take an early return leaving the statement unfiltered."""
+        from app.api.query import _assert_policy_substitution_complete
+
+        with pytest.raises(PolicyError):
+            _assert_policy_substitution_complete(["dbx.sales.orders_raw"], [])
+
+    def test_a_resolver_failure_is_not_swallowed(self):
+        """`_PolicyResolutionFailed` must NOT be a `PolicyError` subclass — if
+        it were, `rewrite_sql`'s `except PolicyError: continue` would swallow it
+        and we would be back to the silent drop."""
+        from app.api.query import _PolicyResolutionFailed
+
+        assert not issubclass(_PolicyResolutionFailed, PolicyError)
+        assert _PolicyResolutionFailed("t").table_id == "t"
+
+    def test_binding_failure_surfaces_as_a_denial_not_a_dropped_policy(self, seeded_app, warehouse, monkeypatch):
+        """End to end: make the parameter binding fail for a policied table and
+        assert the query DENIES rather than returning unfiltered rows."""
+        from src.db import get_system_db
+        from tests.conftest import grant_table_via_package
+
+        wh, _settings = warehouse
+        monkeypatch.setenv("AGNES_ACCESS_POLICIES_ENABLED", "true")
+        _register(
+            id="dbx.sales.orders_raw",
+            name="orders_raw",
+            source_type="databricks",
+            bucket="sales",
+            source_table="orders_raw",
+        )
+        _set_policy("dbx.sales.orders_raw", "SELECT * FROM orders_raw WHERE country = 'CZ'")
+        conn = get_system_db()
+        try:
+            grant_table_via_package(conn, "dbx.sales.orders_raw", "analyst1")
+        finally:
+            conn.close()
+
+        def _boom(_sql, _params):
+            from connectors.databricks.policy_params import DatabricksPolicyBindingError
+
+            raise DatabricksPolicyBindingError("simulated binding failure")
+
+        monkeypatch.setattr("connectors.databricks.policy_params.bind_policy_parameters", _boom)
+
+        before = len(wh.statements)
+        c = seeded_app["client"]
+        r = c.post(
+            "/api/query",
+            json={"sql": "SELECT country, n FROM orders_raw"},
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        assert r.status_code == 500, r.text
+        assert r.json()["detail"]["reason"] == "policy_error"
+        # The decisive assertion: nothing was sent to the warehouse at all.
+        assert len(wh.statements) == before, f"an unfiltered statement was shipped: {wh.statements[before:]}"
+
+    def test_unsafe_registry_identifier_is_a_400_not_a_500(self, seeded_app, warehouse):
+        """`_build_databricks_sql` raises DatabricksRemoteError, which
+        `scan_endpoint` does not catch, so it escaped as an unexplained 500.
+
+        Reaching it needs the schema resolve to be satisfied first — that path
+        calls `quote_dbx_path` too and converts to a ValueError → 400 — so the
+        window is a CACHED schema, which is the normal state after any earlier
+        request for the same table. Primed here to exercise the builder itself
+        rather than the guard that happens to run before it.
+        """
+        from app.api import v2_schema
+        from app.api.v2_quota import _build_quota_tracker
+        from app.api.v2_scan import run_scan
+        from fastapi import HTTPException
+        from src.db import get_system_db
+
+        _register(
+            id="dbx.sales.bad_row",
+            name="bad_row",
+            source_type="databricks",
+            bucket="sales",
+            source_table="orders`; DROP",
+        )
+        v2_schema._schema_cache.set(
+            "dbx.sales.bad_row",
+            {"columns": [{"name": "country", "type": "STRING"}], "sql_flavor": "databricks"},
+        )
+
+        conn = get_system_db()
+        try:
+            with pytest.raises(HTTPException) as exc:
+                run_scan(
+                    conn,
+                    {"id": "admin1", "email": "admin@test.com"},
+                    {"table_id": "dbx.sales.bad_row"},
+                    bq=None,
+                    quota=_build_quota_tracker(),
+                )
+        finally:
+            conn.close()
+            v2_schema._schema_cache.clear()
+
+        assert exc.value.status_code == 400, f"got {exc.value.status_code}: {exc.value.detail}"
+        assert exc.value.detail["reason"] == "databricks_unsafe_identifier"
+
+    def test_the_estimate_uses_the_interactive_timeout(self):
+        """`--estimate` runs a REAL warehouse COUNT — not a free dry-run like
+        BigQuery's. Someone is waiting on it, so it must not inherit the
+        900 s materialize budget."""
+        from app.api.v2_scan import _databricks_estimate_timeout_s, _databricks_scan_timeout_s
+
+        assert _databricks_estimate_timeout_s() == 120
+        assert _databricks_scan_timeout_s() == 900
+        assert _databricks_estimate_timeout_s() < _databricks_scan_timeout_s()

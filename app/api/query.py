@@ -1463,7 +1463,7 @@ def execute_query(
             # as request parameters. Any failure below denies (§17) — there is
             # no branch that forwards the unfiltered statement.
             try:
-                _apply_databricks_policies(_dbx_plan, request.sql, user)
+                _apply_databricks_policies(_dbx_plan, request.sql, user, expected_ids=policied_table_ids)
             except PolicyNameCollision as exc:
                 raise HTTPException(
                     status_code=400,
@@ -1585,6 +1585,7 @@ def execute_query(
                             name_lookups=name_lookups,
                             labels=job_labels_for(user, "query"),
                             outer_limit=request.limit + 1,
+                            expected_ids=policied_table_ids,
                         )
                     except PolicyNameCollision as exc:
                         raise HTTPException(
@@ -2376,6 +2377,58 @@ def _databricks_remote_plan(sql: str, sql_lower: str, sys_conn, user, allowed):
     }
 
 
+class _PolicyResolutionFailed(Exception):
+    """A policy resolver failed for a reason that is NOT "unregistered name".
+
+    Deliberately not a ``PolicyError`` subclass. ``rewrite_sql``'s resolution
+    loop swallows ``PolicyError`` on purpose — that exception doubles as the
+    registry's "no such table" signal, and swallowing it is what keeps every
+    query naming a CTE or an ``information_schema`` view working. But an
+    engine-side failure (a transpile error, a pattern-metacharacter group name,
+    a parameter-binding failure) raises the SAME type, and being swallowed
+    there makes a policied table look unpolicied. This type is invisible to
+    that ``except``, so a genuine resolution failure propagates instead.
+    """
+
+    def __init__(self, table_id: str) -> None:
+        self.table_id = table_id
+        super().__init__(f"policy resolution failed for {table_id!r}")
+
+
+def _table_is_registered(name_or_id: str) -> bool:
+    """Does the registry know this name? Distinguishes the two things
+    ``policied_relation`` reports with the same ``PolicyError``: an unknown
+    name (a CTE, an ``information_schema`` view — must stay swallowed) from a
+    genuine resolution failure on a table that does exist."""
+    repo = table_registry_repo()
+    if repo.get(name_or_id):
+        return True
+    getter = getattr(repo, "get_by_name", None)
+    return bool(getter(name_or_id)) if getter else False
+
+
+def _assert_policy_substitution_complete(expected_ids, actual_ids) -> None:
+    """Every table the first policy pass flagged must still be policied after
+    the engine-specific second pass (§17 — every failure denies).
+
+    Both remote arms run ``rewrite_sql`` twice: once with the default DuckDB
+    resolver to decide whether a policy is in play at all, then again with an
+    engine resolver that transpiles and binds. Only the second can fail on
+    engine-specific work, and its failure mode is silent: ``rewrite_sql``
+    swallows ``PolicyError`` from ``resolve``, so the table drops out of
+    ``policied_table_ids``, the substitution never happens, and what executes
+    is the caller's own unfiltered statement — returned with a 200.
+
+    That is the worst shape a policy bug can take, so it gets a positive
+    invariant rather than trust in the failure paths: compare the two passes
+    and deny on any table the second one lost.
+    """
+    actual = set(actual_ids or [])
+    missing = [t for t in (expected_ids or []) if t not in actual]
+    if missing:
+        raise PolicyError(missing[0])
+
+
 def _assert_databricks_policy_columns_unique(plan: dict, columns) -> None:
     """Fail closed when a POLICIED Databricks read produced duplicate column names.
 
@@ -2494,13 +2547,26 @@ def _databricks_policy_resolver(*, name_lookups, default_catalog: str):
         return [(name, catalog, schema, table), *others]
 
     def resolve(table_id: str, principal):
-        relation = policied_relation(table_id, principal, dialect="databricks")
+        try:
+            relation = policied_relation(table_id, principal, dialect="databricks")
+        except PolicyError as exc:
+            # `policied_relation` raises PolicyError for BOTH "no such
+            # registered table" (which must stay swallowed, or every CTE name
+            # breaks) and genuine resolution failures — a Databricks transpile
+            # error, a group name carrying a LIKE metacharacter. Only the
+            # second kind can happen after the DuckDB pass already resolved
+            # this name successfully, so re-raise as the non-swallowed type.
+            if _table_is_registered(table_id):
+                raise _PolicyResolutionFailed(exc.table_id) from exc
+            raise
         if not relation.policied:
             return relation
         try:
             body_sql, parameters = bind_policy_parameters(relation.relation_sql, relation.params)
         except DatabricksPolicyBindingError as exc:
-            raise PolicyError(relation.table_id) from exc
+            # NOT PolicyError: `rewrite_sql` swallows that, which would drop
+            # the policy and execute the caller's unfiltered statement.
+            raise _PolicyResolutionFailed(relation.table_id) from exc
         return dataclasses.replace(
             relation,
             # `_body_lookups` and not the caller-derived `name_lookups`: the
@@ -2528,7 +2594,7 @@ def _databricks_policy_resolver(*, name_lookups, default_catalog: str):
     return resolve
 
 
-def _apply_databricks_policies(plan: dict, sql: str, principal) -> list[str]:
+def _apply_databricks_policies(plan: dict, sql: str, principal, *, expected_ids=None) -> list[str]:
     """Rewrite ``plan`` in place so a policied table is read through its
     policy, and return the policied registry ids.
 
@@ -2578,6 +2644,11 @@ def _apply_databricks_policies(plan: dict, sql: str, principal) -> list[str]:
             resolve=resolve,
             dialect="databricks",
         )
+        # Deny if the engine pass lost a table the DuckDB pass had flagged —
+        # the silent-drop shape `_assert_policy_substitution_complete` exists
+        # for. Checked BEFORE the early return, because that return is exactly
+        # what would leave `plan["sql"]` unfiltered.
+        _assert_policy_substitution_complete(expected_ids, policied_table_ids)
         if not policied_table_ids:
             return []
 
@@ -2643,6 +2714,8 @@ def _apply_databricks_policies(plan: dict, sql: str, principal) -> list[str]:
 
         outer_lookups = [entry for entry in body_lookups if entry[0].lower() not in policied_names]
         native_sql = rewrite_to_native(spliced_sql, outer_lookups, default_catalog)
+    except _PolicyResolutionFailed as exc:
+        raise PolicyError(exc.table_id) from exc
     except DatabricksRemoteError as exc:
         raise HTTPException(status_code=exc.status, detail=exc.detail())
 
@@ -3172,6 +3245,7 @@ def _execute_policied_remote_bq(
     name_lookups: list,
     labels: dict,
     outer_limit: int | None = None,
+    expected_ids=None,
 ):
     """Execute a query that touches a policied `query_mode='remote'` table
     directly against the BigQuery jobs API (§7.1) -- never through the
@@ -3197,6 +3271,11 @@ def _execute_policied_remote_bq(
     bq_sql, policy_params, policied_table_ids = _bq_policied_execution_sql(
         sql, principal, bq, name_lookups=name_lookups
     )
+    # The BigQuery transpile happens inside that second `rewrite_sql`, and its
+    # PolicyError is swallowed by the resolution loop — so a policy that fails
+    # to transpile drops out silently and `bq_sql` becomes the caller's own
+    # unfiltered statement. Same invariant as the Databricks arm.
+    _assert_policy_substitution_complete(expected_ids, policied_table_ids)
     if outer_limit is not None:
         bq_sql = f"SELECT * FROM ({bq_sql}) AS _bqq_policy_outer LIMIT {outer_limit}"
 
@@ -3246,7 +3325,7 @@ def _materialize_databricks_select(
         return None
     if policied_table_ids:
         try:
-            _apply_databricks_policies(plan, sql, user)
+            _apply_databricks_policies(plan, sql, user, expected_ids=policied_table_ids)
         except PolicyNameCollision as exc:
             raise HTTPException(
                 status_code=400,
@@ -3809,6 +3888,7 @@ def run_remote_select_to_arrow(conn, user, sql, bq, quota, *, policy_info: dict 
                         bq,
                         name_lookups=name_lookups,
                         labels=job_labels_for(user, "query"),
+                        expected_ids=policied_table_ids,
                     )
                 except PolicyNameCollision as exc:
                     raise HTTPException(

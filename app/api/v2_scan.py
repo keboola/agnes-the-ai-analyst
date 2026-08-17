@@ -428,7 +428,7 @@ def estimate(conn, user, raw_request: dict, *, bq: BqAccess) -> dict:
     _validate_order_by(req.order_by, schema)
 
     if _executes_on_databricks(row):
-        return _estimate_databricks(req, row, schema, safe_where)
+        return _estimate_databricks(req, row, schema, safe_where, user)
 
     # Materialized rows join the non-BQ sources here: served from the
     # server-side parquet, so there is no billable scan to estimate.
@@ -473,7 +473,7 @@ def estimate(conn, user, raw_request: dict, *, bq: BqAccess) -> dict:
     }
 
 
-def _estimate_databricks(req: ScanRequest, row: dict, schema: dict, safe_where: str | None) -> dict:
+def _estimate_databricks(req: ScanRequest, row: dict, schema: dict, safe_where: str | None, user) -> dict:
     """Estimate a Databricks remote scan.
 
     ``estimated_scan_bytes`` is ``None``, not ``0``. Databricks has no dry-run
@@ -492,15 +492,34 @@ def _estimate_databricks(req: ScanRequest, row: dict, schema: dict, safe_where: 
     from connectors.databricks.remote import DatabricksRemoteError, execute_select
 
     settings = _databricks_settings_or_400(req.table_id)
-    count_sql = _build_databricks_sql(row, req, settings, safe_where=safe_where, count_only=True)
 
+    # Unlike BigQuery's arm, this is not a free dry-run: a filtered COUNT(*)
+    # over a Delta table is a real scan on the warehouse. So it holds the
+    # caller's concurrent-scan slot like any other remote execution, and gets
+    # the INTERACTIVE deadline rather than the materialize one — somebody is
+    # waiting on an estimate, and a 15-minute count is not an estimate.
+    quota = _build_quota_tracker()
+    user_id = identity_for_audit(user)[1] or "anon"
     try:
-        _columns, rows, _truncated, _bytes = execute_select(
-            count_sql,
-            settings=settings,
-            limit=1,
-            cap_bytes=0,  # a single COUNT row; the byte cap is meaningless here
-            timeout_s=_databricks_scan_timeout_s(),
+        with quota.acquire(user=user_id):
+            count_sql = _build_databricks_sql(row, req, settings, safe_where=safe_where, count_only=True)
+            _columns, rows, _truncated, _bytes = execute_select(
+                count_sql,
+                settings=settings,
+                limit=1,
+                cap_bytes=0,  # a single COUNT row; the byte cap is meaningless here
+                timeout_s=_databricks_estimate_timeout_s(),
+            )
+    except QuotaExceededError as exc:
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "reason": "concurrent_scans_exceeded",
+                "kind": exc.kind,
+                "current": exc.current,
+                "limit": exc.limit,
+                "retry_after_seconds": exc.retry_after_seconds,
+            },
         )
     except DatabricksRemoteError as exc:
         raise HTTPException(status_code=exc.status, detail=exc.detail())
@@ -632,6 +651,19 @@ def _max_limit() -> int:
     return int(get_value("api", "scan", "max_limit", default=10_000_000) or 10_000_000)
 
 
+def _databricks_estimate_timeout_s() -> float:
+    """Deadline for the estimate's COUNT(*).
+
+    The interactive remote-query timeout, not the snapshot one: `--estimate`
+    is what an analyst runs BEFORE deciding whether to fetch, so it has a
+    person waiting on it. Letting it inherit the 900 s materialize budget
+    would hold a request thread for fifteen minutes to answer "should I bother".
+    """
+    return float(
+        get_value("data_source", "databricks", "remote_query_timeout_seconds", default=120) or 120
+    )
+
+
 def _databricks_scan_timeout_s() -> float:
     """Statement timeout for the scan path.
 
@@ -761,8 +793,14 @@ def run_scan(
             from connectors.databricks.remote import DatabricksRemoteError, execute_scan_to_arrow
 
             settings = _databricks_settings_or_400(req.table_id)
-            dbx_sql = _build_databricks_sql(row, req, settings, safe_where=safe_where)
             try:
+                # Inside the try: `_build_databricks_sql` raises
+                # DatabricksRemoteError for a registry segment outside the safe
+                # alphabet, and `scan_endpoint` catches neither that nor
+                # anything it is not listed in — so an operator's typo in a
+                # registry row surfaced as an unexplained 500 instead of the
+                # 400 naming the bad value that the BigQuery sibling returns.
+                dbx_sql = _build_databricks_sql(row, req, settings, safe_where=safe_where)
                 table = execute_scan_to_arrow(
                     dbx_sql,
                     settings=settings,
