@@ -650,6 +650,16 @@
             border-bottom-color: var(--ds-primary);
         }
 
+        /* Task 5: table-level "referenceable from other policies" switch,
+           above the tabs — a table property, not something either tab
+           owns. */
+        .ap-mapping-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 14px;
+        }
+
         .ap-col-list {
             border: 1px solid var(--ds-border);
             border-radius: 8px;
@@ -3728,7 +3738,22 @@
                     <!-- Filled by _apRenderInterlockWarning() — mirrors the
                          onEditBqAccessModeChange() pattern: computed and
                          shown BEFORE save, not discovered only from a
-                         rejected PUT. -->
+                         rejected PUT. Task 5: the fix is now an inline
+                         #apMakeServerOnly action, not just a sentence. -->
+                </div>
+
+                <!-- Task 5: table-level "referenceable from other policies"
+                     switch — reuses the existing PUT's policy_mapping field
+                     (today CLI-only via `agnes admin table set-policy-mapping`). -->
+                <div class="ap-mapping-row">
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="apMappingToggle" onchange="apToggleMapping(this.checked)">
+                        <span class="toggle-slider"></span>
+                    </label>
+                    <div>
+                        <div class="form-label" style="margin-bottom:2px;">Allow other policies to reference this table</div>
+                        <div class="form-hint" style="margin:0;">Referenceable from any policy — not a grant.</div>
+                    </div>
                 </div>
 
                 <!-- Task 4: Builder (default) + Advanced SQL tabs. Builder
@@ -5830,6 +5855,8 @@
         previewEl.innerHTML = '';
         _apHideSaveError();
         document.getElementById('apClearBtn').style.display = table.access_policy_sql ? '' : 'none';
+        var mappingToggle = document.getElementById('apMappingToggle');
+        if (mappingToggle) mappingToggle.checked = !!table.policy_mapping;
         _apRenderInterlockWarning();
         _apLoadHistory(table.id);
         apSwitchTab('builder');
@@ -5844,18 +5871,77 @@
     }
 
     // Inline interlock warning (design doc §3.1/§13) — computed and shown
-    // BEFORE save, not discovered only from a rejected PUT.
+    // BEFORE save, not discovered only from a rejected PUT. Task 5
+    // (access-policy-builder-ux plan): the former dead-end sentence ("set
+    // server_only first") is now an inline #apMakeServerOnly action that
+    // PUTs the fix and re-opens the builder enabled, same tab, no reload.
     function _apRenderInterlockWarning() {
         var warn = document.getElementById('apInterlockWarning');
         if (!_apTable || _apIsEligible(_apTable)) {
             warn.style.display = 'none';
-            warn.textContent = '';
+            warn.innerHTML = '';
             return;
         }
-        warn.textContent = 'This table is distributed — agnes pull downloads it, so a policy here could be '
-            + 'routed around by pulling the raw parquet. Set server_only=true first, or move this table to '
-            + "query_mode='remote', before attaching a policy.";
+        warn.innerHTML = 'This table is distributed — agnes pull downloads it, so a policy here could be '
+            + 'routed around by pulling the raw parquet. '
+            + '<button type="button" class="btn btn-secondary btn-sm" id="apMakeServerOnly" '
+            + 'onclick="apMakeServerOnly()">Set server_only=true</button> unlocks the builder below — '
+            + "or move this table to query_mode='remote' instead.";
         warn.style.display = '';
+    }
+
+    // Sets server_only=true on the current table via the existing PUT, then
+    // re-renders the warning (which hides once eligible) and the column
+    // list (which re-enables its mask selects) — no modal reload needed.
+    async function apMakeServerOnly() {
+        if (!_apTable) return;
+        var btn = document.getElementById('apMakeServerOnly');
+        if (btn) { btn.disabled = true; btn.textContent = 'Setting…'; }
+        try {
+            var r = await fetch('/api/admin/registry/' + encodeURIComponent(_apTable.id), {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ server_only: true }),
+            });
+            if (!r.ok) {
+                var d = await r.json().catch(function() { return {}; });
+                _apShowSaveError(typeof d.detail === 'string' ? d.detail : (d.detail || d.error || ('HTTP ' + r.status)));
+                return;
+            }
+            _apTable.server_only = true;
+            _apRenderInterlockWarning();
+            _apRenderColList();
+            if (typeof loadAdminTablesLayout === 'function') loadAdminTablesLayout();
+            showToast('Table set to server_only — the builder is unlocked', 'success');
+        } catch (err) {
+            _apShowSaveError('Network error: ' + err.message);
+        }
+    }
+
+    // Task 5: policy_mapping switch — PUTs the existing field so a table
+    // can be marked referenceable from another table's policy SQL (an
+    // allowance, not a grant) without dropping to the CLI.
+    async function apToggleMapping(checked) {
+        if (!_apTable) return;
+        var toggle = document.getElementById('apMappingToggle');
+        try {
+            var r = await fetch('/api/admin/registry/' + encodeURIComponent(_apTable.id), {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ policy_mapping: checked }),
+            });
+            if (!r.ok) {
+                var d = await r.json().catch(function() { return {}; });
+                _apShowSaveError(typeof d.detail === 'string' ? d.detail : (d.detail || d.error || ('HTTP ' + r.status)));
+                if (toggle) toggle.checked = !checked;
+                return;
+            }
+            _apTable.policy_mapping = checked;
+            showToast(checked ? 'Table marked referenceable from other policies' : 'Table no longer referenceable from other policies', 'success');
+        } catch (err) {
+            _apShowSaveError('Network error: ' + err.message);
+            if (toggle) toggle.checked = !checked;
+        }
     }
 
     function apUseTableAsBase() {

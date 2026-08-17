@@ -199,6 +199,19 @@ def test_builder_scaffold_renders_when_flag_on(seeded_app):
     assert 'data-ap-tab="builder"' in body and 'data-ap-tab="sql"' in body
 
 
+def test_inline_eligibility_and_mapping_controls_render(seeded_app):
+    """Task 5: the interlock warning's former dead-end sentence ("set
+    server_only first") becomes an inline fix-it action, and a separate
+    switch lets an admin mark a table policy_mapping=true (referenceable
+    from other policies' SQL) without dropping to the CLI."""
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = c.get("/admin/tables", headers=_auth(token))
+    body = r.text
+    assert 'id="apMakeServerOnly"' in body
+    assert 'id="apMappingToggle"' in body
+
+
 def test_registered_table_row_wires_the_access_chip_to_the_modal(seeded_app):
     """A registered table's row calls ``openAccessPolicyModal(t)`` with the
     full registry row as payload, so the modal can prefill from
