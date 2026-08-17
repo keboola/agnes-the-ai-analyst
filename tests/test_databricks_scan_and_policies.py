@@ -324,6 +324,60 @@ class TestEstimate:
         assert out["estimated_result_rows"] == 42
         assert "COUNT(*)" in wh.statements[-1]
 
+    def test_the_estimate_pre_flights_the_daily_budget(self, seeded_app, warehouse, monkeypatch):
+        """The estimate is billable warehouse compute, unlike BigQuery's free
+        dry-run, so it takes the same pre-flight the FETCH path applies to
+        every engine. A caller who has already burned the daily budget on real
+        fetches must not keep spending warehouse compute here.
+
+        This bounds spend-after-budget, not estimate-only loops — the budget is
+        denominated in bytes and a COUNT returns one row, so estimates barely
+        accumulate. Bounding repetition would need a quota denominated in
+        statements; see the note on `_estimate_databricks`.
+        """
+        from fastapi import HTTPException
+
+        from app.api.v2_quota import KIND_DAILY_BYTES, QuotaExceededError
+        from app.api.v2_scan import _build_quota_tracker, estimate
+        from src.db import get_system_db
+
+        wh, _settings = warehouse
+        _register(
+            id="dbx.sales.orders_raw",
+            name="orders_raw",
+            source_type="databricks",
+            bucket="sales",
+            source_table="orders_raw",
+        )
+        quota = _build_quota_tracker()
+
+        def _exhausted(user):
+            raise QuotaExceededError(kind=KIND_DAILY_BYTES, current=99, limit=1, retry_after_seconds=60)
+
+        monkeypatch.setattr(quota, "check_daily_budget", _exhausted)
+
+        conn = get_system_db()
+        try:
+            with pytest.raises(HTTPException) as exc:
+                estimate(
+                    conn,
+                    {"id": "admin1", "email": "admin@test.com"},
+                    {"table_id": "dbx.sales.orders_raw"},
+                    bq=None,
+                )
+        finally:
+            conn.close()
+
+        assert exc.value.status_code == 429
+        assert exc.value.detail["reason"] == "daily_budget_exceeded"
+        assert exc.value.detail["kind"] == KIND_DAILY_BYTES
+        # The refusal must come BEFORE the billable statement — a pre-flight
+        # that fires after the COUNT would have already spent the compute. The
+        # `information_schema` resolve still runs, and should: it is Unity
+        # Catalog metadata, not a data scan, and it is what validates the
+        # request in the first place.
+        assert not any("COUNT(*)" in s for s in wh.statements), "the billable COUNT ran despite an exhausted budget"
+
     def test_limit_caps_the_reported_row_count(self, seeded_app, warehouse):
         from app.api.v2_scan import estimate
         from src.db import get_system_db
