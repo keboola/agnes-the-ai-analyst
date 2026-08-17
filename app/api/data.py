@@ -1,21 +1,22 @@
 """Data download endpoint — streaming parquet files."""
 
+import hashlib
 import logging
+import os
 import re
 import time
 from pathlib import Path
-from typing import Optional
 
+import duckdb
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import FileResponse
-import duckdb
 
-from app.auth.dependencies import get_current_user, _get_db
+from app.auth.dependencies import _get_db, get_current_user
 from app.utils import get_data_dir as _get_data_dir
-from src.audit_helpers import identity_for_audit, client_kind_from_user
+from src.audit_helpers import client_kind_from_user, identity_for_audit
 from src.identifier_validation import _SAFE_QUOTED_IDENTIFIER
+from src.distribution import CONTENT_MD5_HEADER
 from src.rbac import can_access_table
-
 from src.repositories import (
     audit_repo,
 )
@@ -61,6 +62,89 @@ def _resolve_part_path(extracts_dir: Path, table_id: str, part: str) -> Path | N
     return None
 
 
+# Re-exported from `src.distribution` so client and server cannot drift on the
+# spelling. The md5 of the bytes this response actually carried. `agnes pull` verifies a
+# downloaded part against THIS, not against the manifest hash it planned with.
+#
+# The manifest hash is a cache key — "has this part changed since I last pulled" —
+# and it is a snapshot taken at rebuild time. Manifest-fetch and part-download are
+# separate requests, so on a dataset that is being rewritten between them the two
+# can legitimately disagree, and the client used to read that disagreement as
+# corruption and abort the whole table. No amount of re-hashing on the server can
+# close that window; the fix is for the bytes to describe themselves.
+
+
+
+# Above this a part is streamed the old way, unhashed. Partition parts run 5 KB to
+# ~450 KB today (Jira months; `connectors/keboola/partitioned.py` shares the
+# layout), so this is ~20x headroom rather than a limit anyone should meet. It
+# exists because `_resolve_part_path` imposes no size bound of its own, and the
+# buffered read is linear in part size. Well under the client's own 50 MiB chunking
+# threshold, above which it stops reading the header anyway.
+_SELF_DESCRIBING_MAX_BYTES = 8 * 1024 * 1024
+
+
+def _serve_part_self_describing(file_path: Path, etag: str, *, is_range_request: bool) -> Response:
+    """Serve one partition part, tagged with the md5 of the bytes being sent.
+
+    The body is read ONCE and both hashed and served from that single buffer, so
+    the header cannot describe bytes other than the ones sent. Reading by path a
+    second time (what `FileResponse` does) would reintroduce exactly the race this
+    header exists to remove — partition writes publish via `os.replace`, so a
+    writer landing between two reads swaps the inode underneath.
+
+    The digest is over the WHOLE representation, so it is only attached to a
+    whole-body response. Two cases fall back to `FileResponse`, and both must:
+
+    * **Range requests.** `FileResponse` answers them with a proper `206`;
+      a buffered `Response` cannot, and silently returning `200` with the full
+      body is not a cosmetic difference — `cli/client.py::_probe_range_support`
+      probes every download with `Range: bytes=0-0` and DRAINS whatever comes
+      back, so a `200` there means the part is transferred twice per pull.
+    * **Parts above `_SELF_DESCRIBING_MAX_BYTES`**, which must not be held in
+      memory per in-flight request.
+
+    In both cases the client simply verifies against the manifest hash, which is
+    exactly how parts were served before this existed — nothing regresses, the
+    guarantee is just not strengthened there.
+
+    Parts only, and the reason is architectural rather than about size or churn:
+    on a Caddy-fronted deployment a WHOLE-TABLE download never reaches this handler
+    at all. The `@download` matcher in the Caddyfile is explicitly `not query
+    part=*` and serves those from `file_server`, so there is nowhere to attach an
+    app-computed digest without giving up that fast path. Single-file tables do
+    churn — a Keboola full refresh rewrites `<table>.parquet` on the served path,
+    and materialized tables are rewritten on their own schedule — so they have the
+    same staleness exposure; closing it needs a different mechanism.
+    """
+    if is_range_request or file_path.stat().st_size > _SELF_DESCRIBING_MAX_BYTES:
+        return FileResponse(
+            path=file_path,
+            filename=file_path.name,
+            media_type="application/octet-stream",
+            headers={"ETag": etag},
+        )
+
+    with open(file_path, "rb") as handle:
+        data = handle.read()
+        stat = os.fstat(handle.fileno())
+
+    # ETag from the SAME observation as the bytes. Taking it from a separate
+    # `stat()` on the path — as the caller's 304 check must, having no bytes yet —
+    # can describe the pre-replace inode while the body is the post-replace one:
+    # the same "identity from a different observation" this whole function exists
+    # to avoid.
+    return Response(
+        content=data,
+        media_type="application/octet-stream",
+        headers={
+            "ETag": f'"{stat.st_mtime_ns}"',
+            "Content-Disposition": f'attachment; filename="{file_path.name}"',
+            CONTENT_MD5_HEADER: hashlib.md5(data).hexdigest(),
+        },
+    )
+
+
 # Distribution allowlist. A parquet may leave the server ONLY for these
 # query modes — the same pair the manifest treats as downloadable. Stated as an
 # allowlist rather than a denylist so a query mode added later is undistributable
@@ -69,7 +153,7 @@ def _resolve_part_path(extracts_dir: Path, table_id: str, part: str) -> Path | N
 _DISTRIBUTABLE_QUERY_MODES = frozenset({"local", "materialized"})
 
 
-def _distribution_refusal(table_id: str) -> Optional[HTTPException]:
+def _distribution_refusal(table_id: str) -> HTTPException | None:
     """Raise 403 unless ``table_id`` is a table Agnes actually distributes.
 
     ``server_only`` and ``query_mode`` were **client-side advice**: `agnes pull`
@@ -225,11 +309,7 @@ async def check_access(
             action="data.access_check",
             resource=resource,
             params=params,
-            result=(
-                "success"
-                if granted and refusal is None
-                else ("error.503" if check_unavailable else "error.403")
-            ),
+            result=("success" if granted and refusal is None else ("error.503" if check_unavailable else "error.403")),
             client_kind=client_kind_from_user(user),
         )
     except Exception:
@@ -341,9 +421,14 @@ async def download_table(
     except Exception:
         logger.exception("audit_log write failed for data.download; continuing")
 
+    if part is not None:
+        return _serve_part_self_describing(
+            file_path, etag, is_range_request=bool(request.headers.get("range"))
+        )
+
     return FileResponse(
         path=file_path,
-        filename=file_path.name if part is not None else f"{table_id}.parquet",
+        filename=f"{table_id}.parquet",
         media_type="application/octet-stream",
         headers={"ETag": etag},
     )

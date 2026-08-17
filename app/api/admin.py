@@ -930,6 +930,38 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
                         "errors. 0 disables. Default 900."
                     ),
                 },
+                "max_bytes_per_remote_query": {
+                    "kind": "int",
+                    "default": 1073741824,
+                    "hint": (
+                        "Cost guardrail for interactive `agnes query --remote` against "
+                        "query_mode='remote' rows. Caps the bytes the warehouse may "
+                        "RETURN (the API's byte_limit) — not the bytes it scanned, "
+                        "which Databricks does not expose. A capped result is refused, "
+                        "never returned short. 0 disables. Default 1073741824 = 1 GiB."
+                    ),
+                },
+                "remote_query_timeout_seconds": {
+                    "kind": "int",
+                    "default": 120,
+                    "hint": (
+                        "Deadline on an interactive remote query. Shorter than the "
+                        "materialize timeout because a human is waiting. Default 120."
+                    ),
+                },
+                "attach_enabled": {
+                    "kind": "bool",
+                    "default": False,
+                    "hint": (
+                        "EXPERIMENTAL. Attach Unity Catalog into DuckDB via the "
+                        "uc_catalog + delta community extensions, so remote Databricks "
+                        "tables can be JOINed against local parquets. Off by default: "
+                        "it installs community extensions and sends the workspace PAT "
+                        "to the endpoint (pin it with AGNES_REMOTE_ATTACH_HOST_ALLOWLIST). "
+                        "Without it, remote rows still work — every statement runs on "
+                        "the SQL warehouse instead."
+                    ),
+                },
             },
         },
     },
@@ -2454,17 +2486,18 @@ class RegisterTableRequest(BaseModel):
         sq = (self.source_query or "").strip() or None
         if self.query_mode != "materialized" and sq:
             raise ValueError("source_query is only valid when query_mode='materialized'")
-        # Databricks phase 1 is materialized-only: the scheduler runs the SQL
-        # on the SQL warehouse and distributes the parquet. 'local' has no
-        # extractor subprocess and 'remote' would need the (experimental)
-        # unity_catalog/delta DuckDB extensions + a _remote_attach allowlist
-        # entry — both follow-up phases, rejected here so a row can't land in
-        # the registry with a mode nothing will ever sync.
-        if self.source_type == "databricks" and self.query_mode != "materialized":
+        # Databricks supports two modes. 'materialized': the scheduler runs the
+        # SQL on the warehouse and distributes the parquet. 'remote': nothing
+        # syncs — the analyst's statement ships to the warehouse per query
+        # (`agnes query --remote`), which is the only way to reach a Unity
+        # Catalog metric view's MEASURE() or a table too large to materialize.
+        # 'local' stays rejected: there is no extractor subprocess for it, so a
+        # row would land in the registry with a mode nothing will ever sync.
+        if self.source_type == "databricks" and self.query_mode not in ("materialized", "remote"):
             raise ValueError(
-                "source_type='databricks' currently supports query_mode='materialized' only "
-                "(the SQL runs on the Databricks SQL warehouse on schedule; register with "
-                "query_mode='materialized' and either a source_query or bucket+source_table)"
+                "source_type='databricks' supports query_mode='materialized' (scheduled sync to a "
+                "parquet) or 'remote' (per-query execution on the SQL warehouse); "
+                f"got '{self.query_mode}'"
             )
         # BigQuery materialized auto-generates a full-table-dump SQL from
         # `bucket`+`source_table` when source_query is omitted (see
@@ -2689,17 +2722,61 @@ def _generate_materialized_source_query(
     return f"SELECT * FROM `{project_id}.{bucket}.{source_table}`"
 
 
+def _rebuild_databricks_remote_extract() -> str | None:
+    """Refresh the Databricks remote extract; return a note for the response.
+
+    Called after a ``query_mode='remote'`` Databricks row is registered or
+    updated. Returns ``None`` when there is nothing to say (the common case:
+    the instance has not opted into the Unity Catalog ATTACH, so no extract is
+    written and the row is served by the warehouse path alone).
+
+    Never raises: the registry row is already committed and correct, and the
+    only thing a failure here costs is the *optional* local view. Surfacing it
+    as a 500 would tell the admin their registration failed when it did not.
+    """
+    try:
+        from connectors.databricks.extract_init import rebuild_from_registry
+
+        result = rebuild_from_registry()
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning("databricks remote extract rebuild failed: %s", e)
+        return "Registered. The Unity Catalog ATTACH extract could not be rebuilt; see server logs."
+    if result.get("skipped"):
+        return None
+    errors = result.get("errors") or []
+    if errors:
+        return f"Registered. Unity Catalog extract rebuilt with {len(errors)} error(s); see server logs."
+    return None
+
+
 def _validate_databricks_register_payload(req: "RegisterTableRequest") -> None:
     """Enforce Databricks-specific shape on a register/update request.
 
-    The Pydantic model validator already pinned ``query_mode='materialized'``
-    for Databricks rows; this hook server-generates the full-table-dump
-    ``source_query`` from ``bucket``+``source_table`` (+ the configured
-    default catalog) when the admin omitted custom SQL — mirroring the
-    BigQuery register path. Custom SQL passes through untouched: that is
-    where semantic-layer queries live (``SELECT dim, MEASURE(m) FROM
+    The Pydantic model validator already pinned ``query_mode`` to
+    ``'materialized'`` or ``'remote'``; this hook server-generates the
+    full-table-dump ``source_query`` from ``bucket``+``source_table`` (+ the
+    configured default catalog) when a materialized row omitted custom SQL —
+    mirroring the BigQuery register path. Custom SQL passes through untouched:
+    that is where semantic-layer queries live (``SELECT dim, MEASURE(m) FROM
     <metric_view> GROUP BY dim``).
+
+    A ``query_mode='remote'`` row carries no ``source_query`` at all — nothing
+    is ever scheduled for it, and the statement that runs is the analyst's. It
+    still needs ``bucket``+``source_table``, because that pair is what the
+    remote path rewrites a bare registered name into.
     """
+    if req.query_mode == "remote":
+        if not (req.bucket and req.source_table):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "databricks remote requires bucket+source_table — they resolve the "
+                    "`catalog`.`schema`.`table` an analyst's bare reference to this row is "
+                    "rewritten into (bucket is the schema, or 'catalog.schema' to override "
+                    "the default catalog)"
+                ),
+            )
+        return
     if req.source_query and req.source_query.strip():
         return
     if not (req.bucket and req.source_table):
@@ -3824,13 +3901,22 @@ def register_table(
     invalidate_for_table(table_id)
 
     if not is_bigquery:
+        message = None
+        if request.source_type == "databricks" and request.query_mode == "remote":
+            # A remote Databricks row is queryable the moment it is registered
+            # — `agnes query --remote` reads the registry directly and ships
+            # the statement to the warehouse. The extract rebuild below is only
+            # for the optional Unity Catalog ATTACH (which gives DuckDB a local
+            # view so the row can be joined against local data); it no-ops on
+            # every instance that has not opted in.
+            message = _rebuild_databricks_remote_extract()
         # Keboola / Jira / local rows are insert-only here. 201 Created — the
         # decorator no longer carries a default status, so each branch is
         # explicit about its code (BQ branch overrides via JSONResponse).
-        return JSONResponse(
-            status_code=201,
-            content={"id": table_id, "name": request.name, "status": "registered"},
-        )
+        content = {"id": table_id, "name": request.name, "status": "registered"}
+        if message:
+            content["message"] = message
+        return JSONResponse(status_code=201, content=content)
 
     if request.query_mode == "materialized":
         # Materialized BQ rows are picked up by the trigger pass on the next

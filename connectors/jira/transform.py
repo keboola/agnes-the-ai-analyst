@@ -9,7 +9,7 @@ import json
 import logging
 import os
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -253,7 +253,7 @@ def transform_organization(raw_org: dict) -> dict:
     record: dict[str, Any] = {
         "org_id": None if org_id is None else str(org_id),
         "name": raw_org.get("name"),
-        "_synced_at": datetime.now(timezone.utc).isoformat(),
+        "_synced_at": datetime.now(UTC).isoformat(),
     }
     record.update(extract_organization_details(raw_org))
     return record
@@ -340,7 +340,7 @@ def apply_schema(df: pd.DataFrame, schema: dict) -> pa.Table:
     preventing DuckDB union errors when querying with glob patterns.
     """
     # Ensure all schema columns exist
-    for col in schema.keys():
+    for col in schema:
         if col not in df.columns:
             df[col] = None
 
@@ -355,7 +355,7 @@ def apply_schema(df: pd.DataFrame, schema: dict) -> pa.Table:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
     # Reorder columns to match schema
-    df = df[[col for col in schema.keys()]]
+    df = df[[col for col in schema]]
 
     # Convert to PyArrow with explicit schema
     pa_schema = get_pyarrow_schema(schema)
@@ -581,7 +581,7 @@ def transform_comments(raw_issue: dict, *, preserve_on_incomplete: bool = True) 
     carries. Batch/full-rebuild callers therefore pass
     ``preserve_on_incomplete=False`` and get the partial list.
     """
-    if preserve_on_incomplete and raw_issue.get("_comments_incomplete") is True:
+    if preserve_on_incomplete and comments_are_incomplete(raw_issue):
         return None
 
     issue_key = raw_issue.get("key")
@@ -763,23 +763,79 @@ def transform_remote_links(raw_issue: dict) -> list[dict] | None:
     return records
 
 
+def write_parquet_atomic(table: pa.Table, dest: Path) -> Path:
+    """Publish *table* at *dest* so no reader can observe a partial parquet.
+
+    Write to a per-process temp beside the destination, then ``os.replace`` —
+    atomic within a filesystem, so every reader sees either the whole previous
+    file or the whole new one, never a prefix.
+
+    This is not a cosmetic nicety. A direct ``pq.write_table(table, dest)``
+    leaves a footerless file when the process dies midway (deploy, OOM,
+    restart), and an unreadable partition does not stay a read error: the next
+    read-modify-write treats it as EMPTY — ``load_parquet_month`` logs a warning
+    and returns ``None``, ``upsert_dataframe`` then keeps only the incoming
+    record — so the whole month is republished with a single row. The SLA poller
+    revisits only tickets whose ``status_category != 'Done'``, a small minority
+    of any month, so the rest never come back without an operator re-running the
+    batch transform.
+
+    The temp name is per-process. A shared one raced two writers: either could
+    ``os.replace`` a parquet the other was still writing, while the loser's
+    cleanup deleted the winner's in-flight temp (Devin Review on #1274).
+
+    Deliberately NOT ``tempfile.mkstemp``, which the raw-JSON writers use: it
+    creates the file 0600 and ``os.replace`` preserves the mode, so the published
+    parquet would silently drop from 0644 to 0600 — the permissions regression
+    incident #203 documents for exactly this pattern. The explicit ``chmod``
+    defends the same outcome arriving from the other side, since
+    ``pq.write_table`` creates the temp as ``0666 & umask`` and a restrictive
+    umask (0077 in some container/systemd units) would publish 0600 too. 0o644
+    rather than the raw-JSON writers' 0o660: their fchmod serves a directory
+    carrying POSIX ACLs, while every parquet in this extract tree effectively
+    lands world-readable, and a manual run may execute as a different user than
+    the server process.
+    """
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp_dest = dest.parent / f"{dest.name}.{os.getpid()}.tmp"
+    try:
+        pq.write_table(table, tmp_dest, **PARQUET_WRITE_OPTIONS)
+        os.chmod(tmp_dest, 0o644)
+        os.replace(tmp_dest, dest)
+    except BaseException:
+        # Cleanup belongs on the failure path only: a successful `os.replace` has
+        # already renamed the temp away, so a `finally` would spend a failing
+        # `unlink(2)` plus a raised-and-swallowed FileNotFoundError on every write —
+        # and the SLA poller runs this thousands of times per cycle. `BaseException`
+        # keeps the coverage a `finally` had for KeyboardInterrupt/SystemExit.
+        #
+        # A failed write would otherwise leave the temp behind. Every reader globs
+        # `*.parquet` — the extract views, `_hash_table_parts`, `find_open_issues` —
+        # so a stray `.tmp` is never served, but an accumulating temp file is nobody's
+        # friend. Unlinking only this process's own temp is what makes the cleanup
+        # safe under concurrency.
+        tmp_dest.unlink(missing_ok=True)
+        raise
+    return dest
+
+
 def write_hive_parquet(table: pa.Table, table_dir: Path, month_key: str) -> Path:
     """Write a PyArrow table to the hive-partitioned layout.
 
     Creates ``table_dir/month=<month_key>/data.parquet`` with ZSTD compression
     and column statistics enabled.  Returns the path to the written file.
+
+    Published via :func:`write_parquet_atomic` — the extract views glob this
+    directory on every query, including mid-write.
     """
     hive_dir = table_dir / f"{HIVE_PARTITION_PREFIX}={month_key}"
-    hive_dir.mkdir(parents=True, exist_ok=True)
-    dest = hive_dir / "data.parquet"
-    pq.write_table(table, dest, **PARQUET_WRITE_OPTIONS)
-    return dest
+    return write_parquet_atomic(table, hive_dir / "data.parquet")
 
 
 def get_month_key(dt: datetime | None) -> str:
     """Get month key (YYYY-MM) from datetime, defaulting to current month."""
     if dt is None:
-        dt = datetime.now(timezone.utc)
+        dt = datetime.now(UTC)
     return dt.strftime("%Y-%m")
 
 
@@ -800,6 +856,36 @@ def get_attachment_path(issue_key: str, attachment_id: str, filename: str) -> st
     suffix = num[-3:] if len(num) >= 3 else num
 
     return f"{prefix}/{suffix}/{attachment_id}_{filename}"
+
+
+def is_deleted(raw_issue: dict) -> bool:
+    """True when a deletion webhook has marked this issue's stored JSON.
+
+    `service.py` handles an issue-deleted webhook by stamping `_deleted_at`
+    into the JSON and removing the issue's parquet rows; the file itself is
+    kept for audit. Every consumer that republishes from raw JSON must honor
+    the marker: deletion webhooks fire once and the consistency check skips
+    marked JSONs, so a resurrected row would never be re-deleted and would be
+    invisible to the checker.
+
+    ``.get``, not ``in``: an explicit ``null`` counts as not-deleted, matching
+    the pre-existing reader in the consistency check; this helper is what
+    keeps the next one from drifting.
+    """
+    return bool(raw_issue.get("_deleted_at"))
+
+
+def comments_are_incomplete(raw_issue: dict) -> bool:
+    """True when this issue's embedded comment list is a KNOWN-TRUNCATED subset.
+
+    `complete_issue_comments` (service.py) sets the ``_comments_incomplete``
+    marker after a page-fetch failure mid-pagination. This helper is the single
+    source for the marker's semantics: `transform_comments` consults it for its
+    preserve-on-incomplete contract, and payload builders test it directly
+    instead of running the whole comment transform a second time just to see
+    whether it answers ``None``.
+    """
+    return raw_issue.get("_comments_incomplete") is True
 
 
 def transform_all(
@@ -851,10 +937,19 @@ def transform_all(
     json_files = list(issues_dir.glob("*.json"))
     logger.info(f"Processing {len(json_files)} issue files...")
 
+    deleted_by_month: dict[str, int] = {}
     for json_file in json_files:
         try:
             with open(json_file) as f:
                 raw_issue = json.load(f)
+
+            # A rebuild republishing deleted issues would resurrect rows nothing
+            # ever re-deletes — the full contract lives on `is_deleted`. Tracked
+            # by month so the all-deleted case below can be called out.
+            if is_deleted(raw_issue):
+                month_key = get_month_key(parse_datetime(raw_issue.get("fields", {}).get("created")))
+                deleted_by_month[month_key] = deleted_by_month.get(month_key, 0) + 1
+                continue
 
             # Transform issue
             issue_record = transform_issue(raw_issue)
@@ -908,6 +1003,21 @@ def transform_all(
 
         except Exception as e:
             logger.error(f"Error processing {json_file}: {e}")
+
+    if deleted_by_month:
+        logger.info(f"Skipped {sum(deleted_by_month.values())} issue(s) marked _deleted_at")
+    # A month whose issues are since ALL deleted never reaches the write loop, so
+    # whatever is on disk for it — including a corrupt partition an operator came
+    # here to repair — is left untouched. Rewriting it is not an option (the only
+    # rows we could publish are deleted issues'), so say what the remedy is
+    # instead of exiting 0 and letting "repaired" be assumed.
+    for month_key in sorted(set(deleted_by_month) - set(issues_by_month)):
+        logger.warning(
+            f"month={month_key}: all {deleted_by_month[month_key]} issue(s) are deleted; "
+            f"existing partitions are left untouched. If you are repairing a corrupt "
+            f"partition in this month, remove the file instead — every row it held "
+            f"belongs to a deleted issue."
+        )
 
     # Create output directories
     (output_dir / "issues").mkdir(parents=True, exist_ok=True)

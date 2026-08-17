@@ -29,14 +29,29 @@ import json
 import logging
 import threading
 import time
-from datetime import datetime, timezone
-from typing import Dict
+from datetime import UTC, datetime
 
 from src.object_store import ObjectStore
 
 logger = logging.getLogger(__name__)
 
 MIRROR_INDEX_KEY = "_mirrored.json"
+
+# The md5 of the bytes a part-download response actually carried.
+#
+# `agnes pull` verifies a downloaded part against THIS, not against the manifest
+# hash it planned with. The manifest hash is a cache key — "has this part changed
+# since I last pulled" — and it is a snapshot taken when `sync_state` was last
+# rebuilt. Manifest-fetch and part-download are separate requests, so on a dataset
+# being rewritten between them the two can legitimately disagree while every byte
+# transferred is perfect. No amount of re-hashing server-side closes that window;
+# the fix is for the bytes to describe themselves.
+#
+# Lives here, next to the mirror index, for the same reason that does: server
+# (`app/api/data.py`) and client (`cli/lib/pull.py`) sit on opposite sides of one
+# HTTP contract, and a name spelled out in both would let a rename silently
+# degrade one side to the fallback path with nothing failing.
+CONTENT_MD5_HEADER = "X-Agnes-Content-MD5"
 
 # How long `cached_mirror_index` may serve a stale index before re-reading
 # the store. WF-2's manifest build touches the store at most once per this
@@ -48,11 +63,11 @@ MIRROR_INDEX_KEY = "_mirrored.json"
 _MIRROR_INDEX_CACHE_TTL_S = 45.0
 
 _mirror_index_lock = threading.Lock()
-_mirror_index_cache: Dict[str, str] = {}
+_mirror_index_cache: dict[str, str] = {}
 _mirror_index_cache_at: float = 0.0
 
 
-def write_mirror_index(store: ObjectStore, mapping: Dict[str, str]) -> None:
+def write_mirror_index(store: ObjectStore, mapping: dict[str, str]) -> None:
     """Upload the marker index — ``{"tables": {table_id: md5, ...}, "updated":
     <iso8601>}`` — to :data:`MIRROR_INDEX_KEY`.
 
@@ -65,7 +80,7 @@ def write_mirror_index(store: ObjectStore, mapping: Dict[str, str]) -> None:
     """
     payload = {
         "tables": dict(mapping),
-        "updated": datetime.now(timezone.utc).isoformat(),
+        "updated": datetime.now(UTC).isoformat(),
     }
     data = json.dumps(payload).encode("utf-8")
     md5 = hashlib.md5(data).hexdigest()
@@ -75,7 +90,7 @@ def write_mirror_index(store: ObjectStore, mapping: Dict[str, str]) -> None:
         logger.exception("distribution mirror: failed to write marker index %s", MIRROR_INDEX_KEY)
 
 
-def read_mirror_index(store: ObjectStore) -> Dict[str, str]:
+def read_mirror_index(store: ObjectStore) -> dict[str, str]:
     """Return ``{table_id: md5}`` from the marker index, or ``{}`` on ANY
     failure (missing object, malformed JSON, store error) — fail-open, see
     the module docstring."""
@@ -93,7 +108,7 @@ def read_mirror_index(store: ObjectStore) -> Dict[str, str]:
         return {}
 
 
-def cached_mirror_index(store: ObjectStore, ttl_s: float = _MIRROR_INDEX_CACHE_TTL_S) -> Dict[str, str]:
+def cached_mirror_index(store: ObjectStore, ttl_s: float = _MIRROR_INDEX_CACHE_TTL_S) -> dict[str, str]:
     """Process-wide, short-TTL-cached wrapper around :func:`read_mirror_index`.
 
     WF-2 (manifest build) calls this once per manifest build rather than

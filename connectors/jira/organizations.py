@@ -17,14 +17,12 @@ Usage:
 
 import argparse
 import logging
-import os
 import sys
 import time
 from pathlib import Path
 
 import httpx
 import pandas as pd
-import pyarrow.parquet as pq
 
 from connectors.jira.extract_init import get_default_output_dir, update_meta
 from connectors.jira.service import (
@@ -34,10 +32,10 @@ from connectors.jira.service import (
     reload_config_from_env,
 )
 from connectors.jira.transform import (
-    PARQUET_WRITE_OPTIONS,
     apply_schema,
     organizations_schema,
     transform_organization,
+    write_parquet_atomic,
 )
 
 logger = logging.getLogger(__name__)
@@ -401,47 +399,16 @@ def refresh_organizations(
     # the enumeration.
     stats["removed"] = dropped
 
-    table_dir.mkdir(parents=True, exist_ok=True)
     table = apply_schema(pd.DataFrame(records), organizations_schema())
-    dest = table_dir / "data.parquet"
     # Write-then-replace so a reader never observes a truncated parquet: the extract
     # views glob this directory on every query, including mid-write.
     #
-    # The temp name is per-process. A shared one held a real race between the nightly
-    # job and the documented manual run — and those overlap by design, since `--force`
-    # exists precisely for when the guard is refusing on the scheduled path. Two writers
-    # on one temp path let either `os.replace` a parquet the other was still writing,
-    # publishing a truncated file under the name every query reads, while the loser's
-    # `finally` could delete the other's in-flight temp (Devin Review on #1274). The job
-    # queue's idempotency key serialises job rows against each other, but nothing
-    # serialises the CLI against the worker.
-    #
-    # Deliberately NOT `tempfile.mkstemp`, which the raw-JSON writers use: it creates the
-    # file 0600 and `os.replace` preserves the mode, so the published parquet would
-    # silently drop from 0644 to 0600 — the permissions regression incident #203
-    # documents for exactly this pattern. Measured both before choosing.
-    tmp_dest = table_dir / f"data.parquet.{os.getpid()}.tmp"
-    try:
-        pq.write_table(table, tmp_dest, **PARQUET_WRITE_OPTIONS)
-        # Explicit mode, not the umask's: pq.write_table creates the temp as
-        # 0666 & umask, so under a restrictive umask (0077 in some container/
-        # systemd units) the replace would publish 0600 — the same #203 outcome
-        # the mkstemp avoidance above defends against, arriving from the other
-        # side. 0o644 rather than the raw-JSON writers' 0o660: their fchmod
-        # serves a directory carrying POSIX ACLs, while every parquet in this
-        # extract tree effectively lands world-readable (0666 & umask), and the
-        # documented manual run may execute as a different user than the server
-        # process — group-only read would need a shared group where 0644 does
-        # not (Devin Review on #1274).
-        os.chmod(tmp_dest, 0o644)
-        os.replace(tmp_dest, dest)
-    finally:
-        # A failed write would otherwise leave the temp behind. The extract view globs
-        # `*.parquet`, so a stray `.tmp` is never read, but the sibling writers
-        # (connectors/keboola/incremental.py) clean up for the same reason and an
-        # accumulating temp file is nobody's friend. Unlinking only this process's own
-        # temp is what makes the cleanup safe under concurrency.
-        tmp_dest.unlink(missing_ok=True)
+    # Why the helper's per-process temp name matters specifically HERE: the nightly job
+    # and the documented manual run overlap by design, since `--force` exists precisely
+    # for when the guard is refusing on the scheduled path. The job queue's idempotency
+    # key serialises job rows against each other, but nothing serialises the CLI against
+    # the worker.
+    write_parquet_atomic(table, table_dir / "data.parquet")
 
     # Refresh the catalog row + rebuild the view so the new column set is visible.
     #

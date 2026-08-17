@@ -1,25 +1,24 @@
 """Databricks extractor — SQL-warehouse materialization into local parquet.
 
-Phase 1 of the Databricks connector supports ``query_mode='materialized'``
-only: the scheduler's materialized pass (``app/api/sync.py``) runs each
-registered row's SQL on the configured Databricks SQL warehouse via the
-Statement Execution API and writes the result to
-``$DATA_DIR/extracts/databricks/data/<table_id>.parquet``, registering it in
+This module owns ``query_mode='materialized'``: the scheduler's materialized
+pass (``app/api/sync.py``) runs each registered row's SQL on the configured
+Databricks SQL warehouse via the Statement Execution API and writes the result
+to ``$DATA_DIR/extracts/databricks/data/<table_id>.parquet``, registering it in
 ``extracts/databricks/extract.duckdb`` (``_meta`` + inner view) so the
 orchestrator's standard rebuild publishes a master view — the same
 distribution path (manifest + ``agnes pull``) every other materialized row
 rides.
 
-Not yet supported (deliberately, see the register-time validation in
-``app/api/admin.py``):
+The connector's other two modes live elsewhere:
 
-- ``query_mode='local'`` — there is no Databricks extractor subprocess; a
-  full-table pull is expressed as a materialized row instead (the register
-  route server-generates ``SELECT * FROM <catalog>.<schema>.<table>`` when
-  ``source_query`` is omitted).
-- ``query_mode='remote'`` — would require a ``_remote_attach`` row pairing
-  the experimental DuckDB ``unity_catalog``/``delta`` extensions with an
-  allowlist entry in ``src/orchestrator_security.py``; follow-up phase.
+- ``query_mode='remote'`` — nothing syncs; the analyst's statement ships to
+  the warehouse per query (``connectors/databricks/remote.py``, reached from
+  ``app/api/query.py``). Optionally also attachable into DuckDB via
+  ``connectors/databricks/{attach,extract_init}.py``.
+- ``query_mode='local'`` — rejected at register time. There is no Databricks
+  extractor subprocess; a full-table pull is expressed as a materialized row
+  instead (the register route server-generates ``SELECT * FROM
+  <catalog>.<schema>.<table>`` when ``source_query`` is omitted).
 
 Cost guardrail: the Statement Execution API has no dry-run primitive (unlike
 BigQuery), so ``max_bytes`` caps the *result* size instead of the scanned
