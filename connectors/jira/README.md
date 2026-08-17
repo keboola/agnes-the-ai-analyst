@@ -467,6 +467,24 @@ report's `alert_level` and `discrepancies.parquet_read_failed` rather than on
 the exit code — the exit code deliberately cannot distinguish "one issue failed
 to transform" from "the corpus is unreadable".
 
+There is one more way this unit can now sit red, and it is not a bug:
+
+- **An instance that has raw JSON but has never been transformed to Parquet.**
+  Every issue is genuinely missing on the Parquet side, which is over
+  `AUTO_FIX_THRESHOLD` (20), so the checker refuses to fix it one 120-second
+  subprocess at a time and reports `manual review required` at `ERROR` — the
+  same response `missing_in_json` has always given to a gap that size. The fix
+  is to run the batch transform once (see *Historical Backfill* below); the
+  unit goes green on the next run. Before #1363 this state auto-"fixed" itself
+  by shelling out once per issue for the whole corpus, which is precisely the
+  churn that issue was filed about.
+
+Note the deliberate non-case: if DuckDB is unavailable the Parquet scan cannot
+run at all, and the checker reports `parquet_read_failed` with a
+`<parquet-scan-unavailable: …>` marker instead of claiming the corpus is
+missing. A run that never looked must not name issue keys as missing — install
+DuckDB and the check resumes.
+
 ## Schema Reference
 
 The Jira tables and their columns are described in [`docs/DATA_SOURCES.md`](../../docs/DATA_SOURCES.md). At runtime, inspect the live schema with `agnes schema <table>` and `agnes describe <table>`.

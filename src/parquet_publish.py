@@ -63,7 +63,12 @@ Two incidents shaped this, both worth keeping in mind before changing it:
   ``KeyboardInterrupt``/``SystemExit``; unlinking only the CURRENT process's
   own temp — never a glob, never anything else in ``dest``'s directory — is
   what keeps that cleanup safe while another writer is concurrently
-  mid-publish to the same ``dest``.
+  mid-publish to the same ``dest``. That coverage spans the COMMIT as well
+  as the write: the Jira original wrapped write + ``chmod`` + ``replace`` in
+  one guard, and the ``chmod``/``replace`` pair is itself two syscalls with
+  a real failure window between them (EPERM, ENOSPC, EXDEV, or a signal), so
+  `atomic_publish_finalize` unlinks its own temp on failure rather than
+  leaving one behind for nobody to collect (Devin review).
 
 The temp name never matches a reader's ``*.parquet`` glob (it always ends in
 ``.tmp``), so a stray one left behind by a hard kill (SIGKILL, OOM) is inert —
@@ -122,15 +127,37 @@ def atomic_publish_finalize(tmp: Path | str, dest: Path | str) -> Path:
     """Commit a completed temp write: ``chmod 0644``, then atomically replace.
 
     Pairs with `atomic_publish_temp_path` for call sites whose write is too
-    spread out to nest inside `atomic_publish`'s ``with`` block. This
-    function only implements the commit half — cleaning up ``tmp`` on a
-    failed write remains the caller's own responsibility along the way, same
-    as `atomic_publish` does internally for the single-block case.
+    spread out to nest inside `atomic_publish`'s ``with`` block.
+
+    The split of responsibility is by half, not by function: cleaning up
+    ``tmp`` if the **write** fails is still the caller's job along the way
+    (only the caller knows which of its steps may leave a partial temp),
+    but the **commit** cleans up after itself — if the ``chmod``/``replace``
+    pair raises, ``tmp`` is unlinked before the exception propagates and
+    *dest* is left untouched. Every explicit-pair call site hands the commit
+    to this function and none of them wrap it, so a stranded temp here would
+    have no owner at all.
     """
     tmp = Path(tmp)
     dest = Path(dest)
-    os.chmod(tmp, 0o644)
-    os.replace(tmp, dest)
+    try:
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, dest)
+    except BaseException:
+        # The commit is two syscalls, and everything between "chmod ran" and
+        # "replace landed" is a window where the temp still exists and *dest*
+        # is untouched: EPERM/EROFS from the chmod, ENOSPC/EXDEV from the
+        # replace, or a KeyboardInterrupt/SystemExit arriving between them.
+        # The Jira original this protocol came from wrapped write + chmod +
+        # replace in ONE `except BaseException: unlink; raise`, so a failure
+        # in the commit half still took the temp with it. Cleaning up here,
+        # rather than only in `atomic_publish`, keeps that guarantee for the
+        # explicit temp-path/finalize callers too — they hand the commit off
+        # to this function and none of them wrap it (Devin review).
+        # Idempotent: after a successful `os.replace` the temp is already
+        # gone, and `missing_ok=True` makes a second unlink a no-op.
+        tmp.unlink(missing_ok=True)
+        raise
     return dest
 
 
@@ -158,8 +185,13 @@ def atomic_publish(dest: Path | str) -> Iterator[Path]:
     tmp = atomic_publish_temp_path(dest)
     try:
         yield tmp
+        atomic_publish_finalize(tmp, dest)
+        # Inside the guard, not in an `else:`. `atomic_publish_finalize` already
+        # cleans up after its own failure, so this is belt-and-braces — but it
+        # keeps THIS function's stated contract ("on any exception the temp is
+        # removed and *dest* is left exactly as it was") true on its own terms,
+        # rather than resting on an internal detail of another function that a
+        # later change could move. The extra unlink is a no-op (`missing_ok`).
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
-    else:
-        atomic_publish_finalize(tmp, dest)

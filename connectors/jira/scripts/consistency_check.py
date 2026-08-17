@@ -125,6 +125,14 @@ class JiraConsistencyChecker:
     # Jira API limits
     MAX_RESULTS_PER_PAGE = 100
 
+    # Sentinel reported in `parquet_read_failed` when the Parquet scan could
+    # not run at all (as opposed to individual files failing to read). Not a
+    # path, and deliberately shaped so it cannot collide with one, because the
+    # distinction it carries is "we never looked" rather than "this file is
+    # broken" — the run must not then report a corpus-sized gap it never
+    # measured.
+    PARQUET_SCAN_UNAVAILABLE = "<parquet-scan-unavailable: duckdb not installed>"
+
     def __init__(self, config: Config):
         self.config = config
         self.base_url = f"https://{config.jira_domain}/rest/api/3"
@@ -282,13 +290,38 @@ class JiraConsistencyChecker:
             keys set together with a non-empty failure list means the scan
             could not read some/all Parquet data — callers must NOT treat
             that the same as a genuinely empty corpus.
+
+            The failure list holds file paths, except for one sentinel:
+            `PARQUET_SCAN_UNAVAILABLE`, reported when the scan could not run
+            at all (no DuckDB) and there are therefore no paths to name. A
+            caller seeing it knows the whole Parquet side is unmeasured, not
+            that some files are broken — `run_check` uses it to suppress a
+            corpus-sized "missing in Parquet" gap it never actually observed.
+
+            "No Parquet directory" is NOT a failure: the scan ran and found
+            nothing, which on a never-transformed instance is a real gap.
         """
         if not HAS_DUCKDB:
-            logger.warning("DuckDB not available, skipping Parquet validation")
-            return set(), []
+            # NOT `return set(), []` — that is the "genuinely empty corpus"
+            # answer, and this is the opposite: the scan could not run at all.
+            # Conflating them is the exact bug this function's contract exists
+            # to prevent, one level up from the per-file case: with no keys
+            # read, EVERY issue looks missing from Parquet, which then reports
+            # a corpus-sized gap nobody measured (Devin review).
+            logger.error(
+                "DuckDB is not available — Parquet validation cannot run. Reporting a scan "
+                "failure rather than an empty corpus, so the run cannot claim success."
+            )
+            return set(), [self.PARQUET_SCAN_UNAVAILABLE]
 
         issues_dir = self.config.parquet_dir / "issues"
         if not issues_dir.exists():
+            # Deliberately the empty-corpus answer, unlike the branch above:
+            # here the scan DID run and found nothing to read. On a fresh
+            # instance that has raw JSON but has never been transformed, the
+            # whole-corpus Parquet gap is real, and the over-threshold
+            # "manual review required" path is the correct response — it
+            # mirrors what `missing_in_json` has always done at that size.
             logger.warning(f"Parquet directory not found: {issues_dir}")
             return set(), []
 
@@ -548,6 +581,21 @@ class JiraConsistencyChecker:
 
         missing_in_json = discrepancies["missing_in_json"]
         missing_in_parquet = discrepancies["missing_in_parquet"]
+
+        # If the Parquet scan never ran, every issue trivially "missing in
+        # Parquet" is an artefact of not having looked, not a measurement.
+        # Drop it rather than report it: left in, it drives a corpus-sized
+        # number into `missing_in_parquet`, logs "exceeds threshold, manual
+        # review required" about a gap nobody observed, and scores the alert
+        # on it. The run still fails loudly — `parquet_read_failed` carries
+        # the sentinel and forces ERROR/partial_success below — but it now
+        # says "the Parquet scan could not run", which is true and points at
+        # the actual fix (install DuckDB), instead of naming N issues that
+        # may be perfectly fine (Devin review).
+        if self.PARQUET_SCAN_UNAVAILABLE in self.stats["parquet_read_failed"]:
+            missing_in_parquet = []
+            discrepancies["missing_in_parquet"] = []
+            self.stats["missing_in_parquet"] = []
 
         # Determine if auto-fix should run
         should_fix = (

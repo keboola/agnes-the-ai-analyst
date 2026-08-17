@@ -153,6 +153,62 @@ class TestScanParquetKeysReadFailureVisibility:
         assert len(failed) == 2, "both unreadable files must show up — not an empty-but-clean return"
 
 
+class TestParquetScanThatCouldNotRunAtAll:
+    """ "DuckDB is not installed" is the same conflation as a corrupt file, one
+    level up: the scan never looked, so returning a bare empty set makes EVERY
+    issue look missing from Parquet.
+
+    That was harmless while nothing keyed on the Parquet gap. It stopped being
+    harmless once the gap became threshold-gated and alert-scored: the run
+    would report a corpus-sized `missing_in_parquet`, log "exceeds threshold,
+    manual review required" about issues it never checked, and page at ERROR
+    every 30 minutes — naming N issues that may be perfectly fine instead of
+    the one thing actually wrong (Devin review).
+
+    The run must still FAIL — a checker that cannot check is broken — but for
+    the true reason, and without inventing a number."""
+
+    def test_the_scan_reports_unavailable_rather_than_an_empty_corpus(self, tmp_path: Path) -> None:
+        checker = JiraConsistencyChecker(_config(tmp_path / "raw", tmp_path / "parquet"))
+        with patch("connectors.jira.scripts.consistency_check.HAS_DUCKDB", False):
+            keys, failed = checker.scan_parquet_keys()
+        assert keys == set()
+        assert failed == [JiraConsistencyChecker.PARQUET_SCAN_UNAVAILABLE], (
+            "no DuckDB means the scan could not run — that is not an empty corpus"
+        )
+
+    def test_no_phantom_corpus_sized_gap_is_reported(self, tmp_path: Path) -> None:
+        keys = [f"PROJ-{i}" for i in range(50)]
+        with patch("connectors.jira.scripts.consistency_check.HAS_DUCKDB", False):
+            report, mock_run, _ = _run_check(tmp_path, keys, {})
+        assert report["discrepancies"]["missing_in_parquet"] == [], (
+            "the checker must not report a Parquet gap it never measured"
+        )
+        assert mock_run.call_count == 0, "and must not transform issues it never checked"
+
+    def test_the_run_still_fails_loudly_for_the_real_reason(self, tmp_path: Path) -> None:
+        keys = [f"PROJ-{i}" for i in range(50)]
+        with patch("connectors.jira.scripts.consistency_check.HAS_DUCKDB", False):
+            report, _, _ = _run_check(tmp_path, keys, {})
+        assert report["alert_level"] == "ERROR"
+        assert report["status"] != "success"
+        assert JiraConsistencyChecker.PARQUET_SCAN_UNAVAILABLE in report["discrepancies"]["parquet_read_failed"], (
+            "the report must name the actual failure, not a list of issue keys"
+        )
+
+    def test_a_never_transformed_corpus_is_still_a_real_gap(self, tmp_path: Path) -> None:
+        """The neighbouring branch, deliberately NOT changed: an existing-but-
+        empty Parquet dir means the scan ran and found nothing, so on a fresh
+        instance carrying raw JSON the whole-corpus gap is real and the
+        over-threshold "manual review required" path is the right answer —
+        the same one `missing_in_json` has always taken at that size."""
+        keys = [f"PROJ-{i}" for i in range(50)]
+        report, mock_run, _ = _run_check(tmp_path, keys, {})
+        assert len(report["discrepancies"]["missing_in_parquet"]) == 50
+        assert report["discrepancies"]["parquet_read_failed"] == []
+        assert mock_run.call_count == 0, "over threshold — still not fixed one subprocess per key"
+
+
 class TestParquetLagThreshold:
     """The missing_in_parquet fix path must be threshold-gated exactly like
     missing_in_json already is — a lag in the thousands is a broken read,

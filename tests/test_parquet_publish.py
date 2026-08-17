@@ -247,3 +247,92 @@ def test_atomic_publish_finalize_mode_is_0644_under_restrictive_umask(tmp_path):
     pub.atomic_publish_finalize(tmp, dest)
 
     assert oct(dest.stat().st_mode & 0o777) == oct(0o644)
+
+
+# --------------------------------------------------------------------------
+# A FAILING COMMIT must not strand the temp either.
+#
+# The write half was always covered. The commit half — `chmod` then `replace`,
+# two syscalls with a real window between them (EPERM/EROFS, ENOSPC/EXDEV, or
+# a signal) — briefly was not: `atomic_publish` called the commit from an
+# `else:` clause, outside its own `except BaseException` guard, and the three
+# explicit temp-path/finalize call sites in the connectors do not wrap it at
+# all. A stranded multi-GB temp then has no owner: it never matches a reader's
+# `*.parquet` glob, so nothing serves it and nothing cleans it up (Devin
+# review). These tests fail against that shape and pass against the fixed one.
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+def failing_replace(monkeypatch):
+    """`os.replace` raises, as it would across a filesystem boundary or on a
+    full disk — after `chmod` has already run, i.e. mid-commit."""
+
+    def boom(*a, **kw):
+        raise OSError("EXDEV: cross-device link")
+
+    monkeypatch.setattr(pub.os, "replace", boom)
+
+
+def test_a_failing_commit_leaves_no_temp_behind_context_manager(tmp_path, failing_replace):
+    dest = tmp_path / "t.parquet"
+    with pytest.raises(OSError):
+        with pub.atomic_publish(dest) as tmp:
+            tmp.write_bytes(FOOTERLESS)
+    assert list(tmp_path.glob("*.tmp")) == [], "a commit that failed must still take its temp with it"
+    assert not dest.exists()
+
+
+def test_a_failing_commit_leaves_no_temp_behind_explicit_pair(tmp_path, failing_replace):
+    """The shape the connectors' `materialize_query` functions use — they call
+    `atomic_publish_finalize` directly and none of them wrap it."""
+    dest = tmp_path / "t.parquet"
+    tmp = pub.atomic_publish_temp_path(dest)
+    tmp.parent.mkdir(parents=True, exist_ok=True)
+    tmp.write_bytes(FOOTERLESS)
+
+    with pytest.raises(OSError):
+        pub.atomic_publish_finalize(tmp, dest)
+
+    assert not tmp.exists(), "the temp must not outlive a failed commit"
+    assert not dest.exists()
+
+
+def test_a_failing_commit_leaves_a_previously_published_file_intact(tmp_path, failing_replace):
+    dest = tmp_path / "t.parquet"
+    dest.write_bytes(b"previously published")
+    with pytest.raises(OSError):
+        with pub.atomic_publish(dest) as tmp:
+            tmp.write_bytes(FOOTERLESS)
+    assert dest.read_bytes() == b"previously published"
+
+
+def test_a_failing_chmod_also_cleans_up(tmp_path, monkeypatch):
+    """The first of the two commit syscalls, so the temp exists and `replace`
+    has not run — nothing else in the process will ever look at this path."""
+
+    def boom(*a, **kw):
+        raise PermissionError("EPERM")
+
+    monkeypatch.setattr(pub.os, "chmod", boom)
+    dest = tmp_path / "t.parquet"
+    with pytest.raises(PermissionError):
+        with pub.atomic_publish(dest) as tmp:
+            tmp.write_bytes(FOOTERLESS)
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_a_signal_during_the_commit_still_cleans_up(tmp_path, monkeypatch):
+    """`except BaseException`, not `except Exception`: a KeyboardInterrupt
+    arriving between `chmod` and `replace` must not strand the temp — that is
+    exactly the coverage the module docstring claims a `finally` would give."""
+
+    def boom(*a, **kw):
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(pub.os, "replace", boom)
+    dest = tmp_path / "t.parquet"
+    with pytest.raises(KeyboardInterrupt):
+        with pub.atomic_publish(dest) as tmp:
+            tmp.write_bytes(FOOTERLESS)
+    assert list(tmp_path.glob("*.tmp")) == []
