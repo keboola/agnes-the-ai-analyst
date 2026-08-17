@@ -372,6 +372,21 @@ def _validate_auth_providers_in_patch(sections: Dict[str, Dict[str, Any]]) -> No
                 "GOOGLE_CLIENT_SECRET environment variables at process start — a Google "
                 "OAuth client configured only in instance.yaml is not detected."
             )
+        if "microsoft" in known:
+            # Same env-capture property as Google, and the base detail names
+            # neither Microsoft nor its variables — so a Microsoft-only save
+            # refused for missing env would otherwise read as a message about
+            # some other provider. The tenant clause is not padding: an
+            # invalid/multi-tenant MICROSOFT_TENANT_ID makes the provider
+            # unavailable too (see app/auth/providers/microsoft.py), which is
+            # indistinguishable from "unset" without saying so.
+            detail += (
+                " Note: Microsoft availability is read from the MICROSOFT_TENANT_ID / "
+                "MICROSOFT_CLIENT_ID / MICROSOFT_CLIENT_SECRET environment variables at process "
+                "start — Microsoft sign-in cannot be configured from instance.yaml. It also reads "
+                "unavailable when MICROSOFT_TENANT_ID is not a single tenant (a directory GUID or a "
+                "verified domain); the boot log says which."
+            )
         raise HTTPException(status_code=422, detail=detail)
 
 

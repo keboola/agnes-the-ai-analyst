@@ -1114,6 +1114,18 @@ async def lifespan(app):
     except Exception:
         logger.exception("BQ startup config validation crashed (non-fatal)")
 
+    # Microsoft Entra ID: a tenant that fails the single-tenant check leaves
+    # the provider unavailable (the login button silently disappears), and an
+    # available provider without auth.allowed_domain has no identity boundary
+    # against the tenant's B2B guests. Both must reach the boot log.
+    try:
+        from app.auth.providers.microsoft import startup_warnings as microsoft_startup_warnings
+
+        for warning in microsoft_startup_warnings():
+            logger.warning("Microsoft auth check: %s", warning)
+    except Exception:
+        logger.exception("Microsoft auth startup check crashed (non-fatal)")
+
     # Bring the Postgres schema to the app's expected Alembic head. The
     # DuckDB ladder self-migrates on every connect (src/db.py); Postgres
     # now mirrors that at startup — when the DB is behind, the pending

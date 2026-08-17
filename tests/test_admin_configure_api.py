@@ -453,6 +453,26 @@ class TestServerConfigAuthProvidersValidation:
         assert resp.status_code == 422, resp.text
         assert "no usable sign-in method" in resp.json()["detail"]
 
+    def test_microsoft_refusal_names_microsoft_and_its_env_vars(self, seeded_app, monkeypatch):
+        """Mirrors the Google note: availability is read from the process
+        environment at start, so a refusal that names neither Microsoft nor
+        its three env vars leaves the operator with nothing to act on."""
+        import app.auth.providers.microsoft as ms
+
+        monkeypatch.setattr(ms, "is_available", lambda: False)
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/server-config",
+            json={"sections": {"auth": {"providers": ["microsoft"]}}, "confirm_danger": True},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 422, resp.text
+        detail = resp.json()["detail"]
+        assert "MICROSOFT_TENANT_ID" in detail
+        assert "MICROSOFT_CLIENT_ID" in detail
+        assert "MICROSOFT_CLIENT_SECRET" in detail
+
     def test_http_auth_keboola_stack_url_is_refused(self, seeded_app):
         """auth.keboola URLs are held to the source-connection bar
         (_validate_stack_url rejects non-https): they carry credentials at
