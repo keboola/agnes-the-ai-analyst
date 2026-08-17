@@ -71,6 +71,18 @@ The allowlist excludes them at the network edge anyway, as defense-in-depth:
 don't let the tunnel forward them in the first place, even though the app's
 own auth layer would already reject a bare PAT that reached them.
 
+**Long-running calls and the tunnel's own timeout.** `POST …/responses`
+waits synchronously for up to `timeout_s` (default 120s, max 600s) before
+degrading to a background job and returning `{"job_id": …}` for the caller
+to poll at the already-allowlisted `GET /api/v1/jobs/{job_id}`. A default
+Cloudflare Tunnel edge cuts an idle origin response off well before that —
+around 100s, surfaced to the caller as a `524`, before Agnes's own degrade
+response ever gets sent. Set `"background": true` on the request body (or
+pass a `timeout_s` comfortably under the tunnel's own limit) so the call
+degrades to the job flow on Agnes's terms, not the tunnel's; check your
+tunnel product's current timeout behavior if you'd rather rely on the
+default synchronous wait.
+
 PAT minting (`POST /api/v1/agents/{id}/tokens`, via `agnes agent token <slug>
 --name <label>`) happens **inside** the VPN, by the agent's owner — only the
 resulting token, never a management endpoint, gets handed to the external

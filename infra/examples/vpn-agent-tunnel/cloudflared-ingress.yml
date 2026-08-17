@@ -37,6 +37,14 @@ credentials-file: /etc/cloudflared/<YOUR-TUNNEL-ID>.json
 
 ingress:
   # POST /api/v1/agents/{slug}/responses — the one-shot agent runtime call.
+  # This waits synchronously for up to `timeout_s` (default 120s, max
+  # 600s — see app/api/agent_runtime.py) before degrading to a background
+  # job. A default Cloudflare Tunnel edge cuts an idle origin response off
+  # around 100s (a 524 to the caller) before that degrade response can be
+  # sent. Callers should pass `"background": true` in the request body (or
+  # a `timeout_s` comfortably under your tunnel's own limit) and poll
+  # GET /api/v1/jobs/{job_id} below instead of relying on the sync wait —
+  # see the README's "Long-running calls" note.
   - hostname: agent-api.example.com
     path: ^/api/v1/agents/[^/]+/responses$
     service: http://127.0.0.1:8000
