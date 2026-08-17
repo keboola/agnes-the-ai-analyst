@@ -19,6 +19,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 - `ticket_repo().revoke_session_scopes(session_id, scopes)` (both backends) revokes a session's tickets in the named scopes only. The existing `revoke_session` is scope-blind, which is wrong for a caller holding a long-lived credential in one scope while rotating short-lived egress tickets in others: sweeping the whole session would delete the credential the caller just authenticated with, and the embedded engine has no way to be handed a replacement — its ticket-response schema is `{llm, mcp}` and it keeps using the credential baked into its session JWT, so a scope-blind revoke would `401` every turn after the first. An empty scope list deletes nothing rather than degrading to "match everything".
 
+## [0.83.31] - 2026-08-17
+
+### Fixed
+
+- **The MCP Registry listing can no longer advertise a version Agnes is not.** `server.json` carries its own copy of the version and only a comment asked anyone to keep it in step with `pyproject.toml`, so a release cut that bumped the package alone left the listing behind — which is exactly what happened at 0.83.30, published while the listing still said 0.83.29. Registry versions are immutable, so a wrong one cannot be corrected after publish, only superseded. `tests/test_mcp_registry_manifest.py` now asserts the two match.
+
+### Removed
+
+- **Three `instance.yaml` options that have done nothing since March are gone from the documentation.** `auth.username_strip_domain`, `auth.username_prefix` and the top-level `username_mapping` shaped the Linux OS account the legacy webapp created under `/home/` for each analyst; that webapp — and with it every reader of the three keys — was deleted back in v0.11.0, but the commented block in `config/instance.yaml.example` survived and kept describing them as live. Nothing changes at runtime, because nothing read them: an instance that sets any of the three today already gets no effect from it, and one that removes them gets no effect either. Removing the block ends the misdirection it caused — it told operators that stripping the domain is "safe when `allowed_domain` ensures all users share a single domain", implying multi-domain instances must turn it off, and warned that changing either option "will invalidate all existing analyst accounts", which reads as an irreversible knob when in fact the setting is inert. `docs/CONFIGURATION.md` loses its `username_mapping` line for the same reason.
+
 ## [0.83.30] - 2026-08-17
 
 ### Fixed
