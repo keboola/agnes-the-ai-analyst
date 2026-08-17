@@ -56,6 +56,15 @@ ingress:
     path: ^/api/v1/sessions/[^/]+/messages$
     service: http://127.0.0.1:8000
 
+  # POST /api/v1/sessions/{id}/memories — the agent's own "remember" tool
+  # call (app/api/agent_memory.py), gated by the same require_session_
+  # principal dependency as the rest of this session surface — not the
+  # unrelated, excluded /api/v1/agents/{id}/memories* (owner-facing
+  # inspect/approve/archive, require_session_token-gated) below.
+  - hostname: agent-api.example.com
+    path: ^/api/v1/sessions/[^/]+/memories$
+    service: http://127.0.0.1:8000
+
   # POST /api/v1/sessions/{id}/cancel — cancel an in-flight turn.
   - hostname: agent-api.example.com
     path: ^/api/v1/sessions/[^/]+/cancel$

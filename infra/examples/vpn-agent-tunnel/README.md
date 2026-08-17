@@ -19,8 +19,9 @@ allowlists:
 
 ## Option A — agent-only tunnel (recommended for VPN-only instances)
 
-Exposes **only** the agent-as-API runtime — `app/api/agent_runtime.py` and
-`app/api/agent_sessions.py`, both mounted at `/api/v1`. That surface is
+Exposes **only** the agent-as-API runtime — `app/api/agent_runtime.py`,
+`app/api/agent_sessions.py`, and the "remember" tool in
+`app/api/agent_memory.py`, all mounted at `/api/v1`. That surface is
 Bearer-**PAT**-authenticated (never a browser session) and scoped to exactly
 one `'selected'`-mode agent, whose effective authority is the intersection of
 its own declared scope and its owner's grants — enforced live on every
@@ -43,6 +44,7 @@ POST   /api/v1/agents/*/responses
 GET    /api/v1/agents/*/usage
 POST   /api/v1/agents/*/sessions
 POST   /api/v1/sessions/*/messages
+POST   /api/v1/sessions/*/memories
 GET    /api/v1/sessions/*
 POST   /api/v1/sessions/*/cancel
 DELETE /api/v1/sessions/*

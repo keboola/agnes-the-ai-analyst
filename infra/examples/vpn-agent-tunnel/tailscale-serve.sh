@@ -11,7 +11,17 @@
 #
 # Flags shown match Tailscale CLI >= 1.70 (`tailscale serve --set-path=...`).
 # Run `tailscale serve --help` first to confirm the exact flags on your
-# installed version before relying on this in production.
+# installed version before relying on this in production. This script
+# assumes `--set-path` strips the mount prefix before proxying, so the
+# path repeated in the target URL below round-trips back to the same
+# path Agnes expects; a version that instead preserves the incoming path
+# would double it (e.g. `/api/v1/sessions/api/v1/sessions/{id}`) and every
+# route would 404. Confirm this before trusting the tunnel — after running
+# the mounts below, smoke-test one allowlisted path end-to-end:
+#   curl -I https://<your-funnel-hostname>/api/v1/jobs/does-not-exist
+# A 401/404 *from Agnes* (check for its response body/headers) means the
+# path arrived intact; a bare 404 with no such body means it never reached
+# this instance — the path was likely mangled before it got here.
 #
 # IMPORTANT — read before using this instead of the Cloudflare recipe:
 # `tailscale serve` mounts route by path PREFIX, not by regex. That is

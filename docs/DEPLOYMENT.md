@@ -308,7 +308,8 @@ supported responses, pick one:
    - **Option A — agent-only tunnel (recommended).** Expose only the
      agent-as-API runtime surface: `POST /api/v1/agents/{slug}/responses`
      and its session/job companions (`app/api/agent_runtime.py`,
-     `app/api/agent_sessions.py`, both mounted at `/api/v1`). That surface
+     `app/api/agent_sessions.py`, and the "remember" tool in
+     `app/api/agent_memory.py`, all mounted at `/api/v1`). That surface
      is Bearer-**PAT**-authenticated (not a browser session) and scoped to
      exactly one `'selected'`-mode agent — its effective authority is the
      intersection of the agent's declared scope and its owner's own grants,
