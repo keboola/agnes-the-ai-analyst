@@ -116,7 +116,7 @@ def _capture_orchestrator_exception(exc: BaseException, **props) -> None:
 # orchestrator and the extractors share the same regex (#81 Group D).
 # The local names are kept as aliases so existing call sites need no
 # rename — they import from a single source of truth now.
-from src.identifier_validation import (
+from src.identifier_validation import (  # noqa: E402
     _SAFE_IDENTIFIER,  # noqa: F401  (re-exported for any historical caller)
 )
 from src.identifier_validation import (  # noqa: E402
