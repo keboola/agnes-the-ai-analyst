@@ -101,8 +101,10 @@ def is_safe_plugin_source(source: object) -> bool:
     primitive.
 
     Non-string sources (Claude Code's external object form) are not this
-    function's concern — callers route those separately (valid at ingest, no
-    local files to serve).
+    function's concern, and neither are remote string sources — callers route
+    both through ``is_external_plugin_source`` (valid at ingest, no local
+    files to serve). What this function rejects is a string that *looks* like
+    an in-repo path but escapes: absolute, ``..``, or backslash-bearing.
 
     Security playbook §6 mandates BOTH layers — reject here at ingest
     (``read_plugins``) so a bad row never reaches the DB, and contain at use in
@@ -113,6 +115,36 @@ def is_safe_plugin_source(source: object) -> bool:
     if source.startswith("/") or "\\" in source or ":" in source:
         return False
     return all(seg != ".." for seg in source.split("/"))
+
+
+def is_external_plugin_source(source: object) -> bool:
+    """True when a string ``source`` names a location OUTSIDE the marketplace
+    clone — a URL (``https://…``, ``git+ssh://…``) or an scp-style git address
+    (``git@host:owner/repo``).
+
+    A remote string source is a real shape, not a typo: Agnes's own
+    ``marketplace_metadata_scaffold`` has always accepted one (it keeps the
+    plugin and merely skips skill/agent enumeration, see
+    ``tests/test_marketplace_metadata_scaffold.py::
+    test_remote_source_skips_enumeration_but_keeps_plugin_fields``). Ingest
+    therefore keeps such a row — dropping it would take the plugin off the
+    Browse shelf and leave its ``resource_grants`` dangling — and treats it
+    exactly like the dict form: a catalog entry Agnes serves no files for.
+
+    Deliberately narrow. A backslash-bearing string is NOT external (it is a
+    Windows-style path attempt and stays a rejection), and a bare
+    ``owner/repo`` is indistinguishable from a relative directory, so it keeps
+    being read as one.
+    """
+    if not isinstance(source, str):
+        return False
+    s = source.strip()
+    if not s or "\\" in s:
+        return False
+    if "://" in s:
+        return True
+    # scp-style `git@host:owner/repo` — a colon before the first slash.
+    return ":" in s.split("/", 1)[0]
 
 
 def is_full_sha(ref: str) -> bool:
@@ -449,13 +481,30 @@ def read_plugins(slug: str) -> List[Dict[str, Any]]:
             continue
         source = p.get("source")
         if isinstance(source, str) and not is_safe_plugin_source(source):
-            logger.warning(
-                "marketplace %s: dropping plugin %r with unsafe source %r (must stay inside the clone)",
-                slug,
-                name,
-                source,
-            )
-            continue
+            if is_external_plugin_source(source):
+                # A remote source is a valid shape with nothing local to serve
+                # — same treatment as the object form: keep the catalog entry.
+                logger.info(
+                    "marketplace %s: plugin %r has remote source %r — kept as a catalog entry, "
+                    "no files served from the clone",
+                    slug,
+                    name,
+                    source,
+                )
+            else:
+                logger.warning(
+                    "marketplace %s: dropping plugin %r — source %r is not a usable location. "
+                    "A string source must be an in-repo relative path (e.g. './' or './plugins/%s'); "
+                    "an absolute or '..' path escapes the marketplace clone and is rejected. "
+                    "For a plugin hosted elsewhere use a URL or the object form "
+                    '({"source": "github", "repo": "..."}), either of which is kept as a '
+                    "catalog-only entry.",
+                    slug,
+                    name,
+                    source,
+                    name,
+                )
+                continue
         out.append(p)
     return out
 

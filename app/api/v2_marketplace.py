@@ -23,7 +23,12 @@ from pydantic import BaseModel
 from app.auth.access import _user_group_ids, is_user_admin
 from app.auth.dependencies import get_current_user
 from app.utils import get_marketplaces_dir
-from src.marketplace_filter import _contained_plugin_dir, _resolve_raw, escapes_base
+from src.marketplace_filter import (
+    _contained_plugin_dir,
+    _no_local_dir_reason,
+    _resolve_raw,
+    escapes_base,
+)
 from src.marketplace_listing import _FRONTMATTER_RE, _parse_frontmatter
 from src.repositories import marketplace_plugins_repo
 
@@ -66,9 +71,10 @@ def _skills_for_plugin(
     plugin_root = _contained_plugin_dir(Path(get_marketplaces_dir()), marketplace_id, plugin_name, source=source)
     if plugin_root is None:
         logger.warning(
-            "v2 skills: skipping plugin %r in marketplace %r — no contained local source directory",
+            "v2 skills: no skills listed for plugin %r in marketplace %r — %s",
             plugin_name,
             marketplace_id,
+            _no_local_dir_reason(source),
         )
         return []
     # Curator-supplied content is adversarial and this endpoint puts SKILL.md

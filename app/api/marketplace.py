@@ -53,6 +53,7 @@ from src.marketplace import is_safe_plugin_name
 from src.marketplace_filter import (
     _contained_plugin_dir,
     _resolve_raw,
+    is_unserved_path,
     required_plugin_keys,
     resolve_allowed_plugins,
     resolve_manifest_name,
@@ -1547,16 +1548,23 @@ def _list_mcps(plugin_root: Path) -> List[McpEntry]:
 
 
 def _bundle_size(plugin_root: Path) -> Optional[int]:
-    """Sum of file sizes under ``plugin_root``. None if path missing."""
+    """Sum of served file sizes under ``plugin_root``. None if path missing.
+
+    Counts exactly what ``_walk_files`` lists — see there for why the
+    unserved paths are skipped.
+    """
     if not plugin_root.is_dir():
         return None
     total = 0
     for p in plugin_root.rglob("*"):
-        if p.is_file():
-            try:
-                total += p.stat().st_size
-            except OSError:
-                pass
+        if not p.is_file():
+            continue
+        try:
+            if is_unserved_path(p.relative_to(plugin_root).parts):
+                continue
+            total += p.stat().st_size
+        except (OSError, ValueError):
+            pass
     return total
 
 
@@ -1567,6 +1575,16 @@ def _walk_files(root: Path) -> List[FileEntry]:
     (forward-slash form for stable display). Directories are skipped — only
     leaf files appear, matching the way ``store_detail.html`` renders the
     Files section. Empty list if ``root`` is missing or not a directory.
+
+    Paths the serve paths exclude (``marketplace_filter.is_unserved_path``:
+    ``.git/**``, ``.agnes/**``, ``marketplace-metadata.json``) are skipped so
+    the page describes what a user actually installs. This matters most for a
+    root-source plugin (``source: "./"``), whose ``root`` IS the marketplace
+    clone — an unfiltered walk lists every loose git object and inflates
+    ``bundle_size`` by the whole VCS directory. Harmless at the other two
+    call sites: a Store bundle's files go through ``_bundle_files``, and an
+    inner skill dir through the same plugin walk, both of which already apply
+    this exact exclusion.
     """
     if not root.is_dir():
         return []
@@ -1575,9 +1593,11 @@ def _walk_files(root: Path) -> List[FileEntry]:
         if not p.is_file():
             continue
         try:
-            rel = p.relative_to(root).as_posix()
-            out.append(FileEntry(path=rel, size=p.stat().st_size))
-        except OSError:
+            rel_parts = p.relative_to(root).parts
+            if is_unserved_path(rel_parts):
+                continue
+            out.append(FileEntry(path=Path(*rel_parts).as_posix(), size=p.stat().st_size))
+        except (OSError, ValueError):
             continue
     return out
 

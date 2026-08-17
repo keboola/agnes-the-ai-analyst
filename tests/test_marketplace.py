@@ -6,6 +6,7 @@ Uses a local bare git repo as a fake remote so no network is needed.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
 from pathlib import Path
@@ -1161,9 +1162,7 @@ class TestReadPluginsSourceValidation:
 
         d = get_marketplaces_dir() / "srcmkt" / ".claude-plugin"
         d.mkdir(parents=True, exist_ok=True)
-        (d / "marketplace.json").write_text(
-            json.dumps({"name": "srcmkt", "plugins": plugins}), encoding="utf-8"
-        )
+        (d / "marketplace.json").write_text(json.dumps({"name": "srcmkt", "plugins": plugins}), encoding="utf-8")
 
     def test_root_and_relative_sources_kept(self, clean_env):
         from src.marketplace import read_plugins
@@ -1181,9 +1180,7 @@ class TestReadPluginsSourceValidation:
     def test_absolute_source_drops_plugin(self, clean_env):
         from src.marketplace import read_plugins
 
-        self._write_manifest(
-            [{"name": "evil", "source": "/etc"}, {"name": "ok", "source": "./"}]
-        )
+        self._write_manifest([{"name": "evil", "source": "/etc"}, {"name": "ok", "source": "./"}])
         assert [p["name"] for p in read_plugins("srcmkt")] == ["ok"]
 
     def test_traversal_source_drops_plugin(self, clean_env):
@@ -1201,7 +1198,84 @@ class TestReadPluginsSourceValidation:
     def test_external_dict_source_passes_ingest(self, clean_env):
         from src.marketplace import read_plugins
 
-        self._write_manifest(
-            [{"name": "ext", "source": {"source": "github", "repo": "acme/ext"}}]
-        )
+        self._write_manifest([{"name": "ext", "source": {"source": "github", "repo": "acme/ext"}}])
         assert [p["name"] for p in read_plugins("srcmkt")] == ["ext"]
+
+
+class TestReadPluginsRemoteStringSource:
+    """A remote STRING source (``"https://github.com/x/y"``) is a shape Agnes
+    already accepts — ``marketplace_metadata_scaffold`` keeps such a plugin and
+    only skips skill enumeration (see
+    ``test_marketplace_metadata_scaffold.py::
+    test_remote_source_skips_enumeration_but_keeps_plugin_fields``). Ingest
+    must therefore treat it like the dict form (catalog entry, no local files)
+    rather than dropping the row: a dropped row disappears from Browse and
+    leaves its ``resource_grants`` dangling. Only paths that escape the clone
+    are rejected."""
+
+    def _write_manifest(self, plugins: list[dict]) -> None:
+        from app.utils import get_marketplaces_dir
+
+        d = get_marketplaces_dir() / "shapemkt" / ".claude-plugin"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "marketplace.json").write_text(json.dumps({"name": "shapemkt", "plugins": plugins}), encoding="utf-8")
+
+    def test_url_and_scp_sources_survive_ingest(self, clean_env, caplog):
+        from src.marketplace import read_plugins
+
+        self._write_manifest(
+            [
+                {"name": "url-plug", "source": "https://github.com/x/y"},
+                {"name": "scp-plug", "source": "git@github.com:x/y.git"},
+            ]
+        )
+        with caplog.at_level(logging.WARNING):
+            names = [p["name"] for p in read_plugins("shapemkt")]
+        assert names == ["url-plug", "scp-plug"]
+        # Kept, so nothing is warned about — and certainly not as "unsafe".
+        assert [r.getMessage() for r in caplog.records] == []
+
+    def test_escaping_path_is_still_dropped_with_an_accurate_reason(self, clean_env, caplog):
+        from src.marketplace import read_plugins
+
+        self._write_manifest(
+            [
+                {"name": "evil", "source": "../../etc"},
+                {"name": "evil2", "source": "/etc"},
+                {"name": "ok", "source": "./"},
+            ]
+        )
+        with caplog.at_level(logging.WARNING):
+            assert [p["name"] for p in read_plugins("shapemkt")] == ["ok"]
+        msg = " ".join(r.getMessage() for r in caplog.records)
+        assert "escapes the marketplace clone" in msg
+
+    def test_dict_source_survives_ingest(self, clean_env):
+        from src.marketplace import read_plugins
+
+        self._write_manifest([{"name": "ext", "source": {"source": "github", "repo": "acme/ext"}}])
+        assert [p["name"] for p in read_plugins("shapemkt")] == ["ext"]
+
+
+class TestExternalPluginSourceClassifier:
+    """``is_external_plugin_source`` decides catalog-entry vs rejection, so its
+    edges matter: a Windows-style path is not "external", and a bare
+    ``owner/repo`` is indistinguishable from a relative directory."""
+
+    @pytest.mark.parametrize(
+        "source",
+        ["https://github.com/x/y", "git+ssh://host/x.git", "git@github.com:x/y.git"],
+    )
+    def test_remote_forms_are_external(self, source):
+        from src.marketplace import is_external_plugin_source
+
+        assert is_external_plugin_source(source)
+
+    @pytest.mark.parametrize(
+        "source",
+        ["./", "./plugins/x", "owner/repo", "../escape", "/etc", r"..\..\windows", "", {"source": "github"}],
+    )
+    def test_non_remote_forms_are_not_external(self, source):
+        from src.marketplace import is_external_plugin_source
+
+        assert not is_external_plugin_source(source)

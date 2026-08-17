@@ -540,3 +540,29 @@ class TestRootSourcePluginServing:
             assert exec_mode & 0o111, oct(exec_mode)
             doc_mode = zf.getinfo("plugins/solo-mkt-solo/CLAUDE.md").external_attr >> 16
             assert not doc_mode & 0o111, oct(doc_mode)
+
+    def test_member_set_for_a_root_source_plugin_is_pinned(self, root_source_env):
+        """Pins exactly what a `source: "./"` plugin ships.
+
+        Notably the upstream `.claude-plugin/marketplace.json` rides along as
+        plugin content. That is inert, not a bug: marketplace discovery reads
+        `.claude-plugin/marketplace.json` at the ROOT of a registered
+        marketplace only (the same convention `src.marketplace.read_plugins`
+        follows), and the served root carries Agnes's own synth manifest.
+        Plugin identity comes from `.claude-plugin/plugin.json`, which the
+        packager sanitizes. See the exclusion list in
+        `app/marketplace_server/packager.py::_collect_members`.
+        """
+        c = root_source_env["client"]
+        resp = c.get("/marketplace.zip", headers=_auth(root_source_env["token"]))
+        assert resp.status_code == 200
+        names = sorted(_read_zip(resp.content))
+        assert names == [
+            ".agnes/version.json",
+            ".claude-plugin/marketplace.json",
+            "plugins/solo-mkt-solo/.claude-plugin/marketplace.json",
+            "plugins/solo-mkt-solo/.claude-plugin/plugin.json",
+            "plugins/solo-mkt-solo/CLAUDE.md",
+            "plugins/solo-mkt-solo/engine/bin/enginectl",
+            "plugins/solo-mkt-solo/skills/hello/SKILL.md",
+        ]

@@ -238,6 +238,17 @@ def _collect_members(plugins: List[dict], etag: str) -> List[Tuple[str, bytes, b
             # computed from the same filtered set (compute_etag in
             # marketplace_filter), so adding/removing these files never busts
             # user-side caches.
+            #
+            # Deliberately NOT excluded, after review: a root-source plugin's
+            # own `.claude-plugin/marketplace.json` (the upstream manifest,
+            # which for `source: "./"` sits inside plugin_dir) rides along as
+            # plugin content. It is inert — marketplace discovery reads
+            # `.claude-plugin/marketplace.json` at the ROOT of a registered
+            # marketplace only (the convention `src.marketplace.read_plugins`
+            # follows too), and the served root already carries Agnes's synth
+            # manifest; plugin identity comes from `plugin.json`, sanitized
+            # below. Pinned by TestRootSourcePluginServing::
+            # test_member_set_for_a_root_source_plugin_is_pinned.
             if marketplace_filter.is_unserved_path(rel_parts):
                 continue
             rel = f.relative_to(plugin_dir).as_posix()

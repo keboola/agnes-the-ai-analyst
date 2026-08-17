@@ -1070,3 +1070,43 @@ class TestListMcpsTransport:
     def test_no_transport_signal_leaves_type_none(self, tmp_path):
         e = self._one(tmp_path, {"description": "nothing actionable"})
         assert e.type is None
+
+
+
+
+class TestDetailFileListingExclusions:
+    """The plugin detail page's Files list and `bundle_size` must describe what
+    Agnes actually serves. A root-source plugin's `plugin_root` IS the
+    marketplace clone, so an unfiltered `rglob` sweeps `.git/**` (every loose
+    object, ref and hook sample), `.agnes/**` and `marketplace-metadata.json`
+    into the listing and the size — none of which reach the served ZIP / git
+    tree (`src.marketplace_filter.is_unserved_path`).
+    """
+
+    @staticmethod
+    def _clone(tmp_path):
+        root = tmp_path / "clone"
+        (root / ".claude-plugin").mkdir(parents=True)
+        (root / ".claude-plugin" / "plugin.json").write_text(json.dumps({"name": "solo"}), encoding="utf-8")
+        (root / ".claude-plugin" / "marketplace-metadata.json").write_text(
+            json.dumps({"plugins": {}}), encoding="utf-8"
+        )
+        (root / "CLAUDE.md").write_text("# solo\n", encoding="utf-8")
+        (root / ".git" / "objects").mkdir(parents=True)
+        (root / ".git" / "config").write_text("[core]\n" * 100, encoding="utf-8")
+        (root / ".agnes").mkdir()
+        (root / ".agnes" / "cover.png").write_bytes(b"\x89PNG" * 50)
+        return root
+
+    def test_walk_files_skips_unserved_paths(self, tmp_path):
+        from app.api.marketplace import _walk_files
+
+        paths = {e.path for e in _walk_files(self._clone(tmp_path))}
+        assert paths == {"CLAUDE.md", ".claude-plugin/plugin.json"}
+
+    def test_bundle_size_counts_only_served_files(self, tmp_path):
+        from app.api.marketplace import _bundle_size
+
+        root = self._clone(tmp_path)
+        expected = (root / "CLAUDE.md").stat().st_size + (root / ".claude-plugin" / "plugin.json").stat().st_size
+        assert _bundle_size(root) == expected

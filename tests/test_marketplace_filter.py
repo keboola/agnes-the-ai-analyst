@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -478,3 +479,113 @@ class TestUnservedPaths:
         (d / ".git" / "config").write_bytes(b"[core]")
         e2 = compute_etag([plugin])
         assert e1 == e2
+
+
+class TestEtagTracksExecutableBit:
+    """A curator commit that only chmods a file — the archetypal "fix the
+    broken launcher" commit — changes no hashed byte, so an ETag over
+    ``[relpath, sha256]`` alone stays put: the ZIP channel answers
+    ``If-None-Match`` with 304 and the git channel re-serves the cached
+    ``<etag>.v<N>.git`` tree, both still mode 644. The packaging paths read the
+    exec bit (``is_executable_file``), so the ETag must hash it too."""
+
+    @staticmethod
+    def _plugin_dir(tmp_path) -> Path:
+        d = tmp_path / "clone"
+        (d / "bin").mkdir(parents=True)
+        launcher = d / "bin" / "enginectl"
+        launcher.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+        launcher.chmod(0o644)
+        return d
+
+    def test_chmod_only_change_moves_etag(self, tmp_path):
+        from src.marketplace_filter import compute_etag
+
+        d = self._plugin_dir(tmp_path)
+        plugin = {"prefixed_name": "mkt-solo", "version": "1", "plugin_dir": d}
+        before = compute_etag([plugin])
+
+        (d / "bin" / "enginectl").chmod(0o755)
+        assert compute_etag([plugin]) != before
+
+    def test_chmod_only_change_moves_bundle_etag(self, tmp_path):
+        from src.marketplace_filter import compute_etag
+
+        d = self._plugin_dir(tmp_path)
+        plugin = {"prefixed_name": "store-solo", "version": "1", "plugin_dir": None, "bundle_dirs": [d]}
+        before = compute_etag([plugin])
+
+        (d / "bin" / "enginectl").chmod(0o755)
+        assert compute_etag([plugin]) != before
+
+    def test_etag_is_stable_without_a_mode_change(self, tmp_path):
+        from src.marketplace_filter import compute_etag
+
+        d = self._plugin_dir(tmp_path)
+        plugin = {"prefixed_name": "mkt-solo", "version": "1", "plugin_dir": d}
+        assert compute_etag([plugin]) == compute_etag([plugin])
+
+
+class TestExternalSourceVendoredFallback:
+    """An external plugin source — Claude Code's dict form or a remote string —
+    has no local files for Agnes
+    to serve, but a curator may ALSO vendor the plugin under the conventional
+    ``plugins/<name>/`` (belt-and-braces layout). Before source-aware
+    resolution those files were served; dropping the row silently removes the
+    plugin from every instance relying on that shape, leaving RBAC grants and
+    subscriptions pointing at nothing. Serve the vendored directory when it
+    genuinely exists, stay metadata-only when it does not."""
+
+    T = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+    def _resolve(self, conn, raw_plugin: dict) -> list[dict]:
+        from src.marketplace_filter import resolve_allowed_plugins
+
+        _register_marketplace(conn, id="mkt", registered_at=self.T, plugins=[raw_plugin])
+        _make_user(conn, user_id="u1", email="u1@x")
+        gid = _make_group(conn, name="G1")
+        _add_member(conn, user_id="u1", group_id=gid)
+        _grant(conn, group_id=gid, marketplace="mkt", plugin=raw_plugin["name"])
+        return resolve_allowed_plugins(conn, {"id": "u1"})
+
+    @staticmethod
+    def _raw() -> dict:
+        return {"name": "solo", "source": {"source": "github", "repo": "acme/solo"}}
+
+    def test_vendored_dir_is_served(self, db_conn):
+        from app.utils import get_marketplaces_dir
+
+        vendored = get_marketplaces_dir() / "mkt" / "plugins" / "solo"
+        vendored.mkdir(parents=True)
+        (vendored / "CLAUDE.md").write_text("# solo\n", encoding="utf-8")
+
+        result = self._resolve(db_conn, self._raw())
+        assert len(result) == 1
+        assert result[0]["plugin_dir"] == vendored
+
+    def test_without_vendored_dir_the_plugin_is_metadata_only(self, db_conn):
+        assert self._resolve(db_conn, self._raw()) == []
+
+    def test_remote_string_source_takes_the_same_path(self, db_conn):
+        """A URL string source is external too — catalog entry, no local files
+        unless the curator vendored them."""
+        from src.marketplace_filter import _contained_plugin_dir
+        from app.utils import get_marketplaces_dir
+
+        root = Path(get_marketplaces_dir())
+        assert _contained_plugin_dir(root, "mkt", "solo", source="https://github.com/x/y") is None
+
+        vendored = root / "mkt" / "plugins" / "solo"
+        vendored.mkdir(parents=True)
+        assert _contained_plugin_dir(root, "mkt", "solo", source="https://github.com/x/y") == vendored
+
+    def test_vendored_fallback_is_not_a_traversal_hole(self, db_conn):
+        """A dict source cannot steer the fallback — it is always
+        ``plugins/<validated name>`` inside this marketplace's own clone."""
+        from src.marketplace_filter import _contained_plugin_dir
+        from app.utils import get_marketplaces_dir
+
+        root = Path(get_marketplaces_dir())
+        (root / "mkt" / "plugins" / "solo").mkdir(parents=True)
+        got = _contained_plugin_dir(root, "mkt", "solo", source={"source": "git", "url": "../../etc"})
+        assert got == root / "mkt" / "plugins" / "solo"
