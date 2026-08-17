@@ -46,6 +46,16 @@ _JWKS_CACHE: dict[str, dict[str, Any]] = {}
 # trip on every single one. `0.0` (never fetched yet) always refetches.
 _LAST_REFETCH_AT: float = 0.0
 _MIN_REFETCH_INTERVAL_SECONDS = 60.0
+# A *failed* fetch (network error, or a 200 with no keys) does not stamp
+# _LAST_REFETCH_AT — the very next request can retry immediately rather than
+# waiting out the full minute for a one-off blip. But without any floor at
+# all, a *sustained* outage means every single request with an unrecognized
+# `kid` pays for a fresh round trip. This is deliberately much shorter than
+# _MIN_REFETCH_INTERVAL_SECONDS: enough to collapse a burst of retries during
+# an ongoing outage, short enough that recovery is still fast once Microsoft
+# is back.
+_LAST_FAILURE_AT: float = 0.0
+_FAILURE_BACKOFF_SECONDS = 5.0
 # Serializes refreshes so concurrent inbound Activity POSTs with unknown
 # `kid`s collapse into a single fetch instead of each starting their own —
 # Teams webhooks are handled concurrently, so this isn't hypothetical.
@@ -85,7 +95,7 @@ async def _refresh_jwks_cache() -> None:
     full throttle window with no retry — turning a one-off error into a
     fixed-length outage of the Teams surface.
     """
-    global _LAST_REFETCH_AT
+    global _LAST_REFETCH_AT, _LAST_FAILURE_AT
     try:
         async with _http_client() as client:
             jwks_uri = await _resolve_jwks_uri(client)
@@ -94,6 +104,7 @@ async def _refresh_jwks_cache() -> None:
             keys = resp.json().get("keys", [])
     except Exception:
         logger.warning("failed to fetch Bot Framework JWKS", exc_info=True)
+        _LAST_FAILURE_AT = time.monotonic()
         return
     if not keys:
         # A 200 with no keys (proxy/edge error page rendered as JSON, schema
@@ -102,6 +113,7 @@ async def _refresh_jwks_cache() -> None:
         # combined with the throttle guard, block every request for a
         # minute even though the old keys still work.
         logger.warning("Bot Framework JWKS document contained no keys; keeping existing cache")
+        _LAST_FAILURE_AT = time.monotonic()
         return
     _LAST_REFETCH_AT = time.monotonic()
     _JWKS_CACHE.clear()
@@ -140,7 +152,10 @@ async def verify_bot_framework_token(authorization_header: str | None, app_id: s
             if kid not in _JWKS_CACHE:
                 never_fetched = not _JWKS_CACHE and _LAST_REFETCH_AT == 0.0
                 stale_enough = (time.monotonic() - _LAST_REFETCH_AT) >= _MIN_REFETCH_INTERVAL_SECONDS
-                if never_fetched or stale_enough:
+                backoff_elapsed = (
+                    _LAST_FAILURE_AT == 0.0 or (time.monotonic() - _LAST_FAILURE_AT) >= _FAILURE_BACKOFF_SECONDS
+                )
+                if (never_fetched or stale_enough) and backoff_elapsed:
                     await _refresh_jwks_cache()
         if kid not in _JWKS_CACHE:
             return False

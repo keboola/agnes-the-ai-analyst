@@ -65,6 +65,7 @@ def _token(
 def _reset_jwks_cache(monkeypatch):
     monkeypatch.setattr(sigverify, "_JWKS_CACHE", {})
     monkeypatch.setattr(sigverify, "_LAST_REFETCH_AT", 0.0)
+    monkeypatch.setattr(sigverify, "_LAST_FAILURE_AT", 0.0)
 
 
 def _install_jwks_transport(monkeypatch, keys_provider):
@@ -265,10 +266,12 @@ def test_token_missing_exp_rejected(monkeypatch):
     assert result is False
 
 
-def test_failed_first_fetch_does_not_block_immediate_retry(monkeypatch):
-    """A transient failure on the very first JWKS fetch must not stamp the
-    throttle timestamp — otherwise every request for the next 60s fails
-    closed with no retry, turning a one-off blip into a fixed outage."""
+def test_failed_fetch_retries_after_short_backoff_not_immediately(monkeypatch):
+    """A transient failure must not stamp the 60s success throttle (a one-off
+    blip shouldn't cost a full minute) — but it also must not allow every
+    single request to retry with zero delay, or a sustained outage turns
+    into unbounded outbound traffic. The short `_FAILURE_BACKOFF_SECONDS`
+    floor is the compromise: no retry storm, fast recovery once fixed."""
     key = _rsa_keypair()
     jwk = _jwk_for(key, "kid-1")
     attempt = {"n": 0}
@@ -289,10 +292,17 @@ def test_failed_first_fetch_does_not_block_immediate_retry(monkeypatch):
     first = asyncio.run(sigverify.verify_bot_framework_token(f"Bearer {token}", APP_ID))
     assert first is False  # fetch failed, cache still empty
 
-    # No sleep, no throttle-window manipulation — must retry immediately
-    # because the failed attempt above never stamped _LAST_REFETCH_AT.
+    # Immediately retrying within the failure backoff window must NOT hit
+    # the network again.
     second = asyncio.run(sigverify.verify_bot_framework_token(f"Bearer {token}", APP_ID))
-    assert second is True
+    assert second is False
+    assert attempt["n"] == 1
+
+    # Once the (short) backoff window has elapsed, a retry is allowed again.
+    monkeypatch.setattr(sigverify, "_LAST_FAILURE_AT", time.monotonic() - sigverify._FAILURE_BACKOFF_SECONDS - 1)
+    third = asyncio.run(sigverify.verify_bot_framework_token(f"Bearer {token}", APP_ID))
+    assert third is True
+    assert attempt["n"] == 2
 
 
 def test_concurrent_unknown_kid_requests_share_one_jwks_fetch(monkeypatch):
