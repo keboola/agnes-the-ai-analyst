@@ -80,6 +80,30 @@ def _executes_on_bigquery(row: dict) -> bool:
     return (row.get("source_type") or "") == "bigquery" and (row.get("query_mode") or "") != "materialized"
 
 
+def _assert_scannable_engine(row: dict) -> None:
+    """Refuse a scan/estimate on a remote row this endpoint cannot execute.
+
+    ``_executes_on_bigquery`` answers False for every non-BigQuery source, which
+    routes the request to the local-parquet branch. That is correct for local
+    and materialized rows — the parquet is the source of truth — but a
+    ``query_mode='remote'`` row on another engine has no parquet at all, so the
+    request would surface as a bare 404 that reads like "your table isn't
+    synced yet" when the truth is "this endpoint doesn't speak that engine".
+
+    Raises ``ValueError``, which both callers already map to HTTP 400.
+    """
+    source_type = (row.get("source_type") or "").strip()
+    if source_type in ("", "bigquery"):
+        return
+    if (row.get("query_mode") or "") != "remote":
+        return
+    raise ValueError(
+        f"table '{row.get('id') or row.get('name')}' is a query_mode='remote' {source_type} table; "
+        "/api/v2/scan cannot execute against that engine. Use `agnes query --remote` for an "
+        "interactive answer, or register the table as query_mode='materialized' so it syncs to a parquet."
+    )
+
+
 def _validated_where_fragment(req: "ScanRequest", schema: dict, row: dict, use_bq: bool) -> str | None:
     """Validate ``req.where`` and return the comment-stripped fragment in the
     EXECUTION dialect.
@@ -238,6 +262,7 @@ def estimate(conn, user, raw_request: dict, *, bq: BqAccess) -> dict:
     if not can_access_table(user, req.table_id, conn):
         raise PermissionError(req.table_id)
 
+    _assert_scannable_engine(row)
     schema = _resolve_schema(conn, user, req.table_id, bq)
     use_bq = _executes_on_bigquery(row)
 
@@ -488,6 +513,7 @@ def run_scan(
     if req.limit and req.limit > _max_limit():
         raise ValueError(f"limit {req.limit} exceeds max {_max_limit()}")
 
+    _assert_scannable_engine(row)
     schema = _resolve_schema(conn, user, req.table_id, bq)
     use_bq = _executes_on_bigquery(row)
     # Validate WHERE and capture the comment-stripped fragment for splicing,

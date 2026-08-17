@@ -245,6 +245,31 @@ def build_schema_uncached(
             "clustered_by": opts.get("clustered_by", []),
             "where_dialect_hints": _BQ_DIALECT_HINTS,
         }
+    elif source_type == "databricks" and query_mode == "remote":
+        # No parquet exists for a remote Databricks row, so the local branch
+        # below would 404 — which reads as "not synced yet" and sends the
+        # caller looking for a sync that is never going to happen. Read the
+        # columns from Unity Catalog instead, and advertise Databricks SQL as
+        # the flavor: that is the dialect `agnes query --remote` ships.
+        from connectors.databricks.remote import DIALECT_HINTS, DatabricksRemoteError, fetch_schema
+        from connectors.databricks.semantic_layer import resolve_databricks_settings
+
+        settings = resolve_databricks_settings()
+        if settings is None:
+            raise NotFound(table_id)
+        try:
+            columns = fetch_schema(row, settings=settings)
+        except DatabricksRemoteError as exc:
+            raise ValueError(exc.message) from exc
+        payload = {
+            "table_id": table_id,
+            "source_type": source_type,
+            "sql_flavor": "databricks",
+            "columns": columns,
+            "partition_by": None,
+            "clustered_by": [],
+            "where_dialect_hints": DIALECT_HINTS,
+        }
     else:
         # Local source — read schema from the parquet via DuckDB. Resolve the
         # parquet by source-name-agnostic lookup: the extract directory is not
