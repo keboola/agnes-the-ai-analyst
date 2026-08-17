@@ -26,7 +26,7 @@ class UserJourneyPgRepository:
             row = conn.execute(
                 sa.text(
                     "SELECT first_asked, stack_setup_done, explored_stack, "
-                    "catalog_discovered, use_anywhere, onboarded, "
+                    "catalog_discovered, use_anywhere, agent_created, onboarded, "
                     "successful_answers "
                     "FROM user_journey_state WHERE user_id = :user_id"
                 ),
@@ -40,8 +40,9 @@ class UserJourneyPgRepository:
             "explored_stack": bool(row[2]),
             "catalog_discovered": bool(row[3]),
             "use_anywhere": bool(row[4]),
-            "onboarded": bool(row[5]),
-            "successful_answers": int(row[6]),
+            "agent_created": bool(row[5]),
+            "onboarded": bool(row[6]),
+            "successful_answers": int(row[7]),
         }
 
     def update(self, user_id: str, **fields: Any) -> Dict[str, Any]:
@@ -58,11 +59,11 @@ class UserJourneyPgRepository:
                     """
                     INSERT INTO user_journey_state
                       (user_id, first_asked, stack_setup_done, explored_stack,
-                       catalog_discovered, use_anywhere, onboarded,
+                       catalog_discovered, use_anywhere, agent_created, onboarded,
                        successful_answers, updated_at)
                     VALUES
                       (:user_id, :first_asked, :stack_setup_done, :explored_stack,
-                       :catalog_discovered, :use_anywhere, :onboarded,
+                       :catalog_discovered, :use_anywhere, :agent_created, :onboarded,
                        :successful_answers, now())
                     ON CONFLICT (user_id) DO UPDATE SET
                       first_asked = EXCLUDED.first_asked,
@@ -70,6 +71,7 @@ class UserJourneyPgRepository:
                       explored_stack = EXCLUDED.explored_stack,
                       catalog_discovered = EXCLUDED.catalog_discovered,
                       use_anywhere = EXCLUDED.use_anywhere,
+                      agent_created = EXCLUDED.agent_created,
                       onboarded = EXCLUDED.onboarded,
                       successful_answers = EXCLUDED.successful_answers,
                       updated_at = now()
