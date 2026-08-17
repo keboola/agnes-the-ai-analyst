@@ -32,7 +32,6 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import os
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -45,6 +44,7 @@ import duckdb
 from connectors.bigquery.extractor import MaterializeBudgetError
 from connectors.databricks.client import ArrowResult, DatabricksStatementClient
 from src.identifier_validation import validate_identifier
+from src.parquet_publish import atomic_publish_finalize, atomic_publish_temp_path
 from src.sql_ident import quote_ident
 
 logger = logging.getLogger(__name__)
@@ -296,7 +296,13 @@ def materialize_query(
     data_dir = out_path / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
     parquet_path = data_dir / f"{table_id}.parquet"
-    tmp_path = data_dir / f"{table_id}.parquet.tmp"
+    # Per-process temp + chmod + os.replace, via the shared publish protocol
+    # (#1359). The previous `{table_id}.parquet.tmp` was shared across
+    # processes, so two writers could os.replace each other's in-flight file
+    # while the loser's cleanup deleted the winner's temp (#1274), and the
+    # bare os.replace preserved whatever mode ParquetWriter created under the
+    # ambient umask (#203).
+    tmp_path = atomic_publish_temp_path(parquet_path)
     if tmp_path.exists():
         tmp_path.unlink()
 
@@ -328,7 +334,7 @@ def materialize_query(
             h.update(chunk)
     parquet_hash = h.hexdigest()
     size_bytes = tmp_path.stat().st_size
-    os.replace(tmp_path, parquet_path)
+    atomic_publish_finalize(tmp_path, parquet_path)
 
     _register_materialized_parquet(
         extract_db_path=out_path / "extract.duckdb",

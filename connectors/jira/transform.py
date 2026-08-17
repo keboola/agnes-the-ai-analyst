@@ -18,6 +18,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from connectors.jira.service import organization_detail_fields, refresh_fields
+from src.parquet_publish import atomic_publish
 
 logger = logging.getLogger(__name__)
 
@@ -766,10 +767,6 @@ def transform_remote_links(raw_issue: dict) -> list[dict] | None:
 def write_parquet_atomic(table: pa.Table, dest: Path) -> Path:
     """Publish *table* at *dest* so no reader can observe a partial parquet.
 
-    Write to a per-process temp beside the destination, then ``os.replace`` —
-    atomic within a filesystem, so every reader sees either the whole previous
-    file or the whole new one, never a prefix.
-
     This is not a cosmetic nicety. A direct ``pq.write_table(table, dest)``
     leaves a footerless file when the process dies midway (deploy, OOM,
     restart), and an unreadable partition does not stay a read error: the next
@@ -780,42 +777,21 @@ def write_parquet_atomic(table: pa.Table, dest: Path) -> Path:
     of any month, so the rest never come back without an operator re-running the
     batch transform.
 
-    The temp name is per-process. A shared one raced two writers: either could
-    ``os.replace`` a parquet the other was still writing, while the loser's
-    cleanup deleted the winner's in-flight temp (Devin Review on #1274).
-
-    Deliberately NOT ``tempfile.mkstemp``, which the raw-JSON writers use: it
-    creates the file 0600 and ``os.replace`` preserves the mode, so the published
-    parquet would silently drop from 0644 to 0600 — the permissions regression
-    incident #203 documents for exactly this pattern. The explicit ``chmod``
-    defends the same outcome arriving from the other side, since
-    ``pq.write_table`` creates the temp as ``0666 & umask`` and a restrictive
-    umask (0077 in some container/systemd units) would publish 0600 too. 0o644
-    rather than the raw-JSON writers' 0o660: their fchmod serves a directory
-    carrying POSIX ACLs, while every parquet in this extract tree effectively
-    lands world-readable, and a manual run may execute as a different user than
-    the server process.
+    The actual publish mechanism — per-process temp, ``chmod 0644``,
+    ``os.replace``, cleanup-on-failure-not-``finally`` — moved to
+    `src.parquet_publish.atomic_publish` (#1359), shared by every other
+    extract-layout writer; see that module's docstring for the full mechanism
+    and the #1274 / #203 incidents behind it. This function keeps its name and
+    two-argument shape so its callers (`write_hive_parquet`,
+    `connectors/jira/organizations.py`, `connectors/jira/incremental_transform.py`)
+    and tests are undisturbed, and keeps Jira's own `PARQUET_WRITE_OPTIONS`
+    (ZSTD + page index + statistics) exactly as they were — the shared helper
+    has no opinion on compression, so moving to it does not silently
+    re-compress Jira's partitions to whatever another caller uses.
     """
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    tmp_dest = dest.parent / f"{dest.name}.{os.getpid()}.tmp"
-    try:
+    dest = Path(dest)
+    with atomic_publish(dest) as tmp_dest:
         pq.write_table(table, tmp_dest, **PARQUET_WRITE_OPTIONS)
-        os.chmod(tmp_dest, 0o644)
-        os.replace(tmp_dest, dest)
-    except BaseException:
-        # Cleanup belongs on the failure path only: a successful `os.replace` has
-        # already renamed the temp away, so a `finally` would spend a failing
-        # `unlink(2)` plus a raised-and-swallowed FileNotFoundError on every write —
-        # and the SLA poller runs this thousands of times per cycle. `BaseException`
-        # keeps the coverage a `finally` had for KeyboardInterrupt/SystemExit.
-        #
-        # A failed write would otherwise leave the temp behind. Every reader globs
-        # `*.parquet` — the extract views, `_hash_table_parts`, `find_open_issues` —
-        # so a stray `.tmp` is never served, but an accumulating temp file is nobody's
-        # friend. Unlinking only this process's own temp is what makes the cleanup
-        # safe under concurrency.
-        tmp_dest.unlink(missing_ok=True)
-        raise
     return dest
 
 
