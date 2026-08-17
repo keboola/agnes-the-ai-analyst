@@ -10,16 +10,26 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.83.28] - 2026-08-17
+
 ### Added
 
 - **Every MCP tool now declares what it does to state.** `tools/list` on both surfaces — the HTTP foundation transports and the CLI stdio server — carries `title`, `readOnlyHint`, `destructiveHint` and `openWorldHint` per tool, so a client can tell a reader (`catalog`, `schema`, `query`) from a writer (`stack_subscribe`) from something that removes what you had (`stack_unsubscribe`, `store_delete`, `pull`, which prunes tables you have lost access to). A client that auto-approves read-only calls previously had nothing to go on, and both the Anthropic and OpenAI connector directories check for the annotations. Registering a tool without deciding is no longer possible: `read_only` is a required argument of the shared registration decorator, and a read-only tool can never be flagged destructive.
+
 - **Tool titles name the action.** Eighteen tools were bare nouns — a picker showed "Catalog", "Schema", "Skills", "Server Info" with no clue what calling them does. Their titles now say ("List Available Tables", "Get Table Schema", "Check Server Connection"); the tool names are unchanged, so nothing a client has configured breaks. A guard fails the build if a new tool arrives whose title names no action.
+
 - **`server.json` — a listing for the community MCP Registry.** Clients that browse the registry (VS Code's MCP picker today) can offer Agnes without anyone pasting a URL by hand. The listing is a URL *template*: Agnes is self-hosted, so there is no canonical address to publish, and the entry declares `{instance_host}` as a variable the reader fills in with their own — one listing serving every deployment while naming none of them. Adding the file publishes nothing; `docs/mcp-registry-listing.md` covers the publish step, which is immediate and unreviewed once run.
+
 - **The onboarding checklist has a sixth step: "Create your first agent".** There was nothing to complete — the checklist tracked five milestones, none about agents, so a reader who built one saw nothing acknowledge it, and the only agent-shaped thing on the path was a dismissable coach-mark that tracked no state. It is last in the list because it presumes the others: an agent is scoped to part of your stack, so offering it before there is a stack asks someone to choose from nothing. A sixth row was turned down once before on the grounds that a new journey flag defaults false for everyone and so re-opens the finished checklist of every already-onboarded user; the v116 migration answers that by backfilling the step as done for anyone who already owns an agent or is already flagged onboarded, so no completed card comes back.
 
 ### Fixed
 
+- **An MCP tool that answers with structured content looked like it returned nothing.** The MCP spec's own channel for machine-readable output — `structuredContent`, returned by any server whose tool declares an `outputSchema`, alongside a human-readable rendering in `content` — was discarded at the call boundary: only `result.content` was passed on, and the prose half naturally failed to parse. Materialize mode then reported `tool X did not return parseable JSON`, so a correct upstream registered as a broken one (found against a Keboola MCP data-app lister, but nothing about it is vendor-specific). Structured content is now preferred over the text — authoritative even when the text also parses, since a server may render a *summary* into the text while the structured half carries the full rows. A second shape joins it: one JSON document per content block, which `"\n".join` turned into an invalid document. That one is accepted only when **every** non-empty block parses — a single JSON block next to a line of prose is not a table, and picking the parseable half would invent rows.
+
+- **`materialize_failed` now says what arrived, not just what was required.** The error named the contract ("requires a JSON response with a list-of-dicts") and stopped there, leaving one route to the actual shape: reproduce the upstream call by hand — with a credential that lives write-only in the vault, so the operator frequently cannot. It now carries whether `structuredContent` was present, the content-block types, and the first 200 characters of the text.
+
 - **The Builder no longer shows raw error codes.** Publishing a skill, agent or plugin under a name you already used reported the bare token `conflict_owner_name`; the two sibling authoring screens had mapped store rejections to sentences for some time, and `/skills` was the one that had not. It now maps the same set of codes, with the same wording, so one rejection does not read three different ways.
+
 - **Installing a marketplace plugin ticks "Put knowledge in your stack".** Curated plugins keep their own resolver and never pass through `/api/stack/subscribe`, which was the only place the onboarding milestone was recorded — so the step stayed unticked no matter how many plugins were installed, `agnes-analyst` among them. The step is now marked on every successful install, which also ticks it for readers who installed before this change.
 
 ## [0.83.27] - 2026-08-17
