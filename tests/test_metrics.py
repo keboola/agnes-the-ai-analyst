@@ -78,7 +78,10 @@ class TestMetricRepositoryCreate:
             sql="SELECT 1",
         )
         assert result["type"] == "sum"
-        assert result["grain"] == "monthly"
+        # No grain default: see tests/db_pg/test_metrics_contract.py. `type`
+        # and `source` keep theirs — "sum" and "manual" describe how the row
+        # was made, while a grain describes the DATA and cannot be guessed.
+        assert result["grain"] is None
         assert result["source"] == "manual"
 
     def test_create_with_json_fields(self, db_conn):
