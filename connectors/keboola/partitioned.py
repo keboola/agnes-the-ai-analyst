@@ -16,7 +16,6 @@ table reads identically to a single-file table.
 from __future__ import annotations
 
 import logging
-import os
 import tempfile
 from datetime import date, datetime, timezone, timedelta
 from pathlib import Path
@@ -32,6 +31,7 @@ from connectors.keboola.parquet_io import (
     _convert_column,
 )
 from connectors.keboola.incremental import compute_changed_since
+from src.parquet_publish import atomic_publish
 
 logger = logging.getLogger(__name__)
 
@@ -133,15 +133,12 @@ def merge_partition(
     if pyarrow_schema is not None:
         table = apply_schema_to_table(table, pyarrow_schema)
 
-    tmp_path = partition_path.with_suffix(partition_path.suffix + ".tmp")
-    if tmp_path.exists():
-        tmp_path.unlink()
-    try:
+    # Published atomically (#1359) via `atomic_publish` — per-process temp,
+    # chmod 0644, os.replace. The previous shared (non-per-process) temp name
+    # raced two writers (#1274) and skipped the chmod a restrictive umask
+    # needs (#203); see that module's docstring for the full mechanism.
+    with atomic_publish(partition_path) as tmp_path:
         pq.write_table(table, tmp_path, compression="snappy")
-        os.replace(tmp_path, partition_path)
-    finally:
-        if tmp_path.exists():
-            tmp_path.unlink()
 
     return {"rows": len(combined), "delta_rows": len(delta_df)}
 
