@@ -1,6 +1,9 @@
 # Architecture — Detailed Reference
 
-Comprehensive architectural overview of the Agnes platform (v2).
+Comprehensive architectural overview of the Agnes platform (v2). For the picture
+first, see [`../ARCHITECTURE.md`](../ARCHITECTURE.md#visual-overview) — the layered
+platform diagram, the analyst loop, and query routing, in
+[`diagrams/`](diagrams/).
 
 ## Top-Level Module Map
 
@@ -340,7 +343,7 @@ other.
 
 ### system.duckdb — `{DATA_DIR}/state/system.duckdb`
 
-Current schema version: **109** (auto-migrated from any earlier version on startup — see `src/db.py`; the authoritative constant is `SCHEMA_VERSION` there).
+Current schema version: **118** (auto-migrated from any earlier version on startup — see `src/db.py`; the authoritative constant is `SCHEMA_VERSION` there).
 
 | Table | Purpose |
 |-------|---------|
