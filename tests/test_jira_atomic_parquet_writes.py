@@ -276,12 +276,15 @@ _PUBLISH_PRIMITIVE_NAMES = {"atomic_publish", "atomic_publish_temp_path", "atomi
 # attached. Keyed by (path relative to repo root, enclosing function name).
 _ALLOWED_OFFENDERS: dict[tuple[str, str], str] = {
     ("connectors/databricks/extractor.py", "_write_batches_to_parquet"): (
-        "Same shared-temp-name / no-chmod defect (#1274 / #203) as the Group B sites "
-        "#1359 fixed elsewhere, found by widening this sweep — but "
-        "connectors/databricks/extractor.py's materialize_query landed in PR #1355 "
-        "AFTER #1359 was filed, and connectors/databricks/* is outside this change's "
-        "file ownership (a concurrent, unrelated builder owns it). Needs its own "
-        "follow-up conversion, not a fix folded into this one."
+        "Not a publish: this helper streams record batches into a path its CALLER "
+        "hands it, and that caller (`materialize_query`) obtains the path from "
+        "`atomic_publish_temp_path` and commits it with `atomic_publish_finalize`. "
+        "The sweep keys on the enclosing function, and this one is module-level "
+        "rather than nested inside its caller (unlike BigQuery's `_copy_attempt` "
+        "closure, which the reference-walk does reach), so it cannot see the "
+        "protocol its argument already came from. Allowlisted as a limitation of "
+        "the detection, not as an unconverted site — verify by reading "
+        "`materialize_query`, which is where the publish actually happens."
     ),
 }
 
