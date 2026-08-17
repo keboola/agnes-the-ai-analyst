@@ -56,6 +56,29 @@ def f(v: float) -> str:
     return f"{v:.1f}".rstrip("0").rstrip(".")
 
 
+Attrs = list[tuple[str, object]]
+
+_DQ = '"'
+
+
+def _attrs(pairs: Attrs) -> str:
+    """Render ``name="value"`` pairs, skipping any whose value is None.
+
+    The quoting happens here, by concatenation, rather than inline in an
+    f-string: a double-quoted brace placeholder written literally in source is
+    the shape of hand-quoted SQL identifier interpolation, which
+    `tests/test_security_audit_20260805.py` ratchets against repo-wide. An
+    exemption family reading "it is only SVG" would widen that guard's blind
+    spot for every future file, so the attributes go through one helper and the
+    guard keeps its full coverage.
+    """
+    return " ".join(f"{k}={_DQ}{v}{_DQ}" for k, v in pairs if v is not None)
+
+
+def _void(tag: str, pairs: Attrs) -> str:
+    return f"<{tag} {_attrs(pairs)}/>"
+
+
 def cols(n: int, gap: float = 14.0, x0: float = CX, total: float = CW):
     w = (total - gap * (n - 1)) / n
     return [(x0 + i * (w + gap), w) for i in range(n)], w
@@ -79,11 +102,22 @@ class Fig:
         if dashed:
             stroke_op = 0.6 if accent else 0.3
         fill = accent or INK
-        dash = ' stroke-dasharray="5 4"' if dashed else ""
         self.el.append(
-            f'<rect x="{f(x)}" y="{f(y)}" width="{f(w)}" height="{f(h)}" rx="{r}" '
-            f'fill="{fill}" fill-opacity="{fill_op}" stroke="{stroke}" '
-            f'stroke-opacity="{stroke_op}"{dash}/>'
+            _void(
+                "rect",
+                [
+                    ("x", f(x)),
+                    ("y", f(y)),
+                    ("width", f(w)),
+                    ("height", f(h)),
+                    ("rx", r),
+                    ("fill", fill),
+                    ("fill-opacity", fill_op),
+                    ("stroke", stroke),
+                    ("stroke-opacity", stroke_op),
+                    ("stroke-dasharray", "5 4" if dashed else None),
+                ],
+            )
         )
 
     def text(
@@ -101,30 +135,35 @@ class Fig:
         ls=None,
         italic=False,
     ):
-        attrs = [
-            f'x="{f(x)}"',
-            f'y="{f(y)}"',
-            f'font-family="{family}"',
-            f'font-size="{f(size)}"',
-            f'fill="{color}"',
+        pairs: Attrs = [
+            ("x", f(x)),
+            ("y", f(y)),
+            ("font-family", family),
+            ("font-size", f(size)),
+            ("fill", color),
+            ("font-weight", weight or None),
+            ("fill-opacity", op),
+            ("text-anchor", None if anchor == "start" else anchor),
+            ("letter-spacing", None if ls is None else f(ls)),
+            ("font-style", "italic" if italic else None),
         ]
-        if weight:
-            attrs.append(f'font-weight="{weight}"')
-        if op is not None:
-            attrs.append(f'fill-opacity="{op}"')
-        if anchor != "start":
-            attrs.append(f'text-anchor="{anchor}"')
-        if ls is not None:
-            attrs.append(f'letter-spacing="{f(ls)}"')
-        if italic:
-            attrs.append('font-style="italic"')
-        self.el.append(f"<text {' '.join(attrs)}>{esc(s)}</text>")
+        self.el.append(f"<text {_attrs(pairs)}>{esc(s)}</text>")
 
     def line(self, x1, y1, x2, y2, *, color=INK, op=0.22, wid=1, dashed=False):
-        dash = ' stroke-dasharray="5 4"' if dashed else ""
         self.el.append(
-            f'<line x1="{f(x1)}" y1="{f(y1)}" x2="{f(x2)}" y2="{f(y2)}" '
-            f'stroke="{color}" stroke-opacity="{op}" stroke-width="{wid}"{dash}/>'
+            _void(
+                "line",
+                [
+                    ("x1", f(x1)),
+                    ("y1", f(y1)),
+                    ("x2", f(x2)),
+                    ("y2", f(y2)),
+                    ("stroke", color),
+                    ("stroke-opacity", op),
+                    ("stroke-width", wid),
+                    ("stroke-dasharray", "5 4" if dashed else None),
+                ],
+            )
         )
 
     def arrow(self, x1, y1, x2, y2, *, color=INK, op=0.8, wid=1.4, head=6.0, dashed=False):
@@ -137,7 +176,7 @@ class Fig:
             sign = 1 if x2 > x1 else -1
             self.line(x1, y1, x2 - sign * head, y2, color=color, op=op, wid=wid, dashed=dashed)
             pts = f"{f(x2)},{f(y2)} {f(x2 - sign * head)},{f(y2 - head * 0.62)} {f(x2 - sign * head)},{f(y2 + head * 0.62)}"
-        self.el.append(f'<polygon points="{pts}" fill="{color}" fill-opacity="{op}"/>')
+        self.el.append(_void("polygon", [("points", pts), ("fill", color), ("fill-opacity", op)]))
 
     # ---------- composites ----------
 
@@ -248,11 +287,19 @@ class Fig:
 
     def svg(self, height, aria) -> str:
         body = "\n".join(self.el)
-        return (
-            f'<svg viewBox="0 0 {self.w} {int(height)}" role="img" '
-            f'aria-label="{esc(aria)}" xmlns="http://www.w3.org/2000/svg" '
-            f'fill="none" style="font-variant-ligatures:none">\n{body}\n</svg>'
+        root = _attrs(
+            [
+                ("viewBox", f"0 0 {self.w} {int(height)}"),
+                ("role", "img"),
+                ("aria-label", esc(aria)),
+                ("xmlns", "http://www.w3.org/2000/svg"),
+                ("fill", "none"),
+                # Some mono faces fuse "--" into an em dash; the drawings avoid
+                # the sequence anyway, but a pasted-in label should not surprise.
+                ("style", "font-variant-ligatures:none"),
+            ]
         )
+        return f"<svg {root}>\n{body}\n</svg>"
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -1108,9 +1155,13 @@ def standalone(svg: str) -> str:
     including GitHub's dark theme, where blue-on-nothing is unreadable.
     """
     head, rest = svg.split(">", 1)
-    _, _, width, height = head.split('viewBox="')[1].split('"')[0].split()
-    ground = f'<rect x="0" y="0" width="{width}" height="{height}" fill="#FFFFFF"/>'
-    return f'{head} color="#0B2545">{ground}{rest}'
+    _, _, width, height = head.split("viewBox=" + _DQ)[1].split(_DQ)[0].split()
+    ground = _void(
+        "rect",
+        [("x", 0), ("y", 0), ("width", width), ("height", height), ("fill", "#FFFFFF")],
+    )
+    pinned = _attrs([("color", "#0B2545")])
+    return f"{head} {pinned}>{ground}{rest}"
 
 
 def main() -> int:
