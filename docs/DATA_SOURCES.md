@@ -329,9 +329,9 @@ names which engine answered.
 
 Size is bounded by `api.scan.max_result_bytes` (default 2 GiB) rather than the
 interactive `max_bytes_per_remote_query`, and the statement timeout by
-`data_source.databricks.scan_timeout_seconds` (default 900) — a snapshot is a
-materialize, not an answer somebody is waiting on. A result that hits the byte
-cap raises `remote_scan_too_large` rather than arriving short.
+`data_source.databricks.scan_timeout_seconds` (default 900, `0` disables) — a
+snapshot is a materialize, not an answer somebody is waiting on. A result that
+hits the byte cap raises `remote_scan_too_large` rather than arriving short.
 
 ### Access policies on a remote row
 

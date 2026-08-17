@@ -1340,6 +1340,32 @@ class TestTimeoutConfiguration:
         vs = self._reader(monkeypatch, **{"data_source.databricks.scan_timeout_seconds": 0})
         assert vs._databricks_scan_timeout_s() is None
 
+    def test_a_disabled_deadline_survives_the_connector_layer(self):
+        """The reader's `None` has to reach the client unconverted. Checked at
+        the connector seam — a coercion in `execute_scan_to_arrow` would
+        silently re-arm the deadline without the reader ever being wrong."""
+        import pyarrow as pa
+
+        from connectors.databricks.remote import execute_scan_to_arrow
+
+        seen: dict = {}
+
+        class _FakeResult:
+            truncated = False
+            schema_columns = [{"name": "n", "type_name": "LONG"}]
+
+            def iter_batches(self):
+                return iter([pa.record_batch({"n": pa.array([1])})])
+
+        class _FakeClient:
+            def execute_to_arrow_batches(self, statement, **kwargs):
+                seen.update(kwargs)
+                return _FakeResult()
+
+        table = execute_scan_to_arrow("SELECT 1 AS n", settings={}, cap_bytes=0, timeout_s=None, client=_FakeClient())
+        assert table.num_rows == 1
+        assert seen["timeout_s"] is None
+
     def test_a_disabled_deadline_reaches_the_client_as_no_deadline(self, monkeypatch):
         """`None` has to survive the whole way down, not just out of the
         reader — the client is where a falsy timeout becomes "poll forever"."""
@@ -1484,6 +1510,33 @@ class TestPolicyBodyRewriteStaysInTablePosition:
                 "SELECT * FROM orders_raw", [("orders_raw", "main", "sa`les", "orders_raw")], "main"
             )
         assert exc.value.reason == "databricks_unsafe_identifier"
+
+    def test_the_resolver_emits_exactly_one_native_path(self, seeded_app):
+        """At the resolver seam, where the body is actually produced. The
+        table reference resolves to the row's own native path and that is the
+        ONLY one in the body — every other occurrence of the name is a column
+        qualifier, which must stay a qualifier."""
+        from app.api.query import _databricks_policy_resolver
+
+        _register(
+            id="dbx.sales.orders_raw",
+            name="orders_raw",
+            source_type="databricks",
+            bucket="sales",
+            source_table="orders_raw",
+        )
+        _set_policy(
+            "dbx.sales.orders_raw",
+            "SELECT orders_raw.country, orders_raw.n FROM orders_raw WHERE orders_raw.country = 'CZ'",
+        )
+
+        resolve = _databricks_policy_resolver(name_lookups=[], default_catalog="main")
+        relation = resolve("orders_raw", {"id": "analyst1", "email": "analyst1@test.com"})
+
+        assert relation.policied
+        body = relation.relation_sql
+        assert "FROM `main`.`sales`.`orders_raw`" in body, body
+        assert body.count("`main`.`sales`.`orders_raw`") == 1, body
 
     def test_end_to_end_a_qualifier_policy_ships_a_clean_statement(self, seeded_app, warehouse, monkeypatch):
         """Through `/api/query`, which is where a malformed body would actually

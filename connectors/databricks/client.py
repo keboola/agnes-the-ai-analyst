@@ -61,7 +61,7 @@ class DatabricksStatementTimeoutError(DatabricksApiError):
     deadline. The client cancels the statement best-effort before raising so
     the warehouse doesn't keep burning on a result nobody will read."""
 
-    def __init__(self, statement: str, *, timeout_s: float):
+    def __init__(self, statement: str, *, timeout_s: Optional[float]):
         self.timeout_s = timeout_s
         super().__init__(
             f"Databricks statement exceeded {timeout_s}s (cancelled): {statement[:80]!r}",
