@@ -30,6 +30,7 @@ import pandas as pd
 
 from src.duckdb_conn import _open_duckdb
 from src.identifier_validation import validate_quoted_identifier
+from src.parquet_publish import atomic_publish
 from src.repositories.mcp_sources import MCPSourceRepository
 from src.repositories.tool_registry import MATERIALIZE, ToolRegistryRepository
 from src.sql_ident import quote_ident
@@ -338,14 +339,15 @@ def _write_zero_row_parquet_like(parquet_path: Path) -> Optional[int]:
             exc_info=True,
         )
         return None
-    # Write-then-rename: this is the one path that overwrites a parquet whose
-    # content we still depend on (its schema), and a torn write would take the
-    # last-known-good snapshot with it — carry-forward would then drop the
-    # table as unreadable on the next run. from_batches([]) rather than
-    # Schema.empty_table(): the latter needs pyarrow >= 14, the floor is 12.
-    tmp_path = parquet_path.with_suffix(parquet_path.suffix + ".tmp")
+    # Write-then-publish (#1359: via `atomic_publish` — per-process temp,
+    # chmod 0644, os.replace): this is the one path that overwrites a parquet
+    # whose content we still depend on (its schema), and a torn write would
+    # take the last-known-good snapshot with it — carry-forward would then
+    # drop the table as unreadable on the next run. from_batches([]) rather
+    # than Schema.empty_table(): the latter needs pyarrow >= 14, the floor is
+    # 12.
     prev_path = parquet_path.with_suffix(parquet_path.suffix + ".prev")
-    try:
+    with atomic_publish(parquet_path) as tmp_path:
         pq.write_table(pa.Table.from_batches([], schema=schema), tmp_path)
         # Only when the file being replaced actually HOLDS rows. On a second
         # consecutive empty run the live parquet is already the zero-row file,
@@ -355,7 +357,7 @@ def _write_zero_row_parquet_like(parquet_path: Path) -> Optional[int]:
         # "the last non-empty snapshot", not "the previous file".
         #
         # copy, not rename: the original must stay in place until the atomic
-        # replace below, or a failure between the two steps would leave the
+        # publish below, or a failure between the two steps would leave the
         # table with no parquet at all (carry-forward drops such a table).
         # Bounded to one copy per table — a later non-empty→empty cycle
         # overwrites it.
@@ -368,10 +370,6 @@ def _write_zero_row_parquet_like(parquet_path: Path) -> Optional[int]:
                     prev_path,
                     exc_info=True,
                 )
-        os.replace(tmp_path, parquet_path)
-    finally:
-        if tmp_path.exists():
-            tmp_path.unlink()
     logger.warning(
         "empty upstream: %s reset to zero rows (%d dropped); last non-empty snapshot %s",
         parquet_path.name,
@@ -616,8 +614,11 @@ async def _materialize_one_tool_async(
             f"tool {original_name} response has no list-of-dicts; either reclassify as passthrough or wrap the response"
         )
     df = pd.DataFrame(rows)
-    parquet_path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(parquet_path, index=False)
+    # Published atomically (#1359) — a direct `df.to_parquet(parquet_path)`
+    # wrote straight onto the served path every reader (the orchestrator's
+    # hasher, the master views, `agnes pull`) trusts is complete.
+    with atomic_publish(parquet_path) as tmp_path:
+        df.to_parquet(tmp_path, index=False)
     size_bytes = parquet_path.stat().st_size
     return (len(df), size_bytes)
 
