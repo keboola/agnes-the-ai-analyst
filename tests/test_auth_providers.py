@@ -233,6 +233,14 @@ class TestGoogleOAuth:
         assert "error" in resp.headers.get("location", "")
 
 
+class TestMicrosoftOAuth:
+    def test_microsoft_login_not_configured(self, client):
+        """Without MICROSOFT_CLIENT_ID/SECRET/TENANT_ID, should redirect to login with error."""
+        resp = client.get("/auth/microsoft/login", follow_redirects=False)
+        assert resp.status_code == 302 or resp.status_code == 307
+        assert "error" in resp.headers.get("location", "")
+
+
 @pytest.mark.skip(
     reason="v12: _fetch_google_groups removed; group sync now uses ADC via app.auth.group_sync.fetch_user_groups. Rewrite for the new module."
 )

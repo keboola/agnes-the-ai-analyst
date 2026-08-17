@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- Microsoft Entra ID (Azure AD) single-tenant OAuth login provider (`MICROSOFT_TENANT_ID`/`MICROSOFT_CLIENT_ID`/`MICROSOFT_CLIENT_SECRET`). Authentication only; users land in the Everyone group (IdP group sync not yet wired).
+
 ## [0.83.30] - 2026-08-17
 
 ### Fixed
