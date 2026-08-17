@@ -25,7 +25,7 @@ from app.instance_config import (
     FEATURE_FLAGS,
     get_instance_name,
     get_instance_subtitle,
-    get_theme,
+    get_theme_css_overrides,
     get_corporate_memory_config,
     get_home_route,
     get_home_automode_visibility,
@@ -761,11 +761,10 @@ def _config_proxy() -> type:
 
         @staticmethod
         def theme_overrides():
-            theme = get_theme()
-            # Return dict of CSS variable overrides (only non-empty values)
-            if isinstance(theme, dict):
-                return {k: v for k, v in theme.items() if v}
-            return {}
+            # CSS variable overrides for the operator `theme:` block — both
+            # the legacy `--*` family and the matching `--ds-*` design-system
+            # tokens. See app.instance_config.get_theme_css_overrides.
+            return get_theme_css_overrides()
 
     return ConfigProxy
 
