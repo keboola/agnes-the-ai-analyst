@@ -2841,6 +2841,7 @@ def _reattach_remote_extensions(conn: duckdb.DuckDBPyConnection, extracts_dir: P
         # this, a malicious connector's _remote_attach row exfiltrates
         # JWT_SECRET_KEY / SESSION_SECRET / OPENAI_API_KEY on every
         # query, defeating the rebuild-path hardening entirely.
+        from connectors.databricks.attach import UC_EXTENSION, attach_unity_catalog
         from src.orchestrator_security import (
             attach_host_allowlist_configured,
             escape_sql_string_literal,
@@ -2934,6 +2935,30 @@ def _reattach_remote_extensions(conn: duckdb.DuckDBPyConnection, extracts_dir: P
                     apply_bq_session_settings(conn)
                     if not already_attached:
                         conn.execute(f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, READ_ONLY)")
+                elif extension == UC_EXTENSION:
+                    # Unity Catalog: PAT + workspace endpoint together, which
+                    # the generic TOKEN branch cannot express. Mirrors the
+                    # orchestrator's rebuild-path branch exactly (same helper),
+                    # including the credential-egress host allowlist.
+                    if not is_attach_host_allowed(url):
+                        logger.error(
+                            "Re-attach %s: url host %r not in AGNES_REMOTE_ATTACH_HOST_ALLOWLIST; "
+                            "refusing to send credential from %s.",
+                            alias,
+                            url,
+                            token_env,
+                        )
+                        continue
+                    if not attach_host_allowlist_configured():
+                        logger.warning(
+                            "Re-attach %s: sending credential (%s) to connector-chosen url %r "
+                            "with no AGNES_REMOTE_ATTACH_HOST_ALLOWLIST configured — pin "
+                            "allowed hosts in production.",
+                            alias,
+                            token_env,
+                            url,
+                        )
+                    attach_unity_catalog(conn, alias=alias, url=url, token=token)
                 elif token:
                     # #F11 — never ship a real credential to a connector-chosen
                     # host the operator has not approved (mirrors the rebuild

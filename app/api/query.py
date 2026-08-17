@@ -49,6 +49,13 @@ from src.access_policy import (
 from src.audit_helpers import client_kind_from_user
 from src.db import _open_duckdb, get_analytics_db_readonly
 from src.rbac import get_accessible_tables
+from src.remote_engines import (
+    SQL_RESERVED_NAMES,
+    TABLE_REF_PREFIX_RE,
+    mask_backticks,
+    name_reference_re,
+    rewrite_bare_names,
+)
 from src.remote_query import _strip_leading_sql_comments
 from src.repositories import (
     audit_repo,
@@ -337,24 +344,13 @@ BQ_PATH = re.compile(
 # Issue #201 — full backtick BQ path `<project>.<dataset>.<table>` in user
 # SQL. Used by the registry-gating pass and (via `_mask_backticks`) to keep
 # bare-name regexes from firing inside backtick-quoted segments.
-_BACKTICK_SEGMENT = re.compile(r"`[^`]*`")
 _BACKTICK_FULL_PATH = re.compile(r"`([^.`]+)\.([^.`]+)\.([^.`]+)`")
 
-
-def _mask_backticks(sql: str) -> str:
-    """Replace each `…`-quoted segment with spaces of equal length so
-    word-boundary regexes find positions outside backticks but ignore
-    everything inside. Preserves all character offsets so ``re.search``
-    on the masked string returns matches at the same positions as on the
-    original.
-
-    Issue #201: `\\b` matches inside backtick segments because both `.`
-    and `` ` `` are non-word characters. A registered bare-name like
-    ``unit_economics`` would otherwise match inside a user-supplied full
-    backtick path ``\\`<project>.<dataset>.unit_economics\\``` and get
-    falsely rewritten — corrupting the user's intended SQL.
-    """
-    return _BACKTICK_SEGMENT.sub(lambda m: " " * len(m.group(0)), sql)
+# `_mask_backticks` / `_name_reference_re` now live in `src/remote_engines.py`
+# so every engine's registry gate asks the same question with the same regex.
+# Aliased rather than renamed at ~40 call sites: the local names carry a lot of
+# reviewed history in this module's comments.
+_mask_backticks = mask_backticks
 
 
 def _local_extract_catalogs(conn) -> set[str]:
@@ -678,22 +674,8 @@ def _sql_reference_test(sql_lower: str):
     return lambda name: _sql_text_references_name(masked, name)
 
 
-@functools.lru_cache(maxsize=8192)
-def _name_reference_re(name: str) -> "re.Pattern":
-    """Compiled fallback pattern for one table/view name.
-
-    Memoized because this path is a fallback but NOT a rare one: a
-    backtick-quoted BigQuery path is first-class input that DuckDB's parser
-    rejects, so every non-admin query of that shape reaches the denylist and
-    asks for one pattern per non-granted view. `re`'s own cache holds 512 and
-    evicts FIFO, so past that many views — in the stable order this loop uses
-    — every pattern recompiles on every request: measured 17.5 ms at 1000
-    views against 0.5 ms here.
-
-    Keys are catalog names, bounded by the instance's view + registry count,
-    never free-form user input; the cap is a backstop.
-    """
-    return re.compile(rf"\b{re.escape(name)}\b(?!\s+by\b)")
+# Memoized in `src/remote_engines`; aliased here for this module's call sites.
+_name_reference_re = name_reference_re
 
 
 def _sql_text_references_name(sql_masked_lower: str, name: str) -> bool:
@@ -1426,6 +1408,12 @@ def execute_query(
     # Track whether this query touched BQ-remote tables (set below in _bq_guardrail_inputs).
     # Used for audit action selection (query.remote vs query.local) and bytes_scanned.
     _dry_run_set: list = []
+    # Databricks counterparts of `_dry_run_set`: the plan (None unless this
+    # statement runs on a warehouse) and the result bytes it reported. Bound
+    # here so the response/audit tail below sees them on every path, including
+    # the ones that raise before planning.
+    _dbx_plan: dict | None = None
+    _dbx_bytes: int | None = None
     try:
         # Non-admin SQL RBAC: catalog gate (#868) + master-view-name denylist +
         # internal-extract-table denylist (M1). Shared with the snapshot path
@@ -1459,13 +1447,26 @@ def execute_query(
             # policy body.
             raise HTTPException(status_code=500, detail={"reason": "policy_error", "table": exc.table_id})
 
+        # ---- Which remote engine, if any, runs this statement -------------
+        # `None` for an all-local query and for BigQuery, which keeps its own
+        # (unchanged) guardrail below; a plan dict when the statement resolves
+        # to a Databricks warehouse. Referencing both engines at once is
+        # refused inside the planner — there is no join layer between them.
+        _dbx_plan = _databricks_remote_plan(request.sql, sql_lower, conn, user, allowed)
+        if _dbx_plan is not None:
+            _assert_no_policied_remote_engine(policied_table_ids, "Databricks")
+
         # ---- #160 BQ remote-row guardrail + RBAC patch -------------------
-        dry_run_set, name_lookups, blocked_bq_path = _bq_guardrail_inputs(
-            request.sql,
-            sql_lower,
-            conn,
-            user,
-            allowed,
+        dry_run_set, name_lookups, blocked_bq_path = (
+            ([], [], None)
+            if _dbx_plan is not None
+            else _bq_guardrail_inputs(
+                request.sql,
+                sql_lower,
+                conn,
+                user,
+                allowed,
+            )
         )
         _dry_run_set = dry_run_set  # expose to outer scope for audit
         if blocked_bq_path is not None:
@@ -1502,152 +1503,165 @@ def execute_query(
             else contextlib.nullcontext()
         )
         with guard:
-            # Performance fix: rewrite user SQL referencing BQ-remote tables
-            # to a single ``bigquery_query()`` call so WHERE / projection /
-            # LIMIT push into BQ via jobs.query (1-2 s) instead of falling
-            # through DuckDB's ATTACH-catalog Storage Read API session over
-            # the full table (often 70-150 s, fails with "Response too
-            # large to return" on >100M-row sources). Helper returns the
-            # original SQL unchanged when rewriting would be unsafe
-            # (cross-source JOIN, no BQ tables referenced, double-wrap).
-            #
-            # This plans the push-down against ``request.sql`` — the
-            # caller's ORIGINAL, unfiltered SQL. Fine for a query that
-            # touches no policied table (the common case). When
-            # ``policied_table_ids`` is non-empty, the resulting
-            # ``execution_sql`` below is NEVER used to execute anything —
-            # see the branch immediately below, which routes those
-            # queries around this push-down entirely (§7.1: a
-            # dollar-quoted ``bigquery_query()`` payload has no bind
-            # mechanism, so ``$user_groups`` would either blow up with a
-            # DuckDB parameter-count mismatch, or — when the policy needs
-            # no bind value at all — nothing would raise and the
-            # unfiltered result would silently ship with a 200).
-            # ``did_rewrite`` is still meaningful on its own: it is True
-            # only when EVERY table this query touches is
-            # ``query_mode='remote'`` (``_bq_remote_execution_plan``'s own
-            # cross-source bail, Skip 3) — exactly the condition under
-            # which the policied branch below can run the whole query
-            # directly against BigQuery.
-            execution_sql, did_rewrite = _rewrite_user_sql_for_bigquery_query(
-                request.sql,
-                conn,
-            )
-
-            if did_rewrite and policied_table_ids:
-                # §7.1-§7.4: this query touches a policied
-                # ``query_mode='remote'`` table and is otherwise
-                # push-down-eligible. Never use the ``bigquery_query()``
-                # push-down above for it — run the whole query directly
-                # against the BQ jobs API instead, with the policy
-                # transpiled to BigQuery dialect and bound as named
-                # parameters (§7.2). Any failure past collision detection —
-                # building the query parameters, or the BQ job itself —
-                # becomes a table-scoped ``policy_error``; it NEVER falls
-                # back to the push-down or to an unfiltered execution
-                # (§17 — every failure denies).
-                try:
-                    bq = get_bq_access()
-                    table = _execute_policied_remote_bq(
-                        request.sql,
-                        user,
-                        bq,
-                        name_lookups=name_lookups,
-                        labels=job_labels_for(user, "query"),
-                        outer_limit=request.limit + 1,
-                    )
-                except PolicyNameCollision as exc:
-                    raise HTTPException(
-                        status_code=400,
-                        detail={
-                            "reason": "policy_name_collision",
-                            "table": exc.table_id,
-                            "fix": "rename your CTE",
-                        },
-                    )
-                except PolicyIdentityUnresolvable:
-                    raise HTTPException(status_code=403, detail={"reason": "policy_identity_unresolvable"})
-                except PolicyError as exc:
-                    raise HTTPException(status_code=500, detail={"reason": "policy_error", "table": exc.table_id})
-                columns, rows, truncated = _arrow_table_to_rows(table, request.limit)
+            if _dbx_plan is not None:
+                # Databricks: the statement was rewritten to warehouse-native
+                # SQL by the planner and runs there whole — there is no local
+                # fallback path to fall through to, because the parquet a
+                # `query_mode='remote'` row would need does not exist on this
+                # server. Bytes are reported for disclosure only; unlike
+                # BigQuery they are result bytes, not scanned bytes, so they
+                # are deliberately NOT billed against the BQ daily byte quota
+                # (which prices a different thing on a different engine).
+                columns, rows, truncated, _dbx_bytes = _execute_databricks_plan(_dbx_plan, request.limit, user_id)
             else:
-                if did_rewrite:
-                    # Memory-safety: ``bigquery_query()`` materialises the entire
-                    # BQ result into DuckDB before fetchmany sees it (vs the
-                    # ATTACH-catalog Storage Read API path, which streams rows
-                    # lazily). Wrap the rewritten SQL in an outer ``LIMIT N+1``
-                    # so a `SELECT *` against a billion-row remote table doesn't
-                    # buffer the full table into the worker process — the cap
-                    # is pushed into the BQ job itself. Aliased subquery so the
-                    # outer LIMIT applies to the final rewritten result.
-                    execution_sql = f"SELECT * FROM ({execution_sql}) AS _bqq_outer LIMIT {request.limit + 1}"
-                    logger.info(
-                        "query_rewrite_to_bigquery_query: user_id=%s — wrapped "
-                        "SQL in bigquery_query() with outer LIMIT for BQ "
-                        "predicate pushdown",
-                        user_id,
-                    )
-                else:
-                    # Non-push-down (plain ATTACH-catalog) path: run the
-                    # access-policy-rewritten SQL instead of the raw analyst SQL.
-                    # Byte-identical to request.sql — so this branch is a no-op
-                    # change — unless a table this query touches is policied
-                    # (rewrite_sql's inert-until-attached guarantee).
-                    execution_sql = policy_rewritten_sql
-                    logger.debug(
-                        "query_rewrite_skipped: user_id=%s — running original SQL via ATTACH-catalog path",
-                        user_id,
-                    )
+                # Performance fix: rewrite user SQL referencing BQ-remote tables
+                # to a single ``bigquery_query()`` call so WHERE / projection /
+                # LIMIT push into BQ via jobs.query (1-2 s) instead of falling
+                # through DuckDB's ATTACH-catalog Storage Read API session over
+                # the full table (often 70-150 s, fails with "Response too
+                # large to return" on >100M-row sources). Helper returns the
+                # original SQL unchanged when rewriting would be unsafe
+                # (cross-source JOIN, no BQ tables referenced, double-wrap).
+                #
+                # This plans the push-down against ``request.sql`` — the
+                # caller's ORIGINAL, unfiltered SQL. Fine for a query that
+                # touches no policied table (the common case). When
+                # ``policied_table_ids`` is non-empty, the resulting
+                # ``execution_sql`` below is NEVER used to execute anything —
+                # see the branch immediately below, which routes those
+                # queries around this push-down entirely (§7.1: a
+                # dollar-quoted ``bigquery_query()`` payload has no bind
+                # mechanism, so ``$user_groups`` would either blow up with a
+                # DuckDB parameter-count mismatch, or — when the policy needs
+                # no bind value at all — nothing would raise and the
+                # unfiltered result would silently ship with a 200).
+                # ``did_rewrite`` is still meaningful on its own: it is True
+                # only when EVERY table this query touches is
+                # ``query_mode='remote'`` (``_bq_remote_execution_plan``'s own
+                # cross-source bail, Skip 3) — exactly the condition under
+                # which the policied branch below can run the whole query
+                # directly against BigQuery.
+                execution_sql, did_rewrite = _rewrite_user_sql_for_bigquery_query(
+                    request.sql,
+                    conn,
+                )
 
-                # Open in read-only mode for extra safety. If the rewritten
-                # path errors (e.g. user SQL contained DuckDB-only syntax —
-                # ``::INT`` casts, ``STRPTIME``, COALESCE arity differences —
-                # that survives identifier rewrite but BQ refuses), fall back
-                # to the original SQL via the legacy ATTACH-catalog path so
-                # the request still succeeds (slower, but correct). Same
-                # safety contract as the dry-run fallback in
-                # ``_bq_quota_and_cap_guard``. Bind ``policy_params`` (DuckDB
-                # named params) whenever the executed SQL carries a policy's
-                # ``$name`` markers — never string-interpolated (§6.2). This
-                # branch is reachable ONLY when NOT (did_rewrite and
-                # policied_table_ids) — i.e. either no table this query
-                # touches is policied, or the policied one isn't BQ-remote —
-                # so a retry on ``policy_rewritten_sql`` below never
-                # re-exposes the unfiltered original (§7.4).
-                if policied_table_ids:
-                    # Read-path guard (§17): fail closed if a policy's output
-                    # has duplicate column names (a masking policy that
-                    # re-derives a column `*` still emits leaks the plaintext
-                    # copy). Checks the policy body itself — the outer SELECT
-                    # here would dedup the names and hide it.
-                    assert_policied_reads_unique(analytics, policied_table_ids, user)
-                try:
-                    if policy_params:
-                        result = analytics.execute(execution_sql, policy_params).fetchmany(request.limit + 1)
-                    else:
-                        result = analytics.execute(execution_sql).fetchmany(request.limit + 1)
-                except Exception as exc:
-                    if did_rewrite and _looks_like_bq_rewrite_parse_error(exc):
-                        logger.warning(
-                            "query_rewrite_fallback: user_id=%s — bigquery_query() "
-                            "rewrite rejected by BQ (%s); retrying via "
-                            "ATTACH-catalog path",
-                            user_id,
-                            type(exc).__name__,
+                if did_rewrite and policied_table_ids:
+                    # §7.1-§7.4: this query touches a policied
+                    # ``query_mode='remote'`` table and is otherwise
+                    # push-down-eligible. Never use the ``bigquery_query()``
+                    # push-down above for it — run the whole query directly
+                    # against the BQ jobs API instead, with the policy
+                    # transpiled to BigQuery dialect and bound as named
+                    # parameters (§7.2). Any failure past collision detection —
+                    # building the query parameters, or the BQ job itself —
+                    # becomes a table-scoped ``policy_error``; it NEVER falls
+                    # back to the push-down or to an unfiltered execution
+                    # (§17 — every failure denies).
+                    try:
+                        bq = get_bq_access()
+                        table = _execute_policied_remote_bq(
+                            request.sql,
+                            user,
+                            bq,
+                            name_lookups=name_lookups,
+                            labels=job_labels_for(user, "query"),
+                            outer_limit=request.limit + 1,
                         )
-                        # Retry on the policy-rewritten SQL, not the raw
-                        # request.sql — this fallback re-enters the ATTACH-catalog
-                        # path (same as the did_rewrite=False branch above), so
-                        # it must stay policy-filtered too.
-                        if policy_params:
-                            result = analytics.execute(policy_rewritten_sql, policy_params).fetchmany(request.limit + 1)
-                        else:
-                            result = analytics.execute(policy_rewritten_sql).fetchmany(request.limit + 1)
+                    except PolicyNameCollision as exc:
+                        raise HTTPException(
+                            status_code=400,
+                            detail={
+                                "reason": "policy_name_collision",
+                                "table": exc.table_id,
+                                "fix": "rename your CTE",
+                            },
+                        )
+                    except PolicyIdentityUnresolvable:
+                        raise HTTPException(status_code=403, detail={"reason": "policy_identity_unresolvable"})
+                    except PolicyError as exc:
+                        raise HTTPException(status_code=500, detail={"reason": "policy_error", "table": exc.table_id})
+                    columns, rows, truncated = _arrow_table_to_rows(table, request.limit)
+                else:
+                    if did_rewrite:
+                        # Memory-safety: ``bigquery_query()`` materialises the entire
+                        # BQ result into DuckDB before fetchmany sees it (vs the
+                        # ATTACH-catalog Storage Read API path, which streams rows
+                        # lazily). Wrap the rewritten SQL in an outer ``LIMIT N+1``
+                        # so a `SELECT *` against a billion-row remote table doesn't
+                        # buffer the full table into the worker process — the cap
+                        # is pushed into the BQ job itself. Aliased subquery so the
+                        # outer LIMIT applies to the final rewritten result.
+                        execution_sql = f"SELECT * FROM ({execution_sql}) AS _bqq_outer LIMIT {request.limit + 1}"
+                        logger.info(
+                            "query_rewrite_to_bigquery_query: user_id=%s — wrapped "
+                            "SQL in bigquery_query() with outer LIMIT for BQ "
+                            "predicate pushdown",
+                            user_id,
+                        )
                     else:
-                        raise
-                columns = [desc[0] for desc in analytics.description] if analytics.description else []
-                truncated = len(result) > request.limit
-                rows = result[: request.limit]
+                        # Non-push-down (plain ATTACH-catalog) path: run the
+                        # access-policy-rewritten SQL instead of the raw analyst SQL.
+                        # Byte-identical to request.sql — so this branch is a no-op
+                        # change — unless a table this query touches is policied
+                        # (rewrite_sql's inert-until-attached guarantee).
+                        execution_sql = policy_rewritten_sql
+                        logger.debug(
+                            "query_rewrite_skipped: user_id=%s — running original SQL via ATTACH-catalog path",
+                            user_id,
+                        )
+
+                    # Open in read-only mode for extra safety. If the rewritten
+                    # path errors (e.g. user SQL contained DuckDB-only syntax —
+                    # ``::INT`` casts, ``STRPTIME``, COALESCE arity differences —
+                    # that survives identifier rewrite but BQ refuses), fall back
+                    # to the original SQL via the legacy ATTACH-catalog path so
+                    # the request still succeeds (slower, but correct). Same
+                    # safety contract as the dry-run fallback in
+                    # ``_bq_quota_and_cap_guard``. Bind ``policy_params`` (DuckDB
+                    # named params) whenever the executed SQL carries a policy's
+                    # ``$name`` markers — never string-interpolated (§6.2). This
+                    # branch is reachable ONLY when NOT (did_rewrite and
+                    # policied_table_ids) — i.e. either no table this query
+                    # touches is policied, or the policied one isn't BQ-remote —
+                    # so a retry on ``policy_rewritten_sql`` below never
+                    # re-exposes the unfiltered original (§7.4).
+                    if policied_table_ids:
+                        # Read-path guard (§17): fail closed if a policy's output
+                        # has duplicate column names (a masking policy that
+                        # re-derives a column `*` still emits leaks the plaintext
+                        # copy). Checks the policy body itself — the outer SELECT
+                        # here would dedup the names and hide it.
+                        assert_policied_reads_unique(analytics, policied_table_ids, user)
+                    try:
+                        if policy_params:
+                            result = analytics.execute(execution_sql, policy_params).fetchmany(request.limit + 1)
+                        else:
+                            result = analytics.execute(execution_sql).fetchmany(request.limit + 1)
+                    except Exception as exc:
+                        if did_rewrite and _looks_like_bq_rewrite_parse_error(exc):
+                            logger.warning(
+                                "query_rewrite_fallback: user_id=%s — bigquery_query() "
+                                "rewrite rejected by BQ (%s); retrying via "
+                                "ATTACH-catalog path",
+                                user_id,
+                                type(exc).__name__,
+                            )
+                            # Retry on the policy-rewritten SQL, not the raw
+                            # request.sql — this fallback re-enters the ATTACH-catalog
+                            # path (same as the did_rewrite=False branch above), so
+                            # it must stay policy-filtered too.
+                            if policy_params:
+                                result = analytics.execute(policy_rewritten_sql, policy_params).fetchmany(
+                                    request.limit + 1
+                                )
+                            else:
+                                result = analytics.execute(policy_rewritten_sql).fetchmany(request.limit + 1)
+                        else:
+                            raise
+                    columns = [desc[0] for desc in analytics.description] if analytics.description else []
+                    truncated = len(result) > request.limit
+                    rows = result[: request.limit]
 
             # Post-flight: bill the dry-run estimate against the user's daily
             # quota. Do this AFTER execute so a downstream failure (e.g. BQ
@@ -1680,7 +1694,14 @@ def execute_query(
         # bytes_scanned from _dry_run_set (pinned to entry 0 after _bq_quota_and_cap_guard).
         # Computed before building the response so it can be surfaced to
         # REST/CLI/MCP consumers; ``None`` for local queries (no BQ tables).
-        _bytes_scanned = sum(b for _, _, b in _dry_run_set) if _dry_run_set else None
+        #
+        # For a Databricks statement the number means something different —
+        # bytes the warehouse RETURNED, not bytes it scanned, because the
+        # Statement Execution API exposes no scan accounting. Surfaced anyway
+        # (an analyst asking "how much did that move?" is better served by the
+        # honest available number than by `null`), and the field's per-engine
+        # meaning is spelled out in docs/DATA_SOURCES.md.
+        _bytes_scanned = sum(b for _, _, b in _dry_run_set) if _dry_run_set else _dbx_bytes
         # Task 11 (§10): policied_table_ids (from the rewrite_sql call above)
         # discloses here as response.row_scope -- None unless this query
         # actually touched a policied table (empty list otherwise, or the
@@ -1693,9 +1714,12 @@ def execute_query(
             bytes_scanned=_bytes_scanned,
             row_scope=row_scope_payload(policied_table_ids),
         )
-        # Determine action: remote when BQ tables were involved (_dry_run_set non-empty),
-        # local otherwise.
-        _action = "query.remote" if _dry_run_set else "query.local"
+        # Determine action: remote when an external engine ran the statement
+        # (BQ dry-run set non-empty, or a Databricks plan executed), local
+        # otherwise. One audit action for both engines — the engine itself is
+        # recoverable from the resource/table, and splitting it would break
+        # every existing `query.remote` dashboard.
+        _action = "query.remote" if (_dry_run_set or _dbx_plan is not None) else "query.local"
         _first_table = _first_table_from_sql(request.sql)
         _resource = (f"table:{_first_table}" if _first_table else "adhoc")[:256]
         try:
@@ -2132,42 +2156,283 @@ def _bq_guardrail_inputs(
     return dry_run, name_lookups, None
 
 
-# Reserved SQL keywords a registered table may legally be named after — the
-# register-table id rule is `[a-z_][a-z0-9_]*`, which admits every word below.
-# Union of BigQuery's reserved-keyword list and the DuckDB-only words that can
-# appear bare in a SELECT (ASOF/ANTI/SEMI/POSITIONAL joins, PIVOT/UNPIVOT,
-# QUALIFY, SAMPLE, …). Membership only ever NARROWS where a name is
-# substituted (see `_rewrite_bq_table_refs_to_native`), so over-inclusion is
-# the safe direction; a missing word merely leaves that name on the legacy
-# substitute-everywhere path.
-_SQL_RESERVED_NAMES = frozenset(
-    """
-    all and anti any array as asc asof at between by case cast collate columns
-    contains create cross cube current default define desc distinct else end
-    enum escape except exclude exists extract false fetch following for from
-    full glob group grouping groups hash having if ignore ilike in inner
-    intersect interval into is join lateral left like limit lookup map merge
-    natural new no not null nulls of offset on or order outer over pivot
-    positional preceding proto qualify range recursive replace respect right
-    rollup rows sample select semi set similar some struct table tablesample
-    then to treat true unbounded union unnest unpivot using values when where
-    window with within
-    """.split()
-)
+# ---------------------------------------------------------------------------
+# Databricks remote execution (phase 2)
+# ---------------------------------------------------------------------------
 
-# A bare table name can only follow one of these tokens in a SELECT-only
-# statement: `FROM x`, `… JOIN x`, or `FROM a, x` (old-style comma join).
-# Anchored with `\Z` and applied to the text PRECEDING a candidate match, so
-# it answers "is this occurrence in a table-reference position?".
-#
-# Whitespace and SQL comments may sit between the token and the name. Written
-# with single-character `\s` (not `\s+`) inside the outer `*` so the
-# alternation has no nested quantifier to backtrack over — the SQL here is
-# analyst-supplied, and the security playbook requires linear-time regexes.
-_TABLE_REF_PREFIX_RE = re.compile(
-    r"(?:\bfrom\b|\bjoin\b|,)(?:\s|/\*(?:[^*]|\*(?!/))*\*/|--[^\n]*\n)*\Z",
-    re.IGNORECASE,
-)
+
+def _databricks_remote_cap_bytes() -> int:
+    """Cap on the RESULT bytes an interactive Databricks statement may return.
+
+    Deliberately a different number — and a different meaning — from BigQuery's
+    ``bq_max_scan_bytes``. BigQuery's cap is on bytes *scanned*, checked before
+    the query runs, because a dry-run can price it. Databricks has no dry-run,
+    so this caps what the warehouse is allowed to hand back (the API's
+    ``byte_limit``) and the statement is refused if it hits the cap. 1 GiB of
+    *returned* result is already far past what an interactive answer needs;
+    bulk volume belongs in a materialized row.
+    """
+    raw = get_value("data_source", "databricks", "max_bytes_per_remote_query", default=1_073_741_824)
+    try:
+        return int(raw) if raw is not None else 1_073_741_824
+    except (TypeError, ValueError):
+        return 1_073_741_824
+
+
+def _databricks_statement_timeout_s() -> float:
+    """Client-side deadline for an interactive statement.
+
+    Shorter than the materialize path's ``statement_timeout_seconds`` because a
+    human is waiting on this one: past a couple of minutes the right answer is
+    "register it as materialized", not a longer spinner.
+    """
+    raw = get_value("data_source", "databricks", "remote_query_timeout_seconds", default=120)
+    try:
+        t = float(raw) if raw is not None else 120.0
+    except (TypeError, ValueError):
+        return 120.0
+    return t if t > 0 else 120.0
+
+
+def _caller_is_unrestricted_admin(user, sys_conn) -> bool:
+    """Admin *for the purposes of a direct-path bypass* — never inherited.
+
+    A restricted principal (co-session / agent-session) is NEVER admin, even
+    when its owner is: resolving the owner and asking ``is_user_admin`` would
+    reintroduce exactly the admin-inheritance the AgentPrincipal design
+    forbids. And a full admin on a ``surface='stack'`` PAT is not admin here
+    either (v106) — otherwise they could reach an out-of-stack table through a
+    direct path while the bare-name pass correctly stack-scopes them.
+
+    Extracted from ``_bq_guardrail_inputs``'s inline logic so the Databricks
+    gate cannot drift from the BigQuery one.
+    """
+    from app.auth.session_principal import PRINCIPAL_TYPES
+
+    if isinstance(user, PRINCIPAL_TYPES):
+        return False
+    from src.rbac import _credential_surface
+
+    return bool(
+        is_user_admin(user.get("id") or user.get("email") or "", sys_conn) and _credential_surface(user) == "all"
+    )
+
+
+def _databricks_attach_views_available(sql_lower: str) -> bool:
+    """True when DuckDB can resolve this statement's Databricks tables itself.
+
+    That is only the case on an instance where the operator opted into the
+    experimental Unity Catalog ATTACH: the orchestrator then holds a master
+    view per ``query_mode='remote'`` Databricks row and the ordinary local
+    execution path can join it against local parquets. Asking the catalog is
+    the honest test — the config flag says what was *intended*, the view says
+    what actually got built (the extension may have failed to install, the
+    ATTACH may have been refused by the host allowlist).
+    """
+    try:
+        from src.repositories import table_registry_repo
+
+        rows = [
+            r
+            for r in table_registry_repo().list_by_source("databricks")
+            if (r.get("query_mode") or "") == "remote" and r.get("name")
+        ]
+        masked = mask_backticks(sql_lower)
+        referenced = [str(r["name"]) for r in rows if _name_reference_re(str(r["name"]).lower()).search(masked)]
+        if not referenced:
+            return False
+        analytics = get_analytics_db_readonly()
+        views = {
+            row[0].lower()
+            for row in analytics.execute(
+                "SELECT table_name FROM information_schema.tables WHERE table_type='VIEW'"
+            ).fetchall()
+        }
+        return all(n.lower() in views for n in referenced)
+    except Exception:
+        # No catalog, no ATTACH — the caller's refusal branch is the safe answer.
+        logger.debug("databricks attach-view probe failed; treating as unavailable", exc_info=True)
+        return False
+
+
+def _databricks_remote_plan(sql: str, sql_lower: str, sys_conn, user, allowed):
+    """Decide whether this statement runs on a Databricks warehouse, and how.
+
+    Returns a plan dict (``{"sql": <warehouse-native SQL>, "settings": …}``) or
+    ``None`` when no Databricks remote row is referenced — in which case the
+    caller proceeds down the unchanged BigQuery / local path.
+
+    Raises ``HTTPException`` for the three refusals an analyst can trigger:
+    mixing two remote engines in one statement (400), naming an unregistered or
+    un-granted Databricks table (403), and Databricks not being configured on
+    this instance at all (503).
+    """
+    from src.remote_engines import (
+        CrossEngineError,
+        referenced_remote_rows,
+        references_non_engine_tables,
+        resolve_single_engine,
+    )
+
+    try:
+        engine = resolve_single_engine(referenced_remote_rows(sql, sql_lower))
+    except CrossEngineError as exc:
+        raise HTTPException(status_code=400, detail=exc.detail())
+    if engine != "databricks":
+        return None
+
+    # Cross-source bail. The whole statement ships to the warehouse, so a
+    # reference to anything the warehouse cannot see — a local parquet, a
+    # materialized one, a Jira table — would resolve against nothing there.
+    # BigQuery answers this by falling back to DuckDB's ATTACH-catalog path;
+    # Databricks has no such fallback unless the operator opted into the
+    # experimental Unity Catalog ATTACH (see `docs/DATA_SOURCES.md`), in which
+    # case DuckDB already holds a view for the row and returning None here
+    # lets the local path do the join. Otherwise: refuse, and name the tables.
+    foreign = references_non_engine_tables(sql_lower, "databricks")
+    if foreign:
+        if _databricks_attach_views_available(sql_lower):
+            return None
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "reason": "remote_cross_source_unsupported",
+                "engine": "databricks",
+                "tables": foreign,
+                "message": (
+                    "This query joins a remote Databricks table with data that only exists "
+                    f"on this server ({', '.join(foreign)}). The statement runs entirely on "
+                    "the warehouse, which cannot see it."
+                ),
+                "hint": (
+                    "Register the Databricks side as a query_mode='materialized' table so it "
+                    "syncs to a parquet, then join locally with `agnes query`."
+                ),
+            },
+        )
+
+    from connectors.databricks.remote import DatabricksRemoteError, guardrail_inputs, rewrite_to_native
+    from connectors.databricks.semantic_layer import resolve_databricks_settings
+
+    settings = resolve_databricks_settings()
+    if settings is None:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "reason": "databricks_not_configured",
+                "message": (
+                    "This query references a Databricks table but the instance has no Databricks connection configured."
+                ),
+                "hint": (
+                    "Set data_source.databricks.host + warehouse_id (instance.yaml or "
+                    "/admin/server-config) and the DATABRICKS_TOKEN env var / vault secret."
+                ),
+            },
+        )
+
+    default_catalog = str(settings.get("catalog") or "")
+    try:
+        name_lookups, blocked = guardrail_inputs(
+            sql,
+            sql_lower,
+            allowed=allowed,
+            is_admin=_caller_is_unrestricted_admin(user, sys_conn),
+            default_catalog=default_catalog,
+        )
+        if blocked is not None:
+            # "I can't parse this" is a bad request; everything else the gate
+            # returns is an authorization answer.
+            status = 400 if blocked.get("reason") == "databricks_sql_unparseable" else 403
+            raise HTTPException(status_code=status, detail=blocked)
+        native_sql = rewrite_to_native(sql, name_lookups, default_catalog)
+    except DatabricksRemoteError as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.detail())
+
+    return {"sql": native_sql, "settings": settings, "tables": [n for n, _c, _s, _t in name_lookups]}
+
+
+def _execute_databricks_plan(plan: dict, limit: int, user_id: str):
+    """Run a planned Databricks statement; return ``(columns, rows, truncated, bytes)``.
+
+    Holds the caller's concurrent-scan slot for the duration. That slot is the
+    one piece of the quota machinery that transfers cleanly across engines —
+    it limits how many expensive external queries one user can have in flight,
+    which is exactly as true of a SQL warehouse as of BigQuery.
+
+    The *daily byte budget* deliberately does NOT apply: it is denominated in
+    BigQuery scanned bytes, and Databricks reports returned bytes on a
+    different engine with different pricing. Charging one against the other
+    would either block a Databricks query because of BigQuery spend or quietly
+    inflate the BigQuery budget with numbers that do not mean the same thing.
+    Databricks cost is bounded by ``max_bytes_per_remote_query`` +
+    ``remote_query_timeout_seconds`` instead.
+
+    Access policies are not applied here and cannot be: a policied table is by
+    definition one that never leaves the server, and this path forwards the
+    statement to an external warehouse. ``_assert_no_policied_remote_engine``
+    refuses that combination before planning, so reaching this function means
+    no policy is in play.
+    """
+    from connectors.databricks.remote import DatabricksRemoteError, execute_select
+
+    quota = _build_quota_tracker()
+    try:
+        with quota.acquire(user=user_id):
+            return execute_select(
+                plan["sql"],
+                settings=plan["settings"],
+                limit=limit,
+                cap_bytes=_databricks_remote_cap_bytes(),
+                timeout_s=_databricks_statement_timeout_s(),
+            )
+    except QuotaExceededError as exc:
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "reason": "concurrent_scans_exceeded",
+                "kind": exc.kind,
+                "current": exc.current,
+                "limit": exc.limit,
+                "retry_after_seconds": exc.retry_after_seconds,
+            },
+        )
+    except DatabricksRemoteError as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.detail())
+
+
+def _assert_no_policied_remote_engine(policied_table_ids, engine_label: str) -> None:
+    """Refuse a table access policy on a statement bound for an external engine.
+
+    §17 of the access-policy design says every failure denies; there is no
+    "run it unfiltered" branch anywhere on a policied read. BigQuery has a
+    dedicated transpile-and-bind path (``_execute_policied_remote_bq``) that
+    keeps the policy attached across the engine boundary. Databricks has no
+    such path yet, so the only correct answer is to refuse — silently shipping
+    the unfiltered statement to the warehouse would leak exactly the rows the
+    policy exists to hide.
+    """
+    if not policied_table_ids:
+        return
+    raise HTTPException(
+        status_code=400,
+        detail={
+            "reason": "policy_unsupported_on_remote_engine",
+            "engine": engine_label,
+            "tables": list(policied_table_ids),
+            "message": (
+                f"This query touches an access-policied table and would execute on {engine_label}, "
+                "where Agnes cannot enforce the policy. Refused."
+            ),
+        },
+    )
+
+
+# The reserved-keyword set and the table-reference-position regex moved to
+# `src/remote_engines.py` when Databricks gained a rewriter of its own — both
+# engines must agree on which bare names are safe to substitute where, and a
+# second copy would have drifted the first time one engine's keyword list grew.
+_SQL_RESERVED_NAMES = SQL_RESERVED_NAMES
+_TABLE_REF_PREFIX_RE = TABLE_REF_PREFIX_RE
 
 
 def _rewrite_bq_table_refs_to_native(
@@ -2259,61 +2524,13 @@ def _rewrite_bq_table_refs_to_native(
             target_project = row_project or project
             name_to_target[name.lower()] = f"`{target_project}.{bucket}.{source_table}`"
 
-        # Alternation pattern, longest-first. Longer match wins at any
-        # given position because Python's re tries alternatives
-        # left-to-right and stops at the first match — pinning longest
-        # entries to the front preserves the prefix-collision invariant
-        # exercised by test_rewrite_helper_longer_name_wins_over_prefix.
-        #
-        # Issue #1322: append the same `(?!\s+by\b)` suppression
-        # `_name_reference_re` uses for the RBAC name guards. Without it, a
-        # registered name that happens to be a SQL keyword (e.g. `order`)
-        # also matches the keyword half of ORDER BY / GROUP BY / PARTITION
-        # BY, and re.sub replaces THAT occurrence too — e.g. `FROM order
-        # ORDER BY x` corrupts to ``FROM `proj.ds.tbl` `proj.ds.tbl` BY x``.
-        # A name genuinely used as a table/alias is never immediately
-        # followed by " by" (DuckDB/BQ both reject a bare `by` there), so
-        # the suppression only ever silences the false keyword match.
-        #
-        # Devin review on PR #1331: `(?!\s+by\b)` covers only the two-word
-        # `<KEYWORD> BY` clauses, and only when nothing but plain whitespace
-        # separates the words — `ORDER /*c*/ BY` slips through, and so does
-        # every other keyword a table can be named after (`all` in `UNION
-        # ALL`, `on` in a JOIN condition, `as`, `and`, `limit`, `distinct`,
-        # `select`, …). `_name_repl` below therefore anchors any RESERVED-
-        # KEYWORD-named entry to a table-reference position, which is the
-        # property that actually distinguishes the two roles.
-        sorted_names = sorted(name_to_target.keys(), key=len, reverse=True)
-        pattern = r"\b(" + "|".join(re.escape(n) for n in sorted_names) + r")\b(?!\s+by\b)"
-
-        def _name_repl(m: re.Match) -> str:
-            matched = m.group(1)
-            # Keyword-named tables only substitute where a table reference
-            # can actually stand (after FROM / JOIN / a FROM-list comma).
-            # Deliberately scoped to reserved words rather than applied to
-            # every name: for a keyword name the status quo is corruption,
-            # so a missed position degrades to the correct-but-slower
-            # ATTACH-catalog fallback; for an ordinary name the
-            # substitute-everywhere behaviour documented above works today
-            # and must not be narrowed on the strength of this enumeration.
-            #
-            # The check runs inside the replacement callback, NOT as a second
-            # re.sub pass, so pass 1 stays single-pass — a second pass would
-            # re-scan the backticked text this one inserts and reintroduce
-            # the project-ID-contains-name corruption.
-            if matched.lower() in _SQL_RESERVED_NAMES and not _TABLE_REF_PREFIX_RE.search(m.string[: m.start(1)]):
-                return matched
-            return name_to_target[matched.lower()]
-
-        # `re.split` with a captured group returns: [outside, backtick,
-        # outside, backtick, …]. Even indices are outside-backtick chunks
-        # eligible for bare-name rewrite; odd indices are full backtick
-        # segments preserved verbatim.
-        parts = re.split(r"(`[^`]*`)", out)
-        for i, part in enumerate(parts):
-            if i % 2 == 0:
-                parts[i] = re.sub(pattern, _name_repl, part, flags=re.IGNORECASE)
-        out = "".join(parts)
+        # The substitution itself — single-pass alternation, outside-backtick
+        # only, keyword-named entries anchored to a table-reference position —
+        # is `rewrite_bare_names` in `src/remote_engines.py`. It moved there
+        # when Databricks needed the identical rewrite against a different
+        # target syntax; every hazard it guards against (and the issue that
+        # found each one) is documented at the definition.
+        out = rewrite_bare_names(out, name_to_target)
 
     # Pass 2: bq."ds"."tbl" / bq.ds.tbl → `<project>.<ds>.<tbl>`.
     def _bq_path_repl(m: re.Match) -> str:
@@ -3093,6 +3310,31 @@ def run_remote_select_to_arrow(conn, user, sql, bq, quota, *, policy_info: dict 
             raise HTTPException(status_code=403, detail={"reason": "policy_identity_unresolvable"})
         except PolicyError as exc:
             raise HTTPException(status_code=500, detail={"reason": "policy_error", "table": exc.table_id})
+
+        # Snapshot materialize is BigQuery-only. A Databricks statement would
+        # otherwise silently skip the registry gate below (which only knows BQ
+        # rows) and then fail deep inside DuckDB with "table does not exist",
+        # since a `query_mode='remote'` Databricks row has no local view.
+        # Refuse up front with the command that does work.
+        from src.remote_engines import CrossEngineError, referenced_remote_rows, resolve_single_engine
+
+        try:
+            _engine = resolve_single_engine(referenced_remote_rows(sql, sql_lower))
+        except CrossEngineError as exc:
+            raise HTTPException(status_code=400, detail=exc.detail())
+        if _engine is not None and _engine != "bigquery":
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "reason": "snapshot_engine_unsupported",
+                    "engine": _engine,
+                    "message": (f"Snapshots can only be materialized from BigQuery; this query runs on {_engine}."),
+                    "hint": (
+                        "Run it with `agnes query --remote` for an interactive answer, or register "
+                        "it as a query_mode='materialized' table so the scheduler syncs it."
+                    ),
+                },
+            )
 
         dry_run_set, name_lookups, blocked_bq_path = _bq_guardrail_inputs(
             sql,

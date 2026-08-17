@@ -154,12 +154,10 @@ class TestFetchSlaAndStatus:
 class TestUpdateIssueSlaHealing:
     """Tests for self-healing when API reports an issue as resolved."""
 
-    @patch("connectors.jira.scripts.poll_sla.transform_single_issue")
     @patch("connectors.jira.scripts.poll_sla.fetch_sla_and_status")
     def test_self_healing_returns_healed_and_updates_json(
         self,
         mock_fetch: MagicMock,
-        mock_transform: MagicMock,
         fake_issue_json_in_progress: Path,
     ) -> None:
         """
@@ -188,7 +186,6 @@ class TestUpdateIssueSlaHealing:
             "resolutiondate": "2026-02-19T16:00:00.000+0000",
             "updated": "2026-02-19T16:00:01.000+0000",
         }
-        mock_transform.return_value = True
 
         result = update_issue_sla(
             issue_key="TEST-1",
@@ -218,10 +215,10 @@ class TestUpdateIssueSlaHealing:
         assert fields["customfield_10328"]["name"] == "Time to first response"
         assert fields["customfield_10161"]["name"] == "Time to resolution"
 
-        # transform_single_issue should have been called once, anchored to the raw
-        # directory this function just wrote the JSON into — without raw_dir the
-        # transform resolves $DATA_DIR/extracts/<source>/raw and never finds it.
-        mock_transform.assert_called_once_with(issue_key="TEST-1", raw_dir=raw_dir)
+        # `update_issue_sla` no longer transforms: `run()` batches the parquet
+        # write by month (`transform_issues`). The anchoring this used to assert —
+        # that the transform reads the directory the JSON was written to — now
+        # lives with that batch, which takes `raw_dir` explicitly.
 
 
 # ---------------------------------------------------------------------------
@@ -232,12 +229,10 @@ class TestUpdateIssueSlaHealing:
 class TestUpdateIssueSlaSkip:
     """Tests for the skip logic when SLA data is empty and status is not Done."""
 
-    @patch("connectors.jira.scripts.poll_sla.transform_single_issue")
     @patch("connectors.jira.scripts.poll_sla.fetch_sla_and_status")
     def test_skips_when_no_sla_data_and_not_resolved(
         self,
         mock_fetch: MagicMock,
-        mock_transform: MagicMock,
         fake_issue_json_in_progress: Path,
     ) -> None:
         """
@@ -269,8 +264,7 @@ class TestUpdateIssueSlaSkip:
 
         assert result == "skipped"
 
-        # transform_single_issue should NOT have been called
-        mock_transform.assert_not_called()
+        # Nothing to transform, and nothing transforms here any more either.
 
 
 # ---------------------------------------------------------------------------
@@ -281,12 +275,10 @@ class TestUpdateIssueSlaSkip:
 class TestUpdateIssueSlaJsonMissing:
     """Tests for missing JSON file handling."""
 
-    @patch("connectors.jira.scripts.poll_sla.transform_single_issue")
     @patch("connectors.jira.scripts.poll_sla.fetch_sla_and_status")
     def test_returns_skipped_when_json_file_missing(
         self,
         mock_fetch: MagicMock,
-        mock_transform: MagicMock,
         tmp_path: Path,
     ) -> None:
         """
@@ -309,4 +301,4 @@ class TestUpdateIssueSlaJsonMissing:
 
         # Should not have attempted to fetch or transform
         mock_fetch.assert_not_called()
-        mock_transform.assert_not_called()
+        # Nothing is transformed here any more: `run()` batches the parquet write.
