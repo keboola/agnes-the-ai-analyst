@@ -4661,13 +4661,18 @@ function renderCoPresence(host, participants) {
   }
   updateDashboardSuggestions(_sidebarOk ? _sessionsCache : null);
   // Sidebar cache (_sessionsCache) is now populated so openSession can
-  // resolve the title; fire the one-shot deep-link open.
+  // resolve the title; fire the one-shot deep-link open. Captured BEFORE the
+  // call: `_maybeOpenInitialSession` consumes `_initialSessionId` (nulls it)
+  // synchronously but defers the actual `openSession` into a
+  // `requestAnimationFrame` callback, so `currentChatId` below is not yet set
+  // even when a session deep-link is about to open.
+  const _hadInitialSession = !!_initialSessionId;
   _maybeOpenInitialSession();
   // `/chat?agent=<slug>` — the Chat button on an agent card. Spawns a session
   // running AS that agent. Skipped when a session deep-link already claimed
   // the page, since that names a specific existing conversation.
   const _agentSlug = _takeAgentSlugFromUrl();
-  if (_agentSlug && !currentChatId) {
+  if (_agentSlug && !currentChatId && !_hadInitialSession) {
     hideCapabilities();
     newChat(_agentSlug).catch((err) => {
       console.error("chat: could not start a session as agent", err);

@@ -188,3 +188,35 @@ class TestTheWiringIsPresent:
         resp = seeded_app["client"].get("/agents", headers=_auth(seeded_app["analyst_token"]))
         assert "Work in progress" not in resp.text
         assert "Actually running them" not in resp.text
+
+
+class TestAgentSlugDeepLinkDoesNotRaceASessionDeepLink:
+    """Static-source guard, same shape as test_chat_surface_badge.py.
+
+    `_maybeOpenInitialSession` nulls `_initialSessionId` synchronously but
+    defers the actual `openSession` call into a `requestAnimationFrame`
+    callback — so `currentChatId` is still unset immediately after calling
+    it, even when a session deep-link (`data-initial-session`) is about to
+    open. The `?agent=` spawn must check whether that deep-link EXISTED, not
+    only `currentChatId`, or the two race and open two sessions.
+    """
+
+    def _js(self) -> str:
+        from pathlib import Path
+
+        return Path("app/web/static/js/chat.js").read_text(encoding="utf-8")
+
+    def test_agent_slug_spawn_is_gated_on_a_pending_session_deep_link(self):
+        js = self._js()
+        assert "_hadInitialSession" in js
+        marker = "if (_agentSlug && !currentChatId && !_hadInitialSession)"
+        assert marker in js, "the agent-slug spawn no longer checks the captured pre-open flag"
+
+    def test_the_flag_is_captured_before_the_deep_link_is_consumed(self):
+        js = self._js()
+        capture = "const _hadInitialSession = !!_initialSessionId;"
+        idx_capture = js.index(capture)
+        idx_open_call = js.index("_maybeOpenInitialSession();", idx_capture)
+        # Must read _initialSessionId before the call that nulls it — reading
+        # it after would always see null and defeat the guard.
+        assert idx_capture < idx_open_call

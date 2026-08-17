@@ -191,7 +191,11 @@ class AgentCreate(BaseModel):
     name: str = Field(default="", max_length=200)
     role: str = Field(default="", max_length=500)
     instructions: str = ""
-    tone: str = Field(default="concise", max_length=50)
+    #: `None` (omitted) means "caller has no opinion" — distinct from an
+    #: explicit `"concise"`, which is what the builder's blank-agent shell
+    #: sends and must still win over a template's own tone. `create_agent`'s
+    #: `_field()` falls back to the template's prefill, then to `"concise"`.
+    tone: Optional[str] = Field(default=None, max_length=50)
     greeting: str = ""
     knowledge: List[str] = Field(default_factory=list)
     plugins: List[str] = Field(default_factory=list)
@@ -413,7 +417,7 @@ async def create_agent(payload: AgentCreate, user: dict = Depends(get_current_us
     if payload.template_entity_id:
         prefill = _template_prefill(payload.template_entity_id, user)
 
-    def _field(key: str, given: str, fallback: str = "") -> str:
+    def _field(key: str, given: Optional[str], fallback: str = "") -> str:
         """Caller's value, else the template's, else the existing default."""
         if (given or "").strip():
             return given

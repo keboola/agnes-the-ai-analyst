@@ -263,7 +263,14 @@
           tone: a.tone, greeting: a.greeting, knowledge: a.knowledge,
           plugins: a.plugins, surfaces: a.surfaces, status: a.status
         })
-      }).catch(function (e) { console.error('agents: save failed', e); });
+      }).then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (updated) {
+          // A rename re-derives a draft's slug server-side (`_draft_slug_rename`);
+          // the local copy must pick it up, or the card's Chat link (built from
+          // `a.slug`) keeps pointing at the pre-rename address until a reload.
+          if (updated && updated.slug) a.slug = updated.slug;
+        })
+        .catch(function (e) { console.error('agents: save failed', e); });
     }, 400);
   }
   /* Every existing call site means "persist what the user just changed", which
@@ -378,7 +385,12 @@
           '<span class="ag-card-acts">' +
             // The point of the page: an agent you can actually talk to. Opens a
             // session running AS this agent instead of the caller's default.
-            // Needs a slug, which an unnamed draft does not have yet.
+            // Every agent gets one, `draft` included and regardless of
+            // `surfaces.web` — that field is descriptive today (nothing else
+            // in the platform enforces it either: the agent-as-API surface
+            // and Slack/Telegram routing read the same JSON blob and act on
+            // it just as little), so gating only this button would be an
+            // inconsistent, partial enforcement rather than a real one.
             (a.slug
               ? '<a class="ag-chat" href="/chat?agent=' + encodeURIComponent(a.slug) + '">Chat</a>'
               : '') +
@@ -642,7 +654,16 @@
   function createAgent(btn, templateId) {
     if (btn) btn.disabled = true;
     var payload = makeAgent();
-    if (templateId) payload.template_entity_id = templateId;
+    if (templateId) {
+      payload.template_entity_id = templateId;
+      // makeAgent()'s tone/greeting are this SHELL's defaults, not a real
+      // choice — sending them would always beat the template's own (the
+      // server only prefills a field the caller left blank). Omitting them
+      // lets the template's tone/greeting apply, with these same defaults as
+      // the fallback when the template declares neither.
+      delete payload.tone;
+      delete payload.greeting;
+    }
     return fetch('/api/agents', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -708,9 +729,14 @@
       // relationship between the two entities made visible, instead of leaving
       // the reader to open a template, copy its prompt and paste it into a
       // blank agent. "Start blank" stays a visible peer, and is the whole flow
-      // for anyone with no templates.
-      if (installedTemplates().length) { openTemplatePicker(); return; }
-      createAgent(t);
+      // for anyone with no templates. `plugins` is only guaranteed loaded once
+      // a builder has opened (openBuilder's loadPlugins call) — boot() also
+      // kicks it off, but a caller clicking "New agent" before that resolves
+      // must not fall through to a blank agent as if none were installed.
+      loadPlugins().then(function () {
+        if (installedTemplates().length) { openTemplatePicker(); return; }
+        createAgent(t);
+      });
     } else if (t.hasAttribute('data-ag-tpl')) {
       var tpl = t.getAttribute('data-ag-tpl');
       closeTemplatePicker();
@@ -802,9 +828,14 @@
     save(); syncPreview();
   });
 
-  /* Keyboard access for the div-based cards/section headers. */
+  /* Keyboard access for the div-based cards/section headers. The Chat link is
+     a real <a> nested inside a card — it already gets native Enter/Space
+     handling from the browser, so re-dispatching the CARD's click for it
+     (same guard the click handler above already applies to .ag-chat) would
+     override the anchor's own navigation with openBuilder(). */
   document.addEventListener('keydown', function (e) {
     if (e.key !== 'Enter' && e.key !== ' ') return;
+    if (e.target.closest && e.target.closest('.ag-chat')) return;
     var t = e.target.closest && e.target.closest('[data-ag-open],[data-ag-toggle-sec]');
     if (t) { e.preventDefault(); t.click(); }
   });
@@ -839,6 +870,12 @@
     if (wantNew) { createAgent(null); return true; }
     return false;
   }
+
+  /* Kicked off in parallel with the agents fetch below so "New agent" already
+     knows whether any templates are installed by the time someone clicks it —
+     the click handler also awaits this itself, so a click that lands before
+     it resolves still sees the real answer instead of "none installed". */
+  loadPlugins();
 
   /* Boot: hydrate the working copy from the registry, then render. A failed
      load renders the empty list rather than a blank page, and says so. */

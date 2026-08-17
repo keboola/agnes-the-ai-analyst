@@ -52,6 +52,19 @@ class TestItSaysWhoIsResponsible:
         ):
             assert claim in body, f"missing guarantee: {claim!r}"
 
+    def test_a_configured_support_contact_renders(self, seeded_app, monkeypatch):
+        """The template checked a bare `instance_support` variable that
+        `_build_context` never set — the value only ever reaches the page as
+        `config.INSTANCE_SUPPORT`, so this line silently never rendered."""
+        monkeypatch.setenv("AGNES_INSTANCE_SUPPORT", "Ping #data-help on Slack")
+        body = seeded_app["client"].get("/privacy").text
+        assert "Ping #data-help on Slack" in body
+
+    def test_no_support_contact_configured_omits_the_line(self, seeded_app, monkeypatch):
+        monkeypatch.delenv("AGNES_INSTANCE_SUPPORT", raising=False)
+        body = seeded_app["client"].get("/privacy").text
+        assert "Support contact for this instance" not in body
+
 
 class TestTheOperatorOverride:
     """An operator with their own policy owns the answer at this URL."""

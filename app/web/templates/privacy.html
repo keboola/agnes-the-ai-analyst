@@ -65,8 +65,8 @@
         is kept, and who may see it. For questions about your personal data, or to
         exercise a right over it, contact that organization.
       </p>
-      {% if instance_support %}
-      <p>Support contact for this instance: {{ instance_support }}</p>
+      {% if config.INSTANCE_SUPPORT %}
+      <p>Support contact for this instance: {{ config.INSTANCE_SUPPORT | safe }}</p>
       {% endif %}
     </section>
   </div>

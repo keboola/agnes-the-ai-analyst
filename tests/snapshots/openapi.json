@@ -394,10 +394,16 @@
             "title": "Template Entity Id"
           },
           "tone": {
-            "default": "concise",
-            "maxLength": 50,
-            "title": "Tone",
-            "type": "string"
+            "anyOf": [
+              {
+                "maxLength": 50,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tone"
           }
         },
         "title": "AgentCreate",
