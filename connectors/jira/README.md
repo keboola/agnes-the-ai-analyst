@@ -443,6 +443,30 @@ if not hmac.compare_digest(signature, expected):
 3. Verify raw JSON files exist in `raw/jira/issues/`
 4. Note: Output files are partitioned by month (e.g., `issues/2026-01.parquet`)
 
+### Consistency check: what a non-zero exit now means (operators)
+
+`jira-consistency.service` runs `consistency_check` every 30 minutes and exits
+non-zero when `alert_level == "ERROR"` **or** `status != "success"`. Two inputs
+to that were widened in #1363, so a unit that used to go green can now go red on
+a class of run it previously stayed silent about:
+
+- **`transform_failed`** — a per-issue re-transform that failed or hit its 120 s
+  subprocess timeout. It was recorded in the report body but reached neither
+  `status` nor `alert_level`, so a run that fixed nothing still reported
+  `success`/`INFO`. It now flips `status` to `partial_success`, matching what
+  `backfill_failed` already did on the JSON side. **A single flaky issue is
+  enough**, so alerting keyed on the unit's exit code will see transient
+  failures it did not see before.
+- **`parquet_read_failed`** — a Parquet part that could not be read at all.
+  This forces `alert_level` to `ERROR`, and it should page: an unreadable part
+  is what turned this job into an unbounded re-transform loop in the first
+  place.
+
+If per-issue transform flakiness is noisy in your deployment, alert on the
+report's `alert_level` and `discrepancies.parquet_read_failed` rather than on
+the exit code — the exit code deliberately cannot distinguish "one issue failed
+to transform" from "the corpus is unreadable".
+
 ## Schema Reference
 
 The Jira tables and their columns are described in [`docs/DATA_SOURCES.md`](../../docs/DATA_SOURCES.md). At runtime, inspect the live schema with `agnes schema <table>` and `agnes describe <table>`.

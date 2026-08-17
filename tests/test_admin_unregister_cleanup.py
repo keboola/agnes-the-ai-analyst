@@ -12,9 +12,9 @@ syncing, then DELETEing the registry row left the parquet at
 `analytics.duckdb` — `/api/sync/manifest` and the master view both still
 exposed the table.
 """
+
 from __future__ import annotations
 
-from pathlib import Path
 from unittest.mock import MagicMock
 
 import duckdb
@@ -34,9 +34,12 @@ def bq_instance(monkeypatch):
         },
     }
     monkeypatch.setattr(
-        "app.instance_config.load_instance_config", lambda: fake_cfg, raising=False,
+        "app.instance_config.load_instance_config",
+        lambda: fake_cfg,
+        raising=False,
     )
     from app.instance_config import reset_cache
+
     reset_cache()
     yield fake_cfg
     reset_cache()
@@ -45,10 +48,14 @@ def bq_instance(monkeypatch):
 @pytest.fixture
 def stub_bq_extractor(monkeypatch):
     """Bypass post-register rebuild's BQ traffic so the test stays offline."""
-    rebuild_mock = MagicMock(return_value={
-        "project_id": "my-test-project",
-        "tables_registered": 1, "errors": [], "skipped": False,
-    })
+    rebuild_mock = MagicMock(
+        return_value={
+            "project_id": "my-test-project",
+            "tables_registered": 1,
+            "errors": [],
+            "skipped": False,
+        }
+    )
     monkeypatch.setattr(
         "connectors.bigquery.extractor.rebuild_from_registry",
         rebuild_mock,
@@ -77,16 +84,21 @@ def keboola_instance(monkeypatch):
         },
     }
     monkeypatch.setattr(
-        "app.instance_config.load_instance_config", lambda: fake_cfg, raising=False,
+        "app.instance_config.load_instance_config",
+        lambda: fake_cfg,
+        raising=False,
     )
     from app.instance_config import reset_cache
+
     reset_cache()
     yield fake_cfg
     reset_cache()
 
 
 def test_delete_materialized_bq_row_removes_parquet(
-    seeded_app, bq_instance, stub_bq_extractor,
+    seeded_app,
+    bq_instance,
+    stub_bq_extractor,
 ):
     """DELETE on a materialized BQ registry row removes the canonical parquet
     file at /data/extracts/bigquery/data/<id>.parquet so the orchestrator's
@@ -112,18 +124,37 @@ def test_delete_materialized_bq_row_removes_parquet(
     parquet_path = data_dir / "extracts" / "bigquery" / "data" / f"{table_id}.parquet"
     parquet_path.parent.mkdir(parents=True, exist_ok=True)
     parquet_path.write_bytes(b"PAR1\x00fake-parquet-content")
-    # Also drop a stale .tmp to verify defensive cleanup.
-    tmp_path = parquet_path.parent / f"{table_id}.parquet.tmp"
-    tmp_path.write_bytes(b"PAR1\x00partial")
+    # Stale temps from a materialize killed mid-COPY, in BOTH spellings.
+    # The per-process one is what a writer actually produces since #1359 —
+    # built through the real helper rather than hand-spelled, so this test
+    # cannot go on passing if the naming convention moves again (it used to
+    # seed only the legacy fixed name, which no writer had produced for a
+    # while, and therefore asserted nothing).
+    from src.parquet_publish import atomic_publish_temp_path
+
+    live_tmp = atomic_publish_temp_path(parquet_path)
+    live_tmp.write_bytes(b"PAR1\x00partial")
+    # And the pre-#1359 fixed name, which still sits on deployed volumes.
+    legacy_tmp = parquet_path.parent / f"{table_id}.parquet.tmp"
+    legacy_tmp.write_bytes(b"PAR1\x00partial")
+    # A temp belonging to a DIFFERENT table must survive — the sweep is
+    # scoped by name, not a blanket wipe of the data dir.
+    other_tmp = parquet_path.parent / "someone_else.parquet.99999.tmp"
+    other_tmp.write_bytes(b"PAR1\x00partial")
 
     assert parquet_path.exists()
-    assert tmp_path.exists()
+    assert live_tmp.exists() and legacy_tmp.exists()
 
     r2 = c.delete(f"/api/admin/registry/{table_id}", headers=_auth(token))
     assert r2.status_code == 204
 
     assert not parquet_path.exists(), "DELETE should remove the materialized parquet"
-    assert not tmp_path.exists(), "DELETE should also clean up stale .tmp file"
+    assert not live_tmp.exists(), (
+        "DELETE must clean up the per-process temp a real writer leaves behind — "
+        "otherwise a hard-killed multi-GB export lingers on the volume forever"
+    )
+    assert not legacy_tmp.exists(), "DELETE should still clean up the pre-#1359 fixed-name temp"
+    assert other_tmp.exists(), "the sweep must not reach another table's temp"
 
 
 def test_delete_materialized_keboola_row_removes_parquet(seeded_app, keboola_instance):
@@ -158,7 +189,9 @@ def test_delete_materialized_keboola_row_removes_parquet(seeded_app, keboola_ins
 
 
 def test_delete_remote_bq_row_does_not_touch_data_dir(
-    seeded_app, bq_instance, stub_bq_extractor,
+    seeded_app,
+    bq_instance,
+    stub_bq_extractor,
 ):
     """DELETE on a remote-mode row (no materialized parquet exists) must not
     fail and must not error out trying to delete a non-existent file."""
@@ -206,11 +239,14 @@ def test_delete_clears_sync_state_for_materialized_row(seeded_app, keboola_insta
     # Seed a sync_state row as if it had been materialized.
     from src.db import get_system_db
     from src.repositories.sync_state import SyncStateRepository
+
     sys_conn = get_system_db()
     try:
         SyncStateRepository(sys_conn).update_sync(
             table_id="manifest_drop",  # = registry.name
-            rows=10, file_size_bytes=1024, hash="abc",
+            rows=10,
+            file_size_bytes=1024,
+            hash="abc",
         )
         assert SyncStateRepository(sys_conn).get_table_state("manifest_drop") is not None
     finally:
@@ -245,15 +281,17 @@ def test_orchestrator_skips_orphan_parquet_in_extracts(e2e_env, monkeypatch):
     extracts_dir = e2e_env["extracts_dir"]
 
     # Build a normal extract.duckdb with a registered table.
-    create_mock_extract(extracts_dir, "bigquery", [
-        {"name": "valid_table", "data": [{"id": "1"}], "query_mode": "local"},
-    ])
+    create_mock_extract(
+        extracts_dir,
+        "bigquery",
+        [
+            {"name": "valid_table", "data": [{"id": "1"}], "query_mode": "local"},
+        ],
+    )
     # Drop an orphan parquet at the connector's data dir without registering it.
     orphan_path = extracts_dir / "bigquery" / "data" / "orphan_test.parquet"
     conn0 = duckdb.connect()
-    conn0.execute(
-        f"COPY (SELECT 1 AS id) TO '{orphan_path}' (FORMAT PARQUET)"
-    )
+    conn0.execute(f"COPY (SELECT 1 AS id) TO '{orphan_path}' (FORMAT PARQUET)")
     conn0.close()
     assert orphan_path.exists()
 
@@ -261,8 +299,10 @@ def test_orchestrator_skips_orphan_parquet_in_extracts(e2e_env, monkeypatch):
     sys_conn = get_system_db()
     try:
         TableRegistryRepository(sys_conn).register(
-            id="valid_table", name="valid_table",
-            source_type="bigquery", query_mode="local",
+            id="valid_table",
+            name="valid_table",
+            source_type="bigquery",
+            query_mode="local",
         )
     finally:
         sys_conn.close()
@@ -274,14 +314,12 @@ def test_orchestrator_skips_orphan_parquet_in_extracts(e2e_env, monkeypatch):
     analytics = duckdb.connect(e2e_env["analytics_db"], read_only=True)
     try:
         views = {
-            r[0] for r in analytics.execute(
-                "SELECT table_name FROM information_schema.tables "
-                "WHERE table_type='VIEW'"
+            r[0]
+            for r in analytics.execute(
+                "SELECT table_name FROM information_schema.tables WHERE table_type='VIEW'"
             ).fetchall()
         }
     finally:
         analytics.close()
     assert "valid_table" in views, views
-    assert "orphan_test" not in views, (
-        "orphan parquet without a registry row should not get a master view"
-    )
+    assert "orphan_test" not in views, "orphan parquet without a registry row should not get a master view"
