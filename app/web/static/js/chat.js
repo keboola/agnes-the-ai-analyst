@@ -2448,9 +2448,9 @@ function renderQuestionRequest(frame) {
   const head = document.createElement("div");
   head.className = "cloud-chat-tool-head";
   const icon = document.createElement("span");
-  icon.className = "cloud-chat-tool-icon";
+  icon.className = "cloud-chat-tool-icon cloud-chat-question-icon";
   icon.setAttribute("aria-hidden", "true");
-  icon.textContent = "❓";
+  icon.textContent = "?";
   head.appendChild(icon);
   const name = document.createElement("span");
   name.className = "cloud-chat-tool-name";
@@ -2493,6 +2493,12 @@ function renderQuestionRequest(frame) {
     qtext.className = "cloud-chat-question-text";
     qtext.textContent = String(qq.question || "");
     qline.appendChild(qtext);
+    if (qq.multiSelect) {
+      const hint = document.createElement("span");
+      hint.className = "cloud-chat-question-hint";
+      hint.textContent = "Select all that apply";
+      qline.appendChild(hint);
+    }
     body.appendChild(qline);
 
     const opts = document.createElement("div");
@@ -2537,10 +2543,19 @@ function renderQuestionRequest(frame) {
       opts.appendChild(b);
     });
 
+    // "Other" renders as a peer cell in the option grid — a <label>
+    // wrapper (click anywhere in the cell focuses the input) around a
+    // bare text input.
+    const otherWrap = document.createElement("label");
+    otherWrap.className = "cloud-chat-question-otherwrap";
+    const otherLabel = document.createElement("span");
+    otherLabel.className = "cloud-chat-question-opt-label";
+    otherLabel.textContent = "Other";
+    otherWrap.appendChild(otherLabel);
     const otherInput = document.createElement("input");
     otherInput.type = "text";
     otherInput.className = "cloud-chat-question-other";
-    otherInput.placeholder = "Other…";
+    otherInput.placeholder = "Type your own answer…";
     otherInput.maxLength = 2000;
     otherInput.oninput = () => {
       state[i].other = otherInput.value;
@@ -2551,7 +2566,8 @@ function renderQuestionRequest(frame) {
       }
       updateSubmit();
     };
-    opts.appendChild(otherInput);
+    otherWrap.appendChild(otherInput);
+    opts.appendChild(otherWrap);
     body.appendChild(opts);
     wrap.appendChild(body);
   });
@@ -2627,10 +2643,12 @@ function resolveQuestionCard(frame) {
     if (answered && frame.answers && typeof frame.answers === "object") {
       // Echo what was chosen so the card reads as transcript after the
       // buttons are gone (an answer given on another device shows up too).
-      const summary = document.createElement("span");
-      summary.className = "cloud-chat-question-answer-summary";
-      summary.textContent = Object.values(frame.answers).join(" · ");
-      actions.appendChild(summary);
+      Object.values(frame.answers).forEach((val) => {
+        const chip = document.createElement("span");
+        chip.className = "cloud-chat-question-answer-summary";
+        chip.textContent = String(val);
+        actions.appendChild(chip);
+      });
     }
   }
 }

@@ -3250,112 +3250,259 @@ html[data-ui-layout="rail"] .cloud-chat-shell.has-thread .cloud-chat-main::after
 }
 
 /* --- Question card (question_request / question_resolved frames — the
-       AskUserQuestion tool round-trip) --- */
+       AskUserQuestion tool round-trip). Unlike the tool blocks around it,
+       this is Agnes speaking TO the user, so it drops the monospace
+       tool-id treatment for conversational type, sits on a plain surface
+       panel, and spends --ds-primary (the one action accent) on the
+       selected option and the Submit CTA. --- */
 .cloud-chat-question {
-  border-color: var(--ds-accent-info-line);
-  background: var(--ds-accent-info-bg);
+  background: var(--ds-surface);
+  border-color: var(--ds-border);
+  box-shadow: var(--ds-shadow-sm);
+}
+.cloud-chat-question.is-running { border-left-color: var(--ds-primary); }
+
+.cloud-chat-question .cloud-chat-tool-head { align-items: center; }
+.cloud-chat-question .cloud-chat-tool-name {
+  font-family: inherit;
+  font-size: var(--text-md);
+  font-weight: var(--font-semibold);
+}
+.cloud-chat-question-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--ds-radius-pill);
+  background: var(--ds-primary-light);
+  color: var(--ds-primary-dark);
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
 }
 
-.cloud-chat-question-body {
-  margin-top: var(--space-2);
+.cloud-chat-question-body { margin-top: var(--space-3); }
+.cloud-chat-question-body + .cloud-chat-question-body {
+  border-top: 1px solid var(--ds-border-light);
+  padding-top: var(--space-3);
 }
 
+/* The short header renders as a kicker ABOVE the question, so the badge
+   and the sentence never fight over a shared baseline. */
 .cloud-chat-question-q {
   display: flex;
-  gap: var(--space-2);
-  align-items: baseline;
-  flex-wrap: wrap;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
 }
 
 .cloud-chat-question-chip {
   padding: 1px var(--space-2);
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--ds-accent-info-line);
-  color: var(--ds-accent-info-ink);
-  font-size: 0.8em;
+  border-radius: var(--ds-radius-pill);
+  border: 1px solid var(--ds-border);
+  background: var(--ds-surface-dim);
+  color: var(--ds-text-secondary);
+  font-size: 0.75em;
+  font-weight: var(--font-semibold);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
   white-space: nowrap;
 }
 
 .cloud-chat-question-text {
-  font-weight: 600;
+  font-size: var(--text-md);
+  font-weight: var(--font-semibold);
+  color: var(--ds-text-primary);
+  line-height: 1.4;
 }
 
+.cloud-chat-question-hint {
+  font-size: 0.85em;
+  color: var(--ds-text-muted);
+}
+
+/* Options — an equal-height grid of selectable cards; the "Other"
+   free-text wrapper is one more cell of the same anatomy. */
 .cloud-chat-question-options {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
   gap: var(--space-2);
   margin-top: var(--space-2);
-  align-items: stretch;
 }
 
-.cloud-chat-question-opt {
+.cloud-chat-question-opt,
+.cloud-chat-question-otherwrap {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   gap: 2px;
-  max-width: 260px;
   padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-sm);
+  padding-right: var(--space-6);
+  border-radius: var(--radius-md);
   border: 1px solid var(--ds-border);
   background: var(--ds-surface);
-  cursor: pointer;
   font: inherit;
   text-align: left;
+  transition:
+    background var(--ds-motion-fast) var(--ds-ease-standard),
+    border-color var(--ds-motion-fast) var(--ds-ease-standard),
+    box-shadow var(--ds-motion-fast) var(--ds-ease-standard);
 }
 
-.cloud-chat-question-opt[aria-pressed="true"] {
-  border-color: var(--ds-accent-info-ink);
-  outline: 1px solid var(--ds-accent-info-ink);
+.cloud-chat-question-opt { cursor: pointer; }
+.cloud-chat-question-opt:hover:not(:disabled) { background: var(--ds-surface-dim); }
+.cloud-chat-question-opt:focus-visible {
+  outline: var(--ds-focus-outline);
+  outline-offset: var(--ds-focus-outline-offset);
 }
+
+/* Selected: primary ring + tint + a corner check (the glyph survives
+   greyscale where the tint alone would not). */
+.cloud-chat-question-opt[aria-pressed="true"] {
+  border-color: var(--ds-primary);
+  background: var(--ds-primary-light);
+  box-shadow: inset 0 0 0 1px var(--ds-primary);
+}
+.cloud-chat-question-opt::after {
+  content: "✓";
+  position: absolute;
+  top: var(--space-2);
+  right: var(--space-2);
+  width: 16px;
+  height: 16px;
+  border-radius: var(--ds-radius-pill);
+  background: var(--ds-primary);
+  color: var(--ds-text-inverse);
+  font-size: 0.8em;
+  line-height: 16px;
+  text-align: center;
+  opacity: 0;
+  transition: opacity var(--ds-motion-fast) var(--ds-ease-standard);
+}
+.cloud-chat-question-opt[aria-pressed="true"]::after { opacity: 1; }
 
 .cloud-chat-question-opt-label {
-  font-weight: 600;
+  font-weight: var(--font-semibold);
+  color: var(--ds-text-primary);
 }
 
 .cloud-chat-question-opt-desc {
   font-size: 0.85em;
   color: var(--ds-text-muted);
+  line-height: 1.45;
 }
 
-.cloud-chat-question-other {
-  flex: 1 1 160px;
-  min-width: 120px;
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--ds-border);
-  background: var(--ds-surface);
-  font: inherit;
+.cloud-chat-question-otherwrap { cursor: text; }
+.cloud-chat-question-otherwrap:focus-within {
+  border-color: var(--ds-primary);
+  box-shadow: inset 0 0 0 1px var(--ds-primary);
 }
+/* A typed answer reads as picked — same tint as a selected option. */
+.cloud-chat-question-otherwrap:has(.cloud-chat-question-other:not(:placeholder-shown)) {
+  border-color: var(--ds-primary);
+  background: var(--ds-primary-light);
+}
+
+/* Triple-class selector: must outrank paper-skin's
+   `[data-theme="paper"] input[type="text"]` (0,2,1) box styling — the
+   wrapper is the box here, the input is bare. */
+.cloud-chat-question-options .cloud-chat-question-otherwrap .cloud-chat-question-other {
+  width: 100%;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  font: inherit;
+  color: var(--ds-text-primary);
+}
+.cloud-chat-question-options .cloud-chat-question-otherwrap .cloud-chat-question-other:focus {
+  outline: none;
+}
+.cloud-chat-question-other::placeholder { color: var(--ds-text-muted); }
 
 .cloud-chat-question-actions {
   display: flex;
+  align-items: center;
+  flex-wrap: wrap;
   gap: var(--space-2);
   margin-top: var(--space-3);
-  align-items: center;
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--ds-border-light);
 }
 
 .cloud-chat-question-btn {
-  padding: 4px var(--space-3);
-  border-radius: var(--radius-sm);
+  padding: 5px var(--space-4);
+  border-radius: var(--ds-radius-btn);
   border: 1px solid var(--ds-border);
   background: var(--ds-surface);
+  color: var(--ds-text-secondary);
   cursor: pointer;
   font: inherit;
+  font-weight: var(--font-medium);
+  transition:
+    background var(--ds-motion-fast) var(--ds-ease-standard),
+    color var(--ds-motion-fast) var(--ds-ease-standard),
+    border-color var(--ds-motion-fast) var(--ds-ease-standard);
+}
+.cloud-chat-question-btn:focus-visible {
+  outline: var(--ds-focus-outline);
+  outline-offset: var(--ds-focus-outline-offset);
 }
 
 .cloud-chat-question-btn.is-submit {
-  border-color: var(--ds-accent-info-line);
-  color: var(--ds-accent-info-ink);
+  border-color: var(--ds-primary);
+  background: var(--ds-primary);
+  color: var(--ds-text-inverse);
+  font-weight: var(--font-semibold);
+}
+.cloud-chat-question-btn.is-submit:hover:not(:disabled) {
+  border-color: var(--ds-primary-dark);
+  background: var(--ds-primary-dark);
+}
+/* Unanswered → Submit is visibly parked, not a half-faded twin of the
+   enabled state. */
+.cloud-chat-question-btn.is-submit:disabled {
+  border-color: var(--ds-border);
+  background: var(--ds-surface-sunken);
+  color: var(--ds-text-disabled);
+  opacity: 1;
+}
+
+.cloud-chat-question-btn.is-dismiss {
+  border-color: transparent;
+  background: transparent;
+  color: var(--ds-text-muted);
+}
+.cloud-chat-question-btn.is-dismiss:hover:not(:disabled) {
+  background: var(--ds-surface-dim);
+  color: var(--ds-text-secondary);
 }
 
 .cloud-chat-question-btn:disabled,
 .cloud-chat-question-opt:disabled,
 .cloud-chat-question-other:disabled {
-  opacity: 0.5;
   cursor: default;
+}
+.cloud-chat-question-btn:disabled { opacity: 0.6; }
+.cloud-chat-question-opt:disabled,
+.cloud-chat-question-otherwrap:has(.cloud-chat-question-other:disabled) {
+  opacity: 0.55;
+}
+
+/* Resolved state — outcome pill + one chip per answer, echoing the
+   choice as transcript. */
+.cloud-chat-question .cloud-chat-approval-outcome {
+  border-radius: var(--ds-radius-pill);
+  padding: 2px var(--space-3);
+  font-weight: var(--font-medium);
 }
 
 .cloud-chat-question-answer-summary {
+  padding: 2px var(--space-3);
+  border-radius: var(--ds-radius-pill);
+  border: 1px solid var(--ds-border-light);
+  background: var(--ds-surface-dim);
+  color: var(--ds-text-secondary);
   font-size: 0.85em;
-  color: var(--ds-text-muted);
 }
