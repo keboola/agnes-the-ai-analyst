@@ -71,6 +71,7 @@ Set the env var in `.env`/Terraform, or the YAML path in `instance.yaml`.
 | Deployment display name (page titles, email subjects) | — | `instance.name` | `AI Harness` | `get_instance_name()` |
 | Header subtitle | — | `instance.subtitle` | `""` | `get_instance_subtitle()` |
 | Operator credit in the page footer, rendered as "Deployed by {value}". Unset = the footer omits the line entirely (the product name + build on the left always render) | `AGNES_INSTANCE_COPYRIGHT` | `instance.copyright` | `""` (no attribution) | `get_instance_copyright()` |
+| The organization's own privacy policy URL. When set, the public, unauthenticated `/privacy` route redirects there instead of rendering the built-in page — Agnes is self-hosted, so the operator running the instance is the data controller, not the vendor | `AGNES_PRIVACY_POLICY_URL` | `instance.privacy_policy_url` | unset (built-in page renders) | `get_privacy_policy_url()` |
 | Product brand string (hero copy, CTAs, setup script) | `AGNES_INSTANCE_BRAND` | `instance.brand` | `Agnes` | `get_instance_brand()` |
 | Short brand for mid-sentence body copy; when it differs from the full brand, the `/home` hero appends "Call me {short}." | `AGNES_INSTANCE_BRAND_SHORT` | `instance.brand_short` | derived (= `instance.brand`) | `get_instance_brand_short()` |
 | Inline `<svg>` logo for the header brand slot | `AGNES_INSTANCE_LOGO_SVG` | `instance.logo_svg` | `""` (text brand) | `get_instance_logo_svg()` |
