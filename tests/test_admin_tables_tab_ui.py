@@ -225,6 +225,10 @@ def test_admin_tables_renders_register_modals_in_dom(seeded_app):
     assert 'id="editBqModal"' in html
     assert 'id="registerKeboolaModal"' in html
     assert 'id="editKeboolaModal"' in html
+    assert 'id="registerDatabricksModal"' in html
+    assert 'name="dbxAccessMode"' in html
+    assert 'id="registerDatabricksSubmitBtn"' in html
+    assert 'onclick="registerDatabricksTable()"' in html
 
 
 def test_registry_listing_renders_manage_access_button(seeded_app):
