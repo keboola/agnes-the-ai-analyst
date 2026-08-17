@@ -10,9 +10,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
-## [0.83.34] - 2026-08-17
-
-### Added
+## [0.83.35] - 2026-08-17
 
 - **`agnes snapshot create` works on a remote Databricks row** — both the `table_id` form (`--select` / `--where` / `--limit` / `--order-by`) and `--from-query`. `/api/v2/scan` and `/api/v2/scan/estimate` gained a Databricks branch instead of refusing with `scan_engine_unsupported`, which had left an analyst no way to pull a filtered subset of a large Databricks table short of asking an admin for a materialized row. Predicates are written in Databricks SQL — the flavor `agnes schema` already advertises for the row — and size is bounded by `api.scan.max_result_bytes` with its own longer statement timeout (`data_source.databricks.scan_timeout_seconds`, default 900), because a snapshot is a materialize rather than an answer someone is waiting on.
 
@@ -69,6 +67,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Internal
 
 - **The schema TTL cache is reset between tests.** Keyed on `table_id` with a 1 h TTL and process-global, so two suites registering the same id with different columns handed each other the wrong schema — a failure that depended only on file ordering. Added to the existing `_reset_module_caches` autouse fixture alongside the catalog and quota caches.
+
+## [0.83.34] - 2026-08-17
+
+### Added
+
+- **Architecture figures: the whole platform on one page.** `ARCHITECTURE.md` now opens with a layered diagram of the nine planes — surfaces, the authorization boundary, the `api`/`gateway`/`worker` application plane, the agent + LLM path, knowledge & governance, dual-backend app state, the analytics data plane, connectors, external systems — plus two companion figures for the cycles a layered view flattens: the analyst loop (manifest → `agnes pull` → laptop → Claude Code → `agnes push` → corporate memory → the next session's stack) and query routing (which engine actually executes a statement, and the cost guardrail on each remote one). The SVGs live in `docs/diagrams/` and are produced by `scripts/dev/gen_architecture_diagrams.py`, which measures every drawn line against its box and exits non-zero rather than shipping clipped text — the failure mode a hand-edited SVG hides. Also corrects the stale schema version in `docs/architecture.md` (109 → 118, the actual `SCHEMA_VERSION`).
 
 ## [0.83.33] - 2026-08-17
 
