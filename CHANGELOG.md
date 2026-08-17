@@ -10,6 +10,24 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.83.36] - 2026-08-17
+
+### Added
+
+- Microsoft Entra ID (Azure AD) single-tenant OAuth login provider (`MICROSOFT_TENANT_ID`/`MICROSOFT_CLIENT_ID`/`MICROSOFT_CLIENT_SECRET`). Authentication only; users land in the Everyone group (IdP group sync not yet wired).
+- `docs/auth-microsoft-oauth.md` — Entra app registration, the three env vars, the redirect URI, every `/login?error=…` code the provider emits, and the guest-account trust model. Microsoft now also appears in the provider inventories (`docs/architecture.md`, `docs/CONFIGURATION.md`, `docs/README.md`), which is where an operator looks first.
+
+### Fixed
+
+- **The Microsoft provider's single-tenant promise is now structural rather than documentary.** `MICROSOFT_TENANT_ID` went verbatim into the OIDC discovery URL, so setting it to `common`, `organizations` or `consumers` — three values that endpoint accepts — silently produced exactly the multi-tenant configuration the module said it never uses: with `auth.allowed_domain` unset, any Microsoft account anywhere could sign in and self-provision an account. The tenant is now validated as a directory GUID or a verified domain, the three reserved names are refused *by name*, and a tenant that fails leaves the provider unavailable with a boot error explaining why — an instance must not come up multi-tenant quietly.
+- **A Microsoft sign-in can no longer take over an account through an unverified UPN.** Identity fell back to `preferred_username` whenever the `email` claim was absent, and `ensure_user` matches accounts by that string alone. The fallback now rejects Entra B2B guest UPNs (`user_othercorp.com#EXT#@tenant…`), which are not mailboxes. The broader property this narrows — a single tenant is the *authentication* boundary, not the identity one, because invited guests carry their external address in the `email` claim — is documented next to the env vars and warned about at boot when `auth.allowed_domain` is unset.
+- **One person, one account, across providers.** `ensure_user` matched on an exact email string (`=` is case-sensitive on DuckDB and Postgres alike) while providers disagreed on normalization — Microsoft lower-cases the resolved claim, Google passes the raw `email` claim through — so the same person arriving through two providers got two accounts. Provisioning now matches case-insensitively (new `users` repo method `get_by_email_ci`, both backends) and stores the address normalized; pre-existing mixed-case rows are matched, never duplicated.
+- **A refused Microsoft-only sign-in list now names Microsoft.** The 422 from `/api/admin/server-config` suggested "add the Google or Keboola OAuth credentials" and mentioned neither Microsoft nor its env vars, even though the availability probe reads them from the process environment at start — the same confusion that earned Google an explicit note. The detail now names `MICROSOFT_TENANT_ID` / `MICROSOFT_CLIENT_ID` / `MICROSOFT_CLIENT_SECRET`, and says an invalid tenant reads as unavailable too.
+
+- **A Microsoft-only sign-in configuration can be saved from the admin page.** `microsoft` reached `KNOWN_PROVIDERS` and the runtime availability probes, but the admin write path keeps a *second*, independent probe (`_provider_available_after_save`) that knew only password/google/email/keboola and fell through to `False` for anything else — so narrowing `auth.providers` to Microsoft was refused with "would leave no usable sign-in method" even with all three env vars set. The env path (`AGNES_AUTH_PROVIDERS`) never saw that validator, so the same instance could be configured one way and not the other.
+
+- **A failed Microsoft sign-in now says so, and says it about Microsoft.** The provider redirected to `/login?error=microsoft_not_configured`, a code the login page had no message for, so the user landed on a blank page with no explanation; its other two failures reused `oauth_failed` and `no_email`, both worded as Google problems. All three are now provider-scoped, following the precedent Keboola set.
+
 ## [0.83.35] - 2026-08-17
 
 ### Changed
