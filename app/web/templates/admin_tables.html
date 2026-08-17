@@ -1252,6 +1252,8 @@
                       onclick="closeRegisterNewTableMenu(); openRegisterModal('bigquery')">BigQuery</button>
               <button class="tbl-register__item" type="button" data-register-source="keboola"
                       onclick="closeRegisterNewTableMenu(); openRegisterModal('keboola')">Keboola</button>
+              <button class="tbl-register__item" type="button" data-register-source="databricks"
+                      onclick="closeRegisterNewTableMenu(); openRegisterModal('databricks')">Databricks</button>
               <a class="tbl-register__item" href="docs/connectors/jira.md"
                  onclick="closeRegisterNewTableMenu()">Jira (webhook-driven — see docs)</a>
             </div>
@@ -1994,6 +1996,141 @@
                     </div>
                 </div>
             </div>
+
+            <!-- ── Databricks Register Modal ── -->
+            <div class="ds-drawer ds-drawer--wide" id="registerDatabricksModal" role="dialog" aria-modal="true" aria-labelledby="registerDatabricksModal-title">
+                <div class="ds-drawer__backdrop" onclick="closeRegisterDatabricksModal()"></div>
+                <div class="ds-drawer__panel">
+                    <div class="ds-drawer__head"><div class="ds-drawer__head-main">
+                        <h2 class="ds-drawer__title" id="registerDatabricksModal-title">Register a Databricks table</h2>
+                        <p class="ds-drawer__sub">Point Agnes at a Databricks SQL warehouse table or view. Live queries hit the warehouse; synced copies materialize to parquet.</p>
+                        </div>
+                        <button class="ds-drawer__x" aria-label="Close" onclick="closeRegisterDatabricksModal()">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <line x1="18" y1="6" x2="6" y2="18"/>
+                                <line x1="6" y1="6" x2="18" y2="18"/>
+                            </svg>
+                        </button>
+                    </div>
+                    <div class="ds-drawer__body">
+                        {% if data_source_type != 'databricks' %}
+                        <div class="alert-v2 alert-warning-v2" style="font-size:13px;">
+                            <svg style="flex-shrink:0; margin-top:1px; color:var(--warning);" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                            <span>Databricks is not the configured data source — set host/token/catalog in <a href="/admin/server-config#cfg-s-data_source" style="color:inherit; text-decoration:underline;">Instance settings</a>.</span>
+                        </div>
+                        {% endif %}
+
+                        <div class="form-group">
+                            <label class="form-label">How should analysts access this data?</label>
+                            <div style="display:flex; gap:12px; margin-top:6px; flex-wrap:wrap;">
+                                <label class="sync-option-card" style="flex:1; min-width:200px; padding:12px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
+                                    <input type="radio" name="dbxAccessMode" value="live" onchange="onDbxAccessModeChange()">
+                                    <strong>Live from Databricks</strong>
+                                    <div style="font-size:12px; color:var(--text-secondary); margin-top:4px;">
+                                        Each query goes to the SQL warehouse. Requires Unity Catalog ATTACH config.
+                                    </div>
+                                </label>
+                                <label class="sync-option-card" style="flex:1; min-width:200px; padding:12px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
+                                    <input type="radio" name="dbxAccessMode" value="synced" checked onchange="onDbxAccessModeChange()">
+                                    <strong>Synced locally</strong>
+                                    <div style="font-size:12px; color:var(--text-secondary); margin-top:4px;">
+                                        Agnes runs a SELECT on a schedule and ships a parquet. Best for speed and repeated queries.
+                                    </div>
+                                </label>
+                            </div>
+                        </div>
+
+                        <div class="form-group dbx-access-synced" style="display:none;">
+                            <label class="form-label">What to sync?</label>
+                            <div style="display:flex; gap:12px; margin-top:6px; flex-wrap:wrap;">
+                                <label class="sync-option-card" style="flex:1; min-width:200px; padding:12px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
+                                    <input type="radio" name="dbxLoadMode" value="whole" checked onchange="onDbxLoadModeChange()">
+                                    <strong>Whole table</strong>
+                                    <div style="font-size:12px; color:var(--text-secondary); margin-top:4px;">
+                                        <code>SELECT *</code> is generated automatically. No SQL required.
+                                    </div>
+                                </label>
+                                <label class="sync-option-card" style="flex:1; min-width:200px; padding:12px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
+                                    <input type="radio" name="dbxLoadMode" value="custom" onchange="onDbxLoadModeChange()">
+                                    <strong>Custom query</strong>
+                                    <div style="font-size:12px; color:var(--text-secondary); margin-top:4px;">
+                                        You write the SELECT — filter, project, or aggregate before the sync.
+                                    </div>
+                                </label>
+                            </div>
+                        </div>
+
+                        <div class="form-group dbx-source-table">
+                            <label class="form-label" for="dbxBucket">
+                                Schema / bucket
+                            </label>
+                            <input type="text" class="form-input" id="dbxBucket" placeholder="e.g. catalog.schema or schema">
+                            <div class="form-hint">For Databricks this is the schema. Use <code>catalog.schema</code> to override the default catalog.</div>
+                        </div>
+                        <div class="form-group dbx-source-table">
+                            <label class="form-label" for="dbxSourceTable">Source Table</label>
+                            <input type="text" class="form-input" id="dbxSourceTable" placeholder="e.g. orders">
+                        </div>
+                        <div class="form-group dbx-source-custom" style="display:none;">
+                            <label class="form-label" for="dbxSourceQuery">
+                                SQL
+                            </label>
+                            <textarea class="form-textarea" id="dbxSourceQuery" rows="8"></textarea>
+                            <div class="form-hint">SELECT against the Databricks warehouse. Result is materialized to parquet.</div>
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label" for="dbxViewName">View Name</label>
+                            <input type="text" class="form-input" id="dbxViewName" placeholder="e.g. orders">
+                            <div class="form-hint">Name analysts use to query the data. Defaults to the source table name.</div>
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label" for="dbxDescription">Description <span class="optional">(optional)</span></label>
+                            <textarea class="form-textarea" id="dbxDescription" placeholder="Brief description of the table contents..."></textarea>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label" for="dbxFolder">Folder <span class="optional">(optional)</span></label>
+                            <input type="text" class="form-input" id="dbxFolder" placeholder="e.g. crm, finance, marketing">
+                        </div>
+
+                        <div class="form-group dbx-access-synced" style="display:none;">
+                            <label class="form-label" for="dbxSyncSchedule">Sync Schedule <span class="optional">(optional, default <code>every 1h</code>)</span></label>
+                            <input type="text" class="form-input" id="dbxSyncSchedule" placeholder="every 6h">
+                            <div class="form-hint">
+                                How often Agnes refreshes the local copy. Examples:
+                                <code>every 15m</code>, <code>every 6h</code>,
+                                <code>daily 03:00</code>, <code>daily 07:00,13:00,18:00</code>,
+                                <code>cron 0 5 7 * *</code> (UTC).
+                            </div>
+                        </div>
+
+                        <div class="form-group dbx-access-synced" style="display:none;">
+                            <label class="form-label">
+                                <input type="checkbox" id="dbxServerOnly">
+                                Server-only (don't distribute to laptops)
+                            </label>
+                            <div class="form-hint">Keep the parquet server-side and queryable via <code>agnes query --remote</code>, but skip it in <code>agnes pull</code>.</div>
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label">Data Packages <span class="optional">(optional)</span></label>
+                            <div class="chip-input"
+                                 data-source-url="/api/admin/data-packages"
+                                 data-allow-create="true"
+                                 data-name="dbx_package_ids"
+                                 data-placeholder="Type to search or create…"
+                                 data-chip-input="data_package"></div>
+                            <div class="form-hint">Bundle this table into one or more Data Packages so analysts can opt-in to it as a group.</div>
+                        </div>
+                    </div>
+                    <div class="ds-drawer__foot">
+                        <button class="btn btn-secondary" onclick="closeRegisterDatabricksModal()">Cancel</button>
+                        <button class="btn btn-primary" id="registerDatabricksSubmitBtn" onclick="registerDatabricksTable()">Register</button>
+                    </div>
+                </div>
+            </div>
+
 
             <!-- ── Keboola Edit Modal (Phase F2) ── -->
             <div class="modal-overlay" id="editKeboolaModal">
@@ -3865,17 +4002,24 @@
 
     function openRegisterModal(arg) {
         // Phase E + F: dispatch by string argument.
-        //   'bigquery' → BQ tab Register button → #registerBqModal.
-        //   'keboola'  → Keboola tab Register button → #registerKeboolaModal.
+        //   'bigquery'   → BQ tab Register button → #registerBqModal.
+        //   'keboola'    → Keboola tab Register button → #registerKeboolaModal.
+        //   'databricks' → Databricks Register button → #registerDatabricksModal.
         if (arg === 'bigquery') {
             return _openBqRegisterModal({});
         }
         if (arg === 'keboola') {
             return _openKeboolaTabRegisterModal();
         }
+        if (arg === 'databricks') {
+            return _openDatabricksRegisterModal();
+        }
         // Fallback when called with no argument — pick by instance type.
         if (DATA_SOURCE_TYPE === 'bigquery') {
             return _openBqRegisterModal({});
+        }
+        if (DATA_SOURCE_TYPE === 'databricks') {
+            return _openDatabricksRegisterModal();
         }
         return _openKeboolaTabRegisterModal();
     }
@@ -4777,6 +4921,163 @@
             el.style.display = (syncMode === 'custom') ? '' : 'none';
         });
     }
+
+    // ── Databricks register modal ─────────────────────────────
+
+    function _openDatabricksRegisterModal(table) {
+        table = table || {};
+        var modal = document.getElementById('registerDatabricksModal');
+        if (!modal) return;
+        // Default to synced/whole.
+        var syncedRadio = modal.querySelector('input[name="dbxAccessMode"][value="synced"]');
+        if (syncedRadio) syncedRadio.checked = true;
+        var liveRadio = modal.querySelector('input[name="dbxAccessMode"][value="live"]');
+        if (liveRadio) liveRadio.checked = false;
+        var wholeRadio = modal.querySelector('input[name="dbxLoadMode"][value="whole"]');
+        if (wholeRadio) wholeRadio.checked = true;
+        ['dbxBucket', 'dbxSourceTable', 'dbxSourceQuery', 'dbxViewName',
+         'dbxDescription', 'dbxFolder', 'dbxSyncSchedule'].forEach(function(id) {
+            var el = document.getElementById(id);
+            if (el) el.value = '';
+        });
+        var serverOnly = document.getElementById('dbxServerOnly');
+        if (serverOnly) serverOnly.checked = false;
+        onDbxAccessModeChange();
+        var btn = document.getElementById('registerDatabricksSubmitBtn');
+        btn.disabled = false;
+        btn.textContent = 'Register';
+        modal.classList.add('is-open');
+    }
+
+    function closeRegisterDatabricksModal() {
+        document.getElementById('registerDatabricksModal').classList.remove('is-open');
+    }
+
+    function _getDbxAccessMode() {
+        var el = document.querySelector('input[name="dbxAccessMode"]:checked');
+        return el ? el.value : 'synced';
+    }
+
+    function _getDbxLoadMode() {
+        var el = document.querySelector('input[name="dbxLoadMode"]:checked');
+        return el ? el.value : 'whole';
+    }
+
+    function onDbxAccessModeChange() {
+        var accessMode = _getDbxAccessMode();
+        document.querySelectorAll('.dbx-access-synced').forEach(function(el) {
+            el.style.display = (accessMode === 'synced') ? '' : 'none';
+        });
+        if (accessMode === 'synced') {
+            onDbxLoadModeChange();
+        } else {
+            document.querySelectorAll('.dbx-source-table').forEach(function(el) { el.style.display = ''; });
+            document.querySelectorAll('.dbx-source-custom').forEach(function(el) { el.style.display = 'none'; });
+        }
+    }
+
+    function onDbxLoadModeChange() {
+        var loadMode = _getDbxLoadMode();
+        document.querySelectorAll('.dbx-source-table').forEach(function(el) {
+            el.style.display = (loadMode === 'custom') ? 'none' : '';
+        });
+        document.querySelectorAll('.dbx-source-custom').forEach(function(el) {
+            el.style.display = (loadMode === 'custom') ? '' : 'none';
+        });
+    }
+
+    function _buildDatabricksPayload() {
+        var accessMode = _getDbxAccessMode();
+        var loadMode = _getDbxLoadMode();
+        var viewName = (document.getElementById('dbxViewName').value || '').trim();
+        var bucket = (document.getElementById('dbxBucket').value || '').trim();
+        var sourceTable = (document.getElementById('dbxSourceTable').value || '').trim();
+        var description = (document.getElementById('dbxDescription').value || '').trim() || null;
+        var folder = (document.getElementById('dbxFolder').value || '').trim() || null;
+        var syncSchedule = (document.getElementById('dbxSyncSchedule').value || '').trim() || null;
+        var serverOnly = !!(document.getElementById('dbxServerOnly') && document.getElementById('dbxServerOnly').checked);
+
+        if (accessMode === 'synced' && loadMode === 'custom') {
+            return {
+                name: viewName,
+                source_type: 'databricks',
+                query_mode: 'materialized',
+                source_query: (document.getElementById('dbxSourceQuery').value || '').trim(),
+                profile_after_sync: false,
+                server_only: serverOnly,
+                description: description,
+                folder: folder,
+                sync_schedule: syncSchedule,
+            };
+        }
+        if (accessMode === 'synced' && loadMode === 'whole') {
+            return {
+                name: viewName || sourceTable,
+                source_type: 'databricks',
+                query_mode: 'materialized',
+                bucket: bucket,
+                source_table: sourceTable,
+                profile_after_sync: false,
+                server_only: serverOnly,
+                description: description,
+                folder: folder,
+                sync_schedule: syncSchedule,
+            };
+        }
+        return {
+            name: viewName || sourceTable,
+            source_type: 'databricks',
+            query_mode: 'remote',
+            bucket: bucket,
+            source_table: sourceTable,
+            profile_after_sync: false,
+            server_only: false,
+            description: description,
+            folder: folder,
+            sync_schedule: syncSchedule,
+        };
+    }
+
+    function registerDatabricksTable() {
+        var btn = document.getElementById('registerDatabricksSubmitBtn');
+        btn.disabled = true;
+        btn.textContent = 'Registering...';
+        var payload;
+        try {
+            payload = _buildDatabricksPayload();
+        } catch (e) {
+            showToast('' + e.message, 'error');
+            btn.disabled = false;
+            btn.textContent = 'Register';
+            return;
+        }
+        fetch('/api/admin/register-table', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        })
+        .then(function(r) {
+            if (!r.ok) {
+                return r.json().then(function(d) {
+                    throw new Error(d.detail || d.error || 'Registration failed');
+                });
+            }
+            return r.json();
+        })
+        .then(function(d) {
+            closeRegisterDatabricksModal();
+            showToast('Queryable as ' + (d.view_name || d.id || payload.name), 'success');
+            loadRegistry();
+        })
+        .catch(function(err) {
+            showToast('' + err.message, 'error');
+        })
+        .finally(function() {
+            btn.disabled = false;
+            btn.textContent = 'Register';
+        });
+    }
+
 
     // The discover / list-tables / prefill helpers are shared between the
     // Register and Edit modals. The default datalist + input ids match the
