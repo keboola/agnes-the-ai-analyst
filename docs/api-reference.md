@@ -275,6 +275,13 @@ curl -s -X POST \
 it for that persona; `rows_visible` is the count through the policy, `rows_total` the
 unfiltered count (admin bypass).
 
+`base_sample_rows` is the same bounded window of RAW rows, for a before/after view, and
+`base_sample_comparable` says whether the two samples are guaranteed to cover the same
+source rows. It is `false` when the policy's reads of its own table could not be bounded
+to the raw sample's window (e.g. it names the table with a schema qualifier) and the raw
+sample is not provably the whole table — in that case the two lists must **not** be
+diffed row-by-row, only read on their own.
+
 ### 3.8 No-SQL policy builder — `GET .../policy/columns`, `POST .../policy/compile`
 
 Lets an admin author a policy by picking columns and masks instead of writing SQL by
@@ -317,9 +324,18 @@ curl -s -X POST \
 #  "warnings": []}
 ```
 
+`warnings` carries what the compiler had to say about the spec — a column it did not
+recognize and dropped, or a spec that filters and masks nothing at all. A spec it cannot
+understand (an unknown `op` or mask) returns `422 policy_compile_invalid_spec`.
+
 This endpoint never persists anything — it only returns SQL text. Save it the same way
 as any hand-written policy: `PUT /api/admin/registry/{table_id}` with the returned `sql`
 as `access_policy_sql` (plus the mandatory `access_policy_note`).
+
+Both builder routes are admin-only and, like `.../policy/preview`, available regardless
+of `access_policies.enabled`: they neither read nor write a stored policy. That flag
+gates attaching one (`PUT` with a non-null `access_policy_sql`) and applying one on a
+read.
 
 ---
 

@@ -308,3 +308,52 @@ def test_preview_shows_before_after_on_the_raw_sample(seeded_app):
     assert "ap-preview-hidden-cell" in body
     # The transient result grid still uses the product's ONE table class.
     assert 'class="data-table"' in body
+
+
+def test_make_server_only_button_recovers_from_a_failed_attempt(seeded_app):
+    """``apMakeServerOnly()`` disables its own button and relabels it
+    "Setting…" before the PUT. Only the SUCCESS path re-renders the
+    warning (which recreates the button), so both failure paths — a
+    rejected PUT and a network error — must put the button back the way
+    ``apSavePolicy()``/``apClearPolicy()`` do in their ``finally``, or the
+    admin is left staring at a permanently disabled control with no way to
+    retry."""
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = c.get("/admin/tables", headers=_auth(token))
+    body = r.text
+    fn = body[body.index("async function apMakeServerOnly") : body.index("async function apToggleMapping")]
+    assert "} finally {" in fn
+    assert "btn.disabled = false" in fn
+
+
+def test_builder_surfaces_compile_warnings(seeded_app):
+    """``policy/compile`` returns ``warnings`` (unknown column dropped, and
+    the "this policy filters nothing" no-op warning). Discarding them lets
+    an admin save a policy that quietly does nothing — so the builder
+    renders them, and renders them as text (never innerHTML with server
+    strings)."""
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = c.get("/admin/tables", headers=_auth(token))
+    body = r.text
+    assert 'id="apCompileWarnings"' in body
+    assert "function _apRenderCompileWarnings" in body
+    assert "body.warnings" in body
+    fn = body[body.index("function _apRenderCompileWarnings") : body.index("function _apShowSaveError")]
+    assert "textContent" in fn
+    assert "innerHTML" not in fn
+
+
+def test_preview_only_diffs_samples_the_server_says_are_comparable(seeded_app):
+    """The before/after diff pairs raw rows against policied rows, which is
+    only meaningful when both samples cover the same source rows. The
+    preview response carries ``base_sample_comparable``; when it is false
+    the renderer must fall back to the policied-only view with a note
+    rather than inventing dropped rows."""
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = c.get("/admin/tables", headers=_auth(token))
+    body = r.text
+    assert "base_sample_comparable" in body
+    assert "ap-preview-note" in body

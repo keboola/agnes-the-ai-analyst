@@ -324,3 +324,29 @@ class TestPolicyBuilderCompile:
             headers=_auth(token),
         )
         assert resp.status_code == 404, resp.text
+
+    def test_compile_endpoint_rejects_a_malformed_spec_with_4xx(self, policy_builder_table):
+        """A typo'd row op or mask choice is a CLIENT mistake, not a server
+        fault. ``compile_policy`` raises a bare ``ValueError`` for both
+        ("unknown row op", "unknown mask"); the handler must translate that
+        into a 4xx the builder can render inline -- never a 500 / unhandled
+        exception.
+        """
+        c = policy_builder_table["client"]
+        token = policy_builder_table["admin_token"]
+
+        malformed = [
+            {
+                "row_rules": [{"column": "cost_center", "op": "equalz", "value": "Finance"}],
+                "column_masks": {},
+            },
+            {"row_rules": [], "column_masks": {"email": "obfuscate"}},
+        ]
+        for spec in malformed:
+            resp = c.post(
+                "/api/admin/registry/policy_builder_invoices/policy/compile",
+                json=spec,
+                headers=_auth(token),
+            )
+            assert resp.status_code == 422, resp.text
+            assert resp.json()["detail"].startswith("policy_compile_invalid_spec:"), resp.text

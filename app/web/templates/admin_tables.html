@@ -600,9 +600,25 @@
             margin-bottom: 14px;
         }
 
+        .ap-compile-warnings {
+            margin-top: 10px;
+            margin-bottom: 0;
+        }
+
+        .ap-compile-warnings > div + div {
+            margin-top: 4px;
+        }
+
         .ap-preview-result {
             margin-top: 10px;
             font-size: 12px;
+        }
+
+        /* Why a before/after diff was NOT rendered for this preview — the
+           two samples are not guaranteed to cover the same rows. */
+        .ap-preview-note {
+            color: var(--ds-text-muted);
+            margin-top: 6px;
         }
 
         /* Task B (access-policy-builder-ux Slice 2): before/after render of
@@ -3867,6 +3883,12 @@
                     <div id="apColList" class="ap-col-list">
                         <div class="form-hint" style="margin:0; padding:10px;">Loading columns…</div>
                     </div>
+                    <!-- What policy/compile said about the spec it just
+                         compiled — an unknown column it dropped, or "this
+                         policy filters and masks nothing". Shown BEFORE the
+                         admin saves, not discovered afterwards. -->
+                    <div class="form-hint form-hint--warn ap-compile-warnings" id="apCompileWarnings"
+                         style="display:none;" role="status"></div>
                 </div>
 
                 <div class="form-group" data-ap-panel="sql" id="apSqlPanel" style="display:none;">
@@ -5953,6 +5975,7 @@
         // builder always starts empty, same as _apMaskState above.
         _apRowRules = [];
         _apRowCombine = 'and';
+        _apRenderCompileWarnings([]);
         _apRenderRowRules();
         _apRenderInterlockWarning();
         _apLoadHistory(table.id);
@@ -5993,6 +6016,7 @@
     async function apMakeServerOnly() {
         if (!_apTable) return;
         var btn = document.getElementById('apMakeServerOnly');
+        var btnLabel = btn ? btn.textContent : '';
         if (btn) { btn.disabled = true; btn.textContent = 'Setting…'; }
         try {
             var r = await fetch('/api/admin/registry/' + encodeURIComponent(_apTable.id), {
@@ -6013,6 +6037,15 @@
             showToast('Table set to server_only — the builder is unlocked', 'success');
         } catch (err) {
             _apShowSaveError('Network error: ' + err.message);
+        } finally {
+            // Same contract as apSavePolicy()/apClearPolicy(): the button
+            // goes back to being clickable no matter how the PUT ended.
+            // Only the success path re-renders the warning (which replaces
+            // this node outright, so touching it there is a harmless no-op)
+            // — on either failure path the button is still on the page, and
+            // leaving it disabled + "Setting…" would strand the admin with
+            // no way to retry.
+            if (btn) { btn.disabled = false; btn.textContent = btnLabel; }
         }
     }
 
@@ -6291,13 +6324,41 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(spec),
             });
-            if (!r.ok) return; // compile is a convenience; leave #apSql as-is on error
+            if (!r.ok) {
+                // compile is a convenience; leave #apSql as-is on error —
+                // but drop the warnings, which described an older spec.
+                _apRenderCompileWarnings([]);
+                return;
+            }
             var body = await r.json();
             document.getElementById('apSql').value = body.sql || '';
+            _apRenderCompileWarnings(body.warnings);
         } catch (err) {
             // Network hiccup — leave #apSql unchanged; the Advanced SQL tab
             // still works standalone.
+            _apRenderCompileWarnings([]);
         }
+    }
+
+    // The compiler's own warnings (an unknown column it dropped, or "this
+    // policy returns the full table to every caller") — rendered where the
+    // spec was assembled so the admin reads them BEFORE saving. Server text
+    // goes in through textContent, never innerHTML.
+    function _apRenderCompileWarnings(warnings) {
+        var el = document.getElementById('apCompileWarnings');
+        if (!el) return;
+        while (el.firstChild) el.removeChild(el.firstChild);
+        var lines = (warnings || []).filter(function(w) { return typeof w === 'string' && w.trim(); });
+        if (!lines.length) {
+            el.style.display = 'none';
+            return;
+        }
+        lines.forEach(function(w) {
+            var line = document.createElement('div');
+            line.textContent = w;
+            el.appendChild(line);
+        });
+        el.style.display = '';
     }
 
     function _apShowSaveError(msg) {
@@ -6490,12 +6551,47 @@
         });
     }
 
+    // The pre-Slice-2 render: the policied slice alone, hidden columns
+    // struck in the header and em-dashed in the body, no raw-vs-masked
+    // diff. Used when the server reports the two samples are not
+    // comparable (`base_sample_comparable === false`).
+    function _apRenderPoliciedOnlyRows(cols, policiedRows) {
+        var html = '<div style="margin-top:8px; max-height:260px; overflow:auto; '
+                 + 'border:1px solid var(--ds-border); border-radius:6px;">';
+        html += '<table class="data-table"><thead><tr>';
+        cols.forEach(function(c) {
+            html += c.hidden
+                ? '<th style="text-decoration:line-through; color:var(--ds-text-disabled);">' + escapeHtml(c.name) + '</th>'
+                : '<th>' + escapeHtml(c.name) + '</th>';
+        });
+        html += '</tr></thead><tbody>';
+        policiedRows.slice(0, 10).forEach(function(policiedRow) {
+            html += '<tr>';
+            cols.forEach(function(c) {
+                if (c.hidden) {
+                    html += '<td class="ap-preview-hidden-cell">&mdash;</td>';
+                    return;
+                }
+                var val = policiedRow[c.name];
+                html += '<td>' + escapeHtml(val === null || val === undefined ? '' : String(val)) + '</td>';
+            });
+            html += '</tr>';
+        });
+        html += '</tbody></table></div>';
+        return html;
+    }
+
     function _apRenderPreviewResult(body) {
         var cols = body.columns || [];
         var hiddenCols = cols.filter(function(c) { return c.hidden; }).map(function(c) { return c.name; });
         var visibleColNames = cols.filter(function(c) { return !c.hidden; }).map(function(c) { return c.name; });
         var baseRows = body.base_sample_rows || [];
         var policiedRows = body.sample_rows || [];
+        // The server only guarantees the two samples cover the same source
+        // rows when it could bound BOTH to one window. When it could not,
+        // pairing them would invent dropped rows and masked-cell diffs out
+        // of nothing — so show the policied slice on its own and say why.
+        var comparable = body.base_sample_comparable !== false;
 
         var html = '<div class="ap-preview-result">';
         html += '<strong>' + formatNumber(body.rows_visible) + '</strong> of <strong>'
@@ -6504,7 +6600,12 @@
             html += '<div class="form-hint" style="margin-top:6px;">Hidden columns: '
                  + escapeHtml(hiddenCols.join(', ')) + '</div>';
         }
-        if (baseRows.length && cols.length) {
+        if (!comparable && policiedRows.length) {
+            html += '<div class="form-hint ap-preview-note">Showing what this persona sees. A '
+                 + 'before/after comparison is not available for this policy — its sample and the '
+                 + 'raw sample are not guaranteed to cover the same rows.</div>';
+            html += _apRenderPoliciedOnlyRows(cols, policiedRows);
+        } else if (comparable && baseRows.length && cols.length) {
             var matches = _apMatchPreviewRows(baseRows, policiedRows, visibleColNames);
             var droppedCount = matches.filter(function(m) { return m === null; }).length;
             if (droppedCount) {

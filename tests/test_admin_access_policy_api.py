@@ -525,3 +525,123 @@ class TestPolicyPreview:
         )
         assert resp.status_code == 422, resp.text
         assert "policy_preview_no_policy" in resp.text
+
+
+@pytest.fixture
+def policied_wide_table_for_preview(seeded_app, mock_extract_factory, monkeypatch):
+    """A table with MORE rows than ``_POLICY_PREVIEW_SAMPLE_LIMIT`` where
+    the only rows a persona can see sit *outside* the raw sample window.
+
+    This is the shape that breaks a naive before/after preview: the raw
+    sample is ``... LIMIT 20`` and the policied sample is an independent
+    ``SELECT * FROM (policy) LIMIT 20``, so the two lists can cover
+    disjoint sets of source rows and the UI ends up diffing unrelated
+    rows against each other.
+    """
+    from src.db import get_system_db
+    from src.orchestrator import SyncOrchestrator
+    from src.repositories.table_registry import TableRegistryRepository
+
+    monkeypatch.setenv("AGNES_ACCESS_POLICIES_ENABLED", "1")
+
+    env = seeded_app["env"]
+    rows = [{"id": f"{i:03d}", "unit": "Ops" if i < 25 else "Finance"} for i in range(30)]
+    mock_extract_factory("keboola", [{"name": "preview_wide", "data": rows}])
+    SyncOrchestrator(analytics_db_path=env["analytics_db"]).rebuild()
+
+    conn = get_system_db()
+    try:
+        registry = TableRegistryRepository(conn)
+        registry.register(
+            id="preview_wide",
+            name="preview_wide",
+            source_type="keboola",
+            query_mode="local",
+            server_only=True,
+        )
+        registry.set_access_policy(
+            "preview_wide",
+            sql="SELECT * FROM preview_wide WHERE list_contains($user_groups, unit)",
+            note="restrict to the caller's unit",
+            updated_by="admin",
+        )
+    finally:
+        conn.close()
+
+    return seeded_app
+
+
+@pytest.mark.journey
+class TestPolicyPreviewSampleWindow:
+    def test_both_samples_cover_the_same_bounded_rows(self, policied_wide_table_for_preview):
+        """The before/after view is only meaningful if the "after" list is
+        the policy applied to the SAME rows the "before" list shows.
+
+        Here the Finance rows all sit past the sample window, so an
+        independent ``SELECT * FROM (policy) LIMIT 20`` returns rows the
+        raw sample never contains -- and the UI pairs unrelated rows,
+        rendering false "dropped" rows and false masked-cell diffs. Every
+        policied sample row must come from the raw sample window.
+        """
+        c = policied_wide_table_for_preview["client"]
+        token = policied_wide_table_for_preview["admin_token"]
+
+        resp = c.post(
+            "/api/admin/registry/preview_wide/policy/preview",
+            json={"as_groups": ["Finance"]},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+
+        # The counts are still whole-table facts, not window facts.
+        assert body["rows_total"] == 30
+        assert body["rows_visible"] == 5
+
+        base_ids = {r["id"] for r in body["base_sample_rows"]}
+        sample_ids = {r["id"] for r in body["sample_rows"]}
+        assert len(base_ids) == 20
+        assert sample_ids <= base_ids, (
+            f"policied sample escaped the raw sample window: {sorted(sample_ids - base_ids)} are not in the before list"
+        )
+        # ... and the response says so, so the UI knows it may diff them.
+        assert body["base_sample_comparable"] is True
+
+    def test_a_narrow_table_still_diffs_the_whole_table(self, policied_invoices_for_preview):
+        """The 3-row fixture is smaller than the sample limit, so the raw
+        sample IS the table and the policied sample IS the whole policied
+        output -- the diff stays exact and still shows the dropped row."""
+        c = policied_invoices_for_preview["client"]
+        token = policied_invoices_for_preview["admin_token"]
+
+        resp = c.post(
+            "/api/admin/registry/preview_invoices/policy/preview",
+            json={"as_groups": ["Finance"]},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["base_sample_comparable"] is True
+        assert {r["id"] for r in body["base_sample_rows"]} == {"1", "2", "3"}
+        assert {r["id"] for r in body["sample_rows"]} == {"1", "2"}
+
+    def test_a_policy_whose_table_reads_cannot_be_bounded_is_flagged(self, policied_wide_table_for_preview):
+        """A qualified self-reference (``main.t``) binds to the real table,
+        not to the bounded-sample CTE -- so the two lists may cover
+        different rows and the response must say so instead of inviting a
+        false diff. Never resolved by rewriting the policy body: editing
+        untrusted SQL by string substitution is exactly the footgun this
+        avoids."""
+        c = policied_wide_table_for_preview["client"]
+        token = policied_wide_table_for_preview["admin_token"]
+
+        resp = c.post(
+            "/api/admin/registry/preview_wide/policy/preview",
+            json={
+                "sql": "SELECT * FROM main.preview_wide WHERE list_contains($user_groups, unit)",
+                "as_groups": ["Finance"],
+            },
+            headers=_auth(token),
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["base_sample_comparable"] is False

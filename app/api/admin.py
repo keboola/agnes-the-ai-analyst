@@ -4902,6 +4902,128 @@ _POLICY_PREVIEW_KNOWN_VARIABLES = frozenset({"user_email", "user_id", "user_grou
 _POLICY_PREVIEW_SAMPLE_LIMIT = 20
 
 
+def _policy_preview_sample_is_redirectable(policy_sql: str, table_name: str) -> bool:
+    """True when a ``WITH "<table_name>" AS (<bounded sample>)`` prelude
+    provably redirects EVERY read the policy makes of its own table.
+
+    The before/after preview is only honest if both lists cover the same
+    source rows (see ``_policy_preview_samples``), and the prelude is how
+    that is arranged -- but a CTE only shadows a BARE identifier. Two
+    shapes escape it, and both are refused here rather than silently
+    diffed against unrelated rows:
+
+    * a qualified reference (``main.t``, ``db.main.t``) binds to the real
+      table, not the CTE -- the policy validator matches on the last name
+      part only, so this passes validation today;
+    * a policy-defined CTE of the same name shadows OUR prelude, so the
+      policy reads that instead.
+
+    A body we cannot parse is refused too (conservative by construction).
+    Note what this never does: rewrite, substitute, or otherwise edit the
+    policy SQL. The body is handed to DuckDB verbatim either way.
+    """
+    import sqlglot
+    from sqlglot import exp
+
+    try:
+        statement = sqlglot.parse_one(policy_sql, read="duckdb")
+    except Exception:
+        return False
+    if statement is None:
+        return False
+
+    lname = table_name.lower()
+    for cte in statement.find_all(exp.CTE):
+        if (cte.alias_or_name or "").lower() == lname:
+            return False
+
+    saw_bare_reference = False
+    for table in statement.find_all(exp.Table):
+        if not isinstance(table.this, exp.Identifier):
+            continue
+        if table.name.lower() != lname:
+            continue
+        if table.args.get("db") or table.args.get("catalog"):
+            return False
+        saw_bare_reference = True
+    return saw_bare_reference
+
+
+def _policy_preview_samples(analytics_conn, table_name: str, policy_sql: str, params: dict):
+    """Both halves of the before/after preview over the SAME bounded rows.
+
+    Returns ``(policied_sample, base_sample, comparable)``.
+
+    The naive shape -- an unbounded ``SELECT * FROM (policy) LIMIT n``
+    beside an independent ``SELECT * FROM t LIMIT n`` -- reads two
+    different, unordered windows: whenever the rows a persona can see sit
+    past the raw sample's window, the policied list carries rows the raw
+    list never contains, and the UI pairs unrelated rows into false
+    "dropped" rows and false masked-cell diffs.
+
+    So the raw window is materialized ONCE into a per-request temp table
+    (one bounded read, replacing the previous two -- strictly cheaper than
+    before, which matters on a remote/BQ-backed table) and the policy is
+    then run against a CTE that reads it back. Nothing rewrites the policy
+    body; DuckDB's own name resolution prefers the CTE over the base
+    table, which is exactly why ``_policy_preview_sample_is_redirectable``
+    has to certify that every reference is shadowable first.
+
+    When it is not, both samples fall back to independent bounded reads
+    and ``comparable`` is True only when the raw sample is provably the
+    WHOLE table (fewer rows came back than the limit) -- in which case the
+    policied sample is the whole policied output and the two are exactly
+    comparable anyway. Otherwise the caller is told not to diff them.
+    """
+    import uuid
+
+    from src.sql_ident import quote_ident
+
+    limit = _POLICY_PREVIEW_SAMPLE_LIMIT
+    quoted_table = quote_ident(table_name)
+
+    def _rows(cursor):
+        names = [d[0] for d in cursor.description]
+        return [dict(zip(names, r)) for r in cursor.fetchall()]
+
+    if _policy_preview_sample_is_redirectable(policy_sql, table_name):
+        # Unique per request: a temp table is connection-scoped, but the
+        # DuckLake backend hands out cursors off one long-lived connection,
+        # so a fixed name could collide between concurrent previews.
+        tmp = quote_ident(f"__agnes_policy_base_{uuid.uuid4().hex}")
+        created = False
+        try:
+            analytics_conn.execute(f"CREATE TEMP TABLE {tmp} AS SELECT * FROM {quoted_table} LIMIT {limit}")
+            created = True
+        except Exception:
+            created = False
+        if created:
+            try:
+                base_sample = _rows(analytics_conn.execute(f"SELECT * FROM {tmp}"))
+                policied_sample = _rows(
+                    analytics_conn.execute(
+                        f"WITH {quoted_table} AS (SELECT * FROM {tmp}) "
+                        f"SELECT * FROM ({policy_sql}) AS __agnes_policy_preview__ LIMIT {limit}",
+                        params,
+                    )
+                )
+                return policied_sample, base_sample, True
+            finally:
+                try:
+                    analytics_conn.execute(f"DROP TABLE IF EXISTS {tmp}")
+                except Exception:
+                    pass
+
+    policied_sample = _rows(
+        analytics_conn.execute(
+            f"SELECT * FROM ({policy_sql}) AS __agnes_policy_preview__ LIMIT {limit}",
+            params,
+        )
+    )
+    base_sample = _rows(analytics_conn.execute(f"SELECT * FROM {quoted_table} LIMIT {limit}"))
+    return policied_sample, base_sample, len(base_sample) < limit
+
+
 def _sanitize_for_json(obj):
     """Recursively replace NaN / ±inf floats with None so a preview's sample
     rows survive JSON serialization -- FastAPI's default encoder rejects
@@ -5107,23 +5229,17 @@ async def preview_table_policy(
                 f"SELECT COUNT(*) FROM ({policy_sql}) AS __agnes_policy_preview__",
                 params,
             ).fetchone()[0]
-            sample_cursor = analytics_conn.execute(
-                f"SELECT * FROM ({policy_sql}) AS __agnes_policy_preview__ LIMIT {_POLICY_PREVIEW_SAMPLE_LIMIT}",
-                params,
-            )
-            sample_col_names = [d[0] for d in sample_cursor.description]
-            sample_rows = [dict(zip(sample_col_names, r)) for r in sample_cursor.fetchall()]
-            # Slice 2 (§13.1 before/after): the RAW sample the authoring admin
-            # (god-mode) may see, so the UI can diff it against the policied
-            # slice above — struck-through dropped rows, real->masked cells.
-            # One bounded LIMIT read (not another full scan): it must NOT add
+            # Slice 2 (§13.1 before/after): the policied slice AND the RAW
+            # sample the authoring admin (god-mode) may see, so the UI can
+            # diff them — struck-through dropped rows, real->masked cells.
+            # Both must cover the SAME bounded rows or the diff pairs
+            # unrelated rows; `_policy_preview_samples` arranges that (and
+            # says so via `comparable`) on ONE bounded read, so it never adds
             # to the two full COUNT(*) scans above, which are the pre-existing
             # per-call cost on a remote/BQ-backed table.
-            base_sample_cursor = analytics_conn.execute(
-                f"SELECT * FROM {quote_ident(row['name'])} LIMIT {_POLICY_PREVIEW_SAMPLE_LIMIT}"
+            sample_rows, base_sample_rows, base_sample_comparable = _policy_preview_samples(
+                analytics_conn, row["name"], policy_sql, params
             )
-            base_sample_col_names = [d[0] for d in base_sample_cursor.description]
-            base_sample_rows = [dict(zip(base_sample_col_names, r)) for r in base_sample_cursor.fetchall()]
         except Exception as exc:
             raise HTTPException(status_code=422, detail=f"policy_preview_failed: {exc}") from exc
     finally:
@@ -5151,6 +5267,10 @@ async def preview_table_policy(
         "columns": columns,
         "sample_rows": sample_rows,
         "base_sample_rows": base_sample_rows,
+        # False = the two samples are NOT guaranteed to cover the same rows,
+        # so the UI must render the policied slice on its own rather than a
+        # row-by-row before/after diff.
+        "base_sample_comparable": bool(base_sample_comparable),
         "rows_visible": int(rows_visible),
         "rows_total": int(rows_total),
     }
@@ -5293,6 +5413,11 @@ async def policy_builder_compile(
     admin who likes the result still saves it through the existing ``PUT
     /registry/{id}`` (``access_policy_sql``), unchanged, so the stored
     artifact stays SQL, never a structured spec.
+
+    Read-only and, like ``policy_builder_columns`` above, deliberately not
+    gated on ``access_policies.enabled``: it neither reads nor writes a
+    stored policy. The flag gates ATTACHING one (``PUT /registry/{id}``
+    with a non-null ``access_policy_sql``).
     """
     row = table_registry_repo().get(table_id)
     if not row:
@@ -5309,7 +5434,15 @@ async def policy_builder_compile(
         "row_combine": request.row_combine,
         "column_masks": request.column_masks,
     }
-    compiled = compile_policy(spec, columns)
+    try:
+        compiled = compile_policy(spec, columns)
+    except ValueError as e:
+        # `compile_policy` raises a bare ValueError for a spec it cannot
+        # understand -- an unknown row `op`, an unknown mask `choice`. That
+        # is a malformed CLIENT payload (a stale builder, a hand-rolled
+        # caller), not a server fault: surface it as a 4xx the builder can
+        # render inline rather than letting it escape as a 500.
+        raise HTTPException(status_code=422, detail=f"policy_compile_invalid_spec: {e}") from e
     return {"sql": compiled.sql, "warnings": compiled.warnings}
 
 
