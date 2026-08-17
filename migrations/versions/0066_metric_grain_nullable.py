@@ -18,8 +18,8 @@ The ``'monthly'`` server default stays on both backends: it is inert for the
 repositories (their INSERTs name the column explicitly) and identical either
 side of the parity line.
 
-Revision ID: 0065_metric_grain_nullable
-Revises: 0064_sem_models_v117
+Revision ID: 0066_metric_grain_nullable
+Revises: 0065_journey_agent_created_v118
 Create Date: 2026-08-16
 """
 
@@ -30,8 +30,8 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0065_metric_grain_nullable"
-down_revision: Union[str, None] = "0064_sem_models_v117"
+revision: str = "0066_metric_grain_nullable"
+down_revision: Union[str, None] = "0065_journey_agent_created_v118"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
