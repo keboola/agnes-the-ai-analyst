@@ -48,14 +48,13 @@ import pandas as pd
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from connectors.jira.scripts.backfill_sla import (  # noqa: E402
+from app.logging_config import setup_logging
+from connectors.jira.file_lock import issue_json_lock
+from connectors.jira.incremental_transform import transform_issues
+from connectors.jira.scripts.backfill_sla import (
     configured_field_ids,
     load_config,
 )
-from connectors.jira.incremental_transform import transform_single_issue  # noqa: E402
-from connectors.jira.file_lock import issue_json_lock  # noqa: E402
-
-from app.logging_config import setup_logging  # noqa: E402
 
 setup_logging(__name__)
 logger = logging.getLogger(__name__)
@@ -107,38 +106,43 @@ def fetch_sla_and_status(base_url: str, auth: tuple[str, str], issue_key: str) -
         return None
 
 
-def find_open_issues(parquet_dir: Path) -> list[str]:
-    """
-    Read Parquet issues and return keys of open tickets (status_category != 'Done').
+def find_open_issues(parquet_dir: Path) -> tuple[list[str], int]:
+    """Open-ticket keys from the issues parquets, plus the unreadable-file count.
 
-    Open tickets are the ones whose field values can still change, so they are the
-    ones worth re-fetching each poll cycle.
+    Skipping an unreadable partition is right for making progress — the other
+    months' tickets still get polled — but it silently removes every open
+    ticket of that month from the working set, so their raw JSON stops being
+    refreshed and their SLA data goes stale at the source. The count exists so
+    `run()` can fold that into `failed` instead of the poll getting faster and
+    greener as the hole grows.
     """
     issues_dir = parquet_dir / "issues"
     if not issues_dir.exists():
         logger.error(f"Issues Parquet directory not found: {issues_dir}")
-        return []
+        return [], 0
 
     # Recursive: matches both flat (<table>/<YYYY-MM>.parquet) and hive
     # (<table>/month=<YYYY-MM>/data.parquet) Jira parquet layouts.
     parquet_files = sorted(issues_dir.rglob("*.parquet"))
     if not parquet_files:
         logger.error(f"No Parquet files found in {issues_dir}")
-        return []
+        return [], 0
 
     logger.info(f"Reading {len(parquet_files)} Parquet files from {issues_dir}")
 
     columns = ["issue_key", "status_category"]
     dfs = []
+    unreadable = 0
     for pf in parquet_files:
         try:
             df = pd.read_parquet(pf, columns=columns)
             dfs.append(df)
         except Exception as e:
-            logger.warning(f"Failed to read {pf}: {e}")
+            unreadable += 1
+            logger.error(f"Failed to read {pf} — its open tickets are not being polled: {e}")
 
     if not dfs:
-        return []
+        return [], unreadable
 
     all_issues = pd.concat(dfs, ignore_index=True)
     logger.info(f"Total issues in Parquet: {len(all_issues)}")
@@ -146,7 +150,7 @@ def find_open_issues(parquet_dir: Path) -> list[str]:
     open_issues = all_issues[all_issues["status_category"] != "Done"]
     issue_keys = open_issues["issue_key"].tolist()
     logger.info(f"Open issues: {len(issue_keys)}")
-    return issue_keys
+    return issue_keys, unreadable
 
 
 def update_issue_sla(
@@ -242,17 +246,13 @@ def update_issue_sla(
                 pass
             raise
 
-        # Re-transform to Parquet (inside lock to prevent stale reads).
-        # `raw_dir` is the directory this function just wrote the JSON into; without
-        # it the transform resolves `$DATA_DIR/extracts/<source>/raw` instead and
-        # fails with "Issue JSON not found" wherever that differs from JIRA_DATA_DIR
-        # — the same reader/writer split fixed on the webhook path. `output_dir`
-        # stays unset on purpose: its default is the served extract layout, while
-        # this module's `parquet_dir` is the legacy Data Broker root.
-        success = transform_single_issue(issue_key=issue_key, raw_dir=raw_dir)
-        if not success:
-            logger.error(f"Failed to transform {issue_key} after field refresh")
-            return "failed"
+        # The parquet write is deliberately NOT done here. `run()` batches it:
+        # it groups the whole poll by month and applies each month in one
+        # read-modify-write per table (`transform_issues`). The JSON above is
+        # durable and is exactly what that pass reads, so nothing is lost by
+        # returning now — and this issue's lock is released before any month lock
+        # is taken, which is what keeps `file_lock.py`'s documented
+        # issue(outer) -> month(inner) nesting intact.
 
     return "healed" if is_healed else "updated"
 
@@ -295,40 +295,70 @@ def run(dry_run: bool = False, verbose: bool = False) -> dict:
             "dry_run": dry_run,
         }
 
-    open_issues = find_open_issues(parquet_dir)
+    open_issues, unreadable_partitions = find_open_issues(parquet_dir)
+
+    stats = {
+        "open_issues": len(open_issues),
+        "updated": 0,
+        "healed": 0,
+        "skipped": 0,
+        # Unreadable partitions removed their open tickets from the working set,
+        # where the refreshed-minus-written delta below can never see them —
+        # they are failures from the start, and dry runs report them too.
+        # (`find_open_issues` already named each file at ERROR.)
+        "failed": unreadable_partitions,
+        "elapsed_sec": 0.0,
+        "dry_run": dry_run,
+    }
 
     if not open_issues:
         logger.info("No open issues found")
-        return {
-            "open_issues": 0,
-            "updated": 0,
-            "healed": 0,
-            "skipped": 0,
-            "failed": 0,
-            "elapsed_sec": 0.0,
-            "dry_run": dry_run,
-        }
+        return stats
 
     if dry_run:
         logger.info(f"Dry run: would poll {len(open_issues)} open issues")
-        return {
-            "open_issues": len(open_issues),
-            "updated": 0,
-            "healed": 0,
-            "skipped": 0,
-            "failed": 0,
-            "elapsed_sec": 0.0,
-            "dry_run": True,
-        }
+        return stats
 
-    stats = {"updated": 0, "skipped": 0, "failed": 0, "healed": 0}
     start_time = time.time()
 
+    # Phase 1 — refresh each ticket's raw JSON. No parquet is touched here, so the
+    # only lock held is that issue's own `issue_json_lock`.
+    refreshed: list[str] = []
     for i, issue_key in enumerate(sorted(open_issues), 1):
         logger.info(f"[{i}/{len(open_issues)}] Polling {issue_key}...")
         result = update_issue_sla(issue_key, raw_dir, base_url, auth)
         stats[result] += 1
+        if result in ("updated", "healed"):
+            refreshed.append(issue_key)
         time.sleep(0.5)  # gentle on the Jira API
+
+    # Phase 2 — land them, one read-modify-write per table per month.
+    #
+    # This used to run inside phase 1: every ticket called `transform_single_issue`,
+    # which rewrites its month's SIX partitions in full. A month holding N polled
+    # tickets was therefore rewritten N times per cycle, re-emitting bytes the
+    # previous ticket had just written — the dominant cost of a poll, and enough
+    # churn that `sync_state`'s hashes could never settle against it.
+    #
+    # `transform_issues` derives each issue's month from its own `created_at` and
+    # does the grouping itself. It is deliberately not this module's job: `month`
+    # is a hive DIRECTORY key, never a column in the parquet, so there is nothing
+    # here to read it back from.
+    written = transform_issues(refreshed, raw_dir=raw_dir)
+    # Set-based, not length-based: `find_open_issues` concats every parquet file
+    # without dedup, the same key legitimately sits in two partitions, and
+    # `transform_issues` dedups — a length delta would read that as a permanent
+    # phantom failure. `written` is a subset of `refreshed`, so this is exactly
+    # the tickets whose parquet write did not land; the per-month isolation
+    # already logged why, and this fold is the only failure signal left.
+    unapplied = len(set(refreshed) - set(written))
+    if unapplied:
+        stats["failed"] += unapplied
+        logger.error(
+            f"{unapplied} refreshed ticket(s) did not land in parquet — see 'Could not apply month' errors above"
+        )
+    if refreshed:
+        logger.info(f"Applied {len(written)} of {len(refreshed)} refreshed ticket(s)")
 
     elapsed = time.time() - start_time
 
@@ -374,15 +404,8 @@ def run(dry_run: bool = False, verbose: bool = False) -> dict:
     logger.info(f"Time: {elapsed:.1f}s")
     logger.info("=" * 60)
 
-    return {
-        "open_issues": len(open_issues),
-        "updated": stats["updated"],
-        "healed": stats["healed"],
-        "skipped": stats["skipped"],
-        "failed": stats["failed"],
-        "elapsed_sec": elapsed,
-        "dry_run": False,
-    }
+    stats["elapsed_sec"] = elapsed
+    return stats
 
 
 def main():
