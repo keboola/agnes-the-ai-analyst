@@ -1,0 +1,551 @@
+"""Interactive `agnes query --remote` execution against a Databricks SQL warehouse.
+
+Phase 1 gave Databricks rows one shape only: ``query_mode='materialized'`` —
+the scheduler runs the registered SQL on the warehouse and writes a parquet
+that everything downstream reads locally. That is the right default (cheap,
+cached, distributable) but it cannot answer an ad-hoc question about a table
+nobody materialized, and it cannot run ``MEASURE()`` at all, since a Unity
+Catalog metric view only evaluates on Databricks compute.
+
+This module is the other half: the analyst's statement ships to the warehouse
+as-is and the rows come back. It mirrors what ``app/api/query.py`` does for
+BigQuery — registry gating, RBAC, name rewrite, cost cap — with one structural
+difference that shapes the whole file.
+
+Cost control differs from BigQuery, on purpose
+----------------------------------------------
+BigQuery prices a statement *before* running it (``dry_run``), so Agnes refuses
+an over-cap query without spending anything. The Databricks Statement Execution
+API has no dry-run primitive. What it has is ``byte_limit``: the warehouse stops
+*producing result bytes* past the cap and flags the manifest ``truncated``.
+
+So the guarantee here is narrower and is stated plainly to the analyst: the cap
+bounds what comes back, not what the warehouse scanned to produce it. A
+truncated result is refused outright (never returned as if it were the answer)
+and the analyst is pointed at a filtered materialized table instead. Compute on
+the warehouse is bounded by the statement timeout, which is the other half of
+the guardrail.
+"""
+
+from __future__ import annotations
+
+import logging
+import re
+from typing import Any, Dict, List, Optional, Sequence, Tuple
+
+from src.remote_engines import mask_backticks, name_reference_re, qualified_path_re, rewrite_bare_names
+
+logger = logging.getLogger(__name__)
+
+#: Pseudo-catalog an analyst may type to address a Databricks table directly:
+#: ``dbx."<catalog>.<schema>"."<table>"``. Registry-gated exactly like ``bq.*``.
+PATH_PREFIX = "dbx"
+
+#: Unity Catalog names are permissive (spaces, dashes, unicode) but Agnes only
+#: rewrites what it can quote unambiguously. Anything outside this alphabet has
+#: to be reached through a registered materialized row instead of a bare name.
+_SAFE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_]+$")
+
+
+class DatabricksRemoteError(Exception):
+    """A typed failure the API layer turns into an HTTP response.
+
+    Carries the structured ``detail`` shape the CLI already knows how to read
+    (``reason`` + ``hint``), so ``agnes query`` prints a next step rather than a
+    stack trace.
+    """
+
+    def __init__(self, reason: str, message: str, *, status: int = 400, **extra: Any):
+        self.reason = reason
+        self.message = message
+        self.status = status
+        self.extra = extra
+        super().__init__(message)
+
+    def detail(self) -> dict:
+        return {"reason": self.reason, "message": self.message, **self.extra}
+
+
+# ---------------------------------------------------------------------------
+# Identifier plumbing
+# ---------------------------------------------------------------------------
+
+
+def quote_dbx_path(catalog: str, schema: str, table: str) -> str:
+    """Backtick-quote a three-part Unity Catalog path.
+
+    Raises :class:`DatabricksRemoteError` on a segment the safe alphabet does
+    not cover: a backtick inside an identifier would let a crafted registry row
+    (admin-registered, but still) break out of the quoting and append arbitrary
+    SQL to every query that names it. Refusing beats escaping here because the
+    registry row is fixable and the blast radius of a mistake is the whole
+    workspace.
+    """
+    for label, segment in (("catalog", catalog), ("schema", schema), ("table", table)):
+        if not segment or not _SAFE_SEGMENT_RE.match(segment):
+            raise DatabricksRemoteError(
+                "databricks_unsafe_identifier",
+                f"registered Databricks {label} segment {segment!r} contains characters Agnes will not "
+                "inline into SQL; register the table with a materialized source_query instead.",
+                status=400,
+            )
+    return f"`{catalog}`.`{schema}`.`{table}`"
+
+
+def row_target(row: dict, default_catalog: str) -> Tuple[str, str, str]:
+    """``(catalog, schema, table)`` for a registry row.
+
+    ``bucket`` is the schema inside the configured default catalog; a dotted
+    ``catalog.schema`` bucket pins its own catalog — the same rule the
+    materialized extractor's ``split_bucket`` applies, kept identical so a row
+    means one physical table regardless of which path reads it.
+    """
+    from connectors.databricks.extractor import split_bucket
+
+    catalog, schema = split_bucket(str(row.get("bucket") or ""), default_catalog)
+    return catalog, schema, str(row.get("source_table") or "")
+
+
+# ---------------------------------------------------------------------------
+# Registry gate + RBAC
+# ---------------------------------------------------------------------------
+
+
+def _resolved_targets(rows: Sequence[dict], default_catalog: str) -> Dict[Tuple[str, str, str], dict]:
+    """``{(catalog, schema, table): row}`` for every registered remote row."""
+    out: Dict[Tuple[str, str, str], dict] = {}
+    for r in rows:
+        if not (r.get("bucket") and r.get("source_table")):
+            continue
+        catalog, schema, table = row_target(r, default_catalog)
+        out[(catalog.lower(), schema.lower(), table.lower())] = r
+    return out
+
+
+def _gate_table_references(
+    sql: str,
+    rows: Sequence[dict],
+    *,
+    accessible: Optional[set],
+    is_admin: bool,
+    default_catalog: str,
+) -> Optional[dict]:
+    """Refuse the statement unless EVERY table it names is registered + granted.
+
+    This is the security boundary of the whole remote path, and a regex over
+    identifiers cannot hold it. The statement executes on the warehouse under
+    Agnes's service PAT, which can typically read the entire workspace — so a
+    reference Agnes does not recognise is not a broken query, it is a read
+    Agnes never authorised.
+
+    The concrete attack the bare-name/`dbx.*` regex passes let through: a
+    fully-qualified path riding along with a legitimate one.
+
+        SELECT * FROM orders JOIN `main`.`hr`.`payroll` USING (id)
+
+    ``orders`` is registered, so the statement routes to Databricks; the
+    backticked path is left verbatim by the rewriter (correctly — it is
+    already warehouse-native) and the warehouse happily reads ``payroll``
+    under the service PAT. Same for a bare two-part ``hr.payroll``, which the
+    warehouse resolves against its default catalog. Neither shape is a name
+    the registry ever saw, which is exactly why enumerating shapes is the
+    wrong defence: the rule has to be "everything is refused unless
+    recognised", not "these spellings are refused".
+
+    So the statement is parsed (sqlglot, ``databricks`` dialect) and every
+    ``exp.Table`` must resolve to a registered row the caller may read. CTE
+    names defined in the same statement are legal references and are skipped.
+
+    A statement sqlglot cannot parse is REFUSED, not waved through: an
+    unparseable statement is precisely the one whose references cannot be
+    checked. Returns a structured detail dict, or ``None`` when everything
+    resolves.
+    """
+    import sqlglot
+    from sqlglot import exp
+
+    try:
+        tree = sqlglot.parse_one(sql, dialect="databricks")
+    except Exception as e:
+        logger.info("databricks remote gate: unparseable statement refused (%s)", e)
+        return {
+            "reason": "databricks_sql_unparseable",
+            "message": (
+                "Agnes could not parse this statement, so it cannot verify which Databricks "
+                "tables it reads — and it runs under a workspace credential that can see more "
+                "than you can. Refused."
+            ),
+            "hint": "Simplify the statement, or register the tables it needs and reference them by name.",
+        }
+    if tree is None:
+        return {
+            "reason": "databricks_sql_unparseable",
+            "message": "Agnes could not parse this statement.",
+            "hint": "Simplify the statement, or register the tables it needs and reference them by name.",
+        }
+
+    cte_names = {c.alias_or_name.lower() for c in tree.find_all(exp.CTE) if c.alias_or_name}
+    by_name = {str(r["name"]).lower(): r for r in rows if r.get("name")}
+    by_target = _resolved_targets(rows, default_catalog)
+
+    for tbl in tree.find_all(exp.Table):
+        name = (tbl.name or "").lower()
+        db = (tbl.db or "").lower()
+        catalog = (tbl.catalog or "").lower()
+        if not name:
+            continue
+
+        # A bare reference may be a CTE defined in this same statement.
+        if not db and not catalog and name in cte_names:
+            continue
+
+        display = ".".join(p for p in (tbl.catalog, tbl.db, tbl.name) if p)
+        row = None
+        qualified = True
+        if not db and not catalog:
+            row = by_name.get(name)
+            qualified = False
+        elif catalog == PATH_PREFIX:
+            # dbx."<bucket>"."<table>" — `bucket` follows the same rule as on a
+            # registry row (a dotted bucket pins its own catalog), so resolve it
+            # with the same helper rather than a second copy of the convention.
+            from connectors.databricks.extractor import split_bucket
+
+            bucket_catalog, bucket_schema = split_bucket(db, default_catalog)
+            row = by_target.get((bucket_catalog.lower(), bucket_schema.lower(), name))
+        else:
+            row = by_target.get(((catalog or default_catalog).lower(), db, name))
+
+        if row is None:
+            return {
+                "reason": "databricks_table_not_registered",
+                "table": display,
+                "message": (
+                    f"'{display}' is not a registered Databricks table. Remote statements may only "
+                    "reference tables registered in Agnes — the query runs under a workspace "
+                    "credential whose reach is wider than yours."
+                ),
+                "hint": (
+                    "Register it with `agnes admin register-table --source-type databricks "
+                    "--query-mode remote --bucket <schema> --source-table <table>`, or use the "
+                    "registered name from `agnes catalog`."
+                ),
+            }
+
+        # Grant check. A qualified path honours the admin bypass exactly like
+        # BigQuery's direct-path pass; a bare name never needs it, because a
+        # full-surface admin arrives with `accessible is None`.
+        if qualified and is_admin:
+            continue
+        if accessible is not None and row.get("id") not in accessible:
+            return {
+                "reason": "databricks_access_denied",
+                "table": display,
+                "registered_as": row.get("name"),
+                "message": f"You do not have access to the Databricks table '{row.get('name')}'.",
+            }
+
+    return None
+
+
+def guardrail_inputs(
+    sql: str,
+    sql_lower: str,
+    *,
+    allowed: Optional[Sequence[str]],
+    is_admin: bool,
+    default_catalog: str,
+) -> Tuple[List[Tuple[str, str, str, str]], Optional[dict]]:
+    """Gate every Databricks reference in ``sql``; return the rewrite table.
+
+    Returns ``(name_lookups, blocked)``:
+
+    - ``name_lookups`` — ``(registered_name, catalog, schema, table)`` per
+      referenced remote row, feeding :func:`rewrite_to_native`.
+    - ``blocked`` — a structured 403 detail when the statement names a table
+      Agnes does not recognise or the caller may not read; ``None`` when
+      everything checks out. See :func:`_gate_table_references` for why that
+      check is a parse and not a set of regexes.
+
+    ``allowed`` is ``get_accessible_tables(...)`` — registry **ids**, not
+    display names (they diverge whenever ``id != name``), so the grant check
+    keys on ``row["id"]`` while the SQL match keys on ``row["name"]``.
+
+    ``is_admin`` must already account for restricted principals: an agent or
+    co-session principal is never admin even when its owner is. The caller
+    resolves that; this function only consumes the answer.
+    """
+    from src.repositories import table_registry_repo
+
+    repo = table_registry_repo()
+    rows = [r for r in repo.list_by_source("databricks") if (r.get("query_mode") or "") == "remote"]
+
+    accessible = set(allowed) if allowed is not None else None
+
+    # The gate: every table this statement names must be registered and
+    # readable by the caller. Runs first — nothing below it is a security
+    # decision, and a reference the gate does not recognise never reaches the
+    # warehouse.
+    blocked = _gate_table_references(
+        sql,
+        rows,
+        accessible=accessible,
+        is_admin=is_admin,
+        default_catalog=default_catalog,
+    )
+    if blocked is not None:
+        return [], blocked
+
+    # The rewrite table. Regex over the raw SQL rather than the parse tree,
+    # because the substitution itself is positional (`rewrite_bare_names`
+    # rewrites text, and sqlglot would reformat the statement and drop the
+    # analyst's comments if we round-tripped through it). Safe to be
+    # approximate here in a way it would NOT be above: the gate has already
+    # established that every reference is registered and granted, so the worst
+    # a missed match costs is an unresolved name the warehouse rejects.
+    #
+    # Every matching row is recorded, not de-duplicated by physical target:
+    # two registry rows may alias the same Unity Catalog table under different
+    # names, and the rewriter needs an entry for each name.
+    sql_lower_masked = mask_backticks(sql_lower)
+    name_lookups: List[Tuple[str, str, str, str]] = []
+    for r in rows:
+        name = r.get("name")
+        if not (name and r.get("bucket") and r.get("source_table")):
+            continue
+        if accessible is not None and r.get("id") not in accessible:
+            continue
+        if name_reference_re(str(name).lower()).search(sql_lower_masked):
+            catalog, schema, table = row_target(r, default_catalog)
+            name_lookups.append((str(name), catalog, schema, table))
+
+    return name_lookups, None
+
+
+def rewrite_to_native(sql: str, name_lookups: Sequence[Tuple[str, str, str, str]], default_catalog: str) -> str:
+    """Rewrite analyst SQL into what the warehouse should run.
+
+    Two substitutions, both confined to outside-backtick text so a caller who
+    already wrote a fully-qualified path is left alone:
+
+    1. registered bare name → `` `catalog`.`schema`.`table` ``
+    2. ``dbx."<catalog>.<schema>"."<table>"`` → the same backticked form
+
+    Everything else — CTEs, window functions, ``MEASURE()`` over a metric view
+    — passes through untouched, because Databricks SQL *is* the target dialect
+    here. That is the point of the remote path: no transpilation, no DuckDB
+    semantics leaking in, so a query an analyst tested in the Databricks UI
+    behaves identically through Agnes.
+    """
+    name_to_target = {
+        name.lower(): quote_dbx_path(catalog, schema, table) for name, catalog, schema, table in name_lookups
+    }
+    out = rewrite_bare_names(sql, name_to_target)
+
+    def _path_repl(m: "re.Match") -> str:
+        bucket_raw = m.group(1).strip('"')
+        table_raw = m.group(2).strip('"')
+        if "." in bucket_raw:
+            catalog, _, schema = bucket_raw.partition(".")
+        else:
+            catalog, schema = default_catalog, bucket_raw
+        return quote_dbx_path(catalog, schema, table_raw)
+
+    return qualified_path_re(PATH_PREFIX).sub(_path_repl, out)
+
+
+# ---------------------------------------------------------------------------
+# Execution
+# ---------------------------------------------------------------------------
+
+
+#: Databricks SQL flavor cues for `agnes schema`, so an agent writing a
+#: predicate for a remote row does not reach for DuckDB or BigQuery syntax.
+DIALECT_HINTS = {
+    "date_literal": "DATE '2026-01-01'",
+    "timestamp_literal": "TIMESTAMP '2026-01-01 00:00:00'",
+    "interval_subtract": "DATE_SUB(CURRENT_DATE(), 30)",
+    "regex": "col RLIKE 'pattern'",
+    "cast": "CAST(x AS BIGINT)",
+}
+
+
+def fetch_schema(
+    row: dict,
+    *,
+    settings: Dict[str, Any],
+    timeout_s: float = 60.0,
+    client: Any = None,
+) -> List[Dict[str, Any]]:
+    """Column list for one remote row, read from Unity Catalog.
+
+    Without this, ``agnes schema <table>`` 404s on a remote Databricks row —
+    it has no parquet to describe — and the documented agent rails ("run
+    ``agnes schema`` before writing any query") send every agent into a dead
+    end on exactly the tables where guessing a column name is most expensive.
+
+    One bounded ``information_schema.columns`` query through the INLINE
+    disposition; the result is a column list, so it cannot outgrow the inline
+    limit in any realistic schema.
+    """
+    from connectors.databricks.client import DatabricksApiError, DatabricksStatementClient
+
+    catalog, schema, table = row_target(row, str(settings.get("catalog") or ""))
+    # Validate before interpolating, then bind as parameters anyway: the values
+    # are admin-controlled, not analyst-controlled, but a registry row is still
+    # the kind of thing that gets edited by hand at 2am.
+    quote_dbx_path(catalog, schema, table)
+
+    if client is None:
+        client = DatabricksStatementClient(
+            host=settings["host"],
+            token=settings["token"],
+            warehouse_id=settings["warehouse_id"],
+        )
+    sql = (
+        "SELECT column_name, full_data_type, is_nullable, comment "
+        f"FROM `{catalog}`.information_schema.columns "
+        f"WHERE table_schema = '{schema}' AND table_name = '{table}' "
+        "ORDER BY ordinal_position"
+    )
+    try:
+        _cols, rows = client.execute_rows(sql, timeout_s=timeout_s)
+    except DatabricksApiError as exc:
+        raise DatabricksRemoteError(
+            "databricks_schema_unavailable",
+            f"Could not read the Databricks schema for {catalog}.{schema}.{table}: {exc}",
+            status=502,
+        ) from exc
+
+    return [
+        {
+            "name": r[0],
+            "type": (r[1] or "").upper(),
+            "nullable": str(r[2]).upper() in ("YES", "TRUE"),
+            "description": r[3] or "",
+        }
+        for r in rows
+    ]
+
+
+def wrap_with_limit(sql: str, limit: int) -> str:
+    """Bound the result set the warehouse is asked to produce.
+
+    ``/api/query`` returns at most ``limit`` rows anyway, so shipping an
+    unbounded ``SELECT *`` and truncating locally would pay full egress for
+    rows nobody sees. ``limit + 1`` preserves the endpoint's existing
+    "truncated" signal: getting N+1 back is how the caller knows more exist.
+
+    The outer wrap is legal Spark SQL for any SELECT, including one that
+    already carries its own ``LIMIT`` (the inner limit simply wins when it is
+    smaller).
+    """
+    return f"SELECT * FROM (\n{sql}\n) AS agnes_remote_q LIMIT {int(limit)}"
+
+
+def execute_select(
+    sql: str,
+    *,
+    settings: Dict[str, Any],
+    limit: int,
+    cap_bytes: int,
+    timeout_s: float,
+    client: Any = None,
+) -> Tuple[List[str], List[List[Any]], bool, int]:
+    """Run a Databricks-native SELECT; return ``(columns, rows, truncated, bytes)``.
+
+    ``truncated`` means "more rows exist than were returned" — the same signal
+    ``/api/query`` reports for a local query — and is derived from the ``limit
+    + 1`` probe row, which is dropped before returning.
+
+    A ``byte_limit`` truncation is a different thing entirely and never reaches
+    the caller as data: it raises ``remote_scan_too_large``. Returning a
+    silently shortened result would be the worst possible failure mode for an
+    analyst — a plausible number that is simply wrong.
+
+    ``client`` is injectable for tests; production builds one from ``settings``.
+    """
+    from connectors.databricks.client import (
+        DatabricksApiError,
+        DatabricksStatementClient,
+        DatabricksStatementTimeoutError,
+    )
+
+    if client is None:
+        client = DatabricksStatementClient(
+            host=settings["host"],
+            token=settings["token"],
+            warehouse_id=settings["warehouse_id"],
+        )
+
+    statement = wrap_with_limit(sql, limit + 1)
+    try:
+        result = client.execute_to_arrow_batches(
+            statement,
+            byte_limit=cap_bytes if cap_bytes and cap_bytes > 0 else None,
+            timeout_s=timeout_s,
+        )
+    except DatabricksStatementTimeoutError as exc:
+        raise DatabricksRemoteError(
+            "remote_statement_timeout",
+            f"The Databricks statement did not finish within {timeout_s:.0f}s and was cancelled.",
+            status=504,
+            hint=(
+                "Narrow the query, or register it as a materialized table so the "
+                "scheduler runs it off the interactive path."
+            ),
+        ) from exc
+    except DatabricksApiError as exc:
+        # Databricks classifies user SQL errors as 400s. Anything else is the
+        # workspace's problem, not the analyst's, and must not read like a
+        # syntax error in their query.
+        status = 400 if (exc.status or 0) < 500 else 502
+        raise DatabricksRemoteError(
+            "databricks_query_failed" if status == 400 else "databricks_upstream_error",
+            str(exc),
+            status=status,
+        ) from exc
+
+    if result.truncated:
+        raise DatabricksRemoteError(
+            "remote_scan_too_large",
+            (
+                f"The Databricks result exceeded the {cap_bytes:,}-byte remote-query cap "
+                "and was refused (a truncated result is not an answer)."
+            ),
+            status=400,
+            cap_bytes=cap_bytes,
+            hint=(
+                "Add a narrower WHERE / fewer columns, or register the query as a "
+                "materialized table (`agnes admin register-table --query-mode materialized`) "
+                "so it syncs on a schedule instead."
+            ),
+        )
+
+    columns: List[str] = [str(c.get("name", "")) for c in result.schema_columns]
+    rows: List[List[Any]] = []
+    # Fetching happens lazily inside the loop — each chunk's presigned link is
+    # resolved and downloaded as it is reached, and those links expire in
+    # minutes — so transport failures surface HERE, not from the submit call
+    # above. Translating them is not optional: an unwrapped DatabricksApiError
+    # escapes as a 500 with a raw vendor message.
+    try:
+        for batch in result.iter_batches():
+            if not columns:
+                columns = list(batch.schema.names)
+            if batch.num_columns:
+                rows.extend(list(r) for r in zip(*[col.to_pylist() for col in batch.columns]))
+            if len(rows) > limit:
+                # Stop pulling chunks the caller will never see. The remaining
+                # presigned links are simply left unfetched.
+                break
+    except DatabricksApiError as exc:
+        raise DatabricksRemoteError(
+            "databricks_result_fetch_failed",
+            f"The Databricks statement succeeded but its result could not be fetched: {exc}",
+            status=502,
+            hint="Retry the query; presigned result links are short-lived.",
+        ) from exc
+
+    truncated = len(rows) > limit
+    return columns, rows[:limit], truncated, int(result.total_byte_count or 0)
