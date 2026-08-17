@@ -905,7 +905,7 @@ async def privacy_page(request: Request):
     Every connector directory asks for a privacy policy URL and fetches it
     without credentials; an unreachable one is an automatic rejection. The
     same content already existed as ``/how-it-works#privacy``, but that route
-    is behind ``get_current_user``, so handing out that anchor produced a
+    requires a signed-in session, so handing out that anchor produced a
     login redirect rather than a policy.
 
     Two shapes, one URL. When the operator has published their own policy
