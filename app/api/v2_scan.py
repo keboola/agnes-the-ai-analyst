@@ -686,16 +686,32 @@ def _databricks_estimate_timeout_s() -> float:
     return float(get_value("data_source", "databricks", "remote_query_timeout_seconds", default=120) or 120)
 
 
-def _databricks_scan_timeout_s() -> float:
-    """Statement timeout for the scan path.
+def _databricks_scan_timeout_s() -> float | None:
+    """Statement timeout for the scan path; `None` means no deadline.
 
     Deliberately NOT `data_source.databricks.remote_query_timeout_seconds`
     (default 120), which bounds an *interactive* answer someone is waiting on.
     A snapshot fetch is a materialize — the analyst expects it to take a while
     — so it gets its own, longer budget, and the byte cap remains the control
     that bounds size.
+
+    `0` disables the deadline, exactly as it does on the materialize knob
+    (`app/api/sync.py`) and as the admin hint promises — hence the explicit
+    unset-vs-zero handling instead of an `or 900.0` fallback, which made the
+    one value an operator reaches for when a long-but-legitimate snapshot
+    keeps getting cancelled silently collapse back to the default.
     """
-    return float(get_value("data_source", "databricks", "scan_timeout_seconds", default=900.0) or 900.0)
+    raw = get_value("data_source", "databricks", "scan_timeout_seconds", default=900.0)
+    try:
+        t = float(raw) if raw is not None else 900.0
+    except (TypeError, ValueError):
+        logger.warning(
+            "data_source.databricks.scan_timeout_seconds is not numeric (%r); "
+            "using the 900s default. Set a number of seconds or 0 to disable.",
+            raw,
+        )
+        t = 900.0
+    return t if t > 0 else None
 
 
 def _run_bq_scan(bq: BqAccess, sql: str, *, user: dict | None = None) -> tuple[pa.Table, dict]:

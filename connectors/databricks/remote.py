@@ -496,7 +496,7 @@ def _build_client(settings: Dict[str, Any]) -> Any:
     )
 
 
-def _translate_submit_failure(exc: Exception, *, timeout_s: float) -> "DatabricksRemoteError":
+def _translate_submit_failure(exc: Exception, *, timeout_s: Optional[float]) -> "DatabricksRemoteError":
     """Map a client-level failure onto the typed error the API layer renders.
 
     Shared by the interactive (``execute_select``) and materialize
@@ -507,9 +507,13 @@ def _translate_submit_failure(exc: Exception, *, timeout_s: float) -> "Databrick
     from connectors.databricks.client import DatabricksApiError, DatabricksStatementTimeoutError
 
     if isinstance(exc, DatabricksStatementTimeoutError):
+        # `timeout_s` is None when the caller disabled the deadline (`0` in
+        # config), which makes this branch unreachable — but formatting None
+        # raises, so take the deadline the exception itself carries.
+        fired_at = float(getattr(exc, "timeout_s", None) or timeout_s or 0.0)
         return DatabricksRemoteError(
             "remote_statement_timeout",
-            f"The Databricks statement did not finish within {timeout_s:.0f}s and was cancelled.",
+            f"The Databricks statement did not finish within {fired_at:.0f}s and was cancelled.",
             status=504,
             hint=(
                 "Narrow the query, or register it as a materialized table so the "
@@ -551,7 +555,7 @@ def execute_scan_to_arrow(
     *,
     settings: Dict[str, Any],
     cap_bytes: int,
-    timeout_s: float,
+    timeout_s: Optional[float],
     parameters: Optional[List[Dict[str, Any]]] = None,
     client: Any = None,
 ):

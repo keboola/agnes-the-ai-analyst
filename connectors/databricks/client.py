@@ -61,7 +61,7 @@ class DatabricksStatementTimeoutError(DatabricksApiError):
     deadline. The client cancels the statement best-effort before raising so
     the warehouse doesn't keep burning on a result nobody will read."""
 
-    def __init__(self, statement: str, *, timeout_s: float):
+    def __init__(self, statement: str, *, timeout_s: Optional[float]):
         self.timeout_s = timeout_s
         super().__init__(
             f"Databricks statement exceeded {timeout_s}s (cancelled): {statement[:80]!r}",
@@ -177,7 +177,7 @@ class DatabricksStatementClient:
         catalog: Optional[str] = None,
         schema: Optional[str] = None,
         byte_limit: Optional[int] = None,
-        timeout_s: float = 900.0,
+        timeout_s: Optional[float] = 900.0,
         parameters: Optional[List[Dict[str, Any]]] = None,
     ) -> "ArrowResult":
         """Run a bulk statement; return an :class:`ArrowResult` whose
@@ -249,7 +249,11 @@ class DatabricksStatementClient:
             payload["parameters"] = list(parameters)
         return payload
 
-    def _run_to_terminal(self, payload: Dict[str, Any], statement: str, *, timeout_s: float) -> Dict[str, Any]:
+    def _run_to_terminal(
+        self, payload: Dict[str, Any], statement: str, *, timeout_s: Optional[float]
+    ) -> Dict[str, Any]:
+        # `None` and `0` both mean "no deadline" — the disable value every
+        # Databricks timeout knob documents.
         deadline = time.monotonic() + timeout_s if timeout_s and timeout_s > 0 else None
         doc = self._post_json(_STATEMENTS_PATH, payload)
         while True:

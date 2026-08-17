@@ -1279,9 +1279,7 @@ class TestSqlglotCoupling:
         import sqlglot
         from sqlglot import exp
 
-        tree = sqlglot.parse_one(
-            "SELECT * FROM t WHERE ARRAY_CONTAINS(:user_groups, region)", dialect="databricks"
-        )
+        tree = sqlglot.parse_one("SELECT * FROM t WHERE ARRAY_CONTAINS(:user_groups, region)", dialect="databricks")
         placeholders = [n for n in tree.find_all(exp.Placeholder)]
         assert placeholders, "sqlglot no longer parses :name as a Placeholder in the databricks dialect"
         assert [p.name for p in placeholders] == ["user_groups"]
@@ -1302,3 +1300,114 @@ class TestSqlglotCoupling:
         found, the group filter must NOT silently vanish."""
         with pytest.raises(DatabricksPolicyBindingError):
             bind_policy_parameters("SELECT * FROM t WHERE 1 = 1", {"user_groups": ["eu-team"]})
+
+
+# ---------------------------------------------------------------------------
+# 6. Fourth review round
+# ---------------------------------------------------------------------------
+
+
+class TestFourthReviewRound:
+    """Two findings from a fourth pass, both "the code is one guard short":
+    a disable knob that could not disable, and a rewrite that reached one
+    token further than it should.
+    """
+
+    def test_zero_scan_timeout_disables_the_deadline(self, monkeypatch):
+        """`0` disables on every sibling Databricks timeout — the materialize
+        one maps it to `None` (`app/api/sync.py`), and the client reads `None`
+        as "no deadline". The scan knob read its value with `or 900.0`, so a
+        configured `0` was falsy and collapsed straight back to the default:
+        the one setting an operator reaches for when a legitimately long
+        snapshot keeps getting cancelled silently did nothing.
+        """
+        from app.api import v2_scan
+
+        def _fake_get_value(*keys, default=None):
+            if keys[-1] == "scan_timeout_seconds":
+                return 0
+            return default
+
+        monkeypatch.setattr(v2_scan, "get_value", _fake_get_value)
+        assert v2_scan._databricks_scan_timeout_s() is None
+
+    def test_a_disabled_scan_timeout_reaches_the_client_as_no_deadline(self):
+        """...and the `None` has to survive the call site. The scan path hands
+        `timeout_s` straight to the statement client, whose `_run_to_terminal`
+        builds a deadline only for a positive value — so an unconverted `0`
+        or a coerced `900.0` here would silently re-arm the deadline.
+        """
+        import pyarrow as pa
+
+        from connectors.databricks.remote import execute_scan_to_arrow
+
+        seen: dict = {}
+
+        class _FakeResult:
+            truncated = False
+            schema_columns = [{"name": "n", "type_name": "LONG"}]
+
+            def iter_batches(self):
+                return iter([pa.record_batch({"n": pa.array([1])})])
+
+        class _FakeClient:
+            def execute_to_arrow_batches(self, statement, **kwargs):
+                seen.update(kwargs)
+                return _FakeResult()
+
+        table = execute_scan_to_arrow(
+            "SELECT 1 AS n",
+            settings={},
+            cap_bytes=0,
+            timeout_s=None,
+            client=_FakeClient(),
+        )
+        assert table.num_rows == 1
+        assert seen["timeout_s"] is None
+
+    def test_the_disable_wording_is_documented_next_to_the_knob(self):
+        """An operator only learns `0` disables from the admin hint; its
+        siblings all say so."""
+        from app.api.admin import _KNOWN_FIELDS
+
+        field = _KNOWN_FIELDS["data_source"]["databricks"]["fields"]["scan_timeout_seconds"]
+        assert "0 disables" in field["hint"]
+
+    def test_policy_body_column_qualifier_is_not_turned_into_a_path(self, seeded_app):
+        """A policy body may qualify its columns with the table name — the
+        save-time validator permits it — and the body rewrite replaced EVERY
+        occurrence of the policied row's registered name, qualifiers included.
+        `SELECT orders_raw.country FROM orders_raw` became
+        ``SELECT `main`.`sales`.`orders_raw`.country FROM …``: a four-part
+        column reference the warehouse has no reason to resolve.
+
+        The outer pass already excludes the policied name for exactly this
+        class of hazard (an alias in that position is a syntax error); the
+        body pass has to make the same distinction — rewrite the table
+        REFERENCE, leave the qualifier alone.
+        """
+        from app.api.query import _databricks_policy_resolver
+
+        _register(
+            id="dbx.sales.orders_raw",
+            name="orders_raw",
+            source_type="databricks",
+            bucket="sales",
+            source_table="orders_raw",
+        )
+        _set_policy(
+            "dbx.sales.orders_raw",
+            "SELECT orders_raw.country, orders_raw.n FROM orders_raw WHERE orders_raw.country = 'CZ'",
+        )
+
+        resolve = _databricks_policy_resolver(name_lookups=[], default_catalog="main")
+        relation = resolve("orders_raw", {"id": "analyst1", "email": "analyst1@test.com"})
+
+        assert relation.policied
+        body = relation.relation_sql
+        # The table reference still resolves to the row's own native path...
+        assert "FROM `main`.`sales`.`orders_raw`" in body, body
+        # ...and it is the ONLY native path in the body: every other
+        # occurrence of the name is a column qualifier, which must stay a
+        # qualifier.
+        assert body.count("`main`.`sales`.`orders_raw`") == 1, body

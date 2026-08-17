@@ -2509,6 +2509,37 @@ def _policy_parse_dialect(sql: str, sql_lower: str) -> str:
     return "databricks"
 
 
+def _quote_column_qualifiers(sql: str, name: str) -> str:
+    """Backtick-quote ``name`` where it is used as a COLUMN QUALIFIER
+    (``name.col``, ``name.*``), leaving every other occurrence alone.
+
+    The point is to move those occurrences out of the native-path rewriter's
+    reach — it only substitutes outside-backtick text — while a bare
+    ``FROM name`` still gets rewritten. ```name`.col`` is valid Databricks SQL
+    and resolves against the rewritten table reference in the same statement.
+
+    Occurrences already inside backticks, and a ``name`` that is itself the
+    tail of a dotted path (``sales.name.col``), are skipped: quoting one
+    segment of a path would only produce a different broken spelling.
+
+    String literals are not masked, matching ``rewrite_bare_names``, which
+    likewise only excludes backticked text — inside a literal this pass is
+    simply the lighter of the two touches that were already happening.
+    """
+    if not name or "`" in name:
+        return sql
+    pattern = re.compile(
+        rf"(?<![\w.`]){re.escape(name)}(?=\s*\.\s*[\w`*])",
+        re.IGNORECASE,
+    )
+    # `re.split` with a captured group returns [outside, backtick, outside, …].
+    parts = re.split(r"(`[^`]*`)", sql)
+    for i, part in enumerate(parts):
+        if i % 2 == 0:
+            parts[i] = pattern.sub(lambda m: f"`{m.group(0)}`", part)
+    return "".join(parts)
+
+
 def _databricks_policy_resolver(*, name_lookups, default_catalog: str):
     """A ``rewrite_sql`` ``resolve`` callable that returns Databricks-dialect
     policy bodies, native-path-rewritten, with the array-valued variable
@@ -2532,19 +2563,34 @@ def _databricks_policy_resolver(*, name_lookups, default_catalog: str):
     )
     from connectors.databricks.remote import rewrite_to_native, row_target
 
-    def _body_lookups(policied_id: str):
-        """Lookups for rewriting ONE policy body: the caller's, plus the
-        policied row's own target resolved from the registry rather than from
-        whatever the caller happened to type."""
+    def _rewrite_body(policied_id: str, body_sql: str) -> str:
+        """Native-path rewrite of ONE policy body.
+
+        Lookups are the caller's, plus the policied row's own target resolved
+        from the registry rather than from whatever the caller happened to
+        type.
+
+        The policied row's own name is first backtick-quoted wherever it is
+        used as a COLUMN QUALIFIER, which takes it out of the rewrite's reach
+        (the name rewriter is confined to outside-backtick text). Without that
+        the body pass hit the same hazard the outer pass excludes the policied
+        name for: it replaces EVERY occurrence of a registered name, so a body
+        that qualifies its columns — `SELECT orders_raw.country FROM
+        orders_raw`, which the save-time validator permits — got its qualifier
+        rewritten too, into a four-part `` `main`.`sales`.`orders_raw`.country
+        ``. The table REFERENCE still has to be rewritten, so the name cannot
+        simply be dropped from these lookups; only the qualifier form is
+        protected, and `` `orders_raw`.country `` still resolves against the
+        rewritten FROM.
+        """
         row = table_registry_repo().get(policied_id)
-        if not row:
-            return list(name_lookups)
-        name = str(row.get("name") or "")
-        if not name:
-            return list(name_lookups)
+        name = str((row or {}).get("name") or "")
+        if not row or not name:
+            return rewrite_to_native(body_sql, list(name_lookups), default_catalog)
         catalog, schema, table = row_target(row, default_catalog)
         others = [e for e in name_lookups if e[0].lower() != name.lower()]
-        return [(name, catalog, schema, table), *others]
+        lookups = [(name, catalog, schema, table), *others]
+        return rewrite_to_native(_quote_column_qualifiers(body_sql, name), lookups, default_catalog)
 
     def resolve(table_id: str, principal):
         try:
@@ -2569,16 +2615,17 @@ def _databricks_policy_resolver(*, name_lookups, default_catalog: str):
             raise _PolicyResolutionFailed(relation.table_id) from exc
         return dataclasses.replace(
             relation,
-            # `_body_lookups` and not the caller-derived `name_lookups`: the
-            # policied row's own path has to come from the ROW, because
-            # `guardrail_inputs` records a lookup only for a registered name
-            # the caller wrote BARE (it masks backticks first). A caller who
-            # writes the fully-qualified ``main`.`sales`.`orders_raw`` — a
-            # spelling this connector documents and tests — produces no entry
-            # at all, so the policy body's own `FROM orders_raw` stayed bare
-            # and shipped unqualified, to resolve against whatever the
-            # warehouse's default context holds.
-            relation_sql=rewrite_to_native(body_sql, _body_lookups(relation.table_id), default_catalog),
+            # `_rewrite_body` and not a plain `rewrite_to_native` over the
+            # caller-derived `name_lookups`: the policied row's own path has to
+            # come from the ROW, because `guardrail_inputs` records a lookup
+            # only for a registered name the caller wrote BARE (it masks
+            # backticks first). A caller who writes the fully-qualified
+            # ``main`.`sales`.`orders_raw`` — a spelling this connector
+            # documents and tests — produces no entry at all, so the policy
+            # body's own `FROM orders_raw` stayed bare and shipped
+            # unqualified, to resolve against whatever the warehouse's default
+            # context holds.
+            relation_sql=_rewrite_body(relation.table_id, body_sql),
             # The WHOLE API entry is the value, not just its ``value`` field.
             # `bind_policy_parameters` omits ``value`` entirely for a NULL bind
             # (that is how the Statement Execution API binds SQL NULL, and it

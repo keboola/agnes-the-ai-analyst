@@ -64,6 +64,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 - **The schema TTL cache is reset between tests.** Keyed on `table_id` with a 1 h TTL and process-global, so two suites registering the same id with different columns handed each other the wrong schema — a failure that depended only on file ordering. Added to the existing `_reset_module_caches` autouse fixture alongside the catalog and quota caches.
 
+- **`data_source.databricks.scan_timeout_seconds = 0` actually disables the snapshot deadline.** The value was read with an `or 900.0` fallback, so a configured `0` was falsy and collapsed straight back to the 900 s default — the one setting an operator reaches for when a long-but-legitimate snapshot keeps getting cancelled did nothing, while every sibling knob (`statement_timeout_seconds`, `max_bytes_per_materialize`) treats `0` as "off". Unset and `0` are now distinguished, a non-numeric value warns and falls back to the default instead of disabling silently, and the admin hint says so.
+
+- **A policy body may qualify its columns with the table name on Databricks.** The body rewrite replaced *every* occurrence of the policied row's registered name, so `SELECT orders_raw.country FROM orders_raw` — a spelling the save-time validator permits — turned the qualifier into a four-part `` `main`.`sales`.`orders_raw`.country `` as well as the `FROM`. The qualifier form is now taken out of the rewrite's reach, the same distinction the outer pass already makes for the subquery alias.
+
 ## [0.83.32] - 2026-08-17
 
 ### Added
