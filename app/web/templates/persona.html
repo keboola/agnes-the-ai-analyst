@@ -17,6 +17,75 @@
     overflow: hidden;
     background: var(--ds-surface);
   }
+
+  /* Map Agnes design tokens onto Persona so the widget looks native. */
+  #persona-root [data-persona-root] {
+    --persona-font-family: var(--ds-font) !important;
+    --persona-surface: var(--ds-surface) !important;
+    --persona-container: var(--ds-bg) !important;
+    --persona-background: var(--ds-bg) !important;
+    --persona-border: var(--ds-border) !important;
+    --persona-divider: var(--ds-border) !important;
+    --persona-primary: var(--ds-text-primary) !important;
+    --persona-text: var(--ds-text-primary) !important;
+    --persona-muted: var(--ds-text-muted) !important;
+    --persona-text-inverse: #ffffff !important;
+    --persona-accent: var(--ds-primary) !important;
+    --persona-call-to-action: var(--ds-primary) !important;
+    --persona-input-background: var(--ds-surface) !important;
+    --persona-button-primary-bg: var(--ds-primary) !important;
+    --persona-button-primary-fg: #ffffff !important;
+    --persona-header-bg: var(--ds-surface) !important;
+    --persona-header-border: var(--ds-border) !important;
+    --persona-header-icon-bg: var(--ds-primary-light) !important;
+    --persona-header-icon-fg: var(--ds-primary) !important;
+    --persona-header-title-fg: var(--ds-text-primary) !important;
+    --persona-header-subtitle-fg: var(--ds-text-muted) !important;
+    --persona-header-action-icon-fg: var(--ds-text-muted) !important;
+    --persona-message-user-bg: var(--ds-primary) !important;
+    --persona-message-assistant-bg: var(--ds-surface) !important;
+    --persona-message-assistant-border: var(--ds-border) !important;
+    --persona-components-button-primary-background: var(--ds-primary) !important;
+    --persona-components-button-primary-foreground: #ffffff !important;
+    --persona-components-header-background: var(--ds-surface) !important;
+    --persona-components-header-border: var(--ds-border) !important;
+    --persona-components-message-user-background: var(--ds-primary) !important;
+    --persona-components-message-user-text: #ffffff !important;
+    --persona-components-message-assistant-background: var(--ds-surface) !important;
+    --persona-components-message-assistant-border: var(--ds-border) !important;
+    --persona-components-message-assistant-text: var(--ds-text-primary) !important;
+    --persona-components-suggestion-chip-background: var(--ds-surface) !important;
+    --persona-components-suggestion-chip-border: var(--ds-border) !important;
+    --persona-components-suggestion-chip-foreground: var(--ds-text-primary) !important;
+    --persona-components-suggestion-chip-hoverBackground: var(--ds-surface-dim) !important;
+    --persona-components-suggestion-chip-hoverBorder: var(--ds-border) !important;
+    --persona-components-input-background: var(--ds-surface) !important;
+    --persona-components-input-placeholder: var(--ds-text-muted) !important;
+    --persona-components-input-focus-border: var(--ds-primary) !important;
+    --persona-components-input-focus-ring: var(--ds-primary) !important;
+    --persona-radius-lg: var(--ds-radius-btn) !important;
+    --persona-radius-md: var(--ds-radius-btn) !important;
+    --persona-radius-sm: var(--ds-radius-btn) !important;
+    --persona-radius-xl: var(--ds-radius-btn) !important;
+    --persona-input-radius: var(--ds-radius-btn) !important;
+    --persona-button-radius: var(--ds-radius-pill) !important;
+    --persona-message-user-radius: var(--ds-radius-btn) !important;
+    --persona-message-assistant-radius: var(--ds-radius-btn) !important;
+  }
+
+  #persona-root [data-persona-root] .persona-welcome-title {
+    color: var(--ds-text-primary) !important;
+  }
+
+  #persona-root [data-persona-root] .persona-welcome-subtitle {
+    color: var(--ds-text-muted) !important;
+  }
+
+  #persona-root [data-persona-root] .persona-suggestion--chip[data-emphasis="primary"] {
+    border-color: var(--ds-primary) !important;
+    background: color-mix(in srgb, var(--ds-primary) 6%, transparent) !important;
+    color: var(--ds-primary) !important;
+  }
 </style>
 {% endblock %}
 
@@ -42,7 +111,7 @@
             accent: 'var(--ds-primary)',
             surface: 'var(--ds-surface)',
             background: 'var(--ds-bg)',
-            primary: 'var(--ds-text)',
+            primary: 'var(--ds-text-primary)',
           },
         },
       },

@@ -5999,6 +5999,60 @@
         "title": "PatchItemRequest",
         "type": "object"
       },
+      "PersonaDispatchBody": {
+        "description": "Persona widget request body.\n\nThe Persona client sends ``messages``, ``context`` and ``metadata``.\nWe also accept ``agent_slug`` (top-level or inside ``metadata``) so the\nwidget can pick which Agnes agent to run.",
+        "properties": {
+          "agent_slug": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Slug"
+          },
+          "context": {
+            "additionalProperties": true,
+            "title": "Context",
+            "type": "object"
+          },
+          "messages": {
+            "items": {
+              "$ref": "#/components/schemas/PersonaMessage"
+            },
+            "title": "Messages",
+            "type": "array"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "title": "Metadata",
+            "type": "object"
+          }
+        },
+        "title": "PersonaDispatchBody",
+        "type": "object"
+      },
+      "PersonaMessage": {
+        "description": "One chat message in Persona's request body.",
+        "properties": {
+          "content": {
+            "title": "Content",
+            "type": "string"
+          },
+          "role": {
+            "title": "Role",
+            "type": "string"
+          }
+        },
+        "required": [
+          "role",
+          "content"
+        ],
+        "title": "PersonaMessage",
+        "type": "object"
+      },
       "PersonalFlagRequest": {
         "properties": {
           "is_personal": {
@@ -10840,7 +10894,7 @@
   "info": {
     "description": "Self-hosted AI harness: governed data access, skills marketplace, corporate memory, and agent workspaces",
     "title": "AI Harness",
-    "version": "0.83.23"
+    "version": "0.83.29"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -47330,6 +47384,70 @@
         ]
       }
     },
+    "/api/v1/persona/dispatch": {
+      "post": {
+        "description": "Accept a Persona request and stream the agent answer as Persona SSE.",
+        "operationId": "persona_dispatch_api_v1_persona_dispatch_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PersonaDispatchBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Persona Dispatch",
+        "tags": [
+          "persona"
+        ]
+      }
+    },
     "/api/v1/sessions/{session_id}": {
       "delete": {
         "operationId": "delete_session_api_v1_sessions__session_id__delete",
@@ -52466,6 +52584,56 @@
           }
         },
         "summary": "News Page",
+        "tags": [
+          "web"
+        ]
+      }
+    },
+    "/persona": {
+      "get": {
+        "description": "Persona widget demo page.\n\nRenders a vanilla-JS Persona chat surface that streams against\n``POST /api/v1/persona/dispatch``. Mirrors the ``/chat`` RBAC gate:\nchat-disabled instances and users without the ``chat`` resource grant\nare redirected home.",
+        "operationId": "persona_page_persona_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Persona Page",
         "tags": [
           "web"
         ]

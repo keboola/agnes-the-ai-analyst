@@ -61,6 +61,18 @@ class FakeManager:
         self.detached.append(chat_id)
 
 
+class TestPersonaRoutes:
+    """Route coverage for the Persona SSE bridge demo page.
+
+    Detailed behavioral coverage lives in the module-level tests below.
+    """
+
+    COVERED_ROUTES = {
+        "GET /persona",
+        "POST /api/v1/persona/dispatch",
+    }
+
+
 @pytest.fixture
 def persona_env(seeded_app, monkeypatch):
     """A seeded TestClient with chat enabled and a default agent for admin1."""

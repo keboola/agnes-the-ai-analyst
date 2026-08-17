@@ -13,6 +13,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Added
 
 - **Persona widget proof-of-concept.** New `POST /api/v1/persona/dispatch` SSE bridge maps Agnes AG-UI chat frames to Persona wire events (`execution_start`, `text_delta`, `execution_complete`, etc.), plus a `/persona` page that loads the `@runtypelabs/persona` vanilla-JS widget from a pinned CDN. Auth uses the same session cookie/Bearer gate as the web chat and requires the `chat` resource grant.
+- **The `/persona` proof-of-concept page is styled with Agnes design tokens.** The Persona widget now uses Agnes `--ds-*` CSS custom properties (colors, fonts, surfaces, radius) so the widget looks native to the rest of the UI.
 
 ### Fixed
 

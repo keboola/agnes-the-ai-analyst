@@ -2600,6 +2600,7 @@ def _collect_covered_routes() -> set:
     for mod_name in (
         "tests.db_pg.test_endpoints_smoke",
         "tests.db_pg.test_endpoints_behavioral",
+        "tests.test_persona",
     ):
         try:
             mod = importlib.import_module(mod_name)
