@@ -8566,6 +8566,30 @@ async def chat_page(
     return templates.TemplateResponse(request, "chat.html", ctx)
 
 
+@router.get("/persona", response_class=HTMLResponse)
+async def persona_page(
+    request: Request,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Persona widget demo page.
+
+    Renders a vanilla-JS Persona chat surface that streams against
+    ``POST /api/v1/persona/dispatch``. Mirrors the ``/chat`` RBAC gate:
+    chat-disabled instances and users without the ``chat`` resource grant
+    are redirected home.
+    """
+    if not request.app.state.chat_config.enabled:
+        return RedirectResponse("/")
+    from app.auth.access import can_access
+    from app.resource_types import ResourceType
+
+    if not can_access(user["id"], ResourceType.CHAT.value, "chat", conn):
+        return RedirectResponse("/")
+    ctx = _build_context(request, user=user, conn=conn, current_user=user)
+    return templates.TemplateResponse(request, "persona.html", ctx)
+
+
 def _chat_capability_snapshot(conn: duckdb.DuckDBPyConnection, user: dict) -> dict:
     """Compute the empty-state capability panel data server-side.
 

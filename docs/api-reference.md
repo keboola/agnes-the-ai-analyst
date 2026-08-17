@@ -1739,6 +1739,12 @@ CLI: `agnes agent webhooks list|add|delete <slug> ...` (`add` takes `--url` and 
 - /api/v1/agents/{slug}/webhooks
 - /api/v1/agents/{slug}/webhooks/{webhook_id}
 
+### `/api/v1/persona/dispatch` — Persona SSE bridge (proof-of-concept)
+
+`POST /api/v1/persona/dispatch` — stateless single-turn chat bridge for the Persona vanilla-JS widget. Request body follows Persona's wire shape: `{messages: [{role, content}], context: {}, metadata: {}}`. The last user message is sent to an Agnes chat session and the assistant response is streamed back as Persona SSE events (`execution_start`, `turn_start`, `text_start`, `text_delta`, `text_complete`, `turn_complete`, `execution_complete`). Auth is the same session token / cookie gate as the web chat; `chat` resource grant required. The `agent_slug` field is accepted top-level or inside `metadata` and falls back to the user's default agent.
+
+- /api/v1/persona/dispatch
+
 ### `/api/v2` — v2 catalog and query APIs
 
 - /api/v2/catalog

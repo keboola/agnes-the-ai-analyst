@@ -593,6 +593,12 @@ _EXEMPT: dict[str, str] = {
     "/api/v1/sessions/{session_id}/cancel": _AGENT_SESSION_REASON,
     "/api/v1/sessions/{session_id}/artifacts": _AGENT_ARTIFACTS_REASON,
     "/api/v1/sessions/{session_id}/artifacts/{artifact_id}": _AGENT_ARTIFACTS_REASON,
+    "/api/v1/persona/dispatch": (
+        "Persona SSE chat bridge — an open Server-Sent Events stream, not a "
+        "request/response JSON call. Mirrors the /api/v1/sessions/{id}/messages "
+        "exemption: no MCP analogue (an MCP tool cannot await an SSE turn) and "
+        "no discrete CLI subcommand (it is a browser widget surface)."
+    ),
     "/api/v1/sessions/{session_id}/memories": _AGENT_MEMORY_WRITE_REASON,
     "/api/v1/agents/{agent_id}/memories": _AGENT_MEMORY_ADMIN_REASON,
     "/api/v1/agents/{agent_id}/memories/{memory_id}": _AGENT_MEMORY_ADMIN_REASON,

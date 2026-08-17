@@ -637,6 +637,9 @@
                    it, leaving /me/connections URL-only under `rail`. #}
                 <a class="app-user-menu-item {% if _path.startswith('/me/connections') %}is-active{% endif %}" role="menuitem" href="/me/connections">My connections</a>
                 <a class="app-user-menu-item {% if _path.startswith('/me/activity') %}is-active{% endif %}" role="menuitem" href="/me/activity">My activity</a>
+                {% if can_chat %}
+                <a class="app-user-menu-item {% if _path == '/persona' %}is-active{% endif %}" role="menuitem" href="/persona">Persona</a>
+                {% endif %}
                 {# News — same #1159 reasoning as the topnav dropdown: /news
                    needs a NON-admin entry point on every chrome, and the rail
                    has no other one (the /home "What's new" strip and the

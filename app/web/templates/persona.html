@@ -1,0 +1,53 @@
+{% extends "base_page.html" %}
+
+{% block title %}Persona — {{ config.INSTANCE_NAME or 'Agnes' }}{% endblock %}
+
+{% set page_hero_eyebrow = "Chat" %}
+{% set page_hero_title = "Persona chat" %}
+{% set page_hero_subtitle = "A proof-of-concept Persona widget connected to Agnes over SSE." %}
+
+{% block container_modifier %}container--wide{% endblock %}
+
+{% block head_extra %}
+<style>
+  .persona-host {
+    height: 70vh;
+    border: 1px solid var(--ds-border);
+    border-radius: var(--ds-radius-btn);
+    overflow: hidden;
+    background: var(--ds-surface);
+  }
+</style>
+{% endblock %}
+
+{% block page %}
+<div id="persona-root" class="persona-host" role="region" aria-label="Persona chat"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  window.siteAgentConfig = {
+    target: '#persona-root',
+    config: {
+      apiUrl: '/api/v1/persona/dispatch',
+      launcher: { enabled: false },
+      copy: {
+        welcomeTitle: 'Persona × Agnes',
+        welcomeSubtitle: 'Ask anything. Agnes streams the answer through the Persona wire.',
+        inputPlaceholder: 'Ask Agnes...',
+      },
+      theme: {
+        semantic: {
+          colors: {
+            accent: 'var(--ds-primary)',
+            surface: 'var(--ds-surface)',
+            background: 'var(--ds-bg)',
+            primary: 'var(--ds-text)',
+          },
+        },
+      },
+    },
+  };
+</script>
+<script src="https://cdn.jsdelivr.net/npm/@runtypelabs/persona@4.4.0/dist/install.global.js" defer></script>
+{% endblock %}
