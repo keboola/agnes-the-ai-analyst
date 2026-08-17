@@ -2129,7 +2129,7 @@
                                  data-name="dbx_package_ids"
                                  data-placeholder="Type to search or create…"
                                  data-chip-input="data_package"></div>
-                            <div class="form-hint">Bundle this table into one or more Data Packages so analysts can opt-in to it as a group.</div>
+                            <div class="form-hint">Data package assignment is not yet wired during registration; use the package admin UI or CLI to attach this table after it is registered.</div>
                         </div>
                     </div>
                     <div class="ds-drawer__foot">
@@ -5018,7 +5018,7 @@
         var serverOnly = !!(document.getElementById('dbxServerOnly') && document.getElementById('dbxServerOnly').checked);
 
         if (accessMode === 'synced' && loadMode === 'custom') {
-            var customName = (viewName || sourceTable || '').trim();
+            var customName = viewName;
             if (!customName) {
                 throw new Error('View name is required for a custom SQL registration.');
             }
