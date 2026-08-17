@@ -7491,10 +7491,20 @@ def _v118_to_v119(conn: duckdb.DuckDBPyConnection) -> None:
 
     Idempotent: ``PRAGMA table_info`` skips the ALTER when the column already
     exists, matching the neighbouring steps.
+
+    ``tool_registry`` may not exist yet when the ladder is replayed from an old
+    stamp — a database created at v68 or v73 (as the chat-migration tests do)
+    reaches this step before the CREATE that introduces the table. `PRAGMA
+    table_info` raises rather than returning empty for a missing table, so the
+    existence check comes first and the step degrades to a no-op; the version
+    is still stamped, because a step that declined to run has still been
+    applied and skipping the stamp would stall the ladder here forever.
     """
-    existing_cols = {row[1] for row in conn.execute("PRAGMA table_info('tool_registry')").fetchall()}
-    if "projection_map" not in existing_cols:
-        conn.execute("ALTER TABLE tool_registry ADD COLUMN projection_map JSON")
+    table_exists = conn.execute("SELECT 1 FROM information_schema.tables WHERE table_name = 'tool_registry'").fetchone()
+    if table_exists:
+        existing_cols = {row[1] for row in conn.execute("PRAGMA table_info('tool_registry')").fetchall()}
+        if "projection_map" not in existing_cols:
+            conn.execute("ALTER TABLE tool_registry ADD COLUMN projection_map JSON")
     conn.execute("UPDATE schema_version SET version = 119")
 
 
