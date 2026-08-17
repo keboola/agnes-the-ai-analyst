@@ -1,4 +1,4 @@
-"""SQLAlchemy models for the agent profiles + agent-as-API cluster (DuckDB v100/v101/v102).
+"""SQLAlchemy models for the agent profiles + agent-as-API cluster (DuckDB v100/v101/v102/v119).
 
 Mirrors:
   - ``agents``                  (src/db.py, v100)
@@ -9,13 +9,16 @@ Mirrors:
   - ``agent_webhooks``           (src/db.py, v101)
   - ``agent_artifacts``          (src/db.py, v101)
   - ``agent_memories``           (src/db.py, v102)
+  - ``agent_schedules``          (src/db.py, v119)
 
 and the Alembic migrations ``migrations/versions/0048_agents_v101.py`` /
 ``migrations/versions/0048_agent_webhooks_artifacts_v101.py`` /
-``migrations/versions/0050_agent_memories_v103.py``. This is the schema
+``migrations/versions/0050_agent_memories_v103.py`` /
+``migrations/versions/0067_agent_schedules_v119.py``. This is the schema
 foundation for agent profiles + agent-as-API
 (docs/superpowers/specs/2026-07-21-agent-profiles-and-agent-api-design.md);
-repos/endpoints land in later tasks of the same wave.
+``agent_schedules`` adds scheduled runs on top of it
+(docs/superpowers/specs/2026-08-17-agent-schedules-design.md).
 
 No secondary indexes on any of these tables — see the ``_v94_to_v95``
 DuckDB ART-index incident note in ``src/db.py``.
@@ -221,3 +224,34 @@ class AgentMemory(Base):
     )
     activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AgentSchedule(Base):
+    """A cron-like scheduled run for an agent profile (agent schedules, v119).
+
+    Schedules die with the agent (repo ``delete_for_agent``, called from the
+    agent-delete cascade in ``app/api/agents_admin.py``). ``schedule`` uses
+    the same grammar as every other schedule in the product
+    (``src.scheduler.is_valid_schedule``); ``last_run_at``/``last_status``/
+    ``last_job_id`` are set by the ``POST /api/v1/agents/run-due`` sweep —
+    terminal job outcomes live on the job + webhooks, not here."""
+
+    __tablename__ = "agent_schedules"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    agent_id: Mapped[str] = mapped_column(String, nullable=False)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    schedule: Mapped[str] = mapped_column(String, nullable=False)
+    prompt: Mapped[str] = mapped_column(Text, nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, server_default=text("TRUE"), nullable=False)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_status: Mapped[str | None] = mapped_column(String, nullable=True)
+    last_job_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"), nullable=True
+    )
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"), nullable=True
+    )
+
+    __table_args__ = (UniqueConstraint("agent_id", "name", name="uq_agent_schedules_agent_name"),)

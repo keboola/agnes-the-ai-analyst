@@ -1483,3 +1483,62 @@ def test_v115_db_migrates_to_v116_adds_access_policy_columns(tmp_path):
 
     _v115_to_v116(conn)
     conn.close()
+
+
+def test_v119_agent_schedules_table(tmp_path):
+    """v118→v119 (agent-schedules design): agent_schedules exists on fresh
+    installs, the ladder is idempotent, and schema_version lands at
+    SCHEMA_VERSION."""
+    db_path = tmp_path / "system.duckdb"
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)
+    assert SCHEMA_VERSION >= 119
+    assert get_schema_version(conn) == SCHEMA_VERSION
+
+    cols = {r[1] for r in conn.execute("PRAGMA table_info('agent_schedules')").fetchall()}
+    assert {
+        "id",
+        "agent_id",
+        "name",
+        "schedule",
+        "prompt",
+        "enabled",
+        "last_run_at",
+        "last_status",
+        "last_job_id",
+        "created_at",
+        "updated_at",
+    } <= cols
+
+    # idempotency — re-running the step must not raise
+    from src.db import _v118_to_v119
+
+    _v118_to_v119(conn)
+    conn.close()
+
+
+def test_v118_db_migrates_to_v119_adds_agent_schedules(tmp_path):
+    """A DB pinned at v118 (a live instance's state before this migration)
+    climbs to v119 via the upgrade-block dispatch and gains agent_schedules."""
+    db_path = tmp_path / "v118.duckdb"
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)
+    conn.execute("UPDATE schema_version SET version = 118")
+    conn.close()
+
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)
+    assert get_schema_version(conn) == SCHEMA_VERSION
+
+    exists = conn.execute(
+        "SELECT 1 FROM information_schema.tables WHERE table_name = 'agent_schedules'"
+    ).fetchone()
+    assert exists is not None
+
+    conn.execute(
+        "INSERT INTO agent_schedules (id, agent_id, name, schedule, prompt) "
+        "VALUES ('s1', 'a1', 'morning', 'daily 07:00', 'do the thing')"
+    )
+    row = conn.execute("SELECT enabled FROM agent_schedules WHERE id = 's1'").fetchone()
+    assert row == (True,)
+    conn.close()

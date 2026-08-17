@@ -430,6 +430,25 @@ _AGENT_WEBHOOKS_REASON = (
     "registration — this is a standing-config exemption, not a landed-later "
     "gap."
 )
+_AGENT_SCHEDULES_REASON = (
+    "scheduled agent runs (agent-schedules design, "
+    "docs/superpowers/specs/2026-08-17-agent-schedules-design.md) — "
+    "owner-scoped standing-config CRUD, same posture as "
+    "_AGENT_WEBHOOKS_REASON above: reachable via `agnes agent schedule "
+    "list/add/remove/enable/disable`. No MCP analogue by design: a schedule "
+    "grants an agent UNATTENDED future runs on the owner's behalf, which "
+    "must stay an interactive, human-witnessed action — an agent tool call "
+    "that could give itself new autonomous cadences is the same "
+    "self-service-authority-widening class _AGENT_TOKENS_REASON and "
+    "_AGENT_SCOPE_REASON already exempt."
+)
+_AGENT_SCHEDULES_RUN_DUE_REASON = (
+    "scheduled agent runs — the admin/scheduler-driven sweep (agent-schedules "
+    "design). Mirrors the grandfathered `/api/scripts/run-due`: an internal "
+    "sweep trigger the scheduler sidecar POSTs on a fixed cadence "
+    "(`agents:run-due`, gated on `SCHEDULER_AGENT_SCHEDULES`), not an "
+    "analyst-facing action — no CLI/MCP analogue."
+)
 _AGENT_ARTIFACTS_REASON = (
     "agent-as-API sandbox artifact harvest/download (agent-api V1b Task 5). "
     "No MCP analogue by design: the download route is a binary byte-stream "
@@ -588,6 +607,9 @@ _EXEMPT: dict[str, str] = {
     "/api/v1/agents/{slug}/sessions": _AGENT_SESSION_REASON,
     "/api/v1/agents/{slug}/webhooks": _AGENT_WEBHOOKS_REASON,
     "/api/v1/agents/{slug}/webhooks/{webhook_id}": _AGENT_WEBHOOKS_REASON,
+    "/api/v1/agents/{slug}/schedules": _AGENT_SCHEDULES_REASON,
+    "/api/v1/agents/{slug}/schedules/{schedule_id}": _AGENT_SCHEDULES_REASON,
+    "/api/v1/agents/run-due": _AGENT_SCHEDULES_RUN_DUE_REASON,
     "/api/v1/sessions/{session_id}": _AGENT_SESSION_REASON,
     "/api/v1/sessions/{session_id}/messages": _AGENT_SESSION_REASON,
     "/api/v1/sessions/{session_id}/cancel": _AGENT_SESSION_REASON,

@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- **Agent profiles can now run on a schedule.** Each agent may hold up to 20 named schedules (`GET/POST /api/v1/agents/{slug}/schedules`, `PATCH/DELETE .../{schedule_id}`; `agnes agent schedule list|add|remove|enable|disable`) using the product's existing schedule grammar (`every Nm`/`every Nh`, `daily HH:MM[,HH:MM]`, `cron <5-field expr>`, all UTC). A new admin/scheduler-driven sweep (`POST /api/v1/agents/run-due`, scheduler row `agents:run-due` every 1m, gated on `SCHEDULER_AGENT_SCHEDULES`, default on) fires due schedules straight into the existing `agent_response` background job kind under the agent owner's identity — model pinning, token budgets, scope enforcement, memory notebooks, and `job.completed`/`job.failed` webhooks all apply unchanged, with no new execution engine. Concurrent sweep ticks can't double-fire a row (optimistic per-row claim), and a retried sweep within the same minute dedupes via `idempotency_key`.
+
 ### Fixed
 
 - **Curated marketplaces can now ship a root-source plugin (`source: "./"`).** The single-plugin-repo shape — where the plugin IS the marketplace repo root — was listed in the catalog but served zero files, because every path derivation hardcoded `plugins/<name>/`. Plugin-dir resolution now honors the catalog entry's declared relative `source` (root or any in-repo subdirectory), containment-anchored on the marketplace's own clone so a hostile source can never reach a sibling marketplace's differently-RBAC'd content; absolute and `..` sources are rejected at ingest; external (dict-form) sources are cleanly excluded from the served set instead of shipping as broken catalog entries; and a root-source plugin's `.git/**` never enters the served ZIP/git tree or the ETag.

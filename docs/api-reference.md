@@ -1739,6 +1739,26 @@ CLI: `agnes agent webhooks list|add|delete <slug> ...` (`add` takes `--url` and 
 - /api/v1/agents/{slug}/webhooks
 - /api/v1/agents/{slug}/webhooks/{webhook_id}
 
+### `/api/v1/agents/{slug}/schedules` and `/api/v1/agents/run-due` — scheduled agent runs
+
+Design doc: `docs/superpowers/specs/2026-08-17-agent-schedules-design.md`. A schedule is a run-type label (`name`, unique per agent, ≤20 per agent) + a cadence in the product's shared schedule grammar (`every Nm`/`every Nh`, `daily HH:MM[,HH:MM]` UTC, or `cron <5-field expr>` UTC) + the `prompt` sent to the agent on each fire. Owner-scoped standing config — every CRUD route requires an interactive session token (`require_session_token` rejects both plain and agent PATs, same posture as `/api/v1/agents/{slug}/webhooks`): an agent must not be able to grant itself new unattended runs through its own tool call.
+
+`GET /api/v1/agents/{slug}/schedules` — `200 {data: [{id, agent_id, name, schedule, prompt, enabled, last_run_at, last_status, last_job_id, created_at, updated_at}], has_more, next_cursor}`.
+
+`POST /api/v1/agents/{slug}/schedules` — `{name: str, schedule: str, prompt: str, enabled?: bool = true}` → `201` (the created row). `400 {"code": "invalid_name"}` (must be a single path-ish segment: letters/digits/`-`/`_`, max 64 chars), `400 {"code": "invalid_schedule"}` (names the accepted grammar, including the literal `cron ` prefix footgun), `400 {"code": "invalid_prompt"}` (empty/whitespace-only), `400 {"code": "schedule_limit"}` (agent already has 20 schedules), or `409 {"code": "schedule_name_taken"}` (name already in use for this agent — names are scoped per agent, not global).
+
+`PATCH /api/v1/agents/{slug}/schedules/{schedule_id}` — any subset of `{name, schedule, prompt, enabled}` → `200` (the updated row). Same validation as `POST`; renaming to a taken name (or your own current name) follows the same `schedule_name_taken`/no-op-success rule as any other unique-per-scope rename. `404 {"code": "schedule_not_found"}` for an unknown id or one belonging to a different agent/owner.
+
+`DELETE /api/v1/agents/{slug}/schedules/{schedule_id}` — `204`.
+
+`POST /api/v1/agents/run-due` — the admin/scheduler-driven sweep, gated like every other scheduler-driven sweep (`require_admin`; the scheduler's shared-secret token resolves to a synthetic Admin-group user). Walks every `enabled=TRUE` row across every owner, skips rows whose agent no longer exists or was soft-deleted, evaluates due-ness with the same `is_table_due` catch-up semantics as every other schedule in the product, atomically claims each due row (optimistic — a concurrent sweep tick that already won the claim is silently skipped, not an error), and enqueues the existing `agent_response` background job kind directly with the agent OWNER's identity (`mode: "fresh"`, `owner_user_id`, `owner_email`, `agent_id`, `prompt`) — never impersonated through the public `/responses` endpoint, since the scheduler owns no agents of its own. Enqueue is deduplicated per-minute via `idempotency_key = "agent-schedule:<schedule_id>:<floor(unix_now/60)>"`. Records `last_run_at`/`last_status` (`enqueued` or `failed_enqueue`)/`last_job_id` on the schedule row — terminal job outcomes live on the job (`GET /api/v1/jobs/{id}`) + the agent's existing `job.completed`/`job.failed` webhooks, not here. Per-row failures are logged and skipped; they never abort the sweep. Scheduler row: `agents:run-due` in `services/scheduler/__main__.py`, `every 1m`, gated on `SCHEDULER_AGENT_SCHEDULES` (default on).
+
+CLI: `agnes agent schedule list|add|remove|enable|disable <slug> ...` (`add` takes `--name`/`--schedule`/`--prompt`/`--disabled`; `remove`/`enable`/`disable` take the schedule `name`, resolved to an id via one `list` round trip). No MCP tool by design, same reasoning as `_AGENT_WEBHOOKS_REASON` — see `tests/test_documentation_api_triple_surface.py`'s `_AGENT_SCHEDULES_REASON`. `run-due` has no CLI/MCP analogue — it is a scheduler-internal sweep trigger, mirroring `/api/scripts/run-due`.
+
+- /api/v1/agents/{slug}/schedules
+- /api/v1/agents/{slug}/schedules/{schedule_id}
+- /api/v1/agents/run-due
+
 ### `/api/v2` — v2 catalog and query APIs
 
 - /api/v2/catalog

@@ -3062,6 +3062,34 @@
         "title": "CreateRecipeRequest",
         "type": "object"
       },
+      "CreateScheduleRequest": {
+        "properties": {
+          "enabled": {
+            "default": true,
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "prompt": {
+            "title": "Prompt",
+            "type": "string"
+          },
+          "schedule": {
+            "title": "Schedule",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "schedule",
+          "prompt"
+        ],
+        "title": "CreateScheduleRequest",
+        "type": "object"
+      },
       "CreateSessionBody": {
         "properties": {
           "profile": {
@@ -9711,6 +9739,56 @@
         "title": "UpdateRecipeRequest",
         "type": "object"
       },
+      "UpdateScheduleRequest": {
+        "properties": {
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "prompt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prompt"
+          },
+          "schedule": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Schedule"
+          }
+        },
+        "title": "UpdateScheduleRequest",
+        "type": "object"
+      },
       "UpdateTableRequest": {
         "properties": {
           "access_policy_note": {
@@ -10840,7 +10918,7 @@
   "info": {
     "description": "Self-hosted AI harness: governed data access, skills marketplace, corporate memory, and agent workspaces",
     "title": "AI Harness",
-    "version": "0.83.23"
+    "version": "0.83.31"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -46268,6 +46346,60 @@
         ]
       }
     },
+    "/api/v1/agents/run-due": {
+      "post": {
+        "description": "Fire every enabled schedule whose cadence says it is due.\n\nGated like every other scheduler-driven sweep (`require_admin` \u2014 the\nscheduler's shared-secret token resolves to a synthetic Admin-group\nuser, see `app.auth.scheduler_token`). Scheduler row: `agents:run-due`\nin `services/scheduler/__main__.py`, `every 1m`, gated on\n`SCHEDULER_AGENT_SCHEDULES` (default on).",
+        "operationId": "run_due_agent_schedules_api_v1_agents_run_due_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Run Due Agent Schedules",
+        "tags": [
+          "agent-schedules"
+        ]
+      }
+    },
     "/api/v1/agents/{agent_id}": {
       "delete": {
         "operationId": "delete_agent_api_v1_agents__agent_id__delete",
@@ -46895,6 +47027,283 @@
         "summary": "Create Agent Response",
         "tags": [
           "agent-runtime"
+        ]
+      }
+    },
+    "/api/v1/agents/{slug}/schedules": {
+      "get": {
+        "operationId": "list_schedules_api_v1_agents__slug__schedules_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Schedules",
+        "tags": [
+          "agent-schedules"
+        ]
+      },
+      "post": {
+        "operationId": "create_schedule_api_v1_agents__slug__schedules_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateScheduleRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Schedule",
+        "tags": [
+          "agent-schedules"
+        ]
+      }
+    },
+    "/api/v1/agents/{slug}/schedules/{schedule_id}": {
+      "delete": {
+        "operationId": "delete_schedule_api_v1_agents__slug__schedules__schedule_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "schedule_id",
+            "required": true,
+            "schema": {
+              "title": "Schedule Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Schedule",
+        "tags": [
+          "agent-schedules"
+        ]
+      },
+      "patch": {
+        "operationId": "update_schedule_api_v1_agents__slug__schedules__schedule_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "schedule_id",
+            "required": true,
+            "schema": {
+              "title": "Schedule Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateScheduleRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Schedule",
+        "tags": [
+          "agent-schedules"
         ]
       }
     },
