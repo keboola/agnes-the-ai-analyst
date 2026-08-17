@@ -10863,7 +10863,7 @@
   "info": {
     "description": "Self-hosted AI harness: governed data access, skills marketplace, corporate memory, and agent workspaces",
     "title": "AI Harness",
-    "version": "0.83.23"
+    "version": "0.71.60"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -52489,6 +52489,28 @@
           }
         },
         "summary": "News Page",
+        "tags": [
+          "web"
+        ]
+      }
+    },
+    "/privacy": {
+      "get": {
+        "description": "What this instance does with data \u2014 deliberately UNAUTHENTICATED.\n\nEvery connector directory asks for a privacy policy URL and fetches it\nwithout credentials; an unreachable one is an automatic rejection. The\nsame content already existed as ``/how-it-works#privacy``, but that route\nis behind ``get_current_user``, so handing out that anchor produced a\nlogin redirect rather than a policy.\n\nTwo shapes, one URL. When the operator has published their own policy\n(``instance.privacy_policy_url``) this redirects there, because on a\nself-hosted deployment *they* are the data controller and their document\nis the authoritative one. Otherwise it renders the built-in page, which\nstates that plainly and describes only what the software itself does \u2014\nthe honest limit of what a vendor can say about someone else's instance.\n\nNo auth, no DB read: it must answer for a reviewer, a crawler, and a\nlogged-out user on an instance whose database is down.",
+        "operationId": "privacy_page_privacy_get",
+        "responses": {
+          "200": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Privacy Page",
         "tags": [
           "web"
         ]
