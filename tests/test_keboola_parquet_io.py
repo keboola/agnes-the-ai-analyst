@@ -4,8 +4,10 @@ Ports the typed-schema parts of internal repo's `src/parquet_manager.py`
 into the OSS Keboola legacy SDK extraction path. Three pure-function
 helpers: convert_date_columns_to_date32, apply_schema_to_table, csv_to_parquet.
 """
+
 import csv as _csv
 import logging
+import os
 from pathlib import Path
 
 import pyarrow as pa
@@ -19,10 +21,12 @@ import pytest
 def test_string_dates_become_date32():
     from connectors.keboola.parquet_io import convert_date_columns_to_date32
 
-    table = pa.table({
-        "id": pa.array([1, 2, 3], type=pa.int64()),
-        "created_on": pa.array(["2025-01-15", "2025-02-20", "2025-03-30"]),
-    })
+    table = pa.table(
+        {
+            "id": pa.array([1, 2, 3], type=pa.int64()),
+            "created_on": pa.array(["2025-01-15", "2025-02-20", "2025-03-30"]),
+        }
+    )
     result = convert_date_columns_to_date32(table, ["created_on"])
     assert result.schema.field("created_on").type == pa.date32()
     assert result.schema.field("id").type == pa.int64()
@@ -31,9 +35,11 @@ def test_string_dates_become_date32():
 def test_invalid_date_becomes_null_keeping_date32(caplog):
     from connectors.keboola.parquet_io import convert_date_columns_to_date32
 
-    table = pa.table({
-        "created_on": pa.array(["2025-01-15", "0000-00-00", "not-a-date"]),
-    })
+    table = pa.table(
+        {
+            "created_on": pa.array(["2025-01-15", "0000-00-00", "not-a-date"]),
+        }
+    )
     with caplog.at_level(logging.WARNING):
         result = convert_date_columns_to_date32(table, ["created_on"])
 
@@ -49,9 +55,11 @@ def test_invalid_date_becomes_null_keeping_date32(caplog):
 def test_all_null_column_gets_typed_nulls():
     from connectors.keboola.parquet_io import convert_date_columns_to_date32
 
-    table = pa.table({
-        "created_on": pa.array([None, None, None], type=pa.string()),
-    })
+    table = pa.table(
+        {
+            "created_on": pa.array([None, None, None], type=pa.string()),
+        }
+    )
     result = convert_date_columns_to_date32(table, ["created_on"])
     assert result.schema.field("created_on").type == pa.date32()
     assert result.column("created_on").null_count == 3
@@ -61,12 +69,14 @@ def test_already_timestamp_column_casts_to_date32():
     import datetime
     from connectors.keboola.parquet_io import convert_date_columns_to_date32
 
-    table = pa.table({
-        "created_on": pa.array(
-            [datetime.datetime(2025, 1, 15, 12, 30)],
-            type=pa.timestamp("us"),
-        ),
-    })
+    table = pa.table(
+        {
+            "created_on": pa.array(
+                [datetime.datetime(2025, 1, 15, 12, 30)],
+                type=pa.timestamp("us"),
+            ),
+        }
+    )
     result = convert_date_columns_to_date32(table, ["created_on"])
     assert result.schema.field("created_on").type == pa.date32()
     assert result.column("created_on").to_pylist()[0].isoformat() == "2025-01-15"
@@ -104,9 +114,11 @@ def test_null_type_column_gets_target_type():
 def test_string_to_timestamp_with_utc_suffix():
     from connectors.keboola.parquet_io import apply_schema_to_table
 
-    table = pa.table({
-        "ts": pa.array(["2022-01-12T16:17:35.000Z", "2022-01-13T08:00:00.000Z"]),
-    })
+    table = pa.table(
+        {
+            "ts": pa.array(["2022-01-12T16:17:35.000Z", "2022-01-13T08:00:00.000Z"]),
+        }
+    )
     target = pa.schema([pa.field("ts", pa.timestamp("us"))])
     result = apply_schema_to_table(table, target)
     assert result.schema.field("ts").type == pa.timestamp("us")
@@ -117,9 +129,11 @@ def test_string_to_timestamp_with_utc_suffix():
 def test_string_to_int_invalid_becomes_null():
     from connectors.keboola.parquet_io import apply_schema_to_table
 
-    table = pa.table({
-        "amount": pa.array(["100", "200", "Non-Manager", "300"]),
-    })
+    table = pa.table(
+        {
+            "amount": pa.array(["100", "200", "Non-Manager", "300"]),
+        }
+    )
     target = pa.schema([pa.field("amount", pa.int64())])
     result = apply_schema_to_table(table, target)
     assert result.schema.field("amount").type == pa.int64()
@@ -139,10 +153,12 @@ def test_matching_type_kept_as_is():
 def test_column_not_in_target_kept_with_inferred_type():
     from connectors.keboola.parquet_io import apply_schema_to_table
 
-    table = pa.table({
-        "x": pa.array([1, 2], type=pa.int64()),
-        "extra": pa.array(["a", "b"]),
-    })
+    table = pa.table(
+        {
+            "x": pa.array([1, 2], type=pa.int64()),
+            "extra": pa.array(["a", "b"]),
+        }
+    )
     target = pa.schema([pa.field("x", pa.int64())])
     result = apply_schema_to_table(table, target)
     assert "extra" in result.column_names
@@ -185,11 +201,14 @@ def _write_csv(tmp_path: Path, rows: list[dict]) -> Path:
 def test_int_column_typed_via_dtypes(tmp_path):
     from connectors.keboola.parquet_io import csv_to_parquet
 
-    csv_path = _write_csv(tmp_path, [
-        {"id": "1", "amount": "100"},
-        {"id": "2", "amount": "200"},
-        {"id": "3", "amount": ""},
-    ])
+    csv_path = _write_csv(
+        tmp_path,
+        [
+            {"id": "1", "amount": "100"},
+            {"id": "2", "amount": "200"},
+            {"id": "3", "amount": ""},
+        ],
+    )
     pq_path = tmp_path / "out.parquet"
     csv_to_parquet(
         csv_path=csv_path,
@@ -204,10 +223,13 @@ def test_int_column_typed_via_dtypes(tmp_path):
 def test_date_column_typed_via_date32(tmp_path):
     from connectors.keboola.parquet_io import csv_to_parquet
 
-    csv_path = _write_csv(tmp_path, [
-        {"id": "1", "created_on": "2025-01-15"},
-        {"id": "2", "created_on": "0000-00-00"},
-    ])
+    csv_path = _write_csv(
+        tmp_path,
+        [
+            {"id": "1", "created_on": "2025-01-15"},
+            {"id": "2", "created_on": "0000-00-00"},
+        ],
+    )
     pq_path = tmp_path / "out.parquet"
     csv_to_parquet(
         csv_path=csv_path,
@@ -225,11 +247,14 @@ def test_date_column_typed_via_date32(tmp_path):
 def test_pyarrow_schema_overrides_inferred(tmp_path):
     from connectors.keboola.parquet_io import csv_to_parquet
 
-    csv_path = _write_csv(tmp_path, [
-        {"flag": "true"},
-        {"flag": "false"},
-        {"flag": ""},
-    ])
+    csv_path = _write_csv(
+        tmp_path,
+        [
+            {"flag": "true"},
+            {"flag": "false"},
+            {"flag": ""},
+        ],
+    )
     pq_path = tmp_path / "out.parquet"
     schema = pa.schema([pa.field("flag", pa.bool_())])
     csv_to_parquet(
@@ -273,3 +298,90 @@ def test_empty_csv_writes_empty_parquet(tmp_path):
     table = pq.read_table(pq_path)
     assert table.num_rows == 0
     assert table.schema.field("id").type == pa.int64()
+
+
+# ───────────────────────────── atomic publish (#1359) ─────────────────────────
+#
+# csv_to_parquet backs connectors/keboola/extractor.py's `_extract_via_legacy`
+# non-empty branch AND `extract_incremental`'s first-sync branch — both publish
+# straight to the served `<table>.parquet` path. Modeled on
+# tests/test_parquet_publish.py / tests/test_jira_atomic_parquet_writes.py: the
+# failure stub writes the footerless bytes a killed `pq.write_table` leaves AT
+# WHATEVER PATH THE WRITER CHOSE, then raises — a stub that never touches the
+# filesystem before raising would pass against the unfixed (direct-write) code
+# too.
+
+FOOTERLESS = b"PAR1" + b"\x00" * 64
+
+
+def _boom(table, where, **kw):
+    Path(where).write_bytes(FOOTERLESS)
+    raise OSError("disk full mid-write")
+
+
+def test_csv_to_parquet_killed_write_leaves_previous_publish_intact(tmp_path, monkeypatch):
+    from connectors.keboola import parquet_io
+
+    csv_path = _write_csv(tmp_path, [{"id": "1"}])
+    pq_path = tmp_path / "out.parquet"
+    pq_path.write_bytes(b"previously published")
+
+    monkeypatch.setattr(parquet_io.pq, "write_table", _boom)
+    with pytest.raises(OSError):
+        parquet_io.csv_to_parquet(csv_path=csv_path, parquet_path=pq_path, dtypes={"id": "Int64"})
+
+    assert pq_path.read_bytes() == b"previously published"
+
+
+def test_csv_to_parquet_killed_write_leaves_no_temp_behind(tmp_path, monkeypatch):
+    from connectors.keboola import parquet_io
+
+    csv_path = _write_csv(tmp_path, [{"id": "1"}])
+    pq_path = tmp_path / "out.parquet"
+
+    monkeypatch.setattr(parquet_io.pq, "write_table", _boom)
+    with pytest.raises(OSError):
+        parquet_io.csv_to_parquet(csv_path=csv_path, parquet_path=pq_path, dtypes={"id": "Int64"})
+
+    assert not pq_path.exists()
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_csv_to_parquet_published_mode_is_0644_under_restrictive_umask(tmp_path):
+
+    from connectors.keboola.parquet_io import csv_to_parquet
+
+    csv_path = _write_csv(tmp_path, [{"id": "1"}])
+    pq_path = tmp_path / "out.parquet"
+
+    previous = os.umask(0o077)
+    try:
+        csv_to_parquet(csv_path=csv_path, parquet_path=pq_path, dtypes={"id": "Int64"})
+    finally:
+        os.umask(previous)
+
+    assert oct(pq_path.stat().st_mode & 0o777) == oct(0o644)
+
+
+def test_csv_to_parquet_temp_is_per_process_and_never_matches_the_parquet_glob(tmp_path, monkeypatch):
+    from connectors.keboola import parquet_io
+
+    seen: list[Path] = []
+    real = parquet_io.pq.write_table
+
+    def _record(table, where, **kw):
+        seen.append(Path(where))
+        return real(table, where, **kw)
+
+    monkeypatch.setattr(parquet_io.pq, "write_table", _record)
+
+    csv_path = _write_csv(tmp_path, [{"id": "1"}])
+    pq_path = tmp_path / "out.parquet"
+    parquet_io.csv_to_parquet(csv_path=csv_path, parquet_path=pq_path, dtypes={"id": "Int64"})
+
+    assert seen, "write_table was never called"
+    assert seen[0].name != "out.parquet", "wrote straight onto the live path"
+
+    assert str(os.getpid()) in seen[0].name
+    assert [p.name for p in tmp_path.glob("*.parquet")] == ["out.parquet"]
+    assert not list(tmp_path.glob("*.parquet.*"))

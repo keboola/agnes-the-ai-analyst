@@ -654,16 +654,42 @@ def _run_distribution_mirror(payload: dict) -> None:
     The md5 compared/stamped is ``sync_state.hash`` — the SAME hash the
     manifest exposes to ``agnes pull`` (computed once, in
     ``src.orchestrator._update_sync_state`` / the materialized-pass
-    equivalent) — never recomputed here, so the marker index and the
-    manifest never disagree about "is this the current content".
+    equivalent) — so the marker index and the manifest never disagree about
+    "is this the current content".
+
+    That claim used to be merely ASSERTED — the value uploaded and stamped
+    was ``sync_state.hash`` itself, read from the DB, never checked against
+    the bytes ``put_file`` actually sent. Issue #1360: a concurrent sync
+    landing between the ``head_md5`` network round trip above and the
+    upload (no lock spans that window) could rewrite the on-disk parquet in
+    between, producing an object whose stamped md5 permanently disagreed
+    with its own content — undetectable afterwards, since every later run
+    only ever compares that stamp (a label) against ``sync_state.hash``
+    (another label). Now it is VERIFIED: immediately before a table's
+    object would be uploaded, :func:`src.object_store.hash_file_md5`
+    streams the on-disk parquet and the result is compared against
+    ``sync_state.hash`` — the same "hash exactly what you are about to
+    send, from one read, right before sending it" rule
+    ``app/api/data.py::_serve_part_self_describing`` established for the
+    app-served part-download response (``X-Agnes-Content-MD5`` /
+    ``src.distribution.CONTENT_MD5_HEADER``). A disagreement means the
+    parquet moved under the mirror since the ``sync_state`` read above; the
+    table is SKIPPED this run rather than published under a stamp that no
+    longer describes its bytes, and the next run reconciles once the race
+    has settled. Only the about-to-upload path re-hashes — a table whose
+    object is already stamped with ``sync_state.hash`` is still skipped on
+    the label comparison alone (below), so an unchanged table costs exactly
+    the one ``head_md5`` round trip it always has, never an extra local
+    read of a potentially multi-GB parquet.
 
     Idempotent: a table whose object already carries the current md5
     (``head_md5(key) == current_md5``) is skipped, not re-uploaded. Per-file
-    failures (network blip, permissions) are logged and do not abort the
-    run — a partial mirror is safe, since the marker index below only
-    lists tables that ARE currently mirrored; WF-2's manifest presign reads
-    that index and simply omits ``signed_url`` for anything not in it, so
-    the client falls back to the app-served download path.
+    failures (network blip, permissions, a parquet that vanished or changed
+    mid-race) are logged and do not abort the run — a partial mirror is
+    safe, since the marker index below only lists tables that ARE currently
+    mirrored AND whose content was just verified to match; WF-2's manifest
+    presign reads that index and simply omits ``signed_url`` for anything
+    not in it, so the client falls back to the app-served download path.
     """
     from src.object_store import object_store
 
@@ -674,12 +700,14 @@ def _run_distribution_mirror(payload: dict) -> None:
 
     from app.utils import resolve_local_parquet
     from src.distribution import write_mirror_index
+    from src.object_store import hash_file_md5
     from src.repositories import sync_state_repo, table_registry_repo
 
     registry_by_name = {t["name"]: t for t in table_registry_repo().list_all()}
 
     uploaded = 0
     skipped = 0
+    raced = 0
     failed = 0
     mirrored: dict[str, str] = {}
 
@@ -732,22 +760,51 @@ def _run_distribution_mirror(payload: dict) -> None:
             mirrored[table_id] = current_md5
             continue
 
+        # About to publish — hash the bytes we are actually about to send
+        # (streamed, one read) rather than trusting `current_md5` blindly.
+        # `head_md5` disagreeing only means "this object needs a refresh";
+        # it is not license to upload whatever happens to be on disk.
         try:
-            store.put_file(parquet_path, key, md5=current_md5)
+            actual_md5 = hash_file_md5(parquet_path)
+        except Exception:
+            logger.exception("distribution mirror: could not hash on-disk parquet for %s", table_id)
+            failed += 1
+            continue
+
+        if actual_md5 != current_md5:
+            # The parquet moved under the mirror since `sync_state` was read
+            # above — a concurrent sync landed in the window `head_md5`'s
+            # network round trip sits in (issue #1360; no lock spans it).
+            # Publishing now would stamp bytes that no longer match the
+            # label, so leave whatever object is already there untouched
+            # and let the next run reconcile once the race has settled.
+            logger.info(
+                "distribution mirror: %s changed on disk since sync_state was read, skipping this run "
+                "(sync_state %s, on-disk %s)",
+                table_id,
+                current_md5[:12],
+                actual_md5[:12],
+            )
+            raced += 1
+            continue
+
+        try:
+            store.put_file(parquet_path, key, md5=actual_md5)
         except Exception:
             logger.exception("distribution mirror: upload failed for %s", table_id)
             failed += 1
             continue
 
         uploaded += 1
-        mirrored[table_id] = current_md5
+        mirrored[table_id] = actual_md5
 
     write_mirror_index(store, mirrored)
 
     logger.info(
-        "distribution mirror: uploaded=%d skipped=%d failed=%d mirrored_total=%d",
+        "distribution mirror: uploaded=%d skipped=%d raced=%d failed=%d mirrored_total=%d",
         uploaded,
         skipped,
+        raced,
         failed,
         len(mirrored),
     )

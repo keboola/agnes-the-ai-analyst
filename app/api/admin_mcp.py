@@ -475,6 +475,7 @@ def _serialize_tool(row: Dict[str, Any]) -> Dict[str, Any]:
         "pii_fields": row.get("pii_fields") or [],
         "rate_limit_pm": row.get("rate_limit_pm"),
         "schedule": row.get("schedule"),
+        "projection_map": row.get("projection_map") or None,
         "enabled": bool(row.get("enabled")) if row.get("enabled") is not None else True,
         "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
         "updated_at": row["updated_at"].isoformat() if row.get("updated_at") else None,
@@ -1792,24 +1793,36 @@ async def materialize_mcp_source(
 
         freshly_written = {t.get("table") for t in result.get("tables") or []}
         lister_table = None
+        projection_map = None
         if only_tool_id and payload is not None and payload.lister:
             # Explicit designation only (the wizard's path) — see the
             # MaterializeRequest.lister comment. A targeted run WITHOUT the
             # flag (per-tool "Materialize now") never projects.
             tool = tool_registry_repo().get(only_tool_id)
             exposed = (tool or {}).get("exposed_name") or ""
+            projection_map = (tool or {}).get("projection_map") or None
             if exposed in freshly_written:
                 lister_table = exposed
         elif not only_tool_id and MATERIALIZED_TABLE in freshly_written:
             lister_table = MATERIALIZED_TABLE
         proj = None
         if lister_table:
-            proj = project_from_extract(source_id, result.get("extract_duckdb"), table_name=lister_table)
+            proj = project_from_extract(
+                source_id,
+                result.get("extract_duckdb"),
+                table_name=lister_table,
+                projection_map=projection_map,
+            )
         if proj is not None:
             result["linked_projection"] = {
                 "created": proj.created,
                 "updated": proj.updated,
                 "hidden": proj.hidden,
+                # The wizard needs both to explain a zero: how many rows it
+                # could not read, and which columns it had to choose from.
+                "skipped": proj.skipped,
+                "columns": list(proj.columns),
+                "projection_map": projection_map,
             }
     except Exception:
         logger.exception("linked-app projection failed for source %s", source_id)
@@ -1957,6 +1970,62 @@ async def update_mcp_tool(
         {"after": after},
         params_before={"before": before},
     )
+    return _serialize_tool(fresh) if fresh else {"tool_id": tool_id}
+
+
+_PROJECTION_FIELDS = ("id", "url", "name", "description")
+
+
+class ProjectionMapRequest(BaseModel):
+    """Which materialized columns carry a linked app's id / url / name.
+
+    A separate endpoint from ``PUT /mcp-tools/{id}`` on purpose: the admin
+    picks these AFTER a fetch, against the columns the tool actually emitted,
+    and clearing the mapping has to be expressible — which the tool-update
+    path cannot do (its upsert preserves the mapping precisely so a reclassify
+    does not wipe it).
+    """
+
+    projection_map: Optional[Dict[str, str]] = None
+
+
+@router.put("/mcp-tools/{tool_id}/projection-map")
+async def set_mcp_tool_projection_map(
+    tool_id: str,
+    payload: ProjectionMapRequest,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Set (or clear, with a null map) the tool's projection column mapping."""
+    repo = tool_registry_repo()
+    existing = repo.get(tool_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="mcp_tool_not_found")
+
+    mapping = payload.projection_map
+    if mapping is not None:
+        unknown = sorted(set(mapping) - set(_PROJECTION_FIELDS))
+        if unknown:
+            raise HTTPException(
+                status_code=400,
+                detail=f"unknown projection field(s): {', '.join(unknown)}; expected {', '.join(_PROJECTION_FIELDS)}",
+            )
+        # Drop blanks rather than storing them: an empty column name is a
+        # choice nobody made, and `map_row` treats a named column as
+        # authoritative — storing "" would pin a field to nothing.
+        mapping = {k: v.strip() for k, v in mapping.items() if isinstance(v, str) and v.strip()}
+        mapping = mapping or None
+
+    repo.set_projection_map(tool_id, mapping)
+    _audit(
+        conn,
+        user["id"],
+        "mcp_tool.projection_map",
+        f"mcp_tool:{tool_id}",
+        {"after": mapping},
+        params_before={"before": existing.get("projection_map")},
+    )
+    fresh = repo.get(tool_id)
     return _serialize_tool(fresh) if fresh else {"tool_id": tool_id}
 
 

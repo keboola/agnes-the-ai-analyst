@@ -20,7 +20,7 @@ class ToolRegistryRepository:
 
     @staticmethod
     def _decode_json(d: Dict[str, Any]) -> Dict[str, Any]:
-        for k in ("input_schema", "pii_fields"):
+        for k in ("input_schema", "pii_fields", "projection_map"):
             if d.get(k) is not None and isinstance(d[k], str):
                 try:
                     d[k] = json.loads(d[k])
@@ -50,6 +50,7 @@ class ToolRegistryRepository:
         rate_limit_pm: Optional[int] = None,
         schedule: Optional[str] = None,
         enabled: bool = True,
+        projection_map: Optional[Dict[str, str]] = None,
     ) -> None:
         if mode not in _VALID_MODES:
             raise ValueError(f"invalid mode: {mode}; must be one of {_VALID_MODES}")
@@ -60,8 +61,8 @@ class ToolRegistryRepository:
             """INSERT INTO tool_registry
                (tool_id, source_id, original_name, exposed_name, mode, table_id,
                 input_schema, description, mutating, pii_fields, rate_limit_pm, schedule,
-                enabled, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                enabled, projection_map, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT (tool_id) DO UPDATE SET
                    source_id      = excluded.source_id,
                    original_name  = excluded.original_name,
@@ -75,13 +76,46 @@ class ToolRegistryRepository:
                    rate_limit_pm  = excluded.rate_limit_pm,
                    schedule       = excluded.schedule,
                    enabled        = excluded.enabled,
+                   -- COALESCE, not overwrite: re-registering a tool (a
+                   -- reclassify, a schedule change) does not restate the
+                   -- projection mapping, and dropping it would send the
+                   -- projection back to guessing column names — the failure
+                   -- this column exists to end.
+                   projection_map = COALESCE(excluded.projection_map, tool_registry.projection_map),
                    updated_at     = excluded.updated_at""",
             [
-                tool_id, source_id, original_name, exposed_name, mode, table_id,
+                tool_id,
+                source_id,
+                original_name,
+                exposed_name,
+                mode,
+                table_id,
                 json.dumps(input_schema) if input_schema is not None else None,
-                description, mutating,
+                description,
+                mutating,
                 json.dumps(pii_fields) if pii_fields is not None else None,
-                rate_limit_pm, schedule, enabled, now, now,
+                rate_limit_pm,
+                schedule,
+                enabled,
+                json.dumps(projection_map) if projection_map is not None else None,
+                now,
+                now,
+            ],
+        )
+
+    def set_projection_map(self, tool_id: str, projection_map: Optional[Dict[str, str]]) -> None:
+        """Set (or clear, with ``None``) which columns the projection reads.
+
+        Separate from ``upsert`` because the admin chooses this AFTER a fetch,
+        against the columns the tool actually emitted — at registration time
+        nobody knows what they are.
+        """
+        self.conn.execute(
+            "UPDATE tool_registry SET projection_map = ?, updated_at = ? WHERE tool_id = ?",
+            [
+                json.dumps(projection_map) if projection_map is not None else None,
+                datetime.now(timezone.utc),
+                tool_id,
             ],
         )
 
@@ -93,9 +127,7 @@ class ToolRegistryRepository:
         return self._decode_json(dict(zip(cols, row)))
 
     def list_all(self) -> List[Dict[str, Any]]:
-        rows = self.conn.execute(
-            "SELECT * FROM tool_registry ORDER BY source_id, exposed_name"
-        ).fetchall()
+        rows = self.conn.execute("SELECT * FROM tool_registry ORDER BY source_id, exposed_name").fetchall()
         return self._rows_to_dicts(rows)
 
     def list_for_source(self, source_id: str) -> List[Dict[str, Any]]:
@@ -165,9 +197,10 @@ class ToolRegistryRepository:
             raise
 
     def delete_for_source(self, source_id: str) -> None:
-        tool_ids = [r[0] for r in self.conn.execute(
-            "SELECT tool_id FROM tool_registry WHERE source_id = ?", [source_id]
-        ).fetchall()]
+        tool_ids = [
+            r[0]
+            for r in self.conn.execute("SELECT tool_id FROM tool_registry WHERE source_id = ?", [source_id]).fetchall()
+        ]
         for tid in tool_ids:
             self.delete(tid)
 
@@ -186,7 +219,5 @@ class ToolRegistryRepository:
         )
 
     def grants_for_tool(self, tool_id: str) -> List[str]:
-        rows = self.conn.execute(
-            "SELECT group_id FROM tool_grants WHERE tool_id = ?", [tool_id]
-        ).fetchall()
+        rows = self.conn.execute("SELECT group_id FROM tool_grants WHERE tool_id = ?", [tool_id]).fetchall()
         return [r[0] for r in rows]
