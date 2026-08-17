@@ -206,6 +206,70 @@ class TestScannableEngineGate:
 
         assert not _executes_on_databricks({"source_type": "databricks", "query_mode": "materialized"})
 
+
+class TestServerConfigSurface:
+    """Every Databricks tunable the code reads must be settable from
+    `/admin/server-config`.
+
+    Nothing guarded this before, which is how `scan_timeout_seconds` shipped
+    readable-but-unsettable: an operator whose snapshots timed out could only
+    fix it by hand-editing instance.yaml, while every sibling guardrail sat
+    right there in the admin UI. The failure mode is quiet — the key works,
+    it is just invisible — so it needs a test rather than review attention.
+    """
+
+    #: Credential POINTERS stay out of the web-editable surface by convention:
+    #: no source block exposes its `token_env` (Keboola reads one the same way
+    #: and likewise omits it). Listed here so the omission reads as a decision.
+    DELIBERATELY_UNEXPOSED = {"token_env"}
+
+    def _config_keys_read_by_code(self) -> set:
+        """Scrape `get_value("data_source", "databricks", "<key>", ...)` out of
+        the source tree.
+
+        Deliberately a scrape and not a hand-list: a hand-list drifts silently,
+        which is the exact bug this test exists to catch.
+        """
+        import re
+        from pathlib import Path
+
+        pattern = re.compile(
+            r"""get_value\(\s*["']data_source["']\s*,\s*["']databricks["']\s*,\s*["']([A-Za-z0-9_]+)["']""",
+            re.VERBOSE,
+        )
+        root = Path(__file__).resolve().parent.parent
+        found: set = set()
+        for directory in ("app", "src", "connectors", "cli", "services"):
+            for path in (root / directory).rglob("*.py"):
+                found.update(pattern.findall(path.read_text(encoding="utf-8", errors="ignore")))
+        return found
+
+    def test_every_read_tunable_is_exposed_in_the_admin_schema(self):
+        from app.api.admin import _KNOWN_FIELDS
+
+        exposed = set(_KNOWN_FIELDS["data_source"]["databricks"]["fields"])
+        read = self._config_keys_read_by_code()
+        assert read, "scrape found nothing — the get_value call shape changed, fix this test"
+
+        missing = read - exposed - self.DELIBERATELY_UNEXPOSED
+        assert not missing, (
+            f"data_source.databricks keys read by the code but not settable in "
+            f"/admin/server-config: {sorted(missing)}. Add them to _KNOWN_FIELDS, or "
+            f"to DELIBERATELY_UNEXPOSED with the reason."
+        )
+
+    def test_the_snapshot_timeout_is_settable(self):
+        """The specific key this test class was written for."""
+        from app.api.admin import _KNOWN_FIELDS
+
+        field = _KNOWN_FIELDS["data_source"]["databricks"]["fields"]["scan_timeout_seconds"]
+        assert field["kind"] == "int"
+        assert field["default"] == 900
+        # The hint must say why it is not the interactive timeout, since an
+        # operator reading the two side by side will otherwise assume one is
+        # redundant and tune the wrong one.
+        assert "materialize" in field["hint"]
+
     def test_where_dialect_follows_the_engine(self):
         """A remote Databricks row parses AND renders as databricks — the flavor
         `agnes schema` advertises for it, and the one the warehouse runs."""

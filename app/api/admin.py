@@ -949,6 +949,27 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
                         "materialize timeout because a human is waiting. Default 120."
                     ),
                 },
+                "scan_timeout_seconds": {
+                    "kind": "int",
+                    "default": 900,
+                    "hint": (
+                        "Deadline on a SNAPSHOT statement (`agnes snapshot create`, "
+                        "/api/v2/scan) against a query_mode='remote' row. Longer than "
+                        "the interactive timeout on purpose: a snapshot is a "
+                        "materialize, not an answer someone is waiting on. Its SIZE "
+                        "bound is api.scan.max_result_bytes, not "
+                        "max_bytes_per_remote_query. Default 900."
+                    ),
+                },
+                "semantic_layer_catalogs": {
+                    "kind": "array",
+                    "item_kind": "string",
+                    "hint": (
+                        "Extra Unity Catalog catalogs the metric-view sync should "
+                        "enumerate, beyond the configured `catalog`. Empty = just "
+                        "`catalog`."
+                    ),
+                },
                 "attach_enabled": {
                     "kind": "bool",
                     "default": False,

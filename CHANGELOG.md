@@ -30,6 +30,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 - **`agnes snapshot create` crashed after a successful fetch when the estimate carried a null scan size.** `est.get("estimated_scan_bytes", 0)` returns `None` when the key exists and maps to `None`, and `int(None)` raises.
 
+- **Both new Databricks tunables are settable from `/admin/server-config`.** `scan_timeout_seconds` and `semantic_layer_catalogs` were readable by the code but invisible in the admin UI, so an operator whose snapshots timed out (or who wanted a second metric-view catalog) could only fix it by hand-editing `instance.yaml` while every sibling guardrail sat right there in the form. A new guard scrapes every `data_source.databricks.*` key the source tree reads and fails when one is missing from the schema, with `token_env` listed as the deliberate exclusion — credential pointers stay out of the web-editable surface, as they already do for Keboola.
+
 ### Internal
 
 - **The schema TTL cache is reset between tests.** Keyed on `table_id` with a 1 h TTL and process-global, so two suites registering the same id with different columns handed each other the wrong schema — a failure that depended only on file ordering. Added to the existing `_reset_module_caches` autouse fixture alongside the catalog and quota caches.
