@@ -10,6 +10,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- **Curated marketplaces can now ship a root-source plugin (`source: "./"`).** The single-plugin-repo shape — where the plugin IS the marketplace repo root — was listed in the catalog but served zero files, because every path derivation hardcoded `plugins/<name>/`. Plugin-dir resolution now honors the catalog entry's declared relative `source` (root or any in-repo subdirectory), containment-anchored on the marketplace's own clone so a hostile source can never reach a sibling marketplace's differently-RBAC'd content; absolute and `..` sources are rejected at ingest; external (dict-form) sources are cleanly excluded from the served set instead of shipping as broken catalog entries; and a root-source plugin's `.git/**` never enters the served ZIP/git tree or the ETag.
+- **The served marketplace preserves the executable bit.** Both channels flattened every file to mode 644, so a plugin whose hooks exec a bundled engine launcher (`${CLAUDE_PLUGIN_ROOT}/…/bin/<tool>`) arrived broken. Executable files now land as mode-100755 git tree entries and `external_attr` 755 ZIP members; `SERVED_FORMAT_VERSION` and the git tree format were bumped so already-cached content rolls over.
+
 ## [0.83.31] - 2026-08-17
 
 ### Fixed

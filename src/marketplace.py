@@ -87,6 +87,34 @@ def is_safe_plugin_name(name: object) -> bool:
     return bool(_SAFE_PLUGIN_NAME_RE.fullmatch(name))
 
 
+def is_safe_plugin_source(source: object) -> bool:
+    """True iff a string ``source`` is a relative path that stays inside the
+    marketplace clone.
+
+    A plugin's ``source`` in ``.claude-plugin/marketplace.json`` names where
+    the plugin lives relative to the marketplace repo root — ``"./"`` for a
+    root-source plugin (the single-plugin-repo shape), ``"./plugins/<name>"``
+    for the conventional layout, or any other in-repo subdirectory. Like the
+    plugin ``name``, it is curator-controlled and becomes a filesystem path
+    under ``${DATA_DIR}/marketplaces/<slug>/`` that is walked and served
+    wholesale, so an absolute path or a ``..`` segment is an arbitrary-file-read
+    primitive.
+
+    Non-string sources (Claude Code's external object form) are not this
+    function's concern — callers route those separately (valid at ingest, no
+    local files to serve).
+
+    Security playbook §6 mandates BOTH layers — reject here at ingest
+    (``read_plugins``) so a bad row never reaches the DB, and contain at use in
+    ``marketplace_filter._contained_plugin_dir``.
+    """
+    if not isinstance(source, str):
+        return False
+    if source.startswith("/") or "\\" in source or ":" in source:
+        return False
+    return all(seg != ".." for seg in source.split("/"))
+
+
 def is_full_sha(ref: str) -> bool:
     """True when `ref` is a full 40-character (hex) commit SHA."""
     return bool(_SHA_RE.match(ref or ""))
@@ -417,6 +445,15 @@ def read_plugins(slug: str) -> List[Dict[str, Any]]:
                 "marketplace %s: dropping plugin with unsafe name %r (not a single path segment)",
                 slug,
                 name,
+            )
+            continue
+        source = p.get("source")
+        if isinstance(source, str) and not is_safe_plugin_source(source):
+            logger.warning(
+                "marketplace %s: dropping plugin %r with unsafe source %r (must stay inside the clone)",
+                slug,
+                name,
+                source,
             )
             continue
         out.append(p)

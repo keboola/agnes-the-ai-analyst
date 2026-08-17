@@ -51,15 +51,14 @@ def marketplace_env(e2e_env, monkeypatch):
     for slug, plug in [("mkt-a", "plug-x"), ("mkt-b", "plug-y"), ("mkt-b", "plug-z")]:
         d = data_dir / "marketplaces" / slug / "plugins" / plug
         d.mkdir(parents=True, exist_ok=True)
-        (d / "CLAUDE.md").write_text(
-            f"# {plug}\nThis is {plug} from {slug}.\n", encoding="utf-8"
-        )
+        (d / "CLAUDE.md").write_text(f"# {plug}\nThis is {plug} from {slug}.\n", encoding="utf-8")
         skills = d / "skills"
         skills.mkdir()
         (skills / "hello.md").write_text(f"skill for {plug}", encoding="utf-8")
         (d / ".claude-plugin").mkdir()
         (d / ".claude-plugin" / "plugin.json").write_text(
-            json.dumps({"name": plug, "version": "1.0"}), encoding="utf-8",
+            json.dumps({"name": plug, "version": "1.0"}),
+            encoding="utf-8",
         )
 
     # DB setup
@@ -67,11 +66,16 @@ def marketplace_env(e2e_env, monkeypatch):
     try:
         t = datetime.now(timezone.utc)
         conn.execute(
-            "INSERT INTO marketplace_registry (id, name, url, registered_at) "
-            "VALUES (?, ?, ?, ?), (?, ?, ?, ?)",
+            "INSERT INTO marketplace_registry (id, name, url, registered_at) VALUES (?, ?, ?, ?), (?, ?, ?, ?)",
             [
-                "mkt-a", "Market A", "https://example.test/a.git", t,
-                "mkt-b", "Market B", "https://example.test/b.git", t,
+                "mkt-a",
+                "Market A",
+                "https://example.test/a.git",
+                t,
+                "mkt-b",
+                "Market B",
+                "https://example.test/b.git",
+                t,
             ],
         )
         for slug, name, ver in [
@@ -79,8 +83,7 @@ def marketplace_env(e2e_env, monkeypatch):
             ("mkt-b", "plug-y", "2.0"),
             ("mkt-b", "plug-z", "3.0"),
         ]:
-            raw = {"name": name, "version": ver, "source": f"./plugins/{name}",
-                   "description": f"{name} from {slug}"}
+            raw = {"name": name, "version": ver, "source": f"./plugins/{name}", "description": f"{name} from {slug}"}
             conn.execute(
                 "INSERT INTO marketplace_plugins (marketplace_id, name, version, raw, updated_at) "
                 "VALUES (?, ?, ?, ?, ?)",
@@ -126,6 +129,7 @@ def marketplace_env(e2e_env, monkeypatch):
         from src.repositories.user_curated_subscriptions import (
             UserCuratedSubscriptionsRepository,
         )
+
         subs = UserCuratedSubscriptionsRepository(conn)
         subs.subscribe("admin1", "mkt-a", "plug-x")
         subs.subscribe("admin1", "mkt-b", "plug-y")
@@ -413,3 +417,126 @@ class TestBuildInfoEtagCache:
         assert etag == info1["etag"]
         assert len(calls) == 1
         packager.invalidate_etag_cache()
+
+
+@pytest.fixture
+def root_source_env(e2e_env):
+    """A curated marketplace whose single plugin declares ``source: "./"`` —
+    the plugin IS the repo root (the common single-plugin-repo shape). The
+    clone carries a ``.git`` dir and Agnes-only enrichment files that must
+    never reach the served tree."""
+    from app.main import create_app
+    from app.auth.jwt import create_access_token
+    from src.db import get_system_db
+    from src.repositories.users import UserRepository
+    from src.repositories.user_groups import UserGroupsRepository
+    from src.repositories.user_group_members import UserGroupMembersRepository
+    from src.repositories.resource_grants import ResourceGrantsRepository
+    from src.repositories.user_curated_subscriptions import (
+        UserCuratedSubscriptionsRepository,
+    )
+
+    data_dir = e2e_env["data_dir"]
+    clone = data_dir / "marketplaces" / "solo-mkt"
+    (clone / ".claude-plugin").mkdir(parents=True)
+    (clone / ".claude-plugin" / "marketplace.json").write_text(
+        json.dumps(
+            {
+                "name": "solo-mkt",
+                "plugins": [{"name": "solo", "source": "./", "version": "0.8.0"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (clone / ".claude-plugin" / "plugin.json").write_text(
+        json.dumps({"name": "solo", "version": "0.8.0"}), encoding="utf-8"
+    )
+    (clone / ".claude-plugin" / "marketplace-metadata.json").write_text(
+        json.dumps({"plugins": {"solo": {"category": "Productivity"}}}),
+        encoding="utf-8",
+    )
+    (clone / "CLAUDE.md").write_text("# solo\n", encoding="utf-8")
+    skills = clone / "skills" / "hello"
+    skills.mkdir(parents=True)
+    (skills / "SKILL.md").write_text("---\nname: hello\n---\nhi", encoding="utf-8")
+    (clone / ".git").mkdir()
+    (clone / ".git" / "config").write_text("[core]\n", encoding="utf-8")
+    (clone / ".agnes").mkdir()
+    (clone / ".agnes" / "cover.png").write_bytes(b"\x89PNG")
+    # An engine launcher the plugin's hooks invoke via ${CLAUDE_PLUGIN_ROOT} —
+    # must survive the trip through Agnes still executable.
+    engine_bin = clone / "engine" / "bin"
+    engine_bin.mkdir(parents=True)
+    launcher = engine_bin / "enginectl"
+    launcher.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    launcher.chmod(0o755)
+
+    conn = get_system_db()
+    try:
+        t = datetime.now(timezone.utc)
+        conn.execute(
+            "INSERT INTO marketplace_registry (id, name, url, registered_at) VALUES (?, ?, ?, ?)",
+            ["solo-mkt", "Solo Market", "https://example.test/solo.git", t],
+        )
+        raw = {"name": "solo", "source": "./", "version": "0.8.0"}
+        conn.execute(
+            "INSERT INTO marketplace_plugins (marketplace_id, name, version, raw, updated_at) VALUES (?, ?, ?, ?, ?)",
+            ["solo-mkt", "solo", "0.8.0", json.dumps(raw), t],
+        )
+
+        UserRepository(conn).create(id="rs-user", email="rs@test.local", name="RS")
+        gid = UserGroupsRepository(conn).create(name="RSGroup")["id"]
+        UserGroupMembersRepository(conn).add_member("rs-user", gid, source="admin")
+        ResourceGrantsRepository(conn).create(
+            group_id=gid,
+            resource_type="marketplace_plugin",
+            resource_id="solo-mkt/solo",
+        )
+        UserCuratedSubscriptionsRepository(conn).subscribe("rs-user", "solo-mkt", "solo")
+    finally:
+        conn.close()
+
+    return {
+        "client": TestClient(create_app()),
+        "token": create_access_token("rs-user", "rs@test.local"),
+    }
+
+
+class TestRootSourcePluginServing:
+    def test_zip_serves_root_source_plugin_files(self, root_source_env):
+        c = root_source_env["client"]
+        resp = c.get("/marketplace.zip", headers=_auth(root_source_env["token"]))
+        assert resp.status_code == 200
+        files = _read_zip(resp.content)
+
+        assert "plugins/solo-mkt-solo/CLAUDE.md" in files
+        assert "plugins/solo-mkt-solo/skills/hello/SKILL.md" in files
+        assert "plugins/solo-mkt-solo/.claude-plugin/plugin.json" in files
+
+        manifest = json.loads(files[".claude-plugin/marketplace.json"])
+        entry = next(p for p in manifest["plugins"] if p["name"] == "solo")
+        assert entry["source"] == "./plugins/solo-mkt-solo"
+
+    def test_zip_excludes_git_and_agnes_only_files(self, root_source_env):
+        c = root_source_env["client"]
+        resp = c.get("/marketplace.zip", headers=_auth(root_source_env["token"]))
+        assert resp.status_code == 200
+        names = set(_read_zip(resp.content))
+        assert not any(".git/" in n for n in names), sorted(names)
+        # The top-level `.agnes/version.json` diagnostic is Agnes's own synth
+        # file and stays; the PLUGIN's `.agnes/**` and marketplace-metadata.json
+        # (which for a root-source plugin live at the clone root) must not be
+        # swept into the plugin subtree.
+        plugin_files = {n for n in names if n.startswith("plugins/")}
+        assert not any(".agnes/" in n for n in plugin_files), sorted(plugin_files)
+        assert not any(n.endswith("marketplace-metadata.json") for n in plugin_files), sorted(plugin_files)
+
+    def test_zip_preserves_executable_bit(self, root_source_env):
+        c = root_source_env["client"]
+        resp = c.get("/marketplace.zip", headers=_auth(root_source_env["token"]))
+        assert resp.status_code == 200
+        with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+            exec_mode = zf.getinfo("plugins/solo-mkt-solo/engine/bin/enginectl").external_attr >> 16
+            assert exec_mode & 0o111, oct(exec_mode)
+            doc_mode = zf.getinfo("plugins/solo-mkt-solo/CLAUDE.md").external_attr >> 16
+            assert not doc_mode & 0o111, oct(doc_mode)

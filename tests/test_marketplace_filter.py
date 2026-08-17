@@ -369,3 +369,112 @@ class TestResolveManifestNameHygiene:
         d = tmp_path / "plugins" / "p"
         d.mkdir(parents=True)
         assert resolve_manifest_name(d, fallback="fb") == "fb"
+
+
+class TestSourceAwarePluginDir:
+    """The catalog's declared ``source`` (a relative path inside the
+    marketplace clone) drives ``plugin_dir`` resolution. A plugin may live at
+    the repo root (``source: "./"``) or any subdirectory — the previously
+    hardcoded ``plugins/<name>`` layout is only the default when no source is
+    declared. Untrusted curator content: sources escaping the clone are
+    skipped, external (dict) sources have no local files to serve.
+    """
+
+    T = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+    def _grant_user(self, conn, *, marketplace: str, plugin: str) -> dict:
+        _make_user(conn, user_id="u1", email="u1@x")
+        gid = _make_group(conn, name="G1")
+        _add_member(conn, user_id="u1", group_id=gid)
+        _grant(conn, group_id=gid, marketplace=marketplace, plugin=plugin)
+        return {"id": "u1"}
+
+    def _resolve(self, conn, raw_plugin: dict) -> list[dict]:
+        from src.marketplace_filter import resolve_allowed_plugins
+
+        _register_marketplace(conn, id="mkt", registered_at=self.T, plugins=[raw_plugin])
+        user = self._grant_user(conn, marketplace="mkt", plugin=raw_plugin["name"])
+        return resolve_allowed_plugins(conn, user)
+
+    def test_root_source_resolves_to_clone_root(self, db_conn, tmp_path):
+        from app.utils import get_marketplaces_dir
+
+        result = self._resolve(db_conn, {"name": "solo", "source": "./"})
+        assert len(result) == 1
+        assert result[0]["plugin_dir"] == get_marketplaces_dir() / "mkt"
+
+    def test_subdir_source_resolves_within_clone(self, db_conn):
+        from app.utils import get_marketplaces_dir
+
+        result = self._resolve(db_conn, {"name": "solo", "source": "./tools/solo"})
+        assert len(result) == 1
+        assert result[0]["plugin_dir"] == get_marketplaces_dir() / "mkt" / "tools" / "solo"
+
+    def test_missing_source_defaults_to_plugins_layout(self, db_conn):
+        from app.utils import get_marketplaces_dir
+
+        result = self._resolve(db_conn, {"name": "solo"})
+        assert len(result) == 1
+        assert result[0]["plugin_dir"] == get_marketplaces_dir() / "mkt" / "plugins" / "solo"
+
+    def test_traversal_source_is_skipped(self, db_conn):
+        assert self._resolve(db_conn, {"name": "solo", "source": "../other-mkt"}) == []
+
+    def test_absolute_source_is_skipped(self, db_conn):
+        assert self._resolve(db_conn, {"name": "solo", "source": "/etc"}) == []
+
+    def test_embedded_traversal_source_is_skipped(self, db_conn):
+        assert self._resolve(db_conn, {"name": "solo", "source": "./tools/../../escape"}) == []
+
+    def test_external_dict_source_is_skipped(self, db_conn):
+        raw = {"name": "solo", "source": {"source": "github", "repo": "acme/solo"}}
+        assert self._resolve(db_conn, raw) == []
+
+    def test_symlinked_source_escaping_clone_is_skipped(self, db_conn, tmp_path):
+        from app.utils import get_marketplaces_dir
+
+        outside = tmp_path / "outside"
+        outside.mkdir(parents=True, exist_ok=True)
+        mkt = get_marketplaces_dir() / "mkt"
+        mkt.mkdir(parents=True, exist_ok=True)
+        (mkt / "ln").symlink_to(outside)
+        assert self._resolve(db_conn, {"name": "solo", "source": "./ln"}) == []
+
+
+class TestUnservedPaths:
+    """VCS internals never enter the served tree or the ETag: a root-source
+    plugin's ``plugin_dir`` IS the git clone, so ``.git/**`` must be excluded
+    exactly like Agnes-only enrichment files."""
+
+    def test_git_dir_is_unserved(self):
+        from src.marketplace_filter import is_unserved_path
+
+        assert is_unserved_path((".git", "config"))
+        assert is_unserved_path(("sub", ".git", "HEAD"))
+
+    def test_agnes_only_paths_stay_unserved(self):
+        from src.marketplace_filter import is_unserved_path
+
+        assert is_unserved_path((".agnes", "cover.png"))
+        assert is_unserved_path((".claude-plugin", "marketplace-metadata.json"))
+
+    def test_regular_paths_are_served(self):
+        from src.marketplace_filter import is_unserved_path
+
+        assert not is_unserved_path(("skills", "hello", "SKILL.md"))
+        assert not is_unserved_path((".claude-plugin", "plugin.json"))
+        assert not is_unserved_path((".github", "workflows", "ci.yml"))
+
+    def test_etag_ignores_git_internals(self, tmp_path):
+        from src.marketplace_filter import compute_etag
+
+        d = tmp_path / "mkt"
+        d.mkdir()
+        (d / "CLAUDE.md").write_bytes(b"content")
+        plugin = {"prefixed_name": "mkt-solo", "version": "1", "plugin_dir": d}
+        e1 = compute_etag([plugin])
+
+        (d / ".git").mkdir()
+        (d / ".git" / "config").write_bytes(b"[core]")
+        e2 = compute_etag([plugin])
+        assert e1 == e2

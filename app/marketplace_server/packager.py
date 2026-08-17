@@ -178,21 +178,28 @@ def build_info(conn: duckdb.DuckDBPyConnection, user: dict) -> Dict[str, Any]:
     }
 
 
-def _collect_members(plugins: List[dict], etag: str) -> List[Tuple[str, bytes]]:
-    """Collect (arcname, bytes) pairs for everything that goes into the ZIP.
+def _collect_members(plugins: List[dict], etag: str) -> List[Tuple[str, bytes, bool]]:
+    """Collect (arcname, bytes, executable) triples for everything that goes
+    into the ZIP.
 
     Intentionally returns unsorted — caller sorts for deterministic order.
+
+    ``executable`` carries the source file's owner-exec bit into the archive
+    so a plugin's engine launcher (invoked by its hooks via
+    ``${CLAUDE_PLUGIN_ROOT}``) still runs after install; synthesized entries
+    are never executable.
 
     Bundle entries (``bundle_dirs`` set, ``plugin_dir`` is None) get a synth
     ``.claude-plugin/plugin.json`` and content merged from every source dir
     minus each source's own ``.claude-plugin/`` (the bundle ships its own).
     """
-    members: List[Tuple[str, bytes]] = []
+    members: List[Tuple[str, bytes, bool]] = []
     manifest = _merged_manifest(plugins, etag)
     members.append(
         (
             ".claude-plugin/marketplace.json",
             json.dumps(manifest, indent=2, sort_keys=False).encode("utf-8"),
+            False,
         )
     )
 
@@ -203,12 +210,13 @@ def _collect_members(plugins: List[dict], etag: str) -> List[Tuple[str, bytes]]:
                 (
                     f"plugins/{prefix}/.claude-plugin/plugin.json",
                     _bundle_plugin_json_bytes(plugin),
+                    False,
                 )
             )
-            from src.marketplace_filter import _bundle_files
+            from src.marketplace_filter import _bundle_files, is_executable_file
 
             for rel, abs_path in _bundle_files(plugin["bundle_dirs"]):
-                members.append((f"plugins/{prefix}/{rel}", abs_path.read_bytes()))
+                members.append((f"plugins/{prefix}/{rel}", abs_path.read_bytes(), is_executable_file(abs_path)))
             continue
 
         plugin_dir = plugin["plugin_dir"]
@@ -225,10 +233,12 @@ def _collect_members(plugins: List[dict], etag: str) -> List[Tuple[str, bytes]]:
             rel_parts = f.relative_to(plugin_dir).parts
             # v32: strip Agnes-only files (`.agnes/**` and `marketplace-metadata.json`)
             # from the synth Claude Code marketplace so user instances never
-            # see enrichment metadata they don't need. ETag is computed from
-            # the same filtered set (compute_etag in marketplace_filter), so
-            # adding/removing these files never busts user-side caches.
-            if marketplace_filter.is_agnes_only_path(rel_parts):
+            # see enrichment metadata they don't need — plus `.git/**` for a
+            # root-source plugin whose plugin_dir IS the clone. ETag is
+            # computed from the same filtered set (compute_etag in
+            # marketplace_filter), so adding/removing these files never busts
+            # user-side caches.
+            if marketplace_filter.is_unserved_path(rel_parts):
                 continue
             rel = f.relative_to(plugin_dir).as_posix()
             arc = f"plugins/{prefix}/{rel}"
@@ -239,7 +249,7 @@ def _collect_members(plugins: List[dict], etag: str) -> List[Tuple[str, bytes]]:
             # but unused `agents`/`commands` dir holding only a .gitkeep).
             if rel == ".claude-plugin/plugin.json":
                 data = _sanitize_served_plugin_json(data, plugin_dir, plugin["manifest_name"])
-            members.append((arc, data))
+            members.append((arc, data, marketplace_filter.is_executable_file(f)))
 
     return members
 
@@ -342,10 +352,10 @@ def _bundle_plugin_json_bytes(plugin: dict) -> bytes:
     return json.dumps(payload, indent=2).encode("utf-8")
 
 
-def _write_zip_entry(zf: zipfile.ZipFile, arcname: str, data: bytes) -> None:
+def _write_zip_entry(zf: zipfile.ZipFile, arcname: str, data: bytes, *, executable: bool = False) -> None:
     info = zipfile.ZipInfo(filename=arcname, date_time=DETERMINISTIC_TIMESTAMP)
     info.compress_type = zipfile.ZIP_DEFLATED
-    info.external_attr = 0o644 << 16
+    info.external_attr = (0o755 if executable else 0o644) << 16
     zf.writestr(info, data)
 
 
@@ -448,6 +458,7 @@ def _build_zip_locked(
         (
             ".agnes/version.json",
             json.dumps(version_payload, indent=2, sort_keys=True).encode("utf-8"),
+            False,
         )
     )
 
@@ -455,6 +466,6 @@ def _build_zip_locked(
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        for arc, data in members:
-            _write_zip_entry(zf, arc, data)
+        for arc, data, executable in members:
+            _write_zip_entry(zf, arc, data, executable=executable)
     return buf.getvalue(), etag

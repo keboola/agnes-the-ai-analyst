@@ -1146,3 +1146,62 @@ def test_delete_marketplace_dir(clean_env):
 
     with pytest.raises(ValueError):
         delete_marketplace_dir("../etc")
+
+
+class TestReadPluginsSourceValidation:
+    """Layer-1 ingest validation for the plugin ``source`` field (security
+    playbook §6: reject at ingest, contain at use). A relative path inside the
+    clone — including ``"./"`` for a root-source plugin — is legitimate; an
+    absolute path or one with ``..`` segments is curator-hostile and drops the
+    plugin. Dict (external) sources pass ingest: they are valid Claude Code
+    catalog entries, they just have no local files for Agnes to serve."""
+
+    def _write_manifest(self, plugins: list[dict]) -> None:
+        from app.utils import get_marketplaces_dir
+
+        d = get_marketplaces_dir() / "srcmkt" / ".claude-plugin"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "marketplace.json").write_text(
+            json.dumps({"name": "srcmkt", "plugins": plugins}), encoding="utf-8"
+        )
+
+    def test_root_and_relative_sources_kept(self, clean_env):
+        from src.marketplace import read_plugins
+
+        self._write_manifest(
+            [
+                {"name": "root-plug", "source": "./"},
+                {"name": "sub-plug", "source": "./plugins/sub-plug"},
+                {"name": "bare-plug"},
+            ]
+        )
+        names = [p["name"] for p in read_plugins("srcmkt")]
+        assert names == ["root-plug", "sub-plug", "bare-plug"]
+
+    def test_absolute_source_drops_plugin(self, clean_env):
+        from src.marketplace import read_plugins
+
+        self._write_manifest(
+            [{"name": "evil", "source": "/etc"}, {"name": "ok", "source": "./"}]
+        )
+        assert [p["name"] for p in read_plugins("srcmkt")] == ["ok"]
+
+    def test_traversal_source_drops_plugin(self, clean_env):
+        from src.marketplace import read_plugins
+
+        self._write_manifest(
+            [
+                {"name": "evil", "source": "../other"},
+                {"name": "evil2", "source": "./x/../../y"},
+                {"name": "ok", "source": "./"},
+            ]
+        )
+        assert [p["name"] for p in read_plugins("srcmkt")] == ["ok"]
+
+    def test_external_dict_source_passes_ingest(self, clean_env):
+        from src.marketplace import read_plugins
+
+        self._write_manifest(
+            [{"name": "ext", "source": {"source": "github", "repo": "acme/ext"}}]
+        )
+        assert [p["name"] for p in read_plugins("srcmkt")] == ["ext"]

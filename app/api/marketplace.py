@@ -51,6 +51,8 @@ from app.services.journey import mark_journey
 from app.utils import get_marketplace_cache_dir, get_marketplaces_dir
 from src.marketplace import is_safe_plugin_name
 from src.marketplace_filter import (
+    _contained_plugin_dir,
+    _resolve_raw,
     required_plugin_keys,
     resolve_allowed_plugins,
     resolve_manifest_name,
@@ -1650,6 +1652,28 @@ def _get_plugin_row(
     return None
 
 
+def _curated_plugin_root(
+    marketplace_id: str,
+    plugin_name: str,
+    plugin_row: Optional[dict] = None,
+) -> Optional[Path]:
+    """On-disk root of a curated plugin, honoring the catalog's declared
+    ``source`` — a root-source plugin (``source: "./"``) lives at the clone
+    root, not under ``plugins/<name>/``. Delegates path containment to
+    ``marketplace_filter._contained_plugin_dir`` (the same helper the serve
+    paths use); returns ``None`` when there is no contained local directory
+    (external dict source, hostile source, unsafe name)."""
+    if plugin_row is None:
+        plugin_row = _get_plugin_row(None, marketplace_id, plugin_name)
+    source = _resolve_raw((plugin_row or {}).get("raw")).get("source")
+    return _contained_plugin_dir(
+        Path(get_marketplaces_dir()),
+        marketplace_id,
+        plugin_name,
+        source=source,
+    )
+
+
 @router.get(
     "/curated/{marketplace_id}/{plugin_name}",
     response_model=PluginDetailResponse,
@@ -1677,9 +1701,9 @@ async def curated_detail(
         raise HTTPException(status_code=404, detail="plugin_not_found")
 
     _reject_unsafe_segment(marketplace_id, plugin_name)
-    plugin_root = Path(get_marketplaces_dir()) / marketplace_id / "plugins" / plugin_name
-    skills = _list_inner_skills(plugin_root)
-    agents = _list_inner_agents(plugin_root)
+    plugin_root = _curated_plugin_root(marketplace_id, plugin_name, plugin_row)
+    skills = _list_inner_skills(plugin_root) if plugin_root else []
+    agents = _list_inner_agents(plugin_root) if plugin_root else []
 
     # v32: enrich each skill/agent card with its marketplace-metadata cover photo
     # so the inner cards on the plugin detail page render the real image
@@ -1735,9 +1759,9 @@ async def curated_detail(
         a.trend_pct = row.get("trend_pct")
         a.parent_stack_count = parent_stack
 
-    commands = _list_commands(plugin_root)
-    hooks = _list_hooks(plugin_root)
-    mcps = _list_mcps(plugin_root)
+    commands = _list_commands(plugin_root) if plugin_root else []
+    hooks = _list_hooks(plugin_root) if plugin_root else []
+    mcps = _list_mcps(plugin_root) if plugin_root else []
 
     subs, required = _curated_stack_sets(conn, user["id"])
     raw = plugin_row.get("raw") or {}
@@ -1788,7 +1812,7 @@ async def curated_detail(
         homepage=plugin_row.get("homepage"),
         cover_photo_url=plugin_row.get("cover_photo_url"),
         video_url=plugin_row.get("video_url"),
-        bundle_size=_bundle_size(plugin_root),
+        bundle_size=_bundle_size(plugin_root) if plugin_root else None,
         released_at=_to_iso(plugin_row.get("created_at")),
         updated_at=_to_iso(plugin_row.get("updated_at")),
         installed=(marketplace_id, plugin_name) in subs,
@@ -1797,7 +1821,7 @@ async def curated_detail(
         commands=commands,
         hooks=hooks,
         mcps=mcps,
-        files=_walk_files(plugin_root),
+        files=_walk_files(plugin_root) if plugin_root else [],
         docs=doc_link_entries,
         is_system=bool(plugin_row.get("is_system")),
         is_required=(marketplace_id, plugin_name) in required,
@@ -2181,7 +2205,7 @@ def _curated_inner_parent_fields(
     """
     plugin_row = _get_plugin_row(conn, marketplace_id, plugin_name) or {}
     _reject_unsafe_segment(marketplace_id, plugin_name)
-    plugin_root = Path(get_marketplaces_dir()) / marketplace_id / "plugins" / plugin_name
+    plugin_root = _curated_plugin_root(marketplace_id, plugin_name, plugin_row)
     meta = _resolve_marketplace_meta(conn, marketplace_id)
     # Pull the parent plugin's curator-friendly display name from the same
     # source the plugin detail hero uses (`_curated_plugin_enrichment`).
@@ -2192,7 +2216,7 @@ def _curated_inner_parent_fields(
         "category": plugin_row.get("category"),
         "parent_author_name": meta["curator_name"] or OWNER_TODO_PLACEHOLDER,
         "parent_updated_at": _to_iso(plugin_row.get("updated_at")),
-        "manifest_name": resolve_manifest_name(plugin_root, fallback=plugin_name),
+        "manifest_name": (resolve_manifest_name(plugin_root, fallback=plugin_name) if plugin_root else plugin_name),
         "parent_display_name": enrichment.get("display_name"),
     }
 
@@ -2638,7 +2662,9 @@ async def curated_skill_detail(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     _reject_unsafe_segment(marketplace_id, plugin_name)
-    plugin_root = Path(get_marketplaces_dir()) / marketplace_id / "plugins" / plugin_name
+    plugin_root = _curated_plugin_root(marketplace_id, plugin_name)
+    if plugin_root is None:
+        raise HTTPException(status_code=404, detail="skill_not_found")
     res = _read_inner(plugin_root, "skills", skill_name, is_dir_layout=True)
     skill_dir = _safe_join(plugin_root, "skills", skill_name)
     if res is None or skill_dir is None:
@@ -2706,7 +2732,9 @@ async def curated_agent_detail(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     _reject_unsafe_segment(marketplace_id, plugin_name)
-    plugin_root = Path(get_marketplaces_dir()) / marketplace_id / "plugins" / plugin_name
+    plugin_root = _curated_plugin_root(marketplace_id, plugin_name)
+    if plugin_root is None:
+        raise HTTPException(status_code=404, detail="agent_not_found")
     res = _read_inner(plugin_root, "agents", agent_name, is_dir_layout=False)
     agent_path = _safe_join(plugin_root, "agents", f"{agent_name}.md")
     if res is None or agent_path is None:

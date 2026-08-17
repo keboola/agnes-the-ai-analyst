@@ -23,7 +23,7 @@ from pydantic import BaseModel
 from app.auth.access import _user_group_ids, is_user_admin
 from app.auth.dependencies import get_current_user
 from app.utils import get_marketplaces_dir
-from src.marketplace_filter import _contained_plugin_dir, escapes_base
+from src.marketplace_filter import _contained_plugin_dir, _resolve_raw, escapes_base
 from src.marketplace_listing import _FRONTMATTER_RE, _parse_frontmatter
 from src.repositories import marketplace_plugins_repo
 
@@ -54,16 +54,19 @@ def _body(text: str) -> str:
 def _skills_for_plugin(
     marketplace_id: str,
     plugin_name: str,
+    source: Any = None,
 ) -> List[SkillEntry]:
-    # Third construction of `<root>/<slug>/plugins/<name>` in the codebase — and
-    # the only one whose output (SKILL.md bodies) goes straight into an HTTP
-    # response, so an escape here discloses file contents directly. Shares the
-    # containment helper with marketplace_filter's two sites rather than
-    # rebuilding the path raw (2026-08-05 audit, F-1).
-    plugin_root = _contained_plugin_dir(Path(get_marketplaces_dir()), marketplace_id, plugin_name)
+    # Third construction of the plugin root in the codebase — and the only one
+    # whose output (SKILL.md bodies) goes straight into an HTTP response, so an
+    # escape here discloses file contents directly. Shares the containment
+    # helper with marketplace_filter's two sites rather than rebuilding the
+    # path raw (2026-08-05 audit, F-1). `source` is the catalog entry's
+    # declared location — a root-source plugin (`source: "./"`) keeps its
+    # skills at the clone root, not under `plugins/<name>/`.
+    plugin_root = _contained_plugin_dir(Path(get_marketplaces_dir()), marketplace_id, plugin_name, source=source)
     if plugin_root is None:
         logger.warning(
-            "v2 skills: skipping plugin %r in marketplace %r — name is not a contained path segment",
+            "v2 skills: skipping plugin %r in marketplace %r — no contained local source directory",
             plugin_name,
             marketplace_id,
         )
@@ -147,5 +150,6 @@ async def list_skills(
     plugins = _accessible_plugins(user)
     skills: List[SkillEntry] = []
     for plugin in plugins:
-        skills.extend(_skills_for_plugin(plugin["marketplace_id"], plugin["name"]))
+        source = _resolve_raw(plugin.get("raw")).get("source")
+        skills.extend(_skills_for_plugin(plugin["marketplace_id"], plugin["name"], source=source))
     return SkillsResponse(skills=skills)
