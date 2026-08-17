@@ -520,6 +520,48 @@ class TestSourcePipelineStrip:
             table_registry_repo().unregister(tid)
             source_connections_repo().delete(conn_id)
 
+    def test_semantic_cell_counts_the_post_cutover_source_too(self, seeded_app):
+        """The flat-table cutover changed the Keboola sync's written `source`
+        from `keboola_semantic_layer` to `keboola_metastore`
+        (`src/semantic/keboola_sources.py`). The strip's `semantic` cell must
+        count a `keboola_metastore` row exactly like a legacy one — matching
+        only the retired literal would show 0 on an upgraded instance that
+        has already synced."""
+        import uuid
+
+        from src.repositories import glossary_repo, metric_repo, source_connections_repo
+        from app.web.router import _source_pipelines
+
+        conn_id = f"semprobe-{uuid.uuid4().hex[:8]}"
+        source_connections_repo().create(
+            id=conn_id,
+            name=f"Semantic Probe {conn_id[-4:]}",
+            source_type="keboola",
+            config={"stack_url": "https://connection.keboola.com"},
+        )
+        metric_repo().create(
+            id=f"keboola_metastore/{conn_id}/core/mrr",
+            name="mrr",
+            display_name="MRR",
+            category="core",
+            sql="SELECT 1",
+            source="keboola_metastore",
+            source_ref=conn_id,
+        )
+        glossary_repo().create(
+            id=f"keboola_metastore/{conn_id}/core/mrr",
+            term="MRR",
+            definition="…",
+            source="keboola_metastore",
+            source_ref=conn_id,
+        )
+        try:
+            cells = _source_pipelines()[conn_id]
+            assert cells["semantic"]["metrics"] == 1
+            assert cells["semantic"]["terms"] == 1
+        finally:
+            source_connections_repo().delete(conn_id)
+
     def test_the_page_serves_the_strip_data(self, seeded_app):
         c = seeded_app["client"]
         body = c.get(

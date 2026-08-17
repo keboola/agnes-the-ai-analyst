@@ -270,7 +270,12 @@ def _glossary_entries(model: dict) -> list[dict]:
 
 
 def project_document(
-    document_json: dict, *, source: str, source_ref: Optional[str], safe_prune: bool = False
+    document_json: dict,
+    *,
+    source: str,
+    source_ref: Optional[str],
+    safe_prune: bool = False,
+    prune: bool = True,
 ) -> ProjectionReport:
     """Project one Ossie document, then prune rows this (source, source_ref)
     previously wrote that the document no longer mentions.
@@ -288,6 +293,15 @@ def project_document(
     pass. Off by default (a git source emptying a model is a real delete
     signal); the Keboola sync — whose upstream can 200 with nothing usable —
     opts in. Mirrors the legacy ``_sync_one_source`` valve the cutover retired.
+
+    ``prune`` gates the whole delete-what's-missing pass (metrics, glossary,
+    columns), independent of ``safe_prune``. Off when the caller knows this
+    call is projecting a PARTIAL merged model list — e.g. one of several
+    composed documents failed validation and was dropped before reaching
+    here — because pruning against an incomplete list would delete the
+    dropped model's own previously-written rows, which upstream never asked
+    to have removed. Upserts still run normally; only the prune is skipped.
+    Defaults to True, the ordinary complete-document case.
     """
     report = ProjectionReport()
 
@@ -304,8 +318,23 @@ def project_document(
     binder = _table_binder()
     kb_lookups = _keboola_lookups()
 
+    # A model name shared by two models in the same document (a real upstream
+    # possibility — nothing prevents two Keboola semantic models being named
+    # the same) would otherwise upsert both onto the same `_scoped_id`s and
+    # silently overwrite one with the other; `report.metrics_written` would
+    # still count both, hiding the loss entirely. Skip the collision and
+    # report it instead. The durable fix is keying `_scoped_id` on the
+    # adapter's own `metastore_id` rather than the model name; this is the
+    # minimal guard until that lands.
+    seen_model_names: set[str] = set()
+
     for model in document_json.get("semantic_model") or []:
         model_name = model.get("name") or ""
+        if model_name in seen_model_names:
+            report.skipped.append({"kind": "model", "name": model_name, "reason": "duplicate_model_name"})
+            continue
+        seen_model_names.add(model_name)
+
         synonyms = _model_synonyms(model)
         constraints = _agnes_payload(model).get("constraints") or []
         # Per model: its own relationships resolve its metrics' JOINs, never a
@@ -357,7 +386,15 @@ def project_document(
             report.metrics_written += 1
 
         for dataset in model.get("datasets") or []:
-            table_id = dataset.get("source") or dataset.get("name") or ""
+            raw_table_id = dataset.get("source") or dataset.get("name") or ""
+            # Same table binder the metric leg uses (`_bind_metric` via
+            # `binder`): a Keboola dataset's `source` is the raw Storage
+            # tableId (`in.c-shop.orders`), but every column_metadata reader
+            # keys on the Agnes view name (`shop_orders`) — see
+            # `resolve_table_name`. Falls back to the raw id when nothing is
+            # registered, which keeps today's behavior for git/native sources
+            # (whose `source`/`name` already IS the meaningful table name).
+            table_id = (binder(raw_table_id) if binder else None) or raw_table_id
             field_names = written_columns_by_table.setdefault(table_id, set())
             for column in dataset.get("fields") or []:
                 column_name = column.get("name")
@@ -378,6 +415,13 @@ def project_document(
             if not term:
                 continue
             glossary_id = _scoped_id(source, source_ref, model_name, _slugify(term))
+            # refresh_fts=False: rebuilding the BM25 index once per glossary
+            # term makes a routine sync of N terms an O(N^2) full-index
+            # rebuild (DuckDB's `PRAGMA create_fts_index` is a full rebuild,
+            # not incremental). One rebuild after every write AND prune below
+            # instead. `GlossaryPgRepository.create` accepts the same kwarg as
+            # a no-op (Postgres computes `ts_rank` on the fly, no index to
+            # rebuild), so this is safe on either backend.
             glossary_repo().create(
                 id=glossary_id,
                 term=term,
@@ -385,13 +429,18 @@ def project_document(
                 see_also=entry.get("see_also"),
                 source=source,
                 source_ref=source_ref,
+                refresh_fts=False,
             )
             written_glossary_ids.add(glossary_id)
             report.glossary_written += 1
 
-    report.metrics_pruned = _prune_metrics(source, source_ref, written_metric_ids, safe_prune=safe_prune)
-    report.glossary_pruned = _prune_glossary(source, source_ref, written_glossary_ids, safe_prune=safe_prune)
-    _prune_columns(source, written_columns_by_table)
+    if prune:
+        report.metrics_pruned = _prune_metrics(source, source_ref, written_metric_ids, safe_prune=safe_prune)
+        report.glossary_pruned = _prune_glossary(source, source_ref, written_glossary_ids, safe_prune=safe_prune)
+        _prune_columns(source, written_columns_by_table)
+
+    if report.glossary_written or report.glossary_pruned:
+        glossary_repo().refresh_search_index()
 
     return report
 

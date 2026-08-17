@@ -881,6 +881,35 @@ class TestConstraintCaseNormalization:
         assert [v["severity"] for v in result["violations"]] == ["error"]
         assert result["valid"] is False
 
+    def test_keboola_shaped_constraint_type_key_drives_valid_false(self):
+        """`connectors/keboola/semantic_ossie.py::_compose_constraint` writes
+        the constraint's type under `constraint_type`, not this module's own
+        `type` key -- without accepting that key, every constraint composed
+        from a real Keboola project degrades to `post_execution_checks` and
+        `validate_query` can never return `valid=False` for it (wave-3 finding).
+        Shaped exactly like the adapter's own composed dict."""
+        document = _fixture_document()
+        document["custom_extensions"] = [
+            _agnes_extension(
+                [
+                    {
+                        "name": "revenue_requires_date_filter",
+                        "constraint_type": "required_filter",
+                        "rule": "order_date",
+                        "severity": "error",
+                        "metrics": ["revenue"],
+                    }
+                ]
+            )
+        ]
+        constraints = extract_constraints(document)
+        assert constraints[0]["type"] == "required_filter"
+
+        result = validate_query("SELECT SUM(amount) AS revenue FROM orders", [document])
+        assert result["post_execution_checks"] == []
+        assert [v["severity"] for v in result["violations"]] == ["error"]
+        assert result["valid"] is False
+
     def test_type_case_variant_stored_normalized(self):
         document = {
             "custom_extensions": [

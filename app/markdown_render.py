@@ -32,39 +32,49 @@ from typing import Optional
 import nh3
 from markdown_it import MarkdownIt
 
+from src.semantic.keboola_sources import KEBOOLA_SEMANTIC_LAYER_SOURCES
+
 
 # CommonMark-strict renderer. `html=False` disables inline raw HTML so a
 # curator who pastes `<script>` inside markdown gets the literal string
 # rendered, not an executable tag. `linkify` is off to keep bare strings
 # from becoming clickable links.
-_md = (
-    MarkdownIt("commonmark", {"html": False, "linkify": False})
-    .enable("table")
-    .enable("strikethrough")
-)
+_md = MarkdownIt("commonmark", {"html": False, "linkify": False}).enable("table").enable("strikethrough")
 
 # Same renderer with raw HTML pass-through, for stored text that may itself
 # BE html rather than markdown (`html_source=True` below). Safety still rests
 # on the same nh3 allowlist — the difference is only whether a `<strong>` in
 # the source becomes markup or becomes the visible characters `<strong>`.
-_md_html_source = (
-    MarkdownIt("commonmark", {"html": True, "linkify": False})
-    .enable("table")
-    .enable("strikethrough")
-)
+_md_html_source = MarkdownIt("commonmark", {"html": True, "linkify": False}).enable("table").enable("strikethrough")
 
 
 # nh3 allowlist — narrower than `src/sanitize_news.py` (which supports
 # admin-edited HTML with iframes). Marketplace descriptions don't need
 # iframes, images, or HTML5 details — just text formatting + links + code.
 _ALLOWED_TAGS: set[str] = {
-    "p", "br",
-    "h2", "h3", "h4",
-    "ul", "ol", "li",
-    "strong", "em", "b", "i", "s",
-    "code", "pre", "blockquote",
+    "p",
+    "br",
+    "h2",
+    "h3",
+    "h4",
+    "ul",
+    "ol",
+    "li",
+    "strong",
+    "em",
+    "b",
+    "i",
+    "s",
+    "code",
+    "pre",
+    "blockquote",
     "a",
-    "table", "thead", "tbody", "tr", "th", "td",
+    "table",
+    "thead",
+    "tbody",
+    "tr",
+    "th",
+    "td",
     "hr",
 }
 
@@ -86,14 +96,21 @@ _ALLOWED_URL_SCHEMES: set[str] = {"http", "https", "mailto"}
 # handlers) is still stripped; these carry layout, never behaviour. Curator
 # markdown keeps the narrow set — it has <p> and never needs these.
 _HTML_SOURCE_EXTRA_TAGS: set[str] = {
-    "div", "section", "article",
-    "dl", "dt", "dd",
-    "figure", "figcaption",
+    "div",
+    "section",
+    "article",
+    "dl",
+    "dt",
+    "dd",
+    "figure",
+    "figcaption",
     # The headings the narrow allowlist omits. It keeps h2-h4 so a curator
     # cannot outrank the page's own headings; an imported description is not
     # authored against this page at all, and dropping its <h1> fused the
     # sections it separated ("Section ASection B").
-    "h1", "h5", "h6",
+    "h1",
+    "h5",
+    "h6",
     # The headings the narrow allowlist omits. It keeps h2-h4 so a curator
     # cannot outrank the page's own headings; an imported description is not
     # authored against this page at all, and dropping its <h1> fused the
@@ -204,8 +221,11 @@ def render_plain(markdown: Optional[str], *, html_source: bool = False) -> str:
 # upstream catalog's, stored with no normalization — routinely rich HTML. Every
 # other writer produces markdown: `manual` (the admin UI / POST endpoints) and
 # `yaml_import` (docs/metrics/*.yaml, and the OpenMetadata export, which strips
-# HTML before writing the YAML).
-HTML_DIALECT_SOURCES = frozenset({"keboola_semantic_layer"})
+# HTML before writing the YAML). Includes both the pre- and post-flat-table-
+# cutover Keboola writer sources (`src.semantic.keboola_sources`) — the
+# projector's rows carry HTML descriptions from the same upstream catalog as
+# the retired flat composer's did.
+HTML_DIALECT_SOURCES = KEBOOLA_SEMANTIC_LAYER_SOURCES
 
 
 def stores_html(row: dict) -> bool:

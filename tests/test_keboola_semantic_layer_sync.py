@@ -622,11 +622,38 @@ class TestSyncSemanticLayerGlossary:
         # above (composition drops the term before projection ever sees it).
         assert result["skipped_missing_term"] == 0
 
-    # (removed: test_imports_multiple_terms_with_single_fts_rebuild — the
-    # single-FTS-rebuild-per-sync batching optimization is retired by the
-    # flat-table cutover; src.semantic.projection.project_document writes
-    # glossary rows individually via glossary_repo().create(), which
-    # refreshes the FTS index on every call.)
+    def test_imports_multiple_terms_with_single_fts_rebuild(self, e2e_env):
+        """Regression: importing N>1 glossary terms in one sync must rebuild
+        the BM25 FTS index once (after the batch), not once per term — a
+        per-row rebuild is an O(N^2) `PRAGMA create_fts_index` + CHECKPOINT
+        storm against the shared system DB connection. Re-added post-cutover:
+        `src.semantic.projection.project_document` is now the writer and must
+        carry the same batching contract the retired flat composer had —
+        `glossary_repo().create(..., refresh_fts=False)` per term, one
+        `refresh_search_index()` after the whole batch (writes + prune)."""
+        from connectors.keboola.semantic_layer import sync_semantic_layer
+        from src.repositories.glossary import GlossaryRepository
+
+        fake_storage = MagicMock()
+        fake_storage.verify_token.return_value = {"isMasterToken": True}
+        fake_metastore = MagicMock()
+        fake_metastore.list_items.side_effect = _metastore_side_effect(
+            glossary_items=[
+                _glossary_item("A", "def a"),
+                _glossary_item("B", "def b"),
+                _glossary_item("C", "def c"),
+            ]
+        )
+
+        with (
+            patch("connectors.keboola.storage_api.KeboolaStorageClient", return_value=fake_storage),
+            patch("connectors.keboola.metastore_client.MetastoreClient", return_value=fake_metastore),
+            patch.object(GlossaryRepository, "_refresh_fts_index") as mock_refresh,
+        ):
+            result = sync_semantic_layer(keboola_url="https://connection.keboola.com", keboola_token="master-tok")
+
+        assert result["glossary_created_or_updated"] == 3
+        mock_refresh.assert_called_once()
 
     def test_metric_import_behavior_unchanged_by_glossary_step(self, e2e_env):
         """Regression: adding the glossary step must not change a single
@@ -855,6 +882,40 @@ class TestSyncSemanticLayerMultiSource:
         assert result["pruned"] == 2
         assert metric_repo().get("keboola/model-a/legacy") is None
         assert metric_repo().get("keboola/model-a/gone_upstream") is None
+
+    def test_null_ref_glossary_rows_are_also_purged_by_the_default_connection(self, e2e_env, vault_key):
+        """Symmetric to `test_null_ref_rows_are_purged_by_the_default_connection`
+        on the metric side: a legacy `source="keboola_semantic_layer"`
+        glossary row must not survive as a permanent duplicate of its
+        freshly-projected `keboola_metastore` twin. Gated on
+        `glossary_written` (not `metrics_written`): this sync's project
+        publishes a glossary term, so the purge is allowed to run."""
+        from src.repositories import glossary_repo
+
+        _make_master_connection("conn-a", stack_url="https://a.keboola.com", token="tok-a", is_default=True)
+
+        glossary_repo().create(
+            id="keboola/model-a/legacy_term",
+            term="legacy_term",
+            definition="a pre-multi-source glossary row",
+            source="keboola_semantic_layer",
+        )
+
+        result = _run_sync(
+            {
+                "tok-a": {
+                    "owner_id": 111,
+                    "model_uuid": "model-a",
+                    "metrics": [],
+                    "glossary": [_glossary_item("mrr", "Monthly recurring revenue.")],
+                }
+            }
+        )
+
+        assert result["glossary_created_or_updated"] == 1
+        assert result["glossary_pruned"] == 1
+        assert glossary_repo().get("keboola_metastore/conn-a/core/mrr") is not None
+        assert glossary_repo().get("keboola/model-a/legacy_term") is None
 
     def test_safety_valve_scoped_per_source(self, e2e_env, vault_key):
         from src.repositories import metric_repo
@@ -1378,6 +1439,53 @@ class TestMultiModelSync:
         assert result["pruned"] == 1
         assert metric_repo().get("keboola_metastore/_/shared/aov") is None
         assert metric_repo().get("keboola_metastore/_/core/revenue") is not None
+        assert metric_repo().get("keboola_metastore/_/shared/orders_count") is not None
+
+    def test_partial_composition_does_not_prune_the_dropped_models_rows(self, e2e_env):
+        """`_store_ossie_documents` logs-and-drops any single composed
+        document that fails Ossie schema validation. When that happens the
+        merged model list handed to `project_document` this pass is a PARTIAL
+        view of what upstream actually publishes — pruning against it would
+        delete the dropped model's OWN previously-written rows, which
+        upstream never asked to have removed. Simulates the drop by forcing
+        `validate_document` to reject the "shared" model's composed document
+        on the second sync, while "core"'s stays real and unaffected."""
+        from src.repositories import metric_repo
+        from src.semantic import document_validation
+
+        _register_keboola_table("in.c-example_source", "orders", "crm_orders")
+
+        models = [_model_item("model-1", "core"), _model_item("model-2", "shared")]
+        per_model = {
+            "model-1": {
+                "semantic-dataset": [_dataset_item(model_uuid="model-1")],
+                "semantic-metric": [_metric_item("revenue", 'SUM("amount")', "in.c-example_source.orders", "model-1")],
+            },
+            "model-2": {
+                "semantic-dataset": [_dataset_item(model_uuid="model-2")],
+                "semantic-metric": [_metric_item("orders_count", "COUNT(*)", "in.c-example_source.orders", "model-2")],
+            },
+        }
+        self._run(models, per_model)
+        assert metric_repo().get("keboola_metastore/_/core/revenue") is not None
+        assert metric_repo().get("keboola_metastore/_/shared/orders_count") is not None
+
+        real_validate = document_validation.validate_document
+
+        def _fail_shared_model(text):
+            if "name: shared" in text:
+                return document_validation.ValidationResult(ok=False, errors=["forced failure for test"])
+            return real_validate(text)
+
+        with patch("src.semantic.document_validation.validate_document", side_effect=_fail_shared_model):
+            result = self._run(models, per_model)
+
+        assert result["status"] == "ok"
+        # "core" still composes and projects fine.
+        assert metric_repo().get("keboola_metastore/_/core/revenue") is not None
+        # "shared"'s document failed validation and was dropped — its
+        # PREVIOUSLY-WRITTEN row must survive this pass, not be pruned as if
+        # upstream had genuinely removed it.
         assert metric_repo().get("keboola_metastore/_/shared/orders_count") is not None
 
     def test_imports_glossary_from_every_model(self, e2e_env):

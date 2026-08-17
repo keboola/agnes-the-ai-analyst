@@ -5,7 +5,7 @@
 
 {#- Source badge -#}
 {% macro source_badge(source) -%}
-{%- if source == 'keboola_semantic_layer' -%}
+{%- if source in keboola_semantic_layer_sources -%}
 <span class="badge badge--success">Keboola sync</span>
 {%- elif source == 'yaml_import' -%}
 <span class="badge badge--info">YAML import</span>
@@ -609,6 +609,10 @@
 {% block scripts %}
 <script>
 (function () {
+    // Pre- and post-flat-table-cutover Keboola writer sources
+    // (`src.semantic.keboola_sources`) — server-injected so this client-side
+    // badge never drifts from the Jinja `source_badge` macro above.
+    const KEBOOLA_SEMANTIC_LAYER_SOURCES = new Set({{ keboola_semantic_layer_sources | list | tojson }});
     function esc(s) {
         const d = document.createElement('div');
         d.textContent = s == null ? '' : String(s);
@@ -616,7 +620,7 @@
     }
     function trunc(s, n) { return s && s.length > n ? s.slice(0, n) + '…' : (s || ''); }
     function sourceBadge(src) {
-        if (src === 'keboola_semantic_layer') return '<span class="badge badge--success">Keboola sync</span>';
+        if (KEBOOLA_SEMANTIC_LAYER_SOURCES.has(src)) return '<span class="badge badge--success">Keboola sync</span>';
         if (src === 'yaml_import') return '<span class="badge badge--info">YAML import</span>';
         if (src === 'openmetadata') return '<span class="badge badge--warn">OpenMetadata</span>';
         return '<span class="badge">' + esc(src || 'manual') + '</span>';

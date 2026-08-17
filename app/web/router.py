@@ -74,6 +74,7 @@ from src.repositories import (
     users_repo,
 )
 from src.connectors_manifest import load_manifest
+from src.semantic.keboola_sources import KEBOOLA_SEMANTIC_LAYER_SOURCES
 from app.api.me_debug import (
     require_debug_auth_enabled,
     _read_session_token,
@@ -475,6 +476,10 @@ def _detail_back(kind: str, href: str, label: str) -> dict[str, str]:
 
 
 templates.env.globals["detail_back"] = _detail_back
+# The Keboola semantic-layer writer source(s) (`src.semantic.keboola_sources`)
+# — pre- and post-flat-table-cutover — so a template badge/filter matches both
+# without hard-coding the retired literal.
+templates.env.globals["keboola_semantic_layer_sources"] = KEBOOLA_SEMANTIC_LAYER_SOURCES
 
 
 class _FlexDict(dict):
@@ -6878,10 +6883,10 @@ def _source_inventory() -> dict:
         from src.repositories import glossary_repo, metric_repo
 
         for m in metric_repo().list():
-            if m.get("source") == "keboola_semantic_layer" and m.get("source_ref"):
+            if m.get("source") in KEBOOLA_SEMANTIC_LAYER_SOURCES and m.get("source_ref"):
                 sem_metrics[m["source_ref"]] = sem_metrics.get(m["source_ref"], 0) + 1
         for t in glossary_repo().list(limit=100000):
-            if t.get("source") == "keboola_semantic_layer" and t.get("source_ref"):
+            if t.get("source") in KEBOOLA_SEMANTIC_LAYER_SOURCES and t.get("source_ref"):
                 sem_terms[t["source_ref"]] = sem_terms.get(t["source_ref"], 0) + 1
     except Exception as e:
         logger.warning("data-sources pipelines: semantic counts unavailable: %s", e)
@@ -7065,8 +7070,8 @@ async def admin_semantic_layer_page(
     terms = glossary_repo().list(limit=100000)
 
     def _counts(ref: Optional[str]) -> tuple[int, int]:
-        m = sum(1 for x in metrics if x.get("source") == "keboola_semantic_layer" and x.get("source_ref") == ref)
-        g = sum(1 for x in terms if x.get("source") == "keboola_semantic_layer" and x.get("source_ref") == ref)
+        m = sum(1 for x in metrics if x.get("source") in KEBOOLA_SEMANTIC_LAYER_SOURCES and x.get("source_ref") == ref)
+        g = sum(1 for x in terms if x.get("source") in KEBOOLA_SEMANTIC_LAYER_SOURCES and x.get("source_ref") == ref)
         return m, g
 
     raw_sources = _enumerate_master_sources()  # names/ids/stack_url only — token stripped below
@@ -7152,10 +7157,12 @@ async def admin_semantic_layer_page(
     connection_names = {c["id"]: (c.get("name") or c["id"]) for c in keboola_connections}
 
     all_refs = {
-        m.get("source_ref") for m in metrics if m.get("source") == "keboola_semantic_layer" and m.get("source_ref")
+        m.get("source_ref")
+        for m in metrics
+        if m.get("source") in KEBOOLA_SEMANTIC_LAYER_SOURCES and m.get("source_ref")
     }
     all_refs |= {
-        t.get("source_ref") for t in terms if t.get("source") == "keboola_semantic_layer" and t.get("source_ref")
+        t.get("source_ref") for t in terms if t.get("source") in KEBOOLA_SEMANTIC_LAYER_SOURCES and t.get("source_ref")
     }
     orphaned = []
     for ref in sorted(all_refs - known_ids):

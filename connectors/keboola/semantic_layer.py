@@ -631,7 +631,7 @@ def _sync_one_source(
 
     from connectors.keboola.metastore_client import MetastoreApiError, MetastoreClient
     from connectors.keboola.storage_api import KeboolaStorageClient, StorageApiError
-    from src.repositories import metric_repo, table_registry_repo
+    from src.repositories import glossary_repo, metric_repo, table_registry_repo
 
     scope_refs: set = set(prune_scope_refs) if prune_scope_refs is not None else {source_ref}
 
@@ -758,6 +758,26 @@ def _sync_one_source(
 
     parsed_documents = _store_ossie_documents(ossie_documents, source="keboola_metastore", source_ref=source_ref)
 
+    # `_store_ossie_documents` logs-and-drops any single composed document
+    # that fails schema validation (no slug to key storage on or protect from
+    # its own prune). When that happens the merged model list below is a
+    # PARTIAL view of what the adapter actually composed — projecting it with
+    # pruning on would delete the dropped model's own previously-written rows,
+    # which upstream never asked to have removed (mirrors the retired
+    # "fetch all models before writing anything" invariant). Skip the prune
+    # for this pass only; the write/upsert side is unaffected, and the next
+    # fully-valid sync prunes normally.
+    partial_composition = len(parsed_documents) < len(ossie_documents)
+    if partial_composition:
+        logger.warning(
+            "Keboola semantic layer: %d of %d composed document(s) failed validation and were "
+            "dropped this pass (source_ref=%s); skipping prune to avoid deleting the dropped "
+            "model(s)' previously-written rows. A later fully-valid sync will prune normally.",
+            len(ossie_documents) - len(parsed_documents),
+            len(ossie_documents),
+            source_ref,
+        )
+
     # Project the stored documents as ONE merged model list. project_document's
     # prune is scoped to (source, source_ref) so it can only touch this
     # project's own rows, and safe_prune keeps an empty-but-valid upstream from
@@ -768,7 +788,9 @@ def _sync_one_source(
     merged: dict[str, list] = {"semantic_model": []}
     for doc in parsed_documents:
         merged["semantic_model"].extend(doc.get("semantic_model") or [])
-    report = project_document(merged, source="keboola_metastore", source_ref=source_ref, safe_prune=True)
+    report = project_document(
+        merged, source="keboola_metastore", source_ref=source_ref, safe_prune=True, prune=not partial_composition
+    )
 
     # `unresolved_tables` is a plain fact for the admin Semantic layer page: the
     # tables a metric needs but this instance never registered, i.e. the set to
@@ -806,13 +828,30 @@ def _sync_one_source(
                 legacy_repo.delete(m["id"])
                 purged_legacy += 1
 
+    # Symmetric one-time retirement for glossary rows — the metric-side purge
+    # above has always run this pass, but the glossary side was never added,
+    # so a legacy `source="keboola_semantic_layer"` glossary row is a
+    # permanent duplicate of its freshly-projected `keboola_metastore` twin.
+    # Gated on `report.glossary_written` (NOT `metrics_written`): a project
+    # that writes metrics but no glossary terms this pass must not wipe
+    # glossary rows it never rewrote.
+    purged_legacy_glossary = 0
+    if report.glossary_written:
+        legacy_glossary_repo = glossary_repo()
+        for g in legacy_glossary_repo.list(limit=100_000):
+            if (g.get("source") or "") == "keboola_semantic_layer" and _in_scope(g, scope_refs, adopt_null):
+                legacy_glossary_repo.delete(g["id"])
+                purged_legacy_glossary += 1
+        if purged_legacy_glossary:
+            legacy_glossary_repo.refresh_search_index()
+
     return {
         "status": "ok",
         "created_or_updated": report.metrics_written,
         "pruned": report.metrics_pruned + purged_legacy,
         "skipped_unresolved_table": skipped_unresolved_table,
         "glossary_created_or_updated": report.glossary_written,
-        "glossary_pruned": report.glossary_pruned,
+        "glossary_pruned": report.glossary_pruned + purged_legacy_glossary,
         # Truncated for the payload, but the TOTAL rides along: the admin page
         # presents this list as the set to go and register, so a silent cut
         # meant an admin could register everything shown, sync again, and still

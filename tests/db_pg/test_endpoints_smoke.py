@@ -2698,6 +2698,7 @@ class TestSemanticLayerSmoke:
         "POST /api/admin/semantic-sources/{source_id}/sync",
         "GET /api/semantic-models/search",
         "GET /api/semantic-models/{slug}.yaml",
+        "POST /api/semantic-models/validate-query",
     }
 
     def test_model_crud_and_export(self, seeded_app_both):
@@ -2726,6 +2727,15 @@ class TestSemanticLayerSmoke:
         assert exported.text == _SEMANTIC_DOC
 
         assert c.get("/api/semantic-models/search?q=smoke", headers=h).status_code == 200
+
+        validated = c.post(
+            "/api/semantic-models/validate-query",
+            json={"sql": "SELECT * FROM orders"},
+            headers=h,
+        )
+        assert validated.status_code == 200
+        assert validated.json()["available"] is True
+
         assert c.delete(f"/api/admin/semantic-models/{model_id}", headers=h).status_code == 204
 
     def test_source_crud_and_sync(self, seeded_app_both):

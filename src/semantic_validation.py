@@ -271,7 +271,18 @@ def extract_constraints(document: dict[str, Any]) -> list[dict[str, Any]]:
             severity = severity.casefold() if isinstance(severity, str) else ""
             if severity not in ("error", "warning"):
                 severity = "warning"
-            constraint_type = item.get("type")
+            # `type` is this module's own provisional key name, but
+            # `connectors/keboola/semantic_ossie.py::_compose_constraint` (the
+            # only real producer of this AGNES-extension shape today) writes
+            # `constraint_type` -- the same key `src.semantic.projection
+            # ._constraints_for` reads when it later stores the constraint
+            # into `metric_definitions.validation`. Without this fallback no
+            # Keboola-composed constraint is ever statically checkable: every
+            # one silently degrades to `post_execution_checks` and the
+            # validator can never return `valid=False` for a real Keboola
+            # model. `type` is tried first for backward compatibility with
+            # hand-built documents already using this module's own key.
+            constraint_type = item.get("type") or item.get("constraint_type")
             if isinstance(constraint_type, str):
                 constraint_type = constraint_type.casefold()
             constraints.append(

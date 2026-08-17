@@ -368,3 +368,128 @@ class TestDatasetGrain:
         row = _only_metric()
         assert row["grain"] is None
         assert not [n for n in (row["notes"] or []) if "grain" in n]
+
+
+class TestColumnBinding:
+    """A Keboola dataset's `source` is the raw Storage tableId
+    (`in.c-shop.orders`), but every column_metadata reader keys on the Agnes
+    `table_registry` view name (`shop_orders`) — same binder the metric leg
+    already applies."""
+
+    def test_keboola_field_descriptions_land_under_the_view_name(self, system_db):
+        _register_keboola_table("in.c-shop", "orders", "shop_orders")
+
+        doc = {
+            "semantic_model": [
+                {
+                    "name": "retail",
+                    "datasets": [
+                        {
+                            "name": "orders",
+                            "source": "in.c-shop.orders",
+                            "fields": [
+                                {"name": "amount", "datatype": "Decimal", "description": "Order amount, in cents."}
+                            ],
+                        }
+                    ],
+                }
+            ]
+        }
+        report = project_document(doc, source="keboola_metastore", source_ref="conn-1")
+        assert report.columns_written == 1
+
+        from src.repositories import column_metadata_repo
+
+        repo = column_metadata_repo()
+        under_view_name = repo.list_for_table("shop_orders")
+        assert [c["column_name"] for c in under_view_name] == ["amount"]
+        assert under_view_name[0]["description"] == "Order amount, in cents."
+        # Nothing lands under the raw, unresolved tableId.
+        assert repo.list_for_table("in.c-shop.orders") == []
+
+    def test_prune_stays_scoped_to_the_resolved_view_name(self, system_db):
+        _register_keboola_table("in.c-shop", "orders", "shop_orders")
+
+        def _doc_with_fields(field_names):
+            return {
+                "semantic_model": [
+                    {
+                        "name": "retail",
+                        "datasets": [
+                            {
+                                "name": "orders",
+                                "source": "in.c-shop.orders",
+                                "fields": [{"name": n} for n in field_names],
+                            }
+                        ],
+                    }
+                ]
+            }
+
+        project_document(_doc_with_fields(["amount", "region"]), source="keboola_metastore", source_ref="conn-1")
+        project_document(_doc_with_fields(["amount"]), source="keboola_metastore", source_ref="conn-1")
+
+        from src.repositories import column_metadata_repo
+
+        remaining = {c["column_name"] for c in column_metadata_repo().list_for_table("shop_orders")}
+        assert remaining == {"amount"}, "the dropped field must be pruned under the resolved view name"
+
+    def test_unregistered_table_falls_back_to_the_raw_id(self, system_db):
+        """No keboola tables registered at all -> the binder is unavailable
+        and column_metadata keeps today's behavior (raw dataset source)."""
+        doc = {
+            "semantic_model": [
+                {
+                    "name": "retail",
+                    "datasets": [
+                        {"name": "orders", "source": "in.c-nowhere.orders", "fields": [{"name": "amount"}]},
+                    ],
+                }
+            ]
+        }
+        project_document(doc, source="keboola_metastore", source_ref="conn-1")
+
+        from src.repositories import column_metadata_repo
+
+        assert [c["column_name"] for c in column_metadata_repo().list_for_table("in.c-nowhere.orders")] == ["amount"]
+
+
+class TestDuplicateModelName:
+    """`_scoped_id` keys on the model NAME; two same-named models in one
+    document must not silently overwrite each other's rows."""
+
+    def test_second_model_with_a_duplicate_name_is_reported_not_merged(self, system_db):
+        doc = {
+            "semantic_model": [
+                {
+                    "name": "core",
+                    "datasets": [_stub_dataset("first")],
+                    "metrics": [
+                        {
+                            "name": "metric_a",
+                            "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "SUM(a)"}]},
+                        }
+                    ],
+                },
+                {
+                    "name": "core",
+                    "datasets": [_stub_dataset("second")],
+                    "metrics": [
+                        {
+                            "name": "metric_b",
+                            "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "SUM(b)"}]},
+                        }
+                    ],
+                },
+            ]
+        }
+        report = project_document(doc, source="git", source_ref="repo-a")
+
+        assert report.metrics_written == 1
+        assert {"kind": "model", "name": "core", "reason": "duplicate_model_name"} in report.skipped
+
+        from src.repositories import metric_repo
+
+        names = {m["name"] for m in metric_repo().list()}
+        assert "metric_a" in names
+        assert "metric_b" not in names
