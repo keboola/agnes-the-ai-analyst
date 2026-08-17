@@ -139,6 +139,7 @@ class JiraConsistencyChecker:
             "missing_in_parquet": [],
             "deleted_in_jira": 0,
             "auto_backfilled": [],
+            "transformed": [],
             "backfill_failed": [],
             "transform_failed": [],
             "parquet_read_failed": [],
@@ -565,6 +566,7 @@ class JiraConsistencyChecker:
             # Transform to Parquet (for issues that were backfilled successfully)
             if backfilled:
                 transformed, transform_failed = self.transform_issues(backfilled)
+                self.stats["transformed"].extend(transformed)
                 self.stats["transform_failed"] = transform_failed
 
         elif len(missing_in_json) > self.AUTO_FIX_THRESHOLD:
@@ -583,6 +585,7 @@ class JiraConsistencyChecker:
             if len(missing_in_parquet) <= self.AUTO_FIX_THRESHOLD:
                 logger.info(f"Transforming {len(missing_in_parquet)} issues with Parquet lag")
                 transformed, transform_failed = self.transform_issues(missing_in_parquet)
+                self.stats["transformed"].extend(transformed)
                 self.stats["transform_failed"].extend(transform_failed)
             else:
                 logger.error(
@@ -599,7 +602,14 @@ class JiraConsistencyChecker:
         # catalog's row/size numbers stale until some unrelated webhook fires — and
         # "the only writer" is precisely a webhook outage, i.e. when this checker
         # matters most.
-        if not dry_run and (self.stats["auto_backfilled"] or (auto_fix and missing_in_parquet)):
+        # Gate on what a fix actually WROTE, not on the gap merely existing. The
+        # threshold above means a large Parquet gap transforms nothing, and the
+        # old `auto_fix and missing_in_parquet` condition still fired on it — so
+        # an unreadable or badly lagging partition queued a no-op `jira-refresh`
+        # (plus a `jira-refresh-followup` when one was already running) every 30
+        # minutes, forever. That is the same silent churn this change set out to
+        # stop, in a new place (Devin review).
+        if not dry_run and (self.stats["auto_backfilled"] or self.stats["transformed"]):
             self._enqueue_jira_refresh()
 
         # Calculate final stats
@@ -608,7 +618,19 @@ class JiraConsistencyChecker:
         # Score the larger of the two gaps. This used to score missing_in_json
         # only, so a Parquet-side gap — including one inflated to corpus size
         # by an unreadable Parquet file — never moved this needle.
-        alert_level = self.get_alert_level(max(len(missing_in_json), len(missing_in_parquet)))
+        #
+        # The Parquet side is scored on what this run did NOT repair, not on the
+        # gap as first observed: a routine lag that the checker fully transforms
+        # is a healthy self-healing run and must stay INFO, or every such run
+        # becomes noise for anything alerting on `alert_level != INFO` (Devin
+        # review). `missing_in_json` keeps its original pre-fix scoring — that
+        # semantic predates this change and is not ours to redefine here.
+        # Set difference, not a subtraction of counts: `transformed` accumulates
+        # from BOTH fix branches (backfilled JSON keys as well as Parquet-lag
+        # keys), and those sets need not be subsets of `missing_in_parquet` — a
+        # count-based subtraction could go negative and mask a real gap.
+        unrepaired_in_parquet = len(set(missing_in_parquet) - set(self.stats["transformed"]))
+        alert_level = self.get_alert_level(max(len(missing_in_json), unrepaired_in_parquet))
 
         # A read failure or a failed fix attempt is a broken pipeline, not a
         # size-scored gap — it must never hide behind a small missing-issue

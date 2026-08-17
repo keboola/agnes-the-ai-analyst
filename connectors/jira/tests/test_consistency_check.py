@@ -86,12 +86,12 @@ def _run_check(
     checker = JiraConsistencyChecker(_config(raw_dir, parquet_dir))
     with (
         patch.object(checker, "fetch_jira_keys", return_value=set(all_keys)),
-        patch.object(checker, "_enqueue_jira_refresh"),
+        patch.object(checker, "_enqueue_jira_refresh") as mock_enqueue,
         patch("connectors.jira.scripts.consistency_check.subprocess.run") as mock_run,
     ):
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
         report = checker.run_check(auto_fix=auto_fix, dry_run=False)
-    return report, mock_run
+    return report, mock_run, mock_enqueue
 
 
 class TestScanParquetKeysPerFileIsolation:
@@ -160,7 +160,7 @@ class TestParquetLagThreshold:
 
     def test_a_gap_within_threshold_is_still_auto_fixed(self, tmp_path: Path) -> None:
         lagging = [f"LAG-{i}" for i in range(3)]
-        report, mock_run = _run_check(tmp_path, lagging + ["PROJ-1"], {"2026-01": ["PROJ-1"]})
+        report, mock_run, _mock_enqueue = _run_check(tmp_path, lagging + ["PROJ-1"], {"2026-01": ["PROJ-1"]})
 
         transformed_keys = {call.args[0][3] for call in mock_run.call_args_list}
         assert transformed_keys == set(lagging)
@@ -169,14 +169,14 @@ class TestParquetLagThreshold:
 
     def test_a_gap_over_threshold_is_not_auto_fixed(self, tmp_path: Path) -> None:
         lagging = [f"LAG-{i}" for i in range(JiraConsistencyChecker.AUTO_FIX_THRESHOLD + 5)]
-        report, mock_run = _run_check(tmp_path, lagging + ["PROJ-1"], {"2026-01": ["PROJ-1"]})
+        report, mock_run, _mock_enqueue = _run_check(tmp_path, lagging + ["PROJ-1"], {"2026-01": ["PROJ-1"]})
 
         mock_run.assert_not_called()
         assert set(report["discrepancies"]["missing_in_parquet"]) == set(lagging)
 
     def test_a_gap_over_threshold_is_not_reported_as_info(self, tmp_path: Path) -> None:
         lagging = [f"LAG-{i}" for i in range(JiraConsistencyChecker.AUTO_FIX_THRESHOLD + 5)]
-        report, _mock_run = _run_check(tmp_path, lagging + ["PROJ-1"], {"2026-01": ["PROJ-1"]})
+        report, _mock_run, _mock_enqueue = _run_check(tmp_path, lagging + ["PROJ-1"], {"2026-01": ["PROJ-1"]})
 
         assert report["alert_level"] == "ERROR"
 
@@ -191,7 +191,7 @@ class TestCorruptFileRegression:
         healthy = {"2026-01": ["PROJ-1", "PROJ-2"], "2026-02": ["PROJ-3"]}
         all_keys = corrupt_keys + [k for keys in healthy.values() for k in keys]
 
-        report, _mock_run = _run_check(tmp_path, all_keys, healthy, corrupt_file=True)
+        report, _mock_run, _mock_enqueue = _run_check(tmp_path, all_keys, healthy, corrupt_file=True)
 
         missing = report["discrepancies"]["missing_in_parquet"]
         assert set(missing) == set(corrupt_keys), "must not be the whole corpus"
@@ -203,7 +203,7 @@ class TestCorruptFileRegression:
         healthy = {"2026-01": ["PROJ-1"]}
         all_keys = corrupt_keys + ["PROJ-1"]
 
-        report, mock_run = _run_check(tmp_path, all_keys, healthy, corrupt_file=True)
+        report, mock_run, _mock_enqueue = _run_check(tmp_path, all_keys, healthy, corrupt_file=True)
 
         mock_run.assert_not_called()
         assert set(report["discrepancies"]["missing_in_parquet"]) == set(corrupt_keys)
@@ -213,7 +213,7 @@ class TestCorruptFileRegression:
         healthy = {"2026-01": ["PROJ-1"]}
         all_keys = corrupt_keys + ["PROJ-1"]
 
-        report, _mock_run = _run_check(tmp_path, all_keys, healthy, corrupt_file=True)
+        report, _mock_run, _mock_enqueue = _run_check(tmp_path, all_keys, healthy, corrupt_file=True)
 
         assert report["status"] != "success"
         assert report["alert_level"] != "INFO"
@@ -225,7 +225,7 @@ class TestReadFailureReflectedInReport:
     alert_level=INFO — that is exactly what let the corrupt-file bug hide."""
 
     def test_unreadable_parquet_is_visible_in_the_report(self, tmp_path: Path) -> None:
-        report, _mock_run = _run_check(tmp_path, ["PROJ-1"], {}, corrupt_file=True)
+        report, _mock_run, _mock_enqueue = _run_check(tmp_path, ["PROJ-1"], {}, corrupt_file=True)
 
         assert report["discrepancies"]["parquet_read_failed"], (
             "the read failure must be visible in the report, not silently absorbed"
@@ -236,8 +236,73 @@ class TestReadFailureReflectedInReport:
     def test_a_clean_run_still_reports_success_and_info(self, tmp_path: Path) -> None:
         """Regression guard on the guard: a genuinely healthy run must not
         get swept up by the new checks."""
-        report, _mock_run = _run_check(tmp_path, ["PROJ-1"], {"2026-01": ["PROJ-1"]})
+        report, _mock_run, _mock_enqueue = _run_check(tmp_path, ["PROJ-1"], {"2026-01": ["PROJ-1"]})
 
         assert report["status"] == "success"
         assert report["alert_level"] == "INFO"
         assert report["discrepancies"]["parquet_read_failed"] == []
+
+
+class TestRebuildIsEnqueuedOnlyForWorkActuallyDone:
+    """The coalesced `jira-refresh` must follow what a fix WROTE, not the mere
+    existence of a gap.
+
+    The threshold added for #1363 means a large Parquet gap transforms nothing,
+    but the enqueue guard still keyed on `missing_in_parquet` being non-empty —
+    so an unreadable or badly lagging partition queued a no-op rebuild (plus a
+    `jira-refresh-followup` when one was already running) every 30 minutes,
+    forever. That is the same silent churn #1363 set out to stop, reintroduced
+    one branch over (Devin review on #1384).
+    """
+
+    def test_over_threshold_gap_enqueues_nothing(self, tmp_path: Path) -> None:
+        lagging = [f"LAG-{i}" for i in range(JiraConsistencyChecker.AUTO_FIX_THRESHOLD + 5)]
+        _report, mock_run, mock_enqueue = _run_check(tmp_path, lagging + ["PROJ-1"], {"2026-01": ["PROJ-1"]})
+
+        mock_run.assert_not_called()
+        mock_enqueue.assert_not_called(), "nothing was transformed — a rebuild would be pure churn"
+
+    def test_corrupt_partition_enqueues_nothing_run_after_run(self, tmp_path: Path) -> None:
+        """The #1363 shape end to end: the corrupt file fails identically every
+        run, so an enqueue here is the 30-minute loop in a new disguise."""
+        corrupt_keys = [f"CORRUPT-{i}" for i in range(JiraConsistencyChecker.AUTO_FIX_THRESHOLD + 30)]
+        _report, _mock_run, mock_enqueue = _run_check(
+            tmp_path, corrupt_keys + ["PROJ-1"], {"2026-01": ["PROJ-1"]}, corrupt_file=True
+        )
+
+        mock_enqueue.assert_not_called()
+
+    def test_a_repaired_gap_still_enqueues(self, tmp_path: Path) -> None:
+        """The guard must not over-correct: a fix that really wrote parquet
+        still needs the coalesced rebuild that refreshes `_meta` and the view."""
+        lagging = [f"LAG-{i}" for i in range(3)]
+        _report, mock_run, mock_enqueue = _run_check(tmp_path, lagging + ["PROJ-1"], {"2026-01": ["PROJ-1"]})
+
+        assert mock_run.called
+        mock_enqueue.assert_called_once()
+
+
+class TestAlertLevelScoresTheUnrepairedResidual:
+    """A routine lag the checker fully repairs is a healthy self-healing run
+    and must stay INFO — scoring the gap as first observed turned every such
+    run into WARNING noise for anything alerting on `alert_level != INFO`
+    (Devin review on #1384)."""
+
+    def test_a_fully_repaired_lag_stays_info(self, tmp_path: Path) -> None:
+        # Above WARNING_THRESHOLD but at/below AUTO_FIX_THRESHOLD: pre-fix
+        # scoring would call this WARNING even though nothing is left undone.
+        lagging = [f"LAG-{i}" for i in range(JiraConsistencyChecker.WARNING_THRESHOLD + 1)]
+        assert len(lagging) <= JiraConsistencyChecker.AUTO_FIX_THRESHOLD, "fixture must stay auto-fixable"
+
+        report, mock_run, _mock_enqueue = _run_check(tmp_path, lagging + ["PROJ-1"], {"2026-01": ["PROJ-1"]})
+
+        assert mock_run.called, "the fixture must actually exercise the repair path"
+        assert report["alert_level"] == "INFO"
+
+    def test_an_unrepaired_lag_is_still_scored(self, tmp_path: Path) -> None:
+        """The residual scoring must not silence a genuine gap: over threshold
+        nothing is transformed, so the whole gap is still unrepaired."""
+        lagging = [f"LAG-{i}" for i in range(JiraConsistencyChecker.AUTO_FIX_THRESHOLD + 5)]
+        report, _mock_run, _mock_enqueue = _run_check(tmp_path, lagging + ["PROJ-1"], {"2026-01": ["PROJ-1"]})
+
+        assert report["alert_level"] == "ERROR"
