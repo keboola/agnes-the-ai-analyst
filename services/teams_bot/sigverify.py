@@ -90,6 +90,14 @@ async def _refresh_jwks_cache() -> None:
     except Exception:
         logger.warning("failed to fetch Bot Framework JWKS", exc_info=True)
         return
+    if not keys:
+        # A 200 with no keys (proxy/edge error page rendered as JSON, schema
+        # change, momentarily empty document) is not a successful refresh —
+        # wiping the existing cache here would discard still-valid keys and,
+        # combined with the throttle guard, block every request for a
+        # minute even though the old keys still work.
+        logger.warning("Bot Framework JWKS document contained no keys; keeping existing cache")
+        return
     _LAST_REFETCH_AT = time.monotonic()
     _JWKS_CACHE.clear()
     for jwk in keys:
@@ -135,11 +143,22 @@ async def verify_bot_framework_token(authorization_header: str | None, app_id: s
             algorithms=["RS256"],  # never derive from the token's own `alg` header
             audience=app_id,
             issuer=BOTFRAMEWORK_ISSUER,
-            # PyJWT only checks exp/nbf if present — passing audience=/issuer=
-            # already forces aud/iss presence, but exp/nbf need an explicit
-            # `require` or a token that omits them entirely would verify fine.
-            options={"require": ["exp", "nbf"]},
+            # PyJWT only checks exp if present — passing audience=/issuer=
+            # already forces aud/iss presence, but exp needs an explicit
+            # `require` or a token that omits it entirely would verify fine.
+            # `nbf` is deliberately NOT required: it's not documented as
+            # guaranteed on Connector-issued tokens, and rejecting every
+            # token that lacks it is worse than not checking it at all.
+            # `leeway` tolerates ordinary clock drift between this host and
+            # Microsoft's — matches the ~5 minute allowance Microsoft's own
+            # Bot Framework auth implementations use.
+            options={"require": ["exp"]},
+            leeway=300,
         )
-    except Exception:
+    except Exception as exc:
+        # Fail closed either way; the reason is only useful for debugging
+        # (never logs the token itself — PyJWT's exceptions carry just the
+        # claim/signature failure reason).
+        logger.debug("Bot Framework token verification failed: %s", exc)
         return False
     return True

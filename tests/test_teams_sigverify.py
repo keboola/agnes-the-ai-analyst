@@ -129,6 +129,70 @@ def test_expired_token_rejected(monkeypatch):
     assert result is False
 
 
+def test_expired_token_within_leeway_is_accepted(monkeypatch):
+    """`leeway=300` tolerates ordinary clock drift between this host and
+    Microsoft's — an exp a couple minutes in the past must still verify."""
+    key = _rsa_keypair()
+    jwk = _jwk_for(key, "kid-1")
+    _install_jwks_transport(monkeypatch, lambda: [jwk])
+    token = _token(key, "kid-1", exp_delta=-120)
+
+    result = asyncio.run(sigverify.verify_bot_framework_token(f"Bearer {token}", APP_ID))
+    assert result is True
+
+
+def test_token_without_nbf_is_accepted(monkeypatch):
+    """`nbf` is not required — it isn't documented as guaranteed on
+    Connector-issued tokens, so a token omitting it must still verify."""
+    key = _rsa_keypair()
+    jwk = _jwk_for(key, "kid-1")
+    _install_jwks_transport(monkeypatch, lambda: [jwk])
+    now = int(time.time())
+    payload = {"aud": APP_ID, "iss": ISSUER, "iat": now, "exp": now + 3600}  # no nbf
+    pem = key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    token = pyjwt.encode(payload, pem, algorithm="RS256", headers={"kid": "kid-1"})
+
+    result = asyncio.run(sigverify.verify_bot_framework_token(f"Bearer {token}", APP_ID))
+    assert result is True
+
+
+def test_empty_jwks_response_does_not_wipe_existing_cache(monkeypatch):
+    """A 200 response with no keys must not discard a working cache — that
+    would turn a bad/edge response into an outage for every already-known
+    key, on top of failing the unknown kid that triggered the refetch."""
+    key = _rsa_keypair()
+    jwk = _jwk_for(key, "kid-1")
+    responses = {"n": 0}
+
+    def keys_provider():
+        responses["n"] += 1
+        return [] if responses["n"] == 1 else [jwk]
+
+    _install_jwks_transport(monkeypatch, keys_provider)
+
+    # Prime the cache with a working key (first fetch — must be non-empty
+    # for this scenario, so seed it directly rather than via the mock).
+    # _LAST_REFETCH_AT is set relative to `monotonic()` (not 0.0) so
+    # `stale_enough` is guaranteed true regardless of this process's
+    # monotonic-clock origin.
+    sigverify._JWKS_CACHE["kid-1"] = jwk
+    monkeypatch.setattr(sigverify, "_LAST_REFETCH_AT", time.monotonic() - 1000)
+
+    # An unknown kid triggers a refetch that (per keys_provider) comes back
+    # empty on this first call.
+    other_token = _token(key, "kid-does-not-exist")
+    assert asyncio.run(sigverify.verify_bot_framework_token(f"Bearer {other_token}", APP_ID)) is False
+
+    # The empty refetch must not have wiped kid-1, and must not have
+    # stamped the throttle (so kid-1 remains verifiable right away).
+    original_token = _token(key, "kid-1")
+    assert asyncio.run(sigverify.verify_bot_framework_token(f"Bearer {original_token}", APP_ID)) is True
+
+
 def test_token_signed_with_non_matching_key_rejected(monkeypatch):
     signing_key = _rsa_keypair()
     other_key = _rsa_keypair()
