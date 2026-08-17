@@ -87,6 +87,31 @@ def _custom_extension(payload: Dict[str, Any]) -> Dict[str, str]:
     return {"vendor_name": _AGNES_VENDOR, "data": json.dumps(payload)}
 
 
+def _identity(item: Dict[str, Any]) -> Dict[str, Any]:
+    """The upstream object's identity, for the AGNES extension.
+
+    Nothing else in a composed document says which Metastore object an entry
+    came from: names are the only handle, and a rename upstream is
+    indistinguishable from a delete plus a create. This is the one fact that
+    cannot be recovered later — every sync rewrites the document, so a
+    document composed without it has lost it for good — which is why it lands
+    now rather than with the write-back that will consume it.
+
+    ``meta`` (the revision) is included only when upstream actually sends it;
+    whether it rides along on the list endpoint or only on a detail fetch is
+    not settled, and a fabricated null would be indistinguishable from a real
+    empty revision.
+    """
+    identity: Dict[str, Any] = {}
+    item_id = item.get("id")
+    if item_id:
+        identity["metastore_id"] = item_id
+    meta = item.get("meta")
+    if meta:
+        identity["metastore_revision"] = meta
+    return identity
+
+
 def _resolve_dialect(raw: Optional[str]) -> str:
     """Normalize a Keboola project's declared SQL dialect into the tag every
     expression composed for its model carries.
@@ -189,7 +214,7 @@ def _compose_dataset(item: Dict[str, Any], dialect: str) -> tuple[Dict[str, Any]
     # importer surfaces today (`semantic-dataset.grain` -> `metric_definitions
     # .grain`); the Ossie schema simply has no dataset-level granularity
     # concept as of the pinned version.
-    dataset_extension: Dict[str, Any] = {}
+    dataset_extension: Dict[str, Any] = _identity(item)
     keywords = list(ai_block.get("keywords") or [])
     if keywords:
         dataset_extension["keywords"] = keywords
@@ -236,7 +261,7 @@ def _compose_relationship(item: Dict[str, Any], dataset_name_by_table_id: Dict[s
         "to": dataset_name_by_table_id.get(to_id, to_id),
         "from_columns": from_columns,
         "to_columns": to_columns,
-        "custom_extensions": [_custom_extension({"on": on, "type": attrs.get("type")})],
+        "custom_extensions": [_custom_extension({"on": on, "type": attrs.get("type"), **_identity(item)})],
     }
 
 
@@ -253,9 +278,12 @@ def _compose_metric(item: Dict[str, Any], dialect: str) -> Optional[Dict[str, An
     description = attrs.get("description")
     if description:
         out["description"] = description
+    metric_extension: Dict[str, Any] = _identity(item)
     dataset_table_id = attrs.get("dataset")
     if dataset_table_id:
-        out["custom_extensions"] = [_custom_extension({"dataset": dataset_table_id})]
+        metric_extension["dataset"] = dataset_table_id
+    if metric_extension:
+        out["custom_extensions"] = [_custom_extension(metric_extension)]
     return out
 
 
@@ -267,6 +295,7 @@ def _compose_constraint(item: Dict[str, Any]) -> Dict[str, Any]:
         "rule": attrs.get("rule"),
         "metrics": list(attrs.get("metrics") or []),
         "severity": attrs.get("severity"),
+        **_identity(item),
     }
 
 
@@ -279,6 +308,7 @@ def _compose_glossary_entry(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "term": term,
         "definition": attrs.get("definition"),
         "see_also": list(attrs.get("seeAlso") or []),
+        **_identity(item),
     }
 
 
@@ -333,7 +363,7 @@ def compose_document(model_item: Dict[str, Any], model_items: Dict[str, List[dic
     # definitions with no per-metric or per-dataset home) has a first-class
     # slot in the Ossie schema — both ride the model's own custom_extensions
     # rather than being dropped, same as `ai.keywords` rides a dataset's.
-    agnes_payload: Dict[str, Any] = {}
+    agnes_payload: Dict[str, Any] = _identity(model_item)
     constraints = [_compose_constraint(item) for item in model_items.get("semantic-constraint", [])]
     if constraints:
         agnes_payload["constraints"] = constraints
