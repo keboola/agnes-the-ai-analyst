@@ -133,7 +133,7 @@ class TestSlaPollEnqueuesTheRefresh:
             lambda: {"data_dir": Path("/srv/raw"), "base_url": "https://x", "email": "e", "api_token": "t"},
         )
         monkeypatch.setattr(poll_sla, "configured_field_ids", lambda: ["customfield_1"])
-        monkeypatch.setattr(poll_sla, "find_open_issues", lambda _d: keys)
+        monkeypatch.setattr(poll_sla, "find_open_issues", lambda _d: (keys, 0))
         monkeypatch.setattr(poll_sla, "update_issue_sla", lambda k, *a, **kw: results[keys.index(k)])
         monkeypatch.setattr(poll_sla.time, "sleep", lambda _s: None)
         monkeypatch.setattr("src.repositories.jobs_repo", lambda: _FakeJobs())
@@ -163,7 +163,7 @@ class TestSlaPollEnqueuesTheRefresh:
             lambda: {"data_dir": Path("/srv/raw"), "base_url": "https://x", "email": "e", "api_token": "t"},
         )
         monkeypatch.setattr(poll_sla, "configured_field_ids", lambda: ["customfield_1"])
-        monkeypatch.setattr(poll_sla, "find_open_issues", lambda _d: ["PROJ-1"])
+        monkeypatch.setattr(poll_sla, "find_open_issues", lambda _d: (["PROJ-1"], 0))
         monkeypatch.setattr(poll_sla, "update_issue_sla", lambda *a, **kw: "updated")
         monkeypatch.setattr(poll_sla.time, "sleep", lambda _s: None)
 
