@@ -82,29 +82,57 @@ def _constraint_item(name: str, rule: str, metrics, severity: str = "error") -> 
     }
 
 
+def _relationship_item(name: str, from_id: str, to_id: str, on: str) -> dict:
+    # type="left" and the metric's dataset on the `to` side — the one
+    # live-verified case `resolve_relationship` accepts.
+    return {
+        "type": "semantic-relationship",
+        "id": f"r-{name}",
+        "attributes": {"name": name, "from": from_id, "to": to_id, "type": "left", "on": on},
+    }
+
+
+def _seed_columns(table_name: str, columns) -> None:
+    from src.db import get_system_db
+    from src.repositories.column_metadata import ColumnMetadataRepository
+
+    conn = get_system_db()
+    try:
+        repo = ColumnMetadataRepository(conn)
+        for col in columns:
+            repo.save(table_id=table_name, column_name=col, basetype="VARCHAR", description=None, source="test")
+    finally:
+        conn.close()
+
+
 # One fixture, exercising the cases the plan (§ wave 2) calls out: a plain
-# bound metric, a metric carrying a constraint, and a metric on a table the
-# instance never registered (must be skipped by BOTH paths).
+# bound metric, a metric carrying a constraint, a metric on a table the
+# instance never registered (skipped by both), and a foreign-alias metric that
+# a relationship resolves into a LEFT JOIN.
 _ITEMS = {
     "semantic-model": [_model_item("model-1", "core")],
     "semantic-dataset": [
         _dataset_item("in.c-shop.orders", "model-1", grain="monthly", primary_key=["order_id"]),
+        _dataset_item("in.c-shop.customers", "model-1"),
         _dataset_item("in.c-nowhere.ghosts", "model-1"),
     ],
     "semantic-metric": [
         _metric_item("total_revenue", 'SUM("amount")', "in.c-shop.orders", "model-1"),
         _metric_item("order_count", "COUNT(*)", "in.c-shop.orders", "model-1"),
         _metric_item("ghost_metric", "COUNT(*)", "in.c-nowhere.ghosts", "model-1"),
-        # References a foreign alias with no relationship to resolve it: legacy
-        # skips it (`foreign_alias_reference`), and the projector skips it too
-        # (`references_foreign_alias`). The relationship-resolved JOIN case,
-        # which legacy can compose and the projector cannot, is the one known
-        # remaining parity gap before the cutover — see the module docstring /
-        # PR — and is deliberately NOT exercised here.
-        _metric_item("cross_metric", 'SUM(other."x")', "in.c-shop.orders", "model-1"),
+        # A foreign-alias metric on `orders` reaching a column on the joined
+        # `customers` table. With the relationship below, both writers compose
+        # the same LEFT JOIN — this is the parity case the JOIN port closes.
+        _metric_item("distinct_regions", 'COUNT(DISTINCT c."region")', "in.c-shop.orders", "model-1"),
     ],
     "semantic-constraint": [_constraint_item("non_negative", "value >= 0", ["total_revenue"])],
-    "semantic-relationship": [],
+    "semantic-relationship": [
+        # Distinct join columns on each side so the alias resolution is
+        # unambiguous: customers."customer_id" = orders."cust_ref".
+        _relationship_item(
+            "orders_customers", "in.c-shop.customers", "in.c-shop.orders", 'c."customer_id" = o."cust_ref"'
+        ),
+    ],
     "semantic-glossary": [],
 }
 
@@ -126,6 +154,12 @@ def synced(e2e_env):
     from src.semantic.projection import project_document
 
     _register_keboola_table("in.c-shop", "orders", "shop_orders")
+    _register_keboola_table("in.c-shop", "customers", "shop_customers")
+    # Both writers resolve the JOIN's alias sides against real column metadata
+    # (populated by the profiler in prod). Distinct join columns keep it
+    # unambiguous.
+    _seed_columns("shop_orders", ["order_id", "amount", "cust_ref"])
+    _seed_columns("shop_customers", ["customer_id", "region"])
 
     fake_storage = MagicMock()
     fake_storage.verify_token.return_value = {"isMasterToken": True}
@@ -159,11 +193,11 @@ class TestLoadBearingParity:
 
     def test_same_set_of_metric_names(self, synced):
         legacy, projector = synced
-        # ghost_metric (unregistered table) and cross_metric (foreign alias, no
-        # relationship) are skipped by BOTH paths — so the surviving set is
-        # identical, which is the whole point.
-        assert set(legacy) == {"total_revenue", "order_count"}
-        assert set(projector) == {"total_revenue", "order_count"}
+        # ghost_metric (unregistered table) is skipped by both; distinct_regions
+        # (foreign alias) is composed by both via the relationship.
+        expected = {"total_revenue", "order_count", "distinct_regions"}
+        assert set(legacy) == expected
+        assert set(projector) == expected
 
     def test_runnable_sql_matches(self, synced):
         legacy, projector = synced
@@ -171,6 +205,16 @@ class TestLoadBearingParity:
             assert legacy[name]["sql"] == projector[name]["sql"], name
             assert projector[name]["sql"].startswith("SELECT ")
             assert "FROM" in projector[name]["sql"]
+
+    def test_join_sql_matches(self, synced):
+        legacy, projector = synced
+        # The composed LEFT JOIN is byte-for-byte identical, and the foreign
+        # alias `c.` is rewritten to the joined-table alias on both sides.
+        assert legacy["distinct_regions"]["sql"] == projector["distinct_regions"]["sql"]
+        assert "LEFT JOIN" in projector["distinct_regions"]["sql"]
+        assert 'c."region"' not in projector["distinct_regions"]["sql"]
+        assert sorted(legacy["distinct_regions"]["tables"]) == sorted(projector["distinct_regions"]["tables"])
+        assert set(projector["distinct_regions"]["tables"]) == {"shop_orders", "shop_customers"}
 
     def test_table_binding_matches(self, synced):
         legacy, projector = synced

@@ -72,41 +72,91 @@ def _table_binder():
     return lambda table_id: resolve_table_name(table_id, lookup)
 
 
-def _bind_metric_sql(fragment: str, table_id: str, binder) -> Optional[tuple[str, Optional[str]]]:
+def _keboola_lookups():
+    """``(table_lookup, column_lookup)`` for JOIN composition, or ``None`` when
+    no Keboola tables are registered. Same seam as :func:`_table_binder`:
+    Keboola-specific, imported lazily, and the finished JOIN needs Agnes's own
+    registry + column metadata — data the adapter deliberately never had, which
+    is why the JOIN is composed here rather than in the document."""
+    try:
+        from connectors.keboola.semantic_layer import table_lookup_from_registry
+        from src.repositories import column_metadata_repo, table_registry_repo
+
+        table_lookup = table_lookup_from_registry(table_registry_repo().list_by_source("keboola"))
+    except Exception:  # pragma: no cover - a registry read failure must not lose metrics
+        return None
+    if not table_lookup:
+        return None
+    col_repo = column_metadata_repo()
+    column_lookup = {
+        view: {c["column_name"] for c in col_repo.list_for_table(view)} for view in set(table_lookup.values())
+    }
+    return table_lookup, column_lookup
+
+
+def _relationship_lookup_from_model(model: dict) -> dict:
+    """``tableId -> [relationship attrs]`` for one model, rebuilt from each
+    relationship's ``AGNES`` extension (which carries the raw tableIds, the
+    on-clause and the type). Mirrors the legacy
+    ``relationship_lookup_by_dataset``: a relationship is filed under BOTH its
+    ``from`` and ``to`` tableId, and ``resolve_relationship`` decides which side
+    the metric's dataset sits on."""
+    lookup: dict = {}
+    for rel in model.get("relationships") or []:
+        ext = _agnes_payload(rel)
+        from_id, to_id = ext.get("from_table"), ext.get("to_table")
+        if not (from_id and to_id):
+            continue
+        attrs = {"from": from_id, "to": to_id, "on": ext.get("on") or "", "type": ext.get("type") or ""}
+        lookup.setdefault(from_id, []).append(attrs)
+        lookup.setdefault(to_id, []).append(attrs)
+    return lookup
+
+
+def _bind_metric(
+    fragment: str, table_id: str, binder, kb_lookups, rel_lookup: dict
+) -> Optional[tuple[str, Optional[str], Optional[list]]]:
     """Resolve one metric's SQL against its declared table binding.
 
-    Three outcomes, keyed on whether a binding was declared and whether it can
-    be honored:
+    Returns ``(sql, table_name, tables)`` or ``None`` (caller SKIPS). Four
+    outcomes, matching the legacy Keboola composer exactly:
 
-    - **No binding declared** (``table_id`` empty) → ``(fragment, None)``. A
-      plain upstream Ossie metric — e.g. from a git source — whose expression
-      stands on its own; kept verbatim, no table.
-    - **Binding declared and honored** → ``(runnable_sql, table_name)``.
-    - **Binding declared but cannot be honored** → ``None``, meaning the caller
-      SKIPS the metric. This matches the legacy Keboola composer, which drops a
-      metric whose table is unregistered, whose fragment carries an embedded
-      ``--`` comment (it would swallow the appended FROM), or which references a
-      foreign alias (needs a JOIN this path cannot compose). Keeping such a
-      metric as a bare fragment would make the flat-table cutover start
-      surfacing unrunnable metrics on tables nobody registered — a regression,
-      not the extra coverage the earlier "never drop" wording assumed.
+    - **No binding declared** (``table_id`` empty) → ``(fragment, None, None)``.
+      A plain upstream Ossie metric — e.g. from a git source — kept verbatim.
+    - **Simple binding honored** → ``(SELECT … FROM "view" AS t, view, None)``.
+    - **Foreign-alias binding resolvable via a relationship** →
+      ``(join_sql, primary_view, [primary_view, joined_view])``, composed by the
+      legacy ``try_join_composition`` (the one live-verified LEFT-JOIN case).
+    - **Binding declared but cannot be honored** (unregistered table, embedded
+      ``--`` comment, unresolvable foreign alias) → ``None``. The composer skips
+      these; keeping them as bare fragments would make the flat-table cutover
+      start surfacing unrunnable metrics.
     """
     if not table_id:
-        return fragment, None
+        return fragment, None, None
     if binder is None:
         return None
     from connectors.keboola.semantic_layer import (
         compose_sql,
         has_embedded_sql_comment,
         references_foreign_alias,
+        try_join_composition,
     )
 
-    if has_embedded_sql_comment(fragment) or references_foreign_alias(fragment):
+    if has_embedded_sql_comment(fragment):
         return None
+    if references_foreign_alias(fragment):
+        if kb_lookups is None:
+            return None
+        table_lookup, column_lookup = kb_lookups
+        fields, _reason = try_join_composition(fragment, table_id, table_lookup, rel_lookup, column_lookup)
+        if fields is None:
+            return None
+        return fields["sql"], fields["table_name"], fields.get("tables")
     table_name = binder(table_id)
     if not table_name:
         return None
-    return compose_sql(fragment, table_name), table_name
+    return compose_sql(fragment, table_name), table_name, None
 
 
 def _constraints_for(metric_name: str, constraints: list) -> Optional[dict]:
@@ -235,11 +285,15 @@ def project_document(document_json: dict, *, source: str, source_ref: Optional[s
     # Resolved once per call, not per metric: a registry read per metric would
     # turn a routine sync of a few hundred metrics into a few hundred queries.
     binder = _table_binder()
+    kb_lookups = _keboola_lookups()
 
     for model in document_json.get("semantic_model") or []:
         model_name = model.get("name") or ""
         synonyms = _model_synonyms(model)
         constraints = _agnes_payload(model).get("constraints") or []
+        # Per model: its own relationships resolve its metrics' JOINs, never a
+        # merged pool (a relationship in one model must not satisfy another's).
+        rel_lookup = _relationship_lookup_from_model(model)
         # A dataset's grain describes the DATASET. It rides along as a note on
         # the metrics bound to it, never as `metric_definitions.grain`, which
         # would restate it as a fact about the metric's own time dimension.
@@ -257,13 +311,13 @@ def project_document(document_json: dict, *, source: str, source_ref: Optional[s
                 report.skipped.append({"kind": "metric", "name": metric_name, "reason": reason})
                 continue
             table_id = _agnes_payload(metric).get("dataset") or ""
-            bound = _bind_metric_sql(sql, table_id, binder)
+            bound = _bind_metric(sql, table_id, binder, kb_lookups, rel_lookup)
             if bound is None:
                 # A binding was declared but cannot be honored — skip, as the
                 # legacy composer does, rather than write an unrunnable row.
                 report.skipped.append({"kind": "metric", "name": metric_name, "reason": "unresolved_binding"})
                 continue
-            sql, table_name = bound
+            sql, table_name, tables = bound
             grain = grain_by_table.get(table_id)
             notes = [f"dataset grain: {grain}"] if grain else None
             metric_id = _scoped_id(source, source_ref, model_name, metric_name)
@@ -276,6 +330,7 @@ def project_document(document_json: dict, *, source: str, source_ref: Optional[s
                 description=metric.get("description"),
                 synonyms=synonyms,
                 table_name=table_name,
+                tables=tables,
                 notes=notes,
                 validation=_constraints_for(metric_name, constraints),
                 source=source,
