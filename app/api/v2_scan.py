@@ -590,6 +590,30 @@ def scan_estimate_endpoint(
         except Exception:
             logger.exception("audit_log write failed for snapshot.estimate; continuing")
         return result
+    except HTTPException as exc:
+        # Mirrors the branch `scan_endpoint` already carries, and for the same
+        # reason it was added there: `estimate()` now raises HTTPException
+        # directly for structured rejections — a policied table on this engine,
+        # an unresolvable policy identity, a quota refusal, a warehouse error —
+        # and none of those are in the tuple below, so the request answered
+        # correctly while writing NO audit row. Every other estimate failure
+        # writes one. Log it, then re-raise unchanged so the client still sees
+        # the original status and detail.
+        try:
+            audit_repo().log(
+                user_id=identity_for_audit(user)[0],
+                action="snapshot.estimate",
+                resource=resource,
+                params={
+                    "duration_ms": int((time.monotonic() - t0) * 1000),
+                    "error": str(exc.detail)[:200],
+                },
+                result=f"error.{exc.status_code}",
+                client_kind=client_kind_from_user(user),
+            )
+        except Exception:
+            logger.exception("audit_log write failed on error path for snapshot.estimate; continuing")
+        raise
     except (WhereValidationError, PermissionError, FileNotFoundError, ValueError, BqAccessError) as exc:
         try:
             if isinstance(exc, PermissionError):
@@ -659,9 +683,7 @@ def _databricks_estimate_timeout_s() -> float:
     person waiting on it. Letting it inherit the 900 s materialize budget
     would hold a request thread for fifteen minutes to answer "should I bother".
     """
-    return float(
-        get_value("data_source", "databricks", "remote_query_timeout_seconds", default=120) or 120
-    )
+    return float(get_value("data_source", "databricks", "remote_query_timeout_seconds", default=120) or 120)
 
 
 def _databricks_scan_timeout_s() -> float:

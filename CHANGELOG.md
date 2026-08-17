@@ -58,6 +58,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 - **`--estimate` on a Databricks row holds the concurrency slot and uses the interactive timeout.** Unlike BigQuery's arm it is not a free dry-run: a filtered `COUNT(*)` over a Delta table is a real scan. It ran outside `quota.acquire` on the 900 s materialize budget, so an estimate could hold a request thread for fifteen minutes while bypassing the per-caller concurrency cap.
 
+- **A refused `--estimate` is written to the audit log.** `POST /api/v2/scan/estimate` recorded its error row only from an except-tuple that does not list `HTTPException`, and the structured rejections added here (a policied table on this engine, an unresolvable policy identity, a quota refusal, a warehouse error) all raise exactly that — so the request answered correctly while leaving no trace, unlike every other estimate failure. Mirrors the branch `/api/v2/scan` already carries for the same reason.
+
 ### Internal
 
 - **The schema TTL cache is reset between tests.** Keyed on `table_id` with a 1 h TTL and process-global, so two suites registering the same id with different columns handed each other the wrong schema — a failure that depended only on file ordering. Added to the existing `_reset_module_caches` autouse fixture alongside the catalog and quota caches.

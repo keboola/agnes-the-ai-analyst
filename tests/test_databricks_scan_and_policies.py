@@ -1205,3 +1205,43 @@ class TestThirdReviewRound:
         assert _databricks_estimate_timeout_s() == 120
         assert _databricks_scan_timeout_s() == 900
         assert _databricks_estimate_timeout_s() < _databricks_scan_timeout_s()
+
+
+class TestAuditTrail:
+    def test_a_refused_estimate_is_audited(self, seeded_app, warehouse, monkeypatch):
+        """`estimate()` raises HTTPException for structured rejections, and the
+        endpoint's except-tuple did not list it — so the request answered
+        correctly while writing NO audit row, unlike every other estimate
+        failure. The sibling `scan_endpoint` already carries this branch."""
+        from src.db import get_system_db
+        from src.repositories import audit_repo
+        from tests.conftest import grant_table_via_package
+
+        monkeypatch.setenv("AGNES_ACCESS_POLICIES_ENABLED", "true")
+        _register(
+            id="dbx.sales.orders_raw",
+            name="orders_raw",
+            source_type="databricks",
+            bucket="sales",
+            source_table="orders_raw",
+        )
+        _set_policy("dbx.sales.orders_raw", "SELECT * FROM orders_raw WHERE country = 'CZ'")
+        conn = get_system_db()
+        try:
+            grant_table_via_package(conn, "dbx.sales.orders_raw", "analyst1")
+        finally:
+            conn.close()
+
+        c = seeded_app["client"]
+        r = c.post(
+            "/api/v2/scan/estimate",
+            json={"table_id": "dbx.sales.orders_raw"},
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        assert r.status_code == 400, r.text
+        assert r.json()["detail"]["reason"] == "policy_unsupported_on_scan_engine"
+
+        rows, _cursor = audit_repo().query(action="snapshot.estimate", limit=50)
+        errors = [row for row in rows if str(row.get("result", "")).startswith("error.")]
+        assert errors, f"refusal left no audit row; snapshot.estimate rows: {rows}"
+        assert errors[0]["result"] == "error.400"
