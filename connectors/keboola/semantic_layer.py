@@ -818,10 +818,16 @@ def _sync_one_source(
     # under the old source="keboola_semantic_layer" are superseded by the
     # projection above; purge them within THIS source's scope. Gated on the
     # projection having actually written rows, so an empty/failed upstream
-    # (0 written) can never delete the last good copy of a metric. Idempotent:
-    # a later sync finds none.
+    # (0 written) can never delete the last good copy of a metric — AND on
+    # `not partial_composition`, the same guard the projector's own prune
+    # uses: when one of several composed documents failed validation and was
+    # dropped, the OTHER models still project (metrics_written > 0) while this
+    # pass never rewrites the dropped model's rows at all. Without the guard,
+    # the purge would delete the dropped model's legacy rows anyway, and
+    # nothing this pass recreates them. Idempotent: a later fully-valid sync
+    # finds none.
     purged_legacy = 0
-    if report.metrics_written:
+    if report.metrics_written and not partial_composition:
         legacy_repo = metric_repo()
         for m in legacy_repo.list():
             if (m.get("source") or "") == "keboola_semantic_layer" and _in_scope(m, scope_refs, adopt_null):
@@ -834,9 +840,10 @@ def _sync_one_source(
     # permanent duplicate of its freshly-projected `keboola_metastore` twin.
     # Gated on `report.glossary_written` (NOT `metrics_written`): a project
     # that writes metrics but no glossary terms this pass must not wipe
-    # glossary rows it never rewrote.
+    # glossary rows it never rewrote. Same `not partial_composition` guard as
+    # the metric purge above, for the same reason.
     purged_legacy_glossary = 0
-    if report.glossary_written:
+    if report.glossary_written and not partial_composition:
         legacy_glossary_repo = glossary_repo()
         for g in legacy_glossary_repo.list(limit=100_000):
             if (g.get("source") or "") == "keboola_semantic_layer" and _in_scope(g, scope_refs, adopt_null):

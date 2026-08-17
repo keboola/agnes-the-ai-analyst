@@ -356,6 +356,12 @@ def project_document(
             if sql is None:
                 report.skipped.append({"kind": "metric", "name": metric_name, "reason": reason})
                 continue
+            # The bare aggregation fragment, before `_bind_metric` composes it
+            # into a runnable `SELECT ... FROM ...` (or a JOIN). The legacy
+            # composer stored this alongside the composed `sql` as
+            # `metric_definitions.expression`; kept here so the "Expression"
+            # block in catalog_semantics.html still has something to render.
+            fragment = sql
             table_id = _agnes_payload(metric).get("dataset") or ""
             bound = _bind_metric(sql, table_id, binder, kb_lookups, rel_lookup)
             if bound is None:
@@ -373,6 +379,7 @@ def project_document(
                 display_name=metric_name,
                 category=model_name or "semantic_model",
                 sql=sql,
+                expression=fragment,
                 description=metric.get("description"),
                 synonyms=synonyms,
                 table_name=table_name,
@@ -386,15 +393,19 @@ def project_document(
             report.metrics_written += 1
 
         for dataset in model.get("datasets") or []:
-            raw_table_id = dataset.get("source") or dataset.get("name") or ""
-            # Same table binder the metric leg uses (`_bind_metric` via
-            # `binder`): a Keboola dataset's `source` is the raw Storage
-            # tableId (`in.c-shop.orders`), but every column_metadata reader
-            # keys on the Agnes view name (`shop_orders`) — see
-            # `resolve_table_name`. Falls back to the raw id when nothing is
-            # registered, which keeps today's behavior for git/native sources
-            # (whose `source`/`name` already IS the meaningful table name).
-            table_id = (binder(raw_table_id) if binder else None) or raw_table_id
+            # Deliberately NOT resolved through the table binder to the Agnes
+            # view name (unlike the metric leg above). `column_metadata` is
+            # keyed `(table_id, column_name)` with a single `source` column —
+            # no source dimension — so writing under the view name collides
+            # with rows the profiler / import_proposal / admin already own
+            # there: Keboola fields frequently have `description=None`, so
+            # every sync would blank a previously-authored description and
+            # re-stamp `source='keboola_metastore'`, and `_prune_columns` then
+            # deletes it outright. Surfacing Keboola per-column descriptions
+            # under the view name is deferred pending an ownership-aware
+            # design for that key; for now this write is inert for Keboola
+            # (nothing reads the raw tableId) but harmless.
+            table_id = dataset.get("source") or dataset.get("name") or ""
             field_names = written_columns_by_table.setdefault(table_id, set())
             for column in dataset.get("fields") or []:
                 column_name = column.get("name")
@@ -414,7 +425,17 @@ def project_document(
             term = entry.get("term")
             if not term:
                 continue
-            glossary_id = _scoped_id(source, source_ref, model_name, _slugify(term))
+            base_glossary_id = _scoped_id(source, source_ref, model_name, _slugify(term))
+            # Two distinct terms can slugify identically ("Revenue (net)" and
+            # "Revenue net" both -> "revenue_net"); without a dedup, the
+            # second silently overwrites the first while `glossary_written`
+            # counts both. Numeric-suffix on collision, first-seen order,
+            # scoped to this call — mirrors the deleted `assign_glossary_id`.
+            glossary_id = base_glossary_id
+            suffix = 2
+            while glossary_id in written_glossary_ids:
+                glossary_id = f"{base_glossary_id}-{suffix}"
+                suffix += 1
             # refresh_fts=False: rebuilding the BM25 index once per glossary
             # term makes a routine sync of N terms an O(N^2) full-index
             # rebuild (DuckDB's `PRAGMA create_fts_index` is a full rebuild,

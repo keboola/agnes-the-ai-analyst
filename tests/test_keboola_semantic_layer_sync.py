@@ -1488,6 +1488,58 @@ class TestMultiModelSync:
         # upstream had genuinely removed it.
         assert metric_repo().get("keboola_metastore/_/shared/orders_count") is not None
 
+    def test_partial_composition_does_not_purge_the_dropped_models_legacy_rows(self, e2e_env):
+        """The one-time legacy-source (`keboola_semantic_layer`) purge must be
+        skipped on the same partial-composition pass the projector's own
+        prune is skipped on. Before this fix the purge was gated only on
+        `report.metrics_written`: when "shared" fails validation and drops
+        this pass, "core" still projects fine (metrics_written > 0), which
+        alone used to fire the purge and delete "shared"'s legacy row even
+        though nothing this pass recreates it."""
+        from src.repositories import metric_repo
+        from src.semantic import document_validation
+
+        _register_keboola_table("in.c-example_source", "orders", "crm_orders")
+
+        models = [_model_item("model-1", "core"), _model_item("model-2", "shared")]
+        per_model = {
+            "model-1": {
+                "semantic-dataset": [_dataset_item(model_uuid="model-1")],
+                "semantic-metric": [_metric_item("revenue", 'SUM("amount")', "in.c-example_source.orders", "model-1")],
+            },
+            "model-2": {
+                "semantic-dataset": [_dataset_item(model_uuid="model-2")],
+                "semantic-metric": [_metric_item("orders_count", "COUNT(*)", "in.c-example_source.orders", "model-2")],
+            },
+        }
+        self._run(models, per_model)
+
+        # A row from the retired pre-cutover composer, as if not yet purged —
+        # scoped to "shared", the model that will be dropped this pass.
+        metric_repo().create(
+            id="keboola/shared/legacy_metric",
+            name="legacy_metric",
+            display_name="legacy_metric",
+            category="keboola",
+            sql='SELECT 1 FROM "crm_orders" AS t',
+            table_name="crm_orders",
+            source="keboola_semantic_layer",
+            source_ref=None,
+        )
+
+        real_validate = document_validation.validate_document
+
+        def _fail_shared_model(text):
+            if "name: shared" in text:
+                return document_validation.ValidationResult(ok=False, errors=["forced failure for test"])
+            return real_validate(text)
+
+        with patch("src.semantic.document_validation.validate_document", side_effect=_fail_shared_model):
+            result = self._run(models, per_model)
+
+        assert result["status"] == "ok"
+        assert metric_repo().get("keboola/shared/legacy_metric") is not None
+
     def test_imports_glossary_from_every_model(self, e2e_env):
         from src.repositories import glossary_repo
 

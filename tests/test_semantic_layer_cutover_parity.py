@@ -239,6 +239,18 @@ class TestLoadBearingFields:
         metastore, _ = synced
         assert _norm_validation(metastore["order_count"]["validation"]) is None
 
+    def test_expression_preserves_the_raw_fragment(self, synced):
+        """`expression` is the bare aggregation fragment `resolve_expression`
+        returns, captured BEFORE `_bind_metric` composes it into `sql` — the
+        legacy composer stored the same fragment alongside its composed sql,
+        and `catalog_semantics.html`'s "Expression" block is gated on it."""
+        metastore, _ = synced
+        assert metastore["total_revenue"]["expression"] == 'SUM("amount")'
+        assert metastore["order_count"]["expression"] == "COUNT(*)"
+        # The foreign-alias JOIN case: `expression` is the RAW fragment, still
+        # aliased `c.`, not the `sql` column's rewritten-to-`j.` composed JOIN.
+        assert metastore["distinct_regions"]["expression"] == 'COUNT(DISTINCT c."region")'
+
 
 class TestIntendedDifferences:
     """Differences the wave-1 N4 decision made on purpose — pinned so the

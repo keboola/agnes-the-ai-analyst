@@ -275,6 +275,8 @@ class TestTableBinding:
         row = _only_metric()
         assert row["sql"] == "SUM(amount)"
         assert row["table_name"] is None
+        # No binding to compose against — `expression` equals the fragment too.
+        assert row["expression"] == "SUM(amount)"
 
     def test_a_binding_to_an_unregistered_table_is_skipped(self, system_db):
         """A metric that DECLARES a table binding it cannot honor is dropped,
@@ -371,12 +373,18 @@ class TestDatasetGrain:
 
 
 class TestColumnBinding:
-    """A Keboola dataset's `source` is the raw Storage tableId
-    (`in.c-shop.orders`), but every column_metadata reader keys on the Agnes
-    `table_registry` view name (`shop_orders`) — same binder the metric leg
-    already applies."""
+    """The column leg keys `column_metadata` on the RAW dataset id
+    (`dataset.source` or `dataset.name`), never resolved through the table
+    binder to the Agnes `table_registry` view name — unlike the metric leg.
+    `column_metadata` is keyed `(table_id, column_name)` with a single
+    `source` column (no source dimension), so a naive bind under the view
+    name collides with rows the profiler / import_proposal / admin already
+    own there and clobbers them on every sync. (A view-name bind was tried
+    and reverted — see the regression test below.) Surfacing Keboola
+    per-column descriptions under the view name is deferred pending an
+    ownership-aware design for that key."""
 
-    def test_keboola_field_descriptions_land_under_the_view_name(self, system_db):
+    def test_keboola_field_descriptions_land_under_the_raw_id_registered_or_not(self, system_db):
         _register_keboola_table("in.c-shop", "orders", "shop_orders")
 
         doc = {
@@ -401,13 +409,14 @@ class TestColumnBinding:
         from src.repositories import column_metadata_repo
 
         repo = column_metadata_repo()
-        under_view_name = repo.list_for_table("shop_orders")
-        assert [c["column_name"] for c in under_view_name] == ["amount"]
-        assert under_view_name[0]["description"] == "Order amount, in cents."
-        # Nothing lands under the raw, unresolved tableId.
-        assert repo.list_for_table("in.c-shop.orders") == []
+        under_raw_id = repo.list_for_table("in.c-shop.orders")
+        assert [c["column_name"] for c in under_raw_id] == ["amount"]
+        assert under_raw_id[0]["description"] == "Order amount, in cents."
+        # Nothing lands under the resolved view name — even though the table
+        # IS registered — because the column leg no longer binds through it.
+        assert repo.list_for_table("shop_orders") == []
 
-    def test_prune_stays_scoped_to_the_resolved_view_name(self, system_db):
+    def test_prune_stays_scoped_to_the_raw_id(self, system_db):
         _register_keboola_table("in.c-shop", "orders", "shop_orders")
 
         def _doc_with_fields(field_names):
@@ -431,27 +440,50 @@ class TestColumnBinding:
 
         from src.repositories import column_metadata_repo
 
-        remaining = {c["column_name"] for c in column_metadata_repo().list_for_table("shop_orders")}
-        assert remaining == {"amount"}, "the dropped field must be pruned under the resolved view name"
+        remaining = {c["column_name"] for c in column_metadata_repo().list_for_table("in.c-shop.orders")}
+        assert remaining == {"amount"}, "the dropped field must be pruned under the raw id"
 
-    def test_unregistered_table_falls_back_to_the_raw_id(self, system_db):
-        """No keboola tables registered at all -> the binder is unavailable
-        and column_metadata keeps today's behavior (raw dataset source)."""
+    def test_profiler_authored_description_survives_keboola_projection(self, system_db):
+        """Regression guard for the reverted column-binding change: a
+        profiler/admin-authored `column_metadata` row for a Keboola-registered
+        table (keyed under the VIEW name) must not be clobbered by a semantic
+        layer sync for that table, because the projector now writes under the
+        raw dataset id — a different key entirely, so no collision, no
+        overwrite, no prune."""
+        _register_keboola_table("in.c-shop", "orders", "shop_orders")
+
+        from src.repositories import column_metadata_repo
+
+        repo = column_metadata_repo()
+        repo.save(
+            table_id="shop_orders",
+            column_name="amount",
+            basetype="DECIMAL",
+            description="Authored by the profiler.",
+            source="profiler",
+        )
+
         doc = {
             "semantic_model": [
                 {
                     "name": "retail",
                     "datasets": [
-                        {"name": "orders", "source": "in.c-nowhere.orders", "fields": [{"name": "amount"}]},
+                        {
+                            "name": "orders",
+                            "source": "in.c-shop.orders",
+                            # Keboola fields frequently have no description —
+                            # the case that used to blank the profiler's row.
+                            "fields": [{"name": "amount", "datatype": "Decimal", "description": None}],
+                        }
                     ],
                 }
             ]
         }
         project_document(doc, source="keboola_metastore", source_ref="conn-1")
 
-        from src.repositories import column_metadata_repo
-
-        assert [c["column_name"] for c in column_metadata_repo().list_for_table("in.c-nowhere.orders")] == ["amount"]
+        row = repo.get("shop_orders", "amount")
+        assert row["description"] == "Authored by the profiler."
+        assert row["source"] == "profiler"
 
 
 class TestDuplicateModelName:
@@ -493,3 +525,42 @@ class TestDuplicateModelName:
         names = {m["name"] for m in metric_repo().list()}
         assert "metric_a" in names
         assert "metric_b" not in names
+
+
+class TestGlossarySlugCollision:
+    """`_scoped_id` keys a glossary row on `_slugify(term)`; two distinct
+    terms that slugify identically must not collide and overwrite each
+    other (the deleted `assign_glossary_id`'s numeric-suffix dedup)."""
+
+    def test_two_same_slugging_terms_are_both_written_under_distinct_ids(self, system_db):
+        doc = {
+            "semantic_model": [
+                {
+                    "name": "retail",
+                    "datasets": [_stub_dataset()],
+                    "custom_extensions": [
+                        {
+                            "vendor_name": "AGNES",
+                            "data": json.dumps(
+                                {
+                                    "glossary": [
+                                        {"term": "Revenue (net)", "definition": "First definition."},
+                                        {"term": "Revenue net", "definition": "Second definition."},
+                                    ]
+                                }
+                            ),
+                        }
+                    ],
+                }
+            ]
+        }
+        report = project_document(doc, source="git", source_ref="repo-a")
+        assert report.glossary_written == 2
+
+        from src.repositories import glossary_repo
+
+        rows = glossary_repo().list(limit=1000)
+        base = "git/repo-a/retail/revenue_net"
+        colliding = {r["id"]: r["term"] for r in rows if r["id"] == base or r["id"].startswith(f"{base}-")}
+        assert len(colliding) == 2
+        assert set(colliding.values()) == {"Revenue (net)", "Revenue net"}
