@@ -750,6 +750,53 @@
             padding: 3px 6px;
         }
 
+        /* Task A (access-policy-builder-ux Slice 2): row-rule repeater —
+           [column ▾] [operator ▾] [value] per rule, plus a remove button.
+           Mirrors .where-filters-builder's .wfb-* layout (a different
+           builder, same shape) rather than inventing new proportions. */
+        .ap-row-rules-section {
+            margin-bottom: 16px;
+        }
+
+        .ap-rr-list {
+            margin-bottom: 8px;
+        }
+
+        .ap-rr-row {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 8px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .ap-rr-col {
+            flex: 1 1 26%;
+            min-width: 130px;
+        }
+
+        .ap-rr-op {
+            flex: 1 1 34%;
+            min-width: 190px;
+        }
+
+        .ap-rr-val {
+            flex: 1 1 26%;
+            min-width: 120px;
+        }
+
+        .ap-rr-remove {
+            flex: 0 0 auto;
+            padding: 4px 10px;
+            line-height: 1;
+        }
+
+        .ap-rr-controls {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
         /* ── Row actions — one ⋯ per row, one menu for the table ────────
            Five icon buttons per row spent the widest column in the table on
            controls used once a month, and read as noise beside the data. The
@@ -3769,10 +3816,32 @@
                 </div>
 
                 <div data-ap-panel="builder" id="apBuilder">
+                    <!-- Task A (access-policy-builder-ux Slice 2): repeatable row rules,
+                         ABOVE the column list — the flagship no-SQL row scope. Every
+                         change re-assembles row_rules/row_combine and feeds them into the
+                         SAME _apCompileNow() the mask pickers already drive; nothing here
+                         talks to policy/compile directly. -->
+                    <div class="ap-row-rules-section">
+                        <div class="form-label" style="margin-bottom:2px;">Who sees which rows</div>
+                        <div class="form-hint" style="margin-top:0;">
+                            Add a rule to scope which rows a caller can see. With two or more rules,
+                            choose whether every rule must match (AND) or any one does (OR). No rules
+                            means every row passes through.
+                        </div>
+                        <div id="apRowRules" class="ap-rr-list"></div>
+                        <div class="ap-rr-controls">
+                            <button type="button" class="btn btn-secondary btn-sm" id="apAddRuleBtn"
+                                    onclick="_apAddRowRule()">Add rule</button>
+                            <select class="form-input" id="apRowCombine" style="display:none; max-width:260px;"
+                                    onchange="_apOnRowCombineChange(this.value)">
+                                <option value="and">Match ALL rules (AND)</option>
+                                <option value="or">Match ANY rule (OR)</option>
+                            </select>
+                        </div>
+                    </div>
                     <div class="form-hint" style="margin-top:0;">
                         Pick a mask for any column that needs to change for some callers — everything
-                        else passes through unchanged. Rows are not filtered here yet; use the Advanced
-                        SQL tab for a row-level <code>WHERE</code> clause.
+                        else passes through unchanged.
                     </div>
                     <div id="apColList" class="ap-col-list">
                         <div class="form-hint" style="margin:0; padding:10px;">Loading columns…</div>
@@ -5857,6 +5926,13 @@
         document.getElementById('apClearBtn').style.display = table.access_policy_sql ? '' : 'none';
         var mappingToggle = document.getElementById('apMappingToggle');
         if (mappingToggle) mappingToggle.checked = !!table.policy_mapping;
+        // The stored artifact is always SQL (never a structured spec, per
+        // policy/compile's own docstring), so there is nothing to reverse-
+        // compile a saved policy's row filter back into — the row-rule
+        // builder always starts empty, same as _apMaskState above.
+        _apRowRules = [];
+        _apRowCombine = 'and';
+        _apRenderRowRules();
         _apRenderInterlockWarning();
         _apLoadHistory(table.id);
         apSwitchTab('builder');
@@ -5911,6 +5987,7 @@
             _apTable.server_only = true;
             _apRenderInterlockWarning();
             _apRenderColList();
+            _apRenderRowRules();
             if (typeof loadAdminTablesLayout === 'function') loadAdminTablesLayout();
             showToast('Table set to server_only — the builder is unlocked', 'success');
         } catch (err) {
@@ -5967,6 +6044,22 @@
     let _apColumns = [];
     let _apMaskState = {};
     let _apCompileTimer = null;
+
+    // Task A (access-policy-builder-ux Slice 2) — the row-rule repeater's
+    // state. Every op here is one the compiler (src/access_policy_compile.py)
+    // already understands; the three "caller identity" ops need no value —
+    // the compiler binds them straight to $user_groups/$user_email/$user_id
+    // server-side, so the builder never handles a real caller identity value.
+    var _AP_ROW_OPS = {
+        in_caller_groups: "is one of the caller's groups",
+        eq_caller_email: "equals the caller's email",
+        eq_caller_id: "equals the caller's ID",
+        eq: 'equals',
+        in: 'is one of',
+    };
+    var _AP_ROW_OPS_NO_VALUE = ['in_caller_groups', 'eq_caller_email', 'eq_caller_id'];
+    let _apRowRules = [];
+    let _apRowCombine = 'and';
 
     // Real schema + samples for the builder (Task 2's endpoint) — fetched
     // once per modal open, independent of which tab is showing.
@@ -6053,6 +6146,112 @@
         _apScheduleCompile();
     }
 
+    // ── Row-rule builder ("Who sees which rows", Task A) ── Repeatable
+    // [column ▾] [operator ▾] [value] rows, ABOVE the column list. Every
+    // add/remove/select change re-renders (mirrors _apOnMaskChange); a value
+    // keystroke only updates state + schedules a compile, same as
+    // _apOnUnmaskGroupChange, so typing never loses focus to a re-render.
+    function _apRenderRowRules() {
+        var list = document.getElementById('apRowRules');
+        var combineSelect = document.getElementById('apRowCombine');
+        var disabled = !_apTable || !_apIsEligible(_apTable);
+        if (!_apRowRules.length) {
+            list.innerHTML = '<div class="form-hint" style="margin:0 0 8px; padding:0;">'
+                + 'No row rules — every caller sees every row.</div>';
+        } else {
+            list.innerHTML = _apRowRules.map(function(rule, i) {
+                var colOptions = _apColumns.map(function(col) {
+                    return '<option value="' + escapeHtmlAttr(col.name) + '"'
+                        + (col.name === rule.column ? ' selected' : '') + '>' + escapeHtml(col.name) + '</option>';
+                }).join('');
+                var opOptions = Object.keys(_AP_ROW_OPS).map(function(op) {
+                    return '<option value="' + op + '"' + (op === rule.op ? ' selected' : '') + '>'
+                        + _AP_ROW_OPS[op] + '</option>';
+                }).join('');
+                var needsValue = _AP_ROW_OPS_NO_VALUE.indexOf(rule.op) === -1;
+                var valueField = needsValue
+                    ? '<input type="text" class="form-input ap-rr-val" '
+                      + (disabled ? 'disabled ' : '')
+                      + 'placeholder="' + (rule.op === 'in' ? 'comma-separated values' : 'value') + '" '
+                      + 'value="' + escapeHtmlAttr(rule.value || '') + '" '
+                      + 'oninput="_apOnRowRuleValueChange(' + i + ', this.value)">'
+                    : '<span class="ap-rr-val"></span>';
+                return ''
+                    + '<div class="ap-rr-row">'
+                    +   '<select class="form-input ap-rr-col" ' + (disabled ? 'disabled ' : '')
+                    +     'onchange="_apOnRowRuleColumnChange(' + i + ', this.value)">' + colOptions + '</select>'
+                    +   '<select class="form-input ap-rr-op" ' + (disabled ? 'disabled ' : '')
+                    +     'onchange="_apOnRowRuleOpChange(' + i + ', this.value)">' + opOptions + '</select>'
+                    +   valueField
+                    +   '<button type="button" class="btn btn-secondary btn-sm ap-rr-remove" ' + (disabled ? 'disabled ' : '')
+                    +     'onclick="_apRemoveRowRule(' + i + ')" aria-label="Remove rule">×</button>'
+                    + '</div>';
+            }).join('');
+        }
+        if (combineSelect) {
+            combineSelect.style.display = _apRowRules.length >= 2 ? '' : 'none';
+            combineSelect.value = _apRowCombine;
+        }
+        var addBtn = document.getElementById('apAddRuleBtn');
+        if (addBtn) addBtn.disabled = disabled;
+    }
+
+    function _apAddRowRule() {
+        _apRowRules.push({ column: (_apColumns[0] && _apColumns[0].name) || '', op: 'eq', value: '' });
+        _apRenderRowRules();
+        _apScheduleCompile();
+    }
+
+    function _apRemoveRowRule(index) {
+        _apRowRules.splice(index, 1);
+        _apRenderRowRules();
+        _apScheduleCompile();
+    }
+
+    function _apOnRowRuleColumnChange(index, value) {
+        if (_apRowRules[index]) _apRowRules[index].column = value;
+        _apScheduleCompile();
+    }
+
+    function _apOnRowRuleOpChange(index, value) {
+        if (_apRowRules[index]) _apRowRules[index].op = value;
+        _apRenderRowRules(); // the value field's visibility depends on the op
+        _apScheduleCompile();
+    }
+
+    function _apOnRowRuleValueChange(index, value) {
+        if (_apRowRules[index]) _apRowRules[index].value = value;
+        _apScheduleCompile();
+    }
+
+    function _apOnRowCombineChange(value) {
+        _apRowCombine = value;
+        _apScheduleCompile();
+    }
+
+    // Turns the builder's row-rule state into the policy/compile request
+    // shape ({column, op[, value]}) — a half-filled rule (no column, or an
+    // eq/in rule with no value typed yet) never reaches the compiler, same
+    // spirit as where-filters-builder.js dropping a blank-column row.
+    function _apAssembleRowRules() {
+        return _apRowRules
+            .filter(function(r) { return r.column; })
+            .map(function(r) {
+                var out = { column: r.column, op: r.op };
+                if (_AP_ROW_OPS_NO_VALUE.indexOf(r.op) === -1) {
+                    out.value = (r.op === 'in')
+                        ? String(r.value || '').split(',').map(function(s) { return s.trim(); }).filter(Boolean)
+                        : r.value;
+                }
+                return out;
+            })
+            .filter(function(r) {
+                if (_AP_ROW_OPS_NO_VALUE.indexOf(r.op) !== -1) return true;
+                if (r.op === 'in') return Array.isArray(r.value) && r.value.length > 0;
+                return r.value !== undefined && r.value !== null && String(r.value).trim() !== '';
+            });
+    }
+
     // Debounced (~250ms) compile — assembles the spec from the mask state
     // and POSTs it to Task 3's endpoint, dropping the returned SQL into
     // #apSql. Never fires on modal open, so opening the builder on a table
@@ -6064,7 +6263,7 @@
 
     async function _apCompileNow() {
         if (!_apTable) return;
-        var spec = { row_rules: [], row_combine: 'and', column_masks: _apMaskState };
+        var spec = { row_rules: _apAssembleRowRules(), row_combine: _apRowCombine, column_masks: _apMaskState };
         try {
             var r = await fetch('/api/admin/registry/' + encodeURIComponent(_apTable.id) + '/policy/compile', {
                 method: 'POST',

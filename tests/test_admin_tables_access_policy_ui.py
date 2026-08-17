@@ -231,3 +231,62 @@ def test_registered_table_row_wires_the_access_chip_to_the_modal(seeded_app):
     )
     r = c.get("/admin/tables", headers=_auth(token))
     assert "openAccessPolicyModal(" in r.text
+
+
+def test_row_rule_builder_scaffold_renders_above_the_column_list(seeded_app):
+    """access-policy-builder-ux Slice 2, Task A: a "Who sees which rows"
+    section — the row-rule repeater — sits above ``#apColList`` inside the
+    Builder tab, with an add-rule control and an AND/OR combine toggle."""
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = c.get("/admin/tables", headers=_auth(token))
+    body = r.text
+    assert 'id="apBuilder"' in body
+    assert 'id="apRowRules"' in body
+    assert 'id="apRowCombine"' in body
+    assert "Who sees which rows" in body
+    assert "_apAddRowRule()" in body
+    # The row-rule section is ABOVE the column list in document order.
+    assert body.index('id="apRowRules"') < body.index('id="apColList"')
+
+
+def test_row_rule_builder_ops_cover_the_compiler_vocabulary(seeded_app):
+    """Every ``row_rules`` op the compiler
+    (``src/access_policy_compile.py``) understands must be reachable from
+    the builder — a caller-group check, self-owned-row checks, and literal
+    eq/in — so the no-SQL path never needs to fall back to Advanced SQL for
+    the common row-scoping cases."""
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = c.get("/admin/tables", headers=_auth(token))
+    body = r.text
+    for op in ("in_caller_groups", "eq_caller_email", "eq_caller_id", "'eq'", "'in'"):
+        assert op in body, f"missing row-rule op wiring: {op}"
+
+
+def test_row_rule_builder_feeds_the_existing_compile_call(seeded_app):
+    """The row-rule state feeds the SAME ``_apCompileNow()`` POST Slice 1
+    already wires up — the compiler stays the only SQL generator, and the
+    hard-coded ``row_rules: []`` placeholder from Slice 1 is gone."""
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = c.get("/admin/tables", headers=_auth(token))
+    body = r.text
+    assert "async function _apCompileNow" in body
+    assert "row_rules: []" not in body
+    assert "_apAssembleRowRules()" in body
+    assert "function _apRenderRowRules" in body
+
+
+def test_row_rule_controls_respect_the_eligibility_interlock(seeded_app):
+    """A distributed table's row-rule controls must be disabled the same
+    way its mask selects already are (``_apIsEligible``) — a row filter is
+    just as pointless as a mask on a table `agnes pull` can route around."""
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = c.get("/admin/tables", headers=_auth(token))
+    body = r.text
+    assert "_apIsEligible(_apTable)" in body
+    # The row-rule renderer computes its own disabled flag the same way
+    # _apRenderColList does.
+    assert body.count("!_apIsEligible(_apTable)") >= 2
