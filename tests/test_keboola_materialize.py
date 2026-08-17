@@ -17,6 +17,7 @@ default parquet path and the legacy CSV opt-in (via
 import hashlib
 import importlib.util
 import os
+import re
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -620,13 +621,24 @@ def test_materialize_query_passes_filter_spec_to_export(tmp_path, fake_storage_c
     assert f.file_type == "parquet"
 
 
-# ---- atomic write contract -------------------------------------------------
+# ---- atomic write contract (#1359: routed through src.parquet_publish) -----
+#
+# materialize_query's temp+os.replace staging predates #1359 but shared the
+# same two defects the extracted helper exists to prevent: a shared
+# (non-per-process) `<id>.parquet.tmp` name (#1274) and no chmod (#203).
+# Modeled on tests/test_parquet_publish.py / tests/test_jira_atomic_parquet_writes.py:
+# the failure stub writes the footerless bytes a killed COPY leaves AT THE
+# PATH THE STATEMENT TARGETS, then raises — a stub that raises without
+# touching the filesystem first (the ORIGINAL version of this test) would
+# pass even against code that isn't atomic at all.
+
+FOOTERLESS = b"PAR1" + b"\x00" * 64
 
 
 def test_keboola_materialize_atomic_write_on_failure(tmp_path):
     """If the CSV→parquet conversion fails (legacy CSV opt-in), no
-    partial file is left at the final .parquet path AND the .parquet.tmp
-    staging file is cleaned up."""
+    partial file is left at the final .parquet path AND no stray temp is
+    left behind."""
 
     def fake_export(table_id, dest, *, export_filter=None, export_timeout=None):
         _seed_csv(Path(dest), "id,name", ["1,alpha"])
@@ -646,6 +658,9 @@ def test_keboola_materialize_atomic_write_on_failure(tmp_path):
 
         def execute(self, sql, *a, **kw):
             if "FORMAT PARQUET" in sql:
+                m = re.search(r"TO '([^']+)'", sql)
+                assert m, f"could not find COPY target in: {sql}"
+                Path(m.group(1)).write_bytes(FOOTERLESS)
                 raise RuntimeError("simulated mid-COPY failure")
             return self._inner.execute(sql, *a, **kw)
 
@@ -671,12 +686,11 @@ def test_keboola_materialize_atomic_write_on_failure(tmp_path):
         f"Partial parquet left at final path {final_path} — orchestrator "
         f"rebuild would pick this up and serve corrupt data."
     )
-    tmp_marker = output_dir / "atomic_test.parquet.tmp"
-    assert not tmp_marker.exists(), f"Stale .parquet.tmp left at {tmp_marker}"
+    assert list(output_dir.glob("*.tmp")) == [], "stale temp left behind"
 
 
 def test_keboola_materialize_uses_tmp_path_during_copy(tmp_path, fake_storage_client_parquet):
-    """Atomic-write contract: parquet first lands at <id>.parquet.tmp, then
+    """Atomic-write contract: parquet first lands at a per-process temp, then
     is os.replaced into <id>.parquet on success. Verified by patching
     os.replace to capture the (src, dst) pair."""
     output_dir = tmp_path / "data"
@@ -700,13 +714,42 @@ def test_keboola_materialize_uses_tmp_path_during_copy(tmp_path, fake_storage_cl
             output_dir=output_dir,
         )
 
-    assert captured["src"].endswith(".parquet.tmp"), captured
+    assert captured["src"].endswith(".tmp"), captured
+    assert not captured["src"].endswith(".parquet.tmp"), (
+        "temp name must be per-process, not the shared <id>.parquet.tmp"
+    )
+    assert str(os.getpid()) in Path(captured["src"]).name, "temp name must be per-process (#1274)"
     assert captured["dst"].endswith(".parquet") and not captured["dst"].endswith(".tmp")
 
     assert (output_dir / "tmp_path_test.parquet").exists()
-    assert not (output_dir / "tmp_path_test.parquet.tmp").exists()
+    assert [p.name for p in output_dir.glob("*.parquet")] == ["tmp_path_test.parquet"]
+    assert not list(output_dir.glob("*.tmp"))
     assert result["path"].endswith(".parquet")
     assert not result["path"].endswith(".tmp")
+
+
+def test_keboola_materialize_published_mode_is_0644_under_restrictive_umask(tmp_path, fake_storage_client_parquet):
+    """`pq.write_table`/DuckDB COPY create the temp as `0666 & umask`; a 0077
+    umask (seen in container/systemd units) would publish 0600 without the
+    explicit chmod #203 documents."""
+    output_dir = tmp_path / "data"
+    output_dir.mkdir()
+
+    previous = os.umask(0o077)
+    try:
+        kbe.materialize_query(
+            table_id="umask_test",
+            bucket="in.c-test",
+            source_table="t",
+            source_query=None,
+            storage_client=fake_storage_client_parquet,
+            output_dir=output_dir,
+        )
+    finally:
+        os.umask(previous)
+
+    pq_path = output_dir / "umask_test.parquet"
+    assert oct(pq_path.stat().st_mode & 0o777) == oct(0o644)
 
 
 # ---- consolidation-connection resource caps (#431 / #432) ------------------
@@ -905,6 +948,66 @@ def test_retype_bounds_writer_row_groups_and_keeps_md5_stable(tmp_path, small_ro
         return hashlib.md5(src.read_bytes()).hexdigest()
 
     assert build() == build(), "retype output is no longer byte-stable for identical input"
+
+
+def test_retype_killed_write_leaves_the_pre_retype_parquet_intact(tmp_path, monkeypatch):
+    """#1359 bonus site (found via the widened sweep, not in the issue's
+    named list): `_retype_parquet_streaming` now routes through
+    `atomic_publish` too, with `dest=tmp_parquet` — a temp-to-temp publish,
+    not yet the served path (`materialize_query` commits that separately).
+
+    This specific property (a killed retype must not corrupt the pre-retype
+    `tmp_parquet`) held even before the move — the original code already
+    wrote to its own `.typed` sibling and only replaced `tmp_parquet` on
+    success, with `except BaseException: cleanup; raise` on failure, so this
+    is a characterization test confirming the refactor preserved that,
+    not a regression test for a hole that existed here independently. The
+    move's actual value at this site is consistency (one publish mechanism,
+    not two) and closing the sweep's allowlist gap — `.typed`'s naming
+    inherits per-process-ness transitively from `tmp_parquet`'s own name now,
+    where pre-fix both were built from the OUTER function's shared
+    `<id>.parquet.tmp`, which the Group B fix on `materialize_query`
+    addresses.
+    """
+    import pyarrow as pa
+
+    src = tmp_path / "retype-me.parquet"
+    _write_wide_parquet(src, n_rows=10, cell_bytes=64)
+    original = src.read_bytes()
+    target = pa.schema([pa.field("id", pa.int32()), pa.field("body", pa.string())])
+
+    real_open = kbe._open_consolidation_conn
+
+    def _boom_on_copy(real_conn, sql, *a, **kw):
+        upper = sql.upper()
+        if "COPY" in upper and "FORMAT PARQUET" in upper:
+            m = re.search(r"TO '([^']+)'", sql)
+            assert m, f"could not find COPY target in: {sql}"
+            Path(m.group(1)).write_bytes(b"PAR1" + b"\x00" * 64)
+            raise RuntimeError("simulated mid-retype-COPY failure")
+        return real_conn.execute(sql, *a, **kw)
+
+    class _ExecuteProxy:
+        def __init__(self, conn, on_execute):
+            self._conn = conn
+            self._on_execute = on_execute
+
+        def execute(self, sql, *a, **kw):
+            return self._on_execute(self._conn, sql, *a, **kw)
+
+        def __getattr__(self, name):
+            return getattr(self._conn, name)
+
+    def boom_open(*a, **kw):
+        return _ExecuteProxy(real_open(*a, **kw), _boom_on_copy)
+
+    monkeypatch.setattr(kbe, "_open_consolidation_conn", boom_open)
+
+    with pytest.raises(RuntimeError, match="simulated mid-retype-COPY failure"):
+        kbe._retype_parquet_streaming(src, target)
+
+    assert src.read_bytes() == original, "killed retype corrupted the pre-retype parquet"
+    assert list(tmp_path.glob("*.tmp")) == [], "stale retype temp left behind"
 
 
 def test_consolidation_conn_spills_under_agnes_temp_dir(tmp_path, monkeypatch):

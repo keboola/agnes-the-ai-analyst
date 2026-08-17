@@ -15,13 +15,17 @@ producers (disk error, truncated restore, non-atomic `os.replace` on NFS/overlay
 one erroring transform instead of a month of history.
 
 `connectors/jira/organizations.py` already published atomically, and its comments
-recorded two incidents the extracted helper now carries for every writer: a shared temp
-name raced two writers (#1274), and `tempfile.mkstemp` + `os.replace` republished the
-parquet 0600 (#203).
+recorded two incidents the mechanism now carries for every writer, everywhere (moved
+to `src/parquet_publish.py` in #1359, shared by the ten other publish sites that same
+issue found — the Keboola/BigQuery/MCP connectors and `src/ingest/tabular.py`): a
+shared temp name raced two writers (#1274), and `tempfile.mkstemp` + `os.replace`
+republished the parquet 0600 (#203).
 
 Layered like `test_jira_webhook_transform_paths.py`: behavioural tests driving the
-writers, plus a source-level sweep so a *future* writer cannot reintroduce a direct
-write.
+Jira writers, plus a source-level sweep — widened by #1359 from `connectors/jira` to
+every connector plus `src/ingest/tabular.py` (the module docstring on
+`_publish_sites` below states the exact scope and why) — so a *future* writer, in any
+of them, cannot reintroduce a direct write.
 """
 
 import ast
@@ -36,7 +40,8 @@ from connectors.jira import incremental_transform as jira_incremental
 from connectors.jira import transform as jira_transform
 from tests.test_jira_hive_parquet import _make_raw_issue, _write_raw_issues
 
-CONNECTOR_ROOT = Path(__file__).resolve().parent.parent / "connectors" / "jira"
+REPO_ROOT = Path(__file__).resolve().parent.parent
+CONNECTOR_ROOT = REPO_ROOT / "connectors" / "jira"
 SCHEMA = {"issue_key": "string"}
 MONTH = "2025-06"
 # What a killed write leaves behind: the magic bytes, no footer.
@@ -227,8 +232,58 @@ def test_the_webhook_wrapper_reports_false_and_leaves_the_corrupt_bytes(
 
 
 # --------------------------------------------------------------------------------
-# Source-level sweep: no future writer may publish directly.
+# Source-level sweep: no future writer, in any connector, may publish directly.
 # --------------------------------------------------------------------------------
+#
+# The guard's actual contract: every `pq.write_table` / `<df>.to_parquet` / DuckDB
+# `COPY … FORMAT PARQUET` that publishes a file into a connector's extract-layout
+# directory (`/data/extracts/<source>/data/*.parquet` or the Jira hive-partitioned
+# equivalent — the tree `src/orchestrator.py`'s hasher and master-view glob treat as
+# authoritative, and `agnes pull` distributes) must go through
+# `src.parquet_publish` (#1359). It is NOT "every parquet write anywhere in the
+# repo" — the CLI's analyst-local snapshot cache (`cli/commands/snapshot.py`), an
+# in-memory HTTP export buffer (`app/api/admin_usage.py`), and dev tooling
+# (`connectors/*/scripts/`) all write parquet too, but none of them is an
+# extract-layout publish that multiple unrelated readers depend on, so they're out
+# of this sweep's root entirely rather than allowlisted — allowlisting would suggest
+# they're offenders that happen to be excused, when they're simply not the thing
+# this invariant is about.
+
+# Every connector, not just Jira — `connectors/*/tests/` and `connectors/*/scripts/`
+# excluded: the former is test fixtures, the latter is operator/benchmark tooling
+# (e.g. `connectors/jira/scripts/bloom_benchmark.py` writes its own comparison
+# parquet on a synthetic corpus, never touching a real extract tree) rather than
+# code any sync path executes. `src/ingest/tabular.py` is the one `src/`-rooted
+# publish site #1359 named; `src.parquet_publish` itself is excluded by construction
+# (it's under `src/`, not `connectors/`, and isn't the tabular-ingest file).
+SWEEP_ROOTS = [REPO_ROOT / "connectors"]
+EXTRA_SWEEP_FILES = [REPO_ROOT / "src" / "ingest" / "tabular.py"]
+_EXCLUDED_PATH_PARTS = {"tests", "scripts"}
+
+# Names that prove a function participates in the shared publish protocol
+# (`src/parquet_publish.py`). Deliberately looser than "the write is lexically
+# inside a `with atomic_publish(...):` block": a few call sites (the BigQuery and
+# Keboola `materialize_query` functions) span retries and several branches too
+# spread out to nest inside one `with`, so they use the two-step
+# `atomic_publish_temp_path` + `atomic_publish_finalize` form instead. Requiring
+# only "the enclosing function references one of these names somewhere" still makes
+# the actual bug class — a function that stages nothing and writes straight onto
+# the served path — unrepresentable, without forcing every call site into one
+# lexical shape.
+_PUBLISH_PRIMITIVE_NAMES = {"atomic_publish", "atomic_publish_temp_path", "atomic_publish_finalize"}
+
+# Sites deliberately left unconverted — shrink-only, never grown without a reason
+# attached. Keyed by (path relative to repo root, enclosing function name).
+_ALLOWED_OFFENDERS: dict[tuple[str, str], str] = {
+    ("connectors/databricks/extractor.py", "_write_batches_to_parquet"): (
+        "Same shared-temp-name / no-chmod defect (#1274 / #203) as the Group B sites "
+        "#1359 fixed elsewhere, found by widening this sweep — but "
+        "connectors/databricks/extractor.py's materialize_query landed in PR #1355 "
+        "AFTER #1359 was filed, and connectors/databricks/* is outside this change's "
+        "file ownership (a concurrent, unrelated builder owns it). Needs its own "
+        "follow-up conversion, not a fix folded into this one."
+    ),
+}
 
 
 class _PublishSweep(ast.NodeVisitor):
@@ -241,61 +296,162 @@ class _PublishSweep(ast.NodeVisitor):
     caused this bug: `pq.write_table(...)`, `df.to_parquet(...)`, and a DuckDB
     `COPY … TO '<path>' (FORMAT PARQUET)`. The narrow version would have waved
     through a future writer that used the shortest path.
+
+    The COPY spelling is matched on `JoinedStr` (an f-string), not only bare
+    `Constant` — every real COPY call site in this codebase interpolates the
+    identifier/path between "COPY" and "FORMAT PARQUET"
+    (``f"COPY (...) TO '{path}' (FORMAT PARQUET)"``), which the parser splits
+    into several `Constant` fragments around each `{...}`. A per-fragment-only
+    check never sees "COPY" and "FORMAT PARQUET" in the SAME fragment and so
+    never matches any of them — a real gap this sweep had until widening it
+    surfaced it. Reconstructing the joined static text (ignoring the
+    interpolated parts) fixes that without losing the ability to catch a
+    plain non-f-string literal too.
+
+    Docstrings are excluded from the Constant/JoinedStr scan (`docstring_ids`,
+    computed once per file by `_docstring_const_ids`) — otherwise prose that
+    happens to mention both "COPY" and "FORMAT PARQUET" false-positives. Real
+    example hit while widening this sweep:
+    `connectors/bigquery/extractor.py::materialize_query`'s own docstring
+    reads "``COPY (...) TO 'path' (FORMAT PARQUET)``." as documentation, not
+    code.
     """
 
     _CALL_NAMES = {"write_table", "to_parquet"}
 
-    def __init__(self, rel: str) -> None:
+    def __init__(self, rel: str, docstring_ids: set[int]) -> None:
         self.rel = rel
+        self._docstring_ids = docstring_ids
         self.stack: list[str] = ["<module>"]
+        # Parallel stack: does the CURRENT innermost enclosing function's body
+        # reference a publish-protocol name anywhere (not necessarily wrapping
+        # the write)? Module scope is never "safe" — no real site writes there,
+        # and treating "referenced anywhere in the whole file" as sufficient
+        # would let an unrelated new bad site ride along on a distant good one.
+        #
+        # A nested function INHERITS its enclosing function's safety (see
+        # visit_FunctionDef) rather than only checking its own body — a real
+        # site needs this: `connectors/bigquery/extractor.py::materialize_query`
+        # nests a nine-line `_copy_attempt()` closure that builds the actual COPY
+        # string, while the temp-path and commit calls live in the OUTER
+        # function (retried by calling `_copy_attempt()` a second time on a
+        # fresh session). Without inheritance this sweep would demand the commit
+        # calls move into the inner closure for no reason but satisfying a lint.
+        self.safe_stack: list[bool] = [False]
         self.found: list[tuple[str, int, str]] = []
+
+    def _references_publish_primitive(self, node: ast.AST) -> bool:
+        for inner in ast.walk(node):
+            if not isinstance(inner, ast.Call):
+                continue
+            func = inner.func
+            if isinstance(func, ast.Name) and func.id in _PUBLISH_PRIMITIVE_NAMES:
+                return True
+            if isinstance(func, ast.Attribute) and func.attr in _PUBLISH_PRIMITIVE_NAMES:
+                return True
+        return False
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         self.stack.append(node.name)
+        inherited = self.safe_stack[-1]
+        self.safe_stack.append(inherited or self._references_publish_primitive(node))
         self.generic_visit(node)
+        self.safe_stack.pop()
         self.stack.pop()
 
     visit_AsyncFunctionDef = visit_FunctionDef  # type: ignore[assignment]
 
+    def _record(self, node: ast.AST) -> None:
+        if not self.safe_stack[-1]:
+            self.found.append((self.rel, node.lineno, self.stack[-1]))
+
     def visit_Call(self, node: ast.Call) -> None:
         func = node.func
         if isinstance(func, ast.Attribute) and func.attr in self._CALL_NAMES:
-            self.found.append((self.rel, node.lineno, self.stack[-1]))
+            self._record(node)
         self.generic_visit(node)
 
+    def _check_sql_text(self, node: ast.AST, text: str) -> None:
+        sql = " ".join(text.upper().split())
+        if "COPY" in sql and "FORMAT PARQUET" in sql:
+            self._record(node)
+
     def visit_Constant(self, node: ast.Constant) -> None:
-        if isinstance(node.value, str):
-            sql = " ".join(node.value.upper().split())
-            if "COPY" in sql and "FORMAT PARQUET" in sql:
-                self.found.append((self.rel, node.lineno, self.stack[-1]))
+        if id(node) not in self._docstring_ids and isinstance(node.value, str):
+            self._check_sql_text(node, node.value)
         self.generic_visit(node)
+
+    def visit_JoinedStr(self, node: ast.JoinedStr) -> None:
+        # f-strings can never be a docstring (Python only recognizes a bare
+        # `Constant` there), so no exclusion check needed on this branch.
+        text = "".join(v.value for v in node.values if isinstance(v, ast.Constant) and isinstance(v.value, str))
+        self._check_sql_text(node, text)
+        self.generic_visit(node)
+
+
+def _docstring_const_ids(tree: ast.AST) -> set[int]:
+    """`id()`s of `Constant` nodes that ARE a Module/Class/Function's own
+    docstring. A separate pass so `_PublishSweep` doesn't have to special-case
+    "is this string literally the first statement of an enclosing def/class/
+    module" mid-traversal."""
+    ids: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            body = node.body
+            if (
+                body
+                and isinstance(body[0], ast.Expr)
+                and isinstance(body[0].value, ast.Constant)
+                and isinstance(body[0].value.value, str)
+            ):
+                ids.add(id(body[0].value))
+    return ids
+
+
+def _iter_swept_files():
+    for root in SWEEP_ROOTS:
+        for py in sorted(root.rglob("*.py")):
+            if _EXCLUDED_PATH_PARTS & set(py.relative_to(root).parts):
+                continue
+            yield py
+    yield from EXTRA_SWEEP_FILES
 
 
 def _publish_sites() -> list[tuple[str, int, str]]:
     found: list[tuple[str, int, str]] = []
-    for py in sorted(CONNECTOR_ROOT.rglob("*.py")):
-        if "tests" in py.parts:
-            continue
-        sweep = _PublishSweep(str(py.relative_to(CONNECTOR_ROOT)))
-        sweep.visit(ast.parse(py.read_text(), filename=str(py)))
+    for py in _iter_swept_files():
+        tree = ast.parse(py.read_text(), filename=str(py))
+        rel = str(py.relative_to(REPO_ROOT))
+        sweep = _PublishSweep(rel, _docstring_const_ids(tree))
+        sweep.visit(tree)
         found.extend(sweep.found)
     return found
 
 
-def test_the_only_parquet_publish_in_the_connector_is_the_atomic_helper() -> None:
+def test_the_only_parquet_publish_in_a_connector_is_the_shared_atomic_helper() -> None:
     """A direct write onto a published path is the bug this file exists for.
-    Funnelling every writer through one helper is what makes that
+    Funnelling every writer through `src.parquet_publish` is what makes that
     unrepresentable, so a new call site has to justify itself here.
 
-    Scope note: this sweeps `connectors/jira` only. The same invariant holds for
-    every connector — several publish parquet onto live paths, and the ones that
-    do use temp+replace use a shared (non-per-process) temp name and no chmod,
-    i.e. exactly the #1274 and #203 defects the helper encodes. Widening this
-    guard belongs with the move that makes the helper shared.
+    Widened by #1359 from `connectors/jira` only to every connector plus
+    `src/ingest/tabular.py` — see the module comment above `SWEEP_ROOTS` for
+    the exact scope and why, and `_ALLOWED_OFFENDERS` for what's deliberately
+    still red and why.
     """
     sites = _publish_sites()
     assert sites, "sweep found no writes at all — it has stopped working"
-    offenders = [s for s in sites if s[2] != "write_parquet_atomic"]
+    offenders = [s for s in sites if (s[0], s[2]) not in _ALLOWED_OFFENDERS]
     assert offenders == [], (
-        f"parquet must be published via `write_parquet_atomic` (temp + os.replace); direct writes found: {offenders}"
+        f"parquet must be published via src.parquet_publish (temp + chmod + os.replace); "
+        f"direct writes found: {offenders}"
     )
+
+
+def test_the_allowlist_has_no_stale_entries() -> None:
+    """Shrink-only: an allowlisted (path, function) that the sweep no longer
+    finds as an offender means the underlying code changed (converted, moved,
+    or deleted) — the entry must be removed in the same change, not left to
+    silently stop meaning anything."""
+    sites = {(s[0], s[2]) for s in _publish_sites()}
+    stale = [key for key in _ALLOWED_OFFENDERS if key not in sites]
+    assert stale == [], f"allowlist entries no longer found by the sweep (remove them): {stale}"
