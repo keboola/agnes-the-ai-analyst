@@ -3044,6 +3044,63 @@ def _validate_bigquery_register_payload(req: "RegisterTableRequest") -> None:
         )
 
 
+def _assert_snowflake_custom_sql_targets_sf(sql: str) -> None:
+    """Refuse custom Snowflake SQL that reaches outside the attached ``sf`` catalog.
+
+    ``connectors.snowflake.extractor.materialize_query`` opens a scratch DuckDB,
+    ATTACHes the configured Snowflake database as ``sf``, and nothing else — so a
+    statement naming any other catalog (or naming a table with no catalog at all)
+    resolves against an empty database and fails at COPY time, on a scheduler
+    tick, hours after registration. That is the "registered but never
+    materializes" state the BigQuery and Databricks validators exist to prevent;
+    catch it while the operator is still looking at the register form.
+
+    The statement is parsed as DuckDB SQL — which is what actually runs; only the
+    table scan is pushed down to Snowflake — so a CTE alias is a local name and
+    is not a catalog reference. Table *functions* (``range(10)``, ``VALUES``) are
+    not table references either and are left alone.
+    """
+    import sqlglot
+    from sqlglot import exp
+
+    from connectors.snowflake.attach import SF_ALIAS
+
+    try:
+        statements = [s for s in sqlglot.parse(sql, read="duckdb") if s is not None]
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"snowflake: source_query could not be parsed as DuckDB SQL ({e}). "
+                "The statement runs through DuckDB's Snowflake extension, so it must "
+                "be valid DuckDB SQL, not Snowflake-flavour SQL."
+            ),
+        ) from e
+
+    if not statements:
+        raise HTTPException(status_code=422, detail="snowflake: source_query is empty")
+
+    for statement in statements:
+        cte_names = {c.alias_or_name.lower() for c in statement.find_all(exp.CTE) if c.alias_or_name}
+        for table in statement.find_all(exp.Table):
+            if not isinstance(table.this, exp.Identifier):
+                # A table function / subquery source has no static catalog to check.
+                continue
+            catalog = (table.catalog or "").strip('"')
+            if not catalog and table.name.lower() in cte_names:
+                continue
+            if catalog.lower() != SF_ALIAS:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"snowflake: source_query references {table.sql(dialect='duckdb')!r}, "
+                        f"which is not in the {SF_ALIAS!r} catalog. The materialize session "
+                        f"attaches only the configured Snowflake database as {SF_ALIAS!r}; "
+                        f'write every table as {SF_ALIAS}."<schema>"."<table>".'
+                    ),
+                )
+
+
 def _validate_snowflake_register_payload(req: "RegisterTableRequest") -> None:
     """Enforce Snowflake-specific shape on a register/update request.
 
@@ -3088,6 +3145,9 @@ def _validate_snowflake_register_payload(req: "RegisterTableRequest") -> None:
     if req.query_mode == "materialized" and req.source_query and req.source_query.strip():
         # Custom SQL is self-contained; bucket/source_table are only required when
         # the server generates the full-table dump itself (mirrors Databricks validator).
+        # It still has to obey the one contract the materialize session imposes:
+        # the only catalog that exists there is `sf`.
+        _assert_snowflake_custom_sql_targets_sf(req.source_query)
         return
 
     bucket = (req.bucket or "").strip()
@@ -3112,8 +3172,7 @@ def _validate_snowflake_register_payload(req: "RegisterTableRequest") -> None:
         raise HTTPException(
             status_code=400,
             detail=(
-                f"snowflake: schema {schema!r} is unsafe (only [A-Za-z0-9_.-] "
-                "allowed, no leading/trailing whitespace)"
+                f"snowflake: schema {schema!r} is unsafe (only [A-Za-z0-9_.-] allowed, no leading/trailing whitespace)"
             ),
         )
     if source_table.strip() != source_table or not _is_safe_quoted_identifier(source_table):
@@ -3141,8 +3200,9 @@ def _validate_snowflake_register_payload(req: "RegisterTableRequest") -> None:
 def _rebuild_snowflake_remote_extract() -> tuple[bool, str]:
     """Rebuild ``extracts/snowflake/extract.duckdb`` for remote rows.
 
-    Returns ``(ok, message)`` so the register route can surface 500 on a hard
-    failure while still leaving the registry row in place.
+    Returns ``(ok, message)``. ``ok=False`` is reserved for a *hard* failure
+    (an exception, or per-table errors) — a skipped rebuild is a message, so a
+    benign skip never turns a successful registration into a 500.
     """
     from connectors.snowflake.extract_init import rebuild_from_registry
 
@@ -3153,10 +3213,23 @@ def _rebuild_snowflake_remote_extract() -> tuple[bool, str]:
         return (False, f"snowflake remote extract rebuild failed: {exc}")
 
     if result.get("skipped"):
+        # A *skipped* rebuild is a message, never a failed registration —
+        # mirroring `_rebuild_databricks_remote_extract`. The registry row is
+        # already persisted by the time we get here, so answering 500 would
+        # tell the operator the registration failed while the row is in fact
+        # live. `no_remote_rows` is a plain no-op (e.g. the update_table
+        # background pass); `not_configured` is reachable whenever the password
+        # resolved at validation time but not at rebuild time — in both cases
+        # the fix is to re-trigger a sync once the instance is configured, not
+        # to re-register.
         reason = result.get("reason")
         if reason == "not_configured":
-            return (False, "snowflake remote extract skipped: not configured")
-        # `no_remote_rows` is a no-op (e.g. update_table background), not a failure.
+            return (
+                True,
+                "snowflake remote extract skipped: Snowflake is not configured, so the "
+                "sf catalog was not attached. Set data_source.snowflake.* + the password "
+                "env/vault secret, then POST /api/sync/trigger to build the extract.",
+            )
         return (True, f"snowflake remote extract skipped: {reason}")
 
     errors = result.get("errors") or []

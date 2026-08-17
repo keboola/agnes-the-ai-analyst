@@ -17,7 +17,7 @@ from connectors.snowflake.attach import (
     build_remote_attach_url,
 )
 from src.duckdb_conn import _open_duckdb
-from src.orchestrator_security import is_attach_host_allowed
+from src.orchestrator_security import is_attach_host_allowed, is_token_env_allowed
 from src.sql_ident import quote_ident
 
 logger = logging.getLogger(__name__)
@@ -118,10 +118,24 @@ def init_extract(
         except Exception as exc:
             logger.error("snowflake extract: ATTACH failed: %s", exc)
             for tc in table_configs:
-                stats["errors"].append(
-                    {"table": tc.get("name"), "error": f"Snowflake ATTACH failed: {exc}"}
-                )
+                stats["errors"].append({"table": tc.get("name"), "error": f"Snowflake ATTACH failed: {exc}"})
             return stats
+
+        # Both replay paths (src/orchestrator.py, src/db.py) refuse a
+        # `token_env` that is not on the orchestrator's allowlist — correctly:
+        # the connector does not get to pick which secret gets shipped. But a
+        # refusal there is silent from the operator's seat (the symptom is a
+        # missing master view), so an operator who configured
+        # `data_source.snowflake.token_env` without allowlisting the name gets
+        # told here, while they are still looking at a register/sync result.
+        # The gate itself is NOT weakened.
+        if token_env and not is_token_env_allowed(token_env):
+            logger.warning(
+                "snowflake extract: token_env %r is not in the remote-attach token-env "
+                "allowlist; the ATTACH will be skipped at query time. Add it to "
+                "AGNES_REMOTE_ATTACH_TOKEN_ENVS (the override REPLACES the defaults).",
+                token_env,
+            )
 
         write_remote_attach(conn, account, database, warehouse, user, role, token_env=token_env)
 
@@ -167,11 +181,7 @@ def rebuild_from_registry(output_dir: str | None = None) -> dict[str, Any]:
     if settings is None:
         return {"skipped": True, "reason": "not_configured", "tables_registered": 0, "errors": []}
 
-    rows = [
-        r
-        for r in table_registry_repo().list_by_source("snowflake")
-        if (r.get("query_mode") or "") == "remote"
-    ]
+    rows = [r for r in table_registry_repo().list_by_source("snowflake") if (r.get("query_mode") or "") == "remote"]
     if not rows:
         return {"skipped": True, "reason": "no_remote_rows", "tables_registered": 0, "errors": []}
 

@@ -2262,10 +2262,9 @@ def _sf_guardrail_inputs(sql: str, sql_lower: str, sys_conn, user, allowed) -> O
         table_raw = m.group(2).strip('"')
         row = None
         for r in repo.list_by_source("snowflake"):
-            if (
-                (r.get("bucket") or "").lower() == schema_raw.lower()
-                and (r.get("source_table") or "").lower() == table_raw.lower()
-            ):
+            if (r.get("bucket") or "").lower() == schema_raw.lower() and (
+                r.get("source_table") or ""
+            ).lower() == table_raw.lower():
                 row = r
                 break
         if row is None:
@@ -3414,6 +3413,18 @@ def run_remote_select_to_arrow(conn, user, sql, bq, quota, *, policy_info: dict 
         )
         if blocked_bq_path is not None:
             raise HTTPException(status_code=403, detail=blocked_bq_path)
+
+        # Snowflake direct-path guard — the same gate `/api/query` applies, for
+        # the same reason. `src/db.py` re-ATTACHes the `sf` catalog on the
+        # read-only analytics connection this path executes against, and
+        # `_local_extract_catalogs` deliberately excludes non-`duckdb` catalogs
+        # from the #868 catalog gate, so without this an `sf."schema"."table"`
+        # reference reaches Snowflake with no registration and no grant check.
+        # `resolve_single_engine` above does not know Snowflake either, so it
+        # does not refuse the statement on this path.
+        blocked_sf_path = _sf_guardrail_inputs(sql, sql_lower, conn, user, allowed)
+        if blocked_sf_path is not None:
+            raise HTTPException(status_code=403, detail=blocked_sf_path)
 
         # See _identity_for_audit — a restricted principal has no ".get".
         _audit_uid, _audit_email = _identity_for_audit(user)

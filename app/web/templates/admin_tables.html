@@ -2072,10 +2072,15 @@
                                 </button>
                             </label>
                             <textarea class="form-textarea" id="sfSourceQuery" rows="8"
-                                placeholder="SELECT date, SUM(revenue) AS revenue&#10;FROM sf.&#34;PUBLIC&#34;.&#34;ORDERS&#34;&#10;WHERE date >= DATEADD(day, -90, CURRENT_DATE())&#10;GROUP BY 1"></textarea>
+                                placeholder="SELECT date, SUM(revenue) AS revenue&#10;FROM sf.&#34;PUBLIC&#34;.&#34;ORDERS&#34;&#10;WHERE date >= CURRENT_DATE - INTERVAL 90 DAY&#10;GROUP BY 1"></textarea>
                             <div class="form-hint">
-                                SELECT statement, no trailing semicolon. Use DuckDB Snowflake-extension identifiers
-                                (<code>sf.&#34;schema&#34;.&#34;table&#34;</code>).
+                                SELECT statement, no trailing semicolon, written in <strong>DuckDB</strong> SQL &mdash; not
+                                Snowflake SQL. DuckDB parses the whole statement and pushes only the table scan
+                                down to Snowflake, so the rest (functions, date arithmetic, aggregates) runs in
+                                DuckDB: write <code>CURRENT_DATE - INTERVAL 90 DAY</code>, not
+                                <code>DATEADD(...)</code>. Every table must be qualified
+                                <code>sf.&#34;schema&#34;.&#34;table&#34;</code> &mdash; <code>sf</code> is the only
+                                catalog attached when the scheduler runs this query.
                             </div>
                         </div>
                         <div class="form-group">

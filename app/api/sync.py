@@ -672,14 +672,29 @@ def _run_materialized_pass(
         # reason the stats dict didn't carry it (defensive).
         parquet_hash = stats.get("hash")
         if not parquet_hash:
-            if row_source_type == "bigquery":
-                output_dir_for_hash = bq_output_dir
-            elif row_source_type == "databricks":
-                output_dir_for_hash = dbx_output_dir
-            elif row_source_type == "snowflake":
-                output_dir_for_hash = sf_output_dir
-            else:
-                output_dir_for_hash = str(kb_output_dir.parent)
+            # Keyed by source_type rather than an if/elif chain with a
+            # Keboola `else`: a connector added later would otherwise
+            # silently inherit the Keboola directory and hash a path that
+            # does not exist (which is exactly what Snowflake rows did).
+            # An unknown source_type is surfaced as a per-row error instead
+            # of being hashed against a guessed directory.
+            output_dir_for_hash = {
+                "bigquery": bq_output_dir,
+                "databricks": dbx_output_dir,
+                "snowflake": sf_output_dir,
+                "keboola": str(kb_output_dir.parent),
+            }.get(row_source_type)
+            if output_dir_for_hash is None:
+                summary["errors"].append(
+                    {
+                        "table": ref_name,
+                        "error": (
+                            "materialize returned no hash and no extract directory is "
+                            f"mapped for source_type={row_source_type!r}"
+                        ),
+                    }
+                )
+                continue
             parquet_path = Path(output_dir_for_hash) / "data" / f"{ref_name}.parquet"
             parquet_hash = _file_hash(parquet_path)
         # `update_sync` resets `status='ok'` / `error=NULL` on the upsert

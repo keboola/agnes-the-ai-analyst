@@ -542,3 +542,396 @@ def test_sf_guardrail_access_denied(monkeypatch):
     )
     assert result is not None
     assert result["reason"] == "sf_path_access_denied"
+
+
+# --- PR #1389 review-finding regressions -------------------------------------------
+
+
+def test_admin_register_snowflake_custom_sql_without_bucket(
+    seeded_app, snowflake_instance, stub_snowflake_extract
+):
+    """Finding #1: a materialized row carrying only custom SQL must register.
+
+    The UI's synced+custom payload deliberately omits bucket/source_table. If the
+    validator demands them before it reaches the custom-SQL early return, that
+    payload can never be registered (nor edited afterwards).
+    """
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    resp = c.post(
+        "/api/admin/register-table",
+        json={
+            "name": "orders_eu",
+            "source_type": "snowflake",
+            "query_mode": "materialized",
+            "source_query": 'SELECT region, revenue FROM sf."public"."orders"',
+        },
+        headers=_auth(token),
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["status"] == "registered"
+
+
+def test_admin_precheck_snowflake_custom_sql_without_bucket(seeded_app, snowflake_instance):
+    """Finding #1: the same payload must survive the precheck route."""
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    resp = c.post(
+        "/api/admin/register-table/precheck",
+        json={
+            "name": "orders_eu",
+            "source_type": "snowflake",
+            "query_mode": "materialized",
+            "source_query": 'SELECT region, revenue FROM sf."public"."orders"',
+        },
+        headers=_auth(token),
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["ok"] is True
+
+
+def test_materialize_query_swap_is_atomic(tmp_path, monkeypatch, snowflake_settings):
+    """Finding #2: the previous parquet must survive a failed swap.
+
+    Pre-fix the destination was ``unlink()``ed before the fresh file was moved
+    into place, so a crash (or a concurrent reader) at that instant saw no file
+    at all. With a single ``os.replace`` the old copy is still readable when the
+    swap itself fails.
+    """
+    out = tmp_path / "extracts" / "snowflake"
+    (out / "data").mkdir(parents=True)
+    parquet_path = out / "data" / "orders_summary.parquet"
+    parquet_path.write_bytes(b"PREVIOUS-GENERATION")
+
+    monkeypatch.setenv("AGNES_REMOTE_ATTACH_HOST_ALLOWLIST", SF_HOST)
+    monkeypatch.setattr(
+        "connectors.snowflake.extractor._open_duckdb",
+        lambda path, **kw: _make_stub_duckdb_conn(),
+    )
+
+    def _boom(src, dst):
+        raise OSError("swap interrupted")
+
+    monkeypatch.setattr("connectors.snowflake.extractor.os.replace", _boom)
+
+    with pytest.raises(OSError, match="swap interrupted"):
+        materialize_query(
+            "orders_summary",
+            output_dir=str(out),
+            source_query='SELECT * FROM "sf"."public"."orders"',
+            settings=snowflake_settings,
+            max_bytes=None,
+        )
+
+    assert parquet_path.exists()
+    assert parquet_path.read_bytes() == b"PREVIOUS-GENERATION"
+
+
+def test_materialize_query_scratch_db_is_per_table(tmp_path, monkeypatch, snowflake_settings):
+    """Finding #3: two tables must not share one scratch DuckDB file.
+
+    ``_get_table_lock`` only serializes the SAME table, so a scheduler tick that
+    overlaps an operator-triggered sync of a different table would open (and then
+    delete) the same ``.tmp_materialize`` file underneath the other run.
+    """
+    out = tmp_path / "extracts" / "snowflake"
+    monkeypatch.setenv("AGNES_REMOTE_ATTACH_HOST_ALLOWLIST", SF_HOST)
+    seen: list[str] = []
+
+    def _open(path, **kw):
+        seen.append(str(path))
+        return _make_stub_duckdb_conn()
+
+    monkeypatch.setattr("connectors.snowflake.extractor._open_duckdb", _open)
+
+    for table_id in ("orders_a", "orders_b"):
+        materialize_query(
+            table_id,
+            output_dir=str(out),
+            source_query='SELECT * FROM "sf"."public"."orders"',
+            settings=snowflake_settings,
+            max_bytes=None,
+        )
+
+    scratch = [p for p in seen if ".tmp_materialize" in p]
+    assert len(scratch) == 2
+    assert scratch[0] != scratch[1], f"scratch DuckDB path is shared across tables: {scratch}"
+
+
+def test_run_materialized_pass_hash_fallback_uses_snowflake_dir(
+    monkeypatch, tmp_path, snowflake_settings
+):
+    """Finding #4: a Snowflake row that falls back to hashing must read the
+    Snowflake extract dir, not the Keboola one."""
+    from app.api.sync import _run_materialized_pass
+
+    monkeypatch.setattr("app.api.sync._get_data_dir", lambda: str(tmp_path))
+    monkeypatch.setattr("app.api.sync.is_table_due", lambda schedule, last: True)
+    monkeypatch.setattr(
+        "connectors.snowflake.settings.resolve_snowflake_settings", lambda: snowflake_settings
+    )
+    # No `hash` in the stats dict → the fallback branch runs.
+    monkeypatch.setattr(
+        "connectors.snowflake.extractor.materialize_query",
+        MagicMock(return_value={"rows": 5, "size_bytes": 100, "query_mode": "materialized"}),
+    )
+
+    hashed: list[str] = []
+
+    def _fake_hash(path):
+        hashed.append(str(path))
+        return "deadbeef"
+
+    monkeypatch.setattr("app.api.sync._file_hash", _fake_hash)
+
+    registry = MagicMock()
+    registry.list_all.return_value = [
+        {
+            "name": "orders_summary",
+            "id": "orders_summary",
+            "source_type": "snowflake",
+            "query_mode": "materialized",
+            "source_query": 'SELECT * FROM sf."public"."orders"',
+            "bucket": "public",
+            "source_table": "orders",
+            "sync_schedule": None,
+        }
+    ]
+    state = MagicMock()
+    state.get_last_sync.return_value = None
+    monkeypatch.setattr("app.api.sync.table_registry_repo", lambda: registry)
+    monkeypatch.setattr("app.api.sync.sync_state_repo", lambda: state)
+
+    _run_materialized_pass(None, None, source_type="snowflake")
+
+    assert hashed, "fallback hash was never taken"
+    assert "extracts/snowflake/data/orders_summary.parquet" in hashed[0].replace("\\", "/")
+
+
+def test_init_extract_persists_custom_token_env(tmp_path, monkeypatch):
+    """Finding #5: an operator-chosen ``token_env`` must reach ``_remote_attach``.
+
+    Both replay paths (``src/orchestrator.py`` and ``src/db.py``) read the env var
+    NAMED IN THAT COLUMN, so hardcoding ``SNOWFLAKE_PASSWORD`` silently breaks
+    every remote row on an instance that configured a different name.
+    """
+    monkeypatch.setenv("AGNES_REMOTE_ATTACH_HOST_ALLOWLIST", SF_HOST)
+    monkeypatch.setenv("AGNES_REMOTE_ATTACH_TOKEN_ENVS", "SF_SECRET_PASSWORD")
+    out = tmp_path / "extracts" / "snowflake"
+
+    init_extract(
+        str(out),
+        SF_SETTINGS["account"],
+        SF_SETTINGS["database"],
+        SF_SETTINGS["warehouse"],
+        SF_SETTINGS["user"],
+        SF_SETTINGS["role"],
+        [{"name": "orders", "bucket": "public", "source_table": "orders"}],
+        token="secret",
+        token_env="SF_SECRET_PASSWORD",
+        attach_fn=lambda conn, *, url, token: None,
+    )
+
+    conn = duckdb.connect(str(out / "extract.duckdb"))
+    try:
+        row = conn.execute("SELECT alias, extension, token_env FROM _remote_attach").fetchone()
+    finally:
+        conn.close()
+    assert row[0] == SF_ALIAS
+    assert row[1] == SF_EXTENSION
+    assert row[2] == "SF_SECRET_PASSWORD"
+
+
+def test_init_extract_default_token_env_is_the_module_default(tmp_path, monkeypatch):
+    """Finding #5 corollary: with no override the default name is still written."""
+    monkeypatch.setenv("AGNES_REMOTE_ATTACH_HOST_ALLOWLIST", SF_HOST)
+    out = tmp_path / "extracts" / "snowflake"
+    init_extract(
+        str(out),
+        SF_SETTINGS["account"],
+        SF_SETTINGS["database"],
+        SF_SETTINGS["warehouse"],
+        SF_SETTINGS["user"],
+        SF_SETTINGS["role"],
+        [{"name": "orders", "bucket": "public", "source_table": "orders"}],
+        token="secret",
+        attach_fn=lambda conn, *, url, token: None,
+    )
+    conn = duckdb.connect(str(out / "extract.duckdb"))
+    try:
+        token_env = conn.execute("SELECT token_env FROM _remote_attach").fetchone()[0]
+    finally:
+        conn.close()
+    assert token_env == SF_TOKEN_ENV
+
+
+def test_init_extract_warns_when_token_env_not_allowlisted(tmp_path, monkeypatch, caplog):
+    """Finding #5: a non-allowlisted ``token_env`` still builds, but the operator
+    must be told — otherwise the ATTACH is silently skipped at replay time and the
+    only symptom is a missing view. The allowlist gate itself is NOT weakened."""
+    import logging
+
+    from src.orchestrator_security import is_token_env_allowed
+
+    monkeypatch.setenv("AGNES_REMOTE_ATTACH_HOST_ALLOWLIST", SF_HOST)
+    monkeypatch.delenv("AGNES_REMOTE_ATTACH_TOKEN_ENVS", raising=False)
+    assert not is_token_env_allowed("SF_SECRET_PASSWORD")
+
+    out = tmp_path / "extracts" / "snowflake"
+    with caplog.at_level(logging.WARNING, logger="connectors.snowflake.extract_init"):
+        init_extract(
+            str(out),
+            SF_SETTINGS["account"],
+            SF_SETTINGS["database"],
+            SF_SETTINGS["warehouse"],
+            SF_SETTINGS["user"],
+            SF_SETTINGS["role"],
+            [{"name": "orders", "bucket": "public", "source_table": "orders"}],
+            token="secret",
+            token_env="SF_SECRET_PASSWORD",
+            attach_fn=lambda conn, *, url, token: None,
+        )
+    assert "AGNES_REMOTE_ATTACH_TOKEN_ENVS" in caplog.text
+
+
+def test_sf_guardrail_tolerates_null_bucket_rows(monkeypatch):
+    """Finding #7: a custom-SQL row stores NULL bucket/source_table (finding #1
+    relaxes the validator that used to force them), so the guard must not
+    ``.lower()`` a ``None`` and turn every sf.* query into a 500."""
+    from app.api.query import _sf_guardrail_inputs
+
+    _patch_guardrail(
+        monkeypatch,
+        [
+            {"id": "custom", "bucket": None, "source_table": None, "name": "orders_eu"},
+            {"id": "t1", "bucket": "public", "source_table": "orders", "name": "orders"},
+        ],
+    )
+    result = _sf_guardrail_inputs(
+        'SELECT * FROM sf."public"."orders"',
+        'select * from sf."public"."orders"',
+        None,
+        {},
+        ["t1"],
+    )
+    assert result is None
+
+
+def test_snapshot_from_query_refuses_unregistered_sf_path(seeded_app):
+    """Finding #6: ``run_remote_select_to_arrow`` (``/api/v2/scan --from-query``,
+    ``agnes query --remote --auto-snapshot``) re-ATTACHes the ``sf`` catalog on the
+    read-only analytics connection, so it needs the SAME registry gate as
+    ``/api/query``. Without it an ``sf.*`` path reaches Snowflake ungated."""
+    from fastapi import HTTPException
+
+    from app.api.query import run_remote_select_to_arrow
+    from src.db import get_system_db
+
+    conn = get_system_db()
+    try:
+        with pytest.raises(HTTPException) as exc:
+            run_remote_select_to_arrow(
+                conn,
+                {"id": "admin1", "email": "admin@test.com"},
+                'SELECT * FROM sf."public"."unregistered"',
+                None,
+                None,
+            )
+    finally:
+        conn.close()
+    assert exc.value.status_code == 403
+    assert exc.value.detail["reason"] == "sf_path_not_registered"
+
+
+def test_admin_register_snowflake_remote_not_configured_is_not_a_500(
+    seeded_app, snowflake_instance, monkeypatch
+):
+    """Finding #8: a *skipped* rebuild is a message, not a failed registration.
+
+    ``rebuild_from_registry`` returns ``skipped/not_configured`` when the password
+    resolves at validation time but not at rebuild time. Mapping that to 500
+    ``rebuild_failed`` leaves the registry row in place while telling the operator
+    the registration failed. Databricks' sibling never 500s.
+    """
+    monkeypatch.setattr(
+        "connectors.snowflake.extract_init.rebuild_from_registry",
+        MagicMock(
+            return_value={
+                "skipped": True,
+                "reason": "not_configured",
+                "tables_registered": 0,
+                "errors": [],
+            }
+        ),
+    )
+    c = seeded_app["client"]
+    resp = c.post(
+        "/api/admin/register-table",
+        json=_sf_payload(name="orders_skip"),
+        headers=_auth(seeded_app["admin_token"]),
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["status"] == "registered"
+    assert "not configured" in (body.get("message") or "").lower()
+
+
+def test_admin_register_snowflake_custom_sql_foreign_catalog_refused(
+    seeded_app, snowflake_instance
+):
+    """Finding #9: the materialize session ATTACHes only ``sf``. Custom SQL naming
+    another catalog registers happily today and then fails at COPY time on the
+    scheduler tick — exactly the 'registered but never materializes' state the
+    other validators exist to prevent."""
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    resp = c.post(
+        "/api/admin/register-table",
+        json={
+            "name": "orders_bad",
+            "source_type": "snowflake",
+            "query_mode": "materialized",
+            "source_query": 'SELECT * FROM other."public"."orders"',
+        },
+        headers=_auth(token),
+    )
+    assert resp.status_code == 400, resp.text
+    assert "sf" in resp.json()["detail"].lower()
+
+
+def test_admin_register_snowflake_custom_sql_unqualified_refused(seeded_app, snowflake_instance):
+    """Finding #9: an unqualified reference resolves against nothing in the
+    materialize session either."""
+    c = seeded_app["client"]
+    resp = c.post(
+        "/api/admin/register-table",
+        json={
+            "name": "orders_bare",
+            "source_type": "snowflake",
+            "query_mode": "materialized",
+            "source_query": "SELECT * FROM orders",
+        },
+        headers=_auth(seeded_app["admin_token"]),
+    )
+    assert resp.status_code == 400, resp.text
+
+
+def test_admin_register_snowflake_custom_sql_allows_ctes(
+    seeded_app, snowflake_instance, stub_snowflake_extract
+):
+    """Finding #9: a CTE alias is a local name, not a foreign catalog."""
+    c = seeded_app["client"]
+    resp = c.post(
+        "/api/admin/register-table",
+        json={
+            "name": "orders_cte",
+            "source_type": "snowflake",
+            "query_mode": "materialized",
+            "source_query": (
+                'WITH raw AS (SELECT * FROM sf."public"."orders") '
+                "SELECT region, SUM(revenue) AS revenue FROM raw GROUP BY 1"
+            ),
+        },
+        headers=_auth(seeded_app["admin_token"]),
+    )
+    assert resp.status_code == 201, resp.text
