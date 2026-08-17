@@ -211,6 +211,12 @@ python -m connectors.jira.transform \
     --attachments-dir /data/src_data/raw/jira/attachments
 ```
 
+> **Repair caveat:** the rebuild skips issues marked `_deleted_at` and only
+> writes months that still have at least one live issue. A month whose issues
+> have since ALL been deleted is left untouched (a per-month WARNING is
+> logged) — if you are repairing a corrupt partition in such a month, remove
+> the file instead: every row it held belongs to a deleted issue.
+
 **Common transformations (both modes):**
 - Extracts plain text from ADF (Atlassian Document Format)
 - Maps custom field IDs to human-readable names
