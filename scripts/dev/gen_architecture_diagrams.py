@@ -1172,7 +1172,10 @@ def main() -> int:
     }
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     for name, build in figures.items():
-        (OUT_DIR / name).write_text(standalone(build()))
+        # Explicit encoding, not the locale's: the figures carry →, ⇒, ·, ×, —,
+        # none of which survive a cp1252 default. Without it the script dies
+        # mid-loop on such a machine, having already overwritten an earlier file.
+        (OUT_DIR / name).write_text(standalone(build()), encoding="utf-8")
         print(f"wrote {(OUT_DIR / name).relative_to(REPO_ROOT)}")
 
     if OVERFLOW:
