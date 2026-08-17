@@ -96,7 +96,7 @@ async def microsoft_callback(request: Request):
         name = user_info.get("name", "")
 
         if not email or "@" not in email:
-            return RedirectResponse(url="/login?error=no_email")
+            return RedirectResponse(url="/login?error=microsoft_no_email")
 
         # Domain check
         allowed = get_allowed_domains()
@@ -154,4 +154,4 @@ async def microsoft_callback(request: Request):
 
     except Exception as e:
         logger.error(f"Microsoft OAuth error: {e}")
-        return RedirectResponse(url="/login?error=oauth_failed")
+        return RedirectResponse(url="/login?error=microsoft_oauth_failed")

@@ -14,6 +14,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 - Microsoft Entra ID (Azure AD) single-tenant OAuth login provider (`MICROSOFT_TENANT_ID`/`MICROSOFT_CLIENT_ID`/`MICROSOFT_CLIENT_SECRET`). Authentication only; users land in the Everyone group (IdP group sync not yet wired).
 
+### Fixed
+
+- **A Microsoft-only sign-in configuration can be saved from the admin page.** `microsoft` reached `KNOWN_PROVIDERS` and the runtime availability probes, but the admin write path keeps a *second*, independent probe (`_provider_available_after_save`) that knew only password/google/email/keboola and fell through to `False` for anything else — so narrowing `auth.providers` to Microsoft was refused with "would leave no usable sign-in method" even with all three env vars set. The env path (`AGNES_AUTH_PROVIDERS`) never saw that validator, so the same instance could be configured one way and not the other.
+
+- **A failed Microsoft sign-in now says so, and says it about Microsoft.** The provider redirected to `/login?error=microsoft_not_configured`, a code the login page had no message for, so the user landed on a blank page with no explanation; its other two failures reused `oauth_failed` and `no_email`, both worded as Google problems. All three are now provider-scoped, following the precedent Keboola set.
+
 ## [0.83.31] - 2026-08-17
 
 ### Fixed

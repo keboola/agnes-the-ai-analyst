@@ -419,6 +419,40 @@ class TestServerConfigAuthProvidersValidation:
         assert "no usable sign-in method" in detail
         assert "GOOGLE_CLIENT_ID" in detail and "GOOGLE_CLIENT_SECRET" in detail
 
+    def test_microsoft_only_is_accepted_when_the_env_is_configured(self, seeded_app, monkeypatch):
+        """`providers: [microsoft]` must be savable once the three env vars are
+        set. The write path keeps its own availability probe, separate from the
+        runtime registry, and a provider missing from it is known-but-never-
+        available — so narrowing an instance to Microsoft was refused as "no
+        usable sign-in method" no matter how it was configured."""
+        import app.auth.providers.microsoft as ms
+
+        monkeypatch.setattr(ms, "is_available", lambda: True)
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/server-config",
+            json={"sections": {"auth": {"providers": ["microsoft"]}}, "confirm_danger": True},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 200, resp.text
+
+    def test_microsoft_only_still_refused_when_the_env_is_absent(self, seeded_app, monkeypatch):
+        """The other half of the contract: the branch reports the real probe,
+        it does not hardcode availability."""
+        import app.auth.providers.microsoft as ms
+
+        monkeypatch.setattr(ms, "is_available", lambda: False)
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/server-config",
+            json={"sections": {"auth": {"providers": ["microsoft"]}}, "confirm_danger": True},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 422, resp.text
+        assert "no usable sign-in method" in resp.json()["detail"]
+
     def test_http_auth_keboola_stack_url_is_refused(self, seeded_app):
         """auth.keboola URLs are held to the source-connection bar
         (_validate_stack_url rejects non-https): they carry credentials at

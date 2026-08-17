@@ -410,6 +410,15 @@ def _provider_available_after_save(name: str, auth_patch: Dict[str, Any], sectio
         }
         stack = merged.get("stack_url") or ds_merged.get("stack_url")
         return bool(merged.get("client_id") and merged.get("client_secret") and merged.get("project_id") and stack)
+    if name == "microsoft":
+        # Env-only, like google: the patch cannot make it available or
+        # unavailable, so the current runtime answer is the answer after save.
+        # Without this branch the name is known (KNOWN_PROVIDERS) but never
+        # available, so narrowing an instance to Microsoft-only is refused as
+        # "no usable sign-in method" even with all three env vars set.
+        from app.auth.providers.microsoft import is_available as microsoft_available
+
+        return microsoft_available()
     return False
 
 
