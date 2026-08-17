@@ -199,10 +199,13 @@ def test_the_webhook_wrapper_reports_false_and_leaves_the_corrupt_bytes(
 ) -> None:
     """The same guarantee one layer up, through the wrapper the webhook actually
     calls: `transform_single_issue` against a corrupt month answers False (its
-    blanket `except Exception` absorbs `UnreadablePartitionError`), writes
-    nothing to any table, and leaves the bad bytes for an operator. Pinned so a
-    future "resilience" change that catches the error and treats the month as
-    empty cannot quietly recreate the one-row-month collapse on the webhook path.
+    blanket `except Exception` absorbs `UnreadablePartitionError`), never
+    publishes the issues row, and leaves the bad bytes for an operator. Pinned
+    so a future "resilience" change that catches the error and treats the month
+    as empty cannot quietly recreate the one-row-month collapse on the webhook
+    path. The OTHER tables may legitimately advance before the failure —
+    `_TABLES` writes `issues` last precisely so the ticket stays open and the
+    whole month is retried next cycle.
     """
     raw_dir = tmp_path / "raw"
     out = tmp_path / "parquet"
@@ -221,7 +224,6 @@ def test_the_webhook_wrapper_reports_false_and_leaves_the_corrupt_bytes(
     # failing an earlier transform step behind the same blanket except.
     assert "could not be read" in caplog.text
     assert dest.read_bytes() == FOOTERLESS, "the corrupt partition was overwritten anyway"
-    assert not (out / "comments").exists(), "a partial write escaped before the failure"
 
 
 # --------------------------------------------------------------------------------
