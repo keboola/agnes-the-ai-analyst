@@ -36,7 +36,7 @@ Full step-by-step (local dev, Docker, TLS) lives in [`docs/QUICKSTART.md`](docs/
 │   ├── keboola/            # Keboola: extractor.py (DuckDB extension) + client.py (fallback)
 │   ├── bigquery/           # BigQuery: extractor.py (remote-only via DuckDB BQ extension)
 │   ├── jira/               # Jira: webhook + incremental parquet → extract.duckdb
-│   └── databricks/         # Databricks: SQL-warehouse materialization + UC metric-view sync
+│   └── databricks/         # Databricks: SQL-warehouse materialization, per-query remote execution, UC metric-view sync
 ├── cli/                    # CLI tool (`agnes pull`, `agnes query`, `agnes admin`)
 ├── app/auth/               # Authentication (FastAPI-based providers)
 ├── services/               # Standalone services (scheduler, telegram_bot, apps_runner sidecar, etc.)
@@ -83,8 +83,20 @@ The SyncOrchestrator scans `/data/extracts/*/extract.duckdb`, ATTACHes each into
 Source modes (per-table `query_mode`):
 - **Batch pull** (Keboola, `local`): DuckDB extension downloads to parquet, scheduled.
 - **Remote attach** (BigQuery, `remote`): DuckDB BQ extension, no download, queries go to BQ.
-- **Materialized SQL** (`materialized`): scheduler runs admin-registered SQL through DuckDB and writes the result to a parquet under `/data/extracts/<source>/data/`. Distributed via the same manifest + `agnes pull` flow as local tables. BigQuery cost guardrail: `data_source.bigquery.max_bytes_per_materialize` (default 10 GiB; `0` disables). Databricks rows (`source_type=databricks`, materialized-only in phase 1) run on the SQL warehouse via the Statement Execution API — incl. `MEASURE()` queries over Unity Catalog metric views — result-size-capped by `data_source.databricks.max_bytes_per_materialize`.
+- **Materialized SQL** (`materialized`): scheduler runs admin-registered SQL through DuckDB and writes the result to a parquet under `/data/extracts/<source>/data/`. Distributed via the same manifest + `agnes pull` flow as local tables. BigQuery cost guardrail: `data_source.bigquery.max_bytes_per_materialize` (default 10 GiB; `0` disables). Databricks rows (`source_type=databricks`) run on the SQL warehouse via the Statement Execution API — incl. `MEASURE()` queries over Unity Catalog metric views — result-size-capped by `data_source.databricks.max_bytes_per_materialize`.
 - **Real-time push** (Jira): webhooks update parquets incrementally.
+
+Which engine runs a `query_mode='remote'` statement is decided in one place
+(`src/remote_engines.py`): it detects the registered remote rows a statement
+touches per engine, refuses a statement straddling two (`remote_cross_engine_
+unsupported`), and hands off to that engine's own guard + rewrite + transport.
+BigQuery's live in `app/api/query.py` (dry-run cost cap, `bigquery_query()`
+push-down); Databricks's in `connectors/databricks/remote.py` (no dry-run
+exists, so `max_bytes_per_remote_query` caps *returned* bytes via the API's
+`byte_limit` and a capped result is refused, never returned short). A
+Databricks remote statement cannot join server-side-only data unless the
+experimental Unity Catalog ATTACH (`data_source.databricks.attach_enabled`,
+default off) gives DuckDB a local view.
 
 ### Remote table support (`_remote_attach`)
 
@@ -394,7 +406,7 @@ HTML dashboard pages use the design-system **page shell** (#367/#482): `{% exten
 - **Keboola**: `connectors/keboola/extractor.py` uses the DuckDB Keboola extension, falls back to `client.py` (legacy Storage API wrapper).
 - **BigQuery**: `connectors/bigquery/extractor.py` uses the DuckDB BQ extension (remote-only, no download).
 - **Jira**: `connectors/jira/webhook.py` → `incremental_transform.py` → `extract_init.py` updates `_meta`.
-- **Databricks**: `connectors/databricks/extractor.py` materializes registered SQL on a SQL warehouse (Statement Execution API → Arrow → parquet, no SDK); `semantic_layer.py` mirrors Unity Catalog metric views into `metric_definitions` (`source='databricks_semantic_layer'`, scoped prune per workspace).
+- **Databricks**: `connectors/databricks/extractor.py` materializes registered SQL on a SQL warehouse (Statement Execution API → Arrow → parquet, no SDK); `remote.py` ships an analyst's statement to the warehouse per query for `query_mode='remote'` rows; `attach.py` + `extract_init.py` optionally ATTACH Unity Catalog into DuckDB (`uc_catalog`/`delta`, opt-in, experimental) so remote rows can be JOINed locally; `semantic_layer.py` mirrors Unity Catalog metric views into `metric_definitions` (`source='databricks_semantic_layer'`, scoped prune per workspace).
 
 ### Config Loading
 1. `config/loader.py` loads `instance.yaml`.

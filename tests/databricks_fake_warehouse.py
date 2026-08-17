@@ -123,6 +123,12 @@ class FakeWarehouse:
     def __init__(self, routes: List[Route], cert_path: Path, key_path: Path):
         self.routes = routes
         self.requests: List[RecordedRequest] = []
+        # Every submitted statement, in order, with the payload the client
+        # sent alongside it. Lets a test assert what the warehouse was
+        # actually asked to run — the identifier rewrite is invisible from
+        # the result rows, so nothing else would catch a mis-rewrite.
+        self.statements: List[str] = []
+        self.payloads: List[Dict[str, Any]] = []
         self._statements: Dict[str, Route] = {}
         self._polls: Dict[str, int] = {}
         self._counter = 0
@@ -155,10 +161,12 @@ class FakeWarehouse:
 
     # -- statement bookkeeping ----------------------------------------------
 
-    def register_statement(self, sql: str) -> Tuple[str, Optional[Route]]:
+    def register_statement(self, sql: str, payload: Optional[Dict[str, Any]] = None) -> Tuple[str, Optional[Route]]:
         with self._lock:
             self._counter += 1
             statement_id = f"st-{self._counter}"
+            self.statements.append(sql)
+            self.payloads.append(dict(payload or {}))
         route = next((r for r in self.routes if r.match in sql), None)
         self._statements[statement_id] = route
         self._polls[statement_id] = 0
@@ -251,7 +259,7 @@ def _make_handler(warehouse: "FakeWarehouse"):
             if self.path.endswith("/cancel"):
                 self._send_json({})
                 return
-            statement_id, _route = warehouse.register_statement(payload.get("statement", ""))
+            statement_id, _route = warehouse.register_statement(payload.get("statement", ""), payload)
             # Always answer PENDING first so the client's poll loop is exercised
             # on every statement, exactly as a cold warehouse behaves.
             self._send_json({"statement_id": statement_id, "status": {"state": "PENDING"}})

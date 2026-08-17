@@ -272,6 +272,16 @@ EXEMPT: frozenset[str] = frozenset(
         # POST /api/query/hybrid -- spec §8 names this one explicitly: "out
         # of scope by §12's admin bypass, not by omission".
         "app/api/query_hybrid.py::hybrid_query",
+        # Databricks remote routing probe: reads `information_schema.tables`
+        # to answer "does a master view exist for the remote rows this SQL
+        # names", i.e. whether DuckDB can resolve the statement locally at
+        # all. Catalog SHAPE, never a row and never a column list, and its
+        # answer only picks which execution path runs -- both of which apply
+        # the policy in their own right (`execute_query` is COVERED; the
+        # remote branch it guards refuses a policied table outright via
+        # `_assert_no_policied_remote_engine`, since Agnes cannot enforce a
+        # policy on a statement that executes on an external warehouse).
+        "app/api/query.py::_databricks_attach_views_available",
         # ── catalog / listing surfaces: table-card metadata (id, name,
         # description, source_type, query_mode, row COUNT), never row
         # content or a column list. §10.1 explicitly keeps a policied
