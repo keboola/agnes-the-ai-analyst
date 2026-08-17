@@ -430,7 +430,9 @@ class TestScanWire:
         finally:
             conn.close()
         detail = getattr(exc.value, "detail", {})
-        assert detail.get("reason") == "policy_unsupported_on_scan_engine", f"raised {type(exc.value).__name__}: {exc.value}"
+        assert detail.get("reason") == "policy_unsupported_on_scan_engine", (
+            f"raised {type(exc.value).__name__}: {exc.value}"
+        )
         assert "agnes query --remote" in detail.get("hint", "")
 
 
@@ -540,6 +542,14 @@ class TestParameterBinding:
         )
         assert all(isinstance(p["value"], str) for p in params)
         assert all(p["type"] == "STRING" for p in params)
+
+    def test_none_binds_as_null_not_as_an_empty_string(self):
+        """`owner_id = :user_id` with a NULL bind matches no row; with `''` it
+        matches any row whose owner_id happens to be empty. Only the first is
+        fail-closed, and it is what the other two engines already do."""
+        _sql, params = bind_policy_parameters("SELECT * FROM t WHERE owner_id = :user_id", {"user_id": None})
+        assert params == [{"name": "user_id", "type": "STRING"}]
+        assert "value" not in params[0]
 
     def test_unparseable_body_denies(self):
         with pytest.raises(DatabricksPolicyBindingError):

@@ -65,7 +65,18 @@ class DatabricksPolicyBindingError(Exception):
 
 
 def _scalar_parameter(name: str, value: Any) -> Dict[str, Any]:
-    return {"name": name, "value": "" if value is None else str(value), "type": _PARAM_TYPE}
+    """One API parameter entry.
+
+    ``None`` omits ``value`` entirely, which is how the Statement Execution API
+    binds SQL NULL — deliberately not ``""``. The two are not interchangeable
+    for a policy: ``owner_id = :user_id`` with a NULL bind matches no row (SQL
+    NULL comparison), whereas an empty-string bind matches any row whose
+    ``owner_id`` happens to be empty. Only one of those is fail-closed, and it
+    is also the one the DuckDB and BigQuery arms already do.
+    """
+    if value is None:
+        return {"name": name, "type": _PARAM_TYPE}
+    return {"name": name, "value": str(value), "type": _PARAM_TYPE}
 
 
 def bind_policy_parameters(relation_sql: str, params: Dict[str, Any]) -> Tuple[str, List[Dict[str, Any]]]:
