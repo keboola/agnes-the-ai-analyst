@@ -16,7 +16,7 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 # The table the Universal-MCP materialize path writes for the data-app lister
 # tool (one row per Keboola data-app config). Kept as a constant so the sync
@@ -81,11 +81,19 @@ def _safe_url(value: str) -> str:
     return v if urlparse(v).scheme.lower() in ("http", "https") else ""
 
 
-def map_row(raw: Dict[str, Any]) -> LinkedAppRecord:
-    """Map one materialized ``keboola_data_apps`` row to a ``LinkedAppRecord``.
+def map_row(raw: Dict[str, Any], mapping: Optional[Dict[str, str]] = None) -> LinkedAppRecord:
+    """Map one materialized lister row to a ``LinkedAppRecord``.
 
-    Tolerant of the actual column names the MCP tool emits (``id``/``app_id``/
-    ``config_id`` for the identifier, ``url``/``app_url`` for the deployment URL).
+    ``mapping`` — ``{"id": col, "url": col, "name": col, "description": col}``,
+    the admin's explicit choice of which columns carry what — wins whenever it
+    names a key. Anything it leaves out falls back to the alias guesses below.
+
+    The guesses exist because the first upstream happened to fit them; they are
+    not a contract. A server naming its columns anything else has every row
+    dropped for want of an id, and the projection reports "0 new, 0 updated" —
+    indistinguishable from an upstream with nothing to offer. That is what the
+    mapping is for; the aliases stay as the zero-configuration path for
+    upstreams they already suit.
     """
 
     def pick(*keys: str) -> str:
@@ -95,9 +103,19 @@ def map_row(raw: Dict[str, Any]) -> LinkedAppRecord:
                 return str(v)
         return ""
 
+    def chosen(field: str, *fallback: str) -> str:
+        col = (mapping or {}).get(field)
+        if col:
+            # An explicit choice is authoritative even when it comes back
+            # empty: silently falling through to a guess would make the
+            # admin's mapping look applied while another column supplied the
+            # value.
+            return pick(col)
+        return pick(*fallback)
+
     return LinkedAppRecord(
-        external_app_id=pick("external_app_id", "id", "app_id", "config_id"),
-        name=pick("name", "app_name", "title"),
-        description=pick("description", "desc"),
-        external_url=_safe_url(pick("external_url", "url", "app_url", "deployment_url")),
+        external_app_id=chosen("id", "external_app_id", "id", "app_id", "config_id"),
+        name=chosen("name", "name", "app_name", "title"),
+        description=chosen("description", "description", "desc"),
+        external_url=_safe_url(chosen("url", "external_url", "url", "app_url", "deployment_url")),
     )
