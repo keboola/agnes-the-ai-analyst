@@ -2267,7 +2267,7 @@ async def update_server_config(
 # Source types accepted by /api/admin/register-table. Anything else is
 # rejected with 422 — keeps a typo'd source_type from silently landing in
 # table_registry (where it would later confuse the orchestrator scan).
-_VALID_SOURCE_TYPES: tuple[str, ...] = ("keboola", "bigquery", "jira", "local", "databricks")
+_VALID_SOURCE_TYPES: tuple[str, ...] = ("keboola", "bigquery", "jira", "local", "databricks", "snowflake")
 
 # Explicit allowlist of audit-payload keys whose values are credentials and
 # must be masked. Substring-scan + ad-hoc whitelist (the previous shape) is
@@ -2493,9 +2493,9 @@ class RegisterTableRequest(BaseModel):
         # Catalog metric view's MEASURE() or a table too large to materialize.
         # 'local' stays rejected: there is no extractor subprocess for it, so a
         # row would land in the registry with a mode nothing will ever sync.
-        if self.source_type == "databricks" and self.query_mode not in ("materialized", "remote"):
+        if self.source_type in ("databricks", "snowflake") and self.query_mode not in ("materialized", "remote"):
             raise ValueError(
-                "source_type='databricks' supports query_mode='materialized' (scheduled sync to a "
+                f"source_type='{self.source_type}' supports query_mode='materialized' (scheduled sync to a "
                 "parquet) or 'remote' (per-query execution on the SQL warehouse); "
                 f"got '{self.query_mode}'"
             )
@@ -2510,7 +2510,7 @@ class RegisterTableRequest(BaseModel):
         if (
             self.query_mode == "materialized"
             and not sq
-            and self.source_type not in ("bigquery", "keboola", "databricks")
+            and self.source_type not in ("bigquery", "keboola", "databricks", "snowflake")
         ):
             raise ValueError(
                 f"query_mode='materialized' for source_type='{self.source_type}' requires a non-empty source_query"
@@ -3042,6 +3042,132 @@ def _validate_bigquery_register_payload(req: "RegisterTableRequest") -> None:
                 "suppress from agnes pull"
             ),
         )
+
+
+def _validate_snowflake_register_payload(req: "RegisterTableRequest") -> None:
+    """Enforce Snowflake-specific shape on a register/update request.
+
+    Snowflake supports ``query_mode='materialized'`` (scheduler runs the SQL
+    through the DuckDB Snowflake extension and writes a parquet) and
+    ``query_mode='remote'`` (a local view over the attached ``sf`` catalog).
+    The server generates ``SELECT * FROM sf."<schema>"."<table>"`` when the
+    admin supplies ``bucket`` (schema) + ``source_table`` and omits custom SQL.
+    """
+    from connectors.snowflake.extractor import full_table_sql, split_bucket
+    from connectors.snowflake.settings import resolve_snowflake_settings
+
+    raw_name = req.name or ""
+    if raw_name.strip() != raw_name or not _is_safe_identifier(raw_name):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"snowflake: view name {raw_name!r} is unsafe — must match "
+                f"^[a-zA-Z_][a-zA-Z0-9_]{{0,63}}$ (DuckDB identifier rules) "
+                "with no leading/trailing whitespace"
+            ),
+        )
+
+    settings = resolve_snowflake_settings()
+    if not settings:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "snowflake: data_source.snowflake.* is not configured; "
+                "set account, user, database, warehouse and the SNOWFLAKE_PASSWORD env / vault secret "
+                "via instance.yaml or /admin/server-config first"
+            ),
+        )
+
+    default_database = (settings.get("database") or "").strip()
+    if not default_database:
+        raise HTTPException(
+            status_code=400,
+            detail="snowflake: data_source.snowflake.database is required",
+        )
+
+    bucket = (req.bucket or "").strip()
+    source_table = (req.source_table or "").strip()
+    if not bucket or not source_table:
+        raise HTTPException(
+            status_code=422,
+            detail="snowflake: bucket (schema) and source_table are required",
+        )
+
+    row_database, schema = split_bucket(bucket, default_database)
+    if row_database.lower() != default_database.lower():
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"snowflake: bucket {bucket!r} resolves to database {row_database!r} "
+                f"which does not match the configured database {default_database!r}"
+            ),
+        )
+
+    if schema.strip() != schema or not _is_safe_quoted_identifier(schema):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"snowflake: schema {schema!r} is unsafe (only [A-Za-z0-9_.-] "
+                "allowed, no leading/trailing whitespace)"
+            ),
+        )
+    if source_table.strip() != source_table or not _is_safe_quoted_identifier(source_table):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"snowflake: source_table {source_table!r} is unsafe (only [A-Za-z0-9_.-] "
+                "allowed, no leading/trailing whitespace)"
+            ),
+        )
+
+    if req.query_mode == "remote":
+        # Remote rows do not carry source_query; the view is built from bucket/source_table.
+        return
+
+    if req.query_mode == "materialized":
+        if req.source_query and req.source_query.strip():
+            return
+        try:
+            req.source_query = full_table_sql(schema, source_table)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=f"snowflake: {e}") from e
+        return
+
+
+def _rebuild_snowflake_remote_extract() -> tuple[bool, str]:
+    """Rebuild ``extracts/snowflake/extract.duckdb`` for remote rows.
+
+    Returns ``(ok, message)`` so the register route can surface 500 on a hard
+    failure while still leaving the registry row in place.
+    """
+    from connectors.snowflake.extract_init import rebuild_from_registry
+
+    try:
+        result = rebuild_from_registry()
+    except Exception as exc:
+        logger.exception("snowflake remote extract rebuild failed")
+        return (False, f"snowflake remote extract rebuild failed: {exc}")
+
+    if result.get("skipped"):
+        return (False, f"snowflake remote extract skipped: {result.get('reason')}")
+
+    errors = result.get("errors") or []
+    if errors:
+        return (False, f"snowflake remote extract rebuilt with errors: {errors}")
+
+    return (
+        True,
+        f"snowflake remote extract rebuilt; {result.get('tables_registered', 0)} table(s) registered",
+    )
+
+
+def _rebuild_snowflake_remote_extract_bg() -> None:
+    """Fire-and-forget wrapper used by ``update_table`` BackgroundTasks."""
+    ok, message = _rebuild_snowflake_remote_extract()
+    if ok:
+        logger.info("%s", message)
+    else:
+        logger.error("%s", message)
 
 
 # Source types that don't depend on a `data_source.<name>.*` block — they
@@ -3809,6 +3935,10 @@ def register_table(
         # Materialized-only (model validator enforced); server-generate the
         # full-table SQL when the admin supplied bucket+source_table only.
         _validate_databricks_register_payload(request)
+    if request.source_type == "snowflake":
+        # Materialized or remote; server-generate the full-table SQL when the
+        # admin supplied bucket (schema) + source_table and omitted custom SQL.
+        _validate_snowflake_register_payload(request)
 
     # Phase C: profile_after_sync is no longer passed — the field is
     # deprecated and inert at the runtime layer. The DB column keeps its
@@ -3910,6 +4040,22 @@ def register_table(
             # view so the row can be joined against local data); it no-ops on
             # every instance that has not opted in.
             message = _rebuild_databricks_remote_extract()
+        if request.source_type == "snowflake" and request.query_mode == "remote":
+            # Snowflake remote rows need a local extract.duckdb with the
+            # _remote_attach row and per-table views so the orchestrator can
+            # ATTACH the sf catalog and create master views.
+            ok, message = _rebuild_snowflake_remote_extract()
+            if not ok:
+                return JSONResponse(
+                    status_code=500,
+                    content={
+                        "id": table_id,
+                        "name": request.name,
+                        "status": "rebuild_failed",
+                        "view_name": table_id,
+                        "message": message,
+                    },
+                )
         # Keboola / Jira / local rows are insert-only here. 201 Created — the
         # decorator no longer carries a default status, so each branch is
         # explicit about its code (BQ branch overrides via JSONResponse).
@@ -4108,6 +4254,27 @@ def register_table_precheck(
     """
     if not request.name or not request.name.strip():
         raise HTTPException(status_code=422, detail="Table name cannot be empty")
+
+    if request.source_type == "snowflake":
+        # Snowflake precheck is validation-only (no round-trip to the
+        # warehouse in M1), but we still run the shape validator so the UI
+        # surfaces the same errors as the real register call.
+        _validate_snowflake_register_payload(request)
+        return {
+            "ok": True,
+            "table": {
+                "name": request.name,
+                "source_type": "snowflake",
+                "query_mode": request.query_mode,
+                "bucket": request.bucket,
+                "source_table": request.source_table,
+                "source_query": request.source_query,
+                "rows": None,
+                "size_bytes": None,
+                "columns": [],
+                "note": "snowflake precheck is validation-only",
+            },
+        }
 
     if request.source_type != "bigquery":
         # M1 only adds BQ-specific precheck. Other source types get a
@@ -4544,9 +4711,10 @@ async def update_table(
         if merged.get("query_mode") == "materialized":
             sq = merged.get("source_query")
             if not sq or not str(sq).strip():
-                # BQ and Keboola both allow null/empty source_query — fall through.
-                # All other source types require an explicit source_query; raise 422.
-                if merged.get("source_type") not in ("bigquery", "keboola"):
+                # BQ, Keboola and Snowflake all allow null/empty source_query —
+                # the server generates it from bucket+source_table. All other
+                # source types require an explicit source_query; raise 422.
+                if merged.get("source_type") not in ("bigquery", "keboola", "snowflake"):
                     raise HTTPException(
                         status_code=422,
                         detail=(
@@ -4611,6 +4779,30 @@ async def update_table(
             except ValidationError as e:
                 raise HTTPException(status_code=422, detail=str(e)) from e
             _validate_databricks_register_payload(synthetic)
+            merged["query_mode"] = synthetic.query_mode
+            merged["source_query"] = synthetic.source_query
+
+        if merged.get("source_type") == "snowflake":
+            # Reuse the register-time contract on updates too: validate the
+            # Snowflake shape and server-generate source_query when omitted.
+            try:
+                synthetic = RegisterTableRequest(
+                    name=merged.get("name") or table_id,
+                    bucket=merged.get("bucket"),
+                    source_table=merged.get("source_table"),
+                    source_query=merged.get("source_query"),
+                    source_type="snowflake",
+                    query_mode=merged.get("query_mode") or "materialized",
+                    primary_key=merged.get("primary_key"),
+                    description=merged.get("description"),
+                    folder=merged.get("folder"),
+                    sync_strategy=merged.get("sync_strategy") or "full_refresh",
+                    sync_schedule=merged.get("sync_schedule"),
+                    server_only=bool(merged.get("server_only") or False),
+                )
+            except ValidationError as e:
+                raise HTTPException(status_code=422, detail=str(e)) from e
+            _validate_snowflake_register_payload(synthetic)
             merged["query_mode"] = synthetic.query_mode
             merged["source_query"] = synthetic.source_query
 
@@ -4858,6 +5050,8 @@ async def update_table(
     after = repo.get(table_id) or {}
     if after.get("source_type") == "bigquery":
         _schedule_bq_materialize(background)
+    if after.get("source_type") == "snowflake" and after.get("query_mode") == "remote":
+        background.add_task(_rebuild_snowflake_remote_extract_bg)
 
     from app.api.v2_catalog import invalidate_for_table
 

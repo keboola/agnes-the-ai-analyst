@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- **Snowflake SQL connector.** Adds a DuckDB `snowflake` community-extension source with `query_mode='remote'` (ATTACH catalog views) and `query_mode='materialized'` (scheduled COPY … TO parquet) support. Includes connection settings under `data_source.snowflake`, registration validation in the admin API, sync materialization dispatch, a query-time `sf."schema"."table"` RBAC guardrail, and a web UI register modal.
+
 ## [0.83.32] - 2026-08-17
 
 ### Added

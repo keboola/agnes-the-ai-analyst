@@ -393,7 +393,7 @@ def test_trigger_rejects_unknown_source():
     client = _make_client()
     fake_repo = _FakeJobsRepo()
     with patch("app.api.sync.jobs_repo", lambda: fake_repo):
-        resp = client.post("/api/sync/trigger?source=snowflake")
+        resp = client.post("/api/sync/trigger?source=not_a_valid_source")
     assert resp.status_code == 422, resp.text
     assert not fake_repo.enqueue_calls
 

@@ -8,6 +8,7 @@ import os
 import re
 import threading
 import time
+from typing import Optional
 
 import duckdb
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -54,6 +55,7 @@ from src.remote_engines import (
     TABLE_REF_PREFIX_RE,
     mask_backticks,
     name_reference_re,
+    qualified_path_re,
     rewrite_bare_names,
 )
 from src.remote_query import _strip_leading_sql_comments
@@ -339,6 +341,11 @@ BQ_PATH = re.compile(
     r'(?<![\w.])(?:"bq"|bq)\s*\.\s*("[^"]+"|\w+)\s*\.\s*("[^"]+"|\w+)(?=\W|$)',
     re.IGNORECASE,
 )
+
+# Snowflake direct path guard. Snowflake is a DuckDB community extension,
+# so the query runs locally, but a qualified `sf."schema"."table"` bypasses
+# the master-view RBAC layer and must be registry-gated like `bq.*`.
+SF_PATH = qualified_path_re("sf")
 
 
 # Issue #201 — full backtick BQ path `<project>.<dataset>.<table>` in user
@@ -1377,10 +1384,14 @@ def execute_query(
     # at all).
     internal_refs = find_internal_refs(request.sql)
     if internal_refs:
-        if BQ_PATH.search(_mask_backticks(request.sql)) or _BACKTICK_FULL_PATH.search(request.sql):
+        if (
+            BQ_PATH.search(_mask_backticks(request.sql))
+            or SF_PATH.search(_mask_backticks(request.sql))
+            or _BACKTICK_FULL_PATH.search(request.sql)
+        ):
             raise HTTPException(
                 status_code=400,
-                detail="Internal tables can't be combined with `bq.*` paths in a single SELECT (v1 limitation).",
+                detail="Internal tables can't be combined with `bq.*` or `sf.*` paths in a single SELECT (v1 limitation).",
             )
         # Reject if user SQL also references any non-internal registry id —
         # that would be a mixed query against analytics.duckdb views. Matched
@@ -1471,6 +1482,19 @@ def execute_query(
         _dry_run_set = dry_run_set  # expose to outer scope for audit
         if blocked_bq_path is not None:
             raise HTTPException(status_code=403, detail=blocked_bq_path)
+
+        # Snowflake direct-path guard. The SF extension runs inside DuckDB,
+        # but ``sf."schema"."table"`` bypasses master views, so it needs the
+        # same registration + RBAC check as ``bq.*``.
+        blocked_sf_path = _sf_guardrail_inputs(
+            request.sql,
+            sql_lower,
+            conn,
+            user,
+            allowed,
+        )
+        if blocked_sf_path is not None:
+            raise HTTPException(status_code=403, detail=blocked_sf_path)
 
         # Issue #160 §4.3.3 — concurrent-slot guard MUST wrap the actual
         # `analytics.execute(request.sql)` call (which is what triggers the
@@ -2216,6 +2240,51 @@ def _caller_is_unrestricted_admin(user, sys_conn) -> bool:
     return bool(
         is_user_admin(user.get("id") or user.get("email") or "", sys_conn) and _credential_surface(user) == "all"
     )
+
+
+def _sf_guardrail_inputs(sql: str, sql_lower: str, sys_conn, user, allowed) -> Optional[dict]:
+    """Registry + RBAC gate for direct ``sf."schema"."table"`` paths.
+
+    Snowflake is a DuckDB community extension, so ``sf.*`` resolves locally,
+    but a qualified path bypasses the master-view RBAC layer. The same
+    registration/admin/RBAC rules as BigQuery's ``bq.*`` guard apply here.
+    Returns ``None`` when the statement contains no ``sf.*`` path or every path
+    is registered and accessible.
+    """
+    from src.repositories import table_registry_repo
+
+    repo = table_registry_repo()
+    is_admin = _caller_is_unrestricted_admin(user, sys_conn)
+    accessible_set = set(allowed) if allowed is not None else None
+
+    for m in SF_PATH.finditer(sql):
+        schema_raw = m.group(1).strip('"')
+        table_raw = m.group(2).strip('"')
+        row = None
+        for r in repo.list_by_source("snowflake"):
+            if (
+                r.get("bucket", "").lower() == schema_raw.lower()
+                and r.get("source_table", "").lower() == table_raw.lower()
+            ):
+                row = r
+                break
+        if row is None:
+            return {
+                "reason": "sf_path_not_registered",
+                "path": f"sf.{quote_ident(schema_raw)}.{quote_ident(table_raw)}",
+                "hint": (
+                    "Direct Snowflake paths must point to a registered table. "
+                    "Register via `agnes admin register-table` or use the registered name from `agnes catalog`."
+                ),
+            }
+        if not is_admin:
+            if accessible_set is None or row["id"] not in accessible_set:
+                return {
+                    "reason": "sf_path_access_denied",
+                    "path": f"sf.{quote_ident(schema_raw)}.{quote_ident(table_raw)}",
+                    "registered_as": row["name"],
+                }
+    return None
 
 
 def _databricks_attach_views_available(sql_lower: str) -> bool:
