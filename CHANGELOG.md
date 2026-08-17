@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.83.27] - 2026-08-17
+
 ### Added
 
 - **`agnes query --remote` now answers against Databricks, not just BigQuery.** Register a table with `--source-type databricks --query-mode remote --bucket <schema> --source-table <table>` and an analyst's statement ships to the SQL warehouse as-is: no sync, no parquet, and — because Databricks SQL is the target dialect, not a transpile target — `MEASURE()` over a Unity Catalog metric view works exactly as it does in the Databricks UI. Registered bare names and `dbx."<catalog>.<schema>"."<table>"` paths are rewritten to backticked three-part paths, registry-gated, and RBAC-checked on the caller's grants (keyed on registry id, so rows where `id != name` are not silently denied). Every table the statement names must be registered and granted — checked by parsing the statement (sqlglot, `databricks` dialect) rather than pattern-matching identifiers, because the query executes under a workspace PAT that can typically read the whole workspace: a fully-qualified `` `main`.`hr`.`payroll` `` or a bare `hr.payroll` riding along with a legitimate name is an unauthorized read, not a typo, and an unparseable statement is refused rather than forwarded. Cost guardrail is `data_source.databricks.max_bytes_per_remote_query` (default 1 GiB) with `remote_query_timeout_seconds` (default 120) — and it means something different from BigQuery's cap, which is why it is a separate setting: Databricks has no dry-run, so the cap bounds the bytes the warehouse may *return*, not the bytes it scans. A capped result raises `remote_scan_too_large` rather than coming back quietly short.
