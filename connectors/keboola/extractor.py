@@ -3,9 +3,9 @@
 import logging
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import duckdb
 
@@ -120,7 +120,7 @@ def _row_group_rows_for(parquet_path) -> int:
         return _ROW_GROUP_MAX_ROWS
 
 
-def _open_consolidation_conn(db_path: Optional[str] = None):
+def _open_consolidation_conn(db_path: str | None = None):
     """Return a DuckDB connection with memory/thread caps applied.
 
     Use for short-lived ``COPY (SELECT … FROM read_parquet/read_csv)``
@@ -181,7 +181,7 @@ def _open_consolidation_conn(db_path: Optional[str] = None):
     return conn
 
 
-def _duckdb_type_for(pa_type) -> Optional[str]:
+def _duckdb_type_for(pa_type) -> str | None:
     """Map a pyarrow target type to the DuckDB type name used in the
     streaming retype cast, or None when no cast is needed/possible
     (string targets keep Storage API's native VARCHAR; unmapped types
@@ -220,9 +220,9 @@ def _warn_on_coerced_nulls(src_parquet: Path, typed_parquet: str, cast_columns) 
     try:
         import pyarrow.parquet as pq
 
-        def null_counts(path: str) -> Dict[str, Optional[int]]:
+        def null_counts(path: str) -> dict[str, int | None]:
             md = pq.read_metadata(path)
-            counts: Dict[str, Optional[int]] = {}
+            counts: dict[str, int | None] = {}
             for rg in range(md.num_row_groups):
                 group = md.row_group(rg)
                 for ci in range(group.num_columns):
@@ -278,7 +278,7 @@ def _retype_parquet_streaming(tmp_parquet: Path, target_schema) -> None:
     source_schema = pq.read_schema(str(tmp_parquet))
     target_types = {f.name: f.type for f in target_schema}
 
-    casts: Dict[str, str] = {}
+    casts: dict[str, str] = {}
     for field in source_schema:
         target = target_types.get(field.name)
         if target is None or field.type == target:
@@ -349,10 +349,10 @@ def materialize_query(
     *,
     bucket: str,
     source_table: str,
-    source_query: Optional[str] = None,
+    source_query: str | None = None,
     storage_client=None,  # KeboolaStorageClient (avoid circular import)
-    keboola_url: Optional[str] = None,
-    keboola_token: Optional[str] = None,
+    keboola_url: str | None = None,
+    keboola_token: str | None = None,
     output_dir: Path,
 ) -> dict:
     """Materialize a Keboola Storage table to a local parquet via Storage API.
@@ -457,7 +457,7 @@ def materialize_query(
         try:
             export_filter.where_filters = resolve_placeholders(
                 parse_filters(export_filter.where_filters),
-                datetime.now(timezone.utc),
+                datetime.now(UTC),
             )
         except InvalidFilterError as e:
             raise ValueError(f"source_query for {table_id} has an invalid where_filters placeholder: {e}") from e
@@ -717,7 +717,7 @@ def materialize_query(
     }
 
 
-def _read_last_sync_for_tc(tc: Dict[str, Any]):
+def _read_last_sync_for_tc(tc: dict[str, Any]):
     """Resolve last_sync for an incremental/partitioned table_config.
 
     Two paths, in order of preference:
@@ -786,8 +786,19 @@ def _create_meta_table(conn: duckdb.DuckDBPyConnection) -> None:
     )""")
 
 
-def _create_remote_attach_table(conn: duckdb.DuckDBPyConnection, keboola_url: str) -> None:
-    """Write _remote_attach so orchestrator can re-ATTACH the Keboola extension."""
+def _create_remote_attach_table(
+    conn: duckdb.DuckDBPyConnection,
+    keboola_url: str,
+    alias: str = "kbc",
+    token_env: str = "KEBOOLA_STORAGE_TOKEN",
+) -> None:
+    """Write _remote_attach so orchestrator can re-ATTACH the Keboola extension.
+
+    Per-connection extracts store the connection-specific alias and leave
+    ``token_env`` empty so the server-side read path resolves the token from
+    the vault (``connection_secrets_repo``) rather than from the extractor
+    subprocess's environment.
+    """
     conn.execute("DROP TABLE IF EXISTS _remote_attach")
     conn.execute("""CREATE TABLE _remote_attach (
         alias VARCHAR,
@@ -797,11 +808,16 @@ def _create_remote_attach_table(conn: duckdb.DuckDBPyConnection, keboola_url: st
     )""")
     conn.execute(
         "INSERT INTO _remote_attach VALUES (?, ?, ?, ?)",
-        ["kbc", "keboola", keboola_url, "KEBOOLA_STORAGE_TOKEN"],
+        [alias, "keboola", keboola_url, token_env],
     )
 
 
-def _try_attach_extension(conn: duckdb.DuckDBPyConnection, keboola_url: str, keboola_token: str) -> bool:
+def _try_attach_extension(
+    conn: duckdb.DuckDBPyConnection,
+    keboola_url: str,
+    keboola_token: str,
+    alias: str = "kbc",
+) -> bool:
     """Try to install and attach the Keboola DuckDB extension. Returns True on success."""
     try:
         conn.execute("INSTALL keboola FROM community; LOAD keboola;")
@@ -811,15 +827,23 @@ def _try_attach_extension(conn: duckdb.DuckDBPyConnection, keboola_url: str, keb
         # `https://connection.us-east4.gcp.keboola.com/` form). Bare host
         # works.
         attach_url = keboola_url.rstrip("/")
-        conn.execute(f"ATTACH '{attach_url}' AS kbc (TYPE keboola, TOKEN '{escaped_token}')")
-        logger.info("Using DuckDB Keboola extension")
+        conn.execute(f"ATTACH '{attach_url}' AS {quote_ident(alias)} (TYPE keboola, TOKEN '{escaped_token}')")
+        logger.info("Using DuckDB Keboola extension (alias=%s)", alias)
         return True
     except Exception as e:
         logger.warning("Keboola extension unavailable (%s), falling back to legacy client", e)
         return False
 
 
-def run(output_dir: str, table_configs: List[Dict[str, Any]], keboola_url: str, keboola_token: str) -> Dict[str, Any]:
+def run(
+    output_dir: str,
+    table_configs: list[dict[str, Any]],
+    keboola_url: str,
+    keboola_token: str,
+    alias: str | None = None,
+    slug: str | None = None,
+    token_env: str | None = None,
+) -> dict[str, Any]:
     """Extract tables from Keboola into output_dir using DuckDB extension.
 
     Args:
@@ -827,10 +851,24 @@ def run(output_dir: str, table_configs: List[Dict[str, Any]], keboola_url: str, 
         table_configs: List of table config dicts from table_registry
         keboola_url: Keboola stack URL
         keboola_token: Keboola Storage API token
+        alias: DuckDB ATTACH alias for the Keboola extension (defaults to ``kbc``).
+            Falls back to ``KEBOOLA_CONNECTION_ALIAS`` env var.
+        slug: Source-name used as the extract directory under ``extracts/``.
+            Defaults to ``keboola``. Falls back to ``KEBOOLA_CONNECTION_SLUG``.
+        token_env: Optional environment variable name that holds the token on
+            the server read path. Per-connection extracts set this to an empty
+            string to trigger vault resolution.
 
     Returns:
         Dict with extraction stats: {tables_extracted: int, tables_failed: int, errors: list}
     """
+    if alias is None:
+        alias = os.environ.get("KEBOOLA_CONNECTION_ALIAS", "kbc")
+    if slug is None:
+        slug = os.environ.get("KEBOOLA_CONNECTION_SLUG", "keboola")
+    if token_env is None:
+        token_env = os.environ.get("KEBOOLA_CONNECTION_TOKEN_ENV", "KEBOOLA_STORAGE_TOKEN")
+
     output_path = Path(output_dir)
     data_dir = output_path / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -844,22 +882,22 @@ def run(output_dir: str, table_configs: List[Dict[str, Any]], keboola_url: str, 
     conn = _open_duckdb(str(tmp_db_path))
 
     stats = {"tables_extracted": 0, "tables_failed": 0, "errors": []}
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     # Per-table workitems whose extension scan failed and need the legacy
     # Storage-API fallback. Drained in a parallel pool below the per-table
     # serial loop. Items are `(tc, pq_path)` tuples.
-    legacy_queue: List[tuple] = []
+    legacy_queue: list[tuple] = []
 
     try:
         # Try DuckDB Keboola extension
-        use_extension = _try_attach_extension(conn, keboola_url, keboola_token)
+        use_extension = _try_attach_extension(conn, keboola_url, keboola_token, alias=alias)
 
         _create_meta_table(conn)
 
         has_remote = any(tc.get("query_mode") == "remote" for tc in table_configs)
         if has_remote and use_extension:
-            _create_remote_attach_table(conn, keboola_url)
+            _create_remote_attach_table(conn, keboola_url, alias=alias, token_env=token_env)
 
         for tc in table_configs:
             table_name = tc["name"]
@@ -924,7 +962,7 @@ def run(output_dir: str, table_configs: List[Dict[str, Any]], keboola_url: str, 
                     # tables_failed and continues.
                     try:
                         conn.execute(
-                            f"CREATE OR REPLACE VIEW {quote_ident(table_name)} AS SELECT * FROM kbc.{quote_ident(bucket)}.{quote_ident(source_table)}"
+                            f"CREATE OR REPLACE VIEW {quote_ident(table_name)} AS SELECT * FROM {quote_ident(alias)}.{quote_ident(bucket)}.{quote_ident(source_table)}"
                         )
                     except Exception as view_err:
                         logger.warning(
@@ -966,7 +1004,7 @@ def run(output_dir: str, table_configs: List[Dict[str, Any]], keboola_url: str, 
                 try:
                     resolved_filters = resolve_placeholders(
                         parse_filters(raw_filters),
-                        datetime.now(timezone.utc),
+                        datetime.now(UTC),
                     )
                 except InvalidFilterError as e:
                     logger.error("where_filters invalid for %s: %s", table_name, e)
@@ -1064,7 +1102,7 @@ def run(output_dir: str, table_configs: List[Dict[str, Any]], keboola_url: str, 
                     )
                 elif use_extension:
                     try:
-                        _extract_via_extension(conn, tc, pq_path)
+                        _extract_via_extension(conn, tc, pq_path, alias=alias)
                     except Exception as ext_err:
                         # ATTACH succeeded but the per-table COPY failed —
                         # most commonly a Keboola QueryService permission error
@@ -1100,7 +1138,7 @@ def run(output_dir: str, table_configs: List[Dict[str, Any]], keboola_url: str, 
         # Detach Keboola if extension was used
         if use_extension:
             try:
-                conn.execute("DETACH kbc")
+                conn.execute(f"DETACH {quote_ident(alias)}")
             except Exception:
                 pass
 
@@ -1183,7 +1221,7 @@ def run(output_dir: str, table_configs: List[Dict[str, Any]], keboola_url: str, 
 
 def _register_local_meta(
     conn: duckdb.DuckDBPyConnection,
-    tc: Dict[str, Any],
+    tc: dict[str, Any],
     pq_path: str,
     extracted_at: datetime,
 ) -> None:
@@ -1202,7 +1240,12 @@ def _register_local_meta(
     )
 
 
-def _extract_via_extension(conn: duckdb.DuckDBPyConnection, tc: Dict[str, Any], pq_path: str) -> None:
+def _extract_via_extension(
+    conn: duckdb.DuckDBPyConnection,
+    tc: dict[str, Any],
+    pq_path: str,
+    alias: str = "kbc",
+) -> None:
     """Extract a table using the DuckDB Keboola extension."""
     from connectors.keboola.storage_api import normalize_source_table
 
@@ -1216,9 +1259,9 @@ def _extract_via_extension(conn: duckdb.DuckDBPyConnection, tc: Dict[str, Any], 
     if not (is_safe_quoted_identifier(bucket) and is_safe_quoted_identifier(source_table)):
         raise ValueError(f"unsafe bucket/source_table: {bucket!r}/{source_table!r}")
     safe_pq_lit = pq_path.replace("'", "''")
-    # `kbc` is the ATTACH alias and stays bare; bucket/source_table are identifiers.
+    # ``alias`` is the ATTACH alias; bucket/source_table are quoted identifiers.
     conn.execute(
-        f"COPY (SELECT * FROM kbc.{quote_ident(bucket)}.{quote_ident(source_table)}) "
+        f"COPY (SELECT * FROM {quote_ident(alias)}.{quote_ident(bucket)}.{quote_ident(source_table)}) "
         f"TO '{safe_pq_lit}' (FORMAT PARQUET)"
     )
 
@@ -1238,11 +1281,11 @@ def _legacy_worker(tc_pq, keboola_url: str, keboola_token: str):
 
 
 def _extract_via_legacy(
-    tc: Dict[str, Any],
+    tc: dict[str, Any],
     pq_path: str,
     keboola_url: str,
     keboola_token: str,
-    where_filters: Optional[List[Dict[str, Any]]] = None,
+    where_filters: list[dict[str, Any]] | None = None,
 ) -> None:
     """Per-table extract via the Storage API export-async path with typed parquet.
 
@@ -1351,7 +1394,7 @@ def _extract_via_legacy(
         warn_if_scratch_survived(_tmp_ctx.name)
 
 
-def compute_exit_code(stats: Dict[str, Any], total: int) -> int:
+def compute_exit_code(stats: dict[str, Any], total: int) -> int:
     """Map an extraction `stats` dict to a process exit code.
 
     Issue #81 Group B: distinguish full success from partial failure so
@@ -1375,7 +1418,7 @@ def compute_exit_code(stats: Dict[str, Any], total: int) -> int:
     return 2
 
 
-def _registered_keboola_tables() -> List[Dict[str, Any]]:
+def _registered_keboola_tables() -> list[dict[str, Any]]:
     """Read Keboola rows from ``table_registry`` via the backend-aware factory.
 
     Standalone-entrypoint helper for the ``__main__`` block below — reachable

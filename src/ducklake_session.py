@@ -96,11 +96,11 @@ import duckdb
 
 from src.analytics_backend import ducklake_catalog_dsn, ducklake_data_path, is_postgres_dsn
 from src.db import (
+    _SAFE_IDENTIFIER,
     _apply_memory_caps,
     _get_data_dir,
     _maybe_instrument,
     _reattach_remote_extensions,
-    _SAFE_IDENTIFIER,
 )
 from src.duckdb_conn import _open_duckdb
 from src.orchestrator_security import escape_sql_string_literal
@@ -296,11 +296,14 @@ def _extracts_dir() -> Path:
 
 def _remote_registry_rows_by_source() -> dict[str, list[dict]]:
     """Group ``table_registry`` rows with ``query_mode='remote'`` by
-    ``source_type`` (== the extract source's directory name under
-    ``{DATA_DIR}/extracts`` — every connector writes its extract to
-    ``extracts/<source_type>/``, one directory per connector, never
-    per-instance; see ``app/api/sync.py``'s ``bq_output_dir`` /
-    ``kb_output_dir`` constants).
+    the extract source's directory name under ``{DATA_DIR}/extracts``.
+
+    With v119 per-connection Keboola extracts, the directory name is
+    ``source_connections.slug`` for the row's connection (or the
+    default connection for its ``source_type``), not the bare
+    ``source_type``. The ATTACH alias used inside each extract still
+    comes from ``source_connections.alias`` (or the legacy ``kbc`` /
+    ``bq`` defaults) and is stored in ``_remote_attach``.
 
     ``table_registry`` (system.duckdb/PG) is the task-4-decided source of
     truth for "which sources need a remote attach" — not a filesystem
@@ -309,7 +312,7 @@ def _remote_registry_rows_by_source() -> dict[str, list[dict]]:
     source's extract.duckdb *entirely*, which is the fix for the
     single-process collision described in :func:`_ensure_remote_extract_attach`.
     """
-    from src.repositories import table_registry_repo
+    from src.repositories import source_connections_repo, table_registry_repo
 
     try:
         rows = table_registry_repo().list_all()
@@ -317,15 +320,31 @@ def _remote_registry_rows_by_source() -> dict[str, list[dict]]:
         logger.debug("could not list table_registry for ducklake remote-view sync: %s", e)
         return {}
 
+    try:
+        connections = source_connections_repo().list() or []
+    except Exception as e:
+        logger.debug("could not list source_connections for ducklake remote-view sync: %s", e)
+        connections = []
+
+    conn_by_id = {c["id"]: c for c in connections}
+    default_by_source: dict[str, dict] = {}
+    for c in connections:
+        if c.get("is_default") and c.get("source_type"):
+            if c["source_type"] not in default_by_source:
+                default_by_source[c["source_type"]] = c
+
     by_source: dict[str, list[dict]] = {}
     for r in rows:
         if (r.get("query_mode") or "") != "remote":
             continue
         source_type = r.get("source_type") or ""
         name = r.get("name") or ""
-        if not source_type or not name:
+        conn_id = r.get("connection_id")
+        conn = conn_by_id.get(conn_id) if conn_id else default_by_source.get(source_type)
+        source_name = conn.get("slug") if (conn and conn.get("slug")) else source_type
+        if not source_name or not name:
             continue
-        by_source.setdefault(source_type, []).append(r)
+        by_source.setdefault(source_name, []).append(r)
     return by_source
 
 

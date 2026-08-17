@@ -14,7 +14,7 @@ from pathlib import Path
 
 import duckdb
 
-from connectors.bigquery.auth import get_metadata_token, BQMetadataAuthError
+from connectors.bigquery.auth import BQMetadataAuthError, get_metadata_token
 from src.analytics_backend import analytics_backend
 
 logger = logging.getLogger(__name__)
@@ -44,8 +44,7 @@ def _maybe_instrument(con, db_tag: str):
 # `src.duckdb_conn` so connectors / CLI / scripts can import it without
 # pulling the heavy `connectors.bigquery.auth` dep that this module
 # imports above.
-from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
-
+from src.duckdb_conn import _open_duckdb
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
@@ -61,8 +60,9 @@ _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 # for one SQL row/column-filtering policy per table (see `_v115_to_v116`),
 # 117 semantic_models / semantic_sources / data_package_semantic_models —
 # the canonical Ossie semantic-layer document store (see `_v116_to_v117`),
-# 118 adds user_journey_state.agent_created (see `_v117_to_v118`).
-SCHEMA_VERSION = 118
+# 118 adds user_journey_state.agent_created (see `_v117_to_v118`),
+# 119 adds source_connections.slug/alias for per-connection Keboola extracts.
+SCHEMA_VERSION = 119
 
 # v96: data_apps registry (hosted user web apps). Extracted as a shared
 # module-level constant so the fresh-install DDL (appended to
@@ -517,6 +517,8 @@ CREATE TABLE IF NOT EXISTS table_registry (
 CREATE TABLE IF NOT EXISTS source_connections (
     id          VARCHAR PRIMARY KEY,
     name        VARCHAR NOT NULL UNIQUE,
+    slug        VARCHAR NOT NULL UNIQUE,
+    alias       VARCHAR NOT NULL UNIQUE,
     source_type VARCHAR NOT NULL,
     config      TEXT NOT NULL,
     token_env   VARCHAR,
@@ -1938,7 +1940,7 @@ CREATE TABLE IF NOT EXISTS mcp_oauth_flows (
 )
 
 
-import threading  # noqa: E402
+import threading
 
 _system_db_lock = threading.Lock()
 _system_db_conn: duckdb.DuckDBPyConnection | None = None
@@ -2905,7 +2907,22 @@ def _reattach_remote_extensions(conn: duckdb.DuckDBPyConnection, extracts_dir: P
                 # missing remote views and the operator will trigger a
                 # rebuild).
                 conn.execute(f"LOAD {extension};")
-                token = os.environ.get(token_env, "") if token_env else ""
+                if token_env:
+                    token = os.environ.get(token_env, "")
+                elif extension == "keboola":
+                    # Per-connection Keboola rows leave token_env empty; the
+                    # read path resolves the token from the vault by alias.
+                    from src.connection_resolver import resolve_token_by_alias
+
+                    token = resolve_token_by_alias(alias) or ""
+                    if not token:
+                        logger.warning(
+                            "query-path remote_attach: keboola alias %r has no resolvable token; skipping",
+                            alias,
+                        )
+                        continue
+                else:
+                    token = ""
                 safe_url = escape_sql_string_literal(url)
 
                 # BQ-specific: refresh token from GCE metadata, create session-scoped
@@ -5014,7 +5031,7 @@ def _v46_to_v47(conn: duckdb.DuckDBPyConnection) -> None:
         from src.fts import ensure_knowledge_fts_index
 
         ensure_knowledge_fts_index(conn)
-    except Exception:  # noqa: BLE001 — best-effort migration, see docstring
+    except Exception:
         # Logged at the call site (``ensure_knowledge_fts_index`` already
         # WARNs on duckdb.Error); only surfaces here for non-DuckDB
         # escapes. Schema bump must proceed regardless.
@@ -7468,6 +7485,97 @@ def _v117_to_v118(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("UPDATE schema_version SET version = 118")
 
 
+def _v118_to_v119(conn: duckdb.DuckDBPyConnection) -> None:
+    """v118→v119: add source_connections.slug/alias for per-connection extracts.
+
+    Every connection needs a filesystem slug (extracts/<slug>) and a DuckDB
+    alias (used by remote Keboola extension ATTACH). Backfill existing rows
+    with safe, unique values derived from the connection name. The default
+    Keboola connection keeps the backwards-compatible slug ``keboola`` and
+    alias ``kbc``.
+    """
+    cols = {row[1] for row in conn.execute("PRAGMA table_info('source_connections')").fetchall()}
+    if "slug" not in cols:
+        conn.execute("ALTER TABLE source_connections ADD COLUMN slug VARCHAR")
+    if "alias" not in cols:
+        conn.execute("ALTER TABLE source_connections ADD COLUMN alias VARCHAR")
+
+    rows = conn.execute("SELECT id, name, source_type, is_default FROM source_connections").fetchall()
+    taken_slugs: set[str] = set()
+    taken_aliases: set[str] = set()
+
+    def _safe_identifier(s: str) -> str:
+        s = re.sub(r"[^a-zA-Z0-9_]+", "_", s.lower())
+        s = re.sub(r"^[0-9]+", "", s)
+        s = s.strip("_") or "conn"
+        return s[:63]
+
+    # Reserve the legacy default Keboola names first.
+    updates: list[tuple[str, str, str]] = []
+    for row_id, name, source_type, is_default in rows:
+        if source_type == "keboola" and is_default:
+            updates.append(("keboola", "kbc", row_id))
+            taken_slugs.add("keboola")
+            taken_aliases.add("kbc")
+
+    for row_id, name, source_type, is_default in rows:
+        existing = conn.execute("SELECT slug, alias FROM source_connections WHERE id = ?", [row_id]).fetchone()
+        if existing and existing[0] and existing[1]:
+            taken_slugs.add(existing[0])
+            taken_aliases.add(existing[1])
+            continue
+
+        if source_type == "keboola" and is_default:
+            continue  # handled above
+
+        slug = _safe_identifier(name)
+        alias = _safe_identifier(name)
+        if not _SAFE_IDENTIFIER.match(slug):
+            slug = "conn"
+        if not _SAFE_IDENTIFIER.match(alias):
+            alias = "conn"
+
+        base_slug = slug
+        counter = 1
+        while slug in taken_slugs:
+            slug = f"{base_slug}_{counter}"[:63]
+            counter += 1
+
+        base_alias = alias
+        counter = 1
+        while alias in taken_aliases:
+            alias = f"{base_alias}_{counter}"[:63]
+            counter += 1
+
+        # Belt-and-suspenders: if collisions persist because of the 63-char
+        # truncation above, disambiguate with the row id.
+        if slug in taken_slugs:
+            slug = f"{base_slug}_{row_id[:8]}"[:63]
+        if alias in taken_aliases:
+            alias = f"{base_alias}_{row_id[:8]}"[:63]
+
+        updates.append((slug, alias, row_id))
+        taken_slugs.add(slug)
+        taken_aliases.add(alias)
+
+    for slug, alias, row_id in updates:
+        conn.execute(
+            "UPDATE source_connections SET slug = ?, alias = ? WHERE id = ?",
+            [slug, alias, row_id],
+        )
+
+    try:
+        conn.execute("ALTER TABLE source_connections ALTER COLUMN slug SET NOT NULL")
+        conn.execute("ALTER TABLE source_connections ALTER COLUMN alias SET NOT NULL")
+    except duckdb.Error:
+        # DuckDB versions that do not support ALTER COLUMN SET NOT NULL can
+        # still rely on the application layer to enforce non-null writes.
+        pass
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_source_connections_slug ON source_connections(slug)")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_source_connections_alias ON source_connections(alias)")
+    conn.execute("UPDATE schema_version SET version = 119")
+
+
 def _add_store_entity_trust_columns(conn: duckdb.DuckDBPyConnection) -> None:
     """The v111 column DDL on its own, with no version stamp.
 
@@ -8503,6 +8611,9 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # onboarding step ("Create your first agent"). No-op on fresh
             # installs — _SYSTEM_SCHEMA already declares the column.
             _v117_to_v118(conn)
+            # v118→v119: per-connection slug/alias. No-op on fresh installs
+            # — _SYSTEM_SCHEMA already declares the columns.
+            _v118_to_v119(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -8792,6 +8903,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v116_to_v117(conn)
             if current < 118:
                 _v117_to_v118(conn)
+            if current < 119:
+                _v118_to_v119(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

@@ -8,16 +8,16 @@ import subprocess
 import threading
 import time
 import traceback
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Optional, List
+from typing import Any
 
+import duckdb
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-import duckdb
 
 from app.auth.access import require_admin
-from app.auth.dependencies import get_current_user, _get_db
+from app.auth.dependencies import _get_db, get_current_user
 from app.instance_config import distribution_signed_urls_mode
 from app.job_correlation import stamp_request_id
 from app.utils import get_data_dir as _get_data_dir
@@ -25,8 +25,6 @@ from src.audit_helpers import client_kind_from_user
 from src.distribution import cached_mirror_index
 from src.object_store import ObjectStore, object_store
 from src.rbac import get_accessible_tables
-from src.scheduler import filter_due_tables, is_table_due
-
 from src.repositories import (
     audit_repo,
     connection_secrets_repo,
@@ -42,6 +40,7 @@ from src.repositories import (
     usage_repo,
     users_repo,
 )
+from src.scheduler import filter_due_tables, is_table_due
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/sync", tags=["sync"])
@@ -92,7 +91,7 @@ def _file_hash(path: Path) -> str:
     return h.hexdigest()
 
 
-def _parse_extractor_stats(stdout: Optional[str]) -> Optional[dict]:
+def _parse_extractor_stats(stdout: str | None) -> dict | None:
     """Parse the Keboola extractor subprocess's stats dict back out of its
     stdout (#754).
 
@@ -127,14 +126,241 @@ def _parse_extractor_stats(stdout: Optional[str]) -> Optional[dict]:
     return None
 
 
+def _resolve_keboola_connection_for_extractor(conn_id: str | None) -> dict[str, Any]:
+    """Resolve a Keboola connection's URL, token, slug, alias, and token_env.
+
+    Per-connection rows leave ``token_env`` empty so the read path resolves
+    the credential from the vault by alias. The legacy/default path uses the
+    instance-wide ``data_source.keboola.*`` config or ``KEBOOLA_*`` env vars
+    and records the actual env var name in ``token_env``.
+    """
+    from app.instance_config import get_value
+
+    if conn_id:
+        sc = source_connections_repo().get(conn_id)
+        if not sc:
+            raise ValueError(f"connection_id {conn_id!r} not found in source_connections")
+        url = sc["config"].get("stack_url", "")
+        token = connection_secrets_repo().get(conn_id) or os.environ.get(sc.get("token_env") or "", "")
+        slug = sc.get("slug") or "keboola"
+        alias = sc.get("alias") or "kbc"
+        token_env = ""  # read path resolves from vault by alias
+    else:
+        url = get_value("data_source", "keboola", "stack_url", default="") or os.environ.get("KEBOOLA_STACK_URL", "")
+        token_env = (
+            get_value("data_source", "keboola", "token_env", default="KEBOOLA_STORAGE_TOKEN") or "KEBOOLA_STORAGE_TOKEN"
+        )
+        token = os.environ.get(token_env, "")
+        if not token:
+            from app.datasource_secrets import datasource_secret as _ds_secret
+
+            token = _ds_secret("KEBOOLA_STORAGE_TOKEN") or ""
+        slug = "keboola"
+        alias = "kbc"
+
+    if not url or not token:
+        raise ValueError("Keboola URL or token not configured for extractor")
+    return {"url": url, "token": token, "slug": slug, "alias": alias, "token_env": token_env}
+
+
+def _run_keboola_extractor_subprocess(
+    table_configs: list[dict],
+    conn_info: dict[str, Any],
+    base_env: dict[str, str],
+    extractor_timeout: int,
+) -> tuple[list[dict], set[str]]:
+    """Spawn one Keboola extractor subprocess for a single connection.
+
+    Returns ``(errors, synced_table_names)`` so the caller can merge across
+    all per-connection runs.
+    """
+    import json as _json
+    import signal
+    import sys as _sys
+
+    sub_env = {
+        **base_env,
+        "KEBOOLA_STACK_URL": conn_info["url"],
+        "KEBOOLA_STORAGE_TOKEN": conn_info["token"],
+        "KEBOOLA_CONNECTION_ALIAS": conn_info["alias"],
+        "KEBOOLA_CONNECTION_SLUG": conn_info["slug"],
+        "KEBOOLA_CONNECTION_TOKEN_ENV": conn_info["token_env"],
+    }
+    # Legacy rows may rely on a non-default env var name for the token.
+    if conn_info["token_env"]:
+        sub_env[conn_info["token_env"]] = conn_info["token"]
+
+    ws_repo = sync_state_repo()
+    for tc in table_configs:
+        if tc.get("sync_strategy") in ("incremental", "partitioned"):
+            state = ws_repo.get_table_state(tc.get("id") or tc.get("name"))
+            if state and state.get("status") != "error":
+                ls = state.get("last_sync")
+                if ls is not None:
+                    tc["__last_sync__"] = ls
+
+    serializable = []
+    for tc in table_configs:
+        serializable.append(
+            {k: (v.isoformat() if hasattr(v, "isoformat") else v) for k, v in tc.items() if v is not None}
+        )
+
+    cmd = [
+        _sys.executable,
+        "-c",
+        """
+import json, sys, os, logging, signal
+from pathlib import Path
+
+logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+
+def _exit_on_sigterm(signum, frame):
+    sys.exit(143)
+signal.signal(signal.SIGTERM, _exit_on_sigterm)
+
+configs = json.load(sys.stdin)
+url = os.environ.get("KEBOOLA_STACK_URL", "")
+token = os.environ.get("KEBOOLA_STORAGE_TOKEN", "")
+alias = os.environ.get("KEBOOLA_CONNECTION_ALIAS", "kbc")
+slug = os.environ.get("KEBOOLA_CONNECTION_SLUG", "keboola")
+token_env = os.environ.get("KEBOOLA_CONNECTION_TOKEN_ENV", "KEBOOLA_STORAGE_TOKEN")
+
+if not url or not token:
+    print("ERROR: Missing KEBOOLA_STACK_URL or KEBOOLA_STORAGE_TOKEN", file=sys.stderr)
+    sys.exit(1)
+
+from connectors.keboola.extractor import run, compute_exit_code
+data_dir = Path(os.environ.get("DATA_DIR", "./data"))
+result = run(
+    str(data_dir / "extracts" / slug),
+    configs,
+    url,
+    token,
+    alias=alias,
+    slug=slug,
+    token_env=token_env,
+)
+print(json.dumps(result))
+sys.exit(compute_exit_code(result, len(configs)))
+""",
+    ]
+
+    print(
+        f"[SYNC] Starting Keboola extractor subprocess for connection {conn_info['alias']!r} "
+        f"({len(table_configs)} tables, slug={conn_info['slug']!r})",
+        file=_sys.stderr,
+        flush=True,
+    )
+
+    proc = subprocess.Popen(
+        cmd,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=sub_env,
+        cwd=str(Path(__file__).parent.parent.parent),
+        start_new_session=True,
+    )
+    errors: list[dict] = []
+    try:
+        stdout, stderr = proc.communicate(input=_json.dumps(serializable), timeout=extractor_timeout)
+        result = subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
+            proc.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            try:
+                proc.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+        print(
+            f"[SYNC] Keboola extractor timed out after {extractor_timeout}s — process "
+            "group killed; continuing to next connection",
+            file=_sys.stderr,
+            flush=True,
+        )
+        errors.append(
+            {
+                "table": f"(keboola extractor {conn_info['alias']})",
+                "error": f"extractor timed out after {extractor_timeout}s — process group killed",
+            }
+        )
+        return errors, set()
+
+    if result.stdout:
+        print(f"[SYNC] Extractor stdout: {result.stdout.strip()[-500:]}", file=_sys.stderr, flush=True)
+    if result.stderr:
+        print(f"[SYNC] Extractor stderr: {result.stderr[-500:]}", file=_sys.stderr, flush=True)
+
+    extractor_stats = _parse_extractor_stats(result.stdout)
+    extractor_table_errors = (extractor_stats or {}).get("errors") or []
+    if extractor_table_errors:
+        err_state = sync_state_repo()
+        for entry in extractor_table_errors:
+            tname = entry.get("table")
+            terror = entry.get("error")
+            if tname and terror:
+                err_state.set_error(tname, terror)
+                errors.append({"table": tname, "error": terror})
+
+    if result.returncode == 0:
+        print("[SYNC] Extractor OK", file=_sys.stderr, flush=True)
+    elif result.returncode == 2:
+        print(
+            "[SYNC] Extractor PARTIAL FAILURE (exit 2) — some tables "
+            "succeeded, some failed; see stderr for per-table errors. "
+            "Successful tables will still be published by the orchestrator.",
+            file=_sys.stderr,
+            flush=True,
+        )
+        if not extractor_table_errors:
+            errors.append(
+                {
+                    "table": f"(keboola extractor {conn_info['alias']})",
+                    "error": "partial failure (exit 2) — see server logs for per-table errors",
+                }
+            )
+    else:
+        print(f"[SYNC] Extractor FAILED (exit {result.returncode})", file=_sys.stderr, flush=True)
+        if not extractor_table_errors:
+            errors.append(
+                {
+                    "table": f"(keboola extractor {conn_info['alias']})",
+                    "error": f"extractor failed (exit {result.returncode}) — see server logs",
+                }
+            )
+
+    failed_names = {e.get("table") for e in extractor_table_errors}
+    synced: set[str] = set()
+    _stats_recovered = result.returncode == 0 or bool(extractor_table_errors)
+    if result.returncode in (0, 2) and _stats_recovered:
+        for tc in table_configs:
+            _name = tc.get("name")
+            if not _name or (tc.get("query_mode") or "local") != "local":
+                continue
+            if _name not in failed_names:
+                synced.add(_name)
+
+    return errors, synced
+
+
 def _materialize_table(
     *,
     table_id: str,
     sql: str,
     bq,
     output_dir: str,
-    max_bytes: Optional[int],
-    fetch_timeout_s: Optional[float] = None,
+    max_bytes: int | None,
+    fetch_timeout_s: float | None = None,
 ) -> dict:
     """Thin wrapper around `connectors.bigquery.extractor.materialize_query`
     so the trigger pass can be unit-tested by patching this seam without
@@ -158,8 +384,8 @@ def _materialize_databricks_table(
     client,
     catalog: str,
     output_dir: str,
-    max_bytes: Optional[int],
-    statement_timeout_s: Optional[float] = None,
+    max_bytes: int | None,
+    statement_timeout_s: float | None = None,
 ) -> dict:
     """Thin wrapper around `connectors.databricks.extractor.materialize_query`
     so the trigger pass can be unit-tested by patching this seam without a
@@ -199,8 +425,8 @@ def _is_permanent_upstream_error(exc: Exception) -> bool:
 def _run_materialized_pass(
     conn: duckdb.DuckDBPyConnection,
     bq,
-    tables: Optional[List[str]] = None,
-    source_type: Optional[str] = None,
+    tables: list[str] | None = None,
+    source_type: str | None = None,
 ) -> dict:
     """Walk `table_registry` for `query_mode='materialized'` rows and run any
     that are due, dispatching by ``source_type`` to the correct connector's
@@ -250,7 +476,6 @@ def _run_materialized_pass(
     from connectors.bigquery.extractor import MaterializeBudgetError, MaterializeInFlightError
 
     bq_output_dir = str(Path(_get_data_dir()) / "extracts" / "bigquery")
-    kb_output_dir = Path(_get_data_dir()) / "extracts" / "keboola" / "data"
     dbx_output_dir = str(Path(_get_data_dir()) / "extracts" / "databricks")
 
     # Sentinel: max_bytes <= 0 (or None) disables the guardrail. `get_value()`
@@ -343,7 +568,7 @@ def _run_materialized_pass(
     # constructs it; a misconfigured instance yields per-row errors instead
     # of failing the whole pass (mirrors the Keboola client cache below).
     databricks_client = None
-    databricks_client_error: Optional[str] = None
+    databricks_client_error: str | None = None
     databricks_catalog = ""
 
     registry = table_registry_repo()
@@ -361,7 +586,7 @@ def _run_materialized_pass(
     # who passes either form (the registry id slug, or the human-friendly
     # name) gets the same result. `None` means "no filter — process all
     # due materialized rows".
-    target_set: Optional[set] = set(tables) if tables is not None else None
+    target_set: set | None = set(tables) if tables is not None else None
 
     for row in registry.list_all():
         if row.get("query_mode") != "materialized":
@@ -488,6 +713,12 @@ def _run_materialized_pass(
                         token=sc_token,
                     )
                 keboola_access = keboola_clients[conn_id]
+                if conn_id:
+                    _sc = source_connections_repo().get(conn_id)
+                    _kb_slug = (_sc.get("slug") or "keboola") if _sc else "keboola"
+                else:
+                    _kb_slug = "keboola"
+                kb_output_dir = Path(_get_data_dir()) / "extracts" / _kb_slug / "data"
                 kb_output_dir.mkdir(parents=True, exist_ok=True)
                 from connectors.keboola.extractor import (
                     materialize_query as kb_materialize_query,
@@ -650,9 +881,9 @@ def _run_materialized_pass(
 
 
 def _run_sync(
-    tables: Optional[List[str]] = None,
-    source_type_filter: Optional[str] = None,
-) -> Optional[bool]:
+    tables: list[str] | None = None,
+    source_type_filter: str | None = None,
+) -> bool | None:
     """Run extractor as subprocess + orchestrator rebuild.
 
     Reads table configs from DuckDB (in main process which has the shared
@@ -702,7 +933,6 @@ def _run_sync(
         this returns ``False`` so the job's failure/retry semantics apply;
         it treats ``None`` the same as ``True`` (no-op, not a failure).
     """
-    import json as _json
     import sys as _sys
 
     if not _sync_lock.acquire(blocking=False):
@@ -716,7 +946,7 @@ def _run_sync(
     # Accumulates per-table failures across the sync (materialized pass +
     # extractor) so both the per-table operator alert below and the fatal-path
     # alert in the outer `except` can report the same context.
-    collected_errors: List[dict] = []
+    collected_errors: list[dict] = []
 
     # Names of tables THIS run actually attempted-and-succeeded syncing
     # (extractor-driven local tables minus any per-table failure, plus
@@ -794,7 +1024,7 @@ def _run_sync(
             # sync_schedule.
             if not os.environ.get("KEBOOLA_STORAGE_TOKEN"):
                 try:
-                    from app.datasource_secrets import datasource_secret as _ds  # noqa: PLC0415
+                    from app.datasource_secrets import datasource_secret as _ds
 
                     _kbc_token_available = bool(_ds("KEBOOLA_STORAGE_TOKEN"))
                 except Exception:
@@ -858,236 +1088,30 @@ def _run_sync(
 
         if run_extractor_subprocess:
             # v26: incremental + partitioned strategies need last_sync from
-            # sync_state to compute changedSince. The subprocess MUST NOT
-            # reopen system.duckdb (parent holds the lock — see contract at
-            # the top of this function), so the parent reads watermarks
-            # here and injects them into each table_config under the key
-            # `__last_sync__`. extractor.run() picks them up via
-            # _read_last_sync's first-check-config-then-fall-back pattern.
-            ws_repo = sync_state_repo()
+            # sync_state to compute changedSince. The per-connection helper
+            # injects `__last_sync__` and serializes configs per group.
+            # Subprocess does NOT open system.duckdb — no lock conflict.
+            from collections import defaultdict
+
+            grouped: dict[str | None, list[dict]] = defaultdict(list)
             for tc in table_configs:
-                if tc.get("sync_strategy") in ("incremental", "partitioned"):
-                    state = ws_repo.get_table_state(tc.get("id") or tc.get("name"))
-                    if state and state.get("status") != "error":
-                        ls = state.get("last_sync")
-                        if ls is not None:
-                            tc["__last_sync__"] = ls
+                grouped[tc.get("connection_id")].append(tc)
 
-            # Serialize configs — strip non-serializable fields
-            serializable = []
-            for tc in table_configs:
-                serializable.append(
-                    {k: (v.isoformat() if hasattr(v, "isoformat") else v) for k, v in tc.items() if v is not None}
-                )
-
-            # Run extractor subprocess with table configs via stdin
-            # Subprocess does NOT open system.duckdb — no lock conflict
-            cmd = [
-                _sys.executable,
-                "-c",
-                """
-import json, sys, os, logging, signal
-from pathlib import Path
-
-# Subprocess inherits no logging config — without basicConfig, Python's
-# lastResort handler only surfaces WARNING+ to stderr and INFO-level
-# extraction progress from connectors.keboola.extractor.run() is silently
-# dropped. capture_output=True in the parent then swallows the rest.
-# Devin BUG_0002 on PR #136 review.
-logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
-
-# Convert SIGTERM into a controlled SystemExit so the ProcessPoolExecutor
-# `with` block in connectors.keboola.extractor.run() runs its __exit__
-# (shutdown/wait_for_workers) before this process dies. Without this,
-# SIGTERM kills the parent abruptly, leaving the OS to clean up the pool
-# children — but each worker holds an open Keboola Storage export job
-# whose lifetime is tied to the HTTP poll loop, and those leak until the
-# Keboola side TTLs them out. The parent extractor calls this from
-# app.api.sync._run_sync after `subprocess.Popen(start_new_session=True)`
-# + `os.killpg(SIGTERM)` on timeout.
-def _exit_on_sigterm(signum, frame):
-    sys.exit(143)
-signal.signal(signal.SIGTERM, _exit_on_sigterm)
-
-configs = json.load(sys.stdin)
-url = os.environ.get("KEBOOLA_STACK_URL", "")
-token = os.environ.get("KEBOOLA_STORAGE_TOKEN", "")
-
-if not url or not token:
-    print("ERROR: Missing KEBOOLA_STACK_URL or KEBOOLA_STORAGE_TOKEN", file=sys.stderr)
-    sys.exit(1)
-
-from connectors.keboola.extractor import run, compute_exit_code
-data_dir = Path(os.environ.get("DATA_DIR", "./data"))
-result = run(str(data_dir / "extracts" / "keboola"), configs, url, token)
-print(json.dumps(result))
-# Issue #81 Group B: surface partial-failure as exit 2 so the API
-# caller can distinguish "every table failed" from "9/10 succeeded".
-sys.exit(compute_exit_code(result, len(configs)))
-""",
-            ]
-
-            print(f"[SYNC] Starting extractor subprocess for {len(table_configs)} tables", file=_sys.stderr, flush=True)
-
-            # Run in a new process group (start_new_session=True) so a
-            # timeout can take down the whole tree — the extractor itself
-            # plus any ProcessPoolExecutor workers it spawned for parallel
-            # legacy-fallback. Without this, plain `subprocess.run` on
-            # timeout SIGKILLs only the immediate child; the pool workers
-            # are reparented to PID 1 and continue holding open Keboola
-            # Storage export jobs, blocking the next sync cycle's
-            # connectivity to those same job IDs.
             extractor_timeout = int(os.environ.get("AGNES_EXTRACTOR_TIMEOUT_SEC", "3600"))
-            proc = subprocess.Popen(
-                cmd,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                env=env,
-                cwd=str(Path(__file__).parent.parent.parent),
-                start_new_session=True,
-            )
-            try:
-                stdout, stderr = proc.communicate(input=_json.dumps(serializable), timeout=extractor_timeout)
-                result = subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
-            except subprocess.TimeoutExpired:
-                # SIGTERM the whole process group first to give workers a
-                # chance to shut down cleanly (release Keboola export jobs,
-                # close DuckDB conns), then SIGKILL the stragglers after a
-                # short grace window.
-                import signal
-
+            for conn_id, group_configs in grouped.items():
                 try:
-                    os.killpg(proc.pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
-                try:
-                    proc.communicate(timeout=10)
-                except subprocess.TimeoutExpired:
-                    try:
-                        os.killpg(proc.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-                    try:
-                        proc.communicate(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        pass
-                # Catch the timeout LOCALLY so the materialized BQ pass and
-                # orchestrator rebuild below still fire — pre-fix the timeout
-                # propagated to the outer except handler and skipped the rest
-                # of `_run_sync` (Devin BUG_0001 on PR #148 commit 2219255).
-                print(
-                    f"[SYNC] Extractor timed out after {extractor_timeout}s — process "
-                    "group killed; continuing to materialized pass + orchestrator rebuild",
-                    file=_sys.stderr,
-                    flush=True,
+                    conn_info = _resolve_keboola_connection_for_extractor(conn_id)
+                except ValueError as e:
+                    logger.warning("Skipping Keboola connection %r: %s", conn_id, e)
+                    for tc in group_configs:
+                        collected_errors.append({"table": tc.get("name"), "error": str(e)})
+                    continue
+
+                group_errors, group_synced = _run_keboola_extractor_subprocess(
+                    group_configs, conn_info, env, extractor_timeout
                 )
-                result = None
-                # Record the timeout so the per-table webhook alert fires —
-                # this LOCAL catch (the common timeout path) sets result=None
-                # and skips the exit-code error collection below, so without
-                # this append a clean materialized pass + rebuild would leave
-                # collected_errors empty and the operator never learns the
-                # extractor stalled (#397, #648 review).
-                collected_errors.append(
-                    {
-                        "table": "(keboola extractor)",
-                        "error": f"extractor timed out after {extractor_timeout}s — process group killed",
-                    }
-                )
-
-            if result is not None:
-                if result.stdout:
-                    print(f"[SYNC] Extractor stdout: {result.stdout.strip()[-500:]}", file=_sys.stderr, flush=True)
-                if result.stderr:
-                    print(f"[SYNC] Extractor stderr: {result.stderr[-500:]}", file=_sys.stderr, flush=True)
-
-                # #754 — recover the subprocess's per-table stats (it can't
-                # write system.duckdb itself; the parent holds that lock for
-                # the duration of the sync) and persist real failures via
-                # sync_state.set_error so `GET /api/admin/registry` /
-                # `agnes admin list-tables` can explain a "N total, 0 synced"
-                # run instead of an operator having to trawl container logs
-                # for the 500-char stdout tail above.
-                extractor_stats = _parse_extractor_stats(result.stdout)
-                extractor_table_errors = (extractor_stats or {}).get("errors") or []
-                if extractor_table_errors:
-                    err_state = sync_state_repo()
-                    for entry in extractor_table_errors:
-                        tname = entry.get("table")
-                        terror = entry.get("error")
-                        if tname and terror:
-                            err_state.set_error(tname, terror)
-                            collected_errors.append({"table": tname, "error": terror})
-
-                # Issue #81 Group B: three exit codes. 0 = full success,
-                # 1 = full failure, 2 = partial. Partial is a data-quality
-                # alert, not a crash — the orchestrator's per-table _meta
-                # machinery already captured which tables succeeded; we just
-                # need to log loudly so operator alerting can pick it up.
-                if result.returncode == 0:
-                    print("[SYNC] Extractor OK", file=_sys.stderr, flush=True)
-                elif result.returncode == 2:
-                    print(
-                        "[SYNC] Extractor PARTIAL FAILURE (exit 2) — some tables "
-                        "succeeded, some failed; see stderr for per-table errors. "
-                        "Successful tables will still be published by the orchestrator.",
-                        file=_sys.stderr,
-                        flush=True,
-                    )
-                    # Real per-table entries (just persisted above) are more
-                    # actionable than this placeholder — only fall back to it
-                    # when the stats line couldn't be recovered at all.
-                    if not extractor_table_errors:
-                        collected_errors.append(
-                            {
-                                "table": "(keboola extractor)",
-                                "error": "partial failure (exit 2) — see server logs for per-table errors",
-                            }
-                        )
-                else:
-                    print(f"[SYNC] Extractor FAILED (exit {result.returncode})", file=_sys.stderr, flush=True)
-                    if not extractor_table_errors:
-                        collected_errors.append(
-                            {
-                                "table": "(keboola extractor)",
-                                "error": f"extractor failed (exit {result.returncode}) — see server logs",
-                            }
-                        )
-
-                # Record which of THIS run's attempted tables actually landed
-                # data, for notify_sync_completed below. "Attempted minus
-                # recovered errors" over-claims in two ways, so both are
-                # excluded here — an analyst-facing "N table(s) refreshed"
-                # must never count a table this run did not write:
-                #
-                #  - Only `local` rows land parquet through this extractor.
-                #    A `tables=[…]` operator trigger reads registry rows
-                #    directly (`repo.get`), so table_configs can also carry
-                #    `materialized` rows — which the extractor `continue`s
-                #    over without recording anything, because
-                #    `_run_materialized_pass` owns them and contributes its
-                #    own positively-accounted names below (and may itself
-                #    have skipped the row on its due/in_flight check) — and
-                #    `remote` rows, which only get a view over the source:
-                #    no data is downloaded, and `agnes pull` skips them.
-                #  - Exit 2 means SOME table failed. When the stats line
-                #    couldn't be parsed there is no per-table error list to
-                #    subtract (that's the fallback branch above), so we know
-                #    a failure happened but not whose — claim none rather
-                #    than announce the failures as refreshes. Exit 0 carries
-                #    no failures by construction (`compute_exit_code`), so
-                #    it needs no such evidence.
-                _stats_recovered = result.returncode == 0 or bool(extractor_table_errors)
-                if result.returncode in (0, 2) and _stats_recovered:
-                    _failed_names = {e.get("table") for e in extractor_table_errors}
-                    for _tc in table_configs:
-                        _name = _tc.get("name")
-                        if not _name or (_tc.get("query_mode") or "local") != "local":
-                            continue
-                        if _name not in _failed_names:
-                            synced_table_names.add(_name)
+                collected_errors.extend(group_errors)
+                synced_table_names.update(group_synced)
 
             # Run custom connectors (Tier A: local mount) — only when there
             # were local-mode tables to drive the extractor. Custom connectors
@@ -1229,7 +1253,7 @@ sys.exit(compute_exit_code(result, len(configs)))
         # system.duckdb lock semantics stay single-writer: the worker
         # returns the profile dict, the parent persists it.
         try:
-            from src._subprocess_runner import run_subprocess_job, SubprocessJobError
+            from src._subprocess_runner import SubprocessJobError, run_subprocess_job
 
             data_dir = Path(os.environ.get("DATA_DIR", "./data"))
             extracts_dir = data_dir / "extracts"
@@ -1373,7 +1397,7 @@ sys.exit(compute_exit_code(result, len(configs)))
 _SIGNED_URL_TTL_S = 900
 
 
-def _resolve_signed_url_context() -> tuple[Optional[ObjectStore], dict]:
+def _resolve_signed_url_context() -> tuple[ObjectStore | None, dict]:
     """Resolve the object store + its (TTL-cached) mirror index ONCE per
     manifest build — never per-table.
 
@@ -1403,7 +1427,7 @@ def _apply_signed_url(
     *,
     query_mode: str,
     server_only: bool,
-    store: Optional[ObjectStore],
+    store: ObjectStore | None,
     mirror_index: dict,
 ) -> None:
     """Mutate *entry* in place, adding ``signed_url`` / ``signed_url_expires_at``
@@ -1443,7 +1467,7 @@ def _apply_signed_url(
     if not md5 or mirror_index.get(table_id) != md5:
         return
     entry["signed_url"] = store.presign_get(f"{table_id}.parquet", ttl_s=_SIGNED_URL_TTL_S)
-    entry["signed_url_expires_at"] = (datetime.now(timezone.utc) + timedelta(seconds=_SIGNED_URL_TTL_S)).isoformat()
+    entry["signed_url_expires_at"] = (datetime.now(UTC) + timedelta(seconds=_SIGNED_URL_TTL_S)).isoformat()
 
 
 def _compute_manifest_policy_fingerprint(reg: dict, principal) -> "str | None":
@@ -1555,9 +1579,9 @@ def _build_data_packages_section(conn, user, registry_by_name: dict, states_by_t
       listed-but-not-downloaded treatment ``server_only`` already gets
       (#607), reused here rather than inventing a second flag.
     """
+    from app.auth.session_principal import PRINCIPAL_TYPES
     from app.resource_types import ResourceType
     from app.services.stack_resolver import StackResolver
-    from app.auth.session_principal import PRINCIPAL_TYPES
 
     resolver = StackResolver(conn)
     stack_subject = user if isinstance(user, PRINCIPAL_TYPES) else user["id"]
@@ -1715,9 +1739,9 @@ def _build_memory_domains_section(conn, user) -> list:
     Phase 7 will need it; for now we emit the URL the future endpoint
     will live at so older clients keep parsing the manifest cleanly.
     """
+    from app.auth.session_principal import PRINCIPAL_TYPES
     from app.resource_types import ResourceType
     from app.services.stack_resolver import StackResolver
-    from app.auth.session_principal import PRINCIPAL_TYPES
 
     resolver = StackResolver(conn)
     stack_subject = user if isinstance(user, PRINCIPAL_TYPES) else user["id"]
@@ -1959,7 +1983,7 @@ def _build_manifest_for_user(conn, user: dict) -> dict:
     return {
         "tables": tables,
         "assets": assets,
-        "server_time": datetime.now(timezone.utc).isoformat(),
+        "server_time": datetime.now(UTC).isoformat(),
         "data_packages": data_packages,
         "memory_domains": memory_domains,
         "direct_tables": direct_tables,
@@ -1989,7 +2013,7 @@ def sync_manifest(
     # as its owner in the /home "last pulled" card.
     if not isinstance(user, PRINCIPAL_TYPES):
         try:
-            users_repo().update(user["id"], last_pull_at=datetime.now(timezone.utc))
+            users_repo().update(user["id"], last_pull_at=datetime.now(UTC))
             # Also emit an audit_log row so /me/stats Sync activity has a
             # timeline of pulls (the column UPDATE only retains the most
             # recent one). Action `manifest.fetch` covers both `agnes pull`
@@ -2039,10 +2063,10 @@ class PullConfirmRequest(BaseModel):
     versions that don't track a section emit nothing for it.
     """
 
-    duration_ms: Optional[int] = None
-    direct_tables: Optional[PullConfirmTypeReport] = None
-    data_packages: Optional[PullConfirmTypeReport] = None
-    memory_domains: Optional[PullConfirmTypeReport] = None
+    duration_ms: int | None = None
+    direct_tables: PullConfirmTypeReport | None = None
+    data_packages: PullConfirmTypeReport | None = None
+    memory_domains: PullConfirmTypeReport | None = None
     errors: int = 0
 
 
@@ -2124,8 +2148,8 @@ _DATA_REFRESH_IDEMPOTENCY_KEY = "sync"
 
 @router.post("/trigger")
 def trigger_sync(
-    body: Optional[Any] = Body(None),
-    source: Optional[str] = Query(
+    body: Any | None = Body(None),
+    source: str | None = Query(
         None,
         description=(
             "Restrict the rebuild to one registered source_type (e.g. `keboola`, `bigquery`). Omit for a full sweep."
@@ -2189,7 +2213,7 @@ def trigger_sync(
     actually inserted (``deduped=False``) gets 200.
     """
     if body is None:
-        tables: Optional[List[str]] = None
+        tables: list[str] | None = None
     elif isinstance(body, list):
         tables = list(body)
     elif isinstance(body, dict):
@@ -2255,7 +2279,7 @@ def trigger_sync(
                 action="sync.trigger",
                 resource=resource,
                 params={
-                    "requested_at": datetime.now(timezone.utc).isoformat(),
+                    "requested_at": datetime.now(UTC).isoformat(),
                     "tables": tables,
                     "source": source,
                     "job_id": job["id"],
@@ -2286,7 +2310,7 @@ def trigger_sync(
             action="sync.trigger",
             resource=resource,
             params={
-                "requested_at": datetime.now(timezone.utc).isoformat(),
+                "requested_at": datetime.now(UTC).isoformat(),
                 "tables": tables,
                 "source": source,
                 "job_id": job["id"],

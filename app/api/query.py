@@ -54,11 +54,13 @@ from src.remote_engines import (
     TABLE_REF_PREFIX_RE,
     mask_backticks,
     name_reference_re,
+    qualified_path_re,
     rewrite_bare_names,
 )
 from src.remote_query import _strip_leading_sql_comments
 from src.repositories import (
     audit_repo,
+    source_connections_repo,
     table_registry_repo,
 )
 from src.sql_ident import quote_ident
@@ -1377,10 +1379,14 @@ def execute_query(
     # at all).
     internal_refs = find_internal_refs(request.sql)
     if internal_refs:
-        if BQ_PATH.search(_mask_backticks(request.sql)) or _BACKTICK_FULL_PATH.search(request.sql):
+        if (
+            BQ_PATH.search(_mask_backticks(request.sql))
+            or _BACKTICK_FULL_PATH.search(request.sql)
+            or _has_kbc_path(request.sql)
+        ):
             raise HTTPException(
                 status_code=400,
-                detail="Internal tables can't be combined with `bq.*` paths in a single SELECT (v1 limitation).",
+                detail="Internal tables can't be combined with `bq.*` or `kbc.*` paths in a single SELECT (v1 limitation).",
             )
         # Reject if user SQL also references any non-internal registry id —
         # that would be a mixed query against analytics.duckdb views. Matched
@@ -1471,6 +1477,21 @@ def execute_query(
         _dry_run_set = dry_run_set  # expose to outer scope for audit
         if blocked_bq_path is not None:
             raise HTTPException(status_code=403, detail=blocked_bq_path)
+
+        # ---- #1375 Keboola remote-row direct-path gate --------------------
+        blocked_kbc_path = (
+            None
+            if _dbx_plan is not None
+            else _kbc_guardrail_inputs(
+                request.sql,
+                sql_lower,
+                conn,
+                user,
+                allowed,
+            )
+        )
+        if blocked_kbc_path is not None:
+            raise HTTPException(status_code=403, detail=blocked_kbc_path)
 
         # Issue #160 §4.3.3 — concurrent-slot guard MUST wrap the actual
         # `analytics.execute(request.sql)` call (which is what triggers the
@@ -1860,9 +1881,16 @@ def _build_materialized_hint(row: dict) -> str:
     source_table = row.get("source_table")
     direct_hint = ""
     if bucket and source_table:
-        # BigQuery: `bq."dataset"."table"`; Keboola: `kbc."bucket"."table"`.
-        # Pick the alias by source_type so the hint is copy-pasteable.
-        alias = "bq" if (row.get("source_type") or "") == "bigquery" else "kbc"
+        # BigQuery: `bq."dataset"."table"`; Keboola: use the connection alias.
+        if (row.get("source_type") or "") == "bigquery":
+            alias = "bq"
+        else:
+            conn_id = row.get("connection_id")
+            if conn_id:
+                sc = source_connections_repo().get(conn_id)
+                alias = sc.get("alias") if sc else "kbc"
+            else:
+                alias = "kbc"
         # Not executed — a copy-pasteable hint. Routed through quote_ident anyway
         # so the suggestion stays valid SQL when a name contains a quote, and
         # through normalize_source_table so a row registered by the pre-fix
@@ -2154,6 +2182,86 @@ def _bq_guardrail_inputs(
                     dry_run.append((bucket, source_table, 0))
 
     return dry_run, name_lookups, None
+
+
+def _kbc_aliases() -> list[str]:
+    """Keboola ATTACH aliases that may appear as catalog prefixes in user SQL.
+
+    Always includes the legacy default ``kbc``. Per-connection aliases are
+    read from source_connections at request time so newly-added connections
+    are gated without a server restart.
+    """
+    aliases = {"kbc"}
+    try:
+        for c in source_connections_repo().list("keboola"):
+            alias = c.get("alias")
+            if alias:
+                aliases.add(alias)
+    except Exception:
+        # source_connections may not be available in early tests / migrations.
+        pass
+    return sorted(aliases)
+
+
+def _has_kbc_path(sql: str) -> bool:
+    """True if `sql` contains a direct ``kbc_alias."bucket"."table"`` path."""
+    masked = _mask_backticks(sql)
+    for alias in _kbc_aliases():
+        if qualified_path_re(alias).search(masked):
+            return True
+    return False
+
+
+def _kbc_guardrail_inputs(
+    sql: str,
+    sql_lower: str,
+    sys_conn: duckdb.DuckDBPyConnection,
+    user: dict,
+    allowed: list | None,
+):
+    """One-pass scan for direct Keboola catalog paths.
+
+    Every ``kbc_alias."bucket"."table"`` reference must resolve to a
+    registered ``query_mode='remote'`` Keboola row that the caller is
+    allowed to see. Returns a structured-detail dict on the first failing
+    path, otherwise None.
+    """
+    repo = table_registry_repo()
+    accessible_set = set(allowed) if allowed is not None else None
+
+    if isinstance(user, PRINCIPAL_TYPES):
+        is_admin = False
+    else:
+        from src.rbac import _credential_surface
+
+        is_admin = (
+            is_user_admin(user.get("id") or user.get("email") or "", sys_conn) and _credential_surface(user) == "all"
+        )
+
+    masked_sql = _mask_backticks(sql)
+    for alias in _kbc_aliases():
+        for m in qualified_path_re(alias).finditer(masked_sql):
+            bucket_raw = m.group(1).strip('"')
+            source_table_raw = m.group(2).strip('"')
+            row = repo.find_by_keboola_path(alias, bucket_raw, source_table_raw)
+            if row is None:
+                return {
+                    "reason": "kbc_path_not_registered",
+                    "path": f"{quote_ident(alias)}.{quote_ident(bucket_raw)}.{quote_ident(source_table_raw)}",
+                    "hint": (
+                        "Direct kbc.* references must point to a registered table. "
+                        "Register via `agnes admin register-table` or use the "
+                        "registered name from `agnes catalog`."
+                    ),
+                }
+            if not is_admin:
+                if accessible_set is None or row["id"] not in accessible_set:
+                    return {
+                        "reason": "kbc_path_access_denied",
+                        "path": f"{quote_ident(alias)}.{quote_ident(bucket_raw)}.{quote_ident(source_table_raw)}",
+                        "registered_as": row["name"],
+                    }
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -3345,6 +3453,17 @@ def run_remote_select_to_arrow(conn, user, sql, bq, quota, *, policy_info: dict 
         )
         if blocked_bq_path is not None:
             raise HTTPException(status_code=403, detail=blocked_bq_path)
+
+        # ---- #1375 Keboola remote-row direct-path gate --------------------
+        blocked_kbc_path = _kbc_guardrail_inputs(
+            sql,
+            sql_lower,
+            conn,
+            user,
+            allowed,
+        )
+        if blocked_kbc_path is not None:
+            raise HTTPException(status_code=403, detail=blocked_kbc_path)
 
         # See _identity_for_audit — a restricted principal has no ".get".
         _audit_uid, _audit_email = _identity_for_audit(user)

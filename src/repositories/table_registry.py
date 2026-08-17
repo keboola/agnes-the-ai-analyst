@@ -1,13 +1,13 @@
 """Repository for table registry."""
 
 import json
-from datetime import datetime, timezone
-from typing import Any, Optional, List, Dict, Union
+from datetime import UTC, datetime
+from typing import Any
 
 import duckdb
 
 
-def _encode_primary_key(pk: Union[None, str, List[str]]) -> Optional[str]:
+def _encode_primary_key(pk: None | str | list[str]) -> str | None:
     """Serialize primary_key (list-or-string) to a canonical VARCHAR form.
 
     Frontend + API send lists (composite PKs are real — session-grain MSA
@@ -24,7 +24,7 @@ def _encode_primary_key(pk: Union[None, str, List[str]]) -> Optional[str]:
     return json.dumps([str(pk)])
 
 
-def _encode_where_filters(filters: Union[None, str, List[Dict[str, Any]]]) -> Optional[str]:
+def _encode_where_filters(filters: None | str | list[dict[str, Any]]) -> str | None:
     """Serialize where_filters to canonical JSON for storage.
 
     Accepts None / empty / list / pre-serialized JSON string. Stores as
@@ -45,7 +45,7 @@ def _encode_where_filters(filters: Union[None, str, List[Dict[str, Any]]]) -> Op
     return json.dumps(filters)
 
 
-def _decode_where_filters(stored: Any) -> Optional[List[Dict[str, Any]]]:
+def _decode_where_filters(stored: Any) -> list[dict[str, Any]] | None:
     if stored is None or stored == "":
         return None
     if isinstance(stored, list):
@@ -59,7 +59,7 @@ def _decode_where_filters(stored: Any) -> Optional[List[Dict[str, Any]]]:
     return None
 
 
-def _decode_primary_key(stored: Any) -> Optional[List[str]]:
+def _decode_primary_key(stored: Any) -> list[str] | None:
     """Decode a registry-stored primary_key into the API-canonical list-of-str
     form. Tolerates four legacy representations:
 
@@ -106,36 +106,36 @@ class TableRegistryRepository:
         self,
         id: str,
         name: str,
-        folder: Optional[str] = None,
-        sync_strategy: Optional[str] = None,
-        primary_key: Union[None, str, List[str]] = None,
-        description: Optional[str] = None,
-        registered_by: Optional[str] = None,
-        source_type: Optional[str] = None,
-        bucket: Optional[str] = None,
-        source_table: Optional[str] = None,
-        source_query: Optional[str] = None,
+        folder: str | None = None,
+        sync_strategy: str | None = None,
+        primary_key: None | str | list[str] = None,
+        description: str | None = None,
+        registered_by: str | None = None,
+        source_type: str | None = None,
+        bucket: str | None = None,
+        source_table: str | None = None,
+        source_query: str | None = None,
         query_mode: str = "local",
-        sync_schedule: Optional[str] = None,
+        sync_schedule: str | None = None,
         profile_after_sync: bool = True,
-        registered_at: Optional[datetime] = None,
+        registered_at: datetime | None = None,
         # v26 — Keboola sync-strategy support fields. All optional; meaningful
         # only when paired with the matching sync_strategy. API-layer
         # validators enforce per-strategy required-field rules and reject
         # conflicting combinations (see app/api/admin.py).
-        incremental_window_days: Optional[int] = None,
-        max_history_days: Optional[int] = None,
-        incremental_column: Optional[str] = None,
-        where_filters: Union[None, str, List[Dict[str, Any]]] = None,
-        partition_by: Optional[str] = None,
-        partition_granularity: Optional[str] = None,
-        initial_load_chunk_days: Optional[int] = None,
+        incremental_window_days: int | None = None,
+        max_history_days: int | None = None,
+        incremental_column: str | None = None,
+        where_filters: None | str | list[dict[str, Any]] = None,
+        partition_by: str | None = None,
+        partition_granularity: str | None = None,
+        initial_load_chunk_days: int | None = None,
         # v51 — fully-qualified BigQuery path (``project.dataset.table``).
         # When set, the orchestrator uses this in place of constructing the
         # path from ``_remote_attach.url.project`` + ``bucket`` +
         # ``source_table`` at rebuild. Decouples the UX/RBAC ``bucket``
         # label from the physical BQ dataset name (issue #343).
-        bq_fqn: Optional[str] = None,
+        bq_fqn: str | None = None,
         # v74 (#607) — distribution flag decoupled from query_mode. When True
         # the row is kept server-side & queryable via `agnes query --remote`,
         # but `agnes pull` skips its parquet. API-layer validator rejects
@@ -143,13 +143,13 @@ class TableRegistryRepository:
         server_only: bool = False,
         # v79 — nullable FK to source_connections.id. NULL = use the default
         # connection for the row's source_type (spec 2026-06-12).
-        connection_id: Optional[str] = None,
+        connection_id: str | None = None,
     ) -> None:
         # `registered_at` defaults to "now" for fresh inserts. Updaters that
         # want to preserve the original registration time across edits pass
         # the existing value explicitly — otherwise PUT /api/admin/registry/{id}
         # would silently reset the timestamp on every edit (issue #130).
-        ts = registered_at or datetime.now(timezone.utc)
+        ts = registered_at or datetime.now(UTC)
         encoded_pk = _encode_primary_key(primary_key)
         encoded_filters = _encode_where_filters(where_filters)
         # Mirror the column DEFAULT — explicit None in the INSERT would
@@ -214,7 +214,7 @@ class TableRegistryRepository:
         )
 
     @staticmethod
-    def _decode_row(row_dict: Dict[str, Any]) -> Dict[str, Any]:
+    def _decode_row(row_dict: dict[str, Any]) -> dict[str, Any]:
         """Apply JSON-decoding to fields stored as canonical VARCHAR."""
         if "primary_key" in row_dict:
             row_dict["primary_key"] = _decode_primary_key(row_dict["primary_key"])
@@ -247,19 +247,19 @@ class TableRegistryRepository:
         table_id: str,
         *,
         # v52 docs surface
-        sample_questions: Optional[List[str]] = None,
-        things_to_know: Optional[str] = None,
-        pairs_well_with: Optional[List[str]] = None,
+        sample_questions: list[str] | None = None,
+        things_to_know: str | None = None,
+        pairs_well_with: list[str] | None = None,
         clear_sample_questions: bool = False,
         clear_things_to_know: bool = False,
         clear_pairs_well_with: bool = False,
         # v56 structured docs for the package-detail rewrite. Same
         # Optional-is-no-op contract as the v52 fields.
-        grain: Optional[str] = None,
-        platforms: Optional[List[str]] = None,
-        partition_col: Optional[str] = None,
-        history: Optional[str] = None,
-        gotchas: Optional[List[Dict[str, Any]]] = None,
+        grain: str | None = None,
+        platforms: list[str] | None = None,
+        partition_col: str | None = None,
+        history: str | None = None,
+        gotchas: list[dict[str, Any]] | None = None,
     ) -> None:
         """v52 + v56: write the per-table docs fields shown on
         /catalog/t/<id> + the per-table extended section on
@@ -270,8 +270,8 @@ class TableRegistryRepository:
         the cover_image_url pattern in data_packages.update). v56 fields
         don't have ``clear_*`` flags yet — pass an empty list/empty string
         if you want to actively clear them (rare in practice)."""
-        fields: List[str] = []
-        params: List[Any] = []
+        fields: list[str] = []
+        params: list[Any] = []
         if clear_sample_questions:
             fields.append("sample_questions = NULL")
         elif sample_questions is not None:
@@ -314,7 +314,7 @@ class TableRegistryRepository:
     def unregister(self, table_id: str) -> None:
         self.conn.execute("DELETE FROM table_registry WHERE id = ?", [table_id])
 
-    def delete_internal_except(self, keep_ids: List[str]) -> int:
+    def delete_internal_except(self, keep_ids: list[str]) -> int:
         """Delete every ``source_type='internal'`` row whose id is NOT in
         ``keep_ids``. Returns the number of rows removed.
 
@@ -334,7 +334,7 @@ class TableRegistryRepository:
         ).fetchall()
         return len(rows)
 
-    def delete_for_corpus(self, corpus_id: str) -> List[str]:
+    def delete_for_corpus(self, corpus_id: str) -> list[str]:
         """Delete all table_registry rows belonging to a file-corpus collection.
 
         Rows are identified by ``source_type='collection'`` and
@@ -367,8 +367,8 @@ class TableRegistryRepository:
     def set_access_policy(
         self,
         table_id: str,
-        sql: Optional[str],
-        note: Optional[str],
+        sql: str | None,
+        note: str | None,
         updated_by: str,
     ) -> None:
         """Set (or clear) the SQL access policy attached to a table
@@ -398,7 +398,7 @@ class TableRegistryRepository:
                    access_policy_updated_at = ?,
                    access_policy_updated_by = ?
                WHERE id = ?""",
-            [sql, note, datetime.now(timezone.utc), updated_by, table_id],
+            [sql, note, datetime.now(UTC), updated_by, table_id],
         )
 
     def set_policy_mapping(self, table_id: str, value: bool) -> None:
@@ -410,21 +410,21 @@ class TableRegistryRepository:
             [bool(value), table_id],
         )
 
-    def get(self, table_id: str) -> Optional[Dict[str, Any]]:
+    def get(self, table_id: str) -> dict[str, Any] | None:
         result = self.conn.execute("SELECT * FROM table_registry WHERE id = ?", [table_id]).fetchone()
         if not result:
             return None
         columns = [desc[0] for desc in self.conn.description]
         return self._decode_row(dict(zip(columns, result)))
 
-    def get_by_name(self, name: str) -> Optional[Dict[str, Any]]:
+    def get_by_name(self, name: str) -> dict[str, Any] | None:
         result = self.conn.execute("SELECT * FROM table_registry WHERE name = ?", [name]).fetchone()
         if not result:
             return None
         columns = [desc[0] for desc in self.conn.description]
         return self._decode_row(dict(zip(columns, result)))
 
-    def list_all(self) -> List[Dict[str, Any]]:
+    def list_all(self) -> list[dict[str, Any]]:
         results = self.conn.execute("SELECT * FROM table_registry ORDER BY name").fetchall()
         if not results:
             return []
@@ -444,7 +444,7 @@ class TableRegistryRepository:
         ).fetchone()
         return int(result[0]) if result else 0
 
-    def list_by_source(self, source_type: str) -> List[Dict[str, Any]]:
+    def list_by_source(self, source_type: str) -> list[dict[str, Any]]:
         """List tables for a given source type (keboola, bigquery, jira, etc.)."""
         results = self.conn.execute(
             "SELECT * FROM table_registry WHERE source_type = ? ORDER BY name",
@@ -459,7 +459,7 @@ class TableRegistryRepository:
         self,
         bucket: str,
         source_table: str,
-    ) -> Optional[Dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         """Look up a BigQuery row by `(bucket, source_table)`.
 
         Used by /api/query's RBAC patch to decide whether a direct
@@ -492,7 +492,37 @@ class TableRegistryRepository:
         columns = [desc[0] for desc in self.conn.description]
         return self._decode_row(dict(zip(columns, result)))
 
-    def list_local(self, source_type: Optional[str] = None) -> List[Dict[str, Any]]:
+    def find_by_keboola_path(
+        self,
+        alias: str,
+        bucket: str,
+        source_table: str,
+    ) -> dict[str, Any] | None:
+        """Look up a Keboola row by `(alias, bucket, source_table)`.
+
+        ``alias`` lives on ``source_connections``; rows with no
+        ``connection_id`` are treated as the default Keboola connection and
+        matched when ``alias = 'kbc'``.
+        """
+        result = self.conn.execute(
+            """SELECT t.* FROM table_registry t
+            LEFT JOIN source_connections sc ON sc.id = t.connection_id
+            WHERE t.source_type = 'keboola'
+              AND t.bucket IS NOT NULL
+              AND t.source_table IS NOT NULL
+              AND COALESCE(sc.alias, 'kbc') = ?
+              AND lower(t.bucket) = lower(?)
+              AND lower(t.source_table) = lower(?)
+            ORDER BY t.registered_at ASC
+            LIMIT 1""",
+            [alias, bucket, source_table],
+        ).fetchone()
+        if not result:
+            return None
+        columns = [desc[0] for desc in self.conn.description]
+        return self._decode_row(dict(zip(columns, result)))
+
+    def list_local(self, source_type: str | None = None) -> list[dict[str, Any]]:
         """List tables with query_mode='local' (data downloaded to parquet)."""
         if source_type:
             results = self.conn.execute(

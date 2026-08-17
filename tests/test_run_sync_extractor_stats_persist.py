@@ -157,7 +157,10 @@ def test_malformed_stdout_falls_back_to_generic_message(tmp_path, monkeypatch):
 
     sync_mod._run_sync()  # must not raise
 
-    assert any(e["table"] == "(keboola extractor)" for e in captured["failed_tables"])
+    assert any(
+        e["table"] == "(keboola extractor)" or e["table"].startswith("(keboola extractor ")
+        for e in captured["failed_tables"]
+    )
 
 
 def test_clean_stats_no_errors_records_nothing(tmp_path, monkeypatch):

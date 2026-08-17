@@ -8,8 +8,8 @@ module so behaviour stays bit-identical across backends.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Union
+from datetime import UTC, datetime
+from typing import Any
 
 import sqlalchemy as sa
 from sqlalchemy.engine import Engine
@@ -30,33 +30,33 @@ class TableRegistryPgRepository:
         self,
         id: str,
         name: str,
-        folder: Optional[str] = None,
-        sync_strategy: Optional[str] = None,
-        primary_key: Union[None, str, List[str]] = None,
-        description: Optional[str] = None,
-        registered_by: Optional[str] = None,
-        source_type: Optional[str] = None,
-        bucket: Optional[str] = None,
-        source_table: Optional[str] = None,
-        source_query: Optional[str] = None,
+        folder: str | None = None,
+        sync_strategy: str | None = None,
+        primary_key: None | str | list[str] = None,
+        description: str | None = None,
+        registered_by: str | None = None,
+        source_type: str | None = None,
+        bucket: str | None = None,
+        source_table: str | None = None,
+        source_query: str | None = None,
         query_mode: str = "local",
-        sync_schedule: Optional[str] = None,
+        sync_schedule: str | None = None,
         profile_after_sync: bool = True,
-        registered_at: Optional[datetime] = None,
-        incremental_window_days: Optional[int] = None,
-        max_history_days: Optional[int] = None,
-        incremental_column: Optional[str] = None,
-        where_filters: Union[None, str, List[Dict[str, Any]]] = None,
-        partition_by: Optional[str] = None,
-        partition_granularity: Optional[str] = None,
-        initial_load_chunk_days: Optional[int] = None,
-        bq_fqn: Optional[str] = None,
+        registered_at: datetime | None = None,
+        incremental_window_days: int | None = None,
+        max_history_days: int | None = None,
+        incremental_column: str | None = None,
+        where_filters: None | str | list[dict[str, Any]] = None,
+        partition_by: str | None = None,
+        partition_granularity: str | None = None,
+        initial_load_chunk_days: int | None = None,
+        bq_fqn: str | None = None,
         # v74 (#607) — distribution flag decoupled from query_mode.
         server_only: bool = False,
         # v79 — nullable FK to source_connections.id (spec 2026-06-12).
-        connection_id: Optional[str] = None,
+        connection_id: str | None = None,
     ) -> None:
-        ts = registered_at or datetime.now(timezone.utc)
+        ts = registered_at or datetime.now(UTC)
         encoded_pk = _encode_primary_key(primary_key)
         encoded_filters = _encode_where_filters(where_filters)
         effective_strategy = sync_strategy or "full_refresh"
@@ -131,7 +131,7 @@ class TableRegistryPgRepository:
             )
 
     @staticmethod
-    def _decode_row(row_dict: Dict[str, Any]) -> Dict[str, Any]:
+    def _decode_row(row_dict: dict[str, Any]) -> dict[str, Any]:
         if "primary_key" in row_dict:
             row_dict["primary_key"] = _decode_primary_key(row_dict["primary_key"])
         if "where_filters" in row_dict:
@@ -168,18 +168,18 @@ class TableRegistryPgRepository:
         table_id: str,
         *,
         # v52 docs surface
-        sample_questions: Optional[List[str]] = None,
-        things_to_know: Optional[str] = None,
-        pairs_well_with: Optional[List[str]] = None,
+        sample_questions: list[str] | None = None,
+        things_to_know: str | None = None,
+        pairs_well_with: list[str] | None = None,
         clear_sample_questions: bool = False,
         clear_things_to_know: bool = False,
         clear_pairs_well_with: bool = False,
         # v56 structured docs
-        grain: Optional[str] = None,
-        platforms: Optional[List[str]] = None,
-        partition_col: Optional[str] = None,
-        history: Optional[str] = None,
-        gotchas: Optional[List[Dict[str, Any]]] = None,
+        grain: str | None = None,
+        platforms: list[str] | None = None,
+        partition_col: str | None = None,
+        history: str | None = None,
+        gotchas: list[dict[str, Any]] | None = None,
     ) -> None:
         """Parity with the DuckDB repo: partial write of per-table docs fields
         shown on /catalog/t/<id> and the package-detail page. Optional-is-no-op;
@@ -189,8 +189,8 @@ class TableRegistryPgRepository:
         are JSONB; ``platforms`` / ``gotchas`` are text columns that store the
         JSON-serialized value (mirrors the DuckDB repo); the rest are plain text.
         """
-        fields: List[str] = []
-        params: Dict[str, Any] = {"id": table_id}
+        fields: list[str] = []
+        params: dict[str, Any] = {"id": table_id}
         if clear_sample_questions:
             fields.append("sample_questions = NULL")
         elif sample_questions is not None:
@@ -236,7 +236,7 @@ class TableRegistryPgRepository:
                 {"id": table_id},
             )
 
-    def delete_internal_except(self, keep_ids: List[str]) -> int:
+    def delete_internal_except(self, keep_ids: list[str]) -> int:
         """Postgres mirror of
         ``TableRegistryRepository.delete_internal_except``."""
         keep_ids = list(keep_ids)
@@ -260,7 +260,7 @@ class TableRegistryPgRepository:
                 ).fetchall()
         return len(rows)
 
-    def delete_for_corpus(self, corpus_id: str) -> List[str]:
+    def delete_for_corpus(self, corpus_id: str) -> list[str]:
         """Delete all table_registry rows belonging to a file-corpus collection.
 
         Rows are identified by ``source_type='collection'`` and
@@ -295,8 +295,8 @@ class TableRegistryPgRepository:
     def set_access_policy(
         self,
         table_id: str,
-        sql: Optional[str],
-        note: Optional[str],
+        sql: str | None,
+        note: str | None,
         updated_by: str,
     ) -> None:
         """Postgres mirror of ``TableRegistryRepository.set_access_policy``.
@@ -330,7 +330,7 @@ class TableRegistryPgRepository:
                 {
                     "sql": sql,
                     "note": note,
-                    "updated_at": datetime.now(timezone.utc),
+                    "updated_at": datetime.now(UTC),
                     "updated_by": updated_by,
                     "id": table_id,
                 },
@@ -344,7 +344,7 @@ class TableRegistryPgRepository:
                 {"v": bool(value), "id": table_id},
             )
 
-    def get(self, table_id: str) -> Optional[Dict[str, Any]]:
+    def get(self, table_id: str) -> dict[str, Any] | None:
         with self._engine.connect() as conn:
             row = (
                 conn.execute(
@@ -356,7 +356,7 @@ class TableRegistryPgRepository:
             )
         return self._decode_row(dict(row)) if row else None
 
-    def get_by_name(self, name: str) -> Optional[Dict[str, Any]]:
+    def get_by_name(self, name: str) -> dict[str, Any] | None:
         with self._engine.connect() as conn:
             row = (
                 conn.execute(
@@ -368,7 +368,7 @@ class TableRegistryPgRepository:
             )
         return self._decode_row(dict(row)) if row else None
 
-    def list_all(self) -> List[Dict[str, Any]]:
+    def list_all(self) -> list[dict[str, Any]]:
         with self._engine.connect() as conn:
             rows = conn.execute(sa.text("SELECT * FROM table_registry ORDER BY name")).mappings().all()
         return [self._decode_row(dict(r)) for r in rows]
@@ -387,7 +387,7 @@ class TableRegistryPgRepository:
             ).scalar()
         return int(result) if result is not None else 0
 
-    def list_by_source(self, source_type: str) -> List[Dict[str, Any]]:
+    def list_by_source(self, source_type: str) -> list[dict[str, Any]]:
         with self._engine.connect() as conn:
             rows = (
                 conn.execute(
@@ -403,7 +403,7 @@ class TableRegistryPgRepository:
         self,
         bucket: str,
         source_table: str,
-    ) -> Optional[Dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         with self._engine.connect() as conn:
             row = (
                 conn.execute(
@@ -424,7 +424,36 @@ class TableRegistryPgRepository:
             )
         return self._decode_row(dict(row)) if row else None
 
-    def list_local(self, source_type: Optional[str] = None) -> List[Dict[str, Any]]:
+    def find_by_keboola_path(
+        self,
+        alias: str,
+        bucket: str,
+        source_table: str,
+    ) -> dict[str, Any] | None:
+        """Look up a Keboola row by `(alias, bucket, source_table)`."""
+        with self._engine.connect() as conn:
+            row = (
+                conn.execute(
+                    sa.text(
+                        """SELECT t.* FROM table_registry t
+                       LEFT JOIN source_connections sc ON sc.id = t.connection_id
+                       WHERE t.source_type = 'keboola'
+                         AND t.bucket IS NOT NULL
+                         AND t.source_table IS NOT NULL
+                         AND COALESCE(sc.alias, 'kbc') = :alias
+                         AND lower(t.bucket) = lower(:bucket)
+                         AND lower(t.source_table) = lower(:source_table)
+                       ORDER BY t.registered_at ASC
+                       LIMIT 1"""
+                    ),
+                    {"alias": alias, "bucket": bucket, "source_table": source_table},
+                )
+                .mappings()
+                .first()
+            )
+        return self._decode_row(dict(row)) if row else None
+
+    def list_local(self, source_type: str | None = None) -> list[dict[str, Any]]:
         with self._engine.connect() as conn:
             if source_type:
                 rows = (

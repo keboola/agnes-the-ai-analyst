@@ -1,18 +1,17 @@
 """Catalog endpoints — table profiles, metrics."""
 
 import json
-from typing import List, Optional
 
+import duckdb
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-import duckdb
 
-from app.auth.dependencies import get_current_user, _get_db
+from app.auth.dependencies import _get_db, get_current_user
 from app.utils import get_data_dir as _get_data_dir
 from src.rbac import can_access_table, get_accessible_tables
-
 from src.repositories import (
     profile_repo,
+    source_connections_repo,
     table_registry_repo,
 )
 
@@ -22,18 +21,21 @@ router = APIRouter(prefix="/api/catalog", tags=["catalog"])
 class CatalogTableItem(BaseModel):
     id: str
     name: str
-    description: Optional[str] = None
-    source_type: Optional[str] = None
-    sync_strategy: Optional[str] = None
+    description: str | None = None
+    source_type: str | None = None
+    sync_strategy: str | None = None
     query_mode: str = "local"
+    connection_id: str | None = None
+    project_id: str | None = None
+    project_name: str | None = None
 
 
 class CatalogTablesResponse(BaseModel):
-    tables: List[CatalogTableItem]
+    tables: list[CatalogTableItem]
     count: int
 
 
-def _profile_restriction(table_name: str, user: dict) -> Optional[dict]:
+def _profile_restriction(table_name: str, user: dict) -> dict | None:
     """Table access policies (§11's "sharper leak"): a stored profile's
     min/max/sample_values/top_values are row CONTENT, computed from the
     physical table at sync/refresh time — independent of any policy
@@ -123,6 +125,9 @@ def list_catalog_tables(
     repo = table_registry_repo()
     all_tables = repo.list_all()
 
+    sc_repo = source_connections_repo()
+    connection_index = {c["id"]: c for c in sc_repo.list()}
+
     # Resolve the accessible-table set ONCE per request (was: one
     # ``can_access_table`` call per row — an N+1 that serialized ~8-9
     # round-trips per table over ~115 tables). ``None`` means admin/all.
@@ -130,17 +135,30 @@ def list_catalog_tables(
     _allowed = None if _accessible_ids is None else set(_accessible_ids)
     all_tables = [t for t in all_tables if _allowed is None or t["id"] in _allowed]
 
-    tables = [
-        {
-            "id": t["id"],
-            "name": t["name"],
-            "description": t.get("description"),
-            "source_type": t.get("source_type"),
-            "sync_strategy": t.get("sync_strategy"),
-            "query_mode": t.get("query_mode", "local"),
-        }
-        for t in all_tables
-    ]
+    tables = []
+    for t in all_tables:
+        conn_id = t.get("connection_id")
+        project_id = None
+        project_name = None
+        if conn_id:
+            sc = connection_index.get(conn_id)
+            if sc:
+                cfg = sc.get("config") or {}
+                project_id = str(cfg["project_id"]) if cfg.get("project_id") is not None else None
+                project_name = cfg.get("project_name")
+        tables.append(
+            {
+                "id": t["id"],
+                "name": t["name"],
+                "description": t.get("description"),
+                "source_type": t.get("source_type"),
+                "sync_strategy": t.get("sync_strategy"),
+                "query_mode": t.get("query_mode", "local"),
+                "connection_id": conn_id,
+                "project_id": project_id,
+                "project_name": project_name,
+            }
+        )
     return {"tables": tables, "count": len(tables)}
 
 
@@ -167,7 +185,7 @@ def refresh_profile(
     if not can_access_table(user, table_name, conn):
         raise HTTPException(status_code=403, detail=f"Access denied to table '{table_name}'")
     from app.utils import resolve_local_parquet, resolve_local_partition_dir
-    from src.profiler import profile_table, TableInfo
+    from src.profiler import TableInfo, profile_table
 
     # The single-file lookup goes through `resolve_local_parquet` rather than a
     # fourth hand-rolled `rglob(f"data/{name}.parquet")`. The name arrives on

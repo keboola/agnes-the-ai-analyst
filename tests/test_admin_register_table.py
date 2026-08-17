@@ -55,6 +55,23 @@ def _conn_id(seeded_app) -> str:
 # ---------------------------------------------------------------------------
 
 
+def test_register_table_keboola_local_with_connection_id_rejected(seeded_app, _conn_id):
+    """Per-connection Keboola batch pull does not exist; local+connection_id → 422."""
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+
+    payload = _base_payload("local_with_conn_table")
+    payload["connection_id"] = _conn_id
+
+    r = c.post(
+        "/api/admin/register-table",
+        json=payload,
+        headers=_auth(token),
+    )
+    assert r.status_code == 422
+    assert "query_mode='local'" in r.json()["detail"][0]["msg"]
+
+
 def test_register_table_without_connection_id(seeded_app):
     """Baseline: register without connection_id still returns 201."""
     c = seeded_app["client"]
@@ -71,12 +88,17 @@ def test_register_table_without_connection_id(seeded_app):
 
 
 def test_register_table_with_valid_connection_id(seeded_app, _conn_id):
-    """Providing a connection_id that exists → 201; id round-trips in response."""
+    """Providing a connection_id that exists → 201; id round-trips in response.
+
+    Per-connection Keboola batch pull does not exist yet, so a connection_id
+    on a local-mode Keboola row is rejected. Use query_mode='remote'.
+    """
     c = seeded_app["client"]
     token = seeded_app["admin_token"]
 
     payload = _base_payload("with_conn_table")
     payload["connection_id"] = _conn_id
+    payload["query_mode"] = "remote"
 
     r = c.post(
         "/api/admin/register-table",
@@ -88,12 +110,17 @@ def test_register_table_with_valid_connection_id(seeded_app, _conn_id):
 
 
 def test_register_table_with_unknown_connection_id(seeded_app):
-    """Providing a connection_id that does not exist → 400."""
+    """Providing a connection_id that does not exist → 400.
+
+    Per-connection Keboola batch pull does not exist yet, so the invalid
+    connection_id case must be exercised with query_mode='remote'.
+    """
     c = seeded_app["client"]
     token = seeded_app["admin_token"]
 
     payload = _base_payload("bad_conn_table")
     payload["connection_id"] = "does-not-exist"
+    payload["query_mode"] = "remote"
 
     r = c.post(
         "/api/admin/register-table",

@@ -5,26 +5,34 @@ which checks Admin user_group membership for both OAuth session and PAT
 callers via the same ``_user_group_ids`` lookup.
 """
 
+import ipaddress as _ipaddress
 import json
 import logging
 import math
 import os
+import shutil as _shutil
+import socket as _socket
 import threading
+from datetime import UTC
 from pathlib import Path
+from typing import Any
+from urllib.parse import urlparse as _urlparse
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
-from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
-from typing import Optional, List, Dict, Any
 import duckdb
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
 from app.switches import SWITCHES
+from src.audit_helpers import client_kind_from_user
 from src.identifier_validation import (
     is_safe_identifier as _is_safe_identifier,
+)
+from src.identifier_validation import (
     is_safe_quoted_identifier as _is_safe_quoted_identifier,
 )
-
 from src.repositories import (
     audit_repo,
     knowledge_repo,
@@ -35,9 +43,8 @@ from src.repositories import (
     usage_repo,
     user_store_installs_repo,
 )
-from src.audit_helpers import client_kind_from_user
-from src.sql_safe import is_safe_project_id as _is_safe_project_id
 from src.scheduler import is_valid_schedule
+from src.sql_safe import is_safe_project_id as _is_safe_project_id
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -74,7 +81,7 @@ def _get_processor_run_lock(name: str) -> threading.Lock:
         return _processor_run_locks[name]
 
 
-def _session_processor_max_per_run() -> Optional[int]:
+def _session_processor_max_per_run() -> int | None:
     """Cap on sessions processed per `/run-session-processor` invocation.
 
     A burst of session closures landing in the same scheduler tick would
@@ -99,12 +106,6 @@ def _session_processor_max_per_run() -> Optional[int]:
     if value <= 0:
         return None
     return value
-
-
-# SSRF protection: reject private/internal URLs for keboola_url
-import ipaddress as _ipaddress  # noqa: E402
-import socket as _socket  # noqa: E402
-from urllib.parse import urlparse as _urlparse  # noqa: E402
 
 
 def _validate_url_not_private(url: str, field_name: str = "url") -> None:
@@ -226,7 +227,7 @@ _URL_BEARING_FIELDS: tuple[tuple[str, ...], ...] = (
 )
 
 
-def _validate_urls_in_patch(sections: Dict[str, Dict[str, Any]]) -> None:
+def _validate_urls_in_patch(sections: dict[str, dict[str, Any]]) -> None:
     """Apply SSRF protection to every URL-bearing field present in the patch.
 
     Walks each registered ``(section, *path, leaf)`` against the incoming
@@ -275,7 +276,7 @@ def _normalize_provider_names(value: Any) -> "list[str] | None":
     )
 
 
-def _validate_auth_providers_in_patch(sections: Dict[str, Dict[str, Any]]) -> None:
+def _validate_auth_providers_in_patch(sections: dict[str, dict[str, Any]]) -> None:
     """Refuse an auth-section overlay write that would name no usable sign-in
     method (Devin review on #1288): an empty or all-unknown ``auth.providers``,
     and — whenever the auth section is patched at all — an effective allowlist
@@ -374,7 +375,7 @@ def _validate_auth_providers_in_patch(sections: Dict[str, Dict[str, Any]]) -> No
         raise HTTPException(status_code=422, detail=detail)
 
 
-def _provider_available_after_save(name: str, auth_patch: Dict[str, Any], sections: Dict[str, Dict[str, Any]]) -> bool:
+def _provider_available_after_save(name: str, auth_patch: dict[str, Any], sections: dict[str, dict[str, Any]]) -> bool:
     """Whether ``name`` would be an offerable login method once this
     server-config save lands. ``password`` is always available; ``google`` /
     ``email`` are env-configured (untouched by an auth.providers patch), so
@@ -417,7 +418,7 @@ _LOCK_TTL_MIN = 60
 _LOCK_TTL_MAX = 7 * 24 * 3600  # 604800 — one week
 
 
-def _validate_materialize_section(sections: Dict[str, Dict[str, Any]]) -> None:
+def _validate_materialize_section(sections: dict[str, dict[str, Any]]) -> None:
     """Validate the materialize section patch when present.
 
     Checks field-level constraints that the Pydantic envelope can't enforce
@@ -1584,7 +1585,7 @@ def _strip_redacted_sentinels(value: Any, key_hint: str = "") -> Any:
     to scrub still can't corrupt secrets via this endpoint.
     """
     if isinstance(value, dict):
-        out: Dict[str, Any] = {}
+        out: dict[str, Any] = {}
         for k, v in value.items():
             if _is_secret_key(k) and isinstance(v, str) and v in _REDACTED_SENTINELS:
                 continue
@@ -1612,7 +1613,7 @@ def _redact(value: Any, key_hint: str = "") -> Any:
     return value
 
 
-def _diff_dicts(before: dict, after: dict, path: str = "") -> List[Dict[str, Any]]:
+def _diff_dicts(before: dict, after: dict, path: str = "") -> list[dict[str, Any]]:
     """Flat list of changed fields between two dicts.
 
     Output: [{"path": "email.smtp_host", "before": "...", "after": "..."}].
@@ -1629,7 +1630,7 @@ def _diff_dicts(before: dict, after: dict, path: str = "") -> List[Dict[str, Any
     keeps the audit row useful when an admin populates a section for the
     first time.
     """
-    changes: List[Dict[str, Any]] = []
+    changes: list[dict[str, Any]] = []
     keys = set(before.keys()) | set(after.keys())
     for key in sorted(keys):
         new_path = f"{path}.{key}" if path else key
@@ -1735,7 +1736,7 @@ class ServerConfigUpdateRequest(BaseModel):
     touches any danger-zone section (auth.*, server.*).
     """
 
-    sections: Dict[str, Dict[str, Any]] = Field(
+    sections: dict[str, dict[str, Any]] = Field(
         default_factory=dict,
         description="Per-section patch dict (e.g. {'instance': {'name': 'X'}})",
     )
@@ -1756,7 +1757,7 @@ class ServerConfigUpdateRequest(BaseModel):
 #     the SA can read the data project but not bill against it.
 #   - max_bytes_per_materialize: cost guardrail for `query_mode='materialized'`
 #     (default 10 GiB; 0 disables; null falls through to the default).
-_BQ_OPTIONAL_FIELD_DEFAULTS: Dict[str, Any] = {
+_BQ_OPTIONAL_FIELD_DEFAULTS: dict[str, Any] = {
     # `billing_project` intentionally NOT seeded here. The empty-string
     # default would inject `billing_project: ""` into every GET payload,
     # which makes the JS `isUnset = (value === undefined)` check evaluate
@@ -1769,7 +1770,7 @@ _BQ_OPTIONAL_FIELD_DEFAULTS: Dict[str, Any] = {
 }
 
 
-def _ensure_bq_optional_fields(sections: Dict[str, Any]) -> None:
+def _ensure_bq_optional_fields(sections: dict[str, Any]) -> None:
     """In-place: add missing BQ optional fields to data_source.bigquery so the
     UI's JSON-textarea renders them as editable keys. Existing values are
     preserved — only absent keys are populated with their documented default.
@@ -1841,7 +1842,7 @@ def _known_fields_resolved() -> dict:
     return fields
 
 
-def _feature_flags_inventory() -> List[Dict[str, Any]]:
+def _feature_flags_inventory() -> list[dict[str, Any]]:
     """Read-only snapshot of every registered feature flag (#1022).
 
     ``source`` tells the operator where the effective value came from:
@@ -1880,7 +1881,7 @@ def _feature_flags_inventory() -> List[Dict[str, Any]]:
     else:
         exp_probe = get_value("instance", "experience", default=_UNSET)
         exp_source = "default" if exp_probe is _UNSET else "config"
-    out: List[Dict[str, Any]] = [
+    out: list[dict[str, Any]] = [
         {
             "name": "instance.experience",
             # String-valued row: value_label carries the resolved preset for
@@ -2121,7 +2122,7 @@ async def update_server_config(
     # The client form does the same scrub, but an API caller round-tripping
     # the GET payload could otherwise overwrite real overlay secrets with
     # the placeholder shown in the form.
-    scrubbed_sections: Dict[str, Dict[str, Any]] = {
+    scrubbed_sections: dict[str, dict[str, Any]] = {
         section: _strip_redacted_sentinels(patch, section) for section, patch in request.sections.items()
     }
 
@@ -2182,7 +2183,7 @@ async def update_server_config(
         #      ${SMTP_PASSWORD}` into `smtp_password: hunter2` in the overlay.
         # By writing only the sections in `request.sections` we keep both the
         # static-evolution and the env-var-placeholder properties intact.
-        overlay_payload: Dict[str, Any] = {}
+        overlay_payload: dict[str, Any] = {}
         if config_path.exists():
             try:
                 overlay_payload = yaml.safe_load(config_path.read_text()) or {}
@@ -2310,7 +2311,7 @@ _SECRET_FIELDS: frozenset = frozenset(
 )
 
 
-def _sanitize_for_audit(payload: Dict[str, Any]) -> Dict[str, Any]:
+def _sanitize_for_audit(payload: dict[str, Any]) -> dict[str, Any]:
     """Mask credential-bearing fields in a request payload before audit_log.
 
     Uses an explicit `_SECRET_FIELDS` allowlist (case-insensitive) instead
@@ -2320,7 +2321,7 @@ def _sanitize_for_audit(payload: Dict[str, Any]) -> Dict[str, Any]:
     based regression would surface immediately, and a missing entry for a
     real new credential gets caught at code review of the audit path.
     """
-    out: Dict[str, Any] = {}
+    out: dict[str, Any] = {}
     for k, v in payload.items():
         if k.lower() in _SECRET_FIELDS:
             out[k] = "***" if v not in (None, "") else "<empty>"
@@ -2350,7 +2351,7 @@ _BACKTICK_REJECTION_MESSAGE = (
 
 class RegisterTableRequest(BaseModel):
     name: str
-    folder: Optional[str] = None
+    folder: str | None = None
     sync_strategy: str = Field(
         default="full_refresh",
         description=(
@@ -2370,16 +2371,16 @@ class RegisterTableRequest(BaseModel):
     # `(session_id, event_date)`, browse rows on more). The frontend sends +
     # reads this as a list; backend stores it JSON-serialized in VARCHAR.
     # A bare string is accepted for backward compat — see _normalize_primary_key.
-    primary_key: Optional[List[str]] = None
-    description: Optional[str] = None
-    source_type: Optional[str] = None
-    bucket: Optional[str] = None
-    source_table: Optional[str] = None
+    primary_key: list[str] | None = None
+    description: str | None = None
+    source_type: str | None = None
+    bucket: str | None = None
+    source_table: str | None = None
     # Backs query_mode='materialized'. Stored verbatim in
     # table_registry.source_query (schema v20); the trigger pass runs it
     # through the DuckDB BQ extension via BqAccess and writes the result
     # to /data/extracts/bigquery/data/<id>.parquet.
-    source_query: Optional[str] = None
+    source_query: str | None = None
     query_mode: str = "local"
     defer_rebuild: bool = Field(
         default=False,
@@ -2393,7 +2394,7 @@ class RegisterTableRequest(BaseModel):
             "a single rebuild. No effect for non-BigQuery or materialized rows."
         ),
     )
-    sync_schedule: Optional[str] = None
+    sync_schedule: str | None = None
     profile_after_sync: bool = Field(
         default=True,
         deprecated=True,
@@ -2407,20 +2408,20 @@ class RegisterTableRequest(BaseModel):
     # only when paired with the matching sync_strategy. Per-strategy
     # required-field rules + conflict policy enforced in the model_validator
     # below.
-    incremental_window_days: Optional[int] = None
-    max_history_days: Optional[int] = None
-    incremental_column: Optional[str] = None
-    where_filters: Optional[List[Dict[str, Any]]] = None
-    partition_by: Optional[str] = None
-    partition_granularity: Optional[str] = None
-    initial_load_chunk_days: Optional[int] = None
+    incremental_window_days: int | None = None
+    max_history_days: int | None = None
+    incremental_column: str | None = None
+    where_filters: list[dict[str, Any]] | None = None
+    partition_by: str | None = None
+    partition_granularity: str | None = None
+    initial_load_chunk_days: int | None = None
     # v51 — fully-qualified BigQuery path. When set on a BigQuery row,
     # the extractor uses ``project.dataset.table`` from this field instead
     # of constructing the path from ``bucket`` + ``source_table`` against
     # the globally-attached project. Decouples UX/RBAC ``bucket`` label
     # from physical BQ dataset (issue #343). Format ``project.dataset.table``;
     # validated by ``connectors.bigquery.extractor.parse_bq_fqn``.
-    bq_fqn: Optional[str] = Field(
+    bq_fqn: str | None = Field(
         default=None,
         description=(
             "Fully-qualified BigQuery path (``project.dataset.table``). "
@@ -2448,7 +2449,7 @@ class RegisterTableRequest(BaseModel):
     # v79 — nullable FK to source_connections.id. NULL = use the instance-default
     # connection for the row's source_type (spec 2026-06-12). When provided,
     # the register-table handler validates the id exists before persisting.
-    connection_id: Optional[str] = Field(
+    connection_id: str | None = Field(
         default=None,
         description=(
             "Pin this table to a named source connection (source_connections.id). "
@@ -2498,6 +2499,14 @@ class RegisterTableRequest(BaseModel):
                 "source_type='databricks' supports query_mode='materialized' (scheduled sync to a "
                 "parquet) or 'remote' (per-query execution on the SQL warehouse); "
                 f"got '{self.query_mode}'"
+            )
+        # Per-connection Keboola batch pull is not implemented yet; a local-mode
+        # Keboola row pinned to a specific connection would never sync.
+        if self.source_type == "keboola" and self.query_mode == "local" and self.connection_id:
+            raise ValueError(
+                "query_mode='local' with source_type='keboola' and a connection_id is not "
+                "supported until per-connection batch pull exists; use query_mode='remote' or "
+                "omit connection_id to use the default Keboola connection"
             )
         # BigQuery materialized auto-generates a full-table-dump SQL from
         # `bucket`+`source_table` when source_query is omitted (see
@@ -2623,7 +2632,7 @@ class RegisterTableRequest(BaseModel):
         same filter shape with a fresh date)."""
         if v in (None, "", []):
             return None
-        from connectors.keboola.where_filters import parse_filters, InvalidFilterError
+        from connectors.keboola.where_filters import InvalidFilterError, parse_filters
 
         try:
             return parse_filters(v)
@@ -3056,7 +3065,7 @@ _SOURCE_TYPES_INDEPENDENT_OF_DATA_SOURCE: frozenset[str] = frozenset(
 )
 
 
-def _validate_source_type_configured(source_type: Optional[str]) -> None:
+def _validate_source_type_configured(source_type: str | None) -> None:
     """Refuse register-table requests whose ``source_type`` isn't actually
     configured on this instance.
 
@@ -3128,23 +3137,23 @@ def _validate_source_type_configured(source_type: Optional[str]) -> None:
 
 
 class UpdateTableRequest(BaseModel):
-    name: Optional[str] = None
-    sync_strategy: Optional[str] = Field(
+    name: str | None = None
+    sync_strategy: str | None = Field(
         default=None,
         description=(
             "v26+: drives the Keboola extractor dispatcher. PUT-shape "
             "requires a value if sent. See RegisterTableRequest.sync_strategy."
         ),
     )
-    primary_key: Optional[List[str]] = None
-    description: Optional[str] = None
-    source_type: Optional[str] = None
-    bucket: Optional[str] = None
-    source_table: Optional[str] = None
-    source_query: Optional[str] = None
-    query_mode: Optional[str] = None
-    sync_schedule: Optional[str] = None
-    profile_after_sync: Optional[bool] = Field(
+    primary_key: list[str] | None = None
+    description: str | None = None
+    source_type: str | None = None
+    bucket: str | None = None
+    source_table: str | None = None
+    source_query: str | None = None
+    query_mode: str | None = None
+    sync_schedule: str | None = None
+    profile_after_sync: bool | None = Field(
         default=None,
         deprecated=True,
         description=("DEPRECATED: not consumed by the runtime. See RegisterTableRequest.profile_after_sync."),
@@ -3153,22 +3162,22 @@ class UpdateTableRequest(BaseModel):
     # handler overlays the body on the existing row and re-runs the
     # synthetic RegisterTableRequest validator on the merged record, so
     # cross-field invariants are checked against the post-update state.
-    incremental_window_days: Optional[int] = None
-    max_history_days: Optional[int] = None
-    incremental_column: Optional[str] = None
-    where_filters: Optional[List[Dict[str, Any]]] = None
-    partition_by: Optional[str] = None
-    partition_granularity: Optional[str] = None
-    initial_load_chunk_days: Optional[int] = None
+    incremental_window_days: int | None = None
+    max_history_days: int | None = None
+    incremental_column: str | None = None
+    where_filters: list[dict[str, Any]] | None = None
+    partition_by: str | None = None
+    partition_granularity: str | None = None
+    initial_load_chunk_days: int | None = None
     # v51 — see RegisterTableRequest.bq_fqn. PUT lets an admin add or
     # clear bq_fqn on an existing row (cleared via explicit `null`,
     # per the PUT shape contract documented on the handler below).
-    bq_fqn: Optional[str] = None
+    bq_fqn: str | None = None
     # v74 (#607) — distribution flag. PUT lets an admin toggle it on/off.
     # The query_mode='remote' conflict is enforced against the *merged*
     # record in the update_table handler (the PUT body alone may omit
     # query_mode, so it can't be validated here in isolation).
-    server_only: Optional[bool] = None
+    server_only: bool | None = None
     # v116 (table access policies design doc) — PUT lets an admin attach,
     # replace, or clear (explicit null) the SQL access policy on this row.
     # The feature flag gate, the SQL validator, and the distribution
@@ -3177,9 +3186,9 @@ class UpdateTableRequest(BaseModel):
     # fields (query_mode, server_only, physical source). Persisted through
     # table_registry_repo().set_access_policy()/.set_policy_mapping(), not
     # register() — see the strip-tuple comment in update_table below.
-    access_policy_sql: Optional[str] = None
-    access_policy_note: Optional[str] = None
-    policy_mapping: Optional[bool] = None
+    access_policy_sql: str | None = None
+    access_policy_note: str | None = None
+    policy_mapping: bool | None = None
 
     @field_validator("access_policy_sql", mode="before")
     @classmethod
@@ -3218,7 +3227,7 @@ class UpdateTableRequest(BaseModel):
     def _validate_where_filters(cls, v):
         if v in (None, "", []):
             return None
-        from connectors.keboola.where_filters import parse_filters, InvalidFilterError
+        from connectors.keboola.where_filters import InvalidFilterError, parse_filters
 
         try:
             return parse_filters(v)
@@ -3311,18 +3320,18 @@ class UpdateTableRequest(BaseModel):
 
 class ConfigureRequest(BaseModel):
     data_source: str  # "keboola" | "bigquery" | "local"
-    keboola_token: Optional[str] = None
-    keboola_url: Optional[str] = None
-    bigquery_project: Optional[str] = None
-    bigquery_location: Optional[str] = None
-    instance_name: Optional[str] = None
-    allowed_domain: Optional[str] = None
+    keboola_token: str | None = None
+    keboola_url: str | None = None
+    bigquery_project: str | None = None
+    bigquery_location: str | None = None
+    instance_name: str | None = None
+    allowed_domain: str | None = None
 
 
 @router.get("/discover-tables")
 async def discover_tables(
     user: dict = Depends(require_admin),
-    dataset: Optional[str] = None,
+    dataset: str | None = None,
 ):
     """Discover available tables from the configured data source.
 
@@ -3342,8 +3351,8 @@ async def discover_tables(
         source_type = get_data_source_type()
 
         if source_type == "keboola":
-            from connectors.keboola.client import KeboolaClient
             from app.instance_config import get_value
+            from connectors.keboola.client import KeboolaClient
 
             url = get_value("data_source", "keboola", "stack_url", default="")
             token_env = get_value("data_source", "keboola", "token_env", default="KEBOOLA_STORAGE_TOKEN")
@@ -3371,7 +3380,7 @@ async def discover_tables(
         raise HTTPException(status_code=500, detail=f"Discovery failed: {e}")
 
 
-def _discover_bigquery(dataset: Optional[str]) -> Dict[str, Any]:
+def _discover_bigquery(dataset: str | None) -> dict[str, Any]:
     """List BQ datasets (when ``dataset`` is None) or tables-in-dataset.
 
     Routes through ``BqAccess.client()`` so config / auth / error
@@ -3379,8 +3388,8 @@ def _discover_bigquery(dataset: Optional[str]) -> Dict[str, Any]:
     the same shape as the Keboola path so the UI doesn't have to branch.
     """
     from connectors.bigquery.access import (
-        get_bq_access,
         BqAccessError,
+        get_bq_access,
         translate_bq_error,
     )
 
@@ -3473,7 +3482,7 @@ async def list_registry(
     # `sync_state` for large registries. The sync_state row is keyed on
     # `table_id` which mirrors `table_registry.name` (see comment in
     # _run_materialized_pass / _build_manifest_for_user about name vs id).
-    state_by_name: Dict[str, Dict[str, Any]] = {}
+    state_by_name: dict[str, dict[str, Any]] = {}
     try:
         rows = sync_state_repo().get_all_states()
         for row in rows:
@@ -3512,7 +3521,7 @@ async def list_registry(
 _BQ_SYNC_REGISTER_TIMEOUT_S: float = 5.0
 
 
-def _materialize_bigquery_extract() -> Dict[str, Any]:
+def _materialize_bigquery_extract() -> dict[str, Any]:
     """Re-build the BigQuery extract.duckdb + master views.
 
     Wrapper used by both the synchronous (in-band) and async (BackgroundTask)
@@ -3609,7 +3618,7 @@ def _schedule_bq_materialize(background: BackgroundTasks) -> bool:
 
 def _run_bigquery_materialize_with_timeout(
     background: BackgroundTasks,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Try to materialize synchronously within the wall-clock budget.
 
     Returns a dict with:
@@ -3646,8 +3655,8 @@ def _run_bigquery_materialize_with_timeout(
         return {"status": "enqueued"}
 
     done = threading.Event()
-    err_holder: Dict[str, Any] = {}
-    result_holder: Dict[str, Any] = {}
+    err_holder: dict[str, Any] = {}
+    result_holder: dict[str, Any] = {}
 
     def _worker():
         try:
@@ -4031,8 +4040,9 @@ def rebuild_registry(
     on synchronous success, 202 if the rebuild exceeds the wall-clock budget and
     continues on a BackgroundTask, 500 if it surfaced errors.
     """
-    from app.instance_config import get_data_source_type
     from fastapi.responses import JSONResponse
+
+    from app.instance_config import get_data_source_type
 
     # The rebuild only makes sense on a BigQuery instance (it rebuilds the BQ
     # extract). On a non-BQ instance rebuild_from_registry would fail with a
@@ -4080,7 +4090,7 @@ class PrecheckResponse(BaseModel):
     """
 
     ok: bool
-    table: Dict[str, Any]
+    table: dict[str, Any]
 
 
 @router.post("/register-table/precheck")
@@ -4157,8 +4167,8 @@ def register_table_precheck(
     # see it. Imports kept local to avoid pulling google-cloud-bigquery into
     # the import chain on non-BQ instances.
     try:
-        from google.cloud import bigquery  # noqa: PLC0415
-        from google.api_core import exceptions as google_exc  # noqa: PLC0415
+        from google.api_core import exceptions as google_exc
+        from google.cloud import bigquery
     except ImportError as e:
         raise HTTPException(
             status_code=500,
@@ -4207,7 +4217,7 @@ def register_table_precheck(
     }
 
 
-def _policy_physical_source_signals(row: Dict[str, Any]) -> set:
+def _policy_physical_source_signals(row: dict[str, Any]) -> set:
     """Every physical-source signal ``row`` (a ``table_registry`` record)
     carries — the ways a DIFFERENT registry row could resolve to the exact
     same underlying data (table access policies design doc §3.2, "the
@@ -4248,7 +4258,7 @@ def _policy_physical_source_signals(row: Dict[str, Any]) -> set:
     return signals
 
 
-def _is_distributable_registry_row(row: Dict[str, Any]) -> bool:
+def _is_distributable_registry_row(row: dict[str, Any]) -> bool:
     """Whether ``row`` is the shape ``agnes pull`` downloads —
     ``query_mode in ('local', 'materialized')`` and not ``server_only``.
     The single definition both §3.2 directions below are keyed on, so the
@@ -4263,8 +4273,8 @@ def _is_distributable_registry_row(row: Dict[str, Any]) -> bool:
 def _find_policied_physical_source_twin(
     my_signals: set,
     *,
-    exclude_id: Optional[str],
-) -> Optional[Dict[str, Any]]:
+    exclude_id: str | None,
+) -> dict[str, Any] | None:
     """The first existing registry row that carries ``access_policy_sql``
     and whose physical-source signals intersect ``my_signals`` — i.e. the
     policied table a row with these signals would be a distributable twin
@@ -4283,8 +4293,8 @@ def _find_policied_physical_source_twin(
 def _find_distributable_physical_source_twin(
     my_signals: set,
     *,
-    exclude_id: Optional[str],
-) -> Optional[Dict[str, Any]]:
+    exclude_id: str | None,
+) -> dict[str, Any] | None:
     """The mirror of :func:`_find_policied_physical_source_twin`: the first
     existing registry row that is itself DISTRIBUTABLE and whose
     physical-source signals intersect ``my_signals``. ``None`` when there
@@ -4311,15 +4321,15 @@ def _find_distributable_physical_source_twin(
 
 def _check_access_policy_physical_source_conflict(
     *,
-    source_type: Optional[str],
-    connection_id: Optional[str],
-    bucket: Optional[str],
-    source_table: Optional[str],
-    bq_fqn: Optional[str],
-    source_query: Optional[str],
-    query_mode: Optional[str],
+    source_type: str | None,
+    connection_id: str | None,
+    bucket: str | None,
+    source_table: str | None,
+    bq_fqn: str | None,
+    source_query: str | None,
+    query_mode: str | None,
     server_only: bool,
-    exclude_id: Optional[str] = None,
+    exclude_id: str | None = None,
 ) -> None:
     """§3.2 (table access policies design doc) — the physical-source twin.
 
@@ -4384,7 +4394,7 @@ def _check_access_policy_physical_source_conflict(
         )
 
 
-def _check_policied_row_has_no_distributable_twin(merged: Dict[str, Any], *, table_id: str) -> None:
+def _check_policied_row_has_no_distributable_twin(merged: dict[str, Any], *, table_id: str) -> None:
     """§3.2, the ATTACH direction — refuse to leave a policy on a row that
     an EXISTING distributable row already resolves to the same physical
     source as.
@@ -4879,9 +4889,9 @@ class PolicyPreviewRequest(BaseModel):
     group-sets" (an ad-hoc set never needs a real account to exist).
     """
 
-    sql: Optional[str] = None
-    as_user: Optional[str] = None
-    as_groups: Optional[List[str]] = None
+    sql: str | None = None
+    as_user: str | None = None
+    as_groups: list[str] | None = None
 
 
 # Mirrors ``src.access_policy._PATTERN_METACHARACTERS`` (§6.3) — group names
@@ -5069,7 +5079,7 @@ async def preview_table_policy(
                 detail=f"policy_preview_failed: could not parse policy SQL: {exc}",
             ) from exc
 
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if "user_email" in referenced:
             params["user_email"] = persona_user_email
         if "user_id" in referenced:
@@ -5162,19 +5172,19 @@ class TableDocsRequest(BaseModel):
     """
 
     # v52 fields.
-    sample_questions: Optional[List[str]] = None
-    things_to_know: Optional[str] = None
-    pairs_well_with: Optional[List[str]] = None
+    sample_questions: list[str] | None = None
+    things_to_know: str | None = None
+    pairs_well_with: list[str] | None = None
     # v56 fields.
-    grain: Optional[str] = None
-    platforms: Optional[List[str]] = None
-    partition_col: Optional[str] = None
-    history: Optional[str] = None
-    gotchas: Optional[List[_GotchaItem]] = None
+    grain: str | None = None
+    platforms: list[str] | None = None
+    partition_col: str | None = None
+    history: str | None = None
+    gotchas: list[_GotchaItem] | None = None
 
     @field_validator("platforms")
     @classmethod
-    def _check_platforms(cls, v: Optional[List[str]]) -> Optional[List[str]]:
+    def _check_platforms(cls, v: list[str] | None) -> list[str] | None:
         if v is None:
             return None
         if len(v) > 8:
@@ -5912,7 +5922,7 @@ def run_session_collector(
     # try to parse uvicorn's sys.argv and SystemExit(2) the worker.
     rc: int = 1
     stats: dict = {}
-    job_error: Optional[Exception] = None
+    job_error: Exception | None = None
     try:
         rc, stats = collector.run(dry_run=False, verbose=False)
     except Exception as e:
@@ -6008,7 +6018,7 @@ def run_session_processor(
     # from the time budget too.
     session_processor_cap = None if processor == "usage" else _session_processor_max_per_run()
     stats: dict = {}
-    job_error: Optional[Exception] = None
+    job_error: Exception | None = None
     try:
         stats = _run_processor(job_conn, proc, max_sessions_per_run=session_processor_cap)
         # Rebuild daily rollups after a successful usage run so the
@@ -6018,10 +6028,10 @@ def run_session_processor(
         # cheap. Kept here (not in runner.py) to stay processor-agnostic at
         # the framework level.
         if processor == "usage" and stats.get("errors", 0) == 0:
-            from datetime import datetime, timedelta, timezone
+            from datetime import datetime, timedelta
 
             try:
-                since_day = (datetime.now(timezone.utc) - timedelta(days=7)).date()
+                since_day = (datetime.now(UTC) - timedelta(days=7)).date()
                 usage_repo().rebuild_rollups(since_day=since_day)
             except Exception as rollup_exc:
                 logger.warning("usage rollup rebuild failed: %s", rollup_exc)
@@ -6083,7 +6093,7 @@ def run_corporate_memory(
     # no env keys are present. Surface the actionable factory message in a
     # 500 instead of letting it crash the request anonymously.
     stats: dict = {}
-    job_error: Optional[Exception] = None
+    job_error: Exception | None = None
     try:
         stats = collect_all(dry_run=False)
     except ValueError as e:
@@ -6138,7 +6148,7 @@ def run_knowledge_packaging(
     """
     from src.knowledge_packaging import run_packaging_pass
 
-    job_error: Optional[Exception] = None
+    job_error: Exception | None = None
     summary: dict = {}
     try:
         summary = run_packaging_pass()
@@ -6185,7 +6195,7 @@ def run_knowledge_digests(
     """
     from src.knowledge_digests import run_digest_pass
 
-    job_error: Optional[Exception] = None
+    job_error: Exception | None = None
     summary: dict = {}
     try:
         summary = run_digest_pass()
@@ -6324,7 +6334,7 @@ def run_jira_sla_poll(
     from connectors.jira.scripts.poll_sla import run as _run_poll_sla
 
     stats: dict = {}
-    job_error: Optional[Exception] = None
+    job_error: Exception | None = None
     try:
         stats = _run_poll_sla(dry_run=False)
     except ValueError as e:
@@ -6408,7 +6418,7 @@ def run_jira_consistency_check(
         return {"status": "skipped", "reason": "jira_not_configured", "detail": str(e)}
 
     report: dict = {}
-    job_error: Optional[Exception] = None
+    job_error: Exception | None = None
     try:
         checker = JiraConsistencyChecker(config)
         report = checker.run_check(
@@ -6458,18 +6468,16 @@ def run_jira_consistency_check(
 # runs surfaces.
 # ---------------------------------------------------------------------------
 
-import shutil as _shutil  # noqa: E402
-
 
 @router.get("/store/submissions")
 async def admin_list_store_submissions(
-    status: Optional[str] = None,
-    submitter: Optional[str] = None,
-    type: Optional[str] = None,  # noqa: A002 — FastAPI query-param name
-    name: Optional[str] = None,
-    version: Optional[str] = None,
-    sort: Optional[str] = None,
-    order: Optional[str] = None,
+    status: str | None = None,
+    submitter: str | None = None,
+    type: str | None = None,
+    name: str | None = None,
+    version: str | None = None,
+    sort: str | None = None,
+    order: str | None = None,
     limit: int = 100,
     skip: int = 0,
     user: dict = Depends(require_admin),
@@ -6592,7 +6600,7 @@ async def admin_override_store_submission(
     # (no prior approved) the version_no already matches — the loop
     # just no-ops and we skip promotion harmlessly.
     entity_row = ents_repo.get(entity_id) or {}
-    promoted_to: Optional[int] = None
+    promoted_to: int | None = None
     # Look up THIS submission's version entry by submission_id, NOT
     # by hash. Hash-based lookup breaks when the user re-uploads
     # byte-identical bundles (e.g. v2 same content as v1): the loop
@@ -6603,7 +6611,7 @@ async def admin_override_store_submission(
     # live on a development deployment.
     from app.api.store import _version_no_for_submission
 
-    target_version_no: Optional[int] = _version_no_for_submission(
+    target_version_no: int | None = _version_no_for_submission(
         entity_row,
         submission_id,
     )
@@ -6685,16 +6693,16 @@ async def admin_rescan_store_submission(
         _submission_plugin_dir,
         _version_no_for_submission,
     )
+    from app.instance_config import (
+        get_guardrails_enabled,
+        get_guardrails_llm_provider_ready,
+    )
     from src.db import get_system_db
     from src.store_guardrails import run_inline_checks
     from src.store_guardrails.runner import (
         default_api_key_loader,
         default_model_loader,
         run_llm_review,
-    )
-    from app.instance_config import (
-        get_guardrails_enabled,
-        get_guardrails_llm_provider_ready,
     )
 
     subs = store_submissions_repo()
@@ -6930,8 +6938,6 @@ async def admin_delete_store_submission(
 # v30: download blocked bundle for forensic inspection
 # ---------------------------------------------------------------------------
 
-from fastapi.responses import StreamingResponse  # noqa: E402
-
 
 @router.get("/store/submissions/{submission_id}/bundle.zip")
 async def admin_download_store_submission_bundle(
@@ -6949,8 +6955,11 @@ async def admin_download_store_submission_bundle(
     import io as _io
     import zipfile as _zipfile
     from pathlib import Path as _P
+
     from app.api.store import (
         _plugin_dir as _sp_plugin_dir,
+    )
+    from app.api.store import (
         _submission_plugin_dir,
         _version_no_for_submission,
     )

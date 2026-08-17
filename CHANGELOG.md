@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- **Per-connection Keboola extracts, aliases, and a `kbc.*` path gate (#1375).** Named Keboola source connections now get their own `extracts/{slug}/` directory and DuckDB ATTACH alias, so multiple Keboola projects can coexist without clashing on the shared `kbc` catalog. Direct `kbc_alias."bucket"."table"` references in queries are validated against registered `query_mode='remote'` Keboola tables and the caller's access grants. Table registrations with `source_type='keboola'`, `query_mode='local'`, and a `connection_id` are rejected until per-connection batch pull exists. `project_id` and `project_name` from the source connection are surfaced in catalog endpoints.
+
 ## [0.83.30] - 2026-08-17
 
 ### Fixed
@@ -14025,4 +14029,3 @@ PR: [#120](https://github.com/keboola/agnes-the-ai-analyst/pull/120) (ci/deploy-
 [0.11.2]: https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.11.2
 [0.11.1]: https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.11.1
 [0.11.0]: https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.11.0
-

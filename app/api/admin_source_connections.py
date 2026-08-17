@@ -25,7 +25,7 @@ import asyncio
 import logging
 import os
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any
 from urllib.parse import urlsplit
 from uuid import uuid4
 
@@ -43,10 +43,10 @@ from connectors.keboola.storage_api import KeboolaStorageClient, StorageApiError
 from connectors.mcp.client import exc_summary
 from src.keboola_chat_tools import (
     build_stdio_spec,
-    merge_env,
     derived_source_id,
     derived_tool_id,
     exposed_tool_name,
+    merge_env,
 )
 from src.repositories import (
     connection_secrets_repo,
@@ -111,19 +111,24 @@ _TOOL_UPSERT_FIELDS = (
 class CreateConnectionBody(BaseModel):
     name: str
     source_type: str
-    config: Dict[str, Any]
-    token_env: Optional[str] = None
+    config: dict[str, Any]
+    token_env: str | None = None
     is_default: bool = False
+    # Optional explicit slug/alias. When omitted the repository derives
+    # safe unique values from the connection name. The default Keboola
+    # connection keeps the legacy slug='keboola', alias='kbc'.
+    slug: str | None = None
+    alias: str | None = None
 
 
 class UpdateConnectionBody(BaseModel):
     # `name` supports the "Add data source" wizard's rename-after-test step
     # (#755): the project name is only known once `POST .../test` succeeds,
     # which requires the row to already exist.
-    name: Optional[str] = None
-    config: Optional[Dict[str, Any]] = None
-    token_env: Optional[str] = None
-    is_default: Optional[bool] = None
+    name: str | None = None
+    config: dict[str, Any] | None = None
+    token_env: str | None = None
+    is_default: bool | None = None
 
 
 class SecretBody(BaseModel):
@@ -148,7 +153,7 @@ def _log_host(stack_url: str) -> str:
     return urlsplit(stack_url).hostname or stack_url
 
 
-def _with_secret_status(row: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+def _with_secret_status(row: dict[str, Any] | None) -> dict[str, Any] | None:
     """Annotate a connection row with ``has_secret``/``has_master_secret``
     (whether a vault secret is stored under each slot).
 
@@ -186,7 +191,7 @@ def _with_secret_status(row: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any
     return row
 
 
-def _workspace_schema_of(config: Optional[Dict[str, Any]]) -> Optional[str]:
+def _workspace_schema_of(config: dict[str, Any] | None) -> str | None:
     """The connection's ``workspace_schema``, or None when unset.
 
     ``config`` is admin-supplied free-form JSON, so the value can be any
@@ -199,12 +204,12 @@ def _workspace_schema_of(config: Optional[Dict[str, Any]]) -> Optional[str]:
     return raw.strip() or None
 
 
-def _resolve_token(connection_id: str, row: Dict[str, Any]) -> Optional[str]:
+def _resolve_token(connection_id: str, row: dict[str, Any]) -> str | None:
     """Resolve the storage token for a connection: vault secret first, then
     the ``token_env`` environment-variable fallback. Shared by ``/test`` and
     ``/tables`` so both endpoints treat "how do I get the token" identically.
     """
-    token: Optional[str] = None
+    token: str | None = None
     try:
         secrets = connection_secrets_repo()
         if secrets.has(connection_id):
@@ -236,7 +241,7 @@ def _resolve_token(connection_id: str, row: Dict[str, Any]) -> Optional[str]:
     return token or None
 
 
-def _reject_disallowed_token_env(token_env: Optional[str]) -> None:
+def _reject_disallowed_token_env(token_env: str | None) -> None:
     """Reject a token_env that isn't on the remote-attach allowlist (409-style
     400). None/empty is allowed — vault-secret connections don't use token_env.
     Called on create/update so a bad name never lands in the row."""
@@ -255,7 +260,7 @@ def _reject_disallowed_token_env(token_env: Optional[str]) -> None:
         )
 
 
-def _record_project_identity(connection_id: str, row: Dict[str, Any], payload: Dict[str, Any]) -> None:
+def _record_project_identity(connection_id: str, row: dict[str, Any], payload: dict[str, Any]) -> None:
     """Persist the upstream project's id + name onto the connection config.
 
     A connection is one Keboola project, but nothing used to record WHICH —
@@ -291,7 +296,7 @@ def _record_project_identity(connection_id: str, row: Dict[str, Any], payload: D
     source_connections_repo().update(connection_id, config=config)
 
 
-def project_mismatch_message(row: Dict[str, Any], payload: Dict[str, Any], *, what: str) -> Optional[str]:
+def project_mismatch_message(row: dict[str, Any], payload: dict[str, Any], *, what: str) -> str | None:
     """Why this token disagrees with the connection's recorded project, or
     ``None`` when there is no disagreement.
 
@@ -330,7 +335,7 @@ def project_mismatch_message(row: Dict[str, Any], payload: Dict[str, Any], *, wh
     )
 
 
-def _reject_project_mismatch(row: Dict[str, Any], payload: Dict[str, Any], *, what: str) -> None:
+def _reject_project_mismatch(row: dict[str, Any], payload: dict[str, Any], *, what: str) -> None:
     """400 if this token opens a different Keboola project than the one the
     connection is already bound to. See :func:`project_mismatch_message`."""
     message = project_mismatch_message(row, payload, what=what)
@@ -344,14 +349,14 @@ class _VerifiedTokenInfo:
     (which expects an object exposing ``verify_token() -> dict``) without a
     second Storage API round-trip just to reuse its exact error message."""
 
-    def __init__(self, info: Dict[str, Any]) -> None:
+    def __init__(self, info: dict[str, Any]) -> None:
         self._info = info
 
-    def verify_token(self) -> Dict[str, Any]:
+    def verify_token(self) -> dict[str, Any]:
         return self._info
 
 
-def _validate_stack_url(config: Optional[Dict[str, Any]], *, required: bool, resolve: bool = True) -> None:
+def _validate_stack_url(config: dict[str, Any] | None, *, required: bool, resolve: bool = True) -> None:
     """SSRF guard for a connection's stack_url. Rejects non-https and
     private/reserved/link-local hosts (e.g. the cloud metadata endpoint).
 
@@ -395,7 +400,7 @@ def _validate_stack_url(config: Optional[Dict[str, Any]], *, required: bool, res
 
 @router.get("")
 async def list_connections(
-    source_type: Optional[str] = None,
+    source_type: str | None = None,
     _user: dict = Depends(require_admin),
 ):
     """List all named source connections, optionally filtered by source_type."""
@@ -430,6 +435,8 @@ async def create_connection(
         token_env=body.token_env,
         is_default=body.is_default,
         created_by=_user.get("id"),
+        slug=body.slug,
+        alias=body.alias,
     )
     return _with_secret_status(repo.get(conn_id))
 
@@ -589,7 +596,7 @@ def _resync_derived_chat_tools(connection_id: str) -> None:
             )
             return
         mcp_sources_repo().upsert(**spec)
-    except Exception:  # noqa: BLE001 — the connection edit already landed
+    except Exception:
         logger.warning(
             "updated connection %s but could not re-sync its chat-tools source",
             connection_id,
@@ -687,7 +694,7 @@ async def set_connection_secret(
 
     # Stays None for a non-Keboola connection (no Storage API to ask), which
     # is what the identity-recording step below keys off.
-    info: Optional[Dict[str, Any]] = None
+    info: dict[str, Any] | None = None
 
     if body.kind == "master":
         if row.get("source_type") != "keboola":
@@ -800,7 +807,7 @@ async def set_connection_secret(
             # (Devin Review on this PR.)
             if mcp_sources_repo().get(derived) is not None:
                 shared_secrets_repo().upsert(derived, body.value)
-        except Exception:  # noqa: BLE001 — the primary store already succeeded
+        except Exception:
             logger.warning(
                 "stored a new token for connection %s but could not re-sync the chat-tools copy",
                 connection_id,
@@ -815,7 +822,7 @@ async def set_connection_secret(
         # successful save into an error response. (Devin Review.)
         try:
             _record_project_identity(connection_id, row, info)
-        except Exception:  # noqa: BLE001 — the secret itself landed
+        except Exception:
             logger.warning(
                 "stored the token for connection %s but could not record its project identity",
                 connection_id,
@@ -869,7 +876,7 @@ async def delete_connection_secret(
                 mcp_sources_repo().upsert(
                     **{k: v for k, v in {**source, "enabled": False}.items() if k not in ("created_at", "updated_at")}
                 )
-        except Exception:  # noqa: BLE001 — best-effort; the primary delete already succeeded
+        except Exception:
             logger.warning(
                 "cleared the token for connection %s but could not clear the chat-tools copy",
                 connection_id,
@@ -915,7 +922,7 @@ def _remove_chat_tools(connection_id: str) -> None:
     def _step(what: str, fn) -> None:
         try:
             fn()
-        except Exception:  # noqa: BLE001 — every step runs; the caller is told which failed
+        except Exception:
             logger.warning("could not remove %s for connection %s", what, connection_id, exc_info=True)
             failed.append(what)
 
@@ -973,7 +980,7 @@ def _remove_chat_tools(connection_id: str) -> None:
         )
 
 
-async def _register_derived_tools(source: Dict[str, Any], connection_id: str, connection_name: str) -> int:
+async def _register_derived_tools(source: dict[str, Any], connection_id: str, connection_name: str) -> int:
     """Introspect the derived source and register its tools as passthrough.
 
     Without this the switch would create a source and nothing else: the
@@ -1012,7 +1019,7 @@ async def _register_derived_tools(source: Dict[str, Any], connection_id: str, co
             # annotates nothing yields None, and treating that as read-only
             # would mark every tool of such a server safe to call unattended.
             mutating = tool.read_only is not True
-            curated: Dict[str, Any] = {}
+            curated: dict[str, Any] = {}
         else:
             # A re-run re-derives what is THIS release's (names, schema,
             # description) and keeps what is the ADMIN's: PII masking, rate
@@ -1396,7 +1403,7 @@ async def test_connection(
                 # (Devin Review on this PR.)
                 try:
                     _record_project_identity(connection_id, row, data)
-                except Exception:  # noqa: BLE001 — the check itself succeeded
+                except Exception:
                     logger.warning(
                         "connection test for %s (%s) passed but its project identity could not be recorded",
                         connection_id,
@@ -1432,9 +1439,7 @@ async def test_connection(
         return {"ok": False, "error": str(exc)[:300]}
 
 
-def _scoped_listing(
-    client: KeboolaStorageClient, connection_id: str
-) -> tuple[Optional[List[dict]], Optional[List[dict]]]:
+def _scoped_listing(client: KeboolaStorageClient, connection_id: str) -> tuple[list[dict] | None, list[dict] | None]:
     """Per-bucket listing driven by the token's own ``bucketPermissions``.
 
     Bucket-scoped (custom access) tokens can be refused the project-wide
@@ -1456,9 +1461,9 @@ def _scoped_listing(
     if not perms:
         return None, None
 
-    buckets: List[dict] = []
-    tables: List[dict] = []
-    last_exc: Optional[Exception] = None
+    buckets: list[dict] = []
+    tables: list[dict] = []
+    last_exc: Exception | None = None
     for bucket_id in sorted(perms):
         try:
             bucket_tables = client.list_tables(bucket_id)
@@ -1554,7 +1559,7 @@ async def list_connection_tables(
 
     client = KeboolaStorageClient(url=stack_url, token=token)
 
-    def _project_listing() -> tuple[List[dict], List[dict]]:
+    def _project_listing() -> tuple[list[dict], list[dict]]:
         return client.list_buckets(), client.list_tables()
 
     scope = "project"
@@ -1647,7 +1652,7 @@ async def list_connection_tables(
         scope,
     )
 
-    tables_by_bucket: Dict[str, List[Dict[str, Any]]] = {}
+    tables_by_bucket: dict[str, list[dict[str, Any]]] = {}
     for t in tables:
         bucket_id = (t.get("bucket") or {}).get("id", "")
         tables_by_bucket.setdefault(bucket_id, []).append(

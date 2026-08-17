@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import duckdb
@@ -26,10 +26,10 @@ from app.api.v2_cache import TTLCache
 from app.auth.dependencies import _get_db, get_current_user
 from src.audit_helpers import client_kind_from_user, identity_for_audit
 from src.rbac import get_accessible_tables
-
 from src.repositories import (
     audit_repo,
     bq_metadata_cache_repo,
+    source_connections_repo,
     table_registry_repo,
 )
 
@@ -370,6 +370,9 @@ def build_catalog(conn: duckdb.DuckDBPyConnection, user: dict) -> dict:
     _accessible_ids = get_accessible_tables(user, conn)
     allowed = None if _accessible_ids is None else set(_accessible_ids)
 
+    sc_repo = source_connections_repo()
+    connection_index = {c["id"]: c for c in sc_repo.list()}
+
     visible = []
     for r in rows:
         if not (allowed is None or r["id"] in allowed):
@@ -397,6 +400,15 @@ def build_catalog(conn: duckdb.DuckDBPyConnection, user: dict) -> dict:
         # precedent as the row-count badge (an unfiltered COUNT is
         # accepted; column-shaped CONTENT is not).
         policy_restricted = bool(r.get("access_policy_sql")) and allowed is not None
+        conn_id = r.get("connection_id")
+        project_id = None
+        project_name = None
+        if conn_id:
+            sc = connection_index.get(conn_id)
+            if sc:
+                cfg = sc.get("config") or {}
+                project_id = str(cfg["project_id"]) if cfg.get("project_id") is not None else None
+                project_name = cfg.get("project_name")
         visible.append(
             {
                 "id": r["id"],
@@ -427,12 +439,15 @@ def build_catalog(conn: duckdb.DuckDBPyConnection, user: dict) -> dict:
                 "clustered_by": [] if policy_restricted else (hint.get("clustered_by") or []),
                 "entity_type": hint.get("entity_type"),
                 "metadata_freshness": hint.get("metadata_freshness"),
+                "connection_id": conn_id,
+                "project_id": project_id,
+                "project_name": project_name,
             }
         )
 
     return {
         "tables": visible,
-        "server_time": datetime.now(timezone.utc).isoformat(),
+        "server_time": datetime.now(UTC).isoformat(),
     }
 
 

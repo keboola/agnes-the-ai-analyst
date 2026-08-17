@@ -40,10 +40,11 @@ def sample_configs():
     ]
 
 
-def _mock_attach(conn, url, token):
+def _mock_attach(conn, url, token, alias="kbc"):
     """Mock that says extension is available and ATTACHes a fake kbc catalog."""
-    # Create in-memory DB as kbc so views referencing kbc."bucket"."table" can be created
-    conn.execute("ATTACH ':memory:' AS kbc")
+    # Create in-memory DB as the requested alias so views referencing
+    # alias."bucket"."table" can be created.
+    conn.execute(f"ATTACH ':memory:' AS {alias}")
     return True
 
 
@@ -59,7 +60,7 @@ class TestKeboolaExtractor:
         """Test that run() creates extract.duckdb with correct structure."""
         from connectors.keboola.extractor import run
 
-        def write_parquet(conn, tc, pq_path):
+        def write_parquet(conn, tc, pq_path, alias="kbc"):
             _write_parquet(pq_path)
 
         with (
@@ -105,9 +106,9 @@ class TestKeboolaExtractor:
             }
         ]
 
-        def mock_attach_with_schema(conn, url, token):
+        def mock_attach_with_schema(conn, url, token, alias="kbc"):
             """Mock kbc with the expected bucket schema so remote views can be created."""
-            conn.execute("ATTACH ':memory:' AS kbc")
+            conn.execute(f"ATTACH ':memory:' AS {alias}")
             conn.execute('CREATE SCHEMA kbc."in.c-events"')
             conn.execute('CREATE TABLE kbc."in.c-events"."big_table" (id VARCHAR)')
             return True
@@ -153,8 +154,8 @@ class TestKeboolaExtractor:
             }
         ]
 
-        def mock_attach_with_schema(conn, url, token):
-            conn.execute("ATTACH ':memory:' AS kbc")
+        def mock_attach_with_schema(conn, url, token, alias="kbc"):
+            conn.execute(f"ATTACH ':memory:' AS {alias}")
             conn.execute('CREATE SCHEMA kbc."in.c-events"')
             conn.execute('CREATE TABLE kbc."in.c-events"."big_table" (id VARCHAR)')
             return True
@@ -186,16 +187,18 @@ class TestKeboolaExtractor:
         at use must make the extraction succeed against the bare name."""
         from connectors.keboola.extractor import run
 
-        configs = [{
-            "name": "orders",
-            "bucket": "in.c-crm",
-            "source_table": "in.c-crm.orders",  # legacy wizard shape
-            "query_mode": "local",
-            "description": "Order data",
-        }]
+        configs = [
+            {
+                "name": "orders",
+                "bucket": "in.c-crm",
+                "source_table": "in.c-crm.orders",  # legacy wizard shape
+                "query_mode": "local",
+                "description": "Order data",
+            }
+        ]
 
-        def mock_attach_with_rows(conn, url, token):
-            conn.execute("ATTACH ':memory:' AS kbc")
+        def mock_attach_with_rows(conn, url, token, alias="kbc"):
+            conn.execute(f"ATTACH ':memory:' AS {alias}")
             conn.execute('CREATE SCHEMA kbc."in.c-crm"')
             conn.execute('CREATE TABLE kbc."in.c-crm"."orders" (id INTEGER)')
             conn.execute('INSERT INTO kbc."in.c-crm"."orders" VALUES (1), (2)')
@@ -237,8 +240,8 @@ class TestKeboolaExtractor:
             },
         ]
 
-        def mock_attach_with_schema(conn, url, token):
-            conn.execute("ATTACH ':memory:' AS kbc")
+        def mock_attach_with_schema(conn, url, token, alias="kbc"):
+            conn.execute(f"ATTACH ':memory:' AS {alias}")
             conn.execute('CREATE SCHEMA kbc."in.c-events"')
             conn.execute('CREATE TABLE kbc."in.c-events"."big_table" (id VARCHAR)')
             return True
@@ -265,7 +268,7 @@ class TestKeboolaExtractor:
 
         call_count = 0
 
-        def side_effect(conn, tc, pq_path):
+        def side_effect(conn, tc, pq_path, alias="kbc"):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -297,7 +300,7 @@ class TestKeboolaExtractor:
         """Test that data/ subdirectory is created."""
         from connectors.keboola.extractor import run
 
-        def write_pq(conn, tc, pq_path):
+        def write_pq(conn, tc, pq_path, alias="kbc"):
             _write_parquet(pq_path, "SELECT 1 AS id")
 
         with (
@@ -315,7 +318,7 @@ class TestKeboolaExtractor:
 
         configs = [{"name": "test_table", "query_mode": "local", "description": "Test"}]
 
-        def write_pq(conn, tc, pq_path):
+        def write_pq(conn, tc, pq_path, alias="kbc"):
             _write_parquet(pq_path, "SELECT 42 AS value, 'hello' AS msg")
 
         with (
@@ -338,7 +341,7 @@ class TestKeboolaExtractor:
 
         configs = [{"name": "t", "query_mode": "local", "description": "desc"}]
 
-        def write_pq(conn, tc, pq_path):
+        def write_pq(conn, tc, pq_path, alias="kbc"):
             _write_parquet(pq_path, "SELECT 1 AS x")
 
         with (
@@ -392,7 +395,7 @@ class TestKeboolaExtractorFailureModes:
         from connectors.keboola.extractor import run
 
         # First, create a valid extract.duckdb
-        def write_pq(conn, tc, pq_path):
+        def write_pq(conn, tc, pq_path, alias="kbc"):
             _write_parquet(pq_path, "SELECT 1 AS id")
 
         with (
@@ -432,11 +435,11 @@ class TestKeboolaExtractorFailureModes:
 
         call_count = 0
 
-        def side_effect(conn, tc, pq_path):
+        def side_effect(conn, tc, pq_path, alias="kbc"):
             nonlocal call_count
             call_count += 1
             if tc["name"] == "bad_table":
-                raise IOError("Disk full — partial write")
+                raise OSError("Disk full — partial write")
             _write_parquet(pq_path, "SELECT 1 AS id")
 
         with (
@@ -459,8 +462,8 @@ class TestKeboolaExtractorFailureModes:
     def test_network_timeout_during_extraction(self, output_dir, monkeypatch):
         """Network timeout during extraction should return a meaningful error
         in the stats, not crash the whole process."""
+
         from connectors.keboola.extractor import run
-        import socket
 
         configs = [
             {"name": "timeout_table", "query_mode": "local", "description": "Will timeout"},
@@ -469,11 +472,11 @@ class TestKeboolaExtractorFailureModes:
 
         call_count = 0
 
-        def side_effect(conn, tc, pq_path):
+        def side_effect(conn, tc, pq_path, alias="kbc"):
             nonlocal call_count
             call_count += 1
             if tc["name"] == "timeout_table":
-                raise socket.timeout("Connection timed out")
+                raise TimeoutError("Connection timed out")
             _write_parquet(pq_path, "SELECT 1 AS id")
 
         # When extension scan fails, the per-table flow now retries via
@@ -487,7 +490,7 @@ class TestKeboolaExtractorFailureModes:
         monkeypatch.setenv("AGNES_KEBOOLA_PARALLELISM", "1")
 
         def legacy_reraise(tc, pq_path, url, token):
-            raise socket.timeout("Connection timed out")
+            raise TimeoutError("Connection timed out")
 
         with (
             patch("connectors.keboola.extractor._try_attach_extension", side_effect=_mock_attach),
@@ -721,7 +724,7 @@ class TestKeboolaExtractorFailureModes:
             {"name": "good_name", "query_mode": "local", "description": "OK"},
         ]
 
-        def write_pq(conn, tc, pq_path):
+        def write_pq(conn, tc, pq_path, alias="kbc"):
             _write_parquet(pq_path, "SELECT 1 AS id")
 
         with (

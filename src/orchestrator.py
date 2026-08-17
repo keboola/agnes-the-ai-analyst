@@ -39,6 +39,8 @@ import duckdb
 
 from connectors.bigquery.auth import BQMetadataAuthError, get_metadata_token
 from src.db import _open_duckdb
+from src.identifier_validation import _SAFE_IDENTIFIER  # noqa: F401  (re-exported for any historical caller)
+from src.identifier_validation import validate_identifier as _validate_identifier
 from src.orchestrator_security import (
     attach_host_allowlist_configured,
     escape_sql_string_literal,
@@ -110,18 +112,6 @@ def _capture_orchestrator_exception(exc: BaseException, **props) -> None:
         )
     except Exception:
         logger.debug("PostHog capture_exception failed in orchestrator", exc_info=True)
-
-
-# Identifier validation lives in src/identifier_validation.py so the
-# orchestrator and the extractors share the same regex (#81 Group D).
-# The local names are kept as aliases so existing call sites need no
-# rename — they import from a single source of truth now.
-from src.identifier_validation import (  # noqa: E402
-    _SAFE_IDENTIFIER,  # noqa: F401  (re-exported for any historical caller)
-)
-from src.identifier_validation import (  # noqa: E402
-    validate_identifier as _validate_identifier,
-)
 
 
 def _atomic_swap_db(tmp_path: str, target_path: str) -> None:
@@ -1362,7 +1352,23 @@ class SyncOrchestrator:
                 )
                 continue
 
-            token = os.environ.get(token_env, "") if token_env else ""
+            if token_env:
+                token = os.environ.get(token_env, "")
+            elif extension == "keboola":
+                # Per-connection Keboola rows leave token_env empty; the
+                # rebuild path resolves the token from the vault by alias.
+                from src.connection_resolver import resolve_token_by_alias
+
+                token = resolve_token_by_alias(alias) or ""
+                if not token:
+                    logger.warning(
+                        "Remote attach %s: keboola alias %r has no resolvable token; skipping",
+                        alias,
+                        alias,
+                    )
+                    continue
+            else:
+                token = ""
             if token_env and not token:
                 logger.warning("Remote attach %s: env var %s not set, skipping", alias, token_env)
                 continue

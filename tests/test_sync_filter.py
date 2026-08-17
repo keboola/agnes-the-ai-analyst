@@ -1,11 +1,10 @@
 """Tests for the schedule-validity helper and the per-table due-filter."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
 from src.scheduler import filter_due_tables, is_valid_schedule
-
 
 # ---------------- is_valid_schedule -----------------------------------------
 
@@ -63,7 +62,7 @@ class _FakeSyncStateRepo:
 
 
 def _utc(year, month, day, hour=0, minute=0):
-    return datetime(year, month, day, hour, minute, tzinfo=timezone.utc)
+    return datetime(year, month, day, hour, minute, tzinfo=UTC)
 
 
 def test_filter_due_tables_passes_through_unscheduled_tables():
@@ -173,9 +172,14 @@ def test_run_sync_filters_local_tables_by_schedule(monkeypatch, tmp_path):
         "_get_data_dir",
         lambda: tmp_path,
     )
-    import app.instance_config as instance_config
+    from app import instance_config
 
     monkeypatch.setattr(instance_config, "get_data_source_type", lambda: "keboola")
+
+    # _run_sync now spawns one extractor subprocess per Keboola connection;
+    # a token + stack URL are required before the Popen mock is reached.
+    monkeypatch.setenv("KEBOOLA_STORAGE_TOKEN", "fake-token")
+    monkeypatch.setenv("KEBOOLA_STACK_URL", "https://connection.keboola.com/")
 
     # Fake registry with one due + one skipped table.
     fake_configs = [
@@ -216,11 +220,11 @@ def test_run_sync_filters_local_tables_by_schedule(monkeypatch, tmp_path):
     monkeypatch.setattr(_db_mod, "get_system_db", lambda: _FakeConn())
 
     # Fake sync_state: 'due' last synced 60m ago, 'skipped' 10m ago.
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     last_syncs = {
-        "due": datetime(2026, 5, 1, 9, 0, tzinfo=timezone.utc),
-        "skipped": datetime(2026, 5, 1, 9, 50, tzinfo=timezone.utc),
+        "due": datetime(2026, 5, 1, 9, 0, tzinfo=UTC),
+        "skipped": datetime(2026, 5, 1, 9, 50, tzinfo=UTC),
     }
 
     class _StubState:
@@ -243,7 +247,7 @@ def test_run_sync_filters_local_tables_by_schedule(monkeypatch, tmp_path):
         lambda cfgs, repo: real_filter(
             cfgs,
             repo,
-            now=datetime(2026, 5, 1, 10, 0, tzinfo=timezone.utc),
+            now=datetime(2026, 5, 1, 10, 0, tzinfo=UTC),
         ),
     )
 
@@ -298,7 +302,7 @@ def test_run_sync_does_not_auto_discover_when_filter_returns_empty(monkeypatch, 
     from app.api import sync as sync_module
 
     monkeypatch.setattr(sync_module, "_get_data_dir", lambda: tmp_path)
-    import app.instance_config as instance_config
+    from app import instance_config
 
     monkeypatch.setattr(instance_config, "get_data_source_type", lambda: "keboola")
     # Critical: KEBOOLA_STORAGE_TOKEN must be set to make the bug reachable.
@@ -335,14 +339,14 @@ def test_run_sync_does_not_auto_discover_when_filter_returns_empty(monkeypatch, 
     monkeypatch.setattr(_db_mod, "get_system_db", lambda: _FakeConn())
 
     # 5m ago → not due under "every 1h"
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     class _StubState:
         def __init__(self, conn):
             pass
 
         def get_last_sync(self, table_id):
-            return datetime(2026, 5, 1, 9, 55, tzinfo=timezone.utc)
+            return datetime(2026, 5, 1, 9, 55, tzinfo=UTC)
 
     monkeypatch.setattr(sync_module, "sync_state_repo", lambda: _StubState(None))
 
@@ -355,7 +359,7 @@ def test_run_sync_does_not_auto_discover_when_filter_returns_empty(monkeypatch, 
         lambda cfgs, repo: real_filter(
             cfgs,
             repo,
-            now=datetime(2026, 5, 1, 10, 0, tzinfo=timezone.utc),
+            now=datetime(2026, 5, 1, 10, 0, tzinfo=UTC),
         ),
     )
 
@@ -396,7 +400,7 @@ def test_run_sync_does_not_auto_discover_when_scoped_id_is_missing(monkeypatch, 
     from app.api import sync as sync_module
 
     monkeypatch.setattr(sync_module, "_get_data_dir", lambda: tmp_path)
-    import app.instance_config as instance_config
+    from app import instance_config
 
     monkeypatch.setattr(instance_config, "get_data_source_type", lambda: "keboola")
     # Critical: KEBOOLA_STORAGE_TOKEN must be set to make the bug reachable.
