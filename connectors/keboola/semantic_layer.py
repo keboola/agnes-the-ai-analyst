@@ -119,18 +119,6 @@ def resolve_table_name(table_id: str, lookup: dict[tuple[str, str], str]) -> str
     return lookup.get((bucket, source_table))
 
 
-def dataset_lookup_by_table_id(dataset_items: list[dict]) -> dict[str, dict]:
-    """Build {tableId: attributes} from semantic-dataset items, for
-    enriching a metric row with grain/dimensions/synonyms/notes."""
-    result: dict[str, dict] = {}
-    for d in dataset_items:
-        attrs = d.get("attributes") or {}
-        table_id = attrs.get("tableId")
-        if table_id:
-            result[table_id] = attrs
-    return result
-
-
 # Matches `<alias>."column"` or `<alias>.column` — qualified-column shapes
 # observed in live Keboola semantic-metric.sql fragments. Verified live
 # (2026-07-15): single-dataset expressions are always bare column references
@@ -227,33 +215,10 @@ def compose_sql(expression: str, table_name: str) -> str:
     either is True — this function does not itself guard against those
     cases. A foreign-alias reference needs a JOIN this importer can't
     compose; a trailing `--` comment would swallow the appended FROM clause.
-    `build_metric_row` performs both checks before calling this.
+    The projector's ``_bind_metric`` (and the coverage predictor
+    ``_predict_metric_binding``) perform both checks before calling this.
     """
     return f"SELECT {expression} FROM {quote_ident(table_name)} AS t"
-
-
-def merge_constraints(metric_name: str, constraints: list[dict]) -> dict | None:
-    """Build the `validation` JSON for one metric from semantic-constraint
-    items whose `metrics[]` list includes it, or None if none match.
-
-    Constraint attribute shape (`name`, `constraintType`, `rule` — a single
-    SQL-ish string like `'value >= 0'`, `metrics: [...]`, `severity`) per
-    `keboola/cli`'s documented live-verified contract.
-    """
-    matching = [c for c in constraints if metric_name in ((c.get("attributes") or {}).get("metrics") or [])]
-    if not matching:
-        return None
-    return {
-        "rules": [
-            {
-                "name": (c.get("attributes") or {}).get("name"),
-                "constraint_type": (c.get("attributes") or {}).get("constraintType"),
-                "rule": (c.get("attributes") or {}).get("rule"),
-                "severity": (c.get("attributes") or {}).get("severity"),
-            }
-            for c in matching
-        ]
-    }
 
 
 def try_join_composition(
@@ -303,100 +268,6 @@ def try_join_composition(
 
     sql = compose_join_sql(expression, table_name, joined_table_name, relationship["on"], to_alias, from_alias)
     return {"table_name": table_name, "tables": [table_name, joined_table_name], "sql": sql}, None
-
-
-def build_metric_row(
-    metric_item: dict,
-    table_lookup: dict[tuple[str, str], str],
-    dataset_lookup: dict[str, dict],
-    constraints: list[dict],
-    model_uuid: str,
-    relationship_lookup: Optional[dict[str, list[dict]]] = None,
-    column_lookup: Optional[dict[str, set[str]]] = None,
-) -> tuple[Optional[dict], Optional[str]]:
-    """Map one semantic-metric item to a metric_definitions row dict.
-
-    Returns (row, None) on success, or (None, skip_reason) where
-    skip_reason is "missing_name", "unresolved_table", "embedded_sql_comment",
-    "foreign_alias_reference" (generic fallback — see try_join_composition
-    for the more specific relationship-resolution skip reasons this
-    function also propagates: "ambiguous_relationship",
-    "unsupported_relationship_type", "unverified_relationship_direction").
-
-    `relationship_lookup` / `column_lookup` are optional — omitting them
-    (the pre-relationship-feature call shape) preserves the exact
-    pre-existing behavior: every foreign-alias expression skips as
-    "foreign_alias_reference", unconditionally.
-    """
-    attrs = metric_item.get("attributes") or {}
-    name = attrs.get("name")
-    expression = attrs.get("sql") or ""
-    dataset_table_id = attrs.get("dataset") or ""
-
-    if not name:
-        return None, "missing_name"
-
-    tables: list[str] = []
-    if references_foreign_alias(expression):
-        if has_embedded_sql_comment(expression):
-            return None, "embedded_sql_comment"
-        join_fields: Optional[dict] = None
-        join_skip_reason: Optional[str] = "foreign_alias_reference"
-        if relationship_lookup is not None and column_lookup is not None:
-            join_fields, join_skip_reason = try_join_composition(
-                expression,
-                dataset_table_id,
-                table_lookup,
-                relationship_lookup,
-                column_lookup,
-            )
-        if join_fields is None:
-            return None, join_skip_reason
-        table_name = join_fields["table_name"]
-        tables = join_fields["tables"]
-        sql = join_fields["sql"]
-    else:
-        if has_embedded_sql_comment(expression):
-            return None, "embedded_sql_comment"
-        table_name = resolve_table_name(dataset_table_id, table_lookup)
-        if table_name is None:
-            return None, "unresolved_table"
-        sql = compose_sql(expression, table_name)
-
-    row: dict[str, Any] = {
-        "id": f"keboola/{model_uuid}/{name}",
-        "name": name,
-        "display_name": name,
-        "category": "keboola",
-        "description": attrs.get("description") or "",
-        "expression": expression,
-        "table_name": table_name,
-        "sql": sql,
-        "source": "keboola_semantic_layer",
-    }
-    if tables:
-        row["tables"] = tables
-
-    dataset_attrs = dataset_lookup.get(dataset_table_id) or {}
-    grain = dataset_attrs.get("grain")
-    if grain:
-        row["grain"] = grain
-    primary_key = dataset_attrs.get("primaryKey") or []
-    if primary_key:
-        row["dimensions"] = list(primary_key)
-    ai_block = dataset_attrs.get("ai") or {}
-    synonyms = ai_block.get("synonyms") or []
-    if synonyms:
-        row["synonyms"] = list(synonyms)
-    notes = list(ai_block.get("hints") or []) + list(ai_block.get("warnings") or [])
-    if notes:
-        row["notes"] = notes
-
-    validation = merge_constraints(name, constraints)
-    if validation is not None:
-        row["validation"] = validation
-
-    return row, None
 
 
 def _default_keboola_connection() -> Optional[dict]:
@@ -563,41 +434,6 @@ def _in_scope(row: dict, scope_refs: set, adopt_null: bool) -> bool:
         return False
     ref = row.get("source_ref")
     return ref in scope_refs or (ref is None and adopt_null)
-
-
-def _is_owned_by_source(
-    existing: Optional[dict],
-    incoming_id: str,
-    scope_refs: set,
-    adopt_null: bool,
-) -> bool:
-    """True if this source may write a row under a name/term that ``existing``
-    (the row currently holding that name/term, or None) already occupies.
-
-    Ownership tracks the same scope as the prune (``scope_refs``): the rows a
-    source may delete are exactly the rows it may overwrite. Names must stay
-    unique for catalog UX, and ownership is sticky — whichever source's ref is
-    already on the row keeps it, so discovery order does not decide outcomes
-    beyond the deterministic first claim. A non-imported row (manual /
-    yaml_import) always keeps its name.
-    """
-    if existing is None:
-        return True
-    if existing.get("id") == incoming_id:
-        # Same row id ≠ same source: ids are built from (model_uuid, name)
-        # with no connection component, and a cloned/restored Keboola project
-        # can carry the SAME Metastore model UUID under a different
-        # connection. An unconditional id match would let that second source
-        # silently re-stamp source_ref on the first source's row (the writer
-        # is ON CONFLICT(id) DO UPDATE), putting the row outside the first
-        # source's prune scope — the exact cross-wipe this gate exists to
-        # prevent. Allow the id shortcut only for rows this source already
-        # owns or un-stamped legacy rows (pre-v107 NULL source_ref, which any
-        # colliding source may claim — first writer wins, then stickiness
-        # applies).
-        ref = existing.get("source_ref")
-        return ref is None or ref in scope_refs
-    return _in_scope(existing, scope_refs, adopt_null)
 
 
 def _project_key(url: str, token_info: dict) -> Optional[tuple[str, Any]]:
@@ -1315,69 +1151,6 @@ def compose_join_sql(
 _NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
 
 
-def slugify_term(term: str) -> str:
-    """Lowercase, replace runs of non-alphanumeric characters with a single
-    underscore, strip leading/trailing underscores.
-
-    Keboola glossary terms are natural-language phrases ("Monthly Recurring
-    Revenue") — unlike semantic-metric.name, which is already a slug — so a
-    stable primary key requires this normalization step (verified live,
-    2026-07-17: terms contain spaces/uppercase/punctuation).
-    """
-    slug = _NON_ALNUM_RE.sub("_", term.lower()).strip("_")
-    return slug
-
-
-def assign_glossary_id(term: str, model_uuid: str, used_ids: set[str]) -> str:
-    """Build a stable glossary_terms.id from (model_uuid, slugified term),
-    resolving a slug collision within the same model with a numeric
-    ``-2``, ``-3``, ... suffix on first-seen order.
-
-    Mutates ``used_ids`` by adding the returned id — callers processing a
-    list of glossary items must reuse the same set across the whole run so
-    collisions are detected against everything assigned so far.
-    """
-    base = f"keboola/{model_uuid}/{slugify_term(term)}"
-    candidate = base
-    suffix = 2
-    while candidate in used_ids:
-        candidate = f"{base}-{suffix}"
-        suffix += 1
-    used_ids.add(candidate)
-    return candidate
-
-
-def build_glossary_row(
-    item: dict,
-    model_uuid: str,
-    used_ids: set[str],
-) -> tuple[Optional[dict], Optional[str]]:
-    """Map one semantic-glossary item to a glossary_terms row dict.
-
-    Returns (row, None) on success, or (None, skip_reason) where
-    skip_reason is "missing_term" or "missing_definition" — both fields
-    are NOT NULL on glossary_terms, so a missing value is skipped
-    defensively rather than written as an empty string.
-    """
-    attrs = item.get("attributes") or {}
-    term = attrs.get("term")
-    definition = attrs.get("definition")
-
-    if not term:
-        return None, "missing_term"
-    if not definition:
-        return None, "missing_definition"
-
-    return {
-        "id": assign_glossary_id(term, model_uuid, used_ids),
-        "term": term,
-        "definition": definition,
-        "see_also": list(attrs.get("seeAlso") or []),
-        "model_uuid": model_uuid,
-        "source": "keboola_semantic_layer",
-    }, None
-
-
 # --- Coverage (live, no stored state) ---------------------------------------
 
 # Skip reasons that mean the metric's own DEFINITION cannot be composed. These
@@ -1539,14 +1312,17 @@ def compute_semantic_coverage(*, warnings_only: bool = False) -> dict:
     more tables than an instance registers, and those metrics are *supposed* to
     stay out. It is reported as a plain fact, never as a pending queue.
 
-    Constraints are not fetched — they only decorate a successfully mapped row
-    (``merge_constraints``) and cannot change a skip decision, so the extra
-    round-trip buys nothing here.
+    Constraints are not fetched — they only decorate a metric that already
+    binds and cannot change a skip decision, so the extra round-trip buys
+    nothing here.
 
-    Counts span EVERY model a project publishes, walked in the same order and
-    with the same per-model scoping and first-claim name tie-break as
-    ``sync_semantic_layer`` — the report's whole value is that it predicts what
-    that sync will do, so any divergence between the two is a defect here.
+    Counts span EVERY model a project publishes, walked with the same per-model
+    scoping the projector uses (``_predict_metric_binding`` mirrors the
+    projector's binder) — the report's whole value is that it predicts what the
+    sync's projection will land, so any divergence is a defect here. Since the
+    projector enforces no name-ownership gate, a name shared with another source
+    no longer blocks a metric; the report surfaces that as coexistence
+    (``conflicts``) rather than subtracting it from ``importable``.
     """
     import requests
 
