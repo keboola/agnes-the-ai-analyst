@@ -2113,6 +2113,14 @@
                             <div class="form-hint">Keep the parquet server-side and queryable via <code>agnes query --remote</code>, but skip it in <code>agnes pull</code>.</div>
                         </div>
 
+                        {# v49 (Task 8.8): Data Packages chip-input field.
+                           The submit handler (registerDatabricksTable) is intentionally
+                           NOT wired to forward `package_ids` to /api/admin/tables
+                           in this pass — backend extension lives in a focused
+                           follow-up. For now the chip-input persists chosen
+                           packages locally and the admin can attach via
+                           `POST /api/admin/data-packages/<id>/tables` from the
+                           CLI / package admin UI. #}
                         <div class="form-group">
                             <label class="form-label">Data Packages <span class="optional">(optional)</span></label>
                             <div class="chip-input"
@@ -3819,11 +3827,18 @@
     // Replaces the per-connector tab nav. The user picks the connector
     // here only to choose which register modal to open; otherwise the
     // page is package-centric and source_type is just an inline tag.
+    function _dbxIsOnlyConnectedSource() {
+        var active = CONNECTED_SOURCE_TYPES.filter(Boolean);
+        return active.length === 1 && active[0] === 'databricks';
+    }
+
     function toggleRegisterNewTableMenu(evt) {
         if (evt) evt.stopPropagation();
-        // When the instance has a single primary source type, open that
-        // register modal directly instead of the source dropdown.
-        if (DATA_SOURCE_TYPE === 'databricks') {
+        // When the instance has Databricks as its only configured source,
+        // open the Databricks register modal directly. If other sources are
+        // also connected — or nothing is recorded in the connection registry
+        // — keep the dropdown reachable so they can be chosen.
+        if (DATA_SOURCE_TYPE === 'databricks' && _dbxIsOnlyConnectedSource()) {
             return openRegisterModal();
         }
         var menu = document.getElementById('registerNewTableMenu');
