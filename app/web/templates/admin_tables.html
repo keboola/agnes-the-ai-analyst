@@ -753,6 +753,21 @@
         }
 
         .tbl-register { flex: 0 0 auto; position: relative; }
+        /* One button visually, two targets: the label shortcuts, the caret
+           always opens the menu. Hairline seam in the primary's own colour
+           so the pair still reads as a single CTA. */
+        .tbl-register__split { display: inline-flex; align-items: stretch; }
+        .tbl-register__split > .btn { border-radius: 0; }
+        .tbl-register__main {
+            border-top-left-radius: var(--ds-radius-btn);
+            border-bottom-left-radius: var(--ds-radius-btn);
+        }
+        .tbl-register__more {
+            padding-left: 10px; padding-right: 10px;
+            border-left: 1px solid color-mix(in srgb, var(--ds-surface) 35%, transparent);
+            border-top-right-radius: var(--ds-radius-btn);
+            border-bottom-right-radius: var(--ds-radius-btn);
+        }
         .tbl-register__menu {
             display: none; position: absolute; top: calc(100% + 4px); right: 0; z-index: 40;
             min-width: 240px; padding: 6px;
@@ -1243,10 +1258,24 @@
              filled and pinned right — the position People gives "+ Invite
              person" and the Library gives its primary. #}
           <div class="tbl-register">
-            <button id="registerNewTableBtn" class="btn btn-primary" type="button"
-                    onclick="toggleRegisterNewTableMenu(event)">
-              + Register new table ▾
-            </button>
+            {# A SPLIT button. The left segment carries the click an admin makes
+               almost every time, and on a single-source instance it shortcuts
+               straight to that source's drawer — one click saved. The right
+               segment always opens the full list, so the shortcut costs
+               nothing: without it the shortcut would be the button's only
+               behaviour and the Jira docs link plus the other connectors'
+               register items would be unreachable from this page. #}
+            <div class="tbl-register__split">
+              <button id="registerNewTableBtn" class="btn btn-primary tbl-register__main" type="button"
+                      onclick="toggleRegisterNewTableMenu(event)">
+                + Register new table
+              </button>
+              <button id="registerNewTableMoreBtn" class="btn btn-primary tbl-register__more" type="button"
+                      aria-haspopup="true" aria-expanded="false" aria-controls="registerNewTableMenu"
+                      aria-label="Choose which source to register from"
+                      title="Register from another source"
+                      onclick="openRegisterNewTableMenu(event)">▾</button>
+            </div>
             <div id="registerNewTableMenu" class="tbl-register__menu">
               <button class="tbl-register__item" type="button" data-register-source="bigquery"
                       onclick="closeRegisterNewTableMenu(); openRegisterModal('bigquery')">BigQuery</button>
@@ -3832,29 +3861,47 @@
         return active.length === 1 && active[0] === 'databricks';
     }
 
+    // The caret segment's handler: opens/closes the full source list and
+    // NOTHING else. Deliberately free of any source sniffing — it is the
+    // path that must stay open when the label segment below shortcuts to a
+    // drawer, or the other connectors (and Jira's docs link) would only be
+    // reachable through the API/CLI.
+    function openRegisterNewTableMenu(evt) {
+        if (evt) evt.stopPropagation();
+        var menu = document.getElementById('registerNewTableMenu');
+        if (!menu) return;
+        var opening = menu.style.display !== 'block';
+        menu.style.display = opening ? 'block' : 'none';
+        var more = document.getElementById('registerNewTableMoreBtn');
+        if (more) more.setAttribute('aria-expanded', opening ? 'true' : 'false');
+    }
+
     function toggleRegisterNewTableMenu(evt) {
         if (evt) evt.stopPropagation();
         // When the instance has Databricks as its only configured source,
         // open the Databricks register modal directly. If other sources are
         // also connected — or nothing is recorded in the connection registry
-        // — keep the dropdown reachable so they can be chosen.
+        // — this segment opens the dropdown too. Either way the caret beside
+        // it still reaches every register entry point.
         if (DATA_SOURCE_TYPE === 'databricks' && _dbxIsOnlyConnectedSource()) {
             return openRegisterModal();
         }
-        var menu = document.getElementById('registerNewTableMenu');
-        if (!menu) return;
-        menu.style.display = (menu.style.display === 'block') ? 'none' : 'block';
+        openRegisterNewTableMenu();
     }
     function closeRegisterNewTableMenu() {
         var menu = document.getElementById('registerNewTableMenu');
         if (menu) menu.style.display = 'none';
+        var more = document.getElementById('registerNewTableMoreBtn');
+        if (more) more.setAttribute('aria-expanded', 'false');
     }
     document.addEventListener('click', function(e) {
         var btn = document.getElementById('registerNewTableBtn');
+        var more = document.getElementById('registerNewTableMoreBtn');
         var menu = document.getElementById('registerNewTableMenu');
         if (!btn || !menu) return;
         if (btn.contains(e.target) || menu.contains(e.target)) return;
-        menu.style.display = 'none';
+        if (more && more.contains(e.target)) return;
+        closeRegisterNewTableMenu();
     });
 
     // State
