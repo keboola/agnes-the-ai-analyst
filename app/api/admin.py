@@ -6,6 +6,7 @@ callers via the same ``_user_group_ids`` lookup.
 """
 
 import json
+import glob
 import logging
 import math
 import os
@@ -5315,10 +5316,19 @@ async def unregister_table(
         try:
             data_dir = Path(os.environ.get("DATA_DIR", "./data"))
             base = data_dir / "extracts" / source_type / "data"
-            for candidate in (
+            # The publish temp is per-process since #1359
+            # (`<name>.parquet.<pid>.tmp`, see src/parquet_publish.py), so a
+            # single fixed `.parquet.tmp` no longer names anything a writer
+            # produces. Both spellings are swept: the glob for temps this
+            # build leaves behind, and the legacy fixed name for ones already
+            # sitting on deployed volumes from before that change. Escaped
+            # because the glob is built from a registry-supplied name.
+            candidates = [
                 base / f"{name}.parquet",
                 base / f"{name}.parquet.tmp",
-            ):
+                *sorted(base.glob(f"{glob.escape(name)}.parquet.*.tmp")),
+            ]
+            for candidate in candidates:
                 if candidate.exists():
                     candidate.unlink()
                     logger.info(
