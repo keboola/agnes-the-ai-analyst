@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.83.28] - 2026-08-17
+
 ### Added
 
 - **Every MCP tool now declares what it does to state.** `tools/list` on both surfaces — the HTTP foundation transports and the CLI stdio server — carries `title`, `readOnlyHint`, `destructiveHint` and `openWorldHint` per tool, so a client can tell a reader (`catalog`, `schema`, `query`) from a writer (`stack_subscribe`) from something that removes what you had (`stack_unsubscribe`, `store_delete`, `pull`, which prunes tables you have lost access to). A client that auto-approves read-only calls previously had nothing to go on, and both the Anthropic and OpenAI connector directories check for the annotations. Registering a tool without deciding is no longer possible: `read_only` is a required argument of the shared registration decorator, and a read-only tool can never be flagged destructive.
@@ -21,6 +23,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 - **The Builder no longer shows raw error codes.** Publishing a skill, agent or plugin under a name you already used reported the bare token `conflict_owner_name`; the two sibling authoring screens had mapped store rejections to sentences for some time, and `/skills` was the one that had not. It now maps the same set of codes, with the same wording, so one rejection does not read three different ways.
 - **Installing a marketplace plugin ticks "Put knowledge in your stack".** Curated plugins keep their own resolver and never pass through `/api/stack/subscribe`, which was the only place the onboarding milestone was recorded — so the step stayed unticked no matter how many plugins were installed, `agnes-analyst` among them. The step is now marked on every successful install, which also ticks it for readers who installed before this change.
+
+### Internal
+
+- **A full local test run no longer parks ~50 GB on the developer's disk.** Three compounding test-infrastructure fixes. (1) Every DuckDB file a test creates now uses 16 KiB storage blocks instead of the 256 KiB default (`duckdb.connect` wrapper in `tests/conftest.py`, `AGNES_TEST_DUCKDB_BLOCK_SIZE` to override/disable): a fresh ~217-table `system.duckdb` drops from ~7 MB to ~3.7 MB and its schema DDL from ~0.95 s to ~0.28 s — measured across one retained full-run basetemp, 47 of 51 GB was 5,126 such per-test files. The wrapper lives in the harness, not `src/duckdb_conn.py`, because DuckDB refuses same-path connections with differing configs — the option must reach every connect in the process or none. (2) A fully green run now deletes its own basetemp at session end (`pytest_sessionfinish`, controller-only, never a user-supplied `--basetemp`; `AGNES_KEEP_BASETEMP=1` keeps it) — previously even a passing run's tens of GB survived until the *next* run's retention sweep. Failed runs still keep their artifacts. (3) The pgserver fixture stops its Postgres (#1362): `cleanup_mode="stop"` makes `server.cleanup()` actually run `pg_ctl -w stop` — with `None` it returned before the stop path and clean runs shut the postmaster down only via PostgreSQL's PANIC on the rmtree'd pidfile ~15 s later — and a new `agnes-owner.pid` sentinel lets the session-start reaper reclaim what a SIGKILL'd run leaks: owner pytest dead + live PID verified (via cmdline) to be a postmaster on that very data dir → stop + remove; owner alive or unverifiable → never touched, so a concurrent worktree session's Postgres stays safe. Manual sweep: `python -m tests.db_pg.pgserver_reaper [--force]`.
 
 ## [0.83.27] - 2026-08-17
 
