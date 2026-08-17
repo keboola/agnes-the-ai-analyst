@@ -195,3 +195,80 @@ def test_materialize_without_schedule_rejected(repo):
             original_name="x", exposed_name="x", mode=MATERIALIZE,
             # missing schedule
         )
+
+
+# ---------------------------------------------------------------------------
+# projection_map (v119) — which materialized columns the linked-apps
+# projection reads. Both backends must agree on the dict-in / dict-out
+# contract AND on the preservation rule, or an admin's mapping survives on one
+# engine and evaporates on the other.
+# ---------------------------------------------------------------------------
+
+
+def test_projection_map_roundtrips_as_a_dict(repo):
+    from src.repositories.tool_registry import MATERIALIZE
+
+    repo.upsert(
+        tool_id="t-map", source_id="src1",
+        original_name="get_data_apps", exposed_name="kbc_data_apps",
+        mode=MATERIALIZE, schedule="daily 04:00",
+        projection_map={"id": "data_app_id", "url": "deployment_url", "name": "config_name"},
+    )
+    row = repo.get("t-map")
+    assert row["projection_map"] == {
+        "id": "data_app_id",
+        "url": "deployment_url",
+        "name": "config_name",
+    }
+
+
+def test_projection_map_defaults_to_none(repo):
+    from src.repositories.tool_registry import MATERIALIZE
+
+    repo.upsert(
+        tool_id="t-none", source_id="src1",
+        original_name="get_data_apps", exposed_name="kbc_data_apps",
+        mode=MATERIALIZE, schedule="daily 04:00",
+    )
+    assert repo.get("t-none")["projection_map"] is None
+
+
+def test_set_projection_map_sets_and_clears(repo):
+    from src.repositories.tool_registry import MATERIALIZE
+
+    repo.upsert(
+        tool_id="t-set", source_id="src1",
+        original_name="get_data_apps", exposed_name="kbc_data_apps",
+        mode=MATERIALIZE, schedule="daily 04:00",
+    )
+    repo.set_projection_map("t-set", {"id": "app_id", "url": "url"})
+    assert repo.get("t-set")["projection_map"] == {"id": "app_id", "url": "url"}
+
+    repo.set_projection_map("t-set", None)
+    assert repo.get("t-set")["projection_map"] is None
+
+
+def test_reupsert_without_the_mapping_preserves_it(repo):
+    """Re-registering a tool must not silently un-map it.
+
+    A reclassify or a schedule change goes through ``upsert`` and does not
+    restate the mapping; overwriting with NULL would send the projection back
+    to guessing column names, which is the failure this column exists to end —
+    and it would fail silently, as "0 new, 0 updated".
+    """
+    from src.repositories.tool_registry import MATERIALIZE
+
+    repo.upsert(
+        tool_id="t-keep", source_id="src1",
+        original_name="get_data_apps", exposed_name="kbc_data_apps",
+        mode=MATERIALIZE, schedule="daily 04:00",
+        projection_map={"id": "data_app_id", "url": "deployment_url"},
+    )
+    repo.upsert(
+        tool_id="t-keep", source_id="src1",
+        original_name="get_data_apps", exposed_name="kbc_data_apps",
+        mode=MATERIALIZE, schedule="daily 06:00",
+    )
+    row = repo.get("t-keep")
+    assert row["schedule"] == "daily 06:00"
+    assert row["projection_map"] == {"id": "data_app_id", "url": "deployment_url"}

@@ -19,6 +19,17 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 - `ticket_repo().revoke_session_scopes(session_id, scopes)` (both backends) revokes a session's tickets in the named scopes only. The existing `revoke_session` is scope-blind, which is wrong for a caller holding a long-lived credential in one scope while rotating short-lived egress tickets in others: sweeping the whole session would delete the credential the caller just authenticated with, and the embedded engine has no way to be handed a replacement — its ticket-response schema is `{llm, mcp}` and it keeps using the credential baked into its session JWT, so a scope-blind revoke would `401` every turn after the first. An empty scope list deletes nothing rather than degrading to "match everything".
 
+## [0.83.32] - 2026-08-17
+
+### Added
+
+- **The linked-apps wizard now asks which columns carry an app's id, URL and name.** The projection that turns a lister tool's materialized rows into linked data apps used a hardcoded alias list (`id`/`app_id`/`config_id`, `url`/`app_url`/`deployment_url`) written against the first upstream that fitted it. A server naming its columns anything else had every row dropped for want of an id, and the wizard reported "0 new, 0 updated" — indistinguishable from an upstream with nothing to offer, and pointing the reader at the wrong end of the problem. Live case: a Keboola data-app lister emits `data_app_id` + `configuration_id` and no `name` at all, so all six of its apps were discarded behind a successful-looking fetch. After a fetch, step 2 now lists the columns the tool actually emitted and lets an admin map each field (pre-filled by a heuristic, `auto` keeps the guesses), saved per tool via `PUT /api/admin/mcp-tools/{tool_id}/projection-map` and applied on the next fetch. A named column is authoritative even when empty — falling back to a guess would make a mapping look applied while another column supplied the value. Existing instances are unaffected until someone chooses: an unset mapping is exactly today's behaviour, and re-registering a tool preserves the mapping rather than silently un-mapping it (schema v119, `tool_registry.projection_map`).
+- **A fetch that skips rows says so.** The projection logged "skipped N row(s) missing id/url" where only a container log would show it, while the operator saw counts that summed to zero. The wizard now reports the skipped count next to the counts and points at the mapping controls.
+
+### Fixed
+
+- **A v119 upgrade from an old stamp no longer crashes on a table it has not created yet.** The step that adds `tool_registry.projection_map` called `PRAGMA table_info` straight away, and DuckDB raises `CatalogException` for a missing table rather than returning an empty result — so a database replaying the ladder from far enough back (v68 and v73 both do) aborted mid-migration instead of upgrading. The step now checks `information_schema` first and degrades to a no-op, still stamping the version so a declined step cannot stall the ladder.
+
 ## [0.83.31] - 2026-08-17
 
 ### Fixed

@@ -287,3 +287,77 @@ def test_zero_row_lister_table_does_not_mass_hide_apps(tmp_path, repo):
     res = project_from_extract("srcX", str(empty), repo=repo)
     assert res is not None and (res.created, res.updated, res.hidden) == (0, 0, 0)
     assert {r["name"] for r in repo.list_linked()} == {"Sales", "Ops"}
+
+
+# ---------------------------------------------------------------------------
+# projection_map (v119): the admin names the columns, so a lister whose shape
+# the alias guesses do not fit still links.
+# ---------------------------------------------------------------------------
+
+# The shape a Keboola data-app lister actually returns, copied from a live
+# materialize run. Note what is NOT here: no `id`, no `name` — the columns the
+# alias guesses were written against. Every row was dropped for want of an id
+# while the wizard reported a successful fetch.
+_LIVE_KEBOOLA_ROW = {
+    "component_id": "keboola.data-apps",
+    "configuration_id": "01kn1zzecd34r2ga6ykywa8cka",
+    "data_app_id": "41997754",
+    "project_id": "4451",
+    "branch_id": "11297",
+    "config_version": "13",
+    "state": "stopped",
+    "type": "python-js",
+    "deployment_url": "https://semantic-layer-ui-41997754.hub.example.com",
+    "auto_suspend_after_seconds": 1800,
+    "repo_url": None,
+}
+
+
+def test_live_lister_row_is_unlinkable_without_a_mapping():
+    """Pins the bug: the guesses find no id, so the row cannot be linked."""
+    from src.data_apps import keboola_adapter
+
+    rec = keboola_adapter.map_row(dict(_LIVE_KEBOOLA_ROW))
+    assert rec.external_app_id == ""
+    # The URL was never the problem — `deployment_url` is one of the guesses.
+    assert rec.external_url.startswith("https://")
+
+
+def test_mapping_names_the_id_column_and_the_row_links():
+    from src.data_apps import keboola_adapter
+
+    rec = keboola_adapter.map_row(
+        dict(_LIVE_KEBOOLA_ROW),
+        {"id": "data_app_id", "url": "deployment_url"},
+    )
+    assert rec.external_app_id == "41997754"
+    assert rec.external_url == "https://semantic-layer-ui-41997754.hub.example.com"
+
+
+def test_mapping_wins_over_a_guessable_column():
+    """An explicit choice is authoritative, or the admin cannot override a guess."""
+    from src.data_apps import keboola_adapter
+
+    raw = {"id": "guessed", "data_app_id": "chosen", "url": "https://example.com/a"}
+    rec = keboola_adapter.map_row(raw, {"id": "data_app_id"})
+    assert rec.external_app_id == "chosen"
+
+
+def test_named_but_empty_column_does_not_fall_back_to_a_guess():
+    """Falling through would make the mapping look applied while a guess supplied
+    the value — the admin would be debugging a column they did not choose."""
+    from src.data_apps import keboola_adapter
+
+    raw = {"id": "guessed", "data_app_id": "", "url": "https://example.com/a"}
+    rec = keboola_adapter.map_row(raw, {"id": "data_app_id"})
+    assert rec.external_app_id == ""
+
+
+def test_partial_mapping_leaves_other_fields_on_the_guesses():
+    from src.data_apps import keboola_adapter
+
+    raw = {"data_app_id": "42", "url": "https://example.com/a", "name": "Sales"}
+    rec = keboola_adapter.map_row(raw, {"id": "data_app_id"})
+    assert rec.external_app_id == "42"
+    assert rec.name == "Sales"
+    assert rec.external_url == "https://example.com/a"
