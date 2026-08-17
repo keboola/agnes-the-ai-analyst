@@ -591,6 +591,25 @@ async def ws_stream(ws: WebSocket, chat_id: str, ticket: str, last_seq: int = 0)
                             await mgr.deliver_approval_decision(chat_id_v, rid, dec, sender_email=user_email)
                         except SessionNotFound:
                             pass
+                elif kind == "question_answer":
+                    # AskUserQuestion card answer. Only answers/dismissed are
+                    # accepted from a client — the manager hardens the dict
+                    # and the "unattended" resolution is manager-originated
+                    # only, so it cannot be forged over a WebSocket.
+                    rid = frame.get("request_id")
+                    answers = frame.get("answers")
+                    dismissed = bool(frame.get("dismissed"))
+                    if isinstance(rid, str) and rid and (dismissed or isinstance(answers, dict)):
+                        try:
+                            await mgr.deliver_question_answer(
+                                chat_id_v,
+                                rid,
+                                answers=answers if isinstance(answers, dict) else None,
+                                dismissed=dismissed,
+                                sender_email=user_email,
+                            )
+                        except SessionNotFound:
+                            pass
         except WebSocketDisconnect:
             return
 
@@ -689,6 +708,23 @@ async def ws_join(ws: WebSocket, session_id: str, ticket: str, last_seq: int = 0
                     if isinstance(rid, str) and rid and dec in ("allow", "allow_session", "deny"):
                         try:
                             await mgr.deliver_approval_decision(session_id, rid, dec, sender_email=participant_email)
+                        except SessionNotFound:
+                            pass
+                elif kind == "question_answer":
+                    # Co-drive participants may answer questions for the same
+                    # reason they may approve. Same validation as ws_stream.
+                    rid = frame.get("request_id")
+                    answers = frame.get("answers")
+                    dismissed = bool(frame.get("dismissed"))
+                    if isinstance(rid, str) and rid and (dismissed or isinstance(answers, dict)):
+                        try:
+                            await mgr.deliver_question_answer(
+                                session_id,
+                                rid,
+                                answers=answers if isinstance(answers, dict) else None,
+                                dismissed=dismissed,
+                                sender_email=participant_email,
+                            )
                         except SessionNotFound:
                             pass
         except WebSocketDisconnect:

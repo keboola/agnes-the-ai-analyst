@@ -161,7 +161,13 @@ class TestKeboolaMetastoreAdapter:
         model = _model(docs, 1)
         assert model["datasets"][0]["name"] == "customers"
         assert "relationships" not in model
-        assert "custom_extensions" not in model
+        # The model-level extension now always carries the model's own
+        # `metastore_id`, so its mere presence no longer means "this model has
+        # constraints or glossary". Assert the absence of those keys instead —
+        # which is what this test was ever about.
+        ext = _custom_extensions(model).get("AGNES", {})
+        assert "constraints" not in ext
+        assert "glossary" not in ext
 
 
 class TestComposeDocumentEdgeCases:
@@ -213,3 +219,108 @@ class TestComposeDocumentEdgeCases:
         }
         doc = yaml.safe_load(compose_document(model_item, model_items))
         assert "metrics" not in doc["semantic_model"][0]
+
+
+# ---------------------------------------------------------------------------
+# Upstream object identity. The adapter reads each Metastore item's `id` (and
+# `meta`, its revision) but composed documents carrying neither — so every
+# sync overwrote the document with one that could not say which upstream
+# object each entry came from. That is the one omission a later write-back
+# cannot reconstruct: it is lost at fetch time, every time, and no amount of
+# later work recovers the history. Storing it costs nothing (the document is
+# the canonical record and is kept verbatim) and it is what phase 2's PATCH
+# will key on.
+# ---------------------------------------------------------------------------
+
+
+def _model_item(uuid="model-1", name="core"):
+    return {"type": "semantic-model", "id": uuid, "attributes": {"name": name, "sqlDialect": "ANSI_SQL"}}
+
+
+def _items(**overrides):
+    base = {
+        "semantic-dataset": [
+            {
+                "type": "semantic-dataset",
+                "id": "ds-uuid",
+                "attributes": {"name": "orders", "tableId": "in.c-shop.orders"},
+            }
+        ],
+        "semantic-metric": [
+            {
+                "type": "semantic-metric",
+                "id": "metric-uuid",
+                "attributes": {"name": "revenue", "sql": "SUM(amount)", "dataset": "in.c-shop.orders"},
+            }
+        ],
+        "semantic-constraint": [],
+        "semantic-relationship": [],
+        "semantic-glossary": [],
+    }
+    base.update(overrides)
+    return base
+
+
+class TestUpstreamIdentityIsPreserved:
+    def test_dataset_and_metric_carry_their_metastore_id(self):
+        model = yaml.safe_load(compose_document(_model_item(), _items()))["semantic_model"][0]
+
+        assert _custom_extensions(model["datasets"][0])["AGNES"]["metastore_id"] == "ds-uuid"
+        assert _custom_extensions(model["metrics"][0])["AGNES"]["metastore_id"] == "metric-uuid"
+
+    def test_the_model_carries_its_own_metastore_id(self):
+        model = yaml.safe_load(compose_document(_model_item("model-42"), _items()))["semantic_model"][0]
+
+        assert _custom_extensions(model)["AGNES"]["metastore_id"] == "model-42"
+
+    def test_constraints_and_glossary_entries_carry_theirs(self):
+        items = _items(
+            **{
+                "semantic-constraint": [
+                    {
+                        "type": "semantic-constraint",
+                        "id": "c-uuid",
+                        "attributes": {"name": "non_negative", "rule": "value >= 0", "metrics": ["revenue"]},
+                    }
+                ],
+                "semantic-glossary": [
+                    {"type": "semantic-glossary", "id": "g-uuid", "attributes": {"term": "MRR", "definition": "…"}}
+                ],
+            }
+        )
+        model = yaml.safe_load(compose_document(_model_item(), items))["semantic_model"][0]
+        agnes = _custom_extensions(model)["AGNES"]
+
+        assert agnes["constraints"][0]["metastore_id"] == "c-uuid"
+        assert agnes["glossary"][0]["metastore_id"] == "g-uuid"
+
+    def test_a_revision_is_carried_when_upstream_sends_one(self):
+        items = _items(
+            **{
+                "semantic-metric": [
+                    {
+                        "type": "semantic-metric",
+                        "id": "metric-uuid",
+                        "meta": {"revision": 7},
+                        "attributes": {"name": "revenue", "sql": "SUM(amount)"},
+                    }
+                ]
+            }
+        )
+        model = yaml.safe_load(compose_document(_model_item(), items))["semantic_model"][0]
+
+        assert _custom_extensions(model["metrics"][0])["AGNES"]["metastore_revision"] == {"revision": 7}
+
+    def test_no_revision_key_when_upstream_sends_none(self):
+        """Whether `meta` rides along on the list endpoint is not settled
+        upstream. Absent means absent — an invented `null` revision would be
+        indistinguishable from a real one that happens to be empty."""
+        model = yaml.safe_load(compose_document(_model_item(), _items()))["semantic_model"][0]
+
+        assert "metastore_revision" not in _custom_extensions(model["metrics"][0])["AGNES"]
+
+    def test_the_composed_document_is_still_schema_valid(self):
+        from src.semantic.document_validation import validate_document
+
+        result = validate_document(compose_document(_model_item(), _items()))
+        assert result.ok, result.errors

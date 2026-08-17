@@ -200,7 +200,8 @@ async def publish_control(
     reason: Optional[str] = None,
     extra: Optional[dict] = None,
 ) -> int:
-    """Append a CONTROL command (``"kill"`` / ``"cancel"`` / ``"approval"``) to ``chat_id``'s
+    """Append a CONTROL command (``"kill"`` / ``"cancel"`` / ``"approval"`` /
+    ``"question"``) to ``chat_id``'s
     inbound stream, for the owning gateway's consumer to execute against
     its LOCAL session (``ChatManager._inbound_consumer_loop`` dispatches
     ``type == "control"`` entries to the local ``kill``/``cancel`` instead
