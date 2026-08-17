@@ -1889,6 +1889,9 @@ KNOWN_UNTESTED = {
     # Google OAuth — requires live credentials
     "GET /auth/google/login",
     "GET /auth/google/callback",
+    # Microsoft Entra ID OAuth — requires live credentials
+    "GET /auth/microsoft/login",
+    "GET /auth/microsoft/callback",
     # Keboola OAuth — redirects to an external OAuth server; behaviour
     # covered by tests/test_keboola_oauth_provider.py
     "GET /auth/keboola/login",
