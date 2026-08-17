@@ -6,6 +6,9 @@
 !.claude/settings.json
 CLAUDE.local.md
 
+# Per-session working notes and throwaway mocks (conflict plans, HTML sketches).
+.scratch/
+
 # Local dev data (copied from server for testing)
 dev_data/
 session-analysis/
@@ -124,6 +127,8 @@ dist/
 build/
 out/
 target/
+.build/
+.swiftpm/
 
 # SSH keys
 .ssh/

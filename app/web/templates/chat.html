@@ -20,37 +20,23 @@
 
 {% block head_extra %}
   <link rel="stylesheet" href="{{ static_url('css/chat.css') }}" />
-  {# Rail pre-conversation dashboard styles (.rdb-* — greeting, activity
-     panels, task starters). Rail-only markup, so topnav skips the sheet. #}
-  {% if ui_layout == 'rail' %}
+  {# Pre-conversation dashboard styles (.rdb-* — greeting, activity panels,
+     task starters). #}
   <link rel="stylesheet" href="{{ static_url('css/chat_dashboard.css') }}" />
-  {% endif %}
   <link rel="stylesheet" href="/static/vendor/highlight.min.css" />
   <script src="/static/vendor/marked.min.js"></script>
   <script src="/static/vendor/highlight.min.js"></script>
-  {# Anti-FOUC: pre-paint the persisted sidebar-collapsed state before
-     first render so a mini-mode user doesn't see the full sidebar flash
-     while chat.js boots. #}
-  <script>
-    (function () {
-      try {
-        // Pre-paint sidebar-collapsed state. The chat shell isn't in
-        // the DOM yet, so we stamp <html data-chat-sidebar="mini">
-        // and let chat.css's selectors target either the shell
-        // (after parse) or the html attribute as a transitional
-        // signal. chat.js promotes this to a class on the shell once
-        // the page is interactive.
-        // Rail has no mini-collapse (the column is a slide-open panel and
-        // the un-collapse toggle is hidden), so never pre-paint mini there —
-        // a stored flag from a topnav session must not carry into rail.
-        var c = localStorage.getItem("agnes-chat-sidebar-collapsed");
-        var railLayout = document.documentElement.getAttribute("data-ui-layout") === "rail";
-        if (c === "1" && !railLayout) {
-          document.documentElement.setAttribute("data-chat-sidebar", "mini");
-        }
-      } catch (_) { /* private mode / storage disabled — no-op */ }
-    })();
-  </script>
+  {# The anti-FOUC pre-paint for the chat sidebar's mini state was here. It
+     stamped `data-chat-sidebar="mini"` on <html> before first render, and
+     already skipped the rail — "rail has no mini-collapse; a stored flag from
+     a topnav session must not carry into rail". With the rail the only chrome
+     (Wave 0, 2026-08) that skip is unconditional, so the block could never
+     stamp anything, and the `.cloud-chat-sidebar` it pre-painted is not
+     rendered by any template any more.
+
+     chat.js still CLEARS the attribute on boot (`removeAttribute`), which is
+     the right direction to keep: it costs nothing and cleans up after a
+     browser that cached the old markup. #}
 {% endblock %}
 
 {# Use full container so the chat shell can stretch edge-to-edge —
@@ -100,65 +86,9 @@
 </div>
 
 <div class="cloud-chat-shell">
-  {# Conversations column — TOPNAV ONLY. Under the rail layout the chat history
-     lives in the left rail itself (_app_rail.html → .rail-history), which owns
-     #chat-list / #cloud-chat-empty-state / #chat-journey there; rendering them
-     here too would duplicate those ids. Topnav keeps the classic in-page
-     sidebar (collapsible mini-rail, +New chat button, journey panel) unchanged. #}
-  {% if ui_layout != 'rail' %}
-  <aside class="cloud-chat-sidebar" aria-label="Conversations">
-    <header class="cloud-chat-sidebar-header">
-      {# Collapse toggle — the sidebar can shrink to a ~56px rail that
-         shows just the +New chat icon, conversation initials, and the
-         theme toggle. State persists in ``localStorage["agnes-chat-
-         sidebar-collapsed"]`` so the user's preference survives
-         reloads. The aria-expanded flag mirrors the visible state so
-         screen readers report it correctly. #}
-      <button type="button" id="chat-sidebar-toggle"
-              class="btn btn-ghost btn-sm cloud-chat-sidebar-toggle"
-              aria-label="Collapse sidebar"
-              aria-expanded="true">
-        <svg class="cloud-chat-sidebar-toggle-icon" viewBox="0 0 16 16"
-             width="14" height="14" aria-hidden="true"
-             fill="none" stroke="currentColor" stroke-width="1.6"
-             stroke-linecap="round" stroke-linejoin="round">
-          <path d="M2.5 3.5h11M2.5 8h11M2.5 12.5h11"/>
-        </svg>
-      </button>
-      <span class="cloud-chat-sidebar-title">Conversations</span>
-      <button type="button" id="new-chat"
-              class="btn btn-primary btn-sm cloud-chat-new-btn"
-              aria-label="Start a new chat">
-        <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
-          <path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
-        </svg>
-        <span class="cloud-chat-new-btn-label">New chat</span>
-      </button>
-    </header>
-    <ul id="chat-list" class="cloud-chat-list" role="list"></ul>
-    <p id="cloud-chat-empty-state" class="cloud-chat-sidebar-empty">No conversations yet.</p>
-
-    {# The door to /chats — the surface that manages conversations (search, the
-       four views, per-row and bulk actions). Topnav's column is full-height and
-       uncapped, so unlike the rail's this link stands in for nothing that is
-       being hidden: it is here because managing a hundred chats is not something
-       a sidebar can do, and because without it the page would be unreachable in
-       this chrome. Its label carries no count and it never collapses the list —
-       it navigates. Hidden when the sidebar is collapsed to its mini rail (see
-       chat.css), where there is no room for a phrase. #}
-    <a class="cloud-chat-sidebar-all" href="/chats">
-      <span class="cloud-chat-sidebar-all-label">View all chats</span>
-      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m9 6 6 6-6 6" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>
-    </a>
-
-    {# No journey checklist here: the chat-driven onboarding layer (checklist,
-       greeting, auto-launched tour) ships with the rail redesign, where it
-       lives in _app_rail.html's onboarding card. The topnav sidebar reads
-       exactly as it did before the redesign — chat_onboarding.js boots only
-       under the rail chrome (IS_RAIL gate), so nothing writes here either.
-       Guarded by tests/test_ui_layout_theme.py::TestDefaultContentParity. #}
-  </aside>
-  {% endif %}
+  {# Conversations column lives in the left rail itself (_app_rail.html →
+     .rail-history), which owns #chat-list / #cloud-chat-empty-state /
+     #chat-journey there — this page has no in-page sidebar of its own. #}
 
   <section class="cloud-chat-main">
     {# Active conversation header. JS toggles ``hidden`` based on
@@ -171,14 +101,9 @@
        for anyone else, admins included), so a user who hits a bad answer has
        nothing to hand to whoever could look at it. This puts the whole thread
        — including the tool calls, which are the provenance — on the clipboard
-       as markdown.
-
-       Rail-only, like every other redesign addition to this template: a
-       default topnav instance's header must render exactly as it did before
-       (guarded by tests/test_ui_layout_theme.py::TestDefaultContentParity). #}
+       as markdown. #}
     <header id="chat-thread-header" class="cloud-chat-thread-header" hidden>
       <h2 id="chat-thread-title" class="cloud-chat-thread-title">Untitled chat</h2>
-      {% if ui_layout == 'rail' %}
       <button type="button" id="chat-copy-transcript"
               class="cloud-chat-thread-action"
               title="Copy this whole conversation as markdown"
@@ -190,7 +115,6 @@
         </svg>
         <span>Copy transcript</span>
       </button>
-      {% endif %}
     </header>
 
     <div id="chat-status" class="cloud-chat-status" aria-live="polite"></div>
@@ -200,17 +124,12 @@
        sidebar. Counts (tables, plugins, snapshots) are loaded
        asynchronously by chat.js so we don't block the page render on
        slow catalog reads. #}
-    {# Empty-state — rail layout gets the pre-conversation Dashboard
-       (issue #896), topnav keeps the classic capability cards so default
-       instances are unchanged (guarded by tests/test_ui_layout_theme.py).
-       Both share the ``#chat-capabilities`` id, so chat.js's
-       showCapabilities/hideCapabilities work either way. The rail state
-       drops the cap-data-summary cards and suggestion buttons;
-       renderCapabilities()'s card accessors are all null-guarded and
-       wireSuggestionButtons matches zero nodes there, so their absence
-       is a no-op. #}
-    {% if ui_layout == 'rail' %}
-    {# Rail pre-conversation state = the Dashboard (#896). The empty state
+    {# Empty-state = the pre-conversation Dashboard (issue #896). The
+       retired topnav chrome used to keep classic capability cards here
+       instead, via a frozen partial that has since been deleted;
+       #chat-capabilities is the id chat.js's showCapabilities/
+       hideCapabilities always targeted, so nothing there needed to change. #}
+    {# The empty state
        is split around the composer so the REAL composer sits under the
        hero: greeting + Knowledge Layer banner above (this block — the
        banner deliberately comes BEFORE the input: first understand what
@@ -244,13 +163,6 @@
          from search (both of which can say how many definitions there are);
          citing it inside the answer that used it is issue #1134. #}
     </aside>
-    {% else %}
-    {# Frozen pre-redesign welcome cards, byte-for-byte (spec 2026-08-07
-       wave 2): the redesign's emoji→icon sweep and copy tweak reached this
-       default-chrome block, so it moved to a LEGACY_FROZEN partial. The
-       include inherits this template's context (current_user etc.). #}
-    {% include "_chat_welcome_cards_legacy.html" %}
-    {% endif %}
 
     <div id="chat-messages" class="cloud-chat-messages" aria-live="polite"></div>
     <form id="chat-form" class="cloud-chat-form">
@@ -264,24 +176,16 @@
            role="listbox" aria-label="Skills and commands">
         <ul id="chat-slash-menu-results" class="cloud-chat-slash-menu-results"></ul>
       </div>
-      {# Rail: Agnes-branded placeholder + an inner .cloud-chat-composer
-         wrapper so the green pill can live INSIDE the form while the form
-         itself acts as the hero box's middle row in the dashboard empty
-         state (chat_dashboard.css). Topnav keeps its classic markup —
-         the wrapper would break its grid composer. #}
-      {% if ui_layout == 'rail' %}
+      {# Agnes-branded placeholder + an inner .cloud-chat-composer wrapper
+         so the green pill can live INSIDE the form while the form itself
+         acts as the hero box's middle row in the dashboard empty state
+         (chat_dashboard.css). #}
       <div class="cloud-chat-composer">
-      {% endif %}
       {# "+" button + its upload menu, wrapped together in a position:relative
          anchor so the popover attaches to the BUTTON (not the whole form).
          Sits at the LEADING edge of the composer, left of the textarea,
-         inside the .cloud-chat-composer pill. RAIL-ONLY: the upload menu
-         ships with the redesign; the default topnav composer reads exactly
-         as before the redesign (guarded by tests/test_ui_layout_theme.py::
-         TestDefaultContentParity). chat.js null-guards #chat-plus-btn, so
-         the absent markup is inert there. aria-haspopup="menu" +
+         inside the .cloud-chat-composer pill. aria-haspopup="menu" +
          aria-expanded are toggled by chat.js for screen readers. #}
-      {% if ui_layout == 'rail' %}
       <span class="cloud-chat-plus-wrap">
         <button type="button" id="chat-plus-btn"
                 class="cloud-chat-plus-btn"
@@ -314,31 +218,20 @@
           </li>
         </ul>
       </span>
-      {% endif %}
-      {% if ui_layout == 'rail' %}
       <textarea id="chat-input" class="cloud-chat-input" placeholder="Ask Agnes anything... (try: summarize revenue trends)" rows="1"></textarea>
-      {% else %}
-      <textarea id="chat-input" class="cloud-chat-input" placeholder="Ask Agnes… (try / for skills)" rows="2"></textarea>
-      {% endif %}
       <div class="cloud-chat-form-actions">
         <button type="button" id="cancel-btn"
                 class="btn btn-danger cloud-chat-stop-btn" hidden>Stop</button>
-        {# Rail (issue #896): circular send button matching the /ask
-           composer (paper pill + up-arrow glyph); aria-label carries the
-           "Send" name the visible text used to provide. Topnav keeps the
-           classic ``.btn .btn-primary`` "Send" button unchanged. #}
-        {% if ui_layout == 'rail' %}
+        {# Circular send button matching the /ask composer (paper pill +
+           up-arrow glyph); aria-label carries the "Send" name the visible
+           text used to provide. #}
         <button type="submit"
                 class="cloud-chat-send-btn" aria-label="Send">
           <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </button>
-        {% else %}
-        <button type="submit"
-                class="btn btn-primary cloud-chat-send-btn">Send</button>
-        {% endif %}
       </div>
-      {# Closes the rail-only .cloud-chat-composer pill wrapper. #}
-      {% if ui_layout == 'rail' %}</div>{% endif %}
+      {# Closes .cloud-chat-composer, opened above. #}
+      </div>
     </form>
 
     {# ── Upload dialogs ─────────────────────────────────────────────────────
@@ -498,7 +391,6 @@
       </div>
     </div>
 
-    {% if ui_layout == 'rail' %}
     {# Empty-state extras that sit BELOW the composer — the Stack status line
        and the Suggested-next-actions card row. Placed after #chat-form in the
        DOM; flex order (chat.css) renders it below the composer. Auto-hides
@@ -578,13 +470,10 @@
       {{ knowledge_layer_banner(orient_label='See how ' ~ (instance_brand_short or 'Agnes') ~ ' works') }}
     </div>
 
-    {# Footer credit — pinned to the very bottom of the page. Config-driven
-       (INSTANCE_COPYRIGHT): the public distribution carries no vendor
-       branding — an instance puts its own name here via config. #}
-    <footer class="cloud-chat-empty-foot">
-      <p class="footer-copy">&copy; {{ now().year if now is defined else 2026 }} {{ config.INSTANCE_COPYRIGHT or 'AI Harness' }}</p>
-    </footer>
-    {% endif %}
+    {# Shared footer partial, pinned to the very bottom of the empty state.
+       `footer_class` keeps the `.cloud-chat-empty-foot` rules (rail ordering,
+       margin-top:auto, muted 12.5px type) on the element. See _footer.html. #}
+    {% with footer_class = 'cloud-chat-empty-foot' %}{% include '_footer.html' %}{% endwith %}
   </section>
 </div>
 {% endblock %}
@@ -601,11 +490,7 @@
   </script>
   {# window.chatRowMenu — shared "⋮" row menu (Pin/Unpin · Rename · Delete),
      also loaded by _app_rail.html; the component self-guards against running
-     twice. Classic + defer so it is defined before chat.js builds any row.
-     RAIL-ONLY: the row menu ships with the redesign; chat.js null-guards
-     window.chatRowMenu, so topnav rows simply render without the "⋮". #}
-  {% if ui_layout == 'rail' %}
+     twice. Classic + defer so it is defined before chat.js builds any row. #}
   <script src="{{ static_url('js/components/chat_row_menu.js') }}" defer></script>
-  {% endif %}
   <script type="module" src="{{ static_url('js/chat.js') }}"></script>
 {% endblock %}

@@ -58,21 +58,21 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 import duckdb
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from starlette.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import exc as sa_exc
 
 from app.auth.access import can_access, is_user_admin, require_admin
-from app.auth.dependencies import _get_db, get_current_user
+from app.auth.dependencies import _get_db, get_current_user, reject_keboola_header_credential
 from app.auth.jwt import create_access_token
 from app.auth.pat_resolver import DATA_APP_PREVIEW_SCOPE_PREFIX
 from app.instance_config import feature_enabled, get_data_apps_config, get_public_url
 from app.resource_types import ResourceType
 from app.secrets_vault import VaultKeyNotConfiguredError, decrypt_secret, encrypt_secret
 from src.data_apps.git_repos import fast_forward_live, init_app_repo
-from src.data_apps.runner_client import RunnerClient, RunnerError, RunnerUnavailable
+from src.data_apps.runner_client import RunnerClient, RunnerError, RunnerUnavailable, up_timeout
 from src.data_apps.spec import AGNES_INTERNAL_URL, RESERVED_SLUGS, SLUG_RE, build_config_json, build_container_spec
 from src.repositories import access_token_repo, audit_repo, data_apps_repo, users_repo
 
@@ -207,9 +207,33 @@ def _release_create_lease(lease_name: str, holder: str) -> None:
 # again inside `redeploy_current` would be a self-deadlock (`lease_acquire`
 # is not reentrant for the same holder, see `CoordinationBackend`'s
 # docstring).
-_OP_LEASE_TTL_S = 120
+#
+# The TTL is DERIVED from the runner client's `up` budget rather than being a
+# flat number of its own: the lease has to outlive the longest operation it
+# serializes, or it stops serializing anything. A cold host pulls the ~1.3 GB
+# runtime image inside `runner.up()` — budgeted at `up_timeout()` (600 s by
+# default, `APPS_RUNNER_UP_TIMEOUT` for slower links) — so a flat 120 s lease
+# would lapse mid-deploy and let a concurrent deploy/stop/delete/wake in on
+# exactly the app whose container is still being created: the unlocked
+# check-then-act race in `services/apps_runner/api.py::up()` that this lease
+# exists to prevent. The wake path (`_trigger_wake`) never releases the lease
+# explicitly at all — it relies on the TTL alone — so an under-sized TTL is
+# not merely a narrow window there but the whole guarantee.
+#
+# The margin covers everything `deploy_data_app` does around the runner call
+# (token mint, spec build, state writes) inside the same lease.
+_OP_LEASE_MARGIN_S = 60.0
 _OP_LEASE_RETRIES = 3
 _OP_LEASE_RETRY_DELAY_S = 0.1
+
+
+def op_lease_ttl_s() -> float:
+    """TTL for `dataapp:op:{slug}`, always above the runner's `up` budget.
+
+    Read at acquire time (not import time) so an operator's
+    `APPS_RUNNER_UP_TIMEOUT` is honored without a code change.
+    """
+    return up_timeout() + _OP_LEASE_MARGIN_S
 
 
 def _op_lease_name(slug: str) -> str:
@@ -237,7 +261,7 @@ def try_acquire_op_lease(slug: str) -> tuple[bool, str]:
 
     holder = default_holder_id()
     try:
-        acquired = coordination().lease_acquire(_op_lease_name(slug), holder, ttl_s=_OP_LEASE_TTL_S)
+        acquired = coordination().lease_acquire(_op_lease_name(slug), holder, ttl_s=op_lease_ttl_s())
     except CoordinationUnavailable:
         return True, holder
     return acquired, holder
@@ -260,7 +284,7 @@ def require_op_lease(slug: str) -> str:
     (a concurrent deploy/stop request, or an in-flight wake). The retries
     only smooth over near-simultaneous requests about to release on their
     own — a genuinely in-flight operation (e.g. a wake's backgrounded
-    redeploy, held for up to `_OP_LEASE_TTL_S`) is expected to make the
+    redeploy, held for up to `op_lease_ttl_s()`) is expected to make the
     caller retry later, not block the request for the full TTL.
 
     Returns the holder id to pass to `release_op_lease` in a `finally`.
@@ -718,6 +742,16 @@ def preview_cookie_name(slug: str) -> str:
 _COOKIE_NAME_SAFE_RE = _re.compile(r"^[A-Za-z0-9_-]+$")
 
 
+class SlugNotCookieSafeError(ValueError):
+    """The mint's deliberate header-safety refusal — and ONLY that.
+
+    A dedicated type so the preview-grant handler can map exactly this
+    refusal to 400 ``slug_not_cookie_safe``; a blanket ``except ValueError``
+    also swallowed unrelated ``ValueError``s from ``create_access_token`` or
+    the repo insert, presenting a 5xx-class backend fault as a bad app name
+    (Devin Review on #1321)."""
+
+
 # Q4 (spec §7/§11): 30-minute default TTL, renewed on every
 # `agnes_data_app_preview` call, hard-capped by SessionEnd's best-effort
 # revoke (`revoke_preview_tokens_for_user`, called from `app/chat/manager.py`).
@@ -750,6 +784,17 @@ def _mint_preview_token(row: dict, requester: dict, *, ttl_s: int = _PREVIEW_TOK
     plain top-level-adjacent GET, not a cross-site POST.
     """
     slug = row["slug"]
+    # BEFORE any side effect. The slug is interpolated into the `Set-Cookie`
+    # NAME below, so it is re-checked at mint rather than trusted: every row
+    # reaches this through a validated create, and a header built from an
+    # unvalidated name is exactly the shape a CRLF injection needs. The check
+    # sat after the mint at first, which made the refusal side-effectful — a
+    # rejected slug still left a live, unrevoked 30-minute credential row in
+    # `access_tokens` that nothing would ever hand out or clean up (Devin
+    # Review on this PR). Validate-first makes the refusal free of both the
+    # JWT and the row.
+    if not _COOKIE_NAME_SAFE_RE.match(slug or ""):
+        raise SlugNotCookieSafeError(f"data app slug is not safe in a cookie name: {slug!r}")
     token_id = str(uuid.uuid4())
     ttl = timedelta(seconds=ttl_s)
     expires_at = datetime.now(timezone.utc) + ttl
@@ -785,17 +830,13 @@ def _mint_preview_token(row: dict, requester: dict, *, ttl_s: int = _PREVIEW_TOK
     #
     # What the path WAS silently doing is keeping two apps' cookies apart, so
     # the per-app scoping moves to the cookie NAME instead — see
-    # `preview_cookie_name`. The name is interpolated into a response header,
-    # so the slug is re-checked here rather than trusted: every row reaches
-    # this through a validated create, and a header built from an unvalidated
-    # name is exactly the shape a CRLF injection needs.
+    # `preview_cookie_name`. The name embeds the slug, which is why the
+    # header-safety check at the top of this function exists.
     #
     # Still path-prefix ingress only (the verified default; `subdomain_base`
     # unset). In subdomain mode the app is served on a different origin whose
     # paths start at `/`, so subdomain-mode preview remains a follow-up — it
     # needs a cross-origin cookie the same-origin fetch cannot set.
-    if not _COOKIE_NAME_SAFE_RE.match(slug or ""):
-        raise ValueError(f"data app slug is not safe in a cookie name: {slug!r}")
     cookie = f"{preview_cookie_name(slug)}={jwt_token}; Max-Age={max(ttl_s, 0)}; Path=/; SameSite=Lax; HttpOnly"
     return jwt_token, cookie
 
@@ -825,6 +866,27 @@ def revoke_preview_tokens_for_user(user_id: str) -> None:
 def _handle_runner_failure(repo, app_id: str, exc: Exception) -> None:
     detail = getattr(exc, "detail", None) or str(exc)
     repo.set_state(app_id, "error", str(detail))
+
+
+def _runner_http_error(exc: Exception) -> HTTPException:
+    """Map a runner-call failure to the 502 the caller sees, WITHOUT
+    flattening the two very different causes into one word.
+
+    ``RunnerUnavailable`` means the transport failed — the sidecar is down,
+    unreachable, or slower than the client timeout. ``runner_unavailable``
+    is then literally true and the operator should go look at the process.
+
+    ``RunnerError`` means the sidecar answered, with its own diagnosis
+    (``image_not_found``, ``image_not_allowed``, ``bad_runner_token``,
+    ``docker_error: ...``). Reporting *that* as "unavailable" is a lie that
+    has now cost two investigations: both times a healthy, responding
+    sidecar was blamed while its actual answer — which named the problem
+    outright — was discarded here. Pass its words through instead.
+    """
+    if isinstance(exc, RunnerError):
+        detail = getattr(exc, "detail", None) or str(exc)
+        return HTTPException(status_code=502, detail=f"runner_error: {detail}")
+    return HTTPException(status_code=502, detail="runner_unavailable")
 
 
 class OwnerNotFoundError(Exception):
@@ -1112,7 +1174,7 @@ async def set_data_app_description(
     return _serialize(_get_row_or_404(slug))
 
 
-@router.post("", status_code=201)
+@router.post("", status_code=201, dependencies=[Depends(reject_keboola_header_credential)])
 async def create_data_app(
     payload: CreateDataAppRequest,
     user: dict = Depends(get_current_user),
@@ -1203,7 +1265,7 @@ async def get_data_app(slug: str, user: dict = Depends(get_current_user)):
     return out
 
 
-@router.post("/{slug}/deploy")
+@router.post("/{slug}/deploy", dependencies=[Depends(reject_keboola_header_credential)])
 async def deploy_data_app(
     slug: str,
     payload: DeployRequest,
@@ -1251,15 +1313,26 @@ async def deploy_data_app(
                 raise HTTPException(status_code=400, detail=str(exc))
 
         try:
-            redeploy_current(row)
+            # OFF the event loop. `redeploy_current` ends in a synchronous
+            # httpx call to the runner sidecar budgeted at `up_timeout()`
+            # (600 s by default, for a cold ~1.3 GB image pull). Called inline
+            # from this `async def`, one first-deploy-on-a-cold-host would
+            # freeze the single uvicorn event loop for that whole window —
+            # no /api/health, no sign-in, every other request queued behind
+            # an image download. `_run_wake_fn` in `data_apps_proxy.py`
+            # already offloads the very same callable for the wake path.
+            await run_in_threadpool(redeploy_current, row)
         except OwnerNotFoundError:
             raise HTTPException(status_code=500, detail="owner_not_found")
         except DraftParentMissingError:
             raise HTTPException(status_code=409, detail="parent_not_found")
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
-        except (RunnerUnavailable, RunnerError):
-            raise HTTPException(status_code=502, detail="runner_unavailable")
+        except (RunnerUnavailable, RunnerError) as exc:
+            # `redeploy_current` already recorded state=error + state_detail
+            # via `_handle_runner_failure`; this only decides what the caller
+            # of THIS request is told.
+            raise _runner_http_error(exc)
 
         repo.record_deploy(row["id"], sha)
         repo.set_state(row["id"], "running")
@@ -1270,7 +1343,7 @@ async def deploy_data_app(
         release_op_lease(slug, holder)
 
 
-@router.post("/{slug}/git-credential")
+@router.post("/{slug}/git-credential", dependencies=[Depends(reject_keboola_header_credential)])
 async def mint_git_credential(
     slug: str,
     user: dict = Depends(get_current_user),
@@ -1290,7 +1363,7 @@ async def mint_git_credential(
     return {"git_clone_url": url}
 
 
-@router.post("/{slug}/preview-grant")
+@router.post("/{slug}/preview-grant", dependencies=[Depends(reject_keboola_header_credential)])
 async def create_preview_grant(
     slug: str,
     user: dict = Depends(get_current_user),
@@ -1313,7 +1386,16 @@ async def create_preview_grant(
     if not _can_view(user, row):
         raise HTTPException(status_code=403, detail="forbidden")
     _reject_linked(row)
-    _token, cookie = _mint_preview_token(row, user)
+    try:
+        _token, cookie = _mint_preview_token(row, user)
+    except SlugNotCookieSafeError:
+        # The mint's own header-safety refusal (slug unsafe in a cookie name)
+        # is deliberate and side-effect-free — surface it as a clean 400, not
+        # an unhandled 500. Caught by its dedicated type only: a blanket
+        # ValueError catch also relabelled unrelated backend faults
+        # (create_access_token claims, repo validation) as a bad app name;
+        # those must keep surfacing as 500s (Devin Review on this PR).
+        raise HTTPException(status_code=400, detail="slug_not_cookie_safe")
     expires_at = datetime.now(timezone.utc) + timedelta(seconds=_PREVIEW_TOKEN_TTL_S)
     _audit(conn, user["id"], "data_app.preview_grant", f"data_app:{slug}", {})
     # Install the cookie via a real Set-Cookie response header, not just the JSON
@@ -1327,7 +1409,7 @@ async def create_preview_grant(
     return resp
 
 
-@router.post("/{slug}/drafts", status_code=201)
+@router.post("/{slug}/drafts", status_code=201, dependencies=[Depends(reject_keboola_header_credential)])
 async def create_draft(
     slug: str,
     payload: CreateDraftRequest,
@@ -1415,7 +1497,7 @@ async def create_draft(
     return {"id": draft_id, "slug": draft_slug, "branch": payload.branch, "git_clone_url": git_url}
 
 
-def _teardown_draft(repo, parent_slug: str, draft: dict, conn: duckdb.DuckDBPyConnection, actor_id: str) -> None:
+async def _teardown_draft(repo, parent_slug: str, draft: dict, conn: duckdb.DuckDBPyConnection, actor_id: str) -> None:
     """Shared draft-teardown body: best-effort container stop, service-token
     revoke, draft-branch delete on the PARENT repo, registry row delete,
     and config-dir cleanup. Used by both ``delete_draft`` (single draft) and
@@ -1430,11 +1512,15 @@ def _teardown_draft(repo, parent_slug: str, draft: dict, conn: duckdb.DuckDBPyCo
     for the draft could race ``runner.up()`` against this teardown's
     ``runner.stop()``, the exact unlocked check-then-act corruption the
     lease exists to prevent (see CHANGELOG 0.76.23).
+
+    ``async`` only so the runner call can be offloaded — both call sites are
+    already `async def` handlers, and a blocking sidecar call left inline
+    there runs on the single event loop.
     """
     draft_slug = draft["slug"]
     holder = require_op_lease(draft_slug)
     try:
-        _runner().stop(draft_slug, mode="recreate")
+        await run_in_threadpool(_runner().stop, draft_slug, "recreate")
     except (RunnerUnavailable, RunnerError):
         logger.warning("_teardown_draft: runner stop failed for %s (continuing)", draft_slug)
     finally:
@@ -1486,7 +1572,7 @@ async def delete_draft(
     if not draft.get("is_draft") or draft.get("parent_app_id") != parent["id"]:
         raise HTTPException(status_code=400, detail="not_a_draft")
 
-    _teardown_draft(repo, slug, draft, conn, user["id"])
+    await _teardown_draft(repo, slug, draft, conn, user["id"])
 
 
 @router.post("/{slug}/stop")
@@ -1506,10 +1592,10 @@ async def stop_data_app(
     try:
         repo = data_apps_repo()
         try:
-            _runner().stop(slug, mode="recreate")
+            await run_in_threadpool(_runner().stop, slug, "recreate")
         except (RunnerUnavailable, RunnerError) as exc:
             _handle_runner_failure(repo, row["id"], exc)
-            raise HTTPException(status_code=502, detail="runner_unavailable")
+            raise _runner_http_error(exc)
 
         repo.set_state(row["id"], "stopped")
         # Spec §8/§10: an explicit stop revokes the service token — unlike
@@ -1589,7 +1675,7 @@ async def delete_data_app(
     # Drafts live on the parent's repo and have their own containers/branches;
     # tear them down first so deleting a prod app can't strand them.
     for draft in repo.list_drafts(row["id"]):
-        _teardown_draft(repo, slug, draft, conn, user["id"])
+        await _teardown_draft(repo, slug, draft, conn, user["id"])
 
     holder = require_op_lease(slug)
     try:
@@ -1597,7 +1683,7 @@ async def delete_data_app(
         # (there'd otherwise be no way to remove an app whose container host is
         # gone).
         try:
-            _runner().stop(slug, mode="recreate")
+            await run_in_threadpool(_runner().stop, slug, "recreate")
         except (RunnerUnavailable, RunnerError):
             logger.warning("delete_data_app: runner stop failed for %s (continuing)", slug)
 
@@ -1654,14 +1740,102 @@ async def get_data_app_logs(slug: str, tail: int = 200, user: dict = Depends(get
     _reject_linked(row)
 
     try:
-        logs = _runner().logs(slug, tail=tail)
-    except (RunnerUnavailable, RunnerError):
-        raise HTTPException(status_code=502, detail="runner_unavailable")
+        logs = await run_in_threadpool(_runner().logs, slug, tail)
+    except (RunnerUnavailable, RunnerError) as exc:
+        raise _runner_http_error(exc)
     return {"logs": logs}
 
 
+def _readiness_cors_headers(request: Request, slug: str) -> dict[str, str]:
+    """CORS response headers for ``slug``'s OWN subdomain origin, or ``{}``.
+
+    On a subdomain-served instance the holding page is rendered on
+    ``https://<slug>.<subdomain_base>`` and its readiness poll goes to the
+    main host (`_readiness_poll_url`) with ``credentials: "include"`` — a
+    cross-origin GET whose *response* the page's JS must be allowed to read.
+
+    That allowance is deliberately NOT the app-wide ``CORSMiddleware``'s job.
+    A first cut added an ``allow_origin_regex`` over every data-app subdomain
+    there, paired with ``allow_credentials=True`` — but those subdomains serve
+    USER-AUTHORED app code, and the session cookie already rides to the main
+    host from them (``Domain=.<parent>``, and subdomains are same-site so
+    ``SameSite`` does not block the send). An app-wide credentialed allowance
+    therefore let any hosted app's JS read every authenticated Agnes endpoint
+    as whoever is viewing it; CORS was the one barrier left, and the regex
+    removed it (Devin Review on this PR). So the grant is scoped twice
+    instead: to THIS route only (headers attached by the handler, no
+    middleware policy), and to THIS app's own origin only — ``a.<base>``
+    cannot read ``b``'s readiness, let alone anything else.
+
+    The poll is a "simple" CORS request (GET, no custom headers), so no
+    preflight ever fires and response headers are the entire surface needed.
+    Only the success path attaches them: an unreadable cross-origin error
+    response behaves exactly like a readable non-ready one — the page's
+    ``catch`` swallows it and the poll continues — so errors stay uniform
+    with the path-prefix form. Port is deliberately ignored in the match
+    (origins carry one on non-default-port deployments, as the old regex's
+    ``(:\\d+)?`` acknowledged); scheme is pinned to http(s).
+
+    Known dependency: ``CORS_ORIGINS='*'`` defeats this grant. With a
+    wildcard, the app-wide middleware runs with ``allow_all_origins`` and
+    stamps ``Access-Control-Allow-Origin: *`` (credential-less — main.py
+    drops credentials for wildcards) OVER these headers, so the credentialed
+    poll response becomes unreadable and the holding page spins.
+    ``app/main.py`` logs a loud error for exactly that combination
+    (wildcard + ``subdomain_base``); the fix is an explicit origin
+    allowlist, never re-adding a subdomain grant to the middleware
+    (Devin Review on #1321).
+    """
+    # `Vary: Origin` on EVERY path, refusals included: the response's headers
+    # differ by Origin, and a cache keyed only on the URL could store the
+    # header-less refusal variant and replay it to the app's own origin —
+    # the browser then refuses the read, the holding page's `catch` swallows
+    # it, and the poll spins forever with the app up (Devin Review on this
+    # PR). Starlette's own CORSMiddleware emits it unconditionally for
+    # explicit-origin policies for the same reason.
+    vary_only = {"Vary": "Origin"}
+    origin = request.headers.get("origin") or ""
+    if not origin:
+        return vary_only
+    base = (get_data_apps_config().get("subdomain_base") or "").strip().strip(".")
+    if not base:
+        return vary_only
+    # With CORS_ORIGINS='*' the app-wide middleware stamps a credential-less
+    # `Access-Control-Allow-Origin: *` OVER whatever this returns, while a
+    # handler-set `Allow-Credentials: true` would survive — shipping the
+    # browser-invalid `*`+credentials pair. The poll is broken under the
+    # wildcard either way (main.py logs a dedicated error for wildcard +
+    # subdomain_base); don't emit half a grant into that response.
+    # The wildcard verdict is captured on app.state at build time, from the
+    # SAME read the middleware was configured with — a request-time env
+    # re-read could diverge on overlay-configured instances, where
+    # create_app loads overlay env after the middleware is registered
+    # (Devin on #1321). Env is only the fallback for app objects built
+    # outside create_app (unit-test shims).
+    wildcard = getattr(request.app.state, "cors_has_wildcard", None)
+    if wildcard is None:
+        wildcard = "*" in (o.strip() for o in os.environ.get("CORS_ORIGINS", "").split(","))
+    if wildcard:
+        return vary_only
+    try:
+        from urllib.parse import urlsplit
+
+        parts = urlsplit(origin)
+    except ValueError:
+        return vary_only
+    if parts.scheme not in ("http", "https"):
+        return vary_only
+    if (parts.hostname or "") != f"{slug}.{base}".lower():
+        return vary_only
+    return {
+        "Access-Control-Allow-Origin": origin,
+        "Access-Control-Allow-Credentials": "true",
+        "Vary": "Origin",
+    }
+
+
 @router.get("/{slug}/readiness")
-async def get_data_app_readiness(slug: str, request: Request):
+async def get_data_app_readiness(slug: str, request: Request, response: Response):
     """Runner-backed readiness probe. Doubles as the wake-completion flip:
     when a `deploying` app's runner reports `ready`, this call itself
     transitions the row to `running` — the ingress proxy's holding page
@@ -1681,27 +1855,41 @@ async def get_data_app_readiness(slug: str, request: Request):
     branches, but the starting-app branch added here reaches it far more
     often). Serving the page and refusing its only poll is half a fix.
 
+    Resolved BEFORE the registry read: with auth moved out of the ``Depends``
+    chain into the handler body, a lookup-first ordering answered anonymous
+    probes 404 for a made-up slug and 401 for a real one — letting a caller
+    with no credentials at all enumerate which hosted apps exist (Devin
+    Review on this PR). Anonymous now gets a uniform 401 either way, the
+    same shape the old ``Depends(get_current_user)`` signature enforced.
+
     Imported inside the function: `data_apps_proxy` imports this module, so a
     module-level import would be circular.
     """
     from app.api.data_apps_proxy import _resolve_proxy_caller
 
     _feature_gate()
-    row = _get_row_or_404(slug)
     user, via_preview = await run_in_threadpool(_resolve_proxy_caller, request, slug, None)
     if user is None:
         raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
+    row = _get_row_or_404(slug)
     # `via_preview` is already pinned to THIS slug by the resolver's scope
     # check, which is what makes skipping the grant check safe here.
     if not via_preview and not _can_view(user, row):
         raise HTTPException(status_code=403, detail="forbidden")
     _reject_linked(row)
 
+    # Subdomain-mode poll: let THIS app's own origin read the answer.
+    response.headers.update(_readiness_cors_headers(request, slug))
+
     state = row["state"]
     ready = False
     if state in ("running", "deploying"):
         try:
-            status = _runner().status(slug)
+            # Offloaded like every other sidecar call: this endpoint is the
+            # one the holding page polls on a cadence, so a slow-to-answer
+            # runner would otherwise stall the loop once per poll, per waking
+            # app.
+            status = await run_in_threadpool(_runner().status, slug)
             ready = bool(status.get("ready"))
         except (RunnerUnavailable, RunnerError):
             ready = False
@@ -1762,7 +1950,7 @@ async def reap_idle_data_apps(
             logger.info("reap-idle: skipping %s — another operation is in flight", row["slug"])
             continue
         try:
-            _runner().stop(row["slug"], mode=row.get("sleep_mode") or "recreate")
+            await run_in_threadpool(_runner().stop, row["slug"], row.get("sleep_mode") or "recreate")
         except (RunnerUnavailable, RunnerError) as exc:
             detail = getattr(exc, "detail", None) or str(exc)
             repo.set_state(row["id"], "error", f"reap-idle stop failed: {detail}")
@@ -1790,7 +1978,7 @@ async def reap_idle_data_apps(
             continue
         ready = False
         try:
-            status = _runner().status(row["slug"])
+            status = await run_in_threadpool(_runner().status, row["slug"])
             ready = bool(status.get("ready"))
         except (RunnerUnavailable, RunnerError) as exc:
             logger.warning("reap-idle: status check failed for %s: %s", row["slug"], exc)

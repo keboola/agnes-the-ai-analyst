@@ -35,7 +35,8 @@ Full step-by-step (local dev, Docker, TLS) lives in [`docs/QUICKSTART.md`](docs/
 ├── connectors/             # Data source connectors (extract.duckdb contract)
 │   ├── keboola/            # Keboola: extractor.py (DuckDB extension) + client.py (fallback)
 │   ├── bigquery/           # BigQuery: extractor.py (remote-only via DuckDB BQ extension)
-│   └── jira/               # Jira: webhook + incremental parquet → extract.duckdb
+│   ├── jira/               # Jira: webhook + incremental parquet → extract.duckdb
+│   └── databricks/         # Databricks: SQL-warehouse materialization + UC metric-view sync
 ├── cli/                    # CLI tool (`agnes pull`, `agnes query`, `agnes admin`)
 ├── app/auth/               # Authentication (FastAPI-based providers)
 ├── services/               # Standalone services (scheduler, telegram_bot, apps_runner sidecar, etc.)
@@ -82,7 +83,7 @@ The SyncOrchestrator scans `/data/extracts/*/extract.duckdb`, ATTACHes each into
 Source modes (per-table `query_mode`):
 - **Batch pull** (Keboola, `local`): DuckDB extension downloads to parquet, scheduled.
 - **Remote attach** (BigQuery, `remote`): DuckDB BQ extension, no download, queries go to BQ.
-- **Materialized SQL** (`materialized`): scheduler runs admin-registered SQL through DuckDB and writes the result to a parquet under `/data/extracts/<source>/data/`. Distributed via the same manifest + `agnes pull` flow as local tables. BigQuery cost guardrail: `data_source.bigquery.max_bytes_per_materialize` (default 10 GiB; `0` disables).
+- **Materialized SQL** (`materialized`): scheduler runs admin-registered SQL through DuckDB and writes the result to a parquet under `/data/extracts/<source>/data/`. Distributed via the same manifest + `agnes pull` flow as local tables. BigQuery cost guardrail: `data_source.bigquery.max_bytes_per_materialize` (default 10 GiB; `0` disables). Databricks rows (`source_type=databricks`, materialized-only in phase 1) run on the SQL warehouse via the Statement Execution API — incl. `MEASURE()` queries over Unity Catalog metric views — result-size-capped by `data_source.databricks.max_bytes_per_materialize`.
 - **Real-time push** (Jira): webhooks update parquets incrementally.
 
 ### Remote table support (`_remote_attach`)
@@ -90,6 +91,28 @@ Source modes (per-table `query_mode`):
 Extractors with `query_mode='remote'` tables include a `_remote_attach` table in `extract.duckdb` (`alias`, `extension`, `url`, `token_env`) so the orchestrator can re-ATTACH the external DuckDB extension at query time — installing/loading the extension, fetching the token (via `token_env` lookup, or an extension-specific auth path when `token_env=''`, e.g. BigQuery's GCE metadata server), creating a session-scoped SECRET when required, and ATTACHing the source so views like `kbc."bucket"."table"` resolve. The mechanism is generic — any connector can plug in.
 
 Deeper architecture notes: [`docs/architecture.md`](docs/architecture.md).
+
+### Semantic layer (Apache Ossie documents)
+
+A semantic model — datasets, per-column fields, relationships, metrics and
+`ai_context` — is stored whole as an [Apache Ossie](https://ossie.apache.org/)
+document in `semantic_models`, validated against a vendored, pinned JSON
+Schema. `metric_definitions`, `glossary_terms` and `column_metadata` are
+**projections** of that document and regenerable from it; the document is the
+owner. Sources (`semantic_sources`) feed it over three transports — git clone,
+upload, or an existing connection — each through an adapter whose entire
+contract is `extract(config) -> list[str]` returning documents as text. Adapters
+never write to the database, which is what makes a new source format additive.
+Provenance is `(source, source_ref)` and a sync prunes only within its own; a
+model owned by a source is read-only through the API (`409 source_owned`) so a
+scheduled sync cannot silently revert a downstream edit. Reference:
+[`docs/semantic-layer.md`](docs/semantic-layer.md). Design:
+[`docs/superpowers/specs/2026-08-13-open-semantic-layer-contract-design.md`](docs/superpowers/specs/2026-08-13-open-semantic-layer-contract-design.md).
+
+Note the neighbour: `src/semantic_validation.py` is a **query** validator (does
+a SQL statement obey a document's constraints and dialects);
+`src/semantic/document_validation.py` is a **document** validator (does a
+document conform to the schema). Different concerns, adjacent names.
 
 ### Agent profiles & agent-as-API
 
@@ -329,6 +352,8 @@ Gate endpoints with `Depends(require_admin)` (app-level mutations) or `Depends(r
 
 Admin UI: `/admin/access`. CLI: `agnes admin group …` and `agnes admin grant …`. Full reference: [`docs/RBAC.md`](docs/RBAC.md).
 
+A third, optional layer sits above these two and answers a narrower question: not "can this group reach the table", but "what does a caller who can reach it actually see". An admin may attach **one SQL policy** to a registered table — only one that never leaves the server, i.e. `query_mode='remote'` or `server_only=true` — that Agnes substitutes for the table on every server-side read, filtering rows and masking columns by the caller's `$user_email` / `$user_id` / `$user_groups`. Off by default behind `access_policies.enabled`. Full reference: [`docs/table-access-policies.md`](docs/table-access-policies.md).
+
 ## Extensibility
 
 ### Data Sources (extract.duckdb contract)
@@ -338,12 +363,15 @@ New connector = `connectors/<name>/extractor.py` producing `extract.duckdb + dat
 Auth providers in `app/auth/` (FastAPI-based):
 - **Google**: OAuth via Google (Workspace group memberships pulled at sign-in — see [`docs/auth-groups.md`](docs/auth-groups.md) for the GCP setup checklist + the `security` label gotcha)
 - **Email**: magic link (itsdangerous token)
+- **Keboola**: OAuth via the Keboola stack (project-bound; optional `X-StorageApi-Token` header auth for existing users, switch-gated)
 - **Desktop**: JWT for API
+
+Per-instance offering is narrowed by `auth.providers` (see `config/instance.yaml.example`).
 
 ### Web pages
 HTML dashboard pages use the design-system **page shell** (#367/#482): `{% extends "base_page.html" %}` (gradient hero + `{% block toolbar %}` + `{% block page %}`) or `{% extends "base_ds.html" %}` (everything else; body in `{% block content %}`). **Never `base.html`** — it is legacy. The base auto-imports the `ds.*` macros (no `{% import "_components.html" %}`), sets theme/favicon/nav/global-JS, and provides the canonical `.container`; page CSS goes in `{% block head_extra %}`, never inline in the body. Contract guards in `tests/test_design_system_contract.py` reject `.container:has()` opt-outs, bare `:root{}`, raw `#hex`, and `var(--primary)` (use `var(--ds-primary)`). Full step-by-step recipe: [`docs/architecture.md`](docs/architecture.md) → *Extending the Platform → New Web Page*.
 
-**Visual standard (binding for ALL UI work):** `.claude/skills/agnes-conventions/references/design-system.md` — `--ds-*` tokens only, theme switch via `data-theme` (`blue` default, `paper` = the issue-#896 prototype look), chrome layout via `data-ui-layout` (`topnav` default, `rail` = left sidebar). Visual changes ship as opt-in scoped theme/skin blocks; the default look of existing instances never changes (guarded by `tests/test_ui_layout_theme.py`).
+**Visual standard (binding for ALL UI work):** `.claude/skills/agnes-conventions/references/design-system.md` — `--ds-*` tokens only, theme switch via `data-theme` (`paper` default since Wave 0, 2026-08 — the issue-#896 prototype look; `blue`/`navy`/`dark`/`auto` remain fully supported and an explicit theme choice always wins), chrome via `data-ui-layout` (hard-wired to `"rail"` — the topnav chrome was retired in the same wave; a configured `instance.ui_layout`/`AGNES_UI_LAYOUT` is tolerated but inert, ignored with a one-time startup warning). A NEW theme value still ships as its own opt-in scoped block, never by mutating an existing theme's block (guarded by `tests/test_ui_layout_theme.py`).
 
 ### Hosted Data Apps
 `src/data_apps/` (registry + spec builders) + `services/apps_runner/` (the sidecar that alone holds the Docker socket) host user web apps next to the data — off by default (`data_apps.enabled`), compose profile `apps`. See [`docs/architecture.md`](docs/architecture.md#hosted-data-apps) and [`docs/superpowers/specs/2026-07-21-data-apps-design.md`](docs/superpowers/specs/2026-07-21-data-apps-design.md).
@@ -366,6 +394,7 @@ HTML dashboard pages use the design-system **page shell** (#367/#482): `{% exten
 - **Keboola**: `connectors/keboola/extractor.py` uses the DuckDB Keboola extension, falls back to `client.py` (legacy Storage API wrapper).
 - **BigQuery**: `connectors/bigquery/extractor.py` uses the DuckDB BQ extension (remote-only, no download).
 - **Jira**: `connectors/jira/webhook.py` → `incremental_transform.py` → `extract_init.py` updates `_meta`.
+- **Databricks**: `connectors/databricks/extractor.py` materializes registered SQL on a SQL warehouse (Statement Execution API → Arrow → parquet, no SDK); `semantic_layer.py` mirrors Unity Catalog metric views into `metric_definitions` (`source='databricks_semantic_layer'`, scoped prune per workspace).
 
 ### Config Loading
 1. `config/loader.py` loads `instance.yaml`.

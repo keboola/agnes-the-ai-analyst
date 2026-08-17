@@ -19,7 +19,10 @@ Using the platform to analyze data.
 - [`HOWTO/`](HOWTO/) — task-oriented cookbook (querying, snapshots, common workflows)
 - [`DATA_SOURCES.md`](DATA_SOURCES.md) — data source connectors (Keboola, BigQuery, CSV) and how tables surface
 - [`metrics/`](metrics/) — canonical business-metric definitions (YAML)
+- [`semantic-layer.md`](semantic-layer.md) — Apache Ossie documents as the canonical semantic layer: sources, adapters, ownership, export
 - [`HEADLESS_USAGE.md`](HEADLESS_USAGE.md) — PAT auth for CI / headless clients
+- [`../clients/macos/README.md`](../clients/macos/README.md) — Marketplace-first
+  macOS desktop MVP with local CLI-path/version health
 
 ## For operators
 
@@ -34,6 +37,7 @@ Deploying, configuring, and running an Agnes instance.
 - [`runbooks/wal-recovery.md`](runbooks/wal-recovery.md) — incident runbook: recovering `system.duckdb` from a WAL-replay failure
 - [`../SECURITY.md`](../SECURITY.md) — threat model, trust boundaries, known limitations, operator security checklist
 - [`RBAC.md`](RBAC.md) — access control: groups, members, resource grants
+- [`table-access-policies.md`](table-access-policies.md) — per-table SQL policies: row filtering + column masking by caller identity
 - [`auth-google-oauth.md`](auth-google-oauth.md) — Google OAuth setup + operator gotchas
 - [`auth-groups.md`](auth-groups.md) — Google Workspace group sync
 - [`admin/query-modes.md`](admin/query-modes.md) — table registration query modes, and `server_only` for queryable-but-never-distributed tables
@@ -64,6 +68,8 @@ Working on the Agnes codebase.
 - [`testing/`](testing/) — test plans (clean-analyst bootstrap, VM test)
 - [`marketplace.md`](marketplace.md) — Claude Code marketplace ingestion + re-serving internals
 - [`global-distribution.md`](global-distribution.md) — Agnes skills + data in every repository (user-scope layer, remote MCP, fleet managed settings)
+- [`superpowers/specs/2026-08-15-agnes-desktop-agent-cockpit-prd.md`](superpowers/specs/2026-08-15-agnes-desktop-agent-cockpit-prd.md) — PRD: developer-first desktop cockpit, agent-as-code, inspectable runs, and managed local sandbox
+- [`superpowers/plans/2026-08-15-macos-desktop-mvp-v2.md`](superpowers/plans/2026-08-15-macos-desktop-mvp-v2.md) — implementation plan: CLI-backed Agent Runs cockpit, structured AG-UI inspection, and request-scoped process lifecycle
 - [`superpowers/specs/2026-07-21-agent-profiles-and-agent-api-design.md`](superpowers/specs/2026-07-21-agent-profiles-and-agent-api-design.md) — design: agent profiles + agent-as-API (sessions, memory, webhooks, budgets)
 - [`superpowers/specs/2026-07-21-data-apps-design.md`](superpowers/specs/2026-07-21-data-apps-design.md) — design: hosted data apps (push-to-deploy, apps-runner sidecar)
 - [`STORE_GUARDRAILS.md`](STORE_GUARDRAILS.md) — flea-market upload guardrails (static checks + LLM review)

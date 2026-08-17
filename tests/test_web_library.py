@@ -232,26 +232,6 @@ def test_library_lists_only_accessible(seeded_app):
     assert "Hidden From Analyst" not in r.text
 
 
-def test_legacy_library_lists_only_accessible_on_topnav(seeded_app, monkeypatch):
-    """The topnav /library branch is DISTINCT code (main's pre-merge handler:
-    get_accessible_ids filter + admin bypass + collection cards) and it is what
-    every default instance runs — its RBAC filter needs its own pin, not just
-    the rail twin above (this file's autouse fixture forces rail everywhere
-    else)."""
-    monkeypatch.setenv("AGNES_UI_LAYOUT", "topnav")
-    c = seeded_app["client"]
-    _create(seeded_app, "Hidden From Analyst Legacy")
-
-    r = c.get("/library", headers=_auth(seeded_app["analyst_token"]))
-    assert r.status_code == 200
-    assert "Your collections" in r.text, "topnav must render the legacy page"
-    # analyst1 has no COLLECTION grant → the row must be filtered out…
-    assert "Hidden From Analyst Legacy" not in r.text
-    # …while the admin bypass still lists it.
-    a = c.get("/library", headers=_auth(seeded_app["admin_token"]))
-    assert "Hidden From Analyst Legacy" in a.text
-
-
 def test_single_file_artefact_presents_as_file(seeded_app, monkeypatch):
     """One file in an artefact reads AS the file — single-document glyph,
     filename + size in the meta, "File" framing, never "a collection with 1
@@ -446,15 +426,20 @@ def test_library_available_grant_reads_in_stack_and_offers_no_toggle(seeded_app,
 
 
 def test_library_available_grant_classic_is_not_claimed_in_stack(seeded_app, monkeypatch):
-    """CLASSIC (the default): a granted-but-unsubscribed ``available``
-    package is NOT a stack member — membership is required ∪ subscribed, and
-    it also drives query authorization — so the row must not claim
-    "In Stack", must not land in the "In stack only" filter bucket, and
-    points the caller at the Catalog to add it (Devin Review on #1199).
-    A subscribed one renders as a member again."""
+    """CLASSIC: a granted-but-unsubscribed ``available`` package is NOT a
+    stack member — membership is required ∪ subscribed, and it also drives
+    query authorization — so the row must not claim "In Stack", must not
+    land in the "In stack only" filter bucket, and points the caller at the
+    Catalog to add it (Devin Review on #1199). A subscribed one renders as a
+    member again.
+
+    Classic is no longer the presetless default (Wave 0, 2026-08, coupled the
+    sole remaining `redesign` experience to auto-membership) — forced here
+    via the still-fully-supported explicit per-knob override, which wins over
+    any preset."""
     from src.db import get_system_db
 
-    monkeypatch.delenv("AGNES_STACK_AUTO_MEMBERSHIP", raising=False)
+    monkeypatch.setenv("AGNES_STACK_AUTO_MEMBERSHIP", "0")
     conn = get_system_db()
     pkg_id = _grant_package(
         conn, slug="classic-avail-pkg", name="Classic Offered Package", user_id="analyst1", requirement="available"
@@ -468,12 +453,14 @@ def test_library_available_grant_classic_is_not_claimed_in_stack(seeded_app, mon
         "a non-member must not wear the member pill"
     )
     # A real Add control wired to the generic subscribe endpoint (JSON body
-    # in data-stack-body), with the post-add state pinned to the LOCKED
-    # member pill (Devin Review on #1199, round 4).
+    # in data-stack-body), carrying the remove direction too — the post-add
+    # state is the REMOVABLE member (a self-subscription is the caller's to
+    # drop; the old locked-after contract claimed an admin mandate the
+    # caller had just created).
     assert 'data-add-to-stack="' in row
     assert 'data-stack-endpoint="/api/stack/subscribe"' in row
     assert "data-stack-body=" in row and "data_package" in row
-    assert 'data-stack-locked-after="1"' in row
+    assert 'data-stack-remove-endpoint="/api/stack/subscription/data_package/' in row
 
     # Subscribing joins the stack — the row becomes a member.
     conn = get_system_db()
@@ -777,3 +764,82 @@ def test_library_does_not_give_an_admin_every_app_in_the_instance(seeded_app, mo
     r = seeded_app["client"].get("/library", headers=_auth(seeded_app["admin_token"]))
     assert r.status_code == 200
     assert "Not Your App" not in r.text, "an admin must not see another user's app in their own Library"
+
+
+def test_library_data_app_row_shows_the_admins_description_override(seeded_app, monkeypatch):
+    """Effective description, not the raw column.
+
+    A linked app carries both `description` (rewritten by the MCP lister on
+    every sync) and `description_override` (an admin's edit); every other
+    surface shows the override when set. Reading `a["description"]` here
+    showed the stale synced wording right next to a detail page saying
+    something else (Devin Review on this PR).
+    """
+    _seed_app(seeded_app, "overapp", "Override App", monkeypatch)
+    from src.repositories import data_apps_repo
+
+    repo = data_apps_repo()
+    repo.update(repo.get_by_slug("overapp")["id"], description="Synced upstream text")
+    repo.set_description_override("overapp", "The wording the admin chose")
+
+    r = seeded_app["client"].get("/library", headers=_auth(seeded_app["admin_token"]))
+    assert r.status_code == 200
+    assert "The wording the admin chose" in r.text
+    assert "Synced upstream text" not in r.text
+
+
+def test_library_own_data_app_row_carries_the_share_control(seeded_app, monkeypatch):
+    """Data apps are a grantable resource type (`resource_grants` on the
+    slug is what `_can_view` honours), so an owner's row must offer the same
+    Share control every other owner-held kind does — rendering it share-less
+    left /admin/access as the only sharing surface for the one kind a user
+    builds from chat (Devin Review on this PR).
+
+    The share id must be the SLUG: the dialog PUTs to
+    `/api/sharing/{share_type}/{item_id}`, and a grant keyed on the row id
+    would be read by nothing.
+    """
+    _seed_app(seeded_app, "shareapp", "Shareable App", monkeypatch)
+    r = seeded_app["client"].get("/library", headers=_auth(seeded_app["admin_token"]))
+    assert r.status_code == 200
+
+    row_at = r.text.index('data-item-id="shareapp"')
+    row = r.text[row_at : r.text.index("</tr>", row_at)]
+    assert 'data-share-type="data_app"' in row, "an owned app row must be shareable"
+    assert 'data-share="shareapp"' in row, "the Sharing badge must be the editable control, keyed on the slug"
+
+
+@pytest.mark.parametrize("layout", ["topnav", "rail"])
+def test_data_app_detail_renders_the_recorded_failure_reason(seeded_app, monkeypatch, layout):
+    """A failed deploy stores the runner's own message in `state_detail`.
+
+    It was recorded and returned by the API from the start, but no template
+    rendered it — so the page showed a bare `error` badge while the Logs pane
+    (the obvious next click) 502s for the very same reason. Parametrized over
+    both layouts because the detail pages are a frozen pair: the default
+    instance renders `_legacy`, so a fix on the redesigned copy alone would
+    silently not exist for most installs.
+    """
+    _seed_app(seeded_app, f"errapp{layout}", "Errored App", monkeypatch)
+    monkeypatch.setenv("AGNES_UI_LAYOUT", layout)
+
+    from src.repositories import data_apps_repo
+
+    repo = data_apps_repo()
+    row = repo.get_by_slug(f"errapp{layout}")
+    repo.set_state(row["id"], "error", "image_not_found")
+
+    r = seeded_app["client"].get(f"/apps/detail/errapp{layout}", headers=_auth(seeded_app["admin_token"]))
+    assert r.status_code == 200
+    assert "image_not_found" in r.text, (
+        f"[{layout}] the recorded failure reason must be on the page — without it a failed "
+        "deploy leaves the operator with a bare 'error' and a 502 in the logs pane"
+    )
+
+
+def test_data_app_detail_shows_no_error_row_when_healthy(seeded_app, monkeypatch):
+    """The row is for saying something, not for an empty slot on every app."""
+    _seed_app(seeded_app, "okapp", "Fine App", monkeypatch)
+    r = seeded_app["client"].get("/apps/detail/okapp", headers=_auth(seeded_app["admin_token"]))
+    assert r.status_code == 200
+    assert 'id="dda-state-detail"' not in r.text

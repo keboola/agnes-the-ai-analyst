@@ -80,6 +80,7 @@ _PK_COLUMNS: Dict[str, List[str]] = {
     "instance_templates": ["key"],
     "view_ownership": ["view_name"],
     "column_metadata": ["table_id", "column_name"],
+    "data_package_semantic_models": ["package_id", "model_id"],
     "bq_metadata_cache": ["table_id"],
     "user_sync_settings": ["user_id", "dataset"],
     "table_profiles": ["table_id"],

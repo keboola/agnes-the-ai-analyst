@@ -62,6 +62,13 @@ _KNOB_CATALOGUE: list[dict[str, Any]] = [
         "default": "",
     },
     {
+        "key": "instance_copyright",
+        "resolver": "get_instance_copyright",
+        "env_var": "AGNES_INSTANCE_COPYRIGHT",
+        "yaml_path": "instance.copyright",
+        "default": "",
+    },
+    {
         "key": "instance_brand",
         "resolver": "get_instance_brand",
         "env_var": "AGNES_INSTANCE_BRAND",
@@ -85,18 +92,18 @@ _KNOB_CATALOGUE: list[dict[str, Any]] = [
         "default": "",
     },
     {
+        # "paper" since Wave 0 (2026-08) — it is what get_instance_theme()
+        # returns on an instance that configures nothing (the `redesign`
+        # preset's implied default). This value is not cosmetic: `_source_for`
+        # infers `yaml` from `current != default`, so leaving the old "blue"
+        # here made a clean instance report `source: "yaml"` for a theme
+        # nobody had configured — and this endpoint feeds the operator
+        # tooling, which would then state the theme was set deliberately.
         "key": "instance_theme",
         "resolver": "get_instance_theme",
         "env_var": "AGNES_INSTANCE_THEME",
         "yaml_path": "instance.theme",
-        "default": "blue",
-    },
-    {
-        "key": "ui_layout",
-        "resolver": "get_ui_layout",
-        "env_var": "AGNES_UI_LAYOUT",
-        "yaml_path": "instance.ui_layout",
-        "default": "topnav",
+        "default": "paper",
     },
     {
         "key": "workspace_dir_name",

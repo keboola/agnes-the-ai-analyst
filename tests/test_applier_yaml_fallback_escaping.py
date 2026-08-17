@@ -10,6 +10,7 @@ test_applier_yaml_writer_no_pyyaml.py): the heredoc python path intercepts
 the established H2-NEW / H4-NEW pattern, the third test uses a static
 structural assertion instead of a subprocess invocation.
 """
+
 from __future__ import annotations
 
 import logging
@@ -21,17 +22,18 @@ APPLIER = Path("scripts/ops/agnes-state-applier.sh")
 
 
 def _bash_fallback_body() -> str:
-    """Extract the pure-bash fallback block from write_instance_yaml."""
+    """Extract the pure-bash fallback block from write_instance_yaml.
+
+    Ends at the shared post-rename ownership re-assert
+    (``_instance_yaml_reassert_owner``), the fallback route's last statement.
+    """
     script = APPLIER.read_text()
     m = re.search(
-        r"# Pure-bash fallback.*?chown agnes-applier:agnes-applier.*?\n",
+        r"# Pure-bash fallback.*?_instance_yaml_reassert_owner.*?\n",
         script,
         re.DOTALL,
     )
-    assert m is not None, (
-        "bash fallback block not found in write_instance_yaml — "
-        "script may have been restructured"
-    )
+    assert m is not None, "bash fallback block not found in write_instance_yaml — script may have been restructured"
     return m.group(0)
 
 
@@ -65,13 +67,13 @@ def test_bash_fallback_url_is_double_quoted_scalar() -> None:
     body = _bash_fallback_body()
     # Must have a printf emitting a double-quoted url scalar.
     has_printf_double_quoted = (
-        'printf \'  url: "%s"\\n\'' in body
+        "printf '  url: \"%s\"\\n'" in body
         or "printf '  url: \"%s\"\\n'" in body
         or 'printf "  url: \\"%s\\"\\n"' in body
     )
     assert has_printf_double_quoted, (
         "B2-NEW: bash fallback url line must use printf with double-quote "
-        "wrapping (e.g. `printf '  url: \"%s\"\\n' \"$url_escaped\"`) "
+        'wrapping (e.g. `printf \'  url: "%s"\\n\' "$url_escaped"`) '
         "rather than bare echo interpolation.\n"
         f"Actual body:\n{body}"
     )
@@ -88,7 +90,7 @@ def test_bash_fallback_escapes_backslash_before_quote() -> None:
     body = _bash_fallback_body()
     # The sed pipeline must contain both escape substitutions.
     # Order: backslash first (s/\\/\\\\/g), then quote (s/"/\\"/g).
-    has_escape_backslash = r's/\\/\\\\/g' in body or "s/\\\\/\\\\\\\\/g" in body
+    has_escape_backslash = r"s/\\/\\\\/g" in body or "s/\\\\/\\\\\\\\/g" in body
     has_escape_quote = r's/"/\\"/g' in body or 's/\\"/\\\\"/g' in body
     assert has_escape_backslash, (
         r"B2-NEW: bash fallback must escape backslashes via sed "
@@ -96,12 +98,12 @@ def test_bash_fallback_escapes_backslash_before_quote() -> None:
         f"\nActual body:\n{body}"
     )
     assert has_escape_quote, (
-        r'B2-NEW: bash fallback must escape double-quotes via sed '
+        r"B2-NEW: bash fallback must escape double-quotes via sed "
         r'(s/"/\\"/g) so they are valid inside a YAML double-quoted scalar'
         f"\nActual body:\n{body}"
     )
     # Verify ordering: backslash-escape sed appears before quote-escape sed.
-    idx_bs = body.find(r's/\\/\\\\/g')
+    idx_bs = body.find(r"s/\\/\\\\/g")
     idx_q = body.find(r's/"/\\"/g')
     assert idx_bs < idx_q, (
         "B2-NEW: backslash-escape sed must come BEFORE quote-escape sed; "
@@ -130,9 +132,7 @@ def test_read_backend_state_logs_loudly_on_yaml_error(tmp_path, caplog) -> None:
     # Simulate what the bash fallback emits without quoting when the URL
     # contains `: ` (colon-space = YAML key-value separator in block
     # context → YAMLError).
-    bad.write_text(
-        "database:\n  backend: cloud\n  url: postgresql://host/db?options=-c replication: logical\n"
-    )
+    bad.write_text("database:\n  backend: cloud\n  url: postgresql://host/db?options=-c replication: logical\n")
     original_path = db_state_machine._OVERLAY_PATH
     try:
         db_state_machine._OVERLAY_PATH = bad
@@ -143,10 +143,7 @@ def test_read_backend_state_logs_loudly_on_yaml_error(tmp_path, caplog) -> None:
         assert url is None
         # Contract: the warning is emitted with text identifying the
         # parse failure and the file path.
-        assert any(
-            "yaml" in rec.message.lower() and "parse" in rec.message.lower()
-            for rec in caplog.records
-        ), (
+        assert any("yaml" in rec.message.lower() and "parse" in rec.message.lower() for rec in caplog.records), (
             "B2-NEW: read_backend_state must log a WARNING mentioning "
             "'yaml' and 'parse' when instance.yaml is malformed.\n"
             f"Captured records: {[r.message for r in caplog.records]}"

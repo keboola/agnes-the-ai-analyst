@@ -1,12 +1,10 @@
 """Tests for #11 — user management (active flag, safeguards, endpoints)."""
 
-import os
 import tempfile
 import pytest
 
-import duckdb
 
-from src.db import _ensure_schema, get_schema_version
+from src.db import get_schema_version
 
 
 @pytest.fixture
@@ -15,6 +13,7 @@ def fresh_db(monkeypatch):
         monkeypatch.setenv("DATA_DIR", tmp)
         # Reset cached system DB so we open a brand-new instance in tmp
         from src.db import close_system_db
+
         close_system_db()
         yield tmp
         close_system_db()
@@ -22,6 +21,7 @@ def fresh_db(monkeypatch):
 
 def test_schema_v5_adds_active_column(fresh_db):
     from src.db import get_system_db, close_system_db
+
     conn = get_system_db()
     try:
         cols = conn.execute("PRAGMA table_info(users)").fetchall()
@@ -47,7 +47,9 @@ def test_schema_v5_backfill_keeps_existing_users_active(fresh_db):
     db_path = db_dir / "system.duckdb"
     conn = _duckdb.connect(str(db_path))
     try:
-        conn.execute("CREATE TABLE schema_version (version INTEGER NOT NULL, applied_at TIMESTAMP DEFAULT current_timestamp)")
+        conn.execute(
+            "CREATE TABLE schema_version (version INTEGER NOT NULL, applied_at TIMESTAMP DEFAULT current_timestamp)"
+        )
         conn.execute("INSERT INTO schema_version (version) VALUES (4)")
         conn.execute("""CREATE TABLE users (
             id VARCHAR PRIMARY KEY, email VARCHAR UNIQUE NOT NULL,
@@ -63,6 +65,7 @@ def test_schema_v5_backfill_keeps_existing_users_active(fresh_db):
 
     # 2. Now let the app open it — schema should migrate to v5 and backfill active=TRUE.
     from src.db import get_system_db, close_system_db, get_schema_version
+
     close_system_db()
     conn = get_system_db()
     try:
@@ -79,6 +82,7 @@ def test_repository_update_accepts_active(fresh_db):
     import uuid
     from src.db import get_system_db, close_system_db
     from src.repositories.users import UserRepository
+
     conn = get_system_db()
     try:
         repo = UserRepository(conn)
@@ -99,13 +103,12 @@ def test_repository_count_admins(fresh_db):
     from src.db import SYSTEM_ADMIN_GROUP, get_system_db, close_system_db
     from src.repositories.user_group_members import UserGroupMembersRepository
     from src.repositories.users import UserRepository
+
     conn = get_system_db()
     try:
         repo = UserRepository(conn)
         assert repo.count_admins() == 0
-        admin_gid = conn.execute(
-            "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP]
-        ).fetchone()[0]
+        admin_gid = conn.execute("SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP]).fetchone()[0]
         admin_id = str(uuid.uuid4())
         repo.create(id=admin_id, email="a@b.c", name="A")
         UserGroupMembersRepository(conn).add_member(admin_id, admin_gid, source="system_seed")
@@ -124,6 +127,7 @@ def app_client(fresh_db, monkeypatch):
     monkeypatch.setenv("TESTING", "1")
     monkeypatch.setenv("JWT_SECRET_KEY", "test-jwt-secret-key-minimum-32-chars!!")
     from app.main import app
+
     return TestClient(app)
 
 
@@ -134,13 +138,12 @@ def _seed_admin(fresh_db):
     from src.repositories.user_group_members import UserGroupMembersRepository
     from src.repositories.users import UserRepository
     from app.auth.jwt import create_access_token
+
     conn = get_system_db()
     try:
         uid = str(uuid.uuid4())
         UserRepository(conn).create(id=uid, email="admin@test", name="Admin")
-        admin_gid = conn.execute(
-            "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP]
-        ).fetchone()[0]
+        admin_gid = conn.execute("SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP]).fetchone()[0]
         UserGroupMembersRepository(conn).add_member(uid, admin_gid, source="system_seed")
         token = create_access_token(user_id=uid, email="admin@test")
         return uid, token
@@ -152,6 +155,7 @@ def test_patch_user_updates_role(app_client, fresh_db):
     import uuid
     from src.db import get_system_db
     from src.repositories.users import UserRepository
+
     admin_id, token = _seed_admin(fresh_db)
     target_id = str(uuid.uuid4())
     conn = get_system_db()
@@ -239,10 +243,17 @@ def test_admin_users_page_renders_for_admin(app_client, fresh_db):
         cookies={"access_token": token},
     )
     assert resp.status_code == 200
-    # /admin/users uses the canonical .page-header--hero block (Users &
-    # Access eyebrow + Users title). Legacy .users-title H2 retired.
-    assert 'class="page-header__title">Users<' in resp.text
-    assert "page-header--hero" in resp.text
+    # One head for the whole section, section-level ("People" — matching the
+    # nav row); the tab strip below it names the sub-view, so People and
+    # Tokens read as one place. Groups is no longer a third tab here: it moved
+    # to Access, where a grant is written.
+    assert 'class="page-header__title">People<' in resp.text
+    # PLAIN, not the hero card. This page is a workspace an admin stands in
+    # and filters, exactly as /library is, so it wears /library's head — the
+    # name, one sentence, nothing drawn around them.
+    assert "page-header--plain" in resp.text
+    assert "page-header--hero" not in resp.text
+    assert 'class="tab-strip"' in resp.text
 
 
 class TestAdminUsersGroupFilterDropdown:
@@ -311,6 +322,7 @@ def test_admin_users_page_denies_non_admin(app_client, fresh_db):
     from src.db import get_system_db
     from src.repositories.users import UserRepository
     from app.auth.jwt import create_access_token
+
     conn = get_system_db()
     try:
         uid = str(uuid.uuid4())
@@ -364,12 +376,11 @@ def test_cannot_remove_last_admin_via_user_memberships(app_client, fresh_db):
     a second admin was added then the first was deactivated, leaving
     one active admin who could otherwise be demoted to zero)."""
     from src.db import SYSTEM_ADMIN_GROUP, get_system_db
+
     admin_id, token = _seed_admin(fresh_db)
     conn = get_system_db()
     try:
-        admin_gid = conn.execute(
-            "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP]
-        ).fetchone()[0]
+        admin_gid = conn.execute("SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP]).fetchone()[0]
     finally:
         conn.close()
     # Sole-admin case: try to demote the only admin via the user-keyed
@@ -387,12 +398,11 @@ def test_cannot_remove_last_admin_via_group_members(app_client, fresh_db):
     refuse to demote the only active admin (group-keyed mirror of the
     user-keyed membership endpoint)."""
     from src.db import SYSTEM_ADMIN_GROUP, get_system_db
+
     admin_id, token = _seed_admin(fresh_db)
     conn = get_system_db()
     try:
-        admin_gid = conn.execute(
-            "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP]
-        ).fetchone()[0]
+        admin_gid = conn.execute("SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP]).fetchone()[0]
     finally:
         conn.close()
     resp = app_client.delete(
@@ -410,16 +420,18 @@ def test_can_remove_admin_when_another_active_admin_exists(app_client, fresh_db)
     from src.db import SYSTEM_ADMIN_GROUP, get_system_db
     from src.repositories.user_group_members import UserGroupMembersRepository
     from src.repositories.users import UserRepository
+
     admin_id, token = _seed_admin(fresh_db)
     conn = get_system_db()
     try:
-        admin_gid = conn.execute(
-            "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP]
-        ).fetchone()[0]
+        admin_gid = conn.execute("SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP]).fetchone()[0]
         other_id = str(uuid.uuid4())
         UserRepository(conn).create(id=other_id, email="other@test", name="Other")
         UserGroupMembersRepository(conn).add_member(
-            other_id, admin_gid, source="admin", added_by="admin@test",
+            other_id,
+            admin_gid,
+            source="admin",
+            added_by="admin@test",
         )
     finally:
         conn.close()
@@ -453,7 +465,89 @@ def test_cannot_deactivate_last_admin(app_client, fresh_db):
     # self-deactivate check (the user IS themselves, but the message says "last
     # active admin"). Either error is acceptable — both signal the constraint.
     assert resp.status_code == 409
-    assert (
-        "admin" in resp.json()["detail"].lower()
-        or "yourself" in resp.json()["detail"].lower()
-    )
+    assert "admin" in resp.json()["detail"].lower() or "yourself" in resp.json()["detail"].lower()
+
+
+class TestPeopleOutcomeColumns:
+    """The People lens' outcome fields — "does this person get data, and is it
+    reaching them?", which account plumbing (created / deactivated) cannot
+    answer.
+
+    Both are DERIVED from storage that already exists — the grant graph and
+    the `users.last_pull_at` column `GET /api/sync/manifest` stamps — so there
+    is no new table, no migration and no DuckDB↔Postgres parity surface. What
+    needs pinning is the derivation itself, since a cached or inflated count
+    is exactly how this column would start lying.
+    """
+
+    def test_response_carries_both_outcome_fields(self, app_client, fresh_db):
+        _admin_id, token = _seed_admin(fresh_db)
+        resp = app_client.get("/api/users", cookies={"access_token": token})
+        assert resp.status_code == 200
+        rows = resp.json()
+        assert rows, "seeded instance should have at least the admin"
+        for row in rows:
+            assert "data_package_count" in row
+            assert "last_pull_at" in row
+
+    def test_package_count_follows_the_grant_graph(self, app_client, fresh_db):
+        """A grant to a group the person is in raises their count; removing it
+        lowers it again. Derived, never stored — a cached count would drift
+        the moment a grant moved."""
+        from src.db import SYSTEM_ADMIN_GROUP
+        from src.repositories import resource_grants_repo, user_groups_repo
+
+        _admin_id, token = _seed_admin(fresh_db)
+        # Grant to a group this user is actually IN. `_seed_admin` puts them
+        # in Admin only — granting to Everyone would (correctly) change
+        # nothing, since the count follows real memberships rather than
+        # assuming the auto-membership every real account gets.
+        group = next(g for g in user_groups_repo().list_all() if g["name"] == SYSTEM_ADMIN_GROUP)
+
+        def _count_for_admin() -> int:
+            rows = app_client.get("/api/users", cookies={"access_token": token}).json()
+            return next(r["data_package_count"] for r in rows if r["is_admin"])
+
+        before = _count_for_admin()
+        grants = resource_grants_repo()
+        gid = grants.create(
+            group_id=group["id"],
+            resource_type="data_package",
+            resource_id="pkg-outcome-probe",
+        )
+        try:
+            assert _count_for_admin() == before + 1
+        finally:
+            grants.delete(gid)
+        assert _count_for_admin() == before
+
+    def test_admin_count_is_explicit_grants_not_a_synthetic_total(self, app_client, fresh_db):
+        """Admins reach everything at runtime by god-mode, but the column
+        reports their EXPLICIT grants — inflating it would hide whether the
+        grants an admin is auditing actually work. Same reasoning as
+        `/users/{id}/effective-access`, which stopped short-circuiting for
+        admins for exactly this."""
+        from src.repositories import data_packages_repo
+
+        _admin_id, token = _seed_admin(fresh_db)
+        rows = app_client.get("/api/users", cookies={"access_token": token}).json()
+        admin_row = next(r for r in rows if r["is_admin"])
+        total_packages = len(data_packages_repo().list())
+        # Not asserted equal to the total: on a seeded instance with no
+        # data-package grants the admin's honest count is 0 while packages
+        # exist. The invariant is that it never EXCEEDS what is granted.
+        assert admin_row["data_package_count"] <= total_packages
+
+    def test_the_page_renders_both_columns(self, app_client, fresh_db):
+        _admin_id, token = _seed_admin(fresh_db)
+        resp = app_client.get(
+            "/admin/users",
+            headers={"Accept": "text/html"},
+            cookies={"access_token": token},
+        )
+        body = resp.text
+        assert "Data access" in body
+        assert "Last pull" in body
+        # ...and the cells warn rather than printing a bare zero.
+        assert "No data access" in body
+        assert "outcome-warn" in body

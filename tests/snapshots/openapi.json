@@ -1140,6 +1140,24 @@
         "title": "Body_reset_request_auth_password_reset_post",
         "type": "object"
       },
+      "Body_send_magic_link_web_auth_email_send_link_web_post": {
+        "properties": {
+          "email": {
+            "title": "Email",
+            "type": "string"
+          },
+          "next": {
+            "default": "",
+            "title": "Next",
+            "type": "string"
+          }
+        },
+        "required": [
+          "email"
+        ],
+        "title": "Body_send_magic_link_web_auth_email_send_link_web_post",
+        "type": "object"
+      },
       "Body_setup_confirm_auth_password_setup_confirm_post": {
         "properties": {
           "confirm_password": {
@@ -3670,6 +3688,14 @@
             },
             "title": "Items",
             "type": "array"
+          },
+          "tables": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/TableAccessDiagnosis"
+            },
+            "title": "Tables",
+            "type": "array"
           }
         },
         "required": [
@@ -4050,6 +4076,22 @@
           "sql"
         ],
         "title": "HybridQueryRequest",
+        "type": "object"
+      },
+      "ImportBody": {
+        "properties": {
+          "project_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Project Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "project_ids"
+        ],
+        "title": "ImportBody",
         "type": "object"
       },
       "ImportBundleResponse": {
@@ -6479,6 +6521,49 @@
         "title": "PluginResponse",
         "type": "object"
       },
+      "PolicyPreviewRequest": {
+        "description": "Body for ``POST /registry/{table_id}/policy/preview`` (design doc\n\u00a713.1). ``sql`` is optional \u2014 omitted previews the table's currently\nstored ``access_policy_sql``; given, it previews a CANDIDATE body\nbefore it is ever saved. Exactly one of ``as_user`` / ``as_groups``\nselects the persona to run the policy as: ``as_user`` binds a real,\nexisting user's identity (id/email) AND their LIVE group membership;\n``as_groups`` is an ad-hoc group set with no real user behind it \u2014 the\nshape Task 15's persona matrix repeatedly calls this endpoint with, one\ndistinct group-set at a time, per \u00a713.1's \"enumerates the distinct\ngroup-sets\" (an ad-hoc set never needs a real account to exist).",
+        "properties": {
+          "as_groups": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "As Groups"
+          },
+          "as_user": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "As User"
+          },
+          "sql": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sql"
+          }
+        },
+        "title": "PolicyPreviewRequest",
+        "type": "object"
+      },
       "PreviewComponent": {
         "properties": {
           "description": {
@@ -6876,6 +6961,18 @@
           "row_count": {
             "title": "Row Count",
             "type": "integer"
+          },
+          "row_scope": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Row Scope"
           },
           "rows": {
             "items": {},
@@ -7499,6 +7596,143 @@
           }
         },
         "title": "SecretsRequest",
+        "type": "object"
+      },
+      "SemanticModelCreate": {
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "document": {
+            "title": "Document",
+            "type": "string"
+          }
+        },
+        "required": [
+          "document"
+        ],
+        "title": "SemanticModelCreate",
+        "type": "object"
+      },
+      "SemanticModelUpdate": {
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          }
+        },
+        "title": "SemanticModelUpdate",
+        "type": "object"
+      },
+      "SemanticSourceCreate": {
+        "properties": {
+          "adapter": {
+            "default": "native",
+            "title": "Adapter",
+            "type": "string"
+          },
+          "config": {
+            "additionalProperties": true,
+            "default": {},
+            "title": "Config",
+            "type": "object"
+          },
+          "enabled": {
+            "default": true,
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "name"
+        ],
+        "title": "SemanticSourceCreate",
+        "type": "object"
+      },
+      "SemanticSourceUpdate": {
+        "properties": {
+          "adapter": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Adapter"
+          },
+          "config": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Config"
+          },
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          }
+        },
+        "title": "SemanticSourceUpdate",
         "type": "object"
       },
       "SendSessionMessageBody": {
@@ -8245,6 +8479,23 @@
         "title": "SystemFlagResponse",
         "type": "object"
       },
+      "TableAccessDiagnosis": {
+        "properties": {
+          "policy": {
+            "$ref": "#/components/schemas/TablePolicyDiagnosis"
+          },
+          "table_id": {
+            "title": "Table Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "table_id",
+          "policy"
+        ],
+        "title": "TableAccessDiagnosis",
+        "type": "object"
+      },
       "TableDocsRequest": {
         "description": "Per-table docs surface \u2014 v52 (sample_questions / things_to_know /\npairs_well_with) extended in v56 with structured fields (grain /\nplatforms / partition_col / history / gotchas) for the\n/catalog/p/<slug> package detail page rewrite.\n\nAll fields optional. Sending `[]` for a list clears it; sending\n`\"\"` for a scalar clears it; omitting leaves it untouched\n(Optional-is-no-op contract).",
         "properties": {
@@ -8350,6 +8601,47 @@
           }
         },
         "title": "TableDocsRequest",
+        "type": "object"
+      },
+      "TablePolicyDiagnosis": {
+        "description": "Per-table access-policy self-audit (table access policies design\ndoc \u00a710.2, \u00a716). Always present on every table entry, never omitted \u2014\na non-policied table reports ``applies=False`` rather than dropping the\nkey, so a caller can rely on one shape instead of branching on key\npresence (documented choice; the design doc leaves this pick open).\n\n``applies`` is a STRUCTURAL fact about the table \u2014 it carries an\n``access_policy_sql`` \u2014 independent of whether THIS persona is actually\nfiltered by it: an admin-bypass target (\u00a712) still reports\n``applies=True`` for a policied table, with ``rows_visible`` showing\nthe unfiltered count instead (exactly what a live read with that\nidentity would return).\n\n``note`` is additional human-readable context beyond the fixed\n``reason`` enum \u2014 e.g. why ``rows_visible`` is ``null`` despite\n``reason='ok'`` (a remote/BigQuery table, counted-skipped to avoid a\nlive scan), or which mapping table + ``last_sync`` produced\n``reason='mapping_empty'``. ``None`` when the reason is self-explanatory.",
+        "properties": {
+          "applies": {
+            "title": "Applies",
+            "type": "boolean"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "rows_visible": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rows Visible"
+          }
+        },
+        "required": [
+          "applies",
+          "reason"
+        ],
+        "title": "TablePolicyDiagnosis",
         "type": "object"
       },
       "TableQueryRequest": {
@@ -9445,6 +9737,28 @@
       },
       "UpdateTableRequest": {
         "properties": {
+          "access_policy_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Access Policy Note"
+          },
+          "access_policy_sql": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Access Policy Sql"
+          },
           "bq_fqn": {
             "anyOf": [
               {
@@ -9554,6 +9868,17 @@
               }
             ],
             "title": "Partition Granularity"
+          },
+          "policy_mapping": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Policy Mapping"
           },
           "primary_key": {
             "anyOf": [
@@ -9956,6 +10281,11 @@
             ],
             "title": "Created At"
           },
+          "data_package_count": {
+            "default": 0,
+            "title": "Data Package Count",
+            "type": "integer"
+          },
           "deactivated_at": {
             "anyOf": [
               {
@@ -10014,6 +10344,17 @@
             "default": false,
             "title": "Is Sso User",
             "type": "boolean"
+          },
+          "last_pull_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Pull At"
           },
           "name": {
             "anyOf": [
@@ -10523,7 +10864,7 @@
   "info": {
     "description": "Self-hosted AI harness: governed data access, skills marketplace, corporate memory, and agent workspaces",
     "title": "AI Harness",
-    "version": "0.83.13"
+    "version": "0.83.23"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -10598,7 +10939,7 @@
     },
     "/admin": {
       "get": {
-        "description": "Admin hub \u2014 the canonical landing page for instance administration.\n\nA settings-style index that groups every /admin/* surface by domain\n(Activity Center, Users & Access, Data Packages, Sources, Agent\nExperience, Documentation, Server). The header's Admin mega-menu links\nhere; this page is the scalable home as the admin surface grows past what\na dropdown holds. Shell-only \u2014 every card links to an existing gated\nroute (each still enforces require_admin independently).",
+        "description": "Admin dashboard \u2014 what needs the admin's attention, on landing.\n\nThis page used to be a card grid of every /admin/* surface. Once the\ngrouped sidebar shipped (`admin_nav.py`) the grid became a second copy of\nthe navigation rendered beside the first, answering \"where do I go\" for a\nquestion the column already answered better. The sidebar is now the only\nadmin navigation (the three API-doc links the grid carried moved into it\nas `ADMIN_NAV_DOCS`), and this page answers \"what needs me?\" instead.\n\nOnly the \"Needs you\" zone \u2014 approval queues, all COUNT-shaped \u2014 resolves\nhere. \"Needs fixing\" reads the unbounded audit/history tables and is\nfetched after first paint from /api/admin/dashboard/signals, so an\ninstance with a large audit log doesn't pay for it on every render. Row\ninventory: `app/web/admin_signals.py`.",
         "operationId": "admin_hub_admin_get",
         "parameters": [
           {
@@ -10648,7 +10989,7 @@
     },
     "/admin/access": {
       "get": {
-        "description": "Resource access management \u2014 master-detail layout with the group list\non the left and per-resource-type checkbox tree on the right. Supports\n``?group=<id>`` deep-link from the group detail page.\n\nUnderlying entity is `resource_grants`; the UI label \"Resource access\"\nmatches what admins think about (who has access) rather than the table\nname (grants).",
+        "description": "The Access surface \u2014 the third leg of People \u2192 Data \u2192 Access, and\nthe ONE place a group is edited.\n\nThis URL has had four lives. It was a standalone grant matrix; it was\nretired into the group detail page's Access tab (``resource_grants``\nkeys on ``group_id``, so the group's own page looked like where the\neditor belonged); it came back as a two-pane workspace beside that tab;\nand it is now the only one of the three left standing.\n\nThe consolidation is the point. A group is one object with two sides \u2014\nan audience, and a bundle of what that audience can use \u2014 and the\nproduct had grown FOUR editors over that one object: this page, the\ngroup list, the group detail page, and the create drawer's own copies\nof both panes. Four surfaces, one pair of tables\n(``user_group_members``, ``resource_grants``), and every one of them\nfree to drift from the others.\n\nSo this page absorbed what the other three uniquely had, rather than\ndropping it:\n\n  * the list's origin pill and member/grant counts \u2192 the selector rows;\n    its description, created date, rename and delete \u2192 the pane header\n  * the detail page's full roster, with each member's origin and the\n    rule that only admin-added membership can be removed here \u2192 the\n    audience block's \"Show all N\"; its resource filter and its\n    ``#table:`` deep link \u2192 the pane's filter and ``?resource=``\n  * the drawer keeps the one job nothing else does (naming a group)\n    and lost its duplicate people/access steps\n\nWhat stays elsewhere is only the TRANSPOSE \u2014 a resource's Share panel\n(which groups get this package) and a person's memberships on their own\npage. Those answer different questions; they are not second copies of\nthis one.\n\n``?group=<id>`` selects that group \u2014 the shape ``/admin/groups/{id}``\nnow redirects to. ``?resource=<type>:<id>`` pre-filters the grant tree,\nwhich is how /admin/tables' \"Manage access\" arrives.",
         "operationId": "admin_access_page_admin_access_get",
         "parameters": [
           {
@@ -11528,6 +11869,65 @@
         ]
       }
     },
+    "/admin/data-packages/{package_id}": {
+      "get": {
+        "description": "ONE package, end to end \u2014 what is in it, who can use it, who has it.\n\nThe package is the unit an analyst actually receives, and until this page\nexisted it was the one object in the Data section with no home: its\ncomposition was edited inside the package-grouped layout on /admin/tables,\nits sharing on /admin/data-packages, and the card's own drilldown left the\nadmin area entirely for the analyst-facing /catalog/p/<slug>. Three places,\nnone of them about the package.\n\nEverything here rides EXISTING repositories and endpoints \u2014 the page adds\nno repo method, so there is no DuckDB\u2194Postgres parity sibling to write\n(CLAUDE.md). Composition writes through ``/api/admin/data-packages/{id}\n/tables``; sharing writes the same ``/api/admin/grants`` rows a group's\nAccess tab does, so the two ends of one relationship can never disagree.\n\nThe delivery read-out is the part the product could not draw anywhere:\na grant is a PERMISSION, and the data only lands once `agnes pull` runs.\n``users.last_pull_at`` (stamped by app/api/sync.py on every human pull) is\nwhat turns \"shared with 14 people\" into \"11 of them actually have it\".",
+        "operationId": "admin_package_detail_admin_data_packages__package_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "title": "Package Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Package Detail",
+        "tags": [
+          "web"
+        ]
+      }
+    },
     "/admin/data-sources": {
       "get": {
         "description": "\"Add data source\" wizard (#755): paste a Keboola project's connection\nURL + storage token, validate, then browse buckets/tables and register\nthe ones you want \u2014 no SSH, no config-file edits. Also the home for\nper-project \"Set as default\" and \"Rotate token\" controls \u2014 the single\nplace to manage a Keboola connection end to end.\n\nDistinct from /admin/mcp-sources (MCP tool servers Agnes calls at\nruntime) and from /admin/datasource-credentials (GWS/BQ instance\nsecrets) \u2014 this page owns Keboola project connect/browse/register/\ndefault/rotate. Passes ``vault_key_configured`` so the template can\nrender the same blocking banner as /admin/datasource-credentials when\n``AGNES_VAULT_KEY`` is absent (the wizard can't store a secret without\nit).",
@@ -11680,30 +12080,8 @@
     },
     "/admin/grants": {
       "get": {
-        "description": "Backward-compat redirect for the page's previous URL.",
+        "description": "Backward-compat redirect for the page's oldest URL.\n\nCarries ``?group=`` through, which the Access page reads to preselect a\ngroup. Keeps the admin gate the destination has, so a non-admin gets 403\nhere rather than a 308 naming an internal URL.",
         "operationId": "admin_grants_redirect_admin_grants_get",
-        "responses": {
-          "200": {
-            "content": {
-              "text/html": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Admin Grants Redirect",
-        "tags": [
-          "web"
-        ]
-      }
-    },
-    "/admin/groups": {
-      "get": {
-        "description": "Group list view \u2014 full-width table of user_groups with origin chips,\nmember/grant counts, and edit/delete affordances for non-system rows.",
-        "operationId": "admin_groups_page_admin_groups_get",
         "parameters": [
           {
             "in": "header",
@@ -11744,7 +12122,57 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Admin Groups Page",
+        "summary": "Admin Grants Redirect",
+        "tags": [
+          "web"
+        ]
+      }
+    },
+    "/admin/groups": {
+      "get": {
+        "description": "The group LIST is the Access workspace's left column.\n\nThis URL was a full-width table of ``user_groups`` \u2014 name, description,\norigin, member and grant counts, created, edit/delete. Every one of\nthose is on ``/admin/access`` now: the counts and the origin ride the\nselector rows, the description and the created date are the pane's\nheader, and edit/delete are the header's two buttons. What the table\ncould not do is the thing the page is for \u2014 change what a group can\nuse \u2014 so the section had two tabs that were both a list of groups.\n\n``#table:<id>`` (the /admin/tables deep link) is a fragment, so it never\nreaches the server; the workspace rewrites it to its own ``?resource=``\nspelling client-side. Kept as a 308 rather than deleted: this URL is\nlinked from a dozen places, is in the admin keyboard shortcuts, and is\nwhat an operator's muscle memory types.",
+        "operationId": "admin_groups_redirect_admin_groups_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Groups Redirect",
         "tags": [
           "web"
         ]
@@ -11752,8 +12180,8 @@
     },
     "/admin/groups/{group_id}": {
       "get": {
-        "description": "Single-group detail page \u2014 header + members table. Resource grants\nlive on /admin/grants (deep-linked from here).",
-        "operationId": "admin_group_detail_page_admin_groups__group_id__get",
+        "description": "A single group is the Access workspace with that group selected.\n\nThe detail page carried a header plus Members and Access tabs. Those\ntwo tabs are the workspace's two panes, side by side rather than behind\na switch, and the header is the pane's header \u2014 so this page was the\nsame three editors reached by a second route, over one pair of tables\n(``user_group_members``, ``resource_grants``). The full roster it owned,\nincluding each member's origin, is the pane's \"Show all N\" disclosure.\n\n``?group=`` is the shape the workspace already accepted, so the\nselection survives the hop. The 404 on an unknown id stays here: it is\ncheaper and more honest than redirecting to a page that would silently\nopen on a different group.",
+        "operationId": "admin_group_detail_redirect_admin_groups__group_id__get",
         "parameters": [
           {
             "in": "path",
@@ -11803,7 +12231,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Admin Group Detail Page",
+        "summary": "Admin Group Detail Redirect",
         "tags": [
           "web"
         ]
@@ -13473,7 +13901,7 @@
     },
     "/api/admin/access-overview": {
       "get": {
-        "description": "One-shot snapshot for the /admin/access page.\n\nReturns:\n  - ``groups``: every user_group with member + grant counts\n  - ``grants``: every (group_id, resource_type, resource_id) row\n  - ``resources``: per-resource-type hierarchical layout, where each\n    type has a list of *blocks* (parent entities, e.g. a marketplace)\n    and each block has *items* (concrete grantable resources).\n\nUI stitches the three pieces into the two-column layout: groups on\nthe left, resources tree on the right with per-item checkboxes whose\nstate derives from ``grants``.",
+        "description": "One-shot snapshot for the group detail page's Access tab.\n\nReturns:\n  - ``groups``: every user_group with member + grant counts\n  - ``grants``: every (group_id, resource_type, resource_id) row\n  - ``resources``: per-resource-type hierarchical layout, where each\n    type has a list of *blocks* (parent entities, e.g. a marketplace)\n    and each block has *items* (concrete grantable resources).\n\nUI stitches the three pieces into the two-column layout: groups on\nthe left, resources tree on the right with per-item checkboxes whose\nstate derives from ``grants``.",
         "operationId": "access_overview_api_admin_access_overview_get",
         "parameters": [
           {
@@ -15297,6 +15725,64 @@
         ]
       }
     },
+    "/api/admin/dashboard/signals": {
+      "get": {
+        "description": "Signals in the \"Needs fixing\" zone that currently have something to say.\n\nClear signals are omitted entirely rather than returned with ``count: 0``\n\u2014 an empty ``signals`` list IS the healthy state, and the page renders it\nas such. A signal whose resolver raised is returned with ``failed: true``\nso the page can say \"couldn't check\" instead of implying all-clear.",
+        "operationId": "dashboard_signals_api_admin_dashboard_signals_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Dashboard Signals Api Admin Dashboard Signals Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Dashboard Signals",
+        "tags": [
+          "admin-dashboard"
+        ]
+      }
+    },
     "/api/admin/data-packages": {
       "get": {
         "description": "List all packages, optionally name-prefix filtered for the chip-input\ntypeahead on ``/admin/tables``.\n\n``include_table_ids=true`` (v54): each row carries a\n``table_ids: [...]`` array. The /admin/tables hydrator uses this to\ncollapse the prior N+1 fan-out (one ``GET /api/admin/data-packages/\n{id}`` per package) into a single round-trip \u2014 see\n``DataPackagesRepository.list_member_ids_bulk``.",
@@ -16762,7 +17248,7 @@
         ]
       },
       "put": {
-        "description": "Update the ``requirement`` enum on an existing grant.\n\nThe ``required \u2192 available`` downgrade path depends on the stack\nmembership mode (``features.stack_auto_membership``, spec\n2026-08-07-default-chrome-ux-parity). Classic (the default): membership\nis the subscribe model, so the downgrade eagerly fans out\n``user_stack_subscriptions`` rows to the group's members \u2014 the\npre-redesign v49 behavior \u2014 or they would silently lose the resource.\nAuto-membership: both ``required`` and ``available`` are automatically in\nevery granted user's stack (``StackResolver.stack``), so the downgrade\nonly lifts the \"always downloaded locally\" guarantee and no row is\nwritten.\n\n``marketplace_plugin`` grants are the one remaining exception: plugin\nvisibility is resolved by ``resolve_user_marketplace`` off\n``user_plugin_optouts``, a separate (opt-out, not opt-in) mechanism\noutside the StackResolver's auto-membership \u2014 so a ``required \u2192\navailable`` downgrade there still fans out eagerly to keep every group\nmember's served set from silently shrinking.",
+        "description": "Update the ``requirement`` enum on an existing grant.\n\nThe ``required \u2192 available`` downgrade path depends on the stack\nmembership mode (``features.stack_auto_membership``, spec\n2026-08-07-default-chrome-ux-parity; flipped to default-on in Wave 0,\n2026-08). Auto-membership (the default): both ``required`` and\n``available`` are automatically in every granted user's stack\n(``StackResolver.stack``), so the downgrade only lifts the \"always\ndownloaded locally\" guarantee and no row is written. Classic (explicit\nopt-out via ``features.stack_auto_membership: false``): membership is\nthe subscribe model, so the downgrade eagerly fans out\n``user_stack_subscriptions`` rows to the group's members \u2014 the\npre-redesign v49 behavior \u2014 or they would silently lose the resource.\n\n``marketplace_plugin`` grants are the one remaining exception: plugin\nvisibility is resolved by ``resolve_user_marketplace`` off\n``user_plugin_optouts``, a separate (opt-out, not opt-in) mechanism\noutside the StackResolver's auto-membership \u2014 so a ``required \u2192\navailable`` downgrade there still fans out eagerly to keep every group\nmember's served set from silently shrinking.",
         "operationId": "update_grant_requirement_api_admin_grants__grant_id__put",
         "parameters": [
           {
@@ -17014,7 +17500,7 @@
         ]
       },
       "get": {
-        "description": "Single-group payload for the /admin/groups/{id} detail page header.",
+        "description": "Single-group payload for one group.\n\nFed the retired ``/admin/groups/{id}`` header; still the endpoint the\ngroup drawer reads back after a create or rename.",
         "operationId": "get_group_api_admin_groups__group_id__get",
         "parameters": [
           {
@@ -18180,7 +18666,7 @@
         ]
       },
       "get": {
-        "description": "Detail view \u2014 includes the list of tools registered against this source.",
+        "description": "Detail view \u2014 includes the list of tools registered against this\nsource, the shared vault secret's last-rotated timestamp\n(``vault_secret_updated_at``), and per-user secret coverage\n(``per_user_secrets`` \u2014 who has connected their own credential, and\nwhen; never the secret value).",
         "operationId": "get_mcp_source_api_admin_mcp_sources__source_id__get",
         "parameters": [
           {
@@ -18370,6 +18856,146 @@
           }
         },
         "summary": "Classify Mcp Source",
+        "tags": [
+          "admin-mcp"
+        ]
+      }
+    },
+    "/api/admin/mcp-sources/{source_id}/grants": {
+      "post": {
+        "description": "Grant a user group every tool registered under one source.\n\nThe per-tool grant is the right granularity for curating an upstream a\nhandful of tools at a time. It is the wrong one for a source that arrives\nwith its whole toolset at once \u2014 a connected Keboola project registers\naround forty, and granting them one page at a time is the friction the\nchat-tools switch exists to remove. This grants the set.\n\nIdempotent per tool, and it does NOT widen anything the source did not\nregister: the set is exactly ``tool_registry`` rows for this source, so a\ntool that arrives later needs another call rather than being granted in\nadvance. Returns what changed and what was already granted, because\n\"granted 0 of 37\" and \"granted 37 of 37\" mean very different things to an\nadmin and both look like success otherwise.",
+        "operationId": "add_mcp_source_grant_api_admin_mcp_sources__source_id__grants_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "source_id",
+            "required": true,
+            "schema": {
+              "title": "Source Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddGrantRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add Mcp Source Grant",
+        "tags": [
+          "admin-mcp"
+        ]
+      }
+    },
+    "/api/admin/mcp-sources/{source_id}/grants/{group_id}": {
+      "delete": {
+        "description": "Revoke a group's access to every tool of one source (idempotent).\n\nThe counterpart matters more than the convenience: an admin who granted a\nwhole project in one action must be able to take it back in one action,\nrather than revoking forty tools by hand while access stays live.",
+        "operationId": "remove_mcp_source_grant_api_admin_mcp_sources__source_id__grants__group_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "source_id",
+            "required": true,
+            "schema": {
+              "title": "Source Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "group_id",
+            "required": true,
+            "schema": {
+              "title": "Group Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Remove Mcp Source Grant",
         "tags": [
           "admin-mcp"
         ]
@@ -22920,6 +23546,79 @@
         ]
       }
     },
+    "/api/admin/registry/{table_id}/policy/preview": {
+      "post": {
+        "description": "Run a stored or candidate access policy as a chosen persona and\nreport what it does (design doc \u00a713.1) \u2014 the single-persona primitive\nadmins use to check a policy before trusting it, and that Task 15's\nadmin-UI matrix (multiple personas, union/overlap) is built from\nrepeated calls to.\n\nDeliberately does NOT route through ``policied_relation``'s admin-bypass\npath (\u00a712): that bypass exists for LIVE reads, where \"is this caller\nexempt from filtering\" is a real authorization decision keyed off the\nCALLING admin's own credential surface. A preview's entire point is\n\"what would THIS CHOSEN persona see\", independent of who is asking for\nit \u2014 so identity/groups are resolved directly from the request (or, for\n``as_user``, from that user's own live membership), never from the\ncalling admin's principal.\n\nEvery preview is audited (\u00a713.1: \"it shows one person another person's\nslice, and 'who looked at whose data, when' is the first question asked\nafter an incident\").",
+        "operationId": "preview_table_policy_api_admin_registry__table_id__policy_preview_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "table_id",
+            "required": true,
+            "schema": {
+              "title": "Table Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PolicyPreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Preview Table Policy",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/api/admin/reports/marketplace-digest": {
       "get": {
         "description": "Compose the full digest payload for `period`.\n\nWindows (all UTC, upper bound exclusive):\n- daily:  primary = the anchor day; comparison = the day before;\n          trend_series = trailing 14 days ending on the anchor.\n- weekly: primary = 7 days ending on the anchor; comparison = the 7 days\n          before that; trend_series = trailing 30 days ending on the anchor.",
@@ -23224,6 +23923,57 @@
         "tags": [
           "admin"
         ]
+      }
+    },
+    "/api/admin/run-databricks-semantic-layer-refresh": {
+      "post": {
+        "description": "Sync the configured Databricks workspace's Unity Catalog metric views\ninto metric_definitions. See connectors/databricks/semantic_layer.py for\nthe mapping/prune logic.\n\n409 if a sync is already in flight. 400 when the sync fails for a reason\nthe admin controls \u2014 Databricks not configured, or a request the\nworkspace refuses (4xx). 502 only when the upstream is unreachable or\nanswers 5xx.",
+        "operationId": "run_databricks_semantic_layer_refresh_api_admin_run_databricks_semantic_layer_refresh_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Run Databricks Semantic Layer Refresh"
       }
     },
     "/api/admin/run-jira-consistency-check": {
@@ -23799,6 +24549,714 @@
           }
         },
         "summary": "Get Semantic Layer Coverage"
+      }
+    },
+    "/api/admin/semantic-models": {
+      "get": {
+        "description": "List every stored semantic model (any status), admin-only.",
+        "operationId": "list_semantic_models_api_admin_semantic_models_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "source",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Source"
+            }
+          },
+          {
+            "in": "query",
+            "name": "source_ref",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Source Ref"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Semantic Models",
+        "tags": [
+          "semantic-models"
+        ]
+      },
+      "post": {
+        "description": "Create (or replace) a hand-authored (``source='manual'``) model from\na pasted Ossie document. Invalid input 422s with the schema errors \u2014\nnever stored half-valid.",
+        "operationId": "create_semantic_model_api_admin_semantic_models_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SemanticModelCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Semantic Model",
+        "tags": [
+          "semantic-models"
+        ]
+      }
+    },
+    "/api/admin/semantic-models/{model_id}": {
+      "delete": {
+        "operationId": "delete_semantic_model_api_admin_semantic_models__model_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "model_id",
+            "required": true,
+            "schema": {
+              "title": "Model Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Semantic Model",
+        "tags": [
+          "semantic-models"
+        ]
+      },
+      "get": {
+        "operationId": "get_semantic_model_api_admin_semantic_models__model_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "model_id",
+            "required": true,
+            "schema": {
+              "title": "Model Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Semantic Model",
+        "tags": [
+          "semantic-models"
+        ]
+      },
+      "put": {
+        "operationId": "update_semantic_model_api_admin_semantic_models__model_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "model_id",
+            "required": true,
+            "schema": {
+              "title": "Model Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SemanticModelUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Semantic Model",
+        "tags": [
+          "semantic-models"
+        ]
+      }
+    },
+    "/api/admin/semantic-sources": {
+      "get": {
+        "operationId": "list_semantic_sources_api_admin_semantic_sources_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "enabled_only",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Enabled Only",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Semantic Sources",
+        "tags": [
+          "semantic-models"
+        ]
+      },
+      "post": {
+        "operationId": "create_semantic_source_api_admin_semantic_sources_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SemanticSourceCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Semantic Source",
+        "tags": [
+          "semantic-models"
+        ]
+      }
+    },
+    "/api/admin/semantic-sources/{source_id}": {
+      "delete": {
+        "operationId": "delete_semantic_source_api_admin_semantic_sources__source_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "source_id",
+            "required": true,
+            "schema": {
+              "title": "Source Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Semantic Source",
+        "tags": [
+          "semantic-models"
+        ]
+      },
+      "get": {
+        "operationId": "get_semantic_source_api_admin_semantic_sources__source_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "source_id",
+            "required": true,
+            "schema": {
+              "title": "Source Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Semantic Source",
+        "tags": [
+          "semantic-models"
+        ]
+      },
+      "put": {
+        "operationId": "update_semantic_source_api_admin_semantic_sources__source_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "source_id",
+            "required": true,
+            "schema": {
+              "title": "Source Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SemanticSourceUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Semantic Source",
+        "tags": [
+          "semantic-models"
+        ]
+      }
+    },
+    "/api/admin/semantic-sources/{source_id}/sync": {
+      "post": {
+        "operationId": "sync_semantic_source_api_admin_semantic_sources__source_id__sync_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "source_id",
+            "required": true,
+            "schema": {
+              "title": "Source Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Sync Semantic Source",
+        "tags": [
+          "semantic-models"
+        ]
       }
     },
     "/api/admin/server-config": {
@@ -27045,7 +28503,7 @@
     },
     "/api/admin/users/{user_id}/effective-access": {
       "get": {
-        "description": "List resources the user effectively has access to, with which group\ngrants each one. ``is_admin`` reflects the real Admin-group check but\nno longer short-circuits the response \u2014 admins get the same explicit\ngrant breakdown as everyone else, so the admin viewing a target user\ncan see precisely what's been granted via which group rather than a\nflat \"Full access\" pill that hides the wiring.\n\nNote: actual authorization at runtime still gives Admin-group members\ngod-mode (see ``app.auth.access.is_user_admin``); this endpoint is a\ndebugging/audit view of the explicit grant graph, not the enforcement\nsurface.",
+        "description": "List resources the user effectively has access to, with which group\ngrants each one. ``is_admin`` reflects the real Admin-group check but\nno longer short-circuits the response \u2014 admins get the same explicit\ngrant breakdown as everyone else, so the admin viewing a target user\ncan see precisely what's been granted via which group rather than a\nflat \"Full access\" pill that hides the wiring.\n\nNote: actual authorization at runtime still gives Admin-group members\ngod-mode (see ``app.auth.access.is_user_admin``); this endpoint is a\ndebugging/audit view of the explicit grant graph, not the enforcement\nsurface. ``tables`` (\u00a710.2) is the exception \u2014 it reports what the\nTARGET user ``user_id`` (not the calling admin) actually sees through\nany access policy, since that is precisely the \"X says Agnes shows her\nnothing\" question this field exists to answer in one page load.",
         "operationId": "user_effective_access_api_admin_users__user_id__effective_access_get",
         "parameters": [
           {
@@ -28482,6 +29940,130 @@
         "summary": "Exchange Setup Token",
         "tags": [
           "cowork"
+        ]
+      }
+    },
+    "/api/auth/keboola/projects": {
+      "get": {
+        "description": "The caller's pending Keboola project discovery, if any.\n\n``discovery_available`` is False when the instance is not in ``select``\nmode (the login didn't run a user-driven discovery \u2014 and a stash left\nover from before an operator flipped the mode must not be offered, or\nthis listing would show projects whose import answers 409\n``not_select_mode``), when the stash expired (TTL \u2014 sign in with Keboola\nagain to refresh), or when the vault key is unconfigured.",
+        "operationId": "list_discovered_projects_api_auth_keboola_projects_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Discovered Projects Api Auth Keboola Projects Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Discovered Projects",
+        "tags": [
+          "auth"
+        ]
+      },
+      "post": {
+        "description": "Provision the selected subset of the caller's discovered projects.\n\n409 ``not_select_mode`` outside select mode (``auto`` imports at login;\n``disabled`` never discovers). 409 ``discovery_expired`` when there is\nno live stash \u2014 sign in with Keboola again. 400 for ids that were never\ndiscovered. Per-project failures are reported in the response, not as an\nHTTP error; the slow tail (chat-tools introspection, semantic-layer\nrefresh) continues as a background task after the response.",
+        "operationId": "import_discovered_projects_api_auth_keboola_projects_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Import Discovered Projects Api Auth Keboola Projects Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Import Discovered Projects",
+        "tags": [
+          "auth"
         ]
       }
     },
@@ -31855,7 +33437,7 @@
     },
     "/api/data-apps/{slug}/readiness": {
       "get": {
-        "description": "Runner-backed readiness probe. Doubles as the wake-completion flip:\nwhen a `deploying` app's runner reports `ready`, this call itself\ntransitions the row to `running` \u2014 the ingress proxy's holding page\n(`app/api/data_apps_proxy.py``, ``data_app_waking.html``'s poll loop)\nis the only caller that hits this endpoint on a cadence, so the flip\nhappening here (rather than a dedicated poller) is what actually\nsurfaces \"the app is up\" back to the browser tab that triggered the\nwake. See that module's docstring for the other half of this contract.\n\nThe caller is resolved through the PROXY's chain, not a plain\n``Depends(get_current_user)``. The holding page this serves is rendered\nby the proxy, which accepts a ``data-app-preview:<slug>`` scoped token \u2014\nthe credential the in-chat preview iframe carries \u2014 while\n``get_current_user`` rejects it outright. So a preview iframe used to get\na holding page whose poll 401'd forever and never noticed the app come\nup (Devin Review on this PR; pre-existing for the `sleeping`/`deploying`\nbranches, but the starting-app branch added here reaches it far more\noften). Serving the page and refusing its only poll is half a fix.\n\nImported inside the function: `data_apps_proxy` imports this module, so a\nmodule-level import would be circular.",
+        "description": "Runner-backed readiness probe. Doubles as the wake-completion flip:\nwhen a `deploying` app's runner reports `ready`, this call itself\ntransitions the row to `running` \u2014 the ingress proxy's holding page\n(`app/api/data_apps_proxy.py``, ``data_app_waking.html``'s poll loop)\nis the only caller that hits this endpoint on a cadence, so the flip\nhappening here (rather than a dedicated poller) is what actually\nsurfaces \"the app is up\" back to the browser tab that triggered the\nwake. See that module's docstring for the other half of this contract.\n\nThe caller is resolved through the PROXY's chain, not a plain\n``Depends(get_current_user)``. The holding page this serves is rendered\nby the proxy, which accepts a ``data-app-preview:<slug>`` scoped token \u2014\nthe credential the in-chat preview iframe carries \u2014 while\n``get_current_user`` rejects it outright. So a preview iframe used to get\na holding page whose poll 401'd forever and never noticed the app come\nup (Devin Review on this PR; pre-existing for the `sleeping`/`deploying`\nbranches, but the starting-app branch added here reaches it far more\noften). Serving the page and refusing its only poll is half a fix.\n\nResolved BEFORE the registry read: with auth moved out of the ``Depends``\nchain into the handler body, a lookup-first ordering answered anonymous\nprobes 404 for a made-up slug and 401 for a real one \u2014 letting a caller\nwith no credentials at all enumerate which hosted apps exist (Devin\nReview on this PR). Anonymous now gets a uniform 401 either way, the\nsame shape the old ``Depends(get_current_user)`` signature enforced.\n\nImported inside the function: `data_apps_proxy` imports this module, so a\nmodule-level import would be circular.",
         "operationId": "get_data_app_readiness_api_data_apps__slug__readiness_get",
         "parameters": [
           {
@@ -36049,7 +37631,7 @@
     },
     "/api/me/effective-access": {
       "get": {
-        "description": "Same payload as /api/admin/users/{id}/effective-access but scoped to\nthe calling user. Drives the /me/profile page's read-only access summary \u2014\nso non-admin callers can self-audit without elevation. Admins get the\nsame explicit grant breakdown as everyone else (no short-circuit) so\nthe profile page audits the actual grant graph; runtime authorization\nstill gives Admin god-mode regardless of this list.",
+        "description": "Same payload as /api/admin/users/{id}/effective-access but scoped to\nthe calling user. Drives the /me/profile page's read-only access summary \u2014\nso non-admin callers can self-audit without elevation. Admins get the\nsame explicit grant breakdown as everyone else (no short-circuit) so\nthe profile page audits the actual grant graph; runtime authorization\nstill gives Admin god-mode regardless of this list.\n\n``tables`` (\u00a710.2) resolves the policy diagnosis against the FULL\n``user`` principal from ``get_current_user`` \u2014 including\n``credential_surface`` when the caller authenticated with a PAT \u2014 so a\n``surface='stack'`` admin token (the ``agnes init`` default) audits\nitself as filtered, exactly like a live ``agnes query`` call with that\nsame token would be (\u00a712: \"policies follow the credential surface\").",
         "operationId": "my_effective_access_api_me_effective_access_get",
         "parameters": [
           {
@@ -40133,6 +41715,147 @@
         ]
       }
     },
+    "/api/semantic-models/search": {
+      "get": {
+        "description": "Case-insensitive substring search over slug/name/description, RBAC\nfiltered to models linked to a Data Package the caller can access\n(admins see everything).",
+        "operationId": "search_semantic_models_api_semantic_models_search_get",
+        "parameters": [
+          {
+            "description": "Search query",
+            "in": "query",
+            "name": "q",
+            "required": true,
+            "schema": {
+              "description": "Search query",
+              "minLength": 1,
+              "title": "Q",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 10,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Search Semantic Models",
+        "tags": [
+          "semantic-models"
+        ]
+      }
+    },
+    "/api/semantic-models/{slug}.yaml": {
+      "get": {
+        "description": "Export the stored document byte-for-byte \u2014 never re-serialized, so\ncomments and key order survive.",
+        "operationId": "export_semantic_model_api_semantic_models__slug__yaml_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Export Semantic Model",
+        "tags": [
+          "semantic-models"
+        ]
+      }
+    },
     "/api/settings": {
       "get": {
         "description": "Get current user's sync settings.\n\nThe legacy ``permissions`` field that mirrored ``dataset_permissions``\nwas removed in v19 \u2014 table access is now via ``resource_grants``,\nqueryable through ``GET /api/me/effective-access``.",
@@ -40607,7 +42330,7 @@
     },
     "/api/stack": {
       "get": {
-        "description": "Return the user's effective stack for the given resource type.\n\nClassic (the default): effective stack = required grants plus the\n``available`` grants the caller subscribed to; every member is\n``materialized`` (downloaded by `agnes pull`). Auto-membership (opt-in\nvia ``features.stack_auto_membership``): every grant on the caller's\ngroups is a member, no subscription needed \u2014 ``materialized`` then flags\nwhich ones are also kept as a local copy (always true for required, true\nfor available only once subscribed).",
+        "description": "Return the user's effective stack for the given resource type.\n\nAuto-membership (the default): every grant on the caller's groups is a\nmember, no subscription needed \u2014 ``materialized`` then flags which ones\nare also kept as a local copy (always true for required, true for\navailable only once subscribed). Classic (explicit opt-out via\n``features.stack_auto_membership: false``): effective stack = required\ngrants plus the ``available`` grants the caller subscribed to; every\nmember is ``materialized`` (downloaded by `agnes pull`).",
         "operationId": "list_stack_api_stack_get",
         "parameters": [
           {
@@ -40843,7 +42566,7 @@
     },
     "/api/stack/browse": {
       "get": {
-        "description": "List every resource of ``type`` the caller could see (RBAC-granted).\n\nThe full candidate set (issue #621), independent of membership mode.\nClassic (the default): ``in_stack`` marks the members (required or\nsubscribed) and the rest are addable via ``POST /api/stack/subscribe``.\nAuto-membership (opt-in): every granted item is ``in_stack: true`` and\nthe scope equals ``GET /api/stack``; ``materialized`` then tells an\nanalyst's Claude what is already downloaded locally vs. only server-side\nqueryable.\n\nScoped per-user by ``StackResolver.browse`` (group grants only), so the\nonly authorization gate is authentication \u2014 no extra RBAC dependency.",
+        "description": "List every resource of ``type`` the caller could see (RBAC-granted).\n\nThe full candidate set (issue #621), independent of membership mode.\nAuto-membership (the default): every granted item is ``in_stack: true``\nand the scope equals ``GET /api/stack``; ``materialized`` then tells an\nanalyst's Claude what is already downloaded locally vs. only server-side\nqueryable. Classic (explicit opt-out via\n``features.stack_auto_membership: false``): ``in_stack`` marks the\nmembers (required or subscribed) and the rest are addable via\n``POST /api/stack/subscribe``.\n\nScoped per-user by ``StackResolver.browse`` (group grants only), so the\nonly authorization gate is authentication \u2014 no extra RBAC dependency.",
         "operationId": "browse_stack_api_stack_browse_get",
         "parameters": [
           {
@@ -40906,7 +42629,7 @@
     },
     "/api/stack/subscribe": {
       "post": {
-        "description": "Subscribe to an ``available`` resource. Classic (the default): this\nADDS the resource to the caller's stack. Auto-membership (opt-in): the\nresource is already in the stack, so this only requests a downloaded\nlocal copy. Refuses if the resource is required (always in the stack and\ndownloaded automatically \u2014 clients shouldn't bother).",
+        "description": "Subscribe to an ``available`` resource. Auto-membership (the\ndefault): the resource is already in the stack, so this only requests a\ndownloaded local copy. Classic (explicit opt-out via\n``features.stack_auto_membership: false``): this ADDS the resource to\nthe caller's stack. Refuses if the resource is required (always in the\nstack and downloaded automatically \u2014 clients shouldn't bother).",
         "operationId": "subscribe_api_stack_subscribe_post",
         "parameters": [
           {
@@ -40970,7 +42693,7 @@
     },
     "/api/stack/subscription/{resource_type}/{resource_id}": {
       "delete": {
-        "description": "Unsubscribe from an ``available`` resource. Classic (the default):\nthis REMOVES the resource from the caller's stack. Auto-membership\n(opt-in): the resource stays in the stack (still queryable server-side),\nonly the downloaded local copy is dropped. Returns 400\n``cannot_remove_required`` when the resource is required for any of the\nuser's groups (required is always in the stack and downloaded, no\nopt-out).\n\nReturns 204 No Content on success \u2014 DELETE idempotency convention\nenforced by the API design rules test.",
+        "description": "Unsubscribe from an ``available`` resource. Auto-membership (the\ndefault): the resource stays in the stack (still queryable\nserver-side), only the downloaded local copy is dropped. Classic\n(explicit opt-out via ``features.stack_auto_membership: false``): this\nREMOVES the resource from the caller's stack. Returns 400\n``cannot_remove_required`` when the resource is required for any of the\nuser's groups (required is always in the stack and downloaded, no\nopt-out).\n\nReturns 204 No Content on success \u2014 DELETE idempotency convention\nenforced by the API design rules test.",
         "operationId": "unsubscribe_api_stack_subscription__resource_type___resource_id__delete",
         "parameters": [
           {
@@ -47197,9 +48920,49 @@
         ]
       }
     },
+    "/auth/email/send-link/web": {
+      "post": {
+        "description": "Web form variant of ``/send-link`` \u2014 renders the 'check your email'\npage instead of returning JSON. Mirrors ``password_login_web``'s\nHTML-form sibling of the JSON ``/auth/password/login`` endpoint.\n\nSame anti-enumeration behavior as ``send_magic_link``: always renders\nthe sent-page, regardless of whether the account exists.\n\n``next`` round-trips into the hidden field on ``login_magic_link.html``\nbut does not yet thread through the magic-link token to the post-verify\nredirect \u2014 that redirect still lands on the operator-configured home\nroute (see ``verify_magic_link_get``).",
+        "operationId": "send_magic_link_web_auth_email_send_link_web_post",
+        "requestBody": {
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_send_magic_link_web_auth_email_send_link_web_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Send Magic Link Web",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
     "/auth/email/verify": {
       "get": {
-        "description": "Click-through variant \u2014 verifies token, sets cookie, redirects to the\noperator-configured home route.\n\nThis is the URL we embed in outgoing emails (and the dev-fallback link), so\nclicking it in a mail client logs the user in without a separate API call.\n\nRate limited 10/min per IP for the same reason as the POST variant \u2014\ndon't let the click-through path bypass the brute-force throttle.",
+        "description": "Click-through variant \u2014 verifies token, sets cookie, redirects to the\npage the user originally asked for (``?next``) or the operator-configured\nhome route.\n\nThis is the URL we embed in outgoing emails (and the dev-fallback link), so\nclicking it in a mail client logs the user in without a separate API call.\n\nRate limited 10/min per IP for the same reason as the POST variant \u2014\ndon't let the click-through path bypass the brute-force throttle.",
         "operationId": "verify_magic_link_get_auth_email_verify_get",
         "parameters": [
           {
@@ -47217,6 +48980,16 @@
             "required": true,
             "schema": {
               "title": "Token",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "next",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Next",
               "type": "string"
             }
           }
@@ -47320,6 +49093,46 @@
           }
         },
         "summary": "Google Login",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/auth/keboola/callback": {
+      "get": {
+        "description": "Exchange the code, verify the access token at the stack, sign in.",
+        "operationId": "keboola_callback_auth_keboola_callback_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Keboola Callback",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/auth/keboola/login": {
+      "get": {
+        "description": "Redirect to the Keboola OAuth authorize endpoint (state in session).",
+        "operationId": "keboola_login_auth_keboola_login_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Keboola Login",
         "tags": [
           "auth"
         ]
@@ -47769,7 +49582,7 @@
     },
     "/auth/token": {
       "post": {
-        "description": "Issue a JWT token. Requires password authentication.",
+        "description": "Issue a JWT token. Requires password authentication.\n\nGated by the ``password`` provider allowlist entry (route-level\n``Depends`` rather than an inline check) \u2014 the body is a JSON Pydantic\nmodel, and FastAPI resolves body validation together with dependencies\nin ``solve_dependencies()``; an inline guard as the first line of the\nfunction never runs when the body fails to parse (e.g. a form-encoded\nPOST), so an excluded provider would 422 instead of 404. The\ndependency raises before body validation gets a chance to.",
         "operationId": "create_token_auth_token_post",
         "requestBody": {
           "content": {
@@ -48304,7 +50117,7 @@
     },
     "/chat": {
       "get": {
-        "description": "Web chat UI \u2014 streams Claude Code sessions over WebSocket.\n\nGoes through ``_build_context`` so the page inherits the standard\nAgnes chrome from ``base_ds.html``: ``_app_header.html`` (nav),\n``static_url(...)``-resolved CSS, ``config.INSTANCE_NAME``,\n``session.user.is_admin`` for the admin dropdown, footer copyright.\nWithout this, the head's four ``<link rel=\"stylesheet\" href=\"\">``\ntags render with empty href and the nav block short-circuits on\n``{% if session.user %}``.",
+        "description": "Web chat UI \u2014 streams Claude Code sessions over WebSocket.\n\nGoes through ``_build_context`` so the page inherits the standard\nAgnes chrome from ``base_ds.html``: ``_app_rail.html`` (nav),\n``static_url(...)``-resolved CSS, ``config.INSTANCE_NAME``,\n``session.user.is_admin`` for the admin dropdown, footer copyright.\nWithout this, the head's four ``<link rel=\"stylesheet\" href=\"\">``\ntags render with empty href and the nav block short-circuits on\n``{% if session.user %}``.",
         "operationId": "chat_page_chat_get",
         "parameters": [
           {
@@ -49130,7 +50943,7 @@
     },
     "/library": {
       "get": {
-        "description": "Library \u2014 everything the caller has: artefacts, skills, and agents.\n\nThis is the renamed and widened former ``/artefacts`` surface. It answers\n\"what do I have?\" across every kind Agnes governs \u2014 the caller's own things\nplus everything shared with them:\n\n  - **Artefacts** \u2014 ``file_corpora`` uploads: images, documents, data\n    files, and multi-file collections, whether *uploaded* by a person or\n    *generated* by an agent (the Source facet).\n  - **Skills** \u2014 the caller's own store entities of type ``skill``, i.e.\n    what the Skill builder (/skills) publishes.\n  - **Granted resources** \u2014 governed **data packages**, **memory\n    domains**, **recipes** and curated **marketplace plugins** granted to\n    one of the caller's groups, plus the community-store items they have\n    **installed**. These are not the caller's to re-share, so they carry no\n    Share action; the grant belongs to an admin.\n\nAgents are deliberately NOT here \u2014 they have their own home at ``/agents``\n(they are still real server-side rows in the v103 ``agents`` registry, and\n``/api/agents`` reads honour agent grants; the Library just isn't their\nlisting surface).\n\nScope is grant-aware: items you OWN plus anything shared into a group you\nbelong to, tagged ``mine`` / ``shared_with_me`` / ``shared_by_me`` so the\ntoolbar can slice by ownership. Deliberately NOT admin god-mode \u2014 an admin\nstill sees their own Library, not every item in the instance (the audit\nview is /admin/access).\n\nEvery row carries its real visibility (Private / Shared / Workspace) and,\nfor the grant-backed kinds, a Share action writing through\n``PUT /api/sharing/{resource_type}/{resource_id}``. Skills are the\nexception: an approved store entity is already readable by every\nauthenticated user, so the row reports that state rather than offering a\ngroup grant nothing would read.\n\nRendering is server-side; the toolbar (search, ownership segments, Type +\nSource facets, sort, and the table \u21c4 grid switch) is client-side over\nthose rows.\n\nTOPNAV keeps the pre-redesign page: the unified Library above is part of\nthe rail redesign, and a default instance's /library must keep rendering\nthe legacy \"Your collections\" page byte-for-byte (the /catalog pattern \u2014\nclassic template on topnav, redesigned one under rail; guarded by\ntests/test_ui_layout_theme.py::TestDefaultContentParity). The legacy\nbranch below is main's pre-merge handler verbatim.",
+        "description": "Library \u2014 everything the caller has: artefacts, skills, and agents.\n\nThis is the renamed and widened former ``/artefacts`` surface. It answers\n\"what do I have?\" across every kind Agnes governs \u2014 the caller's own things\nplus everything shared with them:\n\n  - **Artefacts** \u2014 ``file_corpora`` uploads: images, documents, data\n    files, and multi-file collections, whether *uploaded* by a person or\n    *generated* by an agent (the Source facet).\n  - **Skills** \u2014 the caller's own store entities of type ``skill``, i.e.\n    what the Skill builder (/skills) publishes.\n  - **Granted resources** \u2014 governed **data packages**, **memory\n    domains**, **recipes** and curated **marketplace plugins** granted to\n    one of the caller's groups, plus the community-store items they have\n    **installed**. These are not the caller's to re-share, so they carry no\n    Share action; the grant belongs to an admin.\n\nAgents are deliberately NOT here \u2014 they have their own home at ``/agents``\n(they are still real server-side rows in the v103 ``agents`` registry, and\n``/api/agents`` reads honour agent grants; the Library just isn't their\nlisting surface).\n\nScope is grant-aware: items you OWN plus anything shared into a group you\nbelong to, tagged ``mine`` / ``shared_with_me`` / ``shared_by_me`` so the\ntoolbar can slice by ownership. Deliberately NOT admin god-mode \u2014 an admin\nstill sees their own Library, not every item in the instance (the audit\nview is /admin/access).\n\nEvery row carries its real visibility (Private / Shared / Workspace) and,\nfor the grant-backed kinds, a Share action writing through\n``PUT /api/sharing/{resource_type}/{resource_id}``. Skills are the\nexception: an approved store entity is already readable by every\nauthenticated user, so the row reports that state rather than offering a\ngroup grant nothing would read.\n\nRendering is server-side; the toolbar (search, ownership segments, Type +\nSource facets, sort, and the table \u21c4 grid switch) is client-side over\nthose rows.",
         "operationId": "library_page_library_get",
         "parameters": [
           {
@@ -49328,7 +51141,7 @@
     },
     "/login/email": {
       "get": {
-        "description": "Email magic link login form.",
+        "description": "Email magic link login form.\n\nRenders `login_magic_link.html` \u2014 the actual magic-link form, whose\n\"Send Sign-In Link\" button posts to `/auth/email/send-link/web`. This\nroute used to render `login_email.html` (the password form, which posts\nto `/auth/password/*`) by mistake: with `auth.providers: [email]`, the\nentire `/auth/password` router 404s, so the wrong template locked out\nthe web UI end to end.",
         "operationId": "login_email_page_login_email_get",
         "responses": {
           "200": {
@@ -50382,7 +52195,7 @@
     },
     "/me/ai-connector": {
       "get": {
-        "description": "AI Connector \u2014 chrome-dependent (spec 2026-08-07 wave 2).\n\nDefault chrome keeps the pre-redesign standalone page (frozen\n``me_cowork_legacy.html``: OAuth connector URL, plugin packages,\navailable tools \u2014 including the /mcp-connect token fallback link).\nUnder ANY redesign opt-in \u2014 rail layout or paper theme, the same\nexpression the user-menu row keys on \u2014 the page stays consolidated into\n/how-it-works#connect via the 302 the redesign shipped: a paper-on-topnav\ninstance's menu says \"Learn how it works\", so a bookmark or alias hop\nmust not resurrect the standalone page there (Devin Review on #1200).\n302, not 301: a permanent redirect is cached by the browser forever, so\nit would be very hard to walk back if the consolidation is revisited.\n\nChecked before either chrome branch (#1024): with the MCP connector UI\nhidden (``mcp.connector_ui_enabled: false`` \u2014 a VPN/intranet-only instance\nwhose cloud-side MCP clients can never reach the endpoint), this whole\npage IS the surface being hidden, so both branches bounce home rather\nthan one of them rendering it anyway.",
+        "description": "AI Connector \u2014 consolidated into /how-it-works#connect.\n\nRedirects there unconditionally (302, not 301: a permanent redirect is\ncached by the browser forever, so it would be very hard to walk back if\nthe consolidation is revisited).\n\nChecked first (#1024): with the MCP connector UI hidden\n(``mcp.connector_ui_enabled: false`` \u2014 a VPN/intranet-only instance whose\ncloud-side MCP clients can never reach the endpoint), this whole page IS\nthe surface being hidden, so it bounces home instead.",
         "operationId": "me_ai_connector_page_me_ai_connector_get",
         "parameters": [
           {
@@ -50482,7 +52295,7 @@
     },
     "/me/cowork": {
       "get": {
-        "description": "Legacy aliases \u2192 /me/ai-connector (which renders the page on default\nchrome and forwards to /how-it-works#connect under the redesign opt-in).\n\n302, not 301: a permanent redirect is cached by the browser forever, so\nit would be very hard to walk back if the routing is revisited.",
+        "description": "Legacy aliases \u2192 /me/ai-connector.\n\n302, not 301: a permanent redirect is cached by the browser forever, so\nit would be very hard to walk back if the routing is revisited.",
         "operationId": "me_mcp_redirect_me_cowork_get",
         "responses": {
           "200": {
@@ -50504,7 +52317,7 @@
     },
     "/me/mcp": {
       "get": {
-        "description": "Legacy aliases \u2192 /me/ai-connector (which renders the page on default\nchrome and forwards to /how-it-works#connect under the redesign opt-in).\n\n302, not 301: a permanent redirect is cached by the browser forever, so\nit would be very hard to walk back if the routing is revisited.",
+        "description": "Legacy aliases \u2192 /me/ai-connector.\n\n302, not 301: a permanent redirect is cached by the browser forever, so\nit would be very hard to walk back if the routing is revisited.",
         "operationId": "me_mcp_redirect_me_mcp_get",
         "responses": {
           "200": {
@@ -51189,7 +53002,7 @@
     },
     "/stack": {
       "get": {
-        "description": "Unified My Stack (rail layout / #896 prototype IA) \u2014 the caller's\npersonal workspace: \"Everything in your Stack\", one inventory table\nover every kind \u2014 Data (data packages), Plugins (hydrated client-side\nfrom /api/marketplace/items?tab=my), Memory (memory domains), Uploads\n(private file collections). Growing the stack happens on /catalog,\nwhich carries the \"Recommended for you\" row.\n\nReachable under any layout; the rail's \"My Stack\" entry points here.",
+        "description": "My Stack is retired \u2014 folded into the Library (#1088).\n\nDirection (a) from the issue thread: \"the Library absorbs the Stack. No\nmigration of functionality is required \u2014 it is already there.\" /library\nalready renders every kind My Stack did (data packages, memory domains,\nmarketplace plugins, uploads) off the same ``StackResolver.browse()``\ncall, with per-row ``stack_state`` membership controls, and its \"In\nstack only\" toggle (the ``?stack=in_stack`` preset this redirect targets)\nanswers the exact question this page existed to answer.\n\n302, not 308, so a later reversal is not cached permanently \u2014 same\nreasoning as the /corporate-memory and /apps retirements (#1278). Route\nkept registered (not removed) so old links, bookmarks and the onboarding\ntour's stored history don't 404.",
         "operationId": "my_stack_page_stack_get",
         "parameters": [
           {

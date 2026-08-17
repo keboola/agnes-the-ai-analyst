@@ -26,11 +26,14 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _auto_membership_mode(monkeypatch):
-    """This suite pins the AUTO-membership semantics, which are opt-in since
-    the classic subscribe model became the default again (spec
-    2026-08-07-default-chrome-ux-parity). Classic-mode contracts live in
-    tests/test_stack_membership_modes.py (and the classic fan-out siblings in
-    tests/test_e2e_stack_rbac.py / tests/test_cli_api_parity.py)."""
+    """This suite pins the AUTO-membership semantics, forced explicitly here
+    regardless of which mode the ambient preset implies (spec
+    2026-08-07-default-chrome-ux-parity; Wave 0, 2026-08, coupled the sole
+    remaining `redesign` experience to auto-membership by default, so pinning
+    it explicitly keeps this suite's intent legible either way). Classic-mode
+    contracts live in tests/test_stack_membership_modes.py (and the classic
+    fan-out siblings in tests/test_e2e_stack_rbac.py /
+    tests/test_cli_api_parity.py)."""
     monkeypatch.setenv("AGNES_STACK_AUTO_MEMBERSHIP", "1")
 
 
@@ -236,13 +239,16 @@ def test_subscribe_without_grant_is_forbidden(seeded_app_both):
 
 
 # ---------------------------------------------------------------------------
-# Classic (default) membership mode — the pre-redesign subscribe model, on
-# BOTH backends. These override the module's auto-membership autouse fixture
-# per test (spec 2026-08-07-default-chrome-ux-parity: "asserted per mode via
-# the env var, on both backends where repos are involved"): every fresh or
-# upgraded instance runs classic, so the classic HTTP flows — membership
-# resolution AND the restored grant-downgrade fan-out — must be exercised
-# against real Postgres, not just DuckDB.
+# Classic membership mode — the pre-redesign subscribe model, on BOTH
+# backends. These override the module's auto-membership autouse fixture per
+# test (spec 2026-08-07-default-chrome-ux-parity: "asserted per mode via the
+# env var, on both backends where repos are involved"). Classic is no longer
+# what an unconfigured instance runs (Wave 0, 2026-08, coupled the sole
+# remaining `redesign` experience to auto-membership) — it is forced here via
+# the explicit per-knob override, which still wins over any preset — but the
+# classic HTTP flows themselves (membership resolution AND the restored
+# grant-downgrade fan-out) remain a fully supported opt-out, so they must stay
+# exercised against real Postgres, not just DuckDB.
 # ---------------------------------------------------------------------------
 
 
@@ -260,8 +266,13 @@ def _grant_with_id(gid: str, resource_type: str, resource_id: str, requirement: 
 
 def test_classic_available_grant_joins_stack_only_after_subscribe(seeded_app_both, monkeypatch):
     """Classic: an unsubscribed ``available`` grant is browsable but NOT a
-    stack member; POST /subscribe joins the stack (membership op)."""
-    monkeypatch.delenv("AGNES_STACK_AUTO_MEMBERSHIP", raising=False)
+    stack member; POST /subscribe joins the stack (membership op).
+
+    Classic is no longer the presetless default (Wave 0, 2026-08, coupled the
+    sole remaining `redesign` experience to auto-membership) — forced here via
+    the still-fully-supported explicit per-knob override, which wins over any
+    preset."""
+    monkeypatch.setenv("AGNES_STACK_AUTO_MEMBERSHIP", "0")
     client = seeded_app_both["client"]
     headers = {"Authorization": f"Bearer {seeded_app_both['analyst_token']}"}
 
@@ -299,8 +310,13 @@ def test_classic_downgrade_fans_out_subscriptions(seeded_app_both, monkeypatch):
     """Classic: PUT /api/admin/grants/{id} required → available eagerly
     writes a subscription row per group member (the restored v49 fan-out in
     app/api/access.py), so nobody silently loses the resource — asserted on
-    whichever backend this run configured, via the repo factory."""
-    monkeypatch.delenv("AGNES_STACK_AUTO_MEMBERSHIP", raising=False)
+    whichever backend this run configured, via the repo factory.
+
+    Classic is no longer the presetless default (Wave 0, 2026-08, coupled the
+    sole remaining `redesign` experience to auto-membership) — forced here via
+    the still-fully-supported explicit per-knob override, which wins over any
+    preset."""
+    monkeypatch.setenv("AGNES_STACK_AUTO_MEMBERSHIP", "0")
     client = seeded_app_both["client"]
     analyst_headers = {"Authorization": f"Bearer {seeded_app_both['analyst_token']}"}
     admin_headers = {"Authorization": f"Bearer {seeded_app_both['admin_token']}"}

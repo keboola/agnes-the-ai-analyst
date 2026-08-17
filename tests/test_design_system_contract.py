@@ -591,6 +591,42 @@ def test_no_container_has_optout_in_leaf_templates() -> None:
     )
 
 
+# `body.X-page .container { max-width: … }` — the same opt-out written with a
+# descendant selector instead of `:has()`, and the one the `:has()` guard above
+# does not see. It outranks the canonical modifiers (0,2,1 beats `.container--full`'s
+# 0,1,0), so a leaf template silently re-narrows and re-centres the whole page
+# shell — including the admin sidebar, which base_admin.html deliberately keeps
+# flush with the rail.
+#
+# `(?![\w-])` so sibling classes of their own (`.container-memory`) and the
+# canonical modifiers (`.container--wide`) are not read as the shell itself.
+_CONTAINER_GEOMETRY_RE = re.compile(
+    r"[^{}]*\.container(?![\w-])[^{}]*\{[^}]*\b(?:max-width|min-width|width|padding(?:-(?:left|right))?|margin)\s*:",
+    re.MULTILINE,
+)
+
+
+def test_no_container_geometry_override_in_leaf_templates() -> None:
+    """A leaf template must not redeclare the page shell's box geometry on
+    `.container`. Width/gutters belong to the canonical
+    `.container--wide/--narrow/--full` modifiers, which any page-scoped
+    descendant selector would silently outrank."""
+    offenders: list[str] = []
+    for path in _all_html():
+        if path.name in _CANONICAL_LAYOUT_FILES:
+            continue
+        css = _inline_styles_in_template(path.read_text(encoding="utf-8"))
+        # Strip CSS comments — several templates *document* the shell's rules.
+        css = re.sub(r"/\*.*?\*/", " ", css, flags=re.DOTALL)
+        for match in _CONTAINER_GEOMETRY_RE.finditer(css):
+            offenders.append(f"{path}: {' '.join(match.group(0).split())[:90]}")
+    assert not offenders, (
+        "`.container` geometry override found in a leaf template — set width via a "
+        "canonical `.container--wide/--narrow/--full` modifier on the "
+        "`container_modifier` block instead:\n" + "\n".join(f"  {o}" for o in offenders)
+    )
+
+
 def test_no_bare_root_block_in_leaf_templates() -> None:
     """A bare `:root { … }` block in a leaf template shadows the canonical
     design tokens (cf. the `admin_tables :root{--primary:…}` collapse, #367).
@@ -1094,3 +1130,138 @@ def test_plugin_detail_chip_icons_are_sized_wherever_the_chip_renders() -> None:
     assert ".inner-card .inv-chip" not in src, (
         "chip rules are scoped to .inner-card again — the object-row chip loses all of them, including the SVG size"
     )
+
+
+# --------------------------------------------------------------------------- #
+# #497 §1 — native-dialog contract guard.
+#
+# PR #508 converted ~98 confirm()/alert()/prompt() calls to the promise-based
+# window.confirmModal/alertModal/promptModal (app/web/static/js/modal.js,
+# loaded on every page via _app_scripts.html — see the block comment there).
+# Nothing then stopped the pattern from creeping back in: the 2026-08-13
+# re-audit counted native calls across 11 files, and data_app_detail.html
+# (added 2026-08-14, after modal.js was already loaded on every page) shipped
+# 4 more alert() calls the same day. This guard stops the next one from
+# landing silently.
+# --------------------------------------------------------------------------- #
+
+# Bare `alert(`/`confirm(`/`prompt(`, or the same three prefixed with
+# `window.`. The leading `\b` keeps identifiers like `reconfirm(` from
+# matching; requiring the `(` immediately after the name (no `\s*`) keeps
+# prose like "System prompt (optional)" from matching. Deliberately does NOT
+# match the Modal-suffixed replacements: "confirmModal(" never contains the
+# substring "confirm(" (the character right after "confirm" is "M", not
+# "("), so no extra negative lookahead is needed — proved by
+# test_native_dialog_canonical_forms_do_not_trip_guard below.
+_NATIVE_DIALOG_RE = re.compile(r"\b(?:window\.)?(?:alert|confirm|prompt)\(")
+
+# Grandfather allowlist — every template carrying a native dialog call as of
+# the #497 §1 re-audit (2026-08-15). MAY ONLY SHRINK: convert a page's calls
+# to confirmModal()/alertModal()/promptModal() and drop its entry in the SAME
+# change; never add a new one.
+#
+#   - `_legacy`-suffixed templates are frozen byte-for-byte (repo
+#     convention) and stay grandfathered until the legacy page itself is
+#     retired, not "fixed" in place.
+#   - agents.html keeps exactly one `window.confirm(` on purpose —
+#     tests/test_ui_layout_theme.py asserts it is present on /agents — so it
+#     stays grandfathered here rather than converted.
+#   - A few entries (_app_scripts.html, admin_marketplaces.html,
+#     admin_tables.html, catalog_legacy.html) match only inside a `//` or
+#     `<!-- -->` comment that talks ABOUT confirm()/alert() rather than
+#     calling it. This guard does not try to strip those comments — a
+#     JS-aware comment stripper is its own hazard (string/regex literals and
+#     `https://` URLs all contain `//`) — so a harmless comment mention sits
+#     in the allowlist next to the real offenders. Being here for a comment
+#     is harmless; being missing here for a live call is the regression this
+#     guard exists to catch.
+_NATIVE_DIALOG_ALLOWLIST: set[str] = {
+    "_app_scripts.html",
+    "admin_chat.html",
+    "admin_data_sources.html",
+    "admin_linked_apps.html",
+    "admin_marketplaces.html",
+    "admin_mcp_source_detail.html",
+    "admin_tables.html",
+    "agents.html",
+    "agents_legacy.html",
+    "catalog_legacy.html",
+    "data_app_detail_legacy.html",
+    "library_detail.html",
+    "library_detail_legacy.html",
+    "me_connections.html",
+    "me_connections_legacy.html",
+    "skills.html",
+}
+
+
+def _native_dialog_offenders(text: str) -> list[str]:
+    """Native alert()/confirm()/prompt() calls in *text* — see
+    _NATIVE_DIALOG_RE. Jinja syntax is stripped first so a doc comment inside
+    `{# … #}` (see _claude_setup_cta.jinja, which documents modal.js's
+    fallback behaviour by name) isn't mistaken for a live call."""
+    return _NATIVE_DIALOG_RE.findall(_JINJA_RE.sub(" ", text))
+
+
+def test_no_native_dialog_calls_in_templates() -> None:
+    """A new page must call confirmModal()/alertModal()/promptModal()
+    (app/web/static/js/modal.js), never the native browser dialogs — #497
+    §1. Grandfathered templates in _NATIVE_DIALOG_ALLOWLIST are pre-existing
+    debt (see its comment); every other template must be clean. Iterating
+    _all_html() means a grandfathered template deleted by a concurrent
+    change is simply absent from the walk — never dereferenced, so it can't
+    fail this test either way."""
+    offenders: dict[str, list[str]] = {}
+    for path in _all_html():
+        if path.name in _NATIVE_DIALOG_ALLOWLIST:
+            continue
+        found = _native_dialog_offenders(path.read_text(encoding="utf-8"))
+        if found:
+            offenders[str(path)] = found
+    assert not offenders, (
+        "native alert()/confirm()/prompt() found — use the promise-based "
+        "confirmModal()/alertModal()/promptModal() from modal.js instead "
+        "(#497 §1):\n" + "\n".join(f"  {p}: {matches}" for p, matches in offenders.items())
+    )
+
+
+def test_native_dialog_allowlist_has_no_stale_entries() -> None:
+    """Every allowlist entry must still exist AND still carry a native call.
+    A file deleted by a concurrent change is tolerated (skipped, not
+    failed) — there is nothing left to convert. A file that's still there
+    but fully converted is stale: leaving its entry in place would silently
+    mask a real future regression on that same page, so this fails until
+    the entry is dropped."""
+    stale: list[str] = []
+    for name in sorted(_NATIVE_DIALOG_ALLOWLIST):
+        path = TEMPLATES / name
+        if not path.exists():
+            continue
+        if not _native_dialog_offenders(path.read_text(encoding="utf-8")):
+            stale.append(name)
+    assert not stale, (
+        f"stale _NATIVE_DIALOG_ALLOWLIST entr(ies) — no native dialog call left, drop from the allowlist: {stale}"
+    )
+
+
+def test_native_dialog_canonical_forms_do_not_trip_guard() -> None:
+    """The design-system replacements — bare or window.-prefixed, awaited or
+    not — must never be flagged, or every already-converted page would
+    immediately regress this guard."""
+    sample = """
+    <script>
+      window.confirmModal(x); window.alertModal(y); window.promptModal(z);
+      const ok = await confirmModal('Delete?');
+      await alertModal('Saved');
+      const name = await promptModal('Name?');
+    </script>
+    """
+    assert _native_dialog_offenders(sample) == []
+
+
+def test_native_dialog_detector_fires_on_bare_and_window_prefixed_calls() -> None:
+    """Sanity-check the detector actually catches what it exists to catch."""
+    assert _native_dialog_offenders("<script>alert('hi');</script>") == ["alert("]
+    assert _native_dialog_offenders("<script>if (!confirm('Sure?')) return;</script>") == ["confirm("]
+    assert _native_dialog_offenders("<script>var n = prompt('Name?');</script>") == ["prompt("]
+    assert _native_dialog_offenders("<script>window.confirm('Sure?');</script>") == ["window.confirm("]

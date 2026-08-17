@@ -204,6 +204,19 @@ function setStatus(text, kind = "info") {
   if (text) el.classList.add(`is-${kind}`);
 }
 
+/** A short, tinted line IN the transcript for events that end or interrupt a
+ *  turn. The status bar clears on the next event; the transcript is what the
+ *  reader scrolls back through — a turn that stopped early must say so where
+ *  the reader is looking. */
+function renderSystemNote(text, tone) {
+  const note = document.createElement("div");
+  note.className = `cloud-chat-system-note is-${tone === "error" ? "error" : "warn"}`;
+  note.setAttribute("role", "status");
+  note.textContent = text;
+  $("chat-messages").appendChild(note);
+  maybeScrollToBottom();
+}
+
 /** Show an ephemeral toast at the bottom-right. ``kind`` of "ok" /
  *  "warn" / "error" tints the chip. Auto-dismisses after 2.4s; can
  *  be dismissed early with a click. Multiple toasts stack. */
@@ -456,6 +469,82 @@ function renderSourcesChips(bubble, verdict) {
   bubble.appendChild(wrap);
 }
 
+// ---------- Next-actions block ---------------------------------------------
+// The workspace prompt asks the agent to end each answer with a fenced
+// ```next_actions block — one short follow-up prompt per "- " line. Unlike
+// the sources fence above, this trailer IS chrome: it is stripped from the
+// clipboard too, and re-rendered as one-click buttons under the answer.
+// Same loop shape as stripSourcesFence: global, unterminated-safe, indexOf
+// for the close (a non-greedy pattern rescans to end-of-string per opener).
+const _NEXT_ACTIONS_OPEN_RE = /```next_actions[ \t]*\r?\n/i;
+const _NEXT_ACTIONS_CLOSE = "```";
+const _NEXT_ACTIONS_MAX = 3;
+
+function extractNextActions(markdown) {
+  let out = markdown || "";
+  const actions = [];
+  for (;;) {
+    const open = _NEXT_ACTIONS_OPEN_RE.exec(out);
+    if (!open) break;
+    const bodyStart = open.index + open[0].length;
+    const close = out.indexOf(_NEXT_ACTIONS_CLOSE, bodyStart);
+    if (close === -1) break;
+    for (const line of out.slice(bodyStart, close).split("\n")) {
+      const m = /^\s*[-*]\s+(.+?)\s*$/.exec(line);
+      if (m) actions.push(m[1]);
+    }
+    out = out.slice(0, open.index) + out.slice(close + _NEXT_ACTIONS_CLOSE.length);
+  }
+  return { text: out.trimEnd(), actions: actions.slice(0, _NEXT_ACTIONS_MAX) };
+}
+
+function stripNextActionsFence(markdown) {
+  return extractNextActions(markdown).text;
+}
+
+/** One-click follow-ups under the LATEST assistant answer. Exactly one chip
+ *  row exists at a time — a new row (or a new user message) removes the old
+ *  one, mirroring how suggestions age out the moment the conversation moves. */
+function renderNextActions(bubble, actions) {
+  _clearNextActions();
+  if (!bubble || !actions || actions.length === 0) return;
+  const row = document.createElement("div");
+  row.className = "cloud-chat-next-actions";
+  for (const action of actions) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "cloud-chat-next-action";
+    btn.textContent = action;
+    btn.addEventListener("click", () => {
+      const ta = $("chat-input");
+      if (!ta) return;
+      ta.value = action;
+      ta.focus();
+      const form = $("chat-form");
+      if (form) form.dispatchEvent(new SubmitEvent("submit", { cancelable: true }));
+    });
+    row.appendChild(btn);
+  }
+  // Live order is chips-then-actions (finalize renders chips BEFORE
+  // attachMessageActions appends the row). On a history reload the actions
+  // row already exists when the chips arrive — insert above it so both
+  // paths agree about the bubble's tail.
+  const actionsRow = bubble.querySelector(":scope > .msg-actions");
+  if (actionsRow) bubble.insertBefore(row, actionsRow);
+  else bubble.appendChild(row);
+}
+
+function _clearNextActions() {
+  document.querySelectorAll(".cloud-chat-next-actions").forEach(el => el.remove());
+}
+
+/** The one way answer markdown reaches the DOM: both wire-format trailers
+ *  removed, then sanitized. Streaming and both final render paths go through
+ *  here so a fence can never reach the screen from one path and not another. */
+function renderAnswerMarkdown(content) {
+  return renderMarkdownSafe(stripNextActionsFence(stripSourcesFence(content)));
+}
+
 // ---------- Copy transcript ----------------------------------------------
 // A chat session is owner-only by design: GET /api/chat/sessions/{id}/messages
 // 404s for everyone else, admins included, and /admin/sessions browses the
@@ -487,7 +576,10 @@ function renderSourcesChips(bubble, verdict) {
  *  an empty fence. */
 function formatToolCall(tc) {
   if (!tc || typeof tc.tool !== "string") return null;
-  return { label: tc.tool, argsJson: JSON.stringify(tc.args ?? {}, null, 2) };
+  // Both the verb and the raw id: the DOM keeps the id in a tooltip, but the
+  // markdown export has no tooltip — the copied record must still name which
+  // tool actually ran, or the one artifact handed to a debugger goes vague.
+  return { label: _toolLabel(tc.tool, tc.args), tool: tc.tool, argsJson: JSON.stringify(tc.args ?? {}, null, 2) };
 }
 
 /** Markdown transcript of one conversation. ``title`` must be captured by the
@@ -504,13 +596,13 @@ async function fetchTranscriptMarkdown(chatId, title) {
   const out = [`# ${title}`, "", `Session: \`${chatId}\``, `Exported: ${new Date().toISOString()}`, ""];
   for (const m of msgs) {
     const who = m.role === "user" ? "You" : m.role === "assistant" ? "Agnes" : m.role;
-    out.push(`## ${who} · ${m.created_at}`, "", (m.content || "").trim(), "");
+    out.push(`## ${who} · ${m.created_at}`, "", stripNextActionsFence((m.content || "").trim()), "");
     for (const tc of m.tool_calls || []) {
       const call = formatToolCall(tc);
       if (!call) continue;
       // Fenced, not inline: an `agnes query` argument is multi-line SQL, and
       // the point of carrying tool calls at all is that they stay readable.
-      out.push(`<details><summary>tool: ${call.label}</summary>`, "", "```json", call.argsJson, "```", "", "</details>", "");
+      out.push(`<details><summary>tool: ${call.label} (${call.tool})</summary>`, "", "```json", call.argsJson, "```", "", "</details>", "");
     }
   }
   return out.join("\n");
@@ -607,7 +699,7 @@ function renderCapabilities() {
   if (dataSummary) {
     dataSummary.textContent = total > 0
       ? `You can query ${total} table${total === 1 ? "" : "s"} across ${sourceCount} data source${sourceCount === 1 ? "" : "s"}.`
-      : "No tables in your catalog yet — an admin grants access via /admin/access.";
+      : "No tables in your catalog yet — an admin grants access on your group's Access tab.";
   }
   const dataUl = $("cap-data-sources");
   if (dataUl && total > 0) {
@@ -686,7 +778,7 @@ async function api(path, init = {}) {
 let _sessionsCache = [];
 
 /** How many recent conversations the RAIL shows under its pinned shelf. The
- *  rest are reached through "View all chats" → /chats.
+ *  rest are reached through the rail's Chats destination row → /chats.
  *
  *  Duplicated from rail_history.js (which owns the rationale, and renders this
  *  same list on every page except this one) for the same reason the row
@@ -700,6 +792,14 @@ async function loadSidebar() {
   const list = await api("/api/chat/sessions");
   _sessionsCache = list;
   const ul = $("chat-list");
+  // No list at all: the rail gates its whole chat chrome on `can_chat`
+  // (_app_rail.html), which reads has_explicit_grant — while this route and
+  // the chat API gate on can_access, where god-mode short-circuits. So an
+  // admin without an explicit chat grant gets a fully WORKING /chat with no
+  // sidebar to draw into; bail after caching the fetch (the Cmd+K palette
+  // and openSession's title lookup read _sessionsCache). rail_history.js
+  // guards its renderer on the same condition.
+  if (!ul) return;
   // The rail gives pinned conversations a SECTION of their own above the feed
   // (<ul id="pinned-chat-list">, _app_rail.html) — so when that list is present
   // the pinned rows go there and _groupSessionsByDate is asked not to hoist a
@@ -718,9 +818,9 @@ async function loadSidebar() {
     // RAIL — the presence of the Pinned section's own list is what identifies
     // it. A capped, ungrouped "Recent" feed: the server already sorts
     // pinned-first then most-recent-first, so the head of the list is the most
-    // recent work, and the rest lives on /chats behind the rail's
-    // "View all chats" link. See RAIL_RECENT_LIMIT for why a cap is right here
-    // and was wrong before that page existed. Pins are above and uncapped.
+    // recent work, and the rest lives on /chats behind the rail's Chats row.
+    // See RAIL_RECENT_LIMIT for why a cap is right here and was wrong before
+    // that page existed. Pins are above and uncapped.
     const recent = list.filter(s => !s.pinned).slice(0, RAIL_RECENT_LIMIT);
     for (const s of recent) ul.appendChild(_makeSidebarItem(s));
   } else {
@@ -1079,6 +1179,19 @@ async function loadAndRenderHistory(chatId) {
       renderMessage(m);
       if (m.role === "user") lastUserText = m.content || "";
     }
+    // A reload must end in the same state as the live turn: the follow-up
+    // chips belong under the newest assistant answer — and only while it is
+    // still the conversation's tail. A user message after it means the
+    // conversation moved on (error-aborted turn, mid-turn full_refresh),
+    // where the live path clears the chips. renderMessage stripped the
+    // trailer from the DOM; re-extract it from the raw content here.
+    const lastTurnMsg = [...history].reverse().find(m => m.role === "assistant" || m.role === "user");
+    if (lastTurnMsg && lastTurnMsg.role === "assistant" && lastAssistantArticle) {
+      renderNextActions(
+        lastAssistantArticle.querySelector(".msg-bubble"),
+        extractNextActions(lastTurnMsg.content || "").actions,
+      );
+    }
   }
   // Re-draw any approval still waiting for an answer. The wipe above is a
   // transcript redraw, and a pending card is not transcript — without this
@@ -1100,6 +1213,11 @@ async function loadAndRenderHistory(chatId) {
  */
 async function openSession(chatId, wsUrlOverride) {
   if (ws) { ws.close(); ws = null; }
+  // The streaming pointers belong to the conversation being left: without
+  // this, a pending 150 ms tick paints into a node the wipe below detaches,
+  // and a token arriving on the new socket (no submit in between) appends
+  // the OLD conversation's accumulated text into an invisible bubble.
+  _resetStreamingState();
   // Unanswered cards belong to the conversation that raised them: this map
   // is re-drawn after every transcript reload, so carrying it across a
   // switch painted one conversation's card into another, where its buttons
@@ -1269,21 +1387,46 @@ function handleFrame(frame) {
     case "approval_resolved":
       resolveApprovalCard(frame);
       break;
-    // The three terminal frames all disarm the long-run notification nudge —
+    // The terminal frames below all disarm the long-run notification nudge —
     // a turn that has stopped is no longer worth offering to be pinged about.
     case "cancelled":
+      _flushStreamingTail();
+      renderSystemNote("Turn cancelled.", "warn");
       setStatus(`Cancelled tool: ${frame.tool || ""}`, "warn");
       $("cancel-btn").hidden = true;
       clearThinkingPlaceholder();
       onboardingNoteTurnEnded();
       break;
+    case "confirmation_required":
+      // The runner stopped the turn at the per-turn tool budget — often no
+      // assistant_message follows, so without this note the turn just froze
+      // with zero explanation (the frame used to be silently dropped).
+      _flushStreamingTail();
+      renderSystemNote(
+        `Stopped early: this turn hit its tool-call budget${frame.budget ? ` (${frame.budget})` : ""}. Send a message to continue where it left off.`,
+        "warn",
+      );
+      setStatus("Tool budget reached.", "warn");
+      $("cancel-btn").hidden = true;
+      clearThinkingPlaceholder();
+      onboardingNoteTurnEnded();
+      break;
     case "error":
+      _flushStreamingTail();
+      renderSystemNote(
+        `Something went wrong: ${frame.kind || "error"}${frame.message ? ` — ${frame.message}` : ""}`,
+        "error",
+      );
       setStatus(`Error: ${frame.kind} (${frame.message || ""})`, "error");
       $("cancel-btn").hidden = true;
       clearThinkingPlaceholder();
       onboardingNoteTurnEnded();
       break;
     case "done":
+      // A turn that stopped without ever finalizing (interrupt surfaced as
+      // an exception — no trailing assistant_message) must not leave the
+      // stream pointers armed, or the next turn appends into this bubble.
+      _resetStreamingState();
       $("cancel-btn").hidden = true;
       onboardingNoteTurnEnded();
       break;
@@ -1541,7 +1684,7 @@ function renderMessage(m) {
   const article = createMessageShell({ role: m.role, createdAt: m.created_at });
   const bubble = article.querySelector(".msg-bubble");
   const body = bubble.querySelector(".msg-body");
-  body.innerHTML = renderMarkdownSafe(stripSourcesFence(m.content));
+  body.innerHTML = renderAnswerMarkdown(m.content);
   enhanceCodeBlocks(body);
   enhanceTables(body);
   renderMermaidBlocks(body);
@@ -1569,6 +1712,7 @@ function renderMessage(m) {
       // untrusted and were previously interpolated into innerHTML unescaped.
       const summary = document.createElement("summary");
       summary.textContent = `tool: ${call.label}`;
+      summary.title = call.tool;
       const pre = document.createElement("pre");
       const code = document.createElement("code");
       code.textContent = call.argsJson;
@@ -1585,9 +1729,11 @@ function renderMessage(m) {
   // header over it.
   if (m.role === "assistant") renderSourcesChips(bubble, m.sources);
 
-  // Copy carries the ORIGINAL content, fence and all — see the note on
-  // stripSourcesFence. The fence is hidden from the eye, not from the record.
-  attachMessageActions(article, m.content || "");
+  // Copy keeps the sources fence — provenance is record, hidden from the eye
+  // only (see the note on stripSourcesFence) — but drops the next_actions
+  // trailer: suggestions are chrome, and a copied transcript loses nothing
+  // without them.
+  attachMessageActions(article, stripNextActionsFence(m.content || ""));
   $("chat-messages").appendChild(article);
   if (m.role === "assistant") _markLatestAssistant(article);
   maybeMakeCollapsible(article);
@@ -1836,6 +1982,142 @@ let currentAssistantArticle = null;
 let currentAssistantBody = null;
 let currentAssistantText = "";
 
+// ---------- Streaming markdown ---------------------------------------------
+// Tokens used to append as plain textContent, so the reader watched raw
+// `**bold**` and `|table|` source until turn end. Now the accumulated text is
+// re-rendered through renderAnswerMarkdown at most once per _STREAM_RENDER_MS.
+// Cheap by construction: marked on a few KB of text; the heavy enhancement
+// passes (highlight.js, mermaid, sort, copy buttons) still run only at
+// finalize, on the final content.
+const _STREAM_RENDER_MS = 150;
+let _streamRenderTimer = null;
+let _streamLastRender = 0;
+
+/** What of the accumulated text is safe to paint mid-stream. A trailing fence
+ *  that is still open is hidden while (a) its language id is still being
+ *  typed (no newline yet), or (b) the id is a prefix of a wire trailer
+ *  (`sources` / `next_actions`) — those are lifted out at finalize and must
+ *  never flash on screen. An open fence with a real language and a body keeps
+ *  rendering: marked shows it as a growing code block, which is the desired
+ *  behavior for streaming code. */
+function _streamingSafeText(text) {
+  const t = text || "";
+  // Walk the ``` delimiters from the START, pairing openers with closers —
+  // fence parity. Reading only the LAST ``` mistook a trailer's just-arrived
+  // CLOSING fence for a fresh opener: the chop at that point handed the
+  // renderer an UNTERMINATED trailer, which the strip helpers deliberately
+  // keep (an unterminated opener is not a block), so the wire format flashed
+  // on screen until the next repaint. With parity, a closed trailer passes
+  // through whole and renderAnswerMarkdown strips the complete block; an
+  // OPEN trailer is withheld from its own opener.
+  let i = 0;
+  let openAt = -1; // index of the currently-open fence's ```; -1 = none open
+  let openLang = null; // its language id; null = id still streaming (no newline yet)
+  for (;;) {
+    const f = t.indexOf("```", i);
+    if (f === -1) break;
+    if (openAt === -1) {
+      openAt = f;
+      const nl = t.indexOf("\n", f + 3);
+      openLang = nl === -1 ? null : t.slice(f + 3, nl).trim().toLowerCase();
+    } else {
+      openAt = -1;
+      openLang = null;
+    }
+    i = f + 3;
+  }
+  if (openAt === -1) return t; // every fence is closed
+  if (openLang === null) return t.slice(0, openAt); // language id still streaming
+  if (openLang && ("sources".startsWith(openLang) || "next_actions".startsWith(openLang))) {
+    return t.slice(0, openAt);
+  }
+  return t;
+}
+
+function _scheduleStreamRender() {
+  const now = performance.now();
+  const since = now - _streamLastRender;
+  if (since >= _STREAM_RENDER_MS) {
+    _renderStreamingMarkdown();
+    return;
+  }
+  if (_streamRenderTimer) return;
+  _streamRenderTimer = setTimeout(_renderStreamingMarkdown, _STREAM_RENDER_MS - since);
+}
+
+function _renderStreamingMarkdown() {
+  if (_streamRenderTimer) {
+    clearTimeout(_streamRenderTimer);
+    _streamRenderTimer = null;
+  }
+  _streamLastRender = performance.now();
+  if (!currentAssistantBody) return; // finalized (or never started) — nothing to paint
+  const visible = _streamingSafeText(currentAssistantText);
+  try {
+    currentAssistantBody.innerHTML = renderAnswerMarkdown(visible);
+  } catch (_e) {
+    currentAssistantBody.textContent = visible;
+  }
+  maybeScrollToBottom();
+}
+
+/** Repaint the streaming bubble with the FULL accumulated text. The live
+ *  painter withholds a trailing half-fence (_streamingSafeText); that is only
+ *  correct while more of the stream is coming, and a half-open fence shown
+ *  raw is honest about where the turn died. The turn-stopping frames
+ *  (cancelled / confirmation_required / error) may be the turn's last word —
+ *  a trailing assistant_message is common (graceful interrupt, the watchdog's
+ *  partial-save emits error THEN the partial assistant_message, the budget
+ *  stop breaks out into the turn's trailing emit) but NOT guaranteed — so
+ *  each flushes the withheld tail here. The stream pointers stay set on
+ *  purpose: when the trailing assistant_message DOES arrive,
+ *  finalizeAssistantMessage must land in this same bubble, not render a
+ *  duplicate next to it. */
+function _flushStreamingTail() {
+  if (_streamRenderTimer) {
+    clearTimeout(_streamRenderTimer);
+    _streamRenderTimer = null;
+  }
+  if (!currentAssistantBody) return;
+  try {
+    currentAssistantBody.innerHTML = renderAnswerMarkdown(currentAssistantText);
+  } catch (_e) {
+    currentAssistantBody.textContent = currentAssistantText;
+  }
+}
+
+/** Close out a streamed bubble that never got its assistant_message — flush
+ *  the tail, drop the pointers (so the NEXT turn's tokens start a fresh
+ *  bubble instead of appending into this one after its stale text), and give
+ *  the orphan the same finishing tail finalize gives a normal answer:
+ *  highlighted code, sortable tables, mermaid, chips from a completed
+ *  trailer, the copy/actions row, latest-assistant marking. Sources chips
+ *  are deliberately absent — they render the SERVER's verdict, and a turn
+ *  that never finalized has none. Runs on `done` (the turn terminator,
+ *  always after any assistant_message), on a conversation switch
+ *  (openSession), and again defensively on the next submit (a hard-crashed
+ *  turn may never even get a done); all are no-ops after a normal finalize
+ *  because the pointers are already null, so nothing double-attaches. */
+function _resetStreamingState() {
+  _flushStreamingTail();
+  const article = currentAssistantArticle;
+  const body = currentAssistantBody;
+  const text = currentAssistantText;
+  currentAssistantArticle = null;
+  currentAssistantBody = null;
+  currentAssistantText = "";
+  if (!article || !body) return;
+  article.classList.remove("is-streaming");
+  if (!text.trim()) return; // an empty bubble has nothing to finish
+  enhanceCodeBlocks(body);
+  enhanceTables(body);
+  renderMermaidBlocks(body);
+  renderNextActions(body.closest(".msg-bubble"), extractNextActions(text).actions);
+  attachMessageActions(article, stripNextActionsFence(text));
+  _markLatestAssistant(article);
+  maybeMakeCollapsible(article);
+}
+
 function appendToken(text) {
   clearThinkingPlaceholder();
   if (!currentAssistantArticle) {
@@ -1846,11 +2128,17 @@ function appendToken(text) {
     $("chat-messages").appendChild(currentAssistantArticle);
   }
   currentAssistantText += text;
-  currentAssistantBody.textContent = currentAssistantText;
-  maybeScrollToBottom();
+  _scheduleStreamRender();
 }
 
 function finalizeAssistantMessage(frame) {
+  // A tick scheduled mid-stream must not fire after the final render below —
+  // clear it first; _renderStreamingMarkdown's currentAssistantBody guard is
+  // the second line of defense.
+  if (_streamRenderTimer) {
+    clearTimeout(_streamRenderTimer);
+    _streamRenderTimer = null;
+  }
   clearThinkingPlaceholder();
   // A completed assistant message is a successful answer — advance the
   // journey counter (errors arrive on the separate "error" frame).
@@ -1858,7 +2146,7 @@ function finalizeAssistantMessage(frame) {
   const content = (frame && frame.content) || currentAssistantText;
   if (currentAssistantArticle && currentAssistantBody) {
     currentAssistantArticle.classList.remove("is-streaming");
-    currentAssistantBody.innerHTML = renderMarkdownSafe(stripSourcesFence(content));
+    currentAssistantBody.innerHTML = renderAnswerMarkdown(content);
     enhanceCodeBlocks(currentAssistantBody);
     enhanceTables(currentAssistantBody);
     renderMermaidBlocks(currentAssistantBody);
@@ -1866,7 +2154,8 @@ function finalizeAssistantMessage(frame) {
     // verdict — stamped onto this frame before the fan-out and recomputed
     // identically by GET /sessions/{id}/messages.
     renderSourcesChips(currentAssistantBody.closest(".msg-bubble"), frame && frame.sources);
-    attachMessageActions(currentAssistantArticle, content);
+    renderNextActions(currentAssistantBody.closest(".msg-bubble"), extractNextActions(content).actions);
+    attachMessageActions(currentAssistantArticle, stripNextActionsFence(content));
     _markLatestAssistant(currentAssistantArticle);
     maybeMakeCollapsible(currentAssistantArticle);
     currentAssistantArticle = null;
@@ -1881,6 +2170,15 @@ function finalizeAssistantMessage(frame) {
       sources: frame && frame.sources,
       created_at: new Date().toISOString(),
     });
+    // This fallback path (no streamed article — e.g. a tokenless turn) must
+    // end in the same state as the streamed one: chips under the answer.
+    // renderMessage marked it latest-assistant and stripped the trailer.
+    if (lastAssistantArticle) {
+      renderNextActions(
+        lastAssistantArticle.querySelector(".msg-bubble"),
+        extractNextActions(content).actions,
+      );
+    }
   }
 }
 
@@ -1924,6 +2222,10 @@ function _summarizeArgs(args) {
   // Heuristic: prefer the SQL arg if present (run_query, agnes query)
   // — that's what the user actually wants to see. Otherwise show the
   // first scalar value or a "k=v, k=v" sketch.
+  if (typeof args.command === "string") {
+    const cmd = args.command.replace(/\s+/g, " ").trim();
+    return cmd.length > 100 ? cmd.slice(0, 98) + "…" : cmd;
+  }
   if (typeof args.sql === "string") {
     const sql = args.sql.replace(/\s+/g, " ").trim();
     return sql.length > 100 ? sql.slice(0, 98) + "…" : sql;
@@ -1938,6 +2240,59 @@ function _summarizeArgs(args) {
     parts.push(`${k}=${text.length > 30 ? text.slice(0, 28) + "…" : text}`);
   }
   return parts.join(", ");
+}
+
+// ---------- Tool labels -----------------------------------------------------
+// The header of a tool block shows a reader-facing verb, not a tool id. Three
+// layers: (1) the agent does most data work through the agnes CLI inside
+// Bash, so for Bash the COMMAND LINE is what names the action — first
+// matching prefix wins; (2) exact names for the harness builtins; (3) an
+// unknown tool is humanized (mcp prefix off, underscores to spaces), so raw
+// JSON-ish ids never headline a block. The raw id stays in the tooltip and
+// the args panel.
+const _TOOL_LABELS = {
+  Bash: "Running a command",
+  Read: "Reading a file",
+  Write: "Writing a file",
+  Edit: "Editing a file",
+  Glob: "Listing files",
+  Grep: "Searching files",
+  Task: "Delegating to a subagent",
+  WebSearch: "Searching the web",
+  WebFetch: "Fetching a page",
+  TodoWrite: "Planning steps",
+};
+
+const _BASH_COMMAND_LABELS = [
+  ["agnes catalog", "Reading the data catalog"],
+  ["agnes schema", "Reading a table schema"],
+  ["agnes describe", "Sampling table rows"],
+  ["agnes query", "Querying data"],
+  ["agnes snapshot", "Snapshotting remote data"],
+  ["agnes stack", "Browsing data packages"],
+  ["agnes pull", "Syncing data"],
+  ["python", "Running Python"],
+];
+
+/** `mcp__<server>__<tool>` → `<tool>`; anything else unchanged. */
+function _plainToolName(tool) {
+  const m = /^mcp__.+?__(.+)$/.exec(tool || "");
+  return m ? m[1] : tool || "";
+}
+
+function _toolLabel(tool, args) {
+  const bare = _plainToolName(tool);
+  if (bare === "Bash") {
+    const cmd = args && typeof args.command === "string" ? args.command.trim() : "";
+    for (const [prefix, label] of _BASH_COMMAND_LABELS) {
+      if (cmd.startsWith(prefix)) return label;
+    }
+    return _TOOL_LABELS.Bash;
+  }
+  if (Object.prototype.hasOwnProperty.call(_TOOL_LABELS, bare)) return _TOOL_LABELS[bare];
+  const words = bare.replace(/[_-]+/g, " ").trim();
+  if (!words) return "tool";
+  return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
 function renderApprovalRequest(frame) {
@@ -2075,7 +2430,8 @@ function renderToolCallStart(frame) {
   } else {
     name = document.createElement("span");
     name.className = "cloud-chat-tool-name";
-    name.textContent = frame.tool || "tool";
+    name.textContent = _toolLabel(frame.tool, frame.args);
+    name.title = frame.tool || "";
   }
   head.appendChild(name);
 
@@ -2235,14 +2591,28 @@ function _renderToolResultPreview(result) {
     return wrap;
   }
 
-  // Everything else — pretty-printed JSON inside a <pre>.
+  // Everything else — a one-line summary with the raw JSON one click away.
+  // A pretty-printed payload as the primary rendering is exactly the thing
+  // this function exists to avoid.
   const wrap = document.createElement("div");
   wrap.className = "cloud-chat-tool-result is-json";
+  const det = document.createElement("details");
+  det.className = "cloud-chat-tool-result-full";
+  const sum = document.createElement("summary");
+  const fieldCount =
+    result && typeof result === "object" && !Array.isArray(result)
+      ? Object.keys(result).length
+      : 0;
+  sum.textContent = fieldCount > 0
+    ? `Structured result · ${fieldCount} field${fieldCount === 1 ? "" : "s"} — show raw JSON`
+    : "Structured result — show raw JSON";
+  det.appendChild(sum);
   const pre = document.createElement("pre");
   const code = document.createElement("code");
   code.textContent = JSON.stringify(result, null, 2).slice(0, 4000);
   pre.appendChild(code);
-  wrap.appendChild(pre);
+  det.appendChild(pre);
+  wrap.appendChild(det);
   enhanceCodeBlocks(wrap);
   return wrap;
 }
@@ -2255,6 +2625,34 @@ function _renderToolResultPreview(result) {
  *    - ``{columns: ["a","b"], rows: [[1,2],[3,4]]}`` — DuckDB-ish
  *    - ``{data: [{...}, {...}]}`` — wrapping envelope used by some tools
  */
+const _TOOL_RESULT_FULL_ROWS_MAX = 500;
+
+function _buildResultTable(columns, rows) {
+  const table = document.createElement("table");
+  const thead = document.createElement("thead");
+  const headRow = document.createElement("tr");
+  for (const c of columns) {
+    const th = document.createElement("th");
+    th.textContent = c;
+    headRow.appendChild(th);
+  }
+  thead.appendChild(headRow);
+  table.appendChild(thead);
+  const tbody = document.createElement("tbody");
+  for (const r of rows) {
+    const tr = document.createElement("tr");
+    for (const c of columns) {
+      const td = document.createElement("td");
+      const v = r[c];
+      td.textContent = v == null ? "" : typeof v === "object" ? JSON.stringify(v) : String(v);
+      tr.appendChild(td);
+    }
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  return table;
+}
+
 function _coerceToTablePreview(result) {
   let rows = null;
   let columns = null;
@@ -2285,36 +2683,14 @@ function _coerceToTablePreview(result) {
   const wrap = document.createElement("div");
   wrap.className = "cloud-chat-tool-result is-table";
 
-  const table = document.createElement("table");
-  const thead = document.createElement("thead");
-  const headRow = document.createElement("tr");
-  for (const c of columns) {
-    const th = document.createElement("th");
-    th.textContent = c;
-    headRow.appendChild(th);
-  }
-  thead.appendChild(headRow);
-  table.appendChild(thead);
-
-  const tbody = document.createElement("tbody");
-  for (const r of preview) {
-    const tr = document.createElement("tr");
-    for (const c of columns) {
-      const td = document.createElement("td");
-      const v = r[c];
-      td.textContent = v == null ? "" : (typeof v === "object" ? JSON.stringify(v) : String(v));
-      tr.appendChild(td);
-    }
-    tbody.appendChild(tr);
-  }
-  table.appendChild(tbody);
-
   const tableWrap = document.createElement("div");
   tableWrap.className = "cloud-chat-table-wrap";
-  tableWrap.appendChild(table);
+  tableWrap.appendChild(_buildResultTable(columns, preview));
   wrap.appendChild(tableWrap);
 
-  // "Show full result" reveals the entire JSON below.
+  // The expansion is a REAL table too — the same shape the preview showed,
+  // just all of it (capped so a huge result can't flood the DOM). It used to
+  // be a JSON dump, which contradicted the preview right above it.
   if (total > preview.length) {
     const meta = document.createElement("p");
     meta.className = "cloud-chat-tool-result-meta";
@@ -2323,15 +2699,40 @@ function _coerceToTablePreview(result) {
     const det = document.createElement("details");
     det.className = "cloud-chat-tool-result-full";
     const sum = document.createElement("summary");
-    sum.textContent = "Show all rows (JSON)";
+    const shown = Math.min(total, _TOOL_RESULT_FULL_ROWS_MAX);
+    sum.textContent = total > _TOOL_RESULT_FULL_ROWS_MAX
+      ? `Show first ${shown} of ${total} rows`
+      : `Show all ${total} rows`;
     det.appendChild(sum);
-    const pre = document.createElement("pre");
-    const code = document.createElement("code");
-    code.textContent = JSON.stringify(rows, null, 2);
-    pre.appendChild(code);
-    det.appendChild(pre);
+    const fullWrap = document.createElement("div");
+    fullWrap.className = "cloud-chat-table-wrap";
+    fullWrap.appendChild(_buildResultTable(columns, rows.slice(0, _TOOL_RESULT_FULL_ROWS_MAX)));
+    det.appendChild(fullWrap);
     wrap.appendChild(det);
-    enhanceCodeBlocks(det);
+    enhanceTables(det);
+
+    // Past the cap the table genuinely drops rows — keep a route to ALL of
+    // them (the old JSON dump had them; the cap must not lose data). Built
+    // lazily on first open so a huge dump costs no memory or DOM until
+    // asked for, and via textContent so the payload can never execute.
+    if (total > _TOOL_RESULT_FULL_ROWS_MAX) {
+      const rawDet = document.createElement("details");
+      rawDet.className = "cloud-chat-tool-result-full";
+      const rawSum = document.createElement("summary");
+      rawSum.textContent = `Raw JSON (all ${total} rows)`;
+      rawDet.appendChild(rawSum);
+      const rawPre = document.createElement("pre");
+      const rawCode = document.createElement("code");
+      rawPre.appendChild(rawCode);
+      rawDet.appendChild(rawPre);
+      let rawFilled = false;
+      rawDet.addEventListener("toggle", () => {
+        if (!rawDet.open || rawFilled) return;
+        rawFilled = true;
+        rawCode.textContent = JSON.stringify(rows, null, 2);
+      });
+      wrap.appendChild(rawDet);
+    }
   }
 
   enhanceTables(wrap);
@@ -2702,6 +3103,11 @@ async function submitUserMessage(text) {
   // 3. Now ``#chat-messages`` is stable — render the user bubble and
   //    the thinking placeholder so the user sees their submit landed
   //    and the agent is working on it.
+  // The conversation moved on — yesterday's follow-up chips are stale now,
+  // and a previous turn that died without done/finalize must not leave its
+  // bubble armed to swallow this turn's tokens.
+  _resetStreamingState();
+  _clearNextActions();
   renderMessage({ role: "user", content: text });
   lastUserText = text;
 

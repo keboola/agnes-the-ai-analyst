@@ -268,6 +268,13 @@ class TestToolRegistration:
             # Triple-surface with GET /api/glossary/search + `agnes glossary
             # search`.
             "glossary_search",
+            # Open semantic-layer contract (Task 12) — read-only search + get
+            # over canonical Ossie semantic models, RBAC-filtered on the
+            # linked Data Package's grant. Triple-surface with GET
+            # /api/semantic-models/search + GET /api/semantic-models/{slug}.yaml
+            # + `agnes admin semantic-model list/export`.
+            "semantic_model_search",
+            "semantic_model_get",
             # Re-run ingestion for one stuck file (needs_review/rejected) —
             # status-honesty follow-up (spec 2026-07-08). Triple-surface with
             # POST /api/collections/{cid}/files/{fid}/reingest +

@@ -29,15 +29,6 @@
 // step you cannot complete by looking at anything (`stack_setup_done` lands
 // when a package is actually subscribed) ahead of the one the tour completes
 // for you — so finishing the tour ticked step 3 and left step 2 pending.
-// Chrome gate. The chat-driven onboarding layer (greeting, gap resolver,
-// journey checklist, auto-launched coach-mark tour, long-run notify nudge)
-// ships with the rail redesign; the default topnav chat must read exactly as
-// it did before it (tests/test_ui_layout_theme.py::TestDefaultContentParity).
-// chat.js imports this module statically on every chrome, so the gate lives
-// here rather than in a script tag: off the rail both boot paths return
-// before any journey state loads, and every note*/onUserMessage helper
-// already no-ops off the `ready`/`chatMode` flags that boot would have set.
-const IS_RAIL = document.documentElement.dataset.uiLayout === "rail";
 
 const STEP_KEYS = [
   "first_asked",
@@ -500,12 +491,11 @@ function renderJourneyPanel() {
   if (closeBtn) closeBtn.addEventListener("click", dismissJourney);
 }
 
-// Back to step one. Clearing every step is what un-retires the rail's "Set up
-// Agnes" card: patchJourney's optimistic merge re-renders synchronously, so
-// updateGetStartedIndicator drops `.is-complete` and the card reappears at 0/5
-// before the PUT has even landed. `dismissed` is cleared too — a soft "not now"
-// from earlier in this page load must not swallow a checklist the caller just
-// asked to restart.
+// Back to step one. patchJourney's optimistic merge re-renders synchronously,
+// so updateGetStartedIndicator drops `.is-complete` (the ring reads empty and
+// its glyph swaps back to the checklist icon) before the PUT has even landed.
+// `dismissed` is cleared too — a soft "not now" from earlier in this page
+// load must not swallow a checklist the caller just asked to restart.
 //
 // Shared by the checklist's own "Start over" button and the profile menu's
 // "Start over onboarding" (the rail's only route back once the row is gone).
@@ -556,28 +546,54 @@ function wireRestartOnboardingMenuItem() {
   });
 }
 
-// Reflect journey progress on the rail's onboarding card (the tinted "Set up
-// Agnes" block above the bottom nav that opens this checklist as a popover).
-// Every write is a no-op when its element is absent — on topnav the journey
-// stays inline in the chat sidebar and none of these exist.
+// Reflect journey progress on the rail's onboarding row (the "Set up Agnes"
+// destination above the bottom nav that opens this checklist as a popover) —
+// specifically its leading icon, a circular progress ring (`.rail-getstarted-
+// ring`) that IS the row's icon on every rail page, not an admin-only stand-
+// in. Every write is a no-op when its element is absent — on topnav the
+// journey stays inline in the chat sidebar and none of these exist.
 //
 // The title names the job differently depending on where you are: "Set up
-// Agnes" for someone who hasn't started (it has to say what the card is FOR),
+// Agnes" for someone who hasn't started (it has to say what the row is FOR),
 // "Continue setup" once any step has landed (they know; the accurate word is
-// "continue"). At 5/5 `.is-complete` retires the whole card (rail.css) — the
-// profile menu's "Start over onboarding" is the way back.
-function updateGetStartedIndicator(done, total, complete) {
-  const title = document.getElementById("rail-getstarted-title");
-  if (title) title.textContent = done > 0 ? "Continue setup" : "Set up Agnes";
+// "continue"). At 5/5 the title stops mattering: `.is-complete` retires the
+// whole row (rail.css), which is the outcome "Skip onboarding" — it lands all
+// five steps — promises in its toast. restartJourney() clears the steps and
+// the row comes back.
+const RING_R = 15;
+const RING_CIRCUMFERENCE = 2 * Math.PI * RING_R;
 
-  // Written whole rather than as a bare "3/5": the card has room for the
+function updateGetStartedIndicator(done, total, complete) {
+  const titleText = done > 0 ? "Continue setup" : "Set up Agnes";
+  const title = document.getElementById("rail-getstarted-title");
+  if (title) title.textContent = titleText;
+
+  // Written whole rather than as a bare "3/5": the row has room for the
   // sentence, and the element renders empty server-side so nothing states a
   // wrong number before the journey resolves.
+  const countText = `${done} of ${total} steps complete`;
   const count = document.getElementById("rail-getstarted-count");
-  if (count) count.textContent = `${done} of ${total} steps complete`;
+  if (count) count.textContent = countText;
 
-  const bar = document.getElementById("rail-getstarted-bar");
-  if (bar) bar.style.width = total ? `${Math.round((done / total) * 100)}%` : "0%";
+  // The ring's arc, drawn as stroke-dasharray "filled remainder" so the
+  // unfilled portion of the circle stays the track colour underneath.
+  const pct = total ? Math.round((done / total) * 100) : 0;
+  const ringFill = document.getElementById("rail-getstarted-ring-fill");
+  if (ringFill) {
+    const filled = (pct / 100) * RING_CIRCUMFERENCE;
+    ringFill.style.strokeDasharray = `${filled} ${RING_CIRCUMFERENCE}`;
+  }
+
+  // The row's accessible name is this one sentence — a screen reader gets it
+  // from `aria-label` regardless of whether the label beside the ring is
+  // showing, and `title` gives a mouse user the same text as a tooltip
+  // (useful in icon mode, where the label is hidden).
+  const toggle = document.getElementById("rail-getstarted-toggle");
+  if (toggle) {
+    const sentence = `${titleText} — ${countText}`;
+    toggle.setAttribute("aria-label", sentence);
+    toggle.title = sentence;
+  }
 
   const wrap = document.getElementById("railGetStarted");
   if (wrap) wrap.classList.toggle("is-complete", !!complete);
@@ -1065,7 +1081,10 @@ async function maybeHandleAddCommand(text) {
   }
   await patchJourney({ stack_setup_done: true });
   hooks.renderAssistant(
-    `Added **${escapeHtml(target.name || target.id)}** to your Stack ✓ — it's live now, and visible under [My Stack](/stack).`,
+    // /library?stack=in_stack, not /stack — the Stack page is retired
+    // (#1088); the Library's "In stack only" toggle arrives pressed on
+    // that deep link and reads the same StackResolver.browse() rows.
+    `Added **${escapeHtml(target.name || target.id)}** to your Stack ✓ — it's live now, and visible under [My Stack](/library?stack=in_stack).`,
   );
   return true;
 }
@@ -1109,7 +1128,6 @@ function escapeAttr(s) {
 
 // ── public API ───────────────────────────────────────────────────────────────
 export async function initChatOnboarding(h) {
-  if (!IS_RAIL) return;
   hooks = h;
   chatMode = true;
   // Before the await: the profile menu's "Start over onboarding" must work from
@@ -1133,7 +1151,6 @@ export async function initChatOnboarding(h) {
 // the "?" replay is omitted (chatMode stays false). Safe to call when there is
 // no #chat-journey (no-op via renderJourneyPanel's guard).
 export async function mountJourneyPanel() {
-  if (!IS_RAIL) return;
   wireRestartOnboardingMenuItem();
   wireRefreshListener();
   if (ready) {

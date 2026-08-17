@@ -8,25 +8,35 @@ never change the default chrome for existing instances.
 
 Every page extends `base_ds.html` (or `base_page.html` on top of it).
 The base stamps two attributes on `<html>`: `data-theme` (palette —
-`blue` default | `navy` | `dark` | `auto` | `paper`) and
-`data-ui-layout` (chrome — `topnav` default | `rail`). All colors,
-type, radii, shadows, and motion come from `--ds-*` custom properties
-declared in `app/web/static/css/design-tokens.css`; each theme is a
-`:root[data-theme="…"]` override block there. Structural chrome is an
-include switch in the bases: `_app_header.html` (topnav) vs
-`_app_rail.html` (rail). Operators pick via `instance.theme` /
-`instance.ui_layout` (env: `AGNES_INSTANCE_THEME` / `AGNES_UI_LAYOUT`).
+`paper` default since Wave 0 (2026-08) | `blue` | `navy` | `dark` |
+`auto`) and `data-ui-layout` (always `"rail"` — a hard-wired literal;
+the topnav chrome (`_app_header.html`) was deleted in the same wave, so
+there is only one chrome left). All colors, type, radii, shadows, and
+motion come from `--ds-*` custom properties declared in
+`app/web/static/css/design-tokens.css`; each theme is a
+`:root[data-theme="…"]` override block there. Operators still pick the
+theme via `instance.theme` (env: `AGNES_INSTANCE_THEME`) — an explicit
+choice always wins, so `blue` (or any other non-`paper` value) still
+renders correctly for an instance that sets it. `instance.ui_layout` /
+`AGNES_UI_LAYOUT` are tolerated but inert (ignored with a one-time
+startup warning) — there is no second chrome left to opt into.
 
 ## The paper theme (issue #896 prototype)
 
-`paper` + `rail` together reproduce the prototype look: warm paper
-canvas (`--ds-bg`), white panels, ONE emerald accent (`--ds-primary`),
-Inter-first type with tight negative headline tracking, pill CTAs,
-hairline slate borders, calm shadows, left-rail navigation.
-Shape/typography rules that aren't expressible as color tokens live in
-`app/web/static/css/paper-skin.css` — every selector there is scoped
-to `[data-theme="paper"]`; the rail chrome CSS is
-`app/web/static/css/rail.css`, scoped to `html[data-ui-layout="rail"]`.
+`paper` is the theme half of the prototype look (issue #896), and has
+been the default since Wave 0 (2026-08): warm paper canvas (`--ds-bg`),
+white panels, ONE emerald accent (`--ds-primary`), Inter-first type
+with tight negative headline tracking, pill CTAs, hairline slate
+borders, calm shadows. The rail-navigation half of the prototype look
+is no longer a separate opt-in — the rail is the only chrome, under
+every theme. Shape/typography rules that aren't expressible as color
+tokens live in `app/web/static/css/paper-skin.css` — every selector
+there is scoped to `[data-theme="paper"]`, so an instance that
+explicitly sets `blue` still renders the pre-redesign shapes; the rail
+chrome CSS is `app/web/static/css/rail.css`, scoped to
+`html[data-ui-layout="rail"]` — an attribute that is now a hard-wired
+literal rather than a live switch, so that sheet is effectively always
+active.
 
 ## Non-negotiable rules for agents
 
@@ -34,16 +44,25 @@ to `[data-theme="paper"]`; the rail chrome CSS is
    CSS reach for an existing `--ds-*` token before inventing a value.
    Legacy `var(--primary)` is banned in new code — use
    `var(--ds-primary)`.
-2. **Never restyle the default.** `blue` + `topnav` is what existing
-   instances render; visual changes ship as opt-in theme/skin blocks
-   (`[data-theme="paper"] …`, `html[data-ui-layout="rail"] …`).
-   `tests/test_ui_layout_theme.py` guards this — the default page must
-   keep `.app-header` and `data-theme="blue"`.
+2. **Never break an explicitly-configured theme.** `paper` (rail
+   chrome) is what every instance renders by default since Wave 0
+   (2026-08); an operator who sets `instance.theme: blue` still gets a
+   fully correct blue render. A NEW theme value ships as its own
+   opt-in scoped block (`[data-theme="<name>"] …`), never by mutating
+   an existing theme's block. There is only one chrome (`rail`) —
+   `topnav` was retired in the same wave, so there is no second chrome
+   to preserve. `tests/test_ui_layout_theme.py::TestPaperThemeAssets` +
+   `TestResourceColourTokens` guard the token/skin contract that
+   replaced the old "default page keeps `.app-header`" chrome-parity
+   guard.
 3. **Scoped skin sheets.** Anything paper-specific goes in
    `paper-skin.css` under a `[data-theme="paper"]` selector; anything
    rail-specific in `rail.css` under `html[data-ui-layout="rail"]`.
-   Both sheets are loaded globally and MUST stay inert for default
-   instances (scoping is contract-tested).
+   Both sheets are loaded globally on every page and are ACTIVE by
+   default (paper + rail is what every instance renders unless
+   configured otherwise) — they MUST stay fully inert for an instance
+   that explicitly sets `instance.theme: blue` (scoping is
+   contract-tested).
 4. **One accent vocabulary per meaning:**
    - `--ds-primary` family — the ONE brand action color (primary CTA,
      active nav, selected states). Never for category labels.
@@ -138,28 +157,35 @@ to `[data-theme="paper"]`; the rail chrome CSS is
 7. **Motion:** use `--ds-motion-{fast,med,slow}` +
    `--ds-ease-{standard,enter}`; honor `prefers-reduced-motion` on
    anything that moves.
-8. **Both chromes must keep working.** Grant gating (`can_chat`),
-   admin sections, `data-tour` anchors, and the JS id contract
-   (`#global-search`, `#userMenu`, `#themeToggle`) exist in BOTH
-   `_app_header.html` and `_app_rail.html` — if you touch one, mirror
-   the other (`tests/test_ui_layout_theme.py::TestRailOptIn` asserts
-   the rail side). The two chromes deliberately differ in IA: topnav
-   keeps the flat link row (Home · Chat · Marketplace · Data Packages
-   · Library · Memory); the rail is **two fixed zones with the
-   conversation list between them** — top: New chat + the newest 5
-   chats (no "Chats" heading; `View all chats` expands the list, which
-   scrolls inside `.rail-history-body`); bottom: Library · Agents, then
-   Admin behind the nav's only divider, then the onboarding card
-   (`Set up Agnes` → `Continue setup`, tinted `--ds-accent-info-*`, gone
-   at 5/5), then the profile. Neither zone may move when the list grows.
-   Admin's seven areas are fixed subitem rows whose links open in a
-   flyout BESIDE the rail (`.rail-admin-flyout`, absolutely positioned,
-   revealed by `:hover` / `:focus-within`) — nothing in the rail may
-   expand inline, or the zones drift page to page. Note the two traps:
-   a closed `<details>` cannot host a hover-revealed panel (Chrome's
-   `::details-content { content-visibility: hidden }` beats any author
-   `display`), and the rail's only script is chat-gated, so admin
-   chrome must work with zero JS.
+8. **The rail is the only chrome.** `_app_header.html` (topnav) was
+   deleted in Wave 0 (2026-08); every page renders `_app_rail.html`
+   unconditionally, so grant gating (`can_chat`), the admin entry, and
+   the JS id contract (`#global-search` + `#globalSearchResults`,
+   `#userMenu`, `#themeToggle`) live in that one file — no second
+   chrome left to mirror them into
+   (`tests/test_ui_layout_theme.py::TestRailOptIn` asserts the rail
+   side directly). There are **no `data-tour` anchors** anywhere in the
+   templates: the guided tour was retired with the topnav, and
+   `js/tour.js` keeps `[data-tour=…]` only as a dead fallback in one
+   selector — do not add new ones expecting anything to read them.
+   The rail's IA is **two fixed zones with the
+   conversation list between them** — top: global search, then New chat
+   and Chats (a destination row of its own; the old `View all chats`
+   link at the foot of the list is retired, because a way OUT cannot
+   live inside the one region collapse hides), with the conversations
+   under them scrolling inside `.rail-history-body`; bottom: Library ·
+   Agents, then Admin behind the nav's only divider, then the
+   onboarding row (`Set up Agnes` → `Continue setup`, a circular
+   progress ring, gone at 5/5), then the profile. Neither zone may move
+   when the list grows. **Every row carries an icon** — the rail
+   collapses to a glyph strip, so a text-only row is one that
+   disappears.
+   Admin is ONE destination (`/admin`), not a menu: the hand-written
+   flyout was retired as a second, drifting copy of the admin
+   inventory. That inventory now lives once in `app/web/admin_nav.py`,
+   rendered by `_admin_nav.html` as the admin sidebar on every
+   `/admin/*` page, and guarded by `tests/test_web_admin_nav.py`. Add an
+   admin page there — never by growing the rail.
    Every row shares one height (`--rail-row-h`) and the active
    destination is the ONLY tinted row — never add a standing CTA tint.
    The Studio dropdown, the Marketplace entry and the `.rail-sub-i`
@@ -170,10 +196,11 @@ to `[data-theme="paper"]`; the rail chrome CSS is
    destination (the Library's "+ New" menu, chat suggestions, search),
    not by growing the rail.
 9. **Verify visually.** After any UI change, run the app with both
-   configs and screenshot: default (nothing set) and
-   `AGNES_INSTANCE_THEME=paper AGNES_UI_LAYOUT=rail`. A page that
-   only looks right in one mode is not done. (Chrome context: routes
-   must spread `_chrome_ctx(request, user)` or the page renders bare.)
+   configs and screenshot: the default (nothing set — now `paper` on
+   the rail chrome) and an explicit `AGNES_INSTANCE_THEME=blue`
+   override. A page that only looks right in one mode is not done.
+   (Chrome context: routes must spread `_chrome_ctx(request, user)` or
+   the page renders bare.)
 
 ## Where things live
 
@@ -182,9 +209,8 @@ to `[data-theme="paper"]`; the rail chrome CSS is
 | Token palettes (all themes) | `app/web/static/css/design-tokens.css` |
 | Paper shape/type skin | `app/web/static/css/paper-skin.css` |
 | Rail chrome CSS | `app/web/static/css/rail.css` |
-| Rail chrome markup | `app/web/templates/_app_rail.html` |
-| Topnav chrome markup | `app/web/templates/_app_header.html` |
-| Theme/layout resolvers | `app/instance_config.py` (`get_instance_theme`, `get_ui_layout`) |
+| Rail chrome markup (the only chrome) | `app/web/templates/_app_rail.html` |
+| Theme/layout resolvers | `app/instance_config.py` (`get_instance_theme`, `get_ui_layout` — the latter always returns `"rail"`) |
 | Config surface | `app/api/config_surface.py`; docs `docs/CONFIGURATION.md` |
 | Guards | `tests/test_design_system_contract.py`, `tests/test_ui_layout_theme.py` |
 

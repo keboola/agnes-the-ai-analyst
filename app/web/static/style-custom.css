@@ -1378,6 +1378,38 @@ footer {
     font-size: var(--text-13);
 }
 
+/* Shared footer partial (`_footer.html`): product name, running build, then
+   the operator credit when configured. Only the INSIDE is styled here — the
+   outer `<footer>` keeps the rule above plus every chrome-specific override
+   that keys on the element or on `footer_class` (`.idx > footer`,
+   `body.chat-page-body .container > footer`, the rail detail-page rule, and
+   `.cloud-chat-empty-foot`), so no existing footer treatment moves.
+   Inline spans, not a flex row — see the comment in the partial: inline flow
+   inherits each chrome's own centering and needs no width, which a flex row
+   would have to be given separately in each of the six layout contexts. */
+.site-footer__line {
+    margin: 0;
+}
+.site-footer__brand {
+    font-weight: 600;
+    color: var(--ds-text-secondary);
+}
+.site-footer__build,
+.site-footer__deploy {
+    color: var(--ds-text-muted);
+}
+/* Separators ride the segments they precede, so each one disappears with its
+   own segment — no dangling bullet when /api/version is unreachable or when
+   the instance configures no credit. */
+.site-footer__build::before,
+.site-footer__deploy::before {
+    content: '·';
+    margin: 0 6px;
+}
+.site-footer__build[hidden] {
+    display: none;  /* explicit: `hidden` alone loses to any inline reset */
+}
+
 /* Username box and copy buttons */
 .username-box {
     background: var(--username-box-bg);
@@ -2534,7 +2566,7 @@ footer {
     font-weight: var(--font-medium);
 }
 
-.category-tag.finance { background: rgba(16, 183, 127, 0.1); color: #0d9668; }
+.category-tag.finance { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); }
 .category-tag.hr { background: rgba(139, 92, 246, 0.1); color: #7c3aed; }
 .category-tag.sales { background: color-mix(in srgb, var(--ds-primary) 10%, transparent); color: var(--primary); }
 .category-tag.telemetry { background: rgba(245, 159, 10, 0.1); color: #b45309; }
@@ -3915,10 +3947,10 @@ a.slack-badge:hover {
 .app-header-logo { flex: 0 0 auto; }
 
 /* `.app-header-left` — kept for the `ds.primary_nav` macro (_components.html),
-   the scaffolded future header that groups logo + subtitle in a left cluster.
-   `_app_header.html` places the logo directly now, but the macro still wraps
-   it, so this rule keeps that cluster a sane inline flex item on the single
-   row. */
+   scaffolding for a topnav refactor that never landed before the topnav
+   chrome itself was retired (Wave 0, 2026-08); the macro has no current
+   caller. Left in place rather than deleted since it's inert CSS with no
+   render cost. */
 .app-header-left { display: inline-flex; align-items: center; gap: var(--space-3); flex: 0 0 auto; }
 
 /* Primary nav — the flexible middle. Grows to fill, shrinks toward zero
@@ -4061,124 +4093,6 @@ a.app-header-logo:focus-visible {
     box-shadow: var(--focus-ring);
 }
 
-/* ── Global search box — sits right of the primary nav links, before the
-   Admin dropdown / user menu. Combobox input + listbox dropdown; fetch +
-   debounce wiring in app/web/static/js/global_search.js. Tokens only
-   (var(--ds-*)) so it themes for free in dark mode. ── */
-.app-header-search {
-    position: relative;
-    /* Sits in the right cluster (not the flexible middle), so it takes a
-       responsive fixed-ish width and shrinks — never clips — as the viewport
-       narrows before the nav starts shedding items into "More". */
-    flex: 0 1 clamp(180px, 22vw, 300px);
-    min-width: 150px;
-}
-.app-header-search-input {
-    width: 100%;
-    height: 36px;
-    padding: 0 12px;
-    font-family: inherit;
-    font-size: 13px;
-    color: var(--ds-text-primary);
-    background: var(--ds-surface-dim);
-    border: 1px solid var(--ds-border);
-    border-radius: 8px;
-    transition: width 0.15s ease, background 0.15s ease, border-color 0.15s ease;
-}
-.app-header-search-input::placeholder { color: var(--ds-text-muted); }
-.app-header-search-input:focus {
-    outline: none;
-    /* Width is owned by the flexible `.app-header-search` wrapper now, so
-       focus only changes the surface/border (no jarring width jump). */
-    background: var(--ds-surface);
-    border-color: var(--ds-primary);
-}
-.app-header-search-input:focus-visible {
-    outline: var(--ds-focus-outline);
-    outline-offset: var(--ds-focus-outline-offset);
-}
-.app-header-search-panel {
-    position: absolute;
-    top: calc(100% + 8px);
-    /* Right-anchored: the search now sits on the right of the top row, so the
-       results panel opens leftward and is capped to the viewport width to
-       avoid overflowing off-screen on narrow widths. */
-    right: 0;
-    left: auto;
-    width: min(360px, 92vw);
-    max-height: 60vh;
-    overflow-y: auto;
-    background: var(--ds-surface);
-    border: 1px solid var(--ds-border);
-    border-radius: 10px;
-    box-shadow: var(--ds-shadow-md);
-    padding: 6px;
-    z-index: 60;
-}
-.app-header-search-panel[hidden] { display: none; }
-.app-header-search-group {
-    padding: 6px 10px 4px;
-    font-size: 10px;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    color: var(--ds-text-muted);
-}
-.app-header-search-result {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 10px;
-    padding: 8px 10px;
-    border-radius: 6px;
-    font-size: 13px;
-    color: var(--ds-text-primary);
-    text-decoration: none;
-}
-.app-header-search-result:hover,
-.app-header-search-result:focus-visible {
-    background: var(--ds-border-light);
-    outline: none;
-}
-/* Left column of a hit: the title, plus a definition line on the two types
-   that have one (metric, glossary — see definitionFor() in global_search.js).
-   `min-width: 0` is what lets both lines ellipsis inside a flex row. */
-.app-header-search-result-main {
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-    min-width: 0;
-}
-.app-header-search-result-title {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-/* The definition itself — the answer to a lookup, so it is present but clearly
-   subordinate to the term it defines. One line: it is a reminder of the
-   meaning, not the full entry (that is what the row still links to). */
-.app-header-search-result-def {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    font-size: 12px;
-    line-height: 1.35;
-    color: var(--ds-text-secondary);
-}
-.app-header-search-result-badge {
-    flex: none;
-    font-size: 10px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.3px;
-    color: var(--ds-text-muted);
-}
-.app-header-search-empty {
-    padding: 12px 10px;
-    font-size: 13px;
-    color: var(--ds-text-muted);
-}
-
 .app-btn-logout {
     font-size: 13px;
     font-weight: 500;
@@ -4257,36 +4171,48 @@ a.app-header-logo:focus-visible {
 .app-onboarding-launch:focus-visible { outline: var(--ds-focus-outline); outline-offset: var(--ds-focus-outline-offset); }
 
 /* ── Theme toggle — Light / Dark / System segmented control in the user menu.
-   Built only from tokens that flip under [data-theme="dark"] (--surface,
-   --surface-dim, --border, --text-*, --shadow-sm), so it themes itself in both
-   modes with no dark-specific rules. Wiring: app.js → window.__agnesTheme. ── */
+   One row: the "Theme" label reads like a menu item, the three choices sit
+   opposite it as an icon-only pill (markup: _theme_toggle.html) — the stacked
+   label-over-full-width-buttons layout cost two rows for the same three
+   choices. Built only from tokens that flip under [data-theme="dark"]
+   (--surface, --surface-dim, --border, --text-*, --shadow-sm), so it themes
+   itself in both modes with no dark-specific rules.
+   Wiring: app.js → window.__agnesTheme. ── */
 .app-user-menu-sep { height: 1px; background: var(--border-light, #f3f4f6); margin: 6px 4px; }
-.app-theme-toggle { padding: 6px 8px 4px; }
+.app-theme-toggle {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 4px 12px 6px;
+}
 .app-theme-toggle-label {
-    display: block; margin-bottom: 6px;
-    font-size: 11px; text-transform: uppercase; letter-spacing: 0.3px;
-    color: var(--text-secondary, #6b7280);
+    font-size: 13px; line-height: 1.4;
+    color: var(--text-primary, #111827);
 }
 .app-theme-toggle-options {
-    display: flex; gap: 3px; padding: 3px;
+    display: inline-flex; gap: 2px; padding: 2px;
     background: var(--surface-dim, #f0f2f6);
     border: 1px solid var(--border, #e5e7eb);
-    border-radius: 8px;
+    border-radius: 999px;
 }
 .app-theme-toggle-btn {
-    flex: 1; border: 1px solid transparent; border-radius: 6px;
-    padding: 5px 6px;
-    font: inherit; font-size: 12px; line-height: 1.4;
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 26px; height: 26px; padding: 0;
+    border: 1px solid transparent; border-radius: 999px;
     color: var(--text-secondary, #6b7280);
     background: transparent; cursor: pointer;
     transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
+/* Sized here (not on the inline SVGs) so the icons can't inherit a stray
+   page-level `svg { width: 100% }` and blow the pill apart. */
+.app-theme-toggle-btn svg { width: 15px; height: 15px; display: block; }
+/* Idle hover = a ghost of the active chip (ink + ring, no fill). A fill would
+   need a token between --surface-dim and --surface, and the two are a hair
+   apart in light mode — the ring reads in both themes. */
 .app-theme-toggle-btn:hover { color: var(--text-primary, #111827); }
+.app-theme-toggle-btn:not(.is-active):hover { border-color: var(--border, #e5e7eb); }
 .app-theme-toggle-btn.is-active {
     background: var(--surface, #fff);
     border-color: var(--border, #e5e7eb);
     color: var(--text-primary, #111827);
-    font-weight: 600;
     box-shadow: var(--shadow-sm, 0 1px 2px rgba(0, 0, 0, 0.08));
 }
 .app-theme-toggle-btn:focus-visible { outline: 2px solid var(--ds-primary, #2ea877); outline-offset: 2px; }
@@ -4478,11 +4404,6 @@ a.app-header-logo:focus-visible {
     }
     .app-header-logo { order: 1; }
     .app-header-actions { order: 2; flex: 0 0 auto; margin-left: auto; gap: var(--space-1); }
-    /* The global search is dropped on mobile — there isn't room for logo +
-       search + Admin + help + user on one line, and a squeezed ~40px stub is
-       worse than none. Row 1 is a comfortable logo + Admin + help + user; the
-       nav wraps to row 2. In-page search remains available on each surface. */
-    .app-header-search { display: none; }
     .app-header-nav { order: 3; flex-basis: 100%; }
     /* initPriorityNav() adds .is-priority regardless of viewport (it only
        reacts to overflow, not screen width), which would otherwise force
@@ -5181,11 +5102,61 @@ textarea.form-textarea::placeholder { color: var(--text-muted); }
     flex-wrap: wrap;
 }
 
+/* Plain variant — the INDEX-PAGE head: a name, a sentence, and nothing
+   drawn around them.
+
+   This is the treatment /library, /agents and /chats already run by hand
+   (`.lib-head`, `.ag-head`, `.ch-head` — 24px title, 15px secondary lede
+   capped at 68ch), lifted onto the shared primitive so a page can opt in
+   with one variable (`page_hero_plain`) instead of a fourth private copy.
+
+   Use it where the page is a WORKSPACE the reader stays in — a list they
+   filter, a table they act on, a two-pane editor. A gradient (or, under
+   paper, a bordered white card) around the title is chrome the reader
+   scrolls past on every visit, and on a page whose body is already made of
+   cards it puts a card above the cards. The hero variant below stays right
+   where a page is a DESTINATION that has to introduce itself: /home, an
+   install walkthrough, a marketing-adjacent surface.
+
+   Only three declarations differ from the base primitive — the type scale,
+   the measure, and the link colour (there is no global `a` rule, so an
+   unstyled link in the lede renders as UA blue). Everything else is
+   inherited, which is what keeps this from becoming a second header
+   component: the theme's own `h1` rule still owns the weight and the
+   tracking, exactly as it does for the three hand-built heads above. */
+.page-header--plain {
+    display: block;
+    margin: 8px 0 0;
+    /* Padding, not margin: the head's clearance must not collapse-adjoin a
+       following notice or tab strip, both of which carry their own top
+       edge. */
+    padding: 0 0 22px;
+}
+.page-header--plain .page-header__title { font-size: 24px; }
+.page-header--plain .page-header__subtitle {
+    margin: 8px 0 0;
+    font-size: 15px;
+    line-height: 1.5;
+    color: var(--ds-text-secondary);
+    max-width: 68ch;
+}
+.page-header--plain .page-header__eyebrow { color: var(--ds-text-muted); }
+.page-header--plain a {
+    color: var(--ds-primary-dark);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+.page-header--plain a:hover { color: var(--ds-primary); }
+
 /* Hero variant — gradient background, larger title, light eyebrow.
-   Tuned to match the look of admin_tokens.html's per-page .tokens-hero
-   (which analysts already liked): tighter padding, 14px radius, soft
-   blue glow shadow. Applied across all primary-content pages so the
-   admin section reads as one product instead of a patchwork. */
+   Tuned to match the look of the per-page hero /admin/tokens used to
+   carry (which analysts already liked): tighter padding, 14px radius,
+   soft blue glow shadow.
+
+   NOT the admin default any more — People, Data and Access (and their tab
+   siblings) run the `--plain` variant above, because a workspace page is
+   not a page that has to introduce itself. This stays for the surfaces
+   that do. */
 .page-header--hero {
     padding: 28px 32px 24px;
     /* Spans the parent container width. `.container` already provides
@@ -5837,11 +5808,16 @@ textarea.form-textarea::placeholder { color: var(--text-muted); }
 
 /* =====================================================
    /news page — page chrome
-   body.news-page class added by a DOMContentLoaded
-   script in news.html so these rules only apply there.
+   body.news-page comes from news.html's `body_attrs`
+   block, so these rules only apply there — and they are
+   in effect at first paint. Do not move that class to a
+   DOMContentLoaded handler: the padding below differs
+   from the shell's, so the page would shift once loaded.
    ===================================================== */
 body.news-page { background: var(--background); }
-body.news-page .container { max-width: 1280px; padding: 0 var(--space-8) var(--space-10); }
+/* max-width intentionally omitted — the shell's `--width-app` is already
+   1280px, and restating it here only invites drift from the canonical value. */
+body.news-page .container { padding: 0 var(--space-8) var(--space-10); }
 body.news-page main { color: var(--text-primary); line-height: 1.6; }
 
 body.news-page .news-card {
@@ -5983,7 +5959,7 @@ details.section-card > summary {
     color: var(--primary);
     border: 1px solid color-mix(in srgb, var(--ds-primary) 25%, transparent);
 }
-.role-chip.is-core { background: rgba(16, 185, 129, 0.10); color: #047857; border-color: rgba(16, 185, 129, 0.25); }
+.role-chip.is-core { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); border-color: var(--ds-accent-success-line); }
 .grant-list, .group-roles-list {
     list-style: none;
     padding: 0;

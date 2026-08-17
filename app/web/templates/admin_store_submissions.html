@@ -1,4 +1,4 @@
-{% extends "base_page.html" %}
+{% extends "base_admin_page.html" %}
 {% block title %}Store submissions — {{ config.INSTANCE_NAME }}{% endblock %}
 
 {% set page_hero_eyebrow = "Agent Experience" %}
@@ -174,7 +174,7 @@
       {# Real <select> stays the control this GET form submits — the custom
          dropdown alongside is a visual replacement only, shown instead of
          it under themes that claim it (paper-skin.css). See _components.html's
-         `dropdown` macro / stack_unified.html's `stk-sort` for the pattern. #}
+         `dropdown` macro / library.html's `lib-sort` for the pattern. #}
       <select id="f-type" name="type" class="ds-dropdown-native">
         <option value="" {% if not type_filter %}selected{% endif %}>All</option>
         <option value="skill"  {% if type_filter == 'skill'  %}selected{% endif %}>Skill</option>

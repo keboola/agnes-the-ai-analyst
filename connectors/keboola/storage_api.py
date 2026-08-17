@@ -97,27 +97,48 @@ def get_temp_root() -> Optional[str]:
     return root
 
 
-# Prefixes shared with the ``tempfile.TemporaryDirectory(prefix=...)`` calls
-# that stage data under the temp root: ``kbc-export-`` (the per-export dirs in
-# connectors/keboola/extractor.py — materialize_query + legacy extract) and
-# ``kbc-slice-`` (the per-call sliced-CSV download dir in
-# ``_download_sliced`` below). Anything under the temp root with one of these
-# prefixes is extractor-owned staging scratch.
-_SCRATCH_PREFIXES = ("kbc-export-", "kbc-slice-")
+# Prefix of the per-connection DuckDB spill dirs that
+# ``connectors/keboola/extractor.py:_open_consolidation_conn`` points
+# ``temp_directory`` at. One directory per connection, never shared: DuckDB
+# names its spill files by size class + index only
+# (``duckdb_temp_storage_DEFAULT-0.tmp`` — no pid, no random part) and on close
+# deletes *every* ``duckdb_temp_storage_*`` in the directory, including files
+# another instance is still using, so two DuckDB instances pointed at one
+# directory corrupt each other (verified on duckdb 1.5.5 — one of two
+# concurrently-spilling processes died with SIGSEGV). Consolidation runs
+# concurrently across the api / worker / sync-subprocess roles that share the
+# data volume, hence per-connection.
+#
+# DuckDB creates the directory lazily (first spill) and removes it, with its
+# spill files, on a clean close — so nothing is left behind on the normal path
+# and non-spilling connections create nothing at all. A hard kill is the one
+# case that strands it, which is exactly what :func:`sweep_orphaned_scratch`
+# below reclaims.
+SPILL_DIR_PREFIX = "kbc-spill-"
+
+# Prefixes of the extractor-owned scratch under the temp root:
+# ``kbc-export-`` (the per-export ``tempfile.TemporaryDirectory`` in
+# connectors/keboola/extractor.py — materialize_query + legacy extract),
+# ``kbc-slice-`` (the per-call sliced-CSV download dir in ``_download_sliced``
+# below) and ``kbc-spill-`` (the DuckDB spill dirs described above).
+_SCRATCH_PREFIXES = ("kbc-export-", "kbc-slice-", SPILL_DIR_PREFIX)
 
 
 def sweep_orphaned_scratch(
     root: Optional[str] = None,
     max_age_seconds: Optional[float] = None,
 ) -> int:
-    """Remove orphaned ``kbc-export-*`` / ``kbc-slice-*`` staging dirs and
-    return the count.
+    """Remove orphaned ``kbc-export-*`` / ``kbc-slice-*`` / ``kbc-spill-*``
+    staging dirs and return the count.
 
     A staging dir is created via ``tempfile.TemporaryDirectory`` (the
     ``kbc-export-`` dirs in ``connectors/keboola/extractor.py`` and the
     ``kbc-slice-`` dir in ``_download_sliced`` below), whose ``__exit__``
     removes it on
     *any* normal return — including the ENOSPC / disk-full exception path.
+    The DuckDB spill dirs (``kbc-spill-``, see :data:`SPILL_DIR_PREFIX`) are
+    self-removing in the same sense: DuckDB deletes the directory it created
+    when the connection closes cleanly.
     The only way a dir survives is a **hard kill** (SIGKILL / OOM / the
     auto-upgrade ``docker compose up -d`` recreating the container mid-sync —
     the documented orphan-maker, see ``app/api/sync.py``), where ``__exit__``

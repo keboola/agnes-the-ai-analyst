@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="{{ instance_theme | default('blue') }}" data-ui-layout="{{ ui_layout | default('topnav') }}">
+<html lang="en" data-theme="{{ instance_theme | default('blue') }}" data-ui-layout="rail">
 <head>
     {# HTML5 requires <meta charset> within the first 1024 bytes; any
        operator-injected snippet must come AFTER charset + viewport to
@@ -23,12 +23,8 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     {% endif %}
-    {# Orb favicon ships only under the opt-in redesign (paper/rail); default blue/topnav keeps the original SVG mark. #}
-    {% if (instance_theme | default('blue')) == 'paper' or (ui_layout | default('topnav')) == 'rail' %}
+    {# Orb favicon — the rail chrome is always on (topnav retired, Wave 0 2026-08). #}
     <link rel="icon" type="image/png" href="{{ static_url('img/agnes-orb.png') }}">
-    {% else %}
-    <link rel="icon" type="image/svg+xml" href="{{ static_url('favicon.svg') }}">
-    {% endif %}
     <title>{% block title %}Data Analyst Portal{% endblock %}</title>
     <link rel="stylesheet" href="{{ static_url('style-custom.css') }}">
     {# Design-system tokens (`--ds-*`) — opt-in green/navy palette used
@@ -59,9 +55,9 @@
          Library table + grid, catalog cards and every detail hero. Replaced four
          separate spellings, two of which read from different data. -->
     <link rel="stylesheet" href="{{ static_url('css/trustmark.css') }}">
-    {# app.js loaded by _app_header.html itself so pages that include
-       the header directly without extending base.html (e.g. admin_tables)
-       still get the nav-dropdown wiring. #}
+    {# app.js is loaded by _app_rail.html itself (the sole nav partial now),
+       so any page rendering it gets the nav-dropdown wiring regardless of
+       which base template it extends. #}
     {% block head_extra %}{% endblock %}
     {% include '_theme.html' %}
     {# Operator-injected scripts (placement=head_end, the default) —
@@ -72,11 +68,10 @@
     {% endfor %}
 </head>
 <body {% block body_attrs %}{% endblock %}>
-    {% if (ui_layout | default('topnav')) == 'rail' %}
+    {# Production nav — the fixed left sidebar. The topnav chrome
+       (`_app_header.html`) was retired in Wave 0 (2026-08); rail is the
+       only layout now. #}
     {% include '_app_rail.html' %}
-    {% else %}
-    {% include '_app_header.html' %}
-    {% endif %}
 
     {# `layout` block: pages opt out of the narrow .container wrap by overriding
        this entire block (e.g. dashboard.html renders its own full-width <main
@@ -100,15 +95,12 @@
             {% block content %}{% endblock %}
         </main>
 
-        <footer>
-            {# Footer credit is config-driven on every chrome (INSTANCE_COPYRIGHT):
-               the public distribution carries no vendor branding — an instance puts
-               its own name here via config. #}
-            <p>&copy; {{ now().year if now is defined else 2024 }} {{ config.INSTANCE_COPYRIGHT or 'AI Harness' }}</p>
-        </footer>
+        {# Shared footer partial — see base_ds.html / _footer.html. It carries
+           the build string the fixed bottom-right chip used to show, so the
+           `_version_badge.html` include is gone from here too. #}
+        {% include '_footer.html' %}
     </div>
     {% endblock %}
-    {% include "_version_badge.html" %}
     {# Pages that mount a chip-input opt in via the {% raw %}{{ super() }}{% endraw %} +
        {% raw %}{% block extra_scripts %}<script type="module" src="..."></script>{% endblock %}{% endraw %}
        pattern. Was previously loaded globally here even though only
@@ -117,14 +109,6 @@
     {% block extra_scripts %}{% endblock %}
     {% include "_app_scripts.html" %}
     {% block scripts %}{% endblock %}
-    {# Legacy guided-tour overlay — same include and same gate as
-       base_ds.html (spec 2026-08-07 wave 2): pre-redesign, base.html
-       shipped the tour on every authed page, so the remaining base.html
-       pages keep it on the DEFAULT chrome; any redesign opt-in (rail or
-       paper) ships no legacy tour, matching the header launcher's gate. #}
-    {% if (ui_layout | default('topnav')) != 'rail' and not is_paper() %}
-    {% include "_tour_legacy.html" %}
-    {% endif %}
     {# Operator-injected scripts (placement=body_end) — for vendors that
        explicitly want bottom placement. Admin-only, see
        instance.custom_scripts. #}

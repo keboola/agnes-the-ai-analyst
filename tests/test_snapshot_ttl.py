@@ -39,12 +39,18 @@ def _make(snap_dir, name, *, expires_at):
     write_meta(
         snap_dir,
         SnapshotMeta(
-            name=name, table_id="t", select=None, where=None,
-            limit=None, order_by=None,
+            name=name,
+            table_id="t",
+            select=None,
+            where=None,
+            limit=None,
+            order_by=None,
             fetched_at="2026-01-01T00:00:00+00:00",
             effective_as_of="2026-01-01T00:00:00+00:00",
-            rows=0, bytes_local=10,
-            estimated_scan_bytes_at_fetch=0, result_hash_md5="",
+            rows=0,
+            bytes_local=10,
+            estimated_scan_bytes_at_fetch=0,
+            result_hash_md5="",
             expires_at=expires_at,
         ),
     )
@@ -54,22 +60,36 @@ class TestExpiresAtField:
     def test_expires_at_defaults_to_none(self):
         """expires_at is optional — omitting it yields None (legacy-safe)."""
         meta = SnapshotMeta(
-            name="x", table_id="t", select=None, where=None,
-            limit=None, order_by=None,
-            fetched_at="t", effective_as_of="t", rows=0, bytes_local=0,
-            estimated_scan_bytes_at_fetch=0, result_hash_md5="",
+            name="x",
+            table_id="t",
+            select=None,
+            where=None,
+            limit=None,
+            order_by=None,
+            fetched_at="t",
+            effective_as_of="t",
+            rows=0,
+            bytes_local=0,
+            estimated_scan_bytes_at_fetch=0,
+            result_hash_md5="",
         )
         assert meta.expires_at is None
 
     def test_legacy_meta_without_expires_at_still_loads(self, snap_dir):
         """A meta.json written before TTL existed has no `expires_at` key."""
         legacy = {
-            "name": "legacy", "table_id": "t", "select": None, "where": None,
-            "limit": None, "order_by": None,
+            "name": "legacy",
+            "table_id": "t",
+            "select": None,
+            "where": None,
+            "limit": None,
+            "order_by": None,
             "fetched_at": "2026-01-01T00:00:00+00:00",
             "effective_as_of": "2026-01-01T00:00:00+00:00",
-            "rows": 5, "bytes_local": 100,
-            "estimated_scan_bytes_at_fetch": 0, "result_hash_md5": "deadbeef",
+            "rows": 5,
+            "bytes_local": 100,
+            "estimated_scan_bytes_at_fetch": 0,
+            "result_hash_md5": "deadbeef",
         }
         (snap_dir / "legacy.meta.json").write_text(json.dumps(legacy), encoding="utf-8")
         got = read_meta(snap_dir, "legacy")
@@ -141,7 +161,7 @@ class TestCreateTtl:
         db.write_bytes(b"")
 
         table = pa.table({"a": [1, 2, 3]})
-        monkeypatch.setattr(snap_mod, "api_post_arrow", lambda *a, **k: table)
+        monkeypatch.setattr(snap_mod, "api_post_arrow_with_headers", lambda *a, **k: (table, {}))
         monkeypatch.setattr(snap_mod, "api_post_json", lambda *a, **k: {"estimated_scan_bytes": 0})
 
         class _FakeConn:
@@ -155,8 +175,15 @@ class TestCreateTtl:
 
         before = datetime.now(timezone.utc)
         snap_mod.create_cmd(
-            table_id="t", select=None, where=None, limit=None, order_by=None,
-            as_name="ttl_snap", estimate=False, no_estimate=True, force=False,
+            table_id="t",
+            select=None,
+            where=None,
+            limit=None,
+            order_by=None,
+            as_name="ttl_snap",
+            estimate=False,
+            no_estimate=True,
+            force=False,
             ttl="7d",
         )
         after = datetime.now(timezone.utc)
@@ -179,7 +206,7 @@ class TestCreateTtl:
         db.write_bytes(b"")
 
         table = pa.table({"a": [1]})
-        monkeypatch.setattr(snap_mod, "api_post_arrow", lambda *a, **k: table)
+        monkeypatch.setattr(snap_mod, "api_post_arrow_with_headers", lambda *a, **k: (table, {}))
         monkeypatch.setattr(snap_mod, "api_post_json", lambda *a, **k: {"estimated_scan_bytes": 0})
 
         class _FakeConn:
@@ -192,8 +219,15 @@ class TestCreateTtl:
         monkeypatch.setattr(snap_mod, "_open_duckdb", lambda *a, **k: _FakeConn())
 
         snap_mod.create_cmd(
-            table_id="t", select=None, where=None, limit=None, order_by=None,
-            as_name="plain", estimate=False, no_estimate=True, force=False,
+            table_id="t",
+            select=None,
+            where=None,
+            limit=None,
+            order_by=None,
+            as_name="plain",
+            estimate=False,
+            no_estimate=True,
+            force=False,
             ttl=None,
         )
 
@@ -212,7 +246,8 @@ class TestPullLazySweep:
 
         # Stub run_pull so the wrapper executes without network/disk churn.
         monkeypatch.setattr(
-            pull_mod, "run_pull",
+            pull_mod,
+            "run_pull",
             lambda *a, **k: PullResult(duration_s=0.0),
         )
         monkeypatch.setenv("AGNES_SERVER", "http://localhost:0")

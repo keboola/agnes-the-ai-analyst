@@ -93,6 +93,37 @@ class TestAuthSmoke:
         assert "access_token" in r.json()
 
 
+class TestKeboolaLoginProjectsSmoke:
+    """Select-mode Keboola project import surface. Depth per this file's
+    contract: status + top-level shape. The default mode is ``disabled``,
+    so the GET answers an empty discovery and the POST refuses with the
+    mode conflict — deterministic on both backends with no Keboola config."""
+
+    COVERED_ROUTES = {
+        "GET /api/auth/keboola/projects",
+        "POST /api/auth/keboola/projects",
+    }
+
+    def test_projects_listing_default_mode(self, seeded_app_both):
+        r = seeded_app_both["client"].get("/api/auth/keboola/projects", headers=_analyst_headers(seeded_app_both))
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["mode"] == "disabled"
+        assert body["discovery_available"] is False
+        assert body["projects"] == []
+
+    def test_projects_listing_requires_auth(self, seeded_app_both):
+        assert seeded_app_both["client"].get("/api/auth/keboola/projects").status_code == 401
+
+    def test_import_outside_select_mode_conflicts(self, seeded_app_both):
+        r = seeded_app_both["client"].post(
+            "/api/auth/keboola/projects",
+            json={"project_ids": ["1"]},
+            headers=_analyst_headers(seeded_app_both),
+        )
+        assert r.status_code == 409, r.text
+
+
 class TestCliAuthRescopeSmoke:
     """v106 — the `agnes init --as-admin` opt-up endpoint."""
 
@@ -767,6 +798,7 @@ class TestAdminRegistrySmoke:
         "POST /api/admin/register-table",
         "PUT /api/admin/registry/{table_id}",
         "DELETE /api/admin/registry/{table_id}",
+        "POST /api/admin/registry/{table_id}/policy/preview",
         "GET /api/admin/discover-tables",
         "POST /api/admin/configure",
         "GET /api/admin/metadata/{table_id}",
@@ -827,6 +859,38 @@ class TestAdminRegistrySmoke:
 
         rd = seeded_app_both["client"].delete(f"/api/admin/registry/{table_id}", headers=h)
         assert rd.status_code == 204
+
+    def test_registry_policy_preview(self, seeded_app_both):
+        """Table access policies (Task 14) — the route reads through the
+        factory-backed repos (table_registry_repo/users_repo/
+        user_group_members_repo/audit_repo) on both backends. The table is
+        never synced, so a real analytics-DB read for rows_total/rows_visible
+        legitimately 422s (`policy_preview_failed`) on top of the never-synced
+        table's `DESCRIBE` failure -- the smoke assertion only cares that the
+        route is reachable and behaves identically on DuckDB and Postgres,
+        same tolerance `test_register_precheck`/`test_discover_tables` above
+        already use for other state-dependent endpoints in this class."""
+        h = _admin_headers(seeded_app_both)
+        rc = seeded_app_both["client"].post(
+            "/api/admin/register-table",
+            json={
+                "name": "policy_preview_smoke",
+                "source_type": "keboola",
+                "bucket": "in.c-smoke",
+                "source_table": "orders",
+                "query_mode": "local",
+            },
+            headers=h,
+        )
+        assert rc.status_code == 201
+        table_id = rc.json()["id"]
+
+        r = seeded_app_both["client"].post(
+            f"/api/admin/registry/{table_id}/policy/preview",
+            json={"sql": "SELECT * FROM policy_preview_smoke", "as_groups": ["Everyone"]},
+            headers=h,
+        )
+        assert r.status_code in (200, 422), r.text
 
     def test_discover_tables(self, seeded_app_both):
         r = seeded_app_both["client"].get("/api/admin/discover-tables", headers=_admin_headers(seeded_app_both))
@@ -1528,6 +1592,42 @@ class TestMarketplacesSmoke:
 
 
 # ---------------------------------------------------------------------------
+# Admin dashboard signals (the /admin "Needs fixing" zone)
+# ---------------------------------------------------------------------------
+
+
+class TestAdminDashboardSmoke:
+    COVERED_ROUTES = {
+        "GET /api/admin/dashboard/signals",
+    }
+
+    def test_signals_shape(self, seeded_app_both):
+        from app.services.admin_dashboard import invalidate_cache
+
+        # The zone-2 TTL cache is process-global, so the duckdb leg of this
+        # parametrised fixture would otherwise serve its rollup to the pg leg.
+        invalidate_cache()
+        r = seeded_app_both["client"].get(
+            "/api/admin/dashboard/signals",
+            headers=_admin_headers(seeded_app_both),
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["zone"] == "needs_fixing"
+        assert isinstance(body["signals"], list)
+        # Clear signals are omitted, never returned at zero — an empty list is
+        # the healthy state and the page renders it as such.
+        for sig in body["signals"]:
+            assert sig["count"] > 0 or sig["failed"] is True
+            assert set(sig) >= {"key", "title", "zone", "severity", "failed", "count", "href", "blurb"}
+        invalidate_cache()
+
+    def test_signals_requires_admin(self, seeded_app_both):
+        r = seeded_app_both["client"].get("/api/admin/dashboard/signals")
+        assert r.status_code in (401, 403)
+
+
+# ---------------------------------------------------------------------------
 # Reports (marketplace usage digest)
 # ---------------------------------------------------------------------------
 
@@ -1789,6 +1889,10 @@ KNOWN_UNTESTED = {
     # Google OAuth — requires live credentials
     "GET /auth/google/login",
     "GET /auth/google/callback",
+    # Keboola OAuth — redirects to an external OAuth server; behaviour
+    # covered by tests/test_keboola_oauth_provider.py
+    "GET /auth/keboola/login",
+    "GET /auth/keboola/callback",
     # Telegram webhook — live external service
     "POST /api/telegram/webhook",
     # Jira webhooks — live external service
@@ -1962,6 +2066,9 @@ KNOWN_UNTESTED = {
     # Admin audit view over all Data Packages / Memory Domains (catalog
     # reshape) — rendering covered by tests/test_web_catalog_reshape.py.
     "GET /admin/data-packages",
+    # A data package's own page (tables · sharing · at a glance) — rendering
+    # covered by tests/test_web_admin_package_detail.py.
+    "GET /admin/data-packages/{package_id}",
     # Agent builder (rail-layout WIP surface) — rendering covered by
     # tests/test_ui_layout_theme.py::TestRailOptIn.
     "GET /agents",
@@ -2036,6 +2143,7 @@ KNOWN_UNTESTED = {
     "GET /auth/password/reset",
     "GET /auth/password/setup",
     "POST /auth/email/send-link",
+    "POST /auth/email/send-link/web",
     "POST /auth/email/verify",
     "POST /auth/password/login/web",
     "POST /auth/password/reset",
@@ -2099,6 +2207,9 @@ KNOWN_UNTESTED = {
     "DELETE /api/admin/mcp-sources/{source_id}/secret",
     "DELETE /api/admin/mcp-tools/{tool_id}",
     "DELETE /api/admin/mcp-tools/{tool_id}/grants/{group_id}",
+    # Grant/revoke a whole MCP source at once — tested in test_keboola_chat_tools.py
+    "POST /api/admin/mcp-sources/{source_id}/grants",
+    "DELETE /api/admin/mcp-sources/{source_id}/grants/{group_id}",
     "GET /api/admin/mcp-sources",
     "GET /api/admin/mcp-sources/{source_id}",
     "GET /api/admin/mcp-tools",
@@ -2237,6 +2348,18 @@ KNOWN_UNTESTED = {
     # contract test needed (no new repo methods/migration). Behaviour
     # covered in tests/test_keboola_semantic_layer_refresh_endpoint.py.
     "POST /api/admin/run-keboola-semantic-layer-refresh",
+    # Databricks semantic layer (Unity Catalog metric views) sync — same
+    # shape as the Keboola sibling above: scheduler-driven admin maintenance
+    # op, no new repo methods/migration. Behaviour covered in
+    # tests/test_databricks_semantic_layer_refresh_endpoint.py.
+    # The handler never touches the backend switch itself; the repo calls its
+    # sync drives (metric_repo().create/find_by_name/list/delete, incl. the
+    # source_ref kwarg) are already parity-proven on both backends by
+    # tests/db_pg/test_config_pg.py::test_metric_source_ref_roundtrip and
+    # tests/db_pg/test_ported_methods_contract.py::test_metrics_yaml_reconcile_prunes_on_both_backends
+    # — cited here so this exclusion is self-verifying rather than resting on
+    # "nothing new here".
+    "POST /api/admin/run-databricks-semantic-layer-refresh",
     # K3 local knowledge packaging (#798) — scheduler-driven admin maintenance
     # op, mirrors run-corporate-memory. No dual-backend contract test needed
     # (no new repo methods/migration; state.json lives on disk). Behaviour
@@ -2555,3 +2678,96 @@ def test_every_route_is_covered_or_excluded():
         "(remove them from the class COVERED_ROUTES set): "
         f"{stale}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Semantic layer  (canonical Ossie document store + its sources)
+# ---------------------------------------------------------------------------
+
+
+_SEMANTIC_DOC = (
+    "version: '0.2.0.dev0'\n"
+    "semantic_model:\n"
+    "  - name: smoke_model\n"
+    "    datasets:\n"
+    "      - name: orders\n"
+    "        source: db.public.orders\n"
+)
+
+
+class TestSemanticLayerSmoke:
+    COVERED_ROUTES = {
+        "GET /api/admin/semantic-models",
+        "POST /api/admin/semantic-models",
+        "GET /api/admin/semantic-models/{model_id}",
+        "PUT /api/admin/semantic-models/{model_id}",
+        "DELETE /api/admin/semantic-models/{model_id}",
+        "GET /api/admin/semantic-sources",
+        "POST /api/admin/semantic-sources",
+        "GET /api/admin/semantic-sources/{source_id}",
+        "PUT /api/admin/semantic-sources/{source_id}",
+        "DELETE /api/admin/semantic-sources/{source_id}",
+        "POST /api/admin/semantic-sources/{source_id}/sync",
+        "GET /api/semantic-models/search",
+        "GET /api/semantic-models/{slug}.yaml",
+    }
+
+    def test_model_crud_and_export(self, seeded_app_both):
+        c = seeded_app_both["client"]
+        h = _admin_headers(seeded_app_both)
+
+        created = c.post("/api/admin/semantic-models", json={"document": _SEMANTIC_DOC}, headers=h)
+        assert created.status_code == 201
+        model_id = created.json()["id"]
+
+        assert c.get("/api/admin/semantic-models", headers=h).status_code == 200
+        assert c.get(f"/api/admin/semantic-models/{model_id}", headers=h).status_code == 200
+
+        # A hand-authored model stays editable; a source-owned one would 409.
+        assert (
+            c.put(
+                f"/api/admin/semantic-models/{model_id}",
+                json={"description": "smoke"},
+                headers=h,
+            ).status_code
+            == 200
+        )
+
+        exported = c.get("/api/semantic-models/smoke_model.yaml", headers=h)
+        assert exported.status_code == 200
+        assert exported.text == _SEMANTIC_DOC
+
+        assert c.get("/api/semantic-models/search?q=smoke", headers=h).status_code == 200
+        assert c.delete(f"/api/admin/semantic-models/{model_id}", headers=h).status_code == 204
+
+    def test_source_crud_and_sync(self, seeded_app_both):
+        c = seeded_app_both["client"]
+        h = _admin_headers(seeded_app_both)
+
+        # `upload` kind so the sync needs no network and no clone.
+        created = c.post(
+            "/api/admin/semantic-sources",
+            json={
+                "kind": "upload",
+                "name": "smoke source",
+                "adapter": "native",
+                "config": {"documents": [_SEMANTIC_DOC]},
+            },
+            headers=h,
+        )
+        assert created.status_code == 201
+        source_id = created.json()["id"]
+
+        assert c.get("/api/admin/semantic-sources", headers=h).status_code == 200
+        assert c.get(f"/api/admin/semantic-sources/{source_id}", headers=h).status_code == 200
+        assert (
+            c.put(
+                f"/api/admin/semantic-sources/{source_id}",
+                json={"name": "renamed"},
+                headers=h,
+            ).status_code
+            == 200
+        )
+
+        assert c.post(f"/api/admin/semantic-sources/{source_id}/sync", headers=h).status_code == 200
+        assert c.delete(f"/api/admin/semantic-sources/{source_id}", headers=h).status_code == 204

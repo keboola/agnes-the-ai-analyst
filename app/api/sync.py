@@ -151,6 +151,34 @@ def _materialize_table(
     )
 
 
+def _materialize_databricks_table(
+    *,
+    table_id: str,
+    row: dict,
+    client,
+    catalog: str,
+    output_dir: str,
+    max_bytes: Optional[int],
+    statement_timeout_s: Optional[float] = None,
+) -> dict:
+    """Thin wrapper around `connectors.databricks.extractor.materialize_query`
+    so the trigger pass can be unit-tested by patching this seam without a
+    live warehouse — same role `_materialize_table` plays for BQ."""
+    from connectors.databricks.extractor import materialize_query
+
+    return materialize_query(
+        table_id=table_id,
+        client=client,
+        output_dir=output_dir,
+        source_query=row.get("source_query"),
+        catalog=catalog,
+        bucket=row.get("bucket"),
+        source_table=row.get("source_table"),
+        max_bytes=max_bytes,
+        statement_timeout_s=statement_timeout_s,
+    )
+
+
 def _is_permanent_upstream_error(exc: Exception) -> bool:
     """True when retrying the table can never succeed — the upstream object
     is gone (Keboola Storage ``storage.tables.notFound`` → HTTP 404, e.g. a
@@ -195,6 +223,10 @@ def _run_materialized_pass(
     optionally cost-guarded by ``max_bytes_per_materialize``.
     Keboola rows go through KeboolaAccess + ATTACH-and-COPY, no
     guardrail (extension has no dry-run primitive).
+    Databricks rows go through the Statement Execution API client
+    (``connectors/databricks``), result-size-capped by
+    ``data_source.databricks.max_bytes_per_materialize`` (the API's
+    byte_limit — no dry-run primitive exists there either).
 
     Returns:
         ``{"materialized": [ids], "skipped": [ids], "errors": [{table, error}]}``
@@ -219,6 +251,7 @@ def _run_materialized_pass(
 
     bq_output_dir = str(Path(_get_data_dir()) / "extracts" / "bigquery")
     kb_output_dir = Path(_get_data_dir()) / "extracts" / "keboola" / "data"
+    dbx_output_dir = str(Path(_get_data_dir()) / "extracts" / "databricks")
 
     # Sentinel: max_bytes <= 0 (or None) disables the guardrail. `get_value()`
     # treats YAML `null` as "missing" → returns the default; operators must use
@@ -265,6 +298,53 @@ def _run_materialized_pass(
         )
         t = 900.0
     bq_fetch_timeout_s = t if t > 0 else None
+
+    # Databricks guardrails. No dry-run primitive exists on the Statement
+    # Execution API, so the cap bounds the RESULT size via the API's
+    # byte_limit (manifest flagged `truncated` past it → MaterializeBudgetError
+    # in the extractor), not the scanned bytes the way BQ's dry-run does.
+    raw_dbx_max = get_value(
+        "data_source",
+        "databricks",
+        "max_bytes_per_materialize",
+        default=10 * 2**30,
+    )
+    try:
+        n = int(raw_dbx_max) if raw_dbx_max is not None else 0
+    except (TypeError, ValueError):
+        logger.warning(
+            "data_source.databricks.max_bytes_per_materialize is not numeric "
+            "(%r); cost guardrail disabled. Set an integer or 0 to disable.",
+            raw_dbx_max,
+        )
+        n = 0
+    dbx_max_bytes = n if n > 0 else None
+
+    # Client-side deadline on the statement poll loop — a wedged warehouse
+    # statement is cancelled and surfaced instead of holding the pass.
+    raw_dbx_timeout = get_value(
+        "data_source",
+        "databricks",
+        "statement_timeout_seconds",
+        default=900,
+    )
+    try:
+        t = float(raw_dbx_timeout) if raw_dbx_timeout is not None else 900.0
+    except (TypeError, ValueError):
+        logger.warning(
+            "data_source.databricks.statement_timeout_seconds is not numeric "
+            "(%r); using the 900s default. Set a number of seconds or 0 to disable.",
+            raw_dbx_timeout,
+        )
+        t = 900.0
+    dbx_statement_timeout_s = t if t > 0 else None
+
+    # Lazily-built Databricks client — one per pass, first databricks row
+    # constructs it; a misconfigured instance yields per-row errors instead
+    # of failing the whole pass (mirrors the Keboola client cache below).
+    databricks_client = None
+    databricks_client_error: Optional[str] = None
+    databricks_catalog = ""
 
     registry = table_registry_repo()
     state = sync_state_repo()
@@ -445,6 +525,45 @@ def _run_materialized_pass(
                     "hash": kb_stats["md5"],
                     "query_mode": "materialized",
                 }
+            elif row_source_type == "databricks":
+                if databricks_client is None and databricks_client_error is None:
+                    from connectors.databricks.semantic_layer import (
+                        resolve_databricks_settings,
+                    )
+
+                    settings = resolve_databricks_settings()
+                    if settings is None:
+                        databricks_client_error = (
+                            "Databricks not configured for materialized path "
+                            "(data_source.databricks.host + warehouse_id + "
+                            "DATABRICKS_TOKEN env/vault secret)"
+                        )
+                    else:
+                        from connectors.databricks.client import (
+                            DatabricksStatementClient,
+                        )
+
+                        try:
+                            databricks_client = DatabricksStatementClient(
+                                host=settings["host"],
+                                token=settings["token"],
+                                warehouse_id=settings["warehouse_id"],
+                            )
+                            databricks_catalog = settings.get("catalog") or ""
+                        except ValueError as e:
+                            databricks_client_error = f"Databricks client init failed: {e}"
+                if databricks_client is None:
+                    summary["errors"].append({"table": ref_name, "error": databricks_client_error})
+                    continue
+                stats = _materialize_databricks_table(
+                    table_id=ref_name,
+                    row=row,
+                    client=databricks_client,
+                    catalog=databricks_catalog,
+                    output_dir=dbx_output_dir,
+                    max_bytes=dbx_max_bytes,
+                    statement_timeout_s=dbx_statement_timeout_s,
+                )
             else:
                 summary["errors"].append(
                     {
@@ -505,7 +624,12 @@ def _run_materialized_pass(
         # reason the stats dict didn't carry it (defensive).
         parquet_hash = stats.get("hash")
         if not parquet_hash:
-            output_dir_for_hash = bq_output_dir if row_source_type == "bigquery" else str(kb_output_dir.parent)
+            if row_source_type == "bigquery":
+                output_dir_for_hash = bq_output_dir
+            elif row_source_type == "databricks":
+                output_dir_for_hash = dbx_output_dir
+            else:
+                output_dir_for_hash = str(kb_output_dir.parent)
             parquet_path = Path(output_dir_for_hash) / "data" / f"{ref_name}.parquet"
             parquet_hash = _file_hash(parquet_path)
         # `update_sync` resets `status='ok'` / `error=NULL` on the upsert
@@ -1322,7 +1446,50 @@ def _apply_signed_url(
     entry["signed_url_expires_at"] = (datetime.now(timezone.utc) + timedelta(seconds=_SIGNED_URL_TTL_S)).isoformat()
 
 
-def _table_manifest_entry(state: dict, reg: dict) -> dict:
+def _compute_manifest_policy_fingerprint(reg: dict, principal) -> "str | None":
+    """The per-caller policy fingerprint for one manifest table entry
+    (table access policies §3.4, §10.3; plan Task 18) — what a local
+    ``agnes pull`` compares a snapshot's stored ``SnapshotMeta.
+    policy_fingerprint`` against to detect that the policy (or the
+    puller's own group membership) drifted since ``agnes snapshot
+    create``/``refresh`` ran, and withhold that snapshot's view via the
+    same ``snapshot_views_blocked`` mechanism #1129 already built for a
+    de-authorized or newly-``server_only`` table.
+
+    ``None`` whenever there's nothing to protect: no ``principal`` in hand
+    (a direct caller of ``_table_manifest_entry`` with none to give — every
+    such site keeps compiling and simply gets a null fingerprint, exactly
+    as a non-policied table would), or no policy on the table (checked
+    BEFORE touching ``src.access_policy`` so the overwhelmingly common
+    non-policied table pays nothing extra building its manifest entry).
+    ``policy_fingerprint`` itself returns ``None`` for the remaining case —
+    the admin bypass (§12).
+
+    Defensive: a manifest build must never fail FOR THE WHOLE CALLER
+    because ONE table's fingerprint computation raised (an unresolvable
+    principal shape — a co-drive ``SessionPrincipal`` reaching this via
+    some future caller — or a registry race). The direct caller here
+    (``_build_data_packages_section``) is itself wrapped by a coarse
+    ``try/except`` in ``_build_manifest_for_user`` that would otherwise
+    blank out the ENTIRE ``data_packages`` section — not just this one
+    field — for that request.
+    """
+    if principal is None or not reg.get("access_policy_sql"):
+        return None
+    table_id = reg.get("id") or reg.get("name")
+    if not table_id:
+        return None
+
+    from src.access_policy import policy_fingerprint
+
+    try:
+        return policy_fingerprint(table_id, principal)
+    except Exception:
+        logger.exception("access-policy fingerprint computation failed for table %r; manifest omits it", table_id)
+        return None
+
+
+def _table_manifest_entry(state: dict, reg: dict, *, principal=None) -> dict:
     """Shape one ``sync_state`` row + registry metadata into the per-table
     manifest object used in ``data_packages[].tables`` and ``direct_tables``.
 
@@ -1330,6 +1497,12 @@ def _table_manifest_entry(state: dict, reg: dict) -> dict:
     empty ``reg`` (sync_state row outlives the registry — race on unregister).
     Both happen in real installs; the manifest is the read path so we must
     not blow up on a partially-consistent snapshot.
+
+    ``principal`` (plan Task 18) is the caller this manifest is being built
+    for — used ONLY to compute ``access_policy_fingerprint`` below.
+    Optional, default ``None``, so every existing direct caller of this
+    helper (tests, and any future caller with no principal in hand) keeps
+    compiling unchanged and simply gets a ``None`` fingerprint.
     """
     name = state.get("table_id") or reg.get("name") or reg.get("id") or ""
     entry = {
@@ -1343,6 +1516,15 @@ def _table_manifest_entry(state: dict, reg: dict) -> dict:
         # #607 — distribution flag. Listed in the manifest (catalog + RBAC)
         # but `agnes pull` skips its parquet download when true.
         "server_only": bool(reg.get("server_only")),
+        # Task 11 (§10 item 4) — disclosure marker, not an enforcement gate:
+        # `agnes pull` reads this to name policied tables in a
+        # `.claude/rules/` entry BEFORE an agent writes a query, the only
+        # link in the disclosure chain that reaches an agent's context
+        # ahead of the fact rather than after a response comes back.
+        "access_policy": bool(reg.get("access_policy_sql")),
+        # Task 18 (§3.4, §10.3) — the CURRENT, per-caller policy fingerprint.
+        # See `_compute_manifest_policy_fingerprint` for the full contract.
+        "access_policy_fingerprint": _compute_manifest_policy_fingerprint(reg, principal),
         "source_type": reg.get("source_type") or "",
         "updated": (state.get("last_sync").isoformat() if state.get("last_sync") else None),
     }
@@ -1399,7 +1581,7 @@ def _build_data_packages_section(conn, user, registry_by_name: dict, states_by_t
             # registry.name today. Cover the id↔name asymmetry.
             reg = registry_by_name.get(t["name"]) or {}
             state = states_by_table_id.get(t["name"]) or states_by_table_id.get(t["id"]) or {}
-            entry_obj = _table_manifest_entry(state, reg or {"id": t["id"]})
+            entry_obj = _table_manifest_entry(state, reg or {"id": t["id"]}, principal=user)
             if not entry.materialized:
                 # Auto-membership: authorized + listed, but not downloaded
                 # until the user subscribes (mirrors server_only semantics).

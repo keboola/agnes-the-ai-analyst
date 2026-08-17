@@ -1,10 +1,18 @@
-{% extends "base_ds.html" %}
+{% extends "base_admin.html" %}
 
 {% block title %}Admin · News — {{ instance_name or "AI Harness" }}{% endblock %}
 
+{# Server-rendered, NOT added from a DOMContentLoaded handler: every rule below
+   hangs off this class, so adding it after load painted the page unstyled first
+   and snapped it into place a frame later. #}
+{% block body_attrs %}class="news-admin"{% endblock %}
+
 {% block head_extra %}
 <style>
-body.news-admin .container { max-width: 1280px; padding: 0 32px 48px; }
+{# No `.container` rule here — the page shell's width and gutters belong to
+   `base_admin.html`, which sets `container--full` so the admin sidebar stays
+   flush with the rail. A `body.news-admin .container` override outranks that
+   modifier and pushed this page's whole two-column split off the rail. #}
 body.news-admin h1 { font-size: 22px; margin: 24px 0 10px; }
 body.news-admin h2 { font-size: 16px; margin: 18px 0 8px; color: var(--ds-text-primary); }
 
@@ -135,8 +143,6 @@ body.news-admin details.format-help pre {
 </style>
 <script>
 document.addEventListener('DOMContentLoaded', function () {
-    document.body.classList.add('news-admin');
-
     var introEl = document.getElementById('intro');
     var contentEl = document.getElementById('content');
     var previewFrame = document.getElementById('preview');
@@ -219,7 +225,7 @@ document.addEventListener('DOMContentLoaded', function () {
 </script>
 {% endblock %}
 
-{% block content %}
+{% block admin_content %}
 {# Design-system component macros — Save draft / Publish / Unpublish
    buttons render via `ds.button`. Page-local `body.news-admin
    button.primary` / `button.ghost` rules are no longer matched

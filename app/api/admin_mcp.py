@@ -424,12 +424,20 @@ def _url_policy_report(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     }
 
 
-def _serialize_source(row: Dict[str, Any], *, has_vault_secret: bool = False) -> Dict[str, Any]:
+def _serialize_source(
+    row: Dict[str, Any],
+    *,
+    has_vault_secret: bool = False,
+    vault_secret_updated_at: Optional[str] = None,
+) -> Dict[str, Any]:
     """Project a ``mcp_sources`` row to the API shape (timestamps as ISO).
 
     ``has_vault_secret`` is a write-only-secret status flag — True iff a
     vault-stored secret exists for this source (the value is never read
-    back into the API).
+    back into the API). ``vault_secret_updated_at`` is that same secret's
+    last-rotated timestamp (ISO-8601, or ``None`` when unset/not computed by
+    the caller) — distinct from ``updated_at`` below, which is the SOURCE
+    row's own last-edit time, not the secret's.
     """
     return {
         "id": row.get("id"),
@@ -445,6 +453,7 @@ def _serialize_source(row: Dict[str, Any], *, has_vault_secret: bool = False) ->
         "scope": row.get("scope") or "shared",
         "connect_hint": row.get("connect_hint"),
         "has_vault_secret": has_vault_secret,
+        "vault_secret_updated_at": vault_secret_updated_at,
         "url_policy_verdict": _url_policy_report(row),
         "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
         "updated_at": row["updated_at"].isoformat() if row.get("updated_at") else None,
@@ -470,6 +479,39 @@ def _serialize_tool(row: Dict[str, Any]) -> Dict[str, Any]:
         "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
         "updated_at": row["updated_at"].isoformat() if row.get("updated_at") else None,
     }
+
+
+def _per_user_secret_coverage(source_id: str) -> List[Dict[str, Any]]:
+    """Who has connected their OWN credential for ``source_id``, and when.
+
+    Read-only admin diagnostic for the detail page — never returns a secret
+    value, only identity (``user_id`` / ``email`` / ``name``) + the ISO-8601
+    timestamp of their last upsert. Ordered by ``user_id`` (what
+    ``list_for_source`` already returns), so the result is deterministic.
+
+    Built entirely from the two existing, already-parity-tested
+    ``PerUserSecretsRepository`` methods — ``list_for_source`` (previously
+    called only from the delete/purge cleanup paths in this module and in
+    ``admin_source_connections.py``) and ``get_updated_at`` (added for the
+    per-user connect status endpoint) — rather than a new repo method, so
+    this diagnostic adds no new surface to keep in DuckDB/Postgres parity.
+    """
+    from src.repositories import users_repo
+
+    pu_secrets = per_user_secrets_repo()
+    user_ids = pu_secrets.list_for_source(source_id)
+    if not user_ids:
+        return []
+    info = users_repo().get_info_by_ids(user_ids)
+    return [
+        {
+            "user_id": uid,
+            "email": info.get(uid, {}).get("email"),
+            "name": info.get(uid, {}).get("name"),
+            "updated_at": pu_secrets.get_updated_at(source_id, uid),
+        }
+        for uid in user_ids
+    ]
 
 
 def _merge_source_patch(existing: Dict[str, Any], patch: UpdateMCPSourceRequest) -> Dict[str, Any]:
@@ -766,15 +808,25 @@ async def get_mcp_source(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Detail view — includes the list of tools registered against this source."""
+    """Detail view — includes the list of tools registered against this
+    source, the shared vault secret's last-rotated timestamp
+    (``vault_secret_updated_at``), and per-user secret coverage
+    (``per_user_secrets`` — who has connected their own credential, and
+    when; never the secret value)."""
     repo = mcp_sources_repo()
     src = repo.get(source_id)
     if not src:
         raise HTTPException(status_code=404, detail="mcp_source_not_found")
     tools_repo = tool_registry_repo()
     tools = tools_repo.list_for_source(source_id)
-    out = _serialize_source(src, has_vault_secret=shared_secrets_repo().has(source_id))
+    secrets = shared_secrets_repo()
+    out = _serialize_source(
+        src,
+        has_vault_secret=secrets.has(source_id),
+        vault_secret_updated_at=secrets.get_updated_at(source_id),
+    )
     out["tools"] = [_serialize_tool(t) for t in tools]
+    out["per_user_secrets"] = _per_user_secret_coverage(source_id)
     return out
 
 
@@ -1937,6 +1989,135 @@ async def delete_mcp_tool(
 # ---------------------------------------------------------------------------
 # Tool grants
 # ---------------------------------------------------------------------------
+
+
+@router.post("/mcp-sources/{source_id}/grants")
+async def add_mcp_source_grant(
+    source_id: str,
+    payload: AddGrantRequest,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Grant a user group every tool registered under one source.
+
+    The per-tool grant is the right granularity for curating an upstream a
+    handful of tools at a time. It is the wrong one for a source that arrives
+    with its whole toolset at once — a connected Keboola project registers
+    around forty, and granting them one page at a time is the friction the
+    chat-tools switch exists to remove. This grants the set.
+
+    Idempotent per tool, and it does NOT widen anything the source did not
+    register: the set is exactly ``tool_registry`` rows for this source, so a
+    tool that arrives later needs another call rather than being granted in
+    advance. Returns what changed and what was already granted, because
+    "granted 0 of 37" and "granted 37 of 37" mean very different things to an
+    admin and both look like success otherwise.
+    """
+    src = mcp_sources_repo().get(source_id)
+    if src is None:
+        raise HTTPException(status_code=404, detail="mcp_source_not_found")
+    group_id = (payload.group_id or "").strip()
+    if not group_id:
+        raise HTTPException(status_code=400, detail="group_id is required")
+
+    from src.repositories import user_groups_repo
+
+    if not user_groups_repo().get(group_id):
+        raise HTTPException(status_code=404, detail="user_group_not_found")
+
+    repo = tool_registry_repo()
+    # Only ENABLED tools. A disabled row is invisible to the agent today
+    # (`list_by_mode(..., enabled_only=True)` builds the passthrough surface),
+    # so granting it writes an access decision nobody can see the effect of —
+    # and re-enabling the tool later makes it reachable for the granted group
+    # without anyone granting again. Grant narrow. Revoking, below, stays wide
+    # on purpose: taking access away must not skip a row because it happens to
+    # be switched off. (Devin Review on this PR.)
+    all_tools = repo.list_for_source(source_id)
+    tools = [t for t in all_tools if t.get("enabled", True)]
+    skipped_disabled = len(all_tools) - len(tools)
+    if not tools:
+        # Saying "granted" over an empty set would report success for a source
+        # whose tools were never registered — the failure this whole feature
+        # keeps running into.
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "no_tools_registered",
+                "message": (
+                    f"Source {source_id!r} has no enabled tools to grant"
+                    + (f" ({skipped_disabled} are disabled)" if skipped_disabled else "")
+                    + ". Register them first (for a connected project, turn chat "
+                    "tools on), then grant."
+                ),
+            },
+        )
+
+    granted, already = [], []
+    for tool in tools:
+        tool_id = tool["tool_id"]
+        if group_id in repo.grants_for_tool(tool_id):
+            already.append(tool_id)
+            continue
+        repo.add_grant(tool_id, group_id)
+        granted.append(tool_id)
+
+    _audit(
+        conn,
+        user["id"],
+        "mcp_source.grant.add",
+        f"mcp_source:{source_id}",
+        {
+            "group_id": group_id,
+            "granted": len(granted),
+            "already_granted": len(already),
+            "skipped_disabled": skipped_disabled,
+        },
+    )
+    return {
+        "granted": len(granted),
+        "already_granted": len(already),
+        "total": len(tools),
+        # A grant does not make a `mutating=True` tool reachable — the
+        # passthrough policy gate refuses those for every non-admin regardless.
+        # On an upstream that annotates nothing that is ALL of them, so
+        # reporting only "granted 37 of 37" would promise the group an access
+        # they do not have. Same reasoning as `tools_admin_only` on enable.
+        "admin_only": sum(1 for t in tools if t.get("mutating")),
+        # Said out loud rather than silently omitted: "granted 5 of 5" over a
+        # source with three switched-off tools reads as complete coverage.
+        "skipped_disabled": skipped_disabled,
+    }
+
+
+@router.delete("/mcp-sources/{source_id}/grants/{group_id}", status_code=204)
+async def remove_mcp_source_grant(
+    source_id: str,
+    group_id: str,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Revoke a group's access to every tool of one source (idempotent).
+
+    The counterpart matters more than the convenience: an admin who granted a
+    whole project in one action must be able to take it back in one action,
+    rather than revoking forty tools by hand while access stays live.
+    """
+    if mcp_sources_repo().get(source_id) is None:
+        raise HTTPException(status_code=404, detail="mcp_source_not_found")
+    repo = tool_registry_repo()
+    removed = 0
+    for tool in repo.list_for_source(source_id):
+        if group_id in repo.grants_for_tool(tool["tool_id"]):
+            repo.remove_grant(tool["tool_id"], group_id)
+            removed += 1
+    _audit(
+        conn,
+        user["id"],
+        "mcp_source.grant.remove",
+        f"mcp_source:{source_id}",
+        {"group_id": group_id, "removed": removed},
+    )
 
 
 @router.post("/mcp-tools/{tool_id}/grants")

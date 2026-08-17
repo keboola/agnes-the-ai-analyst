@@ -148,7 +148,7 @@ def test_files_of_every_format_share_one_files_section(seeded_app):
     text = seeded_app["client"].get("/library", headers=_auth(seeded_app["admin_token"])).text
     # One merged section, not per-format ones.
     assert 'data-lib-sec="files"' in text
-    assert ">Files<" in text
+    assert ">Artefacts<" in text
     for retired in ("image", "document", "collection", "spreadsheet"):
         assert f'data-lib-sec="{retired}"' not in text
     # The row still says what the file actually is — its format, on the second
@@ -462,3 +462,19 @@ def test_long_category_gets_its_own_search_field(seeded_app):
     assert "position: sticky; top: -6px;" in css
     # `.fbar-menu__opt` sets display:flex, which beats the UA's [hidden] rule.
     assert ".fbar-menu__opt[hidden] { display: none; }" in css
+
+
+def test_chip_label_keeps_a_name_that_ends_in_a_number(seeded_app):
+    """A chip reads its label off the menu option so the two can never drift.
+
+    It used to strip a trailing number from whatever it read, on the theory
+    that the text ended in the option's tally — but every caller puts the tally
+    in a sibling `.fbar-menu__opt-n`, so `.fbar-menu__opt-text` holds the name
+    alone and the strip ate names that legitimately end in a digit: a data
+    package called "Customer 360" chipped as "Customer", a tag "Q3 2026" as
+    "Q3". The strip now runs ONLY on the fallback path, where the row's own
+    textContent really does carry the count.
+    """
+    js = seeded_app["client"].get("/static/js/filter_toolbar.js").text
+    assert "var span = opt.querySelector('.fbar-menu__opt-text');" in js
+    assert "if (!span) txt = txt.replace(/\\s+\\d+\\s*$/, '');" in js

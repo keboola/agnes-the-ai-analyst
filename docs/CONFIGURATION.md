@@ -70,13 +70,14 @@ Set the env var in `.env`/Terraform, or the YAML path in `instance.yaml`.
 |------|--------------|----------------------|---------|----------|
 | Deployment display name (page titles, email subjects) | — | `instance.name` | `AI Harness` | `get_instance_name()` |
 | Header subtitle | — | `instance.subtitle` | `""` | `get_instance_subtitle()` |
+| Operator credit in the page footer, rendered as "Deployed by {value}". Unset = the footer omits the line entirely (the product name + build on the left always render) | `AGNES_INSTANCE_COPYRIGHT` | `instance.copyright` | `""` (no attribution) | `get_instance_copyright()` |
 | Product brand string (hero copy, CTAs, setup script) | `AGNES_INSTANCE_BRAND` | `instance.brand` | `Agnes` | `get_instance_brand()` |
 | Short brand for mid-sentence body copy; when it differs from the full brand, the `/home` hero appends "Call me {short}." | `AGNES_INSTANCE_BRAND_SHORT` | `instance.brand_short` | derived (= `instance.brand`) | `get_instance_brand_short()` |
 | Inline `<svg>` logo for the header brand slot | `AGNES_INSTANCE_LOGO_SVG` | `instance.logo_svg` | `""` (text brand) | `get_instance_logo_svg()` |
-| Experience preset (`classic`/`redesign`) — flips the DEFAULTS of `instance.ui_layout`, `instance.theme` and `features.stack_auto_membership`; per-knob settings win | `AGNES_INSTANCE_EXPERIENCE` | `instance.experience` | `classic` | `get_experience()` |
-| UI theme/palette (`blue`/`navy`/`dark`/`auto`/`paper`) | `AGNES_INSTANCE_THEME` | `instance.theme` | `blue` (`paper` under `experience: redesign`) | `get_instance_theme()` |
-| Chrome layout (`topnav` = horizontal header, `rail` = fixed left sidebar) | `AGNES_UI_LAYOUT` | `instance.ui_layout` | `topnav` (`rail` under `experience: redesign`) | `get_ui_layout()` |
-| Stack membership mode (off = classic subscribe model, on = auto-membership) | `AGNES_STACK_AUTO_MEMBERSHIP` | `features.stack_auto_membership` | `false` (`true` under `experience: redesign`) | `get_stack_auto_membership()` |
+| Experience preset — retired as a choice (Wave 0, 2026-08): `redesign` is the only valid value and the default; the old `classic` value (or any other unrecognised string) falls back to `redesign`, with a one-time startup warning naming the ignored setting. Historically flipped the DEFAULTS of `instance.theme` and `features.stack_auto_membership`; per-knob settings still win | `AGNES_INSTANCE_EXPERIENCE` | `instance.experience` | `redesign` | `get_experience()` |
+| UI theme/palette (`blue`/`navy`/`dark`/`auto`/`paper`) — still a live, independent axis; an explicit choice always wins | `AGNES_INSTANCE_THEME` | `instance.theme` | `paper` (explicit `blue`/`navy`/`dark`/`auto` still wins) | `get_instance_theme()` |
+| Chrome layout — retired (Wave 0, 2026-08): the rail chrome (fixed left sidebar) is the only chrome; `topnav` no longer exists. A configured value is tolerated but inert — ignored with a one-time startup warning | `AGNES_UI_LAYOUT` (ignored) | `instance.ui_layout` (ignored) | `rail` (always) | `get_ui_layout()` |
+| Stack membership mode (auto-membership vs. the classic subscribe model); an explicit `false` still wins over the default | `AGNES_STACK_AUTO_MEMBERSHIP` | `features.stack_auto_membership` | `true` (explicit `false` still wins) | `get_stack_auto_membership()` |
 | Analyst workspace folder name (`~/<name>`) | `AGNES_WORKSPACE_DIR_NAME` | `instance.workspace_dir` | derived from brand (non-alphanumerics stripped) | `get_workspace_dir_name()` |
 | Operator-injected HTML/JS blocks (analytics, widgets) | — | `instance.custom_scripts` | `[]` | `get_custom_scripts()` |
 | Hide individual `/login` feature cards (keys: `data`, `marketplace`, `mcp`, `memory`, `anywhere`; list or comma-string) | `AGNES_INSTANCE_HIDE_LOGIN_FEATURES` | `instance.hide_login_features` | `""` (nothing hidden) | `get_hidden_login_features()` |
@@ -92,6 +93,7 @@ Set the env var in `.env`/Terraform, or the YAML path in `instance.yaml`.
 | Landing route after auth (`/home` vs `/dashboard`) | `AGNES_HOME_ROUTE` | `instance.home_route` | `/dashboard` | `get_home_route()` |
 | Offer the org-verification axis on the store/marketplace (Verify / Request changes / Request verification + the Verified marker). Off means the whole vocabulary is hidden — publisher attribution still carries accountability — and every user-authored item stays at Community with no admin action able to move it. | `AGNES_STORE_VERIFICATION_ENABLED` | `store.verification_enabled` | `true` | `get_store_verification_enabled()` |
 | Require an MCP source's `url` to be https to a public, resolvable address. Off by default, which is **not** unguarded: link-local/metadata, multicast and reserved addresses, and cleartext http to a public address, are refused either way. What the default permits is a source on an internal address — an organization's own tool server, a developer's localhost — because those are ordinary deployments. Turn on for instances that only ever talk to third-party MCP services; it makes an intranet source unconfigurable. | `AGNES_MCP_SOURCE_URL_STRICT` | `mcp.source_url_strict` | `false` | `get_mcp_source_url_strict()` |
+| Enforce the DNS-free half of the MCP source url policy at the two credentialed forward seams too (#1216), not only when a source is configured. Off by default — an already-enabled legacy source keeps forwarding exactly as it does today. Before turning this on, review the `url_policy_verdict` column on the admin MCP source list for any `would_refuse` row and fix its url first — this switch converts each one into a refused call with no other warning. | `AGNES_MCP_SOURCE_URL_RUNTIME_ENFORCE` | `mcp.source_url_runtime_enforce` | `false` | `get_mcp_source_url_runtime_enforce()` |
 | Show the "turn on auto-accept mode" install block | `AGNES_HOME_SHOW_AUTOMODE` | `instance.home.show_automode` | `true` | `get_home_automode_visibility()` |
 | Show the homepage status frame (sync/sessions/tokens) | `AGNES_HOME_SHOW_STATUS_FRAME` | `instance.home.show_status_frame` | `true` | `get_home_status_frame_visibility()` |
 | Operator-authored Overview HTML on `/home` | `AGNES_INSTANCE_OVERVIEW` | `instance.overview` | `""` (hidden) | `get_instance_overview()` |
@@ -155,11 +157,11 @@ The main configuration file lives at `config/instance.yaml`. See
 instance:
   name: "AI Harness"        # UI title, email subjects (get_instance_name)
   subtitle: "Acme Corp"          # Header subtitle (get_instance_subtitle)
-  copyright: "Acme Corp"         # Footer copyright
+  copyright: "Acme Corp"         # Footer credit, "Deployed by …" (get_instance_copyright)
   brand: "Acme Analyst"          # Product brand string (get_instance_brand)
   brand_short: "Acme"            # Short brand for body copy (get_instance_brand_short)
-  theme: "blue"                  # UI palette (get_instance_theme); "paper" = prototype-derived light look
-  ui_layout: "topnav"            # Chrome layout (get_ui_layout); "rail" = fixed left sidebar
+  theme: "blue"                  # UI palette (get_instance_theme); default is "paper" since Wave 0 (2026-08); "blue" opts out explicitly
+  # ui_layout is retired (Wave 0, 2026-08) — rail is the only chrome; a configured value is ignored
   home_route: "/home"            # Landing after auth (get_home_route)
 ```
 

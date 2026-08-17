@@ -87,22 +87,42 @@ def _grant(
         conn.close()
 
 
+def _kind_grid(body: str, kind: str) -> str:
+    """The server-rendered cards for one Catalog kind tab.
+
+    Replaces a `data-view="browse"` / `data-view="my"` split. That pair was
+    the CLASSIC catalog template's two views; the page renders
+    `catalog_unified.html` for every caller since Wave 0 (2026-08) retired
+    the classic chrome, and its grids are keyed by kind instead. The rule
+    under test is unchanged — an in-stack resource is not offered in the
+    grid — only where the grid is.
+    """
+    marker = f'data-kind-view="{kind}"'
+    assert marker in body, f"catalog page has no {kind} grid"
+    after = body.split(marker, 1)[1]
+    # Grids are siblings; the next one starts at the next data-kind-view.
+    return after.split("data-kind-view=", 1)[0]
+
+
 class TestCatalogExcludesInStackItems:
     def test_analyst_granted_package_absent_from_data_grid(self, seeded_app):
         """A package granted to the analyst's group is auto-membership
-        in_stack=True — it must not render in the Catalog's Data grid
-        (classic layout's Browse tab)."""
+        in_stack=True — it must not render in the Catalog's Data grid."""
         pkg_id = _make_pkg("reshape-avail", "Reshape Available Pkg")
         _grant("Everyone", "data_package", pkg_id, requirement="available", users=["analyst1"])
 
         c = seeded_app["client"]
         resp = c.get("/catalog", headers=_auth(seeded_app["analyst_token"]))
         assert resp.status_code == 200
-        body = resp.text
-        browse_section = body.split('data-view="browse"', 1)[1].split('data-view="my"', 1)[0]
-        assert pkg_id not in browse_section, "granted (in-stack) package must not appear in the Browse/Data grid"
-        # It's still visible somewhere — the My Stack tab.
-        assert pkg_id in body
+        assert pkg_id not in _kind_grid(resp.text, "data"), (
+            "granted (in-stack) package must not appear in the Catalog's Data grid"
+        )
+        # The "still visible on the My Stack tab" half of this assertion went
+        # with the classic template: the unified Catalog offers only what the
+        # caller does NOT have, and the granted package lives on /library.
+        lib = c.get("/library", headers=_auth(seeded_app["analyst_token"]))
+        assert lib.status_code == 200
+        assert pkg_id in lib.text, "granted package vanished from the Library too — it is now unreachable"
 
     def test_analyst_required_package_absent_from_data_grid(self, seeded_app):
         """Required packages are also always in_stack=True — same
@@ -112,10 +132,9 @@ class TestCatalogExcludesInStackItems:
 
         c = seeded_app["client"]
         resp = c.get("/catalog", headers=_auth(seeded_app["analyst_token"]))
-        body = resp.text
-        browse_section = body.split('data-view="browse"', 1)[1].split('data-view="my"', 1)[0]
-        assert pkg_id not in browse_section
-        assert pkg_id in body
+        assert pkg_id not in _kind_grid(resp.text, "data")
+        lib = c.get("/library", headers=_auth(seeded_app["analyst_token"]))
+        assert pkg_id in lib.text
 
     def test_admin_no_longer_sees_ungranted_package_on_catalog(self, seeded_app):
         """Admin god-mode (``browse_admin``) is removed from the
@@ -172,12 +191,16 @@ class TestMemoryCatalogExcludesInStackItems:
         _grant("Everyone", "memory_domain", dom_id, requirement="available", users=["analyst1"])
 
         c = seeded_app["client"]
-        resp = c.get("/corporate-memory", headers=_auth(seeded_app["analyst_token"]))
+        # Was /corporate-memory's own browse/my split. That page 302s into the
+        # Library's Memory band now, so the "browse grid" this rule is about —
+        # the offer of things you do NOT have — is the Catalog's Memory tab,
+        # which applies the identical `not e.in_stack` filter.
+        resp = c.get("/catalog", headers=_auth(seeded_app["analyst_token"]))
         assert resp.status_code == 200
-        body = resp.text
-        browse_section = body.split('data-view="browse"', 1)[1].split('data-view="my"', 1)[0]
-        assert "Reshape Memory" not in browse_section
-        assert "Reshape Memory" in body
+        assert "Reshape Memory" not in _kind_grid(resp.text, "memory")
+        lib = c.get("/library", headers=_auth(seeded_app["analyst_token"]))
+        assert lib.status_code == 200
+        assert "Reshape Memory" in lib.text, "granted domain vanished from the Library too"
 
     def test_admin_no_longer_god_mode_on_corporate_memory(self, seeded_app):
         """An admin with no grant to a domain must not see it via the old

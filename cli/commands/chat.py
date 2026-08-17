@@ -37,6 +37,7 @@ resolution so it can never be shadowed; called out in both the group's
 from __future__ import annotations
 
 import json
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -259,6 +260,129 @@ def _dim(text: str) -> str:
     return f"\033[2m{text}\033[0m"
 
 
+# ---------------------------------------------------------------------------
+# The ```next_actions wire trailer
+# ---------------------------------------------------------------------------
+# The sandbox workspace prompt asks the agent to end every answer with a
+# fenced ```next_actions block; the web chat lifts it into one-click
+# follow-up buttons. The AG-UI wire format itself deliberately keeps the
+# fence — a programmatic consumer of the agent API is exactly the caller
+# the machine-readable form exists for, the same line the server draws for
+# the ``sources`` fence in ``app.chat.sources.strip_block`` — so the strip
+# happens HERE, at render time, in the one AG-UI client that puts the
+# stream in front of a human. `--once --json` stays raw for that same
+# reason, and the ``sources`` fence stays visible on purpose: provenance
+# is readable in a terminal; button chrome is not.
+#
+# Twin of ``app.chat.sources.strip_next_actions_block`` and chat.js's
+# ``extractNextActions`` (the CLI ships standalone and never imports
+# ``app.*``): same tolerant opener, same linear ``find``-based close scan,
+# same "an unterminated opener is not a block" rule.
+_NEXT_ACTIONS_OPEN_RE = re.compile(r"```next_actions[ \t]*\r?\n", re.IGNORECASE)
+_NEXT_ACTIONS_CLOSE = "```"
+
+#: How much buffer tail is worth holding while it could still grow into the
+#: opener (see ``_possible_opener_start``): the opener itself plus slack for
+#: its optional trailing whitespace/CR. A "fence" that hasn't resolved within
+#: this window is not the trailer and is released.
+_OPENER_HOLD_WINDOW = 64
+
+
+def _strip_next_actions(text: str) -> str:
+    """``text`` without its complete ```next_actions blocks (final content)."""
+    out = text
+    while True:
+        m = _NEXT_ACTIONS_OPEN_RE.search(out)
+        if not m:
+            return out.rstrip()
+        close = out.find(_NEXT_ACTIONS_CLOSE, m.end())
+        if close == -1:
+            return out.rstrip()
+        out = out[: m.start()] + out[close + len(_NEXT_ACTIONS_CLOSE) :]
+
+
+def _is_opener_prefix(s: str) -> bool:
+    """Could ``s`` still be the START of a ```next_actions opener once more
+    characters arrive? (``s`` begins at a backtick; a newline would already
+    have completed the opener and matched the regex instead.)"""
+    head = "```next_actions"
+    sl = s.lower()
+    if len(sl) <= len(head):
+        return head.startswith(sl)
+    if not sl.startswith(head):
+        return False
+    return re.fullmatch(r"[ \t]*\r?", sl[len(head) :]) is not None
+
+
+def _possible_opener_start(text: str) -> int:
+    """Index where a suffix begins that could still grow into the opener;
+    ``len(text)`` when nothing needs holding."""
+    lo = max(0, len(text) - _OPENER_HOLD_WINDOW)
+    for p in range(lo, len(text)):
+        if text[p] == "`" and _is_opener_prefix(text[p:]):
+            return p
+    return len(text)
+
+
+class _NextActionsStreamGate:
+    """Withholds a ```next_actions trailer from LIVE terminal output.
+
+    Streaming cannot un-print, so text is held from the first character that
+    could still grow into the trailer's opening fence and released the moment
+    it turns out to be ordinary prose or code (deltas can split anywhere —
+    the SSE mapper forwards the runner's token chunks verbatim). A completed
+    trailer is dropped without ever being written; at end-of-turn an
+    unterminated opener is released — an unterminated opener is not a block,
+    and swallowing it would eat a truncated answer's tail.
+    """
+
+    def __init__(self, write: Any) -> None:
+        self._write = write
+        self._buf = ""  # unreleased tail of the stream
+
+    def feed(self, delta: str) -> None:
+        self._buf += delta
+        self._release(final=False)
+
+    def flush(self) -> None:
+        """Release everything held — a tool line is about to print, and
+        interleaving withheld text after it would reorder the transcript."""
+        self._release(final=True)
+
+    def end(self) -> None:
+        """End of turn: drop a completed trailer, release anything else."""
+        self._release(final=True)
+
+    def _release(self, *, final: bool) -> None:
+        buf = self._buf
+        out: list[str] = []
+        while True:
+            m = _NEXT_ACTIONS_OPEN_RE.search(buf)
+            if m:
+                close = buf.find(_NEXT_ACTIONS_CLOSE, m.end())
+                if close != -1:
+                    # Complete trailer: release what precedes it, drop the
+                    # block, keep scanning (another block may follow).
+                    out.append(buf[: m.start()])
+                    buf = buf[close + len(_NEXT_ACTIONS_CLOSE) :]
+                    continue
+                if final:
+                    out.append(buf)
+                    buf = ""
+                else:
+                    out.append(buf[: m.start()])
+                    buf = buf[m.start() :]
+                break
+            hold = len(buf) if final else _possible_opener_start(buf)
+            out.append(buf[:hold])
+            buf = buf[hold:]
+            break
+        self._buf = buf
+        released = "".join(out)
+        if released:
+            self._write(released)
+
+
 #: Message set on `.error` when the SSE stream ends (generator exhausted,
 #: connection closed cleanly by the server) without ever emitting a
 #: `RUN_FINISHED` or `RUN_ERROR` terminal event. The server's own
@@ -329,10 +453,12 @@ def _send_turn(session_id: str, text: str, *, live_render: bool) -> TurnResult:
 
     Renders live (unless ``live_render=False``, the `--once --json` path,
     which only needs the raw event list): `TEXT_MESSAGE_CONTENT` deltas
-    stream straight to stdout, `TOOL_CALL_START` prints a dim `⚙ <name>`
-    line, `RUN_FINISHED` ends the turn cleanly, `RUN_ERROR` ends it with
-    `.error` set. `TOOL_CALL_END` is collected into `.events` for `--json`
-    but not rendered.
+    stream to stdout through the ```next_actions gate (see
+    `_NextActionsStreamGate` — button chrome never reaches the terminal;
+    `.events` and `.answer` keep the raw wire text), `TOOL_CALL_START`
+    prints a dim `⚙ <name>` line, `RUN_FINISHED` ends the turn cleanly,
+    `RUN_ERROR` ends it with `.error` set. `TOOL_CALL_END` is collected
+    into `.events` for `--json` but not rendered.
 
     `TEXT_MESSAGE_END` carries the turn's full, authoritative answer
     (`app/api/agent_sse.py` maps it off the runner's trailing
@@ -382,6 +508,15 @@ def _send_turn(session_id: str, text: str, *, live_render: bool) -> TurnResult:
     error_message: Optional[str] = None
     terminal_seen = False
 
+    def _stdout_write(s: str) -> None:
+        sys.stdout.write(s)
+        sys.stdout.flush()
+
+    # Live rendering goes through the trailer gate (see the section comment
+    # on _NextActionsStreamGate): raw deltas still land in ``answer_parts``
+    # and ``events`` untouched — only what reaches the terminal is filtered.
+    gate = _NextActionsStreamGate(_stdout_write) if live_render else None
+
     def _answer() -> str:
         # Deltas are the normal case; the trailing full-content event only
         # wins when nothing VISIBLE streamed incrementally (see the
@@ -402,9 +537,8 @@ def _send_turn(session_id: str, text: str, *, live_render: bool) -> TurnResult:
             if etype == "TEXT_MESSAGE_CONTENT":
                 delta = event.get("delta") or ""
                 answer_parts.append(delta)
-                if live_render:
-                    sys.stdout.write(delta)
-                    sys.stdout.flush()
+                if gate is not None:
+                    gate.feed(delta)
             elif etype == "TEXT_MESSAGE_END":
                 content = event.get("content")
                 if content:
@@ -416,9 +550,13 @@ def _send_turn(session_id: str, text: str, *, live_render: bool) -> TurnResult:
                     # after a single empty delta while `_answer()` still
                     # returned this content — success with silent output.
                     if live_render and not "".join(answer_parts).strip():
-                        sys.stdout.write(content)
+                        # The one print of non-streamed content — strip the
+                        # trailer like the live gate does for deltas.
+                        sys.stdout.write(_strip_next_actions(content))
                         sys.stdout.flush()
             elif etype == "TOOL_CALL_START":
+                if gate is not None:
+                    gate.flush()
                 if live_render:
                     name = event.get("name") or "tool"
                     sys.stdout.write(f"\n{_dim(f'⚙ {name}')}\n")
@@ -445,6 +583,11 @@ def _send_turn(session_id: str, text: str, *, live_render: bool) -> TurnResult:
         _best_effort_cancel(session_id)
         return TurnResult(events=events, answer=_answer(), cancelled=True)
     finally:
+        # Runs on every exit — clean finish, Ctrl-C, transport error — so
+        # text the gate was still holding is never lost: a completed trailer
+        # is dropped, anything else (an unterminated opener included) prints.
+        if gate is not None:
+            gate.end()
         close = getattr(gen, "close", None)
         if callable(close):
             close()

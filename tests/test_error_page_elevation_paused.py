@@ -52,13 +52,11 @@ class TestElevationPausedGetsItsAction:
         )
 
 
-#: `/me/profile` renders one of two templates depending on chrome
-#: (`app/web/router.py`: rail -> the redesigned page, topnav -> the frozen
-#: pre-redesign copy). An anchor added to only one is a dead link on the
-#: other — and topnav is the DEFAULT, so a guard that checks the redesigned
-#: page alone passes while most instances get nothing. Devin Review caught
-#: exactly that on this PR.
-PROFILE_TEMPLATES = ("profile.html", "profile_legacy.html")
+#: `/me/profile` renders a single template (`app/web/router.py`) since the
+#: frozen pre-redesign `profile_legacy.html` was retired (Wave 0 legacy
+#: retirement, 2026-08). Kept as a tuple + the guard below so a future
+#: chrome variant can't silently reintroduce an unchecked template.
+PROFILE_TEMPLATES = ("profile.html",)
 
 
 def _template(name: str) -> str:
@@ -99,41 +97,45 @@ class TestTheLinkTargetExists:
 class TestAnchorSurvivesRendering:
     """The static guard reads source; `ds.panel` could still drop `attrs`.
 
-    Rendering both chromes is what proves the anchor actually reaches the
-    browser — a source-only assertion would stay green on a macro that
-    silently ignored the attribute.
+    Rendering the page is what proves the anchor actually reaches the browser —
+    a source-only assertion would stay green on a macro that silently ignored
+    the attribute.
     """
 
-    @pytest.mark.parametrize("layout", ["topnav", "rail"])
-    def test_profile_page_renders_the_anchor(self, seeded_app, monkeypatch, layout):
-        monkeypatch.setenv("AGNES_UI_LAYOUT", layout)
+    def test_profile_page_renders_the_anchor(self, seeded_app):
+        """Was parametrized over ``["topnav", "rail"]``, with a companion test
+        asserting the two really rendered differently so the pair could not be
+        checking one chrome twice. Wave 0 (2026-08) retired the topnav:
+        `get_ui_layout()` returns "rail" whatever is configured, so the
+        parametrization rendered the same page twice under two labels and the
+        companion could only ever fail. One chrome, one case."""
         c = seeded_app["client"]
         c.cookies.set("access_token", seeded_app["admin_token"])
         r = c.get("/me/profile", headers={"Accept": "text/html"})
 
         assert r.status_code == 200, r.text
-        assert 'id="admin-mode"' in r.text, f"anchor missing from rendered {layout} profile"
+        assert 'id="admin-mode"' in r.text, "anchor missing from the rendered profile page"
+        assert 'data-ui-layout="rail"' in r.text
 
-    def test_the_layout_parametrization_really_switches_template(self, seeded_app, monkeypatch):
-        """Otherwise the pair above could be testing one chrome twice.
+    def test_a_configured_layout_cannot_change_the_chrome(self, seeded_app, monkeypatch):
+        """The replacement for the retired parametrization guard.
 
-        The env var is set after the app is built, so this only exercises
-        both templates if `get_ui_layout()` re-reads the environment per
-        request rather than caching at import. It does today — pin it, so a
-        future memoization turns this guard's silence into a failure instead
-        of leaving it quietly checking the default chrome twice.
+        What used to need pinning was that `get_ui_layout()` re-read the
+        environment per request — a memoization would have left the pair above
+        silently testing one chrome twice. What needs pinning now is the
+        opposite: a leftover `AGNES_UI_LAYOUT=topnav` in a real deployment's
+        .env must NOT resurrect a second chrome. It is ignored, and the page
+        still renders the rail with its anchor intact.
         """
         c = seeded_app["client"]
         c.cookies.set("access_token", seeded_app["admin_token"])
 
         monkeypatch.setenv("AGNES_UI_LAYOUT", "topnav")
-        topnav = c.get("/me/profile", headers={"Accept": "text/html"}).text
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
-        rail = c.get("/me/profile", headers={"Accept": "text/html"}).text
+        r = c.get("/me/profile", headers={"Accept": "text/html"})
 
-        assert topnav != rail, "both layouts rendered identically — is get_ui_layout() cached?"
-        assert 'data-ui-layout="rail"' in rail
-        assert 'data-ui-layout="rail"' not in topnav
+        assert r.status_code == 200, r.text
+        assert 'data-ui-layout="rail"' in r.text
+        assert 'id="admin-mode"' in r.text
 
 
 class TestRenderedPage:

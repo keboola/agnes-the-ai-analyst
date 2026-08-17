@@ -25,13 +25,13 @@ from app.instance_config import (
     FEATURE_FLAGS,
     get_instance_name,
     get_instance_subtitle,
-    get_datasets,
     get_theme,
     get_corporate_memory_config,
     get_home_route,
     get_home_automode_visibility,
     get_instance_brand,
     get_instance_brand_short,
+    get_instance_copyright,
     get_workspace_dir_name,
     get_instance_logo_svg,
     get_instance_overview,
@@ -64,7 +64,6 @@ from src.repositories import (
     store_entities_repo,
     store_lint_repo,
     store_submissions_repo,
-    sync_settings_repo,
     sync_state_repo,
     table_registry_repo,
     usage_repo,
@@ -299,20 +298,11 @@ templates.env.globals["posthog_user_block"] = _posthog_user_block
 # Without this, base_ds.html emits <link href=""> and the page renders unstyled.
 templates.env.globals["static_url"] = _static_url
 
-# Legacy guided-tour steps (spec 2026-08-07 wave 2): the pre-redesign tour —
-# frozen as _tour_legacy.html + js/tour_legacy.js — reads its server-filtered
-# steps off this global, exactly as before the redesign (the module is the
-# restored pre-redesign app/web/onboarding.py; contract guard:
-# tests/test_onboarding_not_outdated.py). Rail keeps the coach-mark engine.
-from app.web.onboarding import steps_for as _onboarding_steps_for  # noqa: E402
-
-templates.env.globals["onboarding_steps"] = _onboarding_steps_for
-
 
 def _data_apps_nav_enabled() -> bool:
     """Whether the "Apps" primary-nav entry should render. Registered as a
     Jinja global (like `static_url` above) rather than threaded through
-    per-route context, so `_app_header.html` — shared by both `base.html`
+    per-route context, so `_app_rail.html` — shared by both `base.html`
     (built via `_build_context`) and `base_ds.html`/`base_page.html` (built
     via `_chrome_ctx`) — gates consistently regardless of which context
     builder the current page uses. Re-read on every call (not cached at
@@ -346,6 +336,32 @@ def _is_paper_theme() -> bool:
 
 
 templates.env.globals["is_paper"] = _is_paper_theme
+
+
+# Grouped /admin sidebar (issue #896 follow-up mock) — data + active-state
+# resolver registered as globals (like `static_url`/`is_paper` above) so
+# `_admin_nav.html` (included from base_admin.html / base_admin_page.html)
+# resolves them regardless of which context builder the enclosing page uses.
+from app.web.admin_nav import (  # noqa: E402
+    ADMIN_NAV_DOCS,
+    ADMIN_NAV_HOME,
+    ADMIN_NAV_SECTIONS,
+    resolve_active_href,
+    resolve_active_section_key,
+    resolve_home_active,
+    resolve_section_tabs,
+)
+
+templates.env.globals["admin_nav_sections"] = ADMIN_NAV_SECTIONS
+templates.env.globals["admin_nav_docs"] = ADMIN_NAV_DOCS
+templates.env.globals["admin_nav_home"] = ADMIN_NAV_HOME
+templates.env.globals["admin_nav_active_href"] = resolve_active_href
+templates.env.globals["admin_nav_active_section_key"] = resolve_active_section_key
+templates.env.globals["admin_nav_home_active"] = resolve_home_active
+# Tier two — the per-section tab strip (`_admin_tabs.html`). A global for the
+# same reason the rest are: the partial is included from a page's own content
+# block, so it must resolve regardless of which context builder that page uses.
+templates.env.globals["admin_nav_tabs"] = resolve_section_tabs
 
 
 # The ONE default behind `library.show_unverified_trust`, read off the registry
@@ -397,30 +413,6 @@ def _show_unverified_trust() -> bool:
 templates.env.globals["show_unverified_trust_enabled"] = _show_unverified_trust
 
 
-def _detail_template(base: str) -> str:
-    """Resolve a resource DETAIL page to its layout's template.
-
-    The redesign restructured the detail pages in place (the kind-coloured
-    hero + ``macros/_detail.html`` anatomy). Rail renders those; topnav keeps
-    the pre-redesign page as a frozen ``<base>_legacy.html`` copy — the same
-    contract the /catalog and /library LIST pages follow, extended to the
-    detail level so a default instance's upgrade changes nothing it renders.
-    Every detail render site must resolve through here (guarded by
-    tests/test_ui_layout_theme.py::TestDetailPageParity — a bare
-    ``"<base>.html"`` literal in this module fails the sweep). The handlers
-    are shared: they were verified to pass a superset of the legacy
-    templates' context, so only the template name switches.
-
-    Keyed on the SAME opt-in condition the base templates use for the
-    redesign chrome (rail layout OR paper theme) — the detail anatomy was
-    previously gated in-template on ``is_paper`` alone, and a layout-only
-    key here would strand a paper-without-rail instance on the legacy pages.
-    """
-    if get_ui_layout() == "rail" or get_instance_theme() == "paper":
-        return f"{base}.html"
-    return f"{base}_legacy.html"
-
-
 #: Where a detail page's back link goes in the RAIL layout, per Library
 #: section key. The rail retired Marketplace (/catalog) as a destination —
 #: it is not in the nav and a caller never arrives from it — so a detail
@@ -432,12 +424,16 @@ def _detail_template(base: str) -> str:
 #: `semantics` — see below.
 _RAIL_DETAIL_BACK: dict[str, tuple[str, str]] = {
     "data_package": ("/library?section=data_package", "All data packages"),
-    # Memory is a rail destination again (#1276 restored the nav entry the
-    # redesign dropped), so its browse home is somewhere a rail caller really
-    # arrives from — back keeps the same target the topnav passes. Library
-    # arrivals still override via ?source=library (memory_domain_detail.html).
-    "memory_domain": ("/corporate-memory", "All memory domains"),
+    # Memory folds into the Library under rail (spec 2026-08-12): the
+    # standalone /corporate-memory page 302s to this section, so back links
+    # point straight at the band rather than bouncing through the redirect.
+    # Library arrivals still override via ?source=library
+    # (memory_domain_detail.html).
+    "memory_domain": ("/library?section=memory_domain", "All memory"),
     "recipe": ("/library?section=recipe", "All recipes"),
+    # Same reasoning as memory_domain: /apps 302s into the Library under
+    # rail; apps live in the Files band, so back opens that section.
+    "data_app": ("/library?section=files", "Library"),
     "plugin": ("/library?section=plugin", "All plugins"),
     "skill": ("/library?section=skill", "All skills"),
     "agent": ("/library?section=agent", "All agents"),
@@ -457,18 +453,21 @@ _RAIL_DETAIL_BACK: dict[str, tuple[str, str]] = {
 
 
 def _detail_back(kind: str, href: str, label: str) -> dict[str, str]:
-    """Resolve a detail page's back link for the current chrome.
+    """Resolve a detail page's back link.
 
-    Topnav instances keep exactly what the caller passes (`href`/`label`) —
-    their nav still carries Marketplace and the classic Catalog, so those
-    remain honest destinations there. Rail instances get the /library
-    section instead (see `_RAIL_DETAIL_BACK`). Registered as a Jinja global
-    rather than threaded through each route's context so every detail
-    template resolves it the same way, including the ones rendered from a
-    minimal context.
+    Always the /library section for the kind (see `_RAIL_DETAIL_BACK`),
+    falling back to the Library itself for a kind with no mapping. The
+    caller-supplied `href`/`label` are the PRE-RAIL destinations (the classic
+    Catalog, Marketplace); they were honest while the topnav carried those
+    rows, and this returned them unchanged on that chrome. Wave 0 (2026-08)
+    retired it, so the branch that read them was unreachable — they are kept
+    in the signature because every call site passes them positionally and
+    they document where the page used to sit.
+
+    Registered as a Jinja global rather than threaded through each route's
+    context so every detail template resolves it the same way, including the
+    ones rendered from a minimal context.
     """
-    if get_ui_layout() != "rail":
-        return {"href": href, "label": label}
     rail = _RAIL_DETAIL_BACK.get(kind)
     if not rail:
         return {"href": "/library", "label": "Library"}
@@ -583,6 +582,7 @@ _URL_MAP = {
     "password_auth.request_access": "/auth/password/setup",
     "email_auth.login_email_form": "/login/email",
     "email_auth.send_magic_link": "/auth/email/send-link",
+    "email_auth.send_magic_link_web": "/auth/email/send-link/web",
     "register": "/auth/password/setup",
     "setup": "/first-time-setup",
 }
@@ -723,7 +723,16 @@ def _config_proxy() -> type:
     class ConfigProxy:
         INSTANCE_NAME = get_instance_name()
         INSTANCE_SUBTITLE = get_instance_subtitle()
-        INSTANCE_COPYRIGHT = ""
+        # Was hardcoded "" here, which made the documented `instance.copyright`
+        # key inert: every footer reads `config.INSTANCE_COPYRIGHT or 'AI
+        # Harness'`, so all six chromes rendered the fallback literal instead
+        # of the operator's credit. Empty stays meaningful — `_footer.html`
+        # omits the attribution line rather than inventing one.
+        INSTANCE_COPYRIGHT = get_instance_copyright()
+        # The footer's left side names the PRODUCT (not the deployment) and
+        # reads it off `config` rather than the `instance_brand` context key,
+        # because the partial renders on chromes whose builders don't set it.
+        INSTANCE_BRAND = get_instance_brand()
         LOGO_SVG = get_instance_logo_svg()
         INSTANCE_OVERVIEW = get_instance_overview()
         INSTANCE_SUPPORT = get_instance_support()
@@ -913,20 +922,30 @@ async def login_page(request: Request):
     if not next_path.startswith("/") or next_path.startswith("//"):
         next_path = ""
 
+    from app.auth.provider_registry import provider_allowed
+
     providers = []
     try:
         from app.auth.providers.google import is_available as google_available
 
-        if google_available():
+        if google_available() and provider_allowed("google"):
             providers.append({"name": "google", "display_name": "Google", "icon": "google"})
     except Exception:
         pass
-    providers.append({"name": "password", "display_name": "Email & Password", "icon": "key"})
+    if provider_allowed("password"):
+        providers.append({"name": "password", "display_name": "Email & Password", "icon": "key"})
     try:
         from app.auth.providers.email import is_available as email_available
 
-        if email_available():
+        if email_available() and provider_allowed("email"):
             providers.append({"name": "email", "display_name": "Email Link", "icon": "mail"})
+    except Exception:
+        pass
+    try:
+        from app.auth.providers.keboola import is_available as keboola_available
+
+        if keboola_available() and provider_allowed("keboola"):
+            providers.append({"name": "keboola", "display_name": "Keboola", "icon": "keboola"})
     except Exception:
         pass
 
@@ -954,14 +973,40 @@ async def login_page(request: Request):
             login_buttons.append(
                 {"url": _url, "text": "Sign in with Email Link", "css_class": "btn-secondary", "icon_html": ""}
             )
+        elif p["name"] == "keboola":
+            _url = "/auth/keboola/login"
+            if next_path:
+                _url += f"?next={quote(next_path, safe='')}"
+            login_buttons.append(
+                {"url": _url, "text": "Sign in with Keboola", "css_class": "btn-primary", "icon_html": ""}
+            )
 
-    ctx = _build_context(request, providers=providers, login_buttons=login_buttons, next_path=next_path)
+    keboola_expected_project = ""
+    if request.query_params.get("error") == "keboola_project_mismatch":
+        try:
+            from app.auth.providers import keboola_verify as _kv
+
+            keboola_expected_project = _kv.configured_project_id() or ""
+        except Exception:
+            pass
+
+    ctx = _build_context(
+        request,
+        providers=providers,
+        login_buttons=login_buttons,
+        next_path=next_path,
+        keboola_expected_project=keboola_expected_project,
+    )
     return templates.TemplateResponse(request, "login.html", ctx)
 
 
 @router.get("/login/password", response_class=HTMLResponse)
 async def login_password_page(request: Request):
     """Password login form (email + password)."""
+    from app.auth.provider_registry import provider_allowed
+
+    if not provider_allowed("password"):
+        raise HTTPException(status_code=404, detail="Not Found")
     next_path = request.query_params.get("next", "")
     if not next_path.startswith("/") or next_path.startswith("//"):
         next_path = ""
@@ -969,7 +1014,7 @@ async def login_password_page(request: Request):
     try:
         from app.auth.providers.google import is_available as google_available
 
-        google_ok = google_available()
+        google_ok = google_available() and provider_allowed("google")
     except Exception:
         pass
     ctx = _build_context(request, google_available=google_ok, next_path=next_path)
@@ -978,19 +1023,45 @@ async def login_password_page(request: Request):
 
 @router.get("/login/email", response_class=HTMLResponse)
 async def login_email_page(request: Request):
-    """Email magic link login form."""
-    next_path = request.query_params.get("next", "")
-    if not next_path.startswith("/") or next_path.startswith("//"):
-        next_path = ""
+    """Email magic link login form.
+
+    Renders `login_magic_link.html` — the actual magic-link form, whose
+    "Send Sign-In Link" button posts to `/auth/email/send-link/web`. This
+    route used to render `login_email.html` (the password form, which posts
+    to `/auth/password/*`) by mistake: with `auth.providers: [email]`, the
+    entire `/auth/password` router 404s, so the wrong template locked out
+    the web UI end to end.
+    """
+    from app.auth.provider_registry import provider_allowed
+
+    if not provider_allowed("email"):
+        raise HTTPException(status_code=404, detail="Not Found")
+    # Don't render a "send me a link" form when no mail transport is configured
+    # — it would take the email and claim a link was sent that can never arrive.
+    # is_available() is True in local-dev (the link is logged), so dev still works.
+    from app.auth.providers.email import is_available as email_available
+
+    if not email_available():
+        return RedirectResponse(url="/login?error=email_not_configured", status_code=302)
+    from app.auth._common import safe_next_path
+
+    next_path = safe_next_path(request.query_params.get("next", ""), default="")
     google_ok = False
     try:
         from app.auth.providers.google import is_available as google_available
 
-        google_ok = google_available()
+        google_ok = google_available() and provider_allowed("google")
     except Exception:
         pass
-    ctx = _build_context(request, google_available=google_ok, next_path=next_path)
-    return templates.TemplateResponse(request, "login_email.html", ctx)
+    from app.instance_config import get_allowed_domains
+
+    ctx = _build_context(
+        request,
+        google_available=google_ok,
+        next_path=next_path,
+        allowed_domains=get_allowed_domains(),
+    )
+    return templates.TemplateResponse(request, "login_magic_link.html", ctx)
 
 
 def _compute_data_stats() -> dict:
@@ -1033,15 +1104,21 @@ def _compute_data_stats() -> dict:
 async def dashboard(
     request: Request,
     user: dict = Depends(get_current_user),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    # Layout-aware dashboard split. Under the rail chrome the Dashboard IS
-    # Chat's pre-conversation state: /chat with no active conversation
-    # renders the Agnes-centric dashboard (greeting, composer, activity
-    # panels, guided task starters — see chat.html's rail empty-state
-    # blocks), so /dashboard 302s there and the two surfaces can never
-    # drift apart. Topnav falls straight through to the historical
-    # table-inventory render below — byte-for-byte unchanged.
+    # A REDIRECT, not a page. Deliberately a comment and not a docstring: a
+    # handler docstring becomes the endpoint's public OpenAPI `description`
+    # (tests/snapshots/openapi.json), and this is internal rationale.
+    #
+    # The Dashboard IS Chat's pre-conversation state — /chat with no active
+    # conversation renders the greeting, composer, activity panels and guided
+    # task starters (chat.html's empty-state blocks) — so this 302s there and
+    # the two surfaces can never drift apart.
+    #
+    # It used to fall through to a historical table-inventory render for the
+    # topnav chrome. That chrome was retired in Wave 0 (2026-08), which made
+    # the layout test above it unconditionally true and the 53-line body below
+    # it unreachable; both are gone, along with the `dashboard.html` template
+    # that had no other renderer.
     #
     # `can_chat` mirrors the rail nav's own predicate exactly (see
     # _build_context: chat enabled AND has_explicit_grant) so the LANDING and
@@ -1054,70 +1131,13 @@ async def dashboard(
     # it. The Library is the nearest thing to a data-estate home that IS in
     # the nav. has_explicit_grant is stricter than /chat's own can_access
     # guard, so the /chat redirect is loop-safe. 302 (not 308) so a later
-    # layout/grant flip isn't cached permanently by the browser.
-    if get_ui_layout() == "rail":
-        from app.auth.access import has_explicit_grant
-        from app.resource_types import ResourceType
+    # grant flip isn't cached permanently by the browser.
+    from app.auth.access import has_explicit_grant
+    from app.resource_types import ResourceType
 
-        chat_cfg = getattr(request.app.state, "chat_config", None)
-        can_chat = bool(
-            chat_cfg and chat_cfg.enabled and has_explicit_grant(user["id"], ResourceType.CHAT.value, "chat")
-        )
-        return RedirectResponse(url="/chat" if can_chat else "/library", status_code=302)
-
-    sync_repo = sync_state_repo()
-    settings_repo = sync_settings_repo()
-
-    all_states = sync_repo.get_all_states()
-    enabled_datasets = settings_repo.get_enabled_datasets(user["id"])
-    datasets = get_datasets()
-
-    # Headline stats — shared with /stack via _compute_data_stats() so the
-    # two surfaces can't drift. Internal source_type tables (agnes_*) live
-    # in their own card on /catalog and are excluded from the counter.
-    data_stats = _compute_data_stats()
-    total_tables = data_stats["total_tables"]
-    total_rows = data_stats["total_rows"]
-
-    # Build user_info object expected by dashboard template
-    is_admin = is_user_admin(user["id"], conn)
-
-    class UserInfo:
-        def __init__(self):
-            self.exists = True
-            self.is_admin = is_admin
-            # Legacy fields kept so existing templates don't blow up — admin is
-            # implicitly analyst/privileged, non-admins are not. Granular roles
-            # collapsed in v12.
-            self.is_analyst = is_admin
-            self.is_privileged = is_admin
-            self.username = user.get("email", "").split("@")[0]
-            self.home_dir = ""
-            self.groups = []
-
-    ctx = _build_context(
-        request,
-        user=user,
-        conn=conn,
-        user_info=UserInfo(),
-        username=user.get("email", "").split("@")[0],
-        total_tables=total_tables,
-        total_rows=total_rows,
-        sync_states=all_states,
-        enabled_datasets=enabled_datasets,
-        datasets=datasets,
-        account_status="active",
-        account_details=None,
-        telegram_status={"linked": False},
-        data_stats=data_stats,
-        categories=[],
-        metrics_data=[],
-        desktop_status={"linked": False},
-        activity_summary={"total_sessions": 0, "total_queries": 0},
-        knowledge_stats={"total": 0, "approved": 0},
-        user_knowledge_stats={"authored": 0, "votes_given": 0},
-    )
-    return templates.TemplateResponse(request, "dashboard.html", ctx)
+    chat_cfg = getattr(request.app.state, "chat_config", None)
+    can_chat = bool(chat_cfg and chat_cfg.enabled and has_explicit_grant(user["id"], ResourceType.CHAT.value, "chat"))
+    return RedirectResponse(url="/chat" if can_chat else "/library", status_code=302)
 
 
 def _time_of_day_greeting(hour: int | None = None) -> str:
@@ -1178,8 +1198,7 @@ async def home_page(
     # the install-steps + connector prompts + auto-mode card visible —
     # they stay relevant for adding a second machine, a missing connector,
     # or re-running auto-mode setup. Hero copy + the self-mark control
-    # branch on the boolean. The legacy `home_onboarded.html` is kept on
-    # disk for a release as a fallback but no route renders it.
+    # branch on the boolean.
     ctx = _build_context(
         request,
         user=user,
@@ -1273,90 +1292,30 @@ async def how_it_works_page(
 
 @router.get("/me/ai-connector", response_class=HTMLResponse)
 async def me_ai_connector_page(
-    request: Request,
     user: dict = Depends(get_current_user),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """AI Connector — chrome-dependent (spec 2026-08-07 wave 2).
+    """AI Connector — consolidated into /how-it-works#connect.
 
-    Default chrome keeps the pre-redesign standalone page (frozen
-    ``me_cowork_legacy.html``: OAuth connector URL, plugin packages,
-    available tools — including the /mcp-connect token fallback link).
-    Under ANY redesign opt-in — rail layout or paper theme, the same
-    expression the user-menu row keys on — the page stays consolidated into
-    /how-it-works#connect via the 302 the redesign shipped: a paper-on-topnav
-    instance's menu says "Learn how it works", so a bookmark or alias hop
-    must not resurrect the standalone page there (Devin Review on #1200).
-    302, not 301: a permanent redirect is cached by the browser forever, so
-    it would be very hard to walk back if the consolidation is revisited.
+    Redirects there unconditionally (302, not 301: a permanent redirect is
+    cached by the browser forever, so it would be very hard to walk back if
+    the consolidation is revisited).
 
-    Checked before either chrome branch (#1024): with the MCP connector UI
-    hidden (``mcp.connector_ui_enabled: false`` — a VPN/intranet-only instance
-    whose cloud-side MCP clients can never reach the endpoint), this whole
-    page IS the surface being hidden, so both branches bounce home rather
-    than one of them rendering it anyway."""
+    Checked first (#1024): with the MCP connector UI hidden
+    (``mcp.connector_ui_enabled: false`` — a VPN/intranet-only instance whose
+    cloud-side MCP clients can never reach the endpoint), this whole page IS
+    the surface being hidden, so it bounces home instead."""
     from fastapi.responses import RedirectResponse
 
     if not get_mcp_connector_ui_enabled():
         return RedirectResponse("/", status_code=302)
 
-    if get_ui_layout() == "rail" or _is_paper_theme():
-        return RedirectResponse("/how-it-works#connect", status_code=302)
-
-    # Pre-redesign handler body verbatim (the frozen template reads exactly
-    # this context).
-    from app.api.mcp_passthrough import _visible_passthrough_tools
-    from app.api.v2_marketplace import _accessible_plugins, _skills_for_plugin
-    from src.repositories import mcp_sources_repo
-
-    # Backend-aware reads (mcp_sources / tool grants live in Postgres on a PG
-    # instance) — a raw DuckDB conn here showed no MCP tools on Cowork.
-    source_names = {s["id"]: s["name"] for s in mcp_sources_repo().list_all(enabled_only=True)}
-    raw_tools = _visible_passthrough_tools(user)
-    passthrough_tools = []
-    for t in raw_tools:
-        sname = source_names.get(t["source_id"])
-        if sname:
-            passthrough_tools.append(
-                {
-                    "exposed_name": t["exposed_name"],
-                    "description": t.get("description"),
-                    "source_name": sname,
-                }
-            )
-
-    skills = []
-    for plugin in _accessible_plugins(user):
-        skills.extend(_skills_for_plugin(plugin["marketplace_id"], plugin["name"]))
-
-    static_tools = [
-        {"name": "server_info", "description": "Check Agnes connectivity and your account email."},
-        {"name": "catalog", "description": "List all tables available to you — name, query_mode, row count."},
-        {"name": "schema", "description": "Show column names and types for a table."},
-        {"name": "describe", "description": "Schema + sample rows for a table in one call."},
-        {"name": "query", "description": "Execute SQL against Agnes data (DuckDB or BigQuery dialect)."},
-        {"name": "skills", "description": "List marketplace skills you can access — includes full SKILL.md body."},
-    ]
-
-    server_url = str(request.base_url).rstrip("/")
-    ctx = _build_context(
-        request,
-        user=user,
-        conn=conn,
-        is_admin=is_user_admin(user["id"], conn),
-        static_tools=static_tools,
-        passthrough_tools=passthrough_tools,
-        skills=skills,
-        server_url=server_url,
-    )
-    return templates.TemplateResponse(request, "me_cowork_legacy.html", ctx)
+    return RedirectResponse("/how-it-works#connect", status_code=302)
 
 
 @router.get("/me/mcp", response_class=HTMLResponse)
 @router.get("/me/cowork", response_class=HTMLResponse)
 async def me_mcp_redirect(request: Request):
-    """Legacy aliases → /me/ai-connector (which renders the page on default
-    chrome and forwards to /how-it-works#connect under the redesign opt-in).
+    """Legacy aliases → /me/ai-connector.
 
     302, not 301: a permanent redirect is cached by the browser forever, so
     it would be very hard to walk back if the routing is revisited.
@@ -1547,11 +1506,7 @@ async def me_activity_page(
         conn=conn,
         is_admin=is_user_admin(user["id"], conn),
     )
-    # Rail keeps the redesigned page; topnav renders the frozen pre-redesign
-    # copy (spec 2026-08-07 wave 2 — LEGACY_FROZEN closed set,
-    # TestDefaultContentParity guard). Same handler ctx either way.
-    tmpl = "me_activity.html" if get_ui_layout() == "rail" else "me_activity_legacy.html"
-    return templates.TemplateResponse(request, tmpl, ctx)
+    return templates.TemplateResponse(request, "me_activity.html", ctx)
 
 
 @router.get("/me/stats", response_class=HTMLResponse)
@@ -1707,6 +1662,10 @@ def _data_package_entry_dict(
         # flag and keep the old wording; classic is one of them.
         "in_stack_is_local": _resolve_in_stack_is_local(in_stack_is_local),
         "meta": f"{table_count} table{'s' if table_count != 1 else ''}",
+        # The same fact as a NUMBER, for callers that compose their own meta
+        # line (the admin index card reads "3 tables · Finance · Data Team")
+        # or that flag the empty package as the state it is.
+        "table_count": table_count,
         # v56: source-type pills (auto-derived) come first per the spec
         # convention; admin-authored category tags follow. Concatenated
         # into the single ``tags`` field the macro renders. Duplicates
@@ -1731,7 +1690,8 @@ def _data_package_entry_dict(
         # inline. `assign_to` is read by admin_tables.html on load to auto-
         # open the Bulk Assign modal with this package pre-selected.
         out["meta_html"] = (
-            f'0 tables — <a href="/admin/tables?assign_to={entry.id}" style="color:#0073D1;">assign some →</a>'
+            f'0 tables — <a href="/admin/tables?assign_to={entry.id}" '
+            f'style="color:var(--ds-primary);">assign some →</a>'
         )
     return out
 
@@ -2061,94 +2021,71 @@ async def catalog(
     # curated resources. Data/Memory render server-side here; Plugins +
     # Recipes hydrate client-side from their existing APIs. Uploads
     # (file collections) are private user resources and live on My Stack
-    # (see /stack), not in the shared Catalog. Topnav instances render the
-    # frozen pre-redesign catalog_legacy.html.
-    if get_ui_layout() == "rail":
-        # Memory kind-tab: mirrors the Data grid's contract in BOTH modes —
-        # grant-scoped via ``browse()`` (fixes a pre-existing gap where this
-        # tab enumerated every memory domain with no RBAC check at all);
-        # under auto-membership filtered to entries NOT already in the
-        # caller's stack, under classic the full granted set with its
-        # add-to-stack state — INCLUDING the admin god-mode fork, so the one
-        # page an admin sees applies one scope to both server-rendered kinds
-        # (same ``is_admin_view and not auto_membership`` condition as the
-        # Data grid above; Devin Review on #1199, both rounds).
-        if is_admin_view and not auto_membership:
-            all_mem_entries = resolver.browse_admin(user["id"], ResourceType.MEMORY_DOMAIN)
-        else:
-            all_mem_entries = resolver.browse(user["id"], ResourceType.MEMORY_DOMAIN)
-        addable_mem_entries = [e for e in all_mem_entries if not e.in_stack] if auto_membership else all_mem_entries
-        memory_cards = _unified_memory_cards(addable_mem_entries)
-        # Normalize both server-rendered kinds into the single catalog_card
-        # `c` contract (Plugins + Recipes normalize client-side in the JS twin).
-        data_cards = [_catalog_card_data(e, auto_membership=auto_membership) for e in entries]
-        memory_card_models = [_catalog_card_memory(d, auto_membership=auto_membership) for d in memory_cards]
-        # ── "Recommended for you" — intentionally empty for granted data /
-        #    memory. The Catalog only surfaces resources the caller does NOT
-        #    already have; under auto-membership every granted package is
-        #    already in My Stack, so recommending one here (even as a "not
-        #    yet downloaded" nudge) re-introduces exactly the already-yours
-        #    clutter this reshape removes. The "download a local copy" action
-        #    for granted-but-not-materialized packages lives on My Stack,
-        #    where those cards carry the Download button. A future revision
-        #    may repopulate this row with genuinely not-yet-added shared
-        #    assets (uninstalled plugins / fleamarket), which are not-yours
-        #    by definition.
-        recommended_cards: list = []
-        # Default active kind tab: Data first (if it has addable content),
-        # else Memory, else Plugins — Data/Memory are normally empty post
-        # auto-membership (everything granted is already in My Stack), so
-        # the Catalog naturally centers on Plugins/Recipes.
-        if data_cards:
-            default_kind = "data"
-        elif memory_card_models:
-            default_kind = "memory"
-        else:
-            default_kind = "plugins"
-        ctx = _build_context(
-            request,
-            user=user,
-            is_admin=is_admin_view,
-            entries=entries,
-            data_cards=data_cards,
-            stack_entries=stack_entries_adapted,
-            source_type_chips=source_type_chips,
-            total_registered_tables=total_registered_tables,
-            memory_cards=memory_card_models,
-            recommended_cards=recommended_cards,
-            default_kind=default_kind,
-            # The lede describes what the Data/Memory tabs actually contain,
-            # and that differs by membership mode. Under auto-membership a
-            # grant IS stack membership, so those tabs hold only what you do
-            # NOT have and "granted data lives in My Stack, not here" is true.
-            # Under classic a grant is an invitation you have not accepted, so
-            # the same tabs list granted-but-unsubscribed resources and that
-            # sentence would contradict the grid right under it — the rail +
-            # classic combination this PR makes reachable (Devin on #1199).
-            auto_membership=auto_membership,
-        )
-        return templates.TemplateResponse(request, "catalog_unified.html", ctx)
-
-    # #1206: this page keeps the legacy `_stack_card` macro — its own JS keys on
-    # the `.stack-card__*` class names, so swapping in the unified `catalog_card`
-    # projection here would break add/remove. The macro has no notion on its own
-    # that `in_stack` was re-pointed at the local-download state by the
-    # auto-membership reshape — so a package sat under "My Stack" while its own
-    # button read "Add to stack". The projections that re-point the key now say
-    # so with `in_stack_is_local`, and the macro switches its wording on that
-    # flag rather than on the key name.
+    # (see /stack), not in the shared Catalog.
+    #
+    # Memory kind-tab: mirrors the Data grid's contract in BOTH modes —
+    # grant-scoped via ``browse()`` (fixes a pre-existing gap where this
+    # tab enumerated every memory domain with no RBAC check at all);
+    # under auto-membership filtered to entries NOT already in the
+    # caller's stack, under classic the full granted set with its
+    # add-to-stack state — INCLUDING the admin god-mode fork, so the one
+    # page an admin sees applies one scope to both server-rendered kinds
+    # (same ``is_admin_view and not auto_membership`` condition as the
+    # Data grid above; Devin Review on #1199, both rounds).
+    if is_admin_view and not auto_membership:
+        all_mem_entries = resolver.browse_admin(user["id"], ResourceType.MEMORY_DOMAIN)
+    else:
+        all_mem_entries = resolver.browse(user["id"], ResourceType.MEMORY_DOMAIN)
+    addable_mem_entries = [e for e in all_mem_entries if not e.in_stack] if auto_membership else all_mem_entries
+    memory_cards = _unified_memory_cards(addable_mem_entries)
+    # Normalize both server-rendered kinds into the single catalog_card
+    # `c` contract (Plugins + Recipes normalize client-side in the JS twin).
+    data_cards = [_catalog_card_data(e, auto_membership=auto_membership) for e in entries]
+    memory_card_models = [_catalog_card_memory(d, auto_membership=auto_membership) for d in memory_cards]
+    # ── "Recommended for you" — intentionally empty for granted data /
+    #    memory. The Catalog only surfaces resources the caller does NOT
+    #    already have; under auto-membership every granted package is
+    #    already in My Stack, so recommending one here (even as a "not
+    #    yet downloaded" nudge) re-introduces exactly the already-yours
+    #    clutter this reshape removes. The "download a local copy" action
+    #    for granted-but-not-materialized packages lives on My Stack,
+    #    where those cards carry the Download button. A future revision
+    #    may repopulate this row with genuinely not-yet-added shared
+    #    assets (uninstalled plugins / fleamarket), which are not-yours
+    #    by definition.
+    recommended_cards: list = []
+    # Default active kind tab: Data first (if it has addable content),
+    # else Memory, else Plugins — Data/Memory are normally empty post
+    # auto-membership (everything granted is already in My Stack), so
+    # the Catalog naturally centers on Plugins/Recipes.
+    if data_cards:
+        default_kind = "data"
+    elif memory_card_models:
+        default_kind = "memory"
+    else:
+        default_kind = "plugins"
     ctx = _build_context(
         request,
         user=user,
+        is_admin=is_admin_view,
         entries=entries,
+        data_cards=data_cards,
         stack_entries=stack_entries_adapted,
         source_type_chips=source_type_chips,
         total_registered_tables=total_registered_tables,
+        memory_cards=memory_card_models,
+        recommended_cards=recommended_cards,
+        default_kind=default_kind,
+        # The lede describes what the Data/Memory tabs actually contain,
+        # and that differs by membership mode. Under auto-membership a
+        # grant IS stack membership, so those tabs hold only what you do
+        # NOT have and "granted data lives in My Stack, not here" is true.
+        # Under classic a grant is an invitation you have not accepted, so
+        # the same tabs list granted-but-unsubscribed resources and that
+        # sentence would contradict the grid right under it (Devin on #1199).
+        auto_membership=auto_membership,
     )
-    # Topnav renders the frozen pre-redesign catalog page byte-for-byte
-    # (catalog_legacy.html; the /library pattern — LEGACY_FROZEN closed set,
-    # guarded by tests/test_ui_layout_theme.py::TestDefaultContentParity).
-    return templates.TemplateResponse(request, "catalog_legacy.html", ctx)
+    return templates.TemplateResponse(request, "catalog_unified.html", ctx)
 
 
 def _unified_memory_cards(entries: list) -> list:
@@ -2228,234 +2165,24 @@ def _unified_library_cards(user: dict, conn) -> list:
     return cards
 
 
-def _unified_upload_cards(user: dict) -> list:
-    """Uploads OWNED by the caller — the private per-user file collections
-    surfaced on My Stack. Owner-scoped (``created_by``), NOT grant-scoped:
-    a user sees only the uploads they created, so admins do not see every
-    collection here (that's the shared /library surface)."""
-    cards: list = []
-    try:
-        uid = user.get("id")
-        cf_repo = corpus_files_repo()
-        for col in file_corpora_repo().list():
-            if col.get("created_by") != uid:
-                continue
-            try:
-                files = cf_repo.list_for_corpus(col["id"])
-            except Exception:
-                files = []
-            file_count = len(files)
-            # A one-file artefact is presented AS the file (not "a collection
-            # with 1 file"), so carry the lone file's name/type/size for the
-            # card + detail. Two or more → it reads as a collection.
-            first_file = None
-            if file_count == 1:
-                f0 = files[0]
-                first_file = {
-                    "filename": f0.get("filename"),
-                    "file_type": f0.get("file_type"),
-                    "size_bytes": f0.get("size_bytes"),
-                }
-            cards.append(
-                {
-                    "id": col["id"],
-                    "name": col.get("name") or col.get("slug"),
-                    "description": col.get("description") or "",
-                    "slug": col.get("slug"),
-                    "file_count": file_count,
-                    "first_file": first_file,
-                    "created_at": col.get("created_at"),
-                }
-            )
-    except Exception as e:
-        logger.warning("/stack: could not enumerate uploads: %s", e)
-    return cards
-
-
 @router.get("/stack", response_class=HTMLResponse)
-async def my_stack_page(
-    request: Request,
-    user: dict = Depends(get_current_user),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
-):
-    """Unified My Stack (rail layout / #896 prototype IA) — the caller's
-    personal workspace: "Everything in your Stack", one inventory table
-    over every kind — Data (data packages), Plugins (hydrated client-side
-    from /api/marketplace/items?tab=my), Memory (memory domains), Uploads
-    (private file collections). Growing the stack happens on /catalog,
-    which carries the "Recommended for you" row.
+async def my_stack_page(user: dict = Depends(get_current_user)):
+    """My Stack is retired — folded into the Library (#1088).
 
-    Reachable under any layout; the rail's "My Stack" entry points here."""
-    from app.services.stack_resolver import StackResolver
-    from app.resource_types import ResourceType
+    Direction (a) from the issue thread: "the Library absorbs the Stack. No
+    migration of functionality is required — it is already there." /library
+    already renders every kind My Stack did (data packages, memory domains,
+    marketplace plugins, uploads) off the same ``StackResolver.browse()``
+    call, with per-row ``stack_state`` membership controls, and its "In
+    stack only" toggle (the ``?stack=in_stack`` preset this redirect targets)
+    answers the exact question this page existed to answer.
 
-    # No conn: read the effective stack through the factory repos, exactly
-    # like GET /api/stack. Passing the request conn made the resolver read a
-    # connection that didn't observe just-written subscription rows, so the
-    # stack rendered empty even when /api/stack returned entries.
-    resolver = StackResolver()
-    from app.instance_config import get_stack_auto_membership
-
-    # My Stack rows carry the same mode-aware action wording as the
-    # Catalog cards: auto → Download-locally toggle, classic → the
-    # remove-from-stack control (leaving is a membership change there).
-    auto_membership = get_stack_auto_membership()
-    pkg_repo = data_packages_repo()
-
-    def _pkg_table_count(pkg_id: str) -> int:
-        try:
-            return len(pkg_repo.list_tables(pkg_id))
-        except Exception:
-            return 0
-
-    def _adapt_pkg(e):
-        slug = None
-        try:
-            full = pkg_repo.get(e.id)
-            if full:
-                slug = full.get("slug")
-        except Exception:
-            slug = None
-        return _data_package_entry_dict(
-            e,
-            drilldown_url=f"/catalog/p/{slug}" if slug else f"/catalog#{e.id}",
-            table_count=_pkg_table_count(e.id),
-        )
-
-    data_entries = [_adapt_pkg(e) for e in resolver.stack(user["id"], ResourceType.DATA_PACKAGE)]
-
-    memory_entries: list = []
-    try:
-        domains_repo = memory_domains_repo()
-        for e in resolver.stack(user["id"], ResourceType.MEMORY_DOMAIN):
-            slug = None
-            items_count = 0
-            try:
-                d = domains_repo.get(e.id)
-                if d:
-                    slug = d.get("slug")
-                    items_count = len(domains_repo.list_items_of_domain(e.id, limit=10000))
-            except Exception:
-                slug = None
-            memory_entries.append(
-                {
-                    "id": e.id,
-                    "name": e.name,
-                    "description": e.description or "",
-                    "requirement": e.requirement,
-                    "slug": slug,
-                    "items_count": items_count,
-                    "in_stack": True,
-                }
-            )
-    except Exception as e:
-        logger.warning("/stack: could not resolve memory stack: %s", e)
-
-    # Uploads (file collections) are private per-user resources — they live
-    # here on My Stack, not in the shared Catalog. Owner-scoped: a user sees
-    # only the uploads they created (created_by), never group-shared ones.
-    upload_entries = _unified_upload_cards(user)
-
-    # "Added" timestamps for the inventory table: available-tier stack rows
-    # come from user_stack_subscriptions.subscribed_at; uploads from the
-    # collection's created_at; required grants have no subscription row →
-    # the table shows an em-dash.
-    added_map: dict = {}
-    try:
-        for r in user_stack_subscriptions_repo().list_for_user_with_dates(user["id"]):
-            added_map[(r["resource_type"], r["resource_id"])] = r["subscribed_at"]
-    except Exception as e:
-        logger.warning("/stack: could not read subscription dates: %s", e)
-
-    def _added_iso(rt: str, rid: str):
-        dt = added_map.get((rt, rid))
-        return dt.isoformat() if dt is not None else None
-
-    # Normalize into the shared catalog_card `c` contract so My Stack rows
-    # render off the same normalizers as the Catalog cards, enriched with
-    # the inventory-table columns (added_iso · shared_by).
-    data_cards = []
-    for entry in data_entries:
-        c = _catalog_card_data(entry, auto_membership=auto_membership)
-        c["added_iso"] = _added_iso("data_package", entry["id"])
-        c["shared_by"] = entry.get("owner_name")
-        data_cards.append(c)
-    memory_card_models = []
-    for d in memory_entries:
-        c = _catalog_card_memory(d, auto_membership=auto_membership)
-        c["added_iso"] = _added_iso("memory_domain", d["id"])
-        c["shared_by"] = None
-        memory_card_models.append(c)
-    upload_card_models = []
-    for col in upload_entries:
-        c = _catalog_card_upload(col)
-        created = col.get("created_at")
-        c["added_iso"] = created.isoformat() if created is not None else None
-        c["shared_by"] = "You"
-        upload_card_models.append(c)
-
-    # Artefacts tab — everything the caller has added to their Stack (a
-    # `user_stack_subscriptions` row, resource_type='collection'). The
-    # artefact (file_corpora) stays the single source of truth for
-    # title/owner/sharing/updated-date; a membership row never mutates it.
-    # A hard-gone artefact (file_corpora.get() returns None — default
-    # excludes soft-deleted) is skipped entirely rather than rendered as a
-    # tombstone row — a deliberately smaller scope than a full "deleted
-    # artefact" treatment.
-    artefact_cards: list = []
-    try:
-        stack_collection_ids = user_stack_subscriptions_repo().list_for_user(user["id"], ResourceType.COLLECTION.value)
-        if stack_collection_ids:
-            from app.auth.access import can_access_collection
-            from app.services.artefact_access import (
-                build_artefact_access_context,
-                collection_visibility,
-                owner_label_for,
-            )
-
-            access_ctx = build_artefact_access_context(user["id"])
-            cf_repo = corpus_files_repo()
-            for cid in stack_collection_ids:
-                col = file_corpora_repo().get(cid)
-                if not col:
-                    continue
-                accessible = can_access_collection(user["id"], cid)
-                visibility, visibility_label = collection_visibility(access_ctx, cid)
-                try:
-                    files = cf_repo.list_for_corpus(cid)
-                except Exception:
-                    files = []
-                file_count = len(files)
-                first_file = None
-                if file_count == 1:
-                    f0 = files[0]
-                    first_file = {
-                        "filename": f0.get("filename"),
-                        "file_type": f0.get("file_type"),
-                        "size_bytes": f0.get("size_bytes"),
-                    }
-                c = _catalog_card_stack_artefact(
-                    {**col, "file_count": file_count, "first_file": first_file},
-                    visibility=visibility,
-                    visibility_label=visibility_label,
-                    owner_label=owner_label_for(access_ctx, col),
-                    accessible=accessible,
-                )
-                c["added_iso"] = _added_iso("collection", cid)
-                artefact_cards.append(c)
-    except Exception as e:
-        logger.warning("/stack: could not resolve artefact stack: %s", e)
-
-    ctx = _build_context(
-        request,
-        user=user,
-        data_entries=data_entries,
-        data_cards=data_cards,
-        memory_entries=memory_entries,
-        memory_cards=memory_card_models,
-        artefact_cards=artefact_cards,
-    )
-    return templates.TemplateResponse(request, "stack_unified.html", ctx)
+    302, not 308, so a later reversal is not cached permanently — same
+    reasoning as the /corporate-memory and /apps retirements (#1278). Route
+    kept registered (not removed) so old links, bookmarks and the onboarding
+    tour's stored history don't 404.
+    """
+    return RedirectResponse(url="/library?stack=in_stack", status_code=302)
 
 
 # Artefact type facets for the /artefacts toolbar filter. A single-file
@@ -2705,31 +2432,7 @@ async def library_page(
     Rendering is server-side; the toolbar (search, ownership segments, Type +
     Source facets, sort, and the table ⇄ grid switch) is client-side over
     those rows.
-
-    TOPNAV keeps the pre-redesign page: the unified Library above is part of
-    the rail redesign, and a default instance's /library must keep rendering
-    the legacy "Your collections" page byte-for-byte (the /catalog pattern —
-    classic template on topnav, redesigned one under rail; guarded by
-    tests/test_ui_layout_theme.py::TestDefaultContentParity). The legacy
-    branch below is main's pre-merge handler verbatim.
     """
-    if get_ui_layout() != "rail":
-        from src.rbac import get_accessible_ids
-
-        from app.resource_types import ResourceType
-
-        is_admin = is_user_admin(user["id"], conn)
-        accessible_ids = get_accessible_ids(user, ResourceType.COLLECTION.value, conn)  # None => admin/all
-        allowed = None if accessible_ids is None else set(accessible_ids)
-        cf_repo = corpus_files_repo()
-        cards = []
-        for col in file_corpora_repo().list():
-            if not is_admin and allowed is not None and col["id"] not in allowed:
-                continue
-            files = cf_repo.list_for_corpus(col["id"])
-            cards.append({**col, "file_count": len(files)})
-        ctx = _build_context(request, user=user, conn=conn, is_admin=is_admin, collections=cards)
-        return templates.TemplateResponse(request, "library_legacy.html", ctx)
 
     from app.resource_types import ResourceType
     from app.services.artefact_access import (
@@ -3150,8 +2853,15 @@ async def library_page(
         tags=None,
         owner_key=None,
         in_stack=True,
+        droppable=False,
     ) -> None:
-        """Append one access-granted row (never owner-shareable)."""
+        """Append one access-granted row (never owner-shareable).
+
+        ``droppable``: the membership is the caller's own subscription
+        (classic mode, optional tier) — render the REMOVE control, exactly
+        as /catalog offers for the same membership. Callers whose
+        membership is the grant itself (auto-membership, recipes, plugins)
+        leave it False and get the locked pill."""
         items.append(
             _library_row_base(
                 item_id=item_id,
@@ -3184,17 +2894,35 @@ async def library_page(
         # would label rows the agent cannot actually query (membership also
         # drives ``get_accessible_tables``). Callers whose membership
         # genuinely is the grant (recipes, plugins) omit the argument.
-        if in_stack:
+        if in_stack and droppable:
+            # Classic self-subscription: the caller added it, the caller can
+            # remove it — HERE, not just on /catalog. This row used to render
+            # the locked pill ("only an admin can remove it"), which was
+            # false for a self-subscription and read as a required mandate;
+            # /catalog offered Remove for the very same membership. The lock
+            # is driven by droppability, and this membership IS droppable.
+            import json as _json
+
             items[-1]["stack_state"] = "in_stack"
-            # Every member row says the same thing about membership — "In
-            # Stack" — and is LOCKED, because for a granted member there is
-            # no per-user membership to drop here, only a grant an admin can
-            # revoke (classic members ARE per-user, but their drop surface
-            # is the Catalog/Stack pages, not this listing). The lock is
-            # driven by *droppability*, not by the grant tier: keying it on
-            # ``requirement == 'required'`` (as this once did) left an
-            # optional grant rendering the success-tinted check that a
-            # REMOVABLE row wears at rest. The tier stays legible in the
+            items[-1]["stack_pill"] = "In Stack"
+            items[-1]["stack_removable"] = True
+            # Remove is a path-param DELETE; re-add (after a remove, without
+            # a reload) POSTs the generic subscribe endpoint with a body —
+            # the row carries both so the click handler can cycle.
+            items[-1]["stack_endpoint"] = "/api/stack/subscribe"
+            items[-1]["stack_body"] = _json.dumps({"resource_type": type_key, "resource_id": item_id})
+            items[-1]["stack_remove_endpoint"] = f"/api/stack/subscription/{type_key}/{item_id}"
+            items[-1]["stack_title"] = "Added by you — click to remove it from your Stack"
+        elif in_stack:
+            items[-1]["stack_state"] = "in_stack"
+            # Every non-droppable member row says the same thing about
+            # membership — "In Stack" — and is LOCKED: there is no per-user
+            # membership to drop, only a grant an admin can revoke (required
+            # tier, or auto-membership where the grant IS the membership).
+            # The lock is driven by *droppability*, not by the grant tier:
+            # keying it on ``requirement == 'required'`` (as this once did)
+            # left an optional grant rendering the success-tinted check that
+            # a REMOVABLE row wears at rest. The tier stays legible in the
             # tooltip and the Optional/Required facet.
             items[-1]["stack_pill"] = "In Stack"
             items[-1]["stack_locked"] = True
@@ -3206,17 +2934,18 @@ async def library_page(
             # Classic non-member: a real Add control, not a dead pill (Devin
             # Review on #1199, round 4). The generic subscribe endpoint takes
             # a JSON body, so the row carries it (`data-stack-body`) for the
-            # shared click handler; after a successful add the row is a
-            # MEMBER — locked like every other granted member (the drop
-            # surface is the Catalog/Stack pages), which
-            # `data-stack-locked-after` tells the handler to render.
+            # shared click handler. The post-add state is the REMOVABLE
+            # member above (the handler switches on data-stack-remove-endpoint),
+            # matching what a reload would render — the old locked-after
+            # contract claimed an admin mandate the caller had just created
+            # themselves.
             import json as _json
 
             items[-1]["stack_state"] = "available"
             items[-1]["stack_addable"] = True
             items[-1]["stack_endpoint"] = "/api/stack/subscribe"
             items[-1]["stack_body"] = _json.dumps({"resource_type": type_key, "resource_id": item_id})
-            items[-1]["stack_locked_after_add"] = True
+            items[-1]["stack_remove_endpoint"] = f"/api/stack/subscription/{type_key}/{item_id}"
             items[-1]["stack_title"] = "Granted to you, but not in your Stack — add it to make it queryable"
 
     # Governed data packages + memory domains — StackResolver.browse() is
@@ -3232,6 +2961,27 @@ async def library_page(
         dom_slugs = {r["id"]: r.get("slug") for r in memory_domains_repo().list(limit=100000)}
     except Exception:
         dom_slugs = {}
+    # Per-domain item/required counts — the same numbers the standalone
+    # /corporate-memory cards carry (that page 302s here under rail, so the
+    # band inherits its duties). One grouped COUNT query, not a per-domain
+    # item load: pulling every knowledge item's full body to display two
+    # numbers made the Library's render cost scale with the knowledge base
+    # (Devin review on this PR). ``None`` means the counts are UNKNOWN (the
+    # read failed) — the rows below then render without counts and, crucially,
+    # without the empty-domain hiding rule, because "we could not count" must
+    # not read as "there is nothing here" and silently drop granted knowledge.
+    dom_counts: dict[str, tuple[int, int]] | None
+    try:
+        dom_counts = memory_domains_repo().count_items_by_domain()
+    except Exception as e:
+        logger.warning("/library: could not count memory-domain items: %s", e)
+        dom_counts = None
+    # Membership mode decides droppability below: classic optional members
+    # are the caller's own subscriptions (removable here, as on /catalog);
+    # under auto-membership the grant IS the membership, nothing to drop.
+    from app.instance_config import get_stack_auto_membership
+
+    _auto_membership = get_stack_auto_membership()
     for rt, type_key, type_label, glyph in (
         (ResourceType.DATA_PACKAGE, "data_package", "Data package", "data"),
         (ResourceType.MEMORY_DOMAIN, "memory_domain", "Memory", "memory"),
@@ -3241,12 +2991,30 @@ async def library_page(
                 if type_key == "data_package":
                     slug = pkg_slugs.get(e.id)
                     href = f"/catalog/p/{slug}" if slug else "/catalog"
+                    row_meta = e.category or ""
                 else:
                     slug = dom_slugs.get(e.id)
                     # ?source=library so the drill-down's back link returns
                     # HERE instead of to the memory listing the caller never
                     # visited (also feeds the memory_domain.view event).
                     href = f"/memory/d/{slug}?source=library" if slug else f"/corporate-memory#{e.id}"
+                    if dom_counts is None:
+                        # Counts unknown — render the row WITHOUT them rather
+                        # than treating the failure as emptiness and hiding
+                        # knowledge the caller is granted.
+                        row_meta = e.category or ""
+                    else:
+                        n_items, n_required = dom_counts.get(e.id, (0, 0))
+                        # A domain with KNOWN-zero content has nothing to opt
+                        # into — same rule as the standalone page
+                        # (_has_content): hidden unless the mandate itself is
+                        # required. Admins manage empty placeholders at
+                        # /admin/corporate-memory#domains.
+                        if n_items == 0 and e.requirement != "required":
+                            continue
+                        row_meta = f"{n_items} item{'s' if n_items != 1 else ''}"
+                        if n_required:
+                            row_meta += f" · {n_required} required"
                 _add_shared_row(
                     item_id=e.id,
                     title=e.name,
@@ -3258,7 +3026,7 @@ async def library_page(
                     origin="granted",
                     origin_label="Shared with you",
                     added=None,
-                    meta_text=e.category or "",
+                    meta_text=row_meta,
                     owner_label=e.owner_name or "Your workspace",
                     # StackResolver's non-required tier is "available";
                     # collapse it into "optional" so the facet has exactly two
@@ -3268,86 +3036,10 @@ async def library_page(
                     # Mode-resolved membership: auto → always True (rendering
                     # unchanged); classic → required ∪ subscribed only.
                     in_stack=e.in_stack,
+                    droppable=(not _auto_membership and e.in_stack and e.requirement != "required"),
                 )
         except Exception as e:
             logger.warning("/library: could not resolve %s: %s", rt.value, e)
-
-    # Data apps — hosted apps the caller owns or has been granted. The
-    # Library is "everything you have", and an app you built from chat is as
-    # much yours as a collection you uploaded; until this row existed a
-    # `rail` instance had no way to reach one at all, since the "Apps" nav
-    # entry shipped in the topnav only.
-    #
-    # Visibility is OWNERSHIP ∪ GRANT, deliberately NOT `data_apps._can_view`.
-    # That helper short-circuits True for any admin, and this page's contract
-    # is the opposite — see this function's docstring: "Deliberately NOT admin
-    # god-mode — an admin still sees their own Library, not every item in the
-    # instance". Reusing it listed every hosted app in the instance in an
-    # admin's Library, other people's private ones included, labelled "Shared
-    # with you" with owner "Your workspace" — a claim that is simply false for
-    # an app they hold no grant on (Devin Review on this PR). Reuse was the
-    # right instinct for the *shape* and the draft rule; it was the wrong one
-    # for the scope, because the two surfaces answer different questions.
-    #
-    # The grant set is fetched ONCE rather than per row: `_can_view` costs two
-    # DB lookups per app, on every Library render.
-    #
-    # Drafts are excluded (they are iteration branches of an app, not apps)
-    # and so is `linked_hidden`, matching `/apps` exactly.
-    # Aliased imports: both names are bound locally further down this
-    # function, so referencing the module-level ones here is a use-before-
-    # assignment in the same scope.
-    from app.instance_config import feature_enabled as _feat_enabled
-    from src.repositories import data_apps_repo as _apps_repo
-
-    if _feat_enabled("data_apps", "enabled", env_var="AGNES_DATA_APPS_ENABLED", default=False):
-        try:
-            # Grants on this type are keyed by SLUG (see `_can_view`), not id.
-            _app_grants = _granted_ids(ResourceType.DATA_APP.value)
-
-            # `limit=100000` like every sibling listing in this function
-            # (`data_packages_repo`, `memory_domains_repo`, `recipes_repo`).
-            # The repo defaults to 1000 ordered `created_at DESC`, and that
-            # cap applies BEFORE the ownership/grant filter below — so on an
-            # instance with more apps than that, a caller's older apps drop
-            # off their own Library silently, and under the rail chrome this
-            # page is the only way to click through to one. Linked rows are
-            # created one-per-upstream-app by the MCP listers, so the count is
-            # not bounded by what people build by hand (Devin Review).
-            for a in _apps_repo().list(include_drafts=False, limit=100000):
-                if a.get("state") == "linked_hidden":
-                    continue
-                if a.get("owner_user_id") != uid and a.get("slug") not in _app_grants:
-                    continue
-                _mine = a.get("owner_user_id") == user["id"]
-                _created = a.get("created_at")
-                items.append(
-                    _library_row_base(
-                        item_id=a["id"],
-                        kind="data_app",
-                        title=a.get("name") or a.get("slug") or "",
-                        description=a.get("description") or "",
-                        href=f"/apps/detail/{a['slug']}",
-                        glyph="app",
-                        type_key="data_app",
-                        type_label="App",
-                        origin="mine" if _mine else "granted",
-                        origin_label="Yours" if _mine else "Shared with you",
-                        added_iso=_created.isoformat() if hasattr(_created, "isoformat") else None,
-                        owner_label="You" if _mine else "Your workspace",
-                        ownership="mine" if _mine else "shared_with_me",
-                        visibility="private" if _mine else "shared",
-                        visibility_label="Private" if _mine else "Shared with you",
-                        # The state is the one thing worth knowing at a glance:
-                        # an app can be running, sleeping, or in error, and the
-                        # row is a link you are deciding whether to click.
-                        meta_text=(a.get("state") or "").replace("_", " "),
-                        share_type=None,
-                        owner_key="me" if _mine else "workspace",
-                    )
-                )
-        except Exception as e:
-            logger.warning("/library: could not resolve data apps: %s", e)
 
     # Recipes — granted, resolved straight off the repo (no _fetch_entries
     # support for this type in StackResolver).
@@ -3510,6 +3202,129 @@ async def library_page(
     except Exception as e:
         logger.warning("/library: could not resolve installed agents: %s", e)
 
+    # ── Hosted data apps ───────────────────────────────────────────────
+    # Same visibility set as the /apps page (data_apps_list_page): the
+    # caller's own apps plus apps granted to their groups, minus drafts and
+    # `linked_hidden` rows. No stack membership — data-app access is
+    # grant-driven, not stack-driven — and no lifecycle actions here; the
+    # detail page owns start/stop/logs. The rows group into the FILES band
+    # (_SECTION_OF below) — apps sit among the caller's artifacts — and under
+    # the rail chrome they are the ONLY way to the apps inventory (/apps 302s
+    # to that section — see data_apps_list_page), so removing them strands
+    # the surface.
+    if _data_apps_nav_enabled():
+        from app.api.data_apps import _serialize as _da_serialize
+        from src.repositories import data_apps_repo
+
+        try:
+            _da_cfg = get_data_apps_config()
+            _da_users = users_repo()
+            # Grant-scoped (OWNERSHIP ∪ explicit grant), deliberately NOT the
+            # API's ``_can_view`` (and not ``can_access`` either — both
+            # short-circuit on Admin): this page's contract (docstring above)
+            # is no admin god-mode, an admin's Library lists what THEY have,
+            # not every user's private app. The instance-wide inventory stays
+            # on the API/CLI list and the admin surfaces (Devin review on
+            # this PR). Grants on this type are keyed by SLUG (see
+            # ``_can_view``), fetched ONCE like the recipe/plugin siblings —
+            # same shape PR #1272 lands on main, so the two branches keep one
+            # definition of "what an admin sees in the Library".
+            _app_grants = _granted_ids(ResourceType.DATA_APP.value)
+            # ALL grants on the type (any group), slug-keyed — one query, the
+            # `file_shared_groups` idiom above. An owned row's Sharing badge
+            # must reflect the grants that actually exist on it; hardcoding
+            # "Private" showed an already-shared app as unshared right next
+            # to the control that shares it (Devin Review on PR #1272's
+            # follow-ups).
+            _app_shared_groups: dict = {}
+            try:
+                for g in resource_grants_repo().list_all(resource_type=ResourceType.DATA_APP.value):
+                    _app_shared_groups.setdefault(g["resource_id"], set()).add(g["group_id"])
+            except Exception as e:
+                logger.warning("/library: could not resolve data-app grants: %s", e)
+
+            def _app_visibility(slug: str) -> tuple:
+                groups = _app_shared_groups.get(slug)
+                if not groups:
+                    return "private", "Private"
+                if _everyone_id and _everyone_id in groups:
+                    return "workspace", "Everyone"
+                return "shared", "Specific groups"
+
+            # ``limit=100000`` like every sibling listing in this function:
+            # the repo defaults to 1000 newest-first, and that cap applies
+            # BEFORE the ownership/grant filter — older apps would drop off
+            # their owner's Library silently.
+            for da in data_apps_repo().list(include_drafts=False, limit=100000):
+                _da_mine = da["owner_user_id"] == uid
+                if da.get("state") == "linked_hidden" or not (_da_mine or da["slug"] in _app_grants):
+                    continue
+                _da = _da_serialize(da, _da_cfg)
+                _da_owner = _da_users.get_by_id(da["owner_user_id"]) or {}
+                _da_meta = " · ".join(
+                    b for b in (_da.get("state") or "", "linked" if _da.get("kind") == "linked" else "") if b
+                )
+                if _da_mine:
+                    _da_vis, _da_vis_label = _app_visibility(da["slug"])
+                else:
+                    _da_vis, _da_vis_label = "shared", "Shared with you"
+                _da_created = da.get("created_at")
+                items.append(
+                    _library_row_base(
+                        # `kind` only surfaces as the row's inert `data-kind`
+                        # attribute today (no CSS/JS reads it — the band
+                        # accent rides the SECTION's kind), but say what the
+                        # row is: the sibling app block on main said
+                        # "data_app", and a future consumer keying on
+                        # data-kind must not find apps filed as "library"
+                        # (Devin review on PR #1278).
+                        item_id=da["slug"],
+                        kind="data_app",
+                        title=da.get("name") or da["slug"],
+                        description=_da.get("effective_description") or "",
+                        href=f"/apps/detail/{da['slug']}",
+                        glyph="app",
+                        type_key="data_app",
+                        type_label="Data app",
+                        origin="built" if _da_mine else "granted",
+                        origin_label="Built here" if _da_mine else "Shared with you",
+                        added_iso=_da_created.isoformat() if hasattr(_da_created, "isoformat") else None,
+                        # The owner's EMAIL on a grantee's row — deliberate,
+                        # though sibling granted kinds say "Your workspace".
+                        # Every other surface a granted viewer reaches already
+                        # names the owner: /apps renders owner_email in its
+                        # Owner column and /apps/detail/<slug> (this row's
+                        # href, both chromes) shows the same field, all behind
+                        # the same `_can_view` visibility this row mirrors. An
+                        # app grant is an act by a person — hiding the email
+                        # only here would have the Library disagree with the
+                        # page it links to (Devin review on PR #1278).
+                        owner_label="You" if _da_mine else (_da_owner.get("email") or da["owner_user_id"]),
+                        ownership=(
+                            "shared_by_me"
+                            if (_da_mine and _da_vis != "private")
+                            else ("mine" if _da_mine else "shared_with_me")
+                        ),
+                        visibility=_da_vis,
+                        visibility_label=_da_vis_label,
+                        meta_text=_da_meta,
+                        # Data apps ARE grant-shareable (`ResourceType.DATA_APP`
+                        # is a real `resource_grants` type and the proxy's
+                        # `_can_view` honours it), so an owner's row carries the
+                        # same Share control every other owner-held kind does,
+                        # wired to the slug-keyed grant (Devin Review on PR
+                        # #1272's follow-ups). Grantee rows render the read-only
+                        # badge — the template keys that on `ownership`, and the
+                        # sharing API enforces owner-or-admin regardless.
+                        share_type=ResourceType.DATA_APP.value,
+                        requirement="optional",
+                        tags=[],
+                        owner_key="me" if _da_mine else (da["owner_user_id"] or "workspace"),
+                    )
+                )
+        except Exception as e:
+            logger.warning("/library: could not list data apps: %s", e)
+
     # ── Definitions — the semantic layer, as a page FOOTER ────────────────
     # Deliberately NOT rows in the list above. Metrics and glossary terms are
     # the one thing here nobody owns, shares, installs, drops or edits: they
@@ -3642,13 +3457,19 @@ async def library_page(
         "skill",
         "agent",
         "recipe",
-        # Loose files + collections-as-folders.
+        # Loose files + collections-as-folders (and hosted data apps).
         "files",
         "memory_domain",
     ]
+    #: Kinds that land INSIDE another kind's section instead of getting their
+    #: own. Data apps live among the caller's artifacts in Files — the
+    #: original "Data apps coming soon" badge on that band promised exactly
+    #: this — while their rows keep ``type_key="data_app"`` so the Type facet
+    #: and the row's own label stay honest.
+    _SECTION_OF = {"data_app": "files"}
     grouped: dict = {}
     for c in items:
-        grouped.setdefault(c["type_key"], []).append(c)
+        grouped.setdefault(_SECTION_OF.get(c["type_key"], c["type_key"]), []).append(c)
 
     def _section_rank(type_key: str) -> tuple:
         try:
@@ -3661,8 +3482,10 @@ async def library_page(
     # suffixing "s" because several are irregular (PDFs, Memory, Data files).
     _SECTION_LABELS = {
         # Documents, images and every other format share one section, with
-        # collections nested inside it as folders.
-        "files": "Files",
+        # collections nested inside it as folders — and hosted data apps as a
+        # trailing block (_SECTION_OF): everything the caller or their agent
+        # made, hence the umbrella name.
+        "files": "Artefacts",
         "skill": "Skills",
         "plugin": "Plugins",
         "agent": "Agents",
@@ -3678,7 +3501,7 @@ async def library_page(
     #: it to explain itself. Kept to a short clause; a group with no hint simply
     #: renders none.
     _SECTION_HINTS = {
-        "files": "Uploaded by you, or generated by an agent.",
+        "files": "Files you upload, outputs your agent generates, and your hosted data apps.",
         "skill": "Skills built here.",
         "plugin": "Bundles of skills and commands.",
         "agent": "Assistants you installed.",
@@ -3688,15 +3511,11 @@ async def library_page(
         "memory_domain": "Curated organizational knowledge.",
     }
     #: Marker for a kind that will land INSIDE an existing section rather than
-    #: getting its own. Data apps ship into Files first, so the schedule rides
-    #: the Files band's own label — a badge next to the heading, not a panel in
-    #: the page head. A roadmap note is worth a word where the thing will
-    #: appear; it is not worth a paragraph above the inventory the reader came
-    #: for. Rendered by `group_toggle`, so the table and the grid pick it up
-    #: from one place.
+    #: getting its own. Rendered by `group_toggle`, so the table and the grid
+    #: pick it up from one place.
     #: "<kind> coming soon" badges, keyed by the section the kind will ship
     #: INTO. Empty because the one entry it carried — "Data apps coming soon",
-    #: on the Files band — has shipped: apps now have their own section above,
+    #: on the Files band — has shipped: apps now list inside that band,
     #: and leaving the badge would have the same page list your apps and tell
     #: you they do not exist yet (Devin Review on this PR). The mechanism stays
     #: for the next kind; the badge is meant to delete itself when the kind
@@ -3729,7 +3548,13 @@ async def library_page(
         """
         if key != "files":
             return rows
-        return [r for r in rows if r.get("is_folder")] + [r for r in rows if not r.get("is_folder")]
+        # Three stable blocks: folders (containers first, drop targets in one
+        # place), then loose files, then data apps — the sub-kinds of the
+        # Artefacts umbrella stay grouped instead of interleaving by recency.
+        folders = [r for r in rows if r.get("is_folder")]
+        apps = [r for r in rows if r.get("type_key") == "data_app"]
+        loose = [r for r in rows if not r.get("is_folder") and r.get("type_key") != "data_app"]
+        return folders + loose + apps
 
     library_sections = []
     for key, rows in sorted(grouped.items(), key=lambda kv: _section_rank(kv[0])):
@@ -3810,7 +3635,7 @@ async def artefacts_redirect():
 
 
 # Entry points: "My agents" in the user dropdown
-# (`app/web/templates/_app_header.html`) plus a Cmd/Ctrl-K palette entry — a
+# (`app/web/templates/_app_rail.html`) plus a Cmd/Ctrl-K palette entry — a
 # per-user resource list, so deliberately not primary nav and not the admin
 # mega-menu (instance-level agent authoring is Studio's /admin/studio/agent).
 # Both links are guarded by `tests/test_web_nav_agents.py`; don't drop them.
@@ -3833,45 +3658,6 @@ async def agents_page(
     than pretending drafts are shared."""
     if not get_agent_profiles_enabled():
         return RedirectResponse("/", status_code=302)
-
-    # Default chrome keeps the pre-redesign "My agents" management page —
-    # the builder above is a redesign surface and its ctx diverged, so the
-    # classic branch reproduces the pre-redesign app/web/agents_page.py
-    # logic verbatim over the same repos, rendering the frozen
-    # agents_legacy.html (spec 2026-08-07 wave 2).
-    if get_ui_layout() != "rail":
-        from app.api.agents_admin import _SELECTED_MODE_FIELDS
-        from app.chat.agent_profile import _MEMORY_BUDGET_CHARS, select_in_budget
-        from src.repositories import agent_memories_repo
-
-        mem_repo = agent_memories_repo()
-
-        def _memories_for_panel(agent_id: str) -> list:
-            """Every memory for `agent_id`, each carrying an `in_budget` flag
-            for active rows — the exact same `select_in_budget` split the
-            spawn path uses, so the panel can never show a memory as "in
-            effect" that a live spawn would actually shadow."""
-            memories = mem_repo.list_for_agent(agent_id)
-            active_rows = mem_repo.list_active(agent_id)
-            in_budget, _shadowed = select_in_budget(active_rows, _MEMORY_BUDGET_CHARS)
-            in_budget_ids = {m["id"] for m in in_budget}
-            return [
-                {**m, "in_budget": (m["id"] in in_budget_ids) if m["status"] == "active" else None} for m in memories
-            ]
-
-        from src.repositories import agents_repo as _agents_repo
-
-        rows = _agents_repo().list_for_user(user["id"])
-        agents = [
-            {
-                **row,
-                "token_ready": all(row.get(field) == "selected" for field in _SELECTED_MODE_FIELDS),
-                "memories": _memories_for_panel(row["id"]),
-            }
-            for row in rows
-        ]
-        ctx = _build_context(request, user=user, agents=agents)
-        return templates.TemplateResponse(request, "agents_legacy.html", ctx)
 
     from app.services.stack_resolver import StackResolver
     from app.resource_types import ResourceType
@@ -4174,32 +3960,13 @@ async def catalog_package_detail(
     # `curated` used to be derived right here from "is the creator currently in
     # the Admin group" — a second copy of the same derivation in
     # data_packages._badges_for, which is precisely how the two could disagree.
-    # Both are gone: the trust claim is now the STORED publisher_kind below,
-    # read off the row like any other column, and rendered by the shared trust
-    # marker every other surface uses.
+    # Both are gone: the trust claim is now the STORED publisher_kind, read off
+    # the row like any other column, and rendered by the shared trust marker
+    # every other surface uses (the amber `pkg-badge--curated` chip lived only
+    # on the frozen pre-redesign page, retired with it).
     from datetime import datetime, timedelta, timezone as _tz
 
     badges: list[str] = []
-
-    # The frozen pre-redesign page states the trust claim through this list
-    # (its amber `pkg-badge--curated` chip); the redesigned page states it
-    # through its own publisher marker instead. Scope the append to the
-    # legacy path so the retired chip cannot resurface on the redesign — and
-    # drive it off the STORED publisher_kind, not the retired live
-    # Admin-membership derivation, so the legacy page keeps the exact visible
-    # state the v114 backfill froze.
-    #
-    # BEFORE the `new` append, not after: the template renders this list in
-    # order, and the page being frozen here rendered "Curated New" (the
-    # pre-redesign router appended curated first — 64cf788). Appending it last
-    # would have flipped a default instance's chips to "New Curated", which is a
-    # visible change on the one page this change set promises to leave alone
-    # (Devin Review on #1195).
-    if (
-        _detail_template("catalog_package_detail").endswith("_legacy.html")
-        and pkg.get("publisher_kind") == "organization"
-    ):
-        badges.append("curated")
 
     created_at = pkg.get("created_at")
     if isinstance(created_at, datetime):
@@ -4219,7 +3986,7 @@ async def catalog_package_detail(
         total_size_display=_human_size(total_size) if total_size else None,
         badges=badges,
     )
-    return templates.TemplateResponse(request, _detail_template("catalog_package_detail"), ctx)
+    return templates.TemplateResponse(request, "catalog_package_detail.html", ctx)
 
 
 @router.get("/library/{slug}/f/{file_id}", response_class=HTMLResponse)
@@ -4321,7 +4088,7 @@ async def library_detail(
         collection_visibility=visibility_for(ResourceType.COLLECTION.value, col["id"]),
         can_share=is_admin or owner_id == user["id"],
     )
-    return templates.TemplateResponse(request, _detail_template("library_detail"), ctx)
+    return templates.TemplateResponse(request, "library_detail.html", ctx)
 
 
 @router.get("/catalog/t/{table_id}", response_class=HTMLResponse)
@@ -4342,6 +4109,7 @@ async def catalog_table_detail(
     belong to packages they're granted on.
     """
     from src.rbac import get_accessible_ids
+    from src.access_policy import effective_schema
     from app.resource_types import ResourceType
 
     table_repo = table_registry_repo()
@@ -4421,18 +4189,22 @@ async def catalog_table_detail(
         logger.warning("could not load profile for %s", table_id, exc_info=True)
 
     # Fallback: when table_profiles has no row (table never synced, or
-    # profile was wiped), introspect schema via the same code path the
-    # /api/v2/schema endpoint uses. Handles every source type — internal
-    # via connectors.internal, BigQuery remote via the BQ extension,
-    # local + materialized via DESCRIBE on the parquet. Best-effort —
-    # any failure (parquet missing, BQ creds absent, etc.) leaves the
-    # columns section in its "run a sync" empty state.
+    # profile was wiped), introspect schema via `build_schema` — the same
+    # RBAC- and policy-aware wrapper /api/v2/schema uses — rather than
+    # `build_schema_uncached` directly, which by its own docstring skips
+    # BOTH RBAC and the Task 9 effective-schema override ("call only from
+    # contexts where those are unnecessary (warmup) or already enforced
+    # upstream"). Handles every source type — internal via
+    # connectors.internal, BigQuery remote via the BQ extension, local +
+    # materialized via DESCRIBE on the parquet. Best-effort — any failure
+    # (parquet missing, BQ creds absent, etc.) leaves the columns section
+    # in its "run a sync" empty state.
     if not columns:
         try:
-            from app.api.v2_schema import build_schema_uncached
+            from app.api.v2_schema import build_schema
             from connectors.bigquery.access import BqAccess
 
-            sch = build_schema_uncached(conn, table_id, bq=BqAccess(), row=table)
+            sch = build_schema(conn, user, table_id, bq=BqAccess())
             for col in sch.get("columns") or []:
                 columns.append(
                     {
@@ -4443,6 +4215,38 @@ async def catalog_table_detail(
                 )
         except Exception:
             logger.warning("schema introspection fallback failed for %s", table_id, exc_info=True)
+
+    # Table access policies (§11): the profile-derived column list above is
+    # UNFILTERED raw schema — `table_profiles` is computed from the
+    # physical table regardless of any later-attached policy — so an
+    # EXCLUDE'd column's name would otherwise survive into "What's inside"
+    # for a non-admin even after the fallback above started using the
+    # effective-schema-aware `build_schema`. One filter here, applied AFTER
+    # either source has populated `columns`, closes both paths at once.
+    # Fails closed: a resolution problem suppresses the whole column list
+    # rather than risk showing a name this caller cannot actually read.
+    #
+    # `profile_repo()` also carries min/max/sample_values/top_values (§11's
+    # "sharper leak") for every surviving column, but this route never
+    # forwards those fields into `columns` or the template context — only
+    # name/type/nullable are extracted above — so there is nothing further
+    # to suppress here; see `app/api/catalog.py`'s `GET /profile/{id}` and
+    # `POST /profile/{id}/refresh`, which DO serve that stats payload and
+    # are gated the same way.
+    if table.get("access_policy_sql"):
+        try:
+            effective_cols = effective_schema(table_id, user)
+        except Exception:
+            logger.warning(
+                "effective-schema check failed for policied table %s; suppressing columns",
+                table_id,
+                exc_info=True,
+            )
+            columns = []
+        else:
+            if effective_cols is not None:
+                visible_names = {c["name"] for c in effective_cols if not c.get("hidden")}
+                columns = [c for c in columns if c["name"] in visible_names]
 
     last_sync_state = sync_state_repo().get_table_state(table_id) or {}
 
@@ -4471,7 +4275,7 @@ async def catalog_table_detail(
         sample_questions=(table.get("sample_questions") or []),
         things_to_know=table.get("things_to_know") or "",
     )
-    return templates.TemplateResponse(request, _detail_template("catalog_table_detail"), ctx)
+    return templates.TemplateResponse(request, "catalog_table_detail.html", ctx)
 
 
 @router.get("/catalog/r/{slug}", response_class=HTMLResponse)
@@ -4513,7 +4317,7 @@ async def catalog_recipe_detail(
         recipe=recipe,
         related_tables=related_tables,
     )
-    return templates.TemplateResponse(request, _detail_template("catalog_recipe_detail"), ctx)
+    return templates.TemplateResponse(request, "catalog_recipe_detail.html", ctx)
 
 
 def _human_size(n: int) -> str:
@@ -4578,6 +4382,8 @@ def _memory_domain_entry_dict(
         # flag and keep the old wording; classic is one of them.
         "in_stack_is_local": _resolve_in_stack_is_local(in_stack_is_local),
         "meta": meta,
+        # The same fact as a NUMBER — see `table_count` on the package dict.
+        "items_count": items_count,
         "tags": [],
         "drilldown_url": drilldown_url,
         "footer_left": (f"View {items_count} item{'s' if items_count != 1 else ''} →" if items_count else "Open →"),
@@ -4607,6 +4413,34 @@ async def corporate_memory(
     """
     from app.services.stack_resolver import StackResolver
     from app.resource_types import ResourceType
+
+    # Rail: the Library's Memory band IS this page now (counts, add-to-stack,
+    # the empty-domain rule all moved there — spec 2026-08-12). 302, not 308,
+    # so a later layout flip is not cached permanently. Topnav serves the
+    # frozen pre-redesign page below, untouched.
+    if get_ui_layout() == "rail":
+        # ...but ONLY when that band will actually contain a row for this
+        # caller. The band drops a granted domain whose known item count is
+        # zero unless the mandate is `required`, so a caller with no grants —
+        # or only empty optional ones — would land on a Library with no Memory
+        # band and nothing saying where the page went. `/apps` already guards
+        # its twin redirect this way; asymmetry there was the finding.
+        # Anything unreadable counts as "redirect" rather than stranding the
+        # caller here: the band renders rows without counts when the count
+        # read fails, so it is the surface with more to say, not less.
+        try:
+            _c = memory_domains_repo().count_items_by_domain()
+        except Exception:
+            _c = None
+        try:
+            _band_has_row = any(
+                _c is None or _c.get(e.id, (0, 0))[0] > 0 or e.requirement == "required"
+                for e in StackResolver(conn).browse(user["id"], ResourceType.MEMORY_DOMAIN)
+            )
+        except Exception:
+            _band_has_row = True
+        if _band_has_row:
+            return RedirectResponse(url="/library?section=memory_domain", status_code=302)
 
     resolver = StackResolver(conn)
     domains_repo = memory_domains_repo()
@@ -4700,11 +4534,7 @@ async def corporate_memory(
         pending_review_count=pending_count,
         is_km_admin=is_admin_view,
     )
-    # Rail keeps the redesigned page; topnav renders the frozen
-    # pre-redesign copy byte-for-byte (the /library pattern —
-    # LEGACY_FROZEN closed set, TestDefaultContentParity guard).
-    tmpl = "corporate_memory.html" if get_ui_layout() == "rail" else "corporate_memory_legacy.html"
-    return templates.TemplateResponse(request, tmpl, ctx)
+    return templates.TemplateResponse(request, "corporate_memory.html", ctx)
 
 
 @router.get("/memory/d/{slug}", response_class=HTMLResponse)
@@ -4807,7 +4637,7 @@ async def memory_domain_detail(
         # ?source=library). Same value the view event already carries.
         source=source_hint,
     )
-    return templates.TemplateResponse(request, _detail_template("memory_domain_detail"), ctx)
+    return templates.TemplateResponse(request, "memory_domain_detail.html", ctx)
 
 
 def _chrome_ctx(request: Request, user: Optional[dict]) -> dict:
@@ -4841,7 +4671,6 @@ def _chrome_ctx(request: Request, user: Optional[dict]) -> dict:
         "instance_brand_short": get_instance_brand_short(),
         "workspace_dir": get_workspace_dir_name(),
         "instance_theme": get_instance_theme(),
-        "ui_layout": get_ui_layout(),
         "home_automode": {"show": get_home_automode_visibility()},
         "custom_scripts": get_custom_scripts(),
         # Set here too (not only in _build_context) so the Studio nav link
@@ -4923,8 +4752,49 @@ async def data_apps_list_page(
     from app.api.data_apps import _can_view, _serialize
     from src.repositories import data_apps_repo, users_repo
 
-    cfg = get_data_apps_config()
     enabled = feature_enabled("data_apps", "enabled", env_var="AGNES_DATA_APPS_ENABLED", default=False)
+    # Rail: the apps inventory lives in the Library's Artefacts band now —
+    # data apps sit among the caller's artifacts (spec 2026-08-12, revised:
+    # rows keep type_key=data_app for the Type facet, but Files is their
+    # home). Redirect ONLY when the Library will actually show the caller an
+    # app row (the same grant-scoped visibility the Library band applies —
+    # owner or granted, no admin god-mode): a caller with nothing visible
+    # would land on a Library whose band never rendered, with nothing
+    # explaining where the inventory went, so they keep this page's
+    # explicit empty state instead (Devin review on this PR). Feature off →
+    # same reasoning, page renders its explanatory note. 302, not 308
+    # (layout/visibility flips must not be cached).
+    if enabled and get_ui_layout() == "rail":
+        from app.resource_types import ResourceType
+
+        # Same grant-scoped visibility as the Library band (owner or explicit
+        # grant, no admin god-mode) — the redirect must predict exactly what
+        # the band will render, or an admin with nothing of their own would
+        # bounce onto a Library with no app rows. The grant set is fetched
+        # ONCE, exactly as the band fetches it (`_granted_ids` in
+        # `library_page`) — a per-row `has_explicit_grant` call here was one
+        # grant lookup per registered app on every /apps hit (Devin review
+        # on PR #1278).
+        try:
+            _app_grants = set(
+                resource_grants_repo().list_resource_ids_for_user(user["id"], ResourceType.DATA_APP.value)
+            )
+        except Exception as e:
+            logger.warning("/apps: could not resolve data-app grants: %s", e)
+            _app_grants = set()
+        _visible_any = any(
+            r.get("state") != "linked_hidden" and (r["owner_user_id"] == user["id"] or r["slug"] in _app_grants)
+            # `limit=100000`, matching the Library band. The repo's default
+            # cap is 1000 and it is applied in SQL BEFORE the ownership/grant
+            # filter, so on a large instance an owner's older app drops out of
+            # this predicate while the band would still list it — the redirect
+            # would strand exactly the person it exists to forward.
+            for r in data_apps_repo().list(include_drafts=False, limit=100000)
+        )
+        if _visible_any:
+            return RedirectResponse(url="/library?section=files", status_code=302)
+
+    cfg = get_data_apps_config()
     apps: list[dict] = []
     if enabled:
         u_repo = users_repo()
@@ -5663,13 +5533,7 @@ async def marketplace_listing(
         # verification vocabulary at all (see get_store_verification_enabled).
         store_verification_enabled=get_store_verification_enabled(),
     )
-    # The one-Browse-shelf reshape (Curated/Flea tabs merged) is part of the
-    # rail redesign; topnav keeps the pre-merge two-shelf page byte-for-byte
-    # (the /catalog pattern — guarded by tests/test_ui_layout_theme.py::
-    # TestDefaultContentParity). Same context either way: the legacy template
-    # reads a subset of it.
-    tmpl = "marketplace.html" if get_ui_layout() == "rail" else "marketplace_legacy.html"
-    return templates.TemplateResponse(request, tmpl, ctx)
+    return templates.TemplateResponse(request, "marketplace.html", ctx)
 
 
 @router.get("/marketplace/flea/{entity_id}", response_class=HTMLResponse)
@@ -5793,7 +5657,7 @@ async def marketplace_flea_detail(
         )
         return templates.TemplateResponse(
             request,
-            _detail_template("marketplace_plugin_detail"),
+            "marketplace_plugin_detail.html",
             ctx,
         )
 
@@ -5806,7 +5670,7 @@ async def marketplace_flea_detail(
     )
     return templates.TemplateResponse(
         request,
-        _detail_template("marketplace_item_detail"),
+        "marketplace_item_detail.html",
         ctx,
     )
 
@@ -5836,7 +5700,7 @@ async def marketplace_curated_detail(
     )
     return templates.TemplateResponse(
         request,
-        _detail_template("marketplace_plugin_detail"),
+        "marketplace_plugin_detail.html",
         ctx,
     )
 
@@ -5863,7 +5727,7 @@ async def marketplace_curated_skill_detail(
     )
     return templates.TemplateResponse(
         request,
-        _detail_template("marketplace_item_detail"),
+        "marketplace_item_detail.html",
         ctx,
     )
 
@@ -5890,7 +5754,7 @@ async def marketplace_curated_agent_detail(
     )
     return templates.TemplateResponse(
         request,
-        _detail_template("marketplace_item_detail"),
+        "marketplace_item_detail.html",
         ctx,
     )
 
@@ -5936,7 +5800,7 @@ async def marketplace_flea_skill_detail(
     )
     return templates.TemplateResponse(
         request,
-        _detail_template("marketplace_item_detail"),
+        "marketplace_item_detail.html",
         ctx,
     )
 
@@ -5979,7 +5843,7 @@ async def marketplace_flea_agent_detail(
     )
     return templates.TemplateResponse(
         request,
-        _detail_template("marketplace_item_detail"),
+        "marketplace_item_detail.html",
         ctx,
     )
 
@@ -6099,15 +5963,32 @@ async def admin_hub(
     request: Request,
     user: dict = Depends(require_admin),
 ):
-    """Admin hub — the canonical landing page for instance administration.
+    """Admin dashboard — what needs the admin's attention, on landing.
 
-    A settings-style index that groups every /admin/* surface by domain
-    (Activity Center, Users & Access, Data Packages, Sources, Agent
-    Experience, Documentation, Server). The header's Admin mega-menu links
-    here; this page is the scalable home as the admin surface grows past what
-    a dropdown holds. Shell-only — every card links to an existing gated
-    route (each still enforces require_admin independently)."""
-    ctx = _build_context(request, user=user)
+    This page used to be a card grid of every /admin/* surface. Once the
+    grouped sidebar shipped (`admin_nav.py`) the grid became a second copy of
+    the navigation rendered beside the first, answering "where do I go" for a
+    question the column already answered better. The sidebar is now the only
+    admin navigation (the three API-doc links the grid carried moved into it
+    as `ADMIN_NAV_DOCS`), and this page answers "what needs me?" instead.
+
+    Only the "Needs you" zone — approval queues, all COUNT-shaped — resolves
+    here. "Needs fixing" reads the unbounded audit/history tables and is
+    fetched after first paint from /api/admin/dashboard/signals, so an
+    instance with a large audit log doesn't pay for it on every render. Row
+    inventory: `app/web/admin_signals.py`.
+    """
+    from app.services.admin_dashboard import resolve_journey, resolve_needs_you
+
+    ctx = _build_context(
+        request,
+        user=user,
+        needs_you=resolve_needs_you(),
+        # Setup path + People/Data/Access gap cards — the "where am I, what's
+        # next" layer in front of the two signal zones. Resolved inline: every
+        # count is a cheap repo read (see resolve_journey's docstring).
+        journey=resolve_journey(),
+    )
     return templates.TemplateResponse(request, "admin_hub.html", ctx)
 
 
@@ -6136,11 +6017,23 @@ async def admin_data_packages(
     pkg_repo = data_packages_repo()
     domains_repo = memory_domains_repo()
 
+    # `list_tables` returns only (id, name) — the source type lives on the
+    # registry row, so join it here rather than widening a repository method
+    # (and its _pg sibling) for one caller, exactly as the detail handler
+    # below does. Without the join the source-type tags this page renders were
+    # silently always empty: every `t.get("source_type")` read a key the
+    # junction query never selects.
+    registry_types: dict[str, str] = {}
+    try:
+        registry_types = {t["id"]: (t.get("source_type") or "") for t in table_registry_repo().list_all()}
+    except Exception as e:
+        logger.warning("admin data-packages: could not read the table registry: %s", e)
+
     pkg_meta: dict[str, dict] = {}
     try:
         for pkg in pkg_repo.list():
             tables = pkg_repo.list_tables(pkg["id"])
-            source_types = sorted({(t.get("source_type") or "") for t in tables if t.get("source_type")})
+            source_types = sorted({registry_types.get(t["id"], "") for t in tables} - {""})
             pkg_meta[pkg["id"]] = {
                 "table_count": len(tables),
                 "source_types": source_types,
@@ -6149,17 +6042,17 @@ async def admin_data_packages(
         logger.warning("admin data-packages: could not enumerate data_packages: %s", e)
 
     def _adapt_pkg(e):
-        slug = None
-        try:
-            full = pkg_repo.get(e.id)
-            if full:
-                slug = full.get("slug")
-        except Exception:
-            slug = None
         meta = pkg_meta.get(e.id, {})
         return _data_package_entry_dict(
             e,
-            drilldown_url=f"/catalog/p/{slug}" if slug else f"/catalog#{e.id}",
+            # The package's OWN admin page, not the analyst-facing
+            # /catalog/p/<slug>. This card is the admin's index of packages;
+            # its drilldown used to leave the admin area entirely, so "what is
+            # in Revenue, and who gets it" was answered by a read-only page
+            # written for a different reader. `View as analyst` on the detail
+            # page keeps the catalog view one click away, which is the right
+            # depth for "how does this look to them".
+            drilldown_url=f"/admin/data-packages/{e.id}",
             table_count=meta.get("table_count", 0),
             source_types=meta.get("source_types", []),
             is_admin_view=True,
@@ -6195,13 +6088,497 @@ async def admin_data_packages(
     domain_entries = sorted(domain_entries, key=lambda e: e.name or "")
     domain_cards = [_adapt_domain(e) for e in domain_entries]
 
+    # ── Sharing state, per package — who can use it, at which tier. ──
+    # The grant matrix on a group's detail page stays the canonical editor;
+    # this page adds the OTHER direction ("who can use Revenue?"), which
+    # previously had no answer anywhere in the product. Same rows, same API
+    # (/api/admin/grants) — rendered from the package's side.
+    #
+    # Read-only here. The card states WHO can use each package and stops —
+    # editing sharing from an index card meant a grant could be written from
+    # a surface that shows none of its consequences (how many people that
+    # actually reaches, whether any of them have pulled). The package's own
+    # page owns the edit, next to the delivery read-out that answers for it.
+    pkg_sharing: dict[str, list[dict]] = {}
+    dom_sharing: dict[str, list[dict]] = {}
+    try:
+        for rt, sink in (("data_package", pkg_sharing), ("memory_domain", dom_sharing)):
+            for g in resource_grants_repo().list_all(resource_type=rt):
+                sink.setdefault(g["resource_id"], []).append(
+                    {
+                        "grant_id": g["id"],
+                        "group_id": g["group_id"],
+                        "group_name": g.get("group_name") or g["group_id"],
+                        # 'available' | 'required' in the API; the page words them
+                        # Optional / Automatic — what each one DOES.
+                        "requirement": g.get("requirement") or "available",
+                    }
+                )
+    except Exception as e:
+        logger.warning("admin data-packages: could not enumerate sharing state: %s", e)
+
+    # ── The unpackaged tray — distributable tables no analyst can pull. ──
+    # Same fold as the /admin gap card: blank query_mode reads as local,
+    # `remote` rows are excluded (they answer server-side without a package).
+    unpackaged_tables: list[dict] = []
+    try:
+        packaged_ids: set[str] = set()
+        for ids in pkg_repo.list_member_ids_bulk().values():
+            packaged_ids.update(ids)
+        for t in table_registry_repo().list_all():
+            if (t.get("source_type") or "") == "internal":
+                continue
+            if (t.get("query_mode") or "") not in ("", "local", "materialized"):
+                continue
+            if t["id"] not in packaged_ids:
+                unpackaged_tables.append({"id": t["id"], "name": t.get("name") or t["id"]})
+        unpackaged_tables.sort(key=lambda t: t["name"])
+    except Exception as e:
+        logger.warning("admin data-packages: could not enumerate unpackaged tables: %s", e)
+
     ctx = _build_context(
         request,
         user=user,
         package_cards=package_cards,
         domain_cards=domain_cards,
+        pkg_sharing=pkg_sharing,
+        dom_sharing=dom_sharing,
+        unpackaged_tables=unpackaged_tables,
     )
     return templates.TemplateResponse(request, "admin_data_packages.html", ctx)
+
+
+# ── Plain language for `query_mode`, shared by every Data surface ──────────
+#
+# The label LEADS with what the mode does; the system word rides along as a
+# mono chip so the CLI/API vocabulary (`agnes catalog`, `query_mode=remote`)
+# stays learnable rather than being hidden behind a friendly synonym. One
+# mapping, so the package detail page and the Tables lens can never word the
+# same row differently. A blank `query_mode` reads as local — that is what the
+# schema default and every consumer already assume (see the unpackaged-tray
+# fold at `admin_data_packages` above).
+_QUERY_MODE_WORDS: dict[str, tuple[str, str]] = {
+    "": ("Synced copy", "local"),
+    "local": ("Synced copy", "local"),
+    "remote": ("Live query", "remote"),
+    "materialized": ("Saved query", "materialized"),
+    "server_only": ("Server only", "server_only"),
+}
+
+
+def _mode_words(query_mode: str | None) -> dict[str, str]:
+    """``{'label', 'word'}`` for a table's ``query_mode``.
+
+    An unknown mode is passed through verbatim on both keys rather than
+    guessed at — a new mode should read as itself until someone words it,
+    never as the wrong one.
+    """
+    key = (query_mode or "").strip()
+    label, word = _QUERY_MODE_WORDS.get(key, (key or "—", key or "—"))
+    return {"label": label, "word": word}
+
+
+@router.get("/admin/data-packages/{package_id}", response_class=HTMLResponse)
+async def admin_package_detail(
+    request: Request,
+    package_id: str,
+    user: dict = Depends(require_admin),
+):
+    """ONE package, end to end — what is in it, who can use it, who has it.
+
+    The package is the unit an analyst actually receives, and until this page
+    existed it was the one object in the Data section with no home: its
+    composition was edited inside the package-grouped layout on /admin/tables,
+    its sharing on /admin/data-packages, and the card's own drilldown left the
+    admin area entirely for the analyst-facing /catalog/p/<slug>. Three places,
+    none of them about the package.
+
+    Everything here rides EXISTING repositories and endpoints — the page adds
+    no repo method, so there is no DuckDB↔Postgres parity sibling to write
+    (CLAUDE.md). Composition writes through ``/api/admin/data-packages/{id}
+    /tables``; sharing writes the same ``/api/admin/grants`` rows a group's
+    Access tab does, so the two ends of one relationship can never disagree.
+
+    The delivery read-out is the part the product could not draw anywhere:
+    a grant is a PERMISSION, and the data only lands once `agnes pull` runs.
+    ``users.last_pull_at`` (stamped by app/api/sync.py on every human pull) is
+    what turns "shared with 14 people" into "11 of them actually have it".
+    """
+    from datetime import timedelta, timezone
+
+    from src.repositories import (
+        resource_grants_repo,
+        sync_state_repo,
+        table_registry_repo,
+        user_group_members_repo,
+        user_groups_repo,
+        users_repo,
+    )
+
+    pkg_repo = data_packages_repo()
+    pkg = pkg_repo.get(package_id)
+    if pkg is None:
+        raise HTTPException(status_code=404, detail="data_package_not_found")
+
+    now = datetime.now(timezone.utc)
+
+    def _aware(ts):
+        """Timestamps come back naive from DuckDB and aware from Postgres;
+        comparing the two raises. Normalise to UTC at every read."""
+        if ts is None:
+            return None
+        return ts.replace(tzinfo=timezone.utc) if ts.tzinfo is None else ts
+
+    # ── What is in it ────────────────────────────────────────────────────
+    # `list_tables` returns only (id, name) — the registry row carries the
+    # bucket / mode / source the page needs, so join rather than widening a
+    # repository method (and its _pg sibling) for one caller.
+    member_ids = [t["id"] for t in pkg_repo.list_tables(package_id)]
+    try:
+        registry = {t["id"]: t for t in table_registry_repo().list_all()}
+    except Exception as e:  # noqa: BLE001 — an unreadable registry is an empty list, not a 500
+        logger.warning("package detail: could not read the table registry: %s", e)
+        registry = {}
+    try:
+        states = {s["table_id"]: s for s in sync_state_repo().get_all_states()}
+    except Exception:  # noqa: BLE001
+        states = {}
+
+    tables: list[dict] = []
+    newest_sync = None
+    for tid in member_ids:
+        row = registry.get(tid)
+        if row is None:
+            # Registered in the junction but gone from the registry. Show it
+            # rather than dropping it silently — a member the admin cannot see
+            # is a member they cannot remove.
+            tables.append({"id": tid, "name": tid, "missing": True, "mode": _mode_words(None)})
+            continue
+        st = states.get(tid) or {}
+        last = _aware(st.get("last_sync"))
+        if last is not None and (newest_sync is None or last > newest_sync):
+            newest_sync = last
+        tables.append(
+            {
+                "id": tid,
+                "name": row.get("name") or tid,
+                "bucket": row.get("bucket") or "",
+                "source_type": row.get("source_type") or "",
+                "mode": _mode_words(row.get("query_mode")),
+                "last_sync": last.isoformat() if last else None,
+                "age_minutes": int((now - last).total_seconds() // 60) if last else None,
+                "status": st.get("status") or "",
+                "missing": False,
+            }
+        )
+    tables.sort(key=lambda t: t["name"])
+    source_types = sorted({t["source_type"] for t in tables if t.get("source_type")})
+
+    # Everything this package could still take, for the Add-tables picker.
+    # Server-rendered rather than a second fetch: the registry is already read
+    # above, and a picker that cannot open because one more request failed is
+    # a worse failure than a page that is 30 kB heavier. `internal` rows
+    # (agnes_* bookkeeping tables) are never package material.
+    #
+    # Each row carries what the picker's toolbar filters and sorts ON, because
+    # an instance with three hundred registered tables cannot be worked with a
+    # substring match alone: the source and the mode are what an admin slices
+    # by ("the Keboola tables", "the live-query ones"), `packaged` is the one
+    # that answers "what has nobody bundled yet", and `last_sync` is an ISO
+    # string so it sorts lexicographically without a parse (never-synced
+    # sorts first, which is the order that surfaces the problems).
+    member_set = set(member_ids)
+    packaged_elsewhere: set[str] = set()
+    try:
+        for pid, ids in pkg_repo.list_member_ids_bulk().items():
+            if pid != package_id:
+                packaged_elsewhere.update(ids)
+    except Exception as e:  # noqa: BLE001 — the picker still works without the flag
+        logger.warning("package detail: could not read package membership: %s", e)
+
+    candidate_tables = []
+    for t in sorted(registry.values(), key=lambda r: (r.get("name") or r["id"]).lower()):
+        if t["id"] in member_set or (t.get("source_type") or "") == "internal":
+            continue
+        st = states.get(t["id"]) or {}
+        last = _aware(st.get("last_sync"))
+        candidate_tables.append(
+            {
+                "id": t["id"],
+                "name": t.get("name") or t["id"],
+                "bucket": t.get("bucket") or "",
+                "source_type": t.get("source_type") or "",
+                "mode": _mode_words(t.get("query_mode")),
+                "rows": int(st.get("rows") or 0),
+                "last_sync": last.isoformat() if last else "",
+                "age_minutes": int((now - last).total_seconds() // 60) if last else None,
+                "packaged": t["id"] in packaged_elsewhere,
+            }
+        )
+
+    # The picker's facet vocabularies, each with the count the option covers —
+    # built from the candidates themselves so a filter can never offer a value
+    # that matches nothing.
+    def _facet(key: str) -> list[tuple[str, int]]:
+        counts: dict[str, int] = {}
+        for c in candidate_tables:
+            v = c["mode"]["word"] if key == "mode" else (c.get(key) or "")
+            if v:
+                counts[v] = counts.get(v, 0) + 1
+        return sorted(counts.items())
+
+    candidate_facets = {
+        "source": _facet("source_type"),
+        "mode": _facet("mode"),
+        "bucket": _facet("bucket"),
+    }
+
+    # ── Who can use it ───────────────────────────────────────────────────
+    groups_by_id: dict[str, dict] = {}
+    all_groups: list[dict] = []
+    sharing: list[dict] = []
+    try:
+        members_repo = user_group_members_repo()
+        for grp in user_groups_repo().list_all():
+            is_everyone = bool(grp.get("is_system")) and grp["name"] == "Everyone"
+            entry = {
+                "id": grp["id"],
+                "name": grp["name"],
+                "is_system": bool(grp.get("is_system")),
+                "is_everyone": is_everyone,
+                "member_count": members_repo.count_members(grp["id"]),
+            }
+            groups_by_id[grp["id"]] = entry
+            all_groups.append(entry)
+        for g in resource_grants_repo().list_all(resource_type="data_package"):
+            if g["resource_id"] != package_id:
+                continue
+            grp = groups_by_id.get(g["group_id"], {})
+            sharing.append(
+                {
+                    "grant_id": g["id"],
+                    "group_id": g["group_id"],
+                    "group_name": g.get("group_name") or grp.get("name") or g["group_id"],
+                    # 'available' | 'required' on the wire; Optional | Automatic
+                    # on the page — what each one DOES to a workspace.
+                    "requirement": g.get("requirement") or "available",
+                    "member_count": grp.get("member_count", 0),
+                    "is_everyone": grp.get("is_everyone", False),
+                }
+            )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("package detail: could not read sharing state: %s", e)
+    sharing.sort(key=lambda s: (not s["is_everyone"], s["group_name"]))
+
+    # ── Who actually has it ──────────────────────────────────────────────
+    # Automatic grants are the ones that land WITHOUT the analyst doing
+    # anything, so they are the population whose delivery we can assert.
+    # Optional grants only make the package offerable — counting those as
+    # "reached" would overstate it, which is the exact confusion this panel
+    # exists to end.
+    delivery = {"auto_people": 0, "pulled": 0, "stale": 0, "optional_only": 0, "cutoff_days": 7}
+    try:
+        users_by_id = {u["id"]: u for u in users_repo().list_all() if u.get("active", True)}
+        members_repo = user_group_members_repo()
+
+        def _people(group_ids: set[str]) -> set[str]:
+            """User ids reached by a set of groups. Everyone is auto-membership
+            — its junction rows may not exist — so it resolves to the whole
+            active roster rather than to an empty member list."""
+            reached: set[str] = set()
+            for gid in group_ids:
+                if groups_by_id.get(gid, {}).get("is_everyone"):
+                    reached.update(users_by_id.keys())
+                    continue
+                try:
+                    reached.update(m["id"] for m in members_repo.list_members_for_group(gid))
+                except Exception:  # noqa: BLE001
+                    pass
+            return reached & users_by_id.keys()
+
+        auto = _people({s["group_id"] for s in sharing if s["requirement"] == "required"})
+        optional = _people({s["group_id"] for s in sharing if s["requirement"] != "required"})
+        cutoff = now - timedelta(days=delivery["cutoff_days"])
+        pulled = sum(
+            1 for uid in auto if (_aware(users_by_id[uid].get("last_pull_at")) or now - timedelta(days=3650)) >= cutoff
+        )
+        delivery = {
+            "auto_people": len(auto),
+            "pulled": pulled,
+            "stale": len(auto) - pulled,
+            "optional_only": len(optional - auto),
+            "cutoff_days": 7,
+        }
+    except Exception as e:  # noqa: BLE001
+        logger.warning("package detail: could not compute delivery state: %s", e)
+
+    ctx = _build_context(
+        request,
+        user=user,
+        pkg=pkg,
+        tables=tables,
+        candidate_tables=candidate_tables,
+        candidate_facets=candidate_facets,
+        source_types=source_types,
+        sharing=sharing,
+        all_groups=all_groups,
+        delivery=delivery,
+        newest_sync=newest_sync.isoformat() if newest_sync else None,
+        newest_sync_age_minutes=(int((now - newest_sync).total_seconds() // 60) if newest_sync else None),
+    )
+    return templates.TemplateResponse(request, "admin_package_detail.html", ctx)
+
+
+def _table_delivery() -> dict[str, dict]:
+    """Per table: the package(s) carrying it and how many people that reaches.
+
+    The last two columns of the Tables lens, and the reason the lens is worth
+    having. A table in no package reaches NOBODY — that is the product's
+    central distribution rule, and before this it was stated only as a
+    sentence in a page subtitle while every row stayed silent about whether
+    it obeyed. Here each row carries its own answer.
+
+    Mirrors the ``feeds`` cell of `_source_pipelines` deliberately: same
+    packages → grants → groups → members walk, so a source card and a table
+    row can never disagree about who is reached. ``people = -1`` is the same
+    "Everyone" sentinel, worded by the template.
+
+    Also carries ``last_sync`` (epoch ms), which the lens sorts by. That is
+    here rather than read off the registry response for a real reason:
+    ``/api/admin/registry`` joins sync_state on the table's NAME
+    (app/api/admin.py, "table_id == name by convention") while the orchestrator
+    and `_source_pipelines` key it by table ID — so on instances where those
+    differ the registry's `last_sync` is null for every row, and a sort built
+    on it would silently order nothing. This map uses the ID, like every other
+    consumer.
+
+    Returns ``{table_id: {"packages": [{id, name}], "people": int,
+    "last_sync": int|None}}``; a table absent from the map is in no package
+    and has never synced.
+    """
+    from src.repositories import (
+        resource_grants_repo,
+        user_group_members_repo,
+        user_groups_repo,
+    )
+
+    out: dict[str, dict] = {}
+    try:
+        pkg_repo = data_packages_repo()
+        packages = {p["id"]: p for p in pkg_repo.list()}
+        members_by_pkg = pkg_repo.list_member_ids_bulk()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("table delivery: could not enumerate packages: %s", e)
+        return out
+
+    try:
+        pkg_grants: dict[str, list] = {}
+        for g in resource_grants_repo().list_all(resource_type="data_package"):
+            pkg_grants.setdefault(g["resource_id"], []).append(g)
+        groups = {g["id"]: g for g in user_groups_repo().list_all()}
+        members_repo = user_group_members_repo()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("table delivery: could not enumerate grants: %s", e)
+        pkg_grants, groups, members_repo = {}, {}, None
+
+    everyone_ids = {g["id"] for g in groups.values() if g.get("is_system") and g.get("name") == "Everyone"}
+
+    # People reached BY A PACKAGE, memoised — a table in three packages must
+    # not pay for three identical membership walks, and instances routinely
+    # have far more table→package rows than packages.
+    reach_cache: dict[str, int] = {}
+
+    def _reach(pkg_id: str) -> int:
+        if pkg_id in reach_cache:
+            return reach_cache[pkg_id]
+        group_ids = {g["group_id"] for g in pkg_grants.get(pkg_id, [])}
+        if group_ids & everyone_ids:
+            reach_cache[pkg_id] = -1
+        elif members_repo is None:
+            reach_cache[pkg_id] = 0
+        else:
+            reached: set[str] = set()
+            for gid in group_ids:
+                try:
+                    reached.update(m["id"] for m in members_repo.list_members_for_group(gid))
+                except Exception:  # noqa: BLE001
+                    pass
+            reach_cache[pkg_id] = len(reached)
+        return reach_cache[pkg_id]
+
+    for pkg_id, table_ids in members_by_pkg.items():
+        pkg = packages.get(pkg_id)
+        if pkg is None:
+            continue
+        people = _reach(pkg_id)
+        for tid in table_ids:
+            row = out.setdefault(tid, {"packages": [], "people": 0, "last_sync": None})
+            row["packages"].append({"id": pkg_id, "name": pkg.get("name") or pkg_id})
+            # A table in two packages reaches the UNION, which we cannot take
+            # from two counts. Everyone wins outright; otherwise the larger
+            # count is the honest floor, and it is labelled "at least" when
+            # more than one package carries the row.
+            if row["people"] == -1 or people == -1:
+                row["people"] = -1
+            else:
+                row["people"] = max(row["people"], people)
+
+    # Freshness for EVERY table, packaged or not — a row's sync state is not a
+    # function of whether anyone receives it.
+    try:
+        for s in sync_state_repo().get_all_states():
+            ts = s.get("last_sync")
+            if ts is None:
+                continue
+            row = out.setdefault(s["table_id"], {"packages": [], "people": 0, "last_sync": None})
+            row["last_sync"] = int(ts.timestamp() * 1000)
+    except Exception as e:  # noqa: BLE001 — no freshness is a missing sort key, not a 500
+        logger.warning("table delivery: could not read sync state: %s", e)
+    return out
+
+
+def _source_connection_names() -> dict[str, str]:
+    """``{connection_id: display name}`` for every registered source project.
+
+    The Tables lens hydrates from ``/api/admin/registry``, which carries a
+    row's ``connection_id`` but not the project's NAME — so without this the
+    Source cell could say "keboola" but never *which* Keboola project, and
+    there would be nothing to build a Project filter out of. One map beats
+    widening the registry response for one consumer.
+    """
+    from src.repositories import source_connections_repo
+
+    try:
+        return {c["id"]: (c.get("name") or c["id"]) for c in source_connections_repo().list()}
+    except Exception as e:  # noqa: BLE001 — an unreadable list means no project labels, not a 500
+        logger.warning("tables lens: could not list source connections: %s", e)
+        return {}
+
+
+def _connected_source_types() -> list[str]:
+    """Every source type with at least one registered connection.
+
+    The Tables lens decided "Keboola is not connected" from the legacy
+    ``data_source.type`` scalar alone, which says nothing about the
+    multi-connection registry. An instance whose default type is something else
+    but which has Keboola projects connected was told — on the tab next to the
+    one listing those projects — that Keboola is not connected and its tables
+    cannot sync, sending the admin off to re-enter credentials it already had.
+    Connectedness is a property of the registry, so it is read from there.
+    """
+    from src.repositories import source_connections_repo
+
+    try:
+        return sorted(
+            {
+                (c.get("source_type") or "").strip().lower()
+                for c in source_connections_repo().list()
+                if (c.get("source_type") or "").strip()
+            }
+        )
+    except Exception as e:  # noqa: BLE001 — unreadable means "cannot claim connected", not a 500
+        logger.warning("tables lens: could not list source connection types: %s", e)
+        return []
 
 
 @router.get("/admin/tables", response_class=HTMLResponse)
@@ -6222,6 +6599,21 @@ async def admin_tables(
         user=user,
         registered_tables=tables,
         data_source_type=data_source_type,
+        # The end of each table's chain — which package carries it and how
+        # many people that reaches. The page hydrates its rows client-side
+        # from /api/admin/registry, but reach is a grants × group-membership
+        # join no browser-side endpoint exposes, so it is resolved here and
+        # handed over as one map.
+        table_delivery=_table_delivery(),
+        # {connection_id: name} — turns a row's `connection_id` into the
+        # project it came from ("Keboola Test"), in the Source cell and in the
+        # Project filter. The registry response carries the id but not the
+        # name, and one lookup map is cheaper than widening that endpoint.
+        source_connections=_source_connection_names(),
+        # Which source types actually have a connection — the instance-level
+        # "X is not connected" strip is resolved against this, not against the
+        # legacy single-source scalar above.
+        connected_source_types=_connected_source_types(),
     )
     return templates.TemplateResponse(request, "admin_tables.html", ctx)
 
@@ -6294,19 +6686,328 @@ async def admin_data_sources_page(
     ``AGNES_VAULT_KEY`` is absent (the wizard can't store a secret without
     it).
     """
-    from app.api.keboola_semantic_layer_refresh import get_last_refresh_summary
     from app.secrets_vault import vault_key_configured
 
     ctx = _build_context(request, user=user)
     ctx["vault_key_configured"] = vault_key_configured()
 
-    # Semantic-layer status — one-line summary only; the per-source counts
-    # and "Sync now" control moved to /admin/semantic-layer (#853 + #920
-    # follow-up, #953 status visibility, task 7 slim-down). Always renders —
-    # never-synced-yet / last-sync-ok / last-attempt-failed are all visible
-    # states, not just "something has successfully synced".
-    ctx["semantic_refresh_summary"] = get_last_refresh_summary()
+    # No semantic-layer status here: Semantic is its own tab, and each source
+    # card carries its own semantic step (see `_source_pipelines`), so the
+    # page-wide status strip this context fed was a third copy of the same
+    # fact. Status lives at /admin/semantic-layer.
+    # Per-connection pipeline strip: connected → synced → semantic → feeding
+    # whom, in one glance on each source card. See `_source_pipelines`.
+    inventory = _source_inventory()
+    ctx["source_pipelines"] = inventory["pipelines"]
+    # Connectors that are live on this instance but keep no connection row —
+    # BigQuery, Jira, uploaded files. Rendered as cards in the SAME list, so
+    # "Sources" is every source. See `_source_inventory`.
+    ctx["derived_sources"] = inventory["derived"]
     return templates.TemplateResponse(request, "admin_data_sources.html", ctx)
+
+
+def _gib(n: int) -> str:
+    """A byte cap as the operator wrote it in `instance.yaml` — "5 GiB"."""
+    if not n:
+        return "off"
+    gib = n / (1024**3)
+    return f"{gib:.0f} GiB" if gib >= 1 and abs(gib - round(gib)) < 0.05 else f"{gib:.1f} GiB"
+
+
+# Connectors that produce tables WITHOUT keeping a `source_connections` row:
+# BigQuery is credentialed once at instance level, Jira arrives over webhooks,
+# and `local` is whatever an admin dropped in the extracts directory. They were
+# invisible on this page — the list asked the API for `?source_type=keboola`
+# and the heading said "Keboola projects" — while the Add-data drawer happily
+# offered all four connectors. That is the inconsistency this table closes: a
+# connector that can be ADDED here must be VISIBLE here, so each of these gets
+# a card built from the tables it actually registered, and its card names where
+# its credentials really live instead of pretending they live on the card.
+_DERIVED_SOURCES: dict[str, dict] = {
+    "bigquery": {
+        "name": "BigQuery",
+        "subtitle": "Live queries · service account in instance secrets",
+        "settings_href": "/admin/datasource-credentials",
+        "settings_label": "Instance secrets",
+    },
+    "jira": {
+        "name": "Jira",
+        "subtitle": "Webhook-driven · incremental",
+        "settings_href": "/admin/sync",
+        "settings_label": "Sync status",
+    },
+    "local": {
+        "name": "Uploaded files",
+        "subtitle": "CSV / Parquet in the extracts directory",
+        "settings_href": "/admin/tables",
+        "settings_label": "Tables",
+    },
+}
+
+
+def _source_pipelines() -> dict:
+    """The pipeline strip for every source card, keyed by connection id.
+
+    Thin wrapper over `_source_inventory()` — kept because the strip is the
+    part other callers and the guards name.
+    """
+    return _source_inventory()["pipelines"]
+
+
+def _source_inventory() -> dict:
+    """Every source on this instance: its pipeline strip, and the cards that
+    have no connection row of their own.
+
+    ``{"pipelines": {source_id: cells}, "derived": [row, …]}``.
+
+    **Pipelines.** Four cells per source — tables, sync, semantic layer, who
+    it feeds — computed server-side because each one is a fold over a
+    different table and the client would otherwise need four more round-trips
+    per card. The strip is what makes a source card answer "is this project
+    healthy AND is anyone getting its data", which previously took four pages
+    (Data sources, Tables, Sync, Semantic layer) to assemble by hand.
+
+    Per-connector by construction rather than a fixed four: the semantic cell
+    is Keboola-only (the Metastore is a Keboola API) and the cost cell is
+    BigQuery-only, so each source carries only the keys that are true of it
+    and the template renders the cells present.
+
+    **Derived rows.** A connector with registered tables but no
+    `source_connections` row (see `_DERIVED_SOURCES`) is synthesized into a
+    row of the same shape, with its tables attributed to it, so ONE renderer
+    draws every card and "Sources" means every source. They are marked
+    ``derived: True``; the page offers them the actions that are real for
+    them (add tables, open their tables) and links out for the rest instead
+    of showing controls that would do nothing.
+
+    Every cell degrades independently — a raising repo yields no key rather
+    than a 500 — for the same reason the /admin dashboard isolates its
+    resolvers: this page is where an admin lands when a source is already
+    broken.
+    """
+    from datetime import timezone
+
+    from src.repositories import (
+        data_packages_repo,
+        resource_grants_repo,
+        source_connections_repo,
+        sync_state_repo,
+        table_registry_repo,
+        user_group_members_repo,
+        user_groups_repo,
+    )
+
+    out: dict[str, dict] = {}
+    derived: list[dict] = []
+    try:
+        connections = source_connections_repo().list()
+    except Exception as e:
+        logger.warning("data-sources pipelines: could not list connections: %s", e)
+        return {"pipelines": out, "derived": derived}
+
+    try:
+        tables = table_registry_repo().list_all()
+    except Exception as e:
+        logger.warning("data-sources pipelines: could not list tables: %s", e)
+        tables = []
+
+    # ── tables per connection. `connection_id` is the precise link, but rows
+    # registered before it existed (or through the CLI) carry only
+    # `source_type`. Those are UNATTRIBUTABLE when a type has several
+    # connections, and reporting them as "no tables yet" was the misleading
+    # answer — an instance with eleven registered tables read as empty on
+    # every card. They are counted separately and named as unlinked instead;
+    # with exactly one connection of that type the attribution is safe, so
+    # they simply belong to it.
+    by_conn: dict[str, list] = {}
+    unlinked_by_type: dict[str, list] = {}
+    conns_per_type: dict[str, int] = {}
+    for c in connections:
+        st = c.get("source_type") or ""
+        conns_per_type[st] = conns_per_type.get(st, 0) + 1
+    for t in tables:
+        st = t.get("source_type") or ""
+        if st == "internal":
+            continue
+        if t.get("connection_id"):
+            by_conn.setdefault(t["connection_id"], []).append(t)
+        else:
+            unlinked_by_type.setdefault(st, []).append(t)
+
+    # ── The connectors that keep no connection row. A type with tables and no
+    # connection of its own is not "unlinked" — it is a source whose identity
+    # simply lives elsewhere, so it becomes a card and its tables are ITS
+    # tables. BigQuery earns a card from a configured service account alone,
+    # because an admin who set the credential and registered nothing yet is
+    # exactly the one who needs somewhere to press "Add tables".
+    for stype, meta in _DERIVED_SOURCES.items():
+        if conns_per_type.get(stype):
+            continue  # a real connection of this type owns the card
+        own_tables = unlinked_by_type.pop(stype, [])
+        if not own_tables and not (stype == "bigquery" and _bigquery_credentialed()):
+            continue
+        did = f"derived:{stype}"
+        by_conn[did] = own_tables
+        derived.append({"id": did, "source_type": stype, "derived": True, **meta})
+
+    try:
+        states = {s["table_id"]: s for s in sync_state_repo().get_all_states()}
+    except Exception:
+        states = {}
+    try:
+        pkg_members = data_packages_repo().list_member_ids_bulk()
+        packages = {p["id"]: p for p in data_packages_repo().list()}
+    except Exception:
+        pkg_members, packages = {}, {}
+    try:
+        pkg_grants: dict[str, list] = {}
+        for g in resource_grants_repo().list_all(resource_type="data_package"):
+            pkg_grants.setdefault(g["resource_id"], []).append(g)
+    except Exception:
+        pkg_grants = {}
+    try:
+        groups = {g["id"]: g for g in user_groups_repo().list_all()}
+        members_repo = user_group_members_repo()
+    except Exception:
+        groups, members_repo = {}, None
+
+    # Semantic-layer counts, per `source_ref` (== connection id).
+    sem_metrics: dict[str, int] = {}
+    sem_terms: dict[str, int] = {}
+    try:
+        from src.repositories import glossary_repo, metric_repo
+
+        for m in metric_repo().list():
+            if m.get("source") == "keboola_semantic_layer" and m.get("source_ref"):
+                sem_metrics[m["source_ref"]] = sem_metrics.get(m["source_ref"], 0) + 1
+        for t in glossary_repo().list(limit=100000):
+            if t.get("source") == "keboola_semantic_layer" and t.get("source_ref"):
+                sem_terms[t["source_ref"]] = sem_terms.get(t["source_ref"], 0) + 1
+    except Exception as e:
+        logger.warning("data-sources pipelines: semantic counts unavailable: %s", e)
+
+    def _has_master(conn_id: str) -> bool:
+        try:
+            from app.api.admin_source_connections import master_secret_key
+            from src.repositories import connection_secrets_repo
+
+            return bool(connection_secrets_repo().has(master_secret_key(conn_id)))
+        except Exception:
+            return False
+
+    now = datetime.now(timezone.utc)
+    for conn in [*connections, *derived]:
+        cid = conn["id"]
+        cells: dict[str, dict] = {}
+
+        # ── Tables
+        stype = conn.get("source_type") or ""
+        own = list(by_conn.get(cid, []))
+        unlinked = unlinked_by_type.get(stype, [])
+        basis = "connection"
+        if conns_per_type.get(stype, 0) == 1 and unlinked:
+            # Only one connection of this type — the pre-tracking rows can
+            # only be its own, so attribute rather than report them as
+            # orphans the admin cannot place.
+            own += unlinked
+            basis = "source_type"
+            unlinked = []
+        cells["tables"] = {"count": len(own), "basis": basis, "unlinked": len(unlinked)}
+
+        # ── Sync: the freshest run across this source's tables, and how many
+        # are currently in error. `internal`/remote rows have no sync state,
+        # so a source with none reads "not synced" rather than an error.
+        errors = 0
+        latest = None
+        for t in own:
+            st = states.get(t["id"]) or {}
+            if (st.get("status") or "") not in ("", "ok", "skipped"):
+                errors += 1
+            ts = st.get("last_sync")
+            if ts is not None:
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                if latest is None or ts > latest:
+                    latest = ts
+        cells["sync"] = {
+            "errors": errors,
+            "last_sync": latest.isoformat() if latest else None,
+            "age_minutes": int((now - latest).total_seconds() // 60) if latest else None,
+        }
+
+        # ── Semantic layer (Keboola only — the Metastore is a Keboola API).
+        if stype == "keboola":
+            cells["semantic"] = {
+                "token": _has_master(cid),
+                "metrics": sem_metrics.get(cid, 0),
+                "terms": sem_terms.get(cid, 0),
+            }
+
+        # ── Cost guard (BigQuery only). A remote source never syncs, so the
+        # cell in the sync slot has to be the thing that CAN go wrong with it:
+        # what a query is allowed to scan before the server refuses it. Both
+        # caps are read from live config, so an operator who raised one sees
+        # their number here rather than the documented default.
+        if stype == "bigquery":
+            cells["cost"] = {
+                "scan": _gib(_bq_cap("bq_max_scan_bytes", 5_368_709_120)),
+                "materialize": _gib(_bq_cap("max_bytes_per_materialize", 10_737_418_240)),
+            }
+
+        # ── Feeds: packages holding this source's tables → groups granted →
+        # people reached. The end of the chain the redesign cares about; a
+        # source with tables in no package reads "0 packages", which is the
+        # honest answer to "who is getting this data".
+        own_ids = {t["id"] for t in own}
+        feeding = [pid for pid, tids in pkg_members.items() if own_ids.intersection(tids) and pid in packages]
+        granted_group_ids = {g["group_id"] for pid in feeding for g in pkg_grants.get(pid, [])}
+        everyone_ids = {g["id"] for g in groups.values() if g.get("is_system") and g.get("name") == "Everyone"}
+        people = 0
+        if granted_group_ids & everyone_ids:
+            people = -1  # sentinel: everyone (the template words it)
+        elif members_repo is not None:
+            reached: set[str] = set()
+            for gid in granted_group_ids:
+                try:
+                    reached.update(m["id"] for m in members_repo.list_members_for_group(gid))
+                except Exception:
+                    pass
+            people = len(reached)
+        cells["feeds"] = {
+            "packages": len(feeding),
+            "groups": len(granted_group_ids),
+            "people": people,
+        }
+
+        out[cid] = cells
+    return {"pipelines": out, "derived": derived}
+
+
+def _bq_cap(key: str, default: int) -> int:
+    """A BigQuery cost cap from live config, falling back to the documented
+    default the API seeds it with (`_BQ_OPTIONAL_FIELD_DEFAULTS`)."""
+    try:
+        from app.instance_config import get_value
+
+        raw = get_value("data_source", "bigquery", key, default=default)
+        return int(raw) if raw is not None else default
+    except Exception:
+        return default
+
+
+def _bigquery_credentialed() -> bool:
+    """Whether this instance has a BigQuery service account at all — in the
+    vault or in the environment. Either one is enough for the card to be true."""
+    import os
+
+    if os.getenv("BIGQUERY_SERVICE_ACCOUNT_JSON"):
+        return True
+    try:
+        from src.repositories import system_secrets_repo
+
+        return bool(system_secrets_repo().has("BIGQUERY_SERVICE_ACCOUNT_JSON"))
+    except Exception:
+        return False
 
 
 def _orphan_reason(connection_id: str) -> str:
@@ -6557,6 +7258,18 @@ async def admin_users_page(
     ctx["group_filter_options"] = [{"value": "", "label": "All groups"}] + [
         {"value": g["id"], "label": g["name"]} for g in groups
     ]
+    # Identity provider, for the strip above the table. Google Workspace
+    # produces PEOPLE (sign-in + nightly group sync), not tables — so its
+    # status belongs on the page showing the people it produces, not in Data.
+    # `google_group_count` is what makes the strip checkable rather than
+    # decorative: it is the number of groups Workspace actually owns here, so
+    # "why isn't Maria in Finance yet?" starts with a real number.
+    from app.instance_config import get_allowed_domains
+
+    ctx["idp_domains"] = get_allowed_domains()
+    ctx["google_group_count"] = sum(
+        1 for g in groups if str(g.get("created_by") or "").startswith("system:google-sync")
+    )
     return templates.TemplateResponse(request, "admin_users.html", ctx)
 
 
@@ -6670,62 +7383,105 @@ async def admin_session_detail(
 
 
 @router.get("/admin/groups", response_class=HTMLResponse)
-async def admin_groups_page(
-    request: Request,
-    user: dict = Depends(require_admin),
-):
-    """Group list view — full-width table of user_groups with origin chips,
-    member/grant counts, and edit/delete affordances for non-system rows."""
-    ctx = _build_context(request, user=user)
-    return templates.TemplateResponse(request, "admin_groups.html", ctx)
+async def admin_groups_redirect(request: Request, user: dict = Depends(require_admin)):
+    """The group LIST is the Access workspace's left column.
+
+    This URL was a full-width table of ``user_groups`` — name, description,
+    origin, member and grant counts, created, edit/delete. Every one of
+    those is on ``/admin/access`` now: the counts and the origin ride the
+    selector rows, the description and the created date are the pane's
+    header, and edit/delete are the header's two buttons. What the table
+    could not do is the thing the page is for — change what a group can
+    use — so the section had two tabs that were both a list of groups.
+
+    ``#table:<id>`` (the /admin/tables deep link) is a fragment, so it never
+    reaches the server; the workspace rewrites it to its own ``?resource=``
+    spelling client-side. Kept as a 308 rather than deleted: this URL is
+    linked from a dozen places, is in the admin keyboard shortcuts, and is
+    what an operator's muscle memory types.
+    """
+    return RedirectResponse(url="/admin/access", status_code=308)
 
 
 @router.get("/admin/groups/{group_id}", response_class=HTMLResponse)
-async def admin_group_detail_page(
+async def admin_group_detail_redirect(
     group_id: str,
     request: Request,
     user: dict = Depends(require_admin),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Single-group detail page — header + members table. Resource grants
-    live on /admin/grants (deep-linked from here)."""
-    from app.api.access import _is_google_managed, _mapped_email
+    """A single group is the Access workspace with that group selected.
 
-    g = user_groups_repo().get(group_id)
-    if not g:
+    The detail page carried a header plus Members and Access tabs. Those
+    two tabs are the workspace's two panes, side by side rather than behind
+    a switch, and the header is the pane's header — so this page was the
+    same three editors reached by a second route, over one pair of tables
+    (``user_group_members``, ``resource_grants``). The full roster it owned,
+    including each member's origin, is the pane's "Show all N" disclosure.
+
+    ``?group=`` is the shape the workspace already accepted, so the
+    selection survives the hop. The 404 on an unknown id stays here: it is
+    cheaper and more honest than redirecting to a page that would silently
+    open on a different group.
+    """
+    if not user_groups_repo().get(group_id):
         raise HTTPException(status_code=404, detail="Group not found")
-    # Project the same flags the API derives so the template avoids env
-    # lookups: `is_google_managed` (created_by='system:google-sync' OR
-    # system + env mapping) and `mapped_email` (the Workspace group
-    # funneling members into the Admin/Everyone system row, when set).
-    g_view = dict(g)
-    g_view["is_google_managed"] = _is_google_managed(g)
-    g_view["mapped_email"] = _mapped_email(g)
-    ctx = _build_context(request, user=user, target_group=g_view)
-    return templates.TemplateResponse(request, "admin_group_detail.html", ctx)
+    return RedirectResponse(url=f"/admin/access?group={quote(group_id, safe='')}", status_code=308)
 
 
 @router.get("/admin/access", response_class=HTMLResponse)
-async def admin_access_page(
-    request: Request,
-    user: dict = Depends(require_admin),
-):
-    """Resource access management — master-detail layout with the group list
-    on the left and per-resource-type checkbox tree on the right. Supports
-    ``?group=<id>`` deep-link from the group detail page.
+async def admin_access_page(request: Request, user: dict = Depends(require_admin)):
+    """The Access surface — the third leg of People → Data → Access, and
+    the ONE place a group is edited.
 
-    Underlying entity is `resource_grants`; the UI label "Resource access"
-    matches what admins think about (who has access) rather than the table
-    name (grants)."""
+    This URL has had four lives. It was a standalone grant matrix; it was
+    retired into the group detail page's Access tab (``resource_grants``
+    keys on ``group_id``, so the group's own page looked like where the
+    editor belonged); it came back as a two-pane workspace beside that tab;
+    and it is now the only one of the three left standing.
+
+    The consolidation is the point. A group is one object with two sides —
+    an audience, and a bundle of what that audience can use — and the
+    product had grown FOUR editors over that one object: this page, the
+    group list, the group detail page, and the create drawer's own copies
+    of both panes. Four surfaces, one pair of tables
+    (``user_group_members``, ``resource_grants``), and every one of them
+    free to drift from the others.
+
+    So this page absorbed what the other three uniquely had, rather than
+    dropping it:
+
+      * the list's origin pill and member/grant counts → the selector rows;
+        its description, created date, rename and delete → the pane header
+      * the detail page's full roster, with each member's origin and the
+        rule that only admin-added membership can be removed here → the
+        audience block's "Show all N"; its resource filter and its
+        ``#table:`` deep link → the pane's filter and ``?resource=``
+      * the drawer keeps the one job nothing else does (naming a group)
+        and lost its duplicate people/access steps
+
+    What stays elsewhere is only the TRANSPOSE — a resource's Share panel
+    (which groups get this package) and a person's memberships on their own
+    page. Those answer different questions; they are not second copies of
+    this one.
+
+    ``?group=<id>`` selects that group — the shape ``/admin/groups/{id}``
+    now redirects to. ``?resource=<type>:<id>`` pre-filters the grant tree,
+    which is how /admin/tables' "Manage access" arrives.
+    """
     ctx = _build_context(request, user=user)
     return templates.TemplateResponse(request, "admin_access.html", ctx)
 
 
 @router.get("/admin/grants", response_class=HTMLResponse)
-async def admin_grants_redirect(request: Request):
-    """Backward-compat redirect for the page's previous URL."""
-    qs = request.url.query
-    target = "/admin/access" + (f"?{qs}" if qs else "")
+async def admin_grants_redirect(request: Request, user: dict = Depends(require_admin)):
+    """Backward-compat redirect for the page's oldest URL.
+
+    Carries ``?group=`` through, which the Access page reads to preselect a
+    group. Keeps the admin gate the destination has, so a non-admin gets 403
+    here rather than a 308 naming an internal URL.
+    """
+    gid = request.query_params.get("group", "").strip()
+    target = f"/admin/access?group={quote(gid, safe='')}" if gid else "/admin/access"
     return RedirectResponse(url=target, status_code=308)
 
 
@@ -7425,11 +8181,7 @@ async def profile_page(
         google_group_prefix=os.environ.get("AGNES_GOOGLE_GROUP_PREFIX", "").strip(),
         csrf_token=csrf_token,
     )
-    # Rail keeps the redesigned page; topnav renders the frozen pre-redesign
-    # copy (spec 2026-08-07 wave 2). Current ctx is a superset of what the
-    # legacy template reads (telegram/desktop status are redesign-only).
-    _profile_tmpl = "profile.html" if get_ui_layout() == "rail" else "profile_legacy.html"
-    response = templates.TemplateResponse(request, _profile_tmpl, ctx)
+    response = templates.TemplateResponse(request, "profile.html", ctx)
     _set_web_csrf_cookie(response, request, csrf_token)
     return response
 
@@ -7757,7 +8509,7 @@ async def chat_page(
     """Web chat UI — streams Claude Code sessions over WebSocket.
 
     Goes through ``_build_context`` so the page inherits the standard
-    Agnes chrome from ``base_ds.html``: ``_app_header.html`` (nav),
+    Agnes chrome from ``base_ds.html``: ``_app_rail.html`` (nav),
     ``static_url(...)``-resolved CSS, ``config.INSTANCE_NAME``,
     ``session.user.is_admin`` for the admin dropdown, footer copyright.
     Without this, the head's four ``<link rel="stylesheet" href="">``
@@ -7903,11 +8655,12 @@ def _stack_knowledge_source_count(user: dict) -> int:
 
 def _stack_capability_count(conn: duckdb.DuckDBPyConnection, user: dict) -> int:
     """Count of capabilities actually IN the caller's Stack — the same
-    roster ``GET /api/marketplace/items?tab=my`` serves to /stack's Plugins
-    tab: curated plugins the caller subscribed to (or is required into via
-    a group grant), intersected with what RBAC actually resolves for them,
-    plus their Store installs. NOT ``resolve_allowed_plugins`` alone —
-    that is everything the caller *could* add, not what's in the Stack.
+    roster ``GET /api/marketplace/items?tab=my`` serves to the Library's
+    Plugins section: curated plugins the caller subscribed to (or is
+    required into via a group grant), intersected with what RBAC actually
+    resolves for them, plus their Store installs. NOT
+    ``resolve_allowed_plugins`` alone — that is everything the caller
+    *could* add, not what's in the Stack.
     """
     from src.marketplace_filter import required_plugin_keys, resolve_allowed_plugins
     from src.repositories import user_curated_subscriptions_repo, user_store_installs_repo
@@ -7927,8 +8680,8 @@ async def ask_landing(user: dict = Depends(get_current_user)):
     """Retired surface (#896). ``/ask`` was a visual-only landing hero whose
     composer just forwarded to ``/chat`` — a cosmetic doorstep in front of the
     real chat, and a dead-end for users without a chat grant. The rail IA now
-    lands users on the working chat (``/chat``) or ``/stack``, so ``/ask`` has
-    no job. Kept as a 302 to ``/`` (not deleted) so any bookmarked/linked
+    lands users on the working chat (``/chat``) or the Library, so ``/ask``
+    has no job. Kept as a 302 to ``/`` (not deleted) so any bookmarked/linked
     ``/ask`` resolves through the canonical home route instead of 404ing.
     Its context-line idea lives on in ``/chat``'s empty state, now counting
     the caller's actual Stack (``_stack_knowledge_source_count`` /

@@ -1,0 +1,49 @@
+name: macOS desktop
+
+on:
+  push:
+    branches: [main, "feature/**"]
+    paths:
+      - "clients/macos/**"
+      - ".github/workflows/macos-desktop.yml"
+      - "cli/commands/chat.py"
+      - "cli/client.py"
+      - "cli/commands/marketplace.py"
+      - "cli/commands/my_stack.py"
+      - "app/api/agent_sessions.py"
+      - "app/api/agent_sse.py"
+      - "app/api/marketplace.py"
+      - "app/api/my_stack.py"
+  pull_request:
+    branches: [main]
+    paths:
+      - "clients/macos/**"
+      - ".github/workflows/macos-desktop.yml"
+      - "cli/commands/chat.py"
+      - "cli/client.py"
+      - "cli/commands/marketplace.py"
+      - "cli/commands/my_stack.py"
+      - "app/api/agent_sessions.py"
+      - "app/api/agent_sse.py"
+      - "app/api/marketplace.py"
+      - "app/api/my_stack.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-build:
+    name: Swift test and app build
+    runs-on: macos-15
+    defaults:
+      run:
+        working-directory: clients/macos
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Run Swift tests
+        run: swift test
+
+      - name: Build local app bundle
+        run: scripts/build-app.sh

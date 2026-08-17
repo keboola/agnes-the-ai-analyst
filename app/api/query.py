@@ -1,11 +1,13 @@
 """Query endpoint — execute SQL against server DuckDB."""
 
 import contextlib
+import functools
+import json
 import logging
 import os
 import re
+import threading
 import time
-from typing import Optional
 
 import duckdb
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -22,7 +24,12 @@ from app.auth.access import is_user_admin
 from app.auth.dependencies import _get_db, get_current_user
 from app.auth.session_principal import PRINCIPAL_TYPES
 from app.instance_config import get_value
-from connectors.bigquery.access import BqAccessError, get_bq_access, run_bq_query_to_arrow
+from connectors.bigquery.access import (
+    BqAccessError,
+    bq_query_parameters_from_policy_params,
+    get_bq_access,
+    run_bq_query_to_arrow,
+)
 from connectors.bigquery.labels import job_labels_for
 from connectors.internal.access import (
     InternalAccessError,
@@ -30,8 +37,17 @@ from connectors.internal.access import (
     find_internal_refs,
     is_internal_table,
 )
+from src.access_policy import (
+    PolicyError,
+    PolicyIdentityUnresolvable,
+    PolicyNameCollision,
+    assert_policied_reads_unique,
+    policied_relation,
+    rewrite_sql,
+    row_scope_payload,
+)
 from src.audit_helpers import client_kind_from_user
-from src.db import get_analytics_db_readonly
+from src.db import _open_duckdb, get_analytics_db_readonly
 from src.rbac import get_accessible_tables
 from src.remote_query import _strip_leading_sql_comments
 from src.repositories import (
@@ -166,7 +182,7 @@ def _looks_like_bq_rewrite_parse_error(exc: BaseException) -> bool:
 _SQL_LOG_PREVIEW_CHARS = 200
 
 
-def _bq_error_offset(message: str, sql: str) -> Optional[int]:
+def _bq_error_offset(message: str, sql: str) -> int | None:
     """Absolute offset into ``sql`` for a BigQuery ``at [line:col]`` suffix.
 
     BigQuery reports where it stopped parsing, and for the ROLLUP rejection this
@@ -202,7 +218,7 @@ def _bq_error_offset(message: str, sql: str) -> Optional[int]:
     return offset if offset <= len(raw) else None
 
 
-def _sql_log_preview(sql: str, *, around: Optional[int] = None) -> str:
+def _sql_log_preview(sql: str, *, around: int | None = None) -> str:
     """Truncate SQL for logging. Query literals can carry sensitive values,
     so the log must never become the one place a full query body lands
     unbounded.
@@ -355,9 +371,19 @@ def _local_extract_catalogs(conn) -> set[str]:
         default = conn.execute("SELECT current_database()").fetchone()[0]
         rows = conn.execute("SELECT database_name, type FROM duckdb_databases()").fetchall()
     except Exception:
-        # If catalog enumeration fails we can't run the #868 catalog gate, but
-        # the view-name + internal-table denylists below still apply. Don't 500
-        # the request over it.
+        # If catalog enumeration fails we can't run the #868 catalog gate, so
+        # the request rides on the view-name + internal-table denylists below.
+        # Don't 500 over it.
+        #
+        # Those denylists are a weaker backstop than this comment used to
+        # imply, and weaker again since the guards started matching parsed
+        # table references: a qualified path whose last segment is itself
+        # quoted and dotted (`src.main."bucket.orders"`) yields the whole
+        # `bucket.orders` as the table name, so a denied view called `orders`
+        # no longer matches it. The old text scan caught that by coincidence —
+        # it matched the substring anywhere — not by design. Reaching a source
+        # catalog by qualified path is this gate's job; when it cannot run,
+        # accept that it is not covered rather than assume layer (b) stands in.
         logger.warning("RBAC catalog gate: could not enumerate attached catalogs", exc_info=True)
         return set()
     reserved = {default, "system", "temp", "memory"}
@@ -409,14 +435,294 @@ def _identity_for_audit(user) -> tuple:
     return user.get("id"), user.get("email")
 
 
+# Parse-only DuckDB connection (see _parse_connection).
+_PARSE_CONN: "duckdb.DuckDBPyConnection | None" = None
+_PARSE_CONN_LOCK = threading.Lock()
+
+
+def _parse_connection():
+    """Lazily-created in-memory DuckDB used ONLY to parse user SQL.
+
+    Deliberately not the analytics or system connection: parsing needs no
+    catalog (an unknown table serializes fine), so a connection with nothing
+    attached — no data, no secrets, no locks to contend for — is the smallest
+    thing that can answer the question. Callers take a ``cursor()`` per call,
+    which is what makes this safe from the request threads (~4 us; the parse
+    itself is ~70 us).
+    """
+    global _PARSE_CONN
+    with _PARSE_CONN_LOCK:
+        if _PARSE_CONN is None:
+            # Through the shared helper rather than a bare duckdb.connect:
+            # every connection in the codebase pins its session to UTC that
+            # way (guarded by tests/test_duckdb_session_tz.py).
+            _PARSE_CONN = _open_duckdb(":memory:")
+    return _PARSE_CONN
+
+
+_ORACLE_HEALTHY: bool | None = None
+_ORACLE_PROBE_LOCK = threading.Lock()
+
+# The "no answer" branch of the self-check deliberately re-probes rather than
+# latching, so a permanent failure (a parse connection that can never open, a
+# build without `json_serialize_sql`) would otherwise emit one warning per
+# request, forever, and drown the log it is trying to appear in. Throttled to
+# one line a minute: the first occurrence is always logged, and a condition
+# this sticky needs saying once, not once per query. Callers are unaffected —
+# every request still re-probes and still falls back safely.
+_ORACLE_PROBE_WARN_INTERVAL_S = 60.0
+_oracle_probe_warned_at: float | None = None
+
+
+def _warn_probe_failure(message: str, **kwargs) -> None:
+    """Emit a probe-failure warning at most once per interval.
+
+    Callers hold ``_ORACLE_PROBE_LOCK``, so the timestamp needs no lock of
+    its own.
+    """
+    global _oracle_probe_warned_at
+    now = time.monotonic()
+    if _oracle_probe_warned_at is not None and now - _oracle_probe_warned_at < _ORACLE_PROBE_WARN_INTERVAL_S:
+        return
+    _oracle_probe_warned_at = now
+    logger.warning(message, **kwargs)
+
+
+# Above this many characters the SQL goes to the text scan instead of the
+# parser. Measured expansion for a wide statement: 16k chars -> 1.3 MB of
+# serialized JSON -> 6 MB of Python objects, growing linearly (64k chars ->
+# 24 MB). `sql` has no length limit and the handler runs on the shared anyio
+# threadpool, so the ceiling is per-request memory times whatever is in
+# flight. 16k leaves ~10x headroom over the largest statement seen here
+# (1.6 KB) while bounding one request to single-digit MB.
+#
+# Characters, not bytes — non-ASCII SQL can be up to 4x this in UTF-8, still
+# bounded. And falling back is conservative in PRECISION, not in cost: over a
+# statement this size the text scan burns more CPU than the parse it replaces
+# (~87 ms against 200 view names). Bounding `sql` at the request model and
+# rejecting outright would beat both, but that is a user-visible API change,
+# so it is filed rather than smuggled in here.
+_MAX_ORACLE_SQL_CHARS = 16 * 1024
+
+
+def _oracle_answers_as_expected() -> bool:
+    """One-time probe that the installed DuckDB still answers the way the
+    guards read its output.
+
+    The tripwire test covers a changed *error* shape, but the dangerous
+    direction is a changed *success* shape: rename ``BASE_TABLE`` or
+    ``table_name`` and every statement suddenly references nothing, which
+    reads as "denies nothing" — a silent, total bypass. CI cannot be the only
+    net here, because ``duckdb`` is pinned open-ended (``>=1.5.2``) and a
+    built image can resolve a newer wheel than the one the suite ran against.
+
+    So the parse path asks this first, and a wrong answer turns the oracle off
+    for good: callers get ``None`` and fall back to the conservative text scan.
+
+    A *wrong answer* latches; *no answer* does not. A wrong answer is
+    deterministic — this engine will keep answering wrongly, so re-probing
+    every request would buy nothing. No answer may be a transient (an
+    interrupted call, memory pressure, a parse connection that failed to
+    open), and latching on one would degrade the process until restart with
+    no way back.
+
+    "No answer" is ``None``, not an exception: the helper below catches
+    everything and returns ``None``, so in production no exception reaches
+    here at all. Checking only for a raised exception — as an earlier revision
+    did — therefore latched on every real transient. The ``except`` remains
+    for a caller-supplied helper that does raise, but ``None`` is the branch
+    that fires. Neither retry is rate-limited: a permanently broken engine
+    costs one failed parse (~90 us) per request, which is a better trade than
+    one blip disabling the precise matcher for the process lifetime. Its other
+    per-request cost — a warning line each time — is throttled by
+    ``_warn_probe_failure``, so a permanent failure says so once a minute
+    rather than once a query.
+    """
+    global _ORACLE_HEALTHY
+    # Its own lock, NOT _PARSE_CONN_LOCK: the probe opens the parse connection,
+    # which takes that one, and a plain Lock is not reentrant.
+    with _ORACLE_PROBE_LOCK:
+        if _ORACLE_HEALTHY is None:
+            try:
+                probe = _sql_referenced_names_unguarded("SELECT 1 FROM __agnes_oracle_probe__")
+            except Exception:
+                _warn_probe_failure(
+                    "DuckDB parse oracle self-check raised; retrying on the next query. "
+                    "SQL name guards fall back to text scanning until it succeeds.",
+                    exc_info=True,
+                )
+                return False
+            if probe is None:
+                _warn_probe_failure(
+                    "DuckDB parse oracle self-check returned no answer; retrying on the next "
+                    "query. SQL name guards fall back to text scanning until it succeeds."
+                )
+                return False
+            _ORACLE_HEALTHY = probe == {"__agnes_oracle_probe__"}
+            if not _ORACLE_HEALTHY:
+                logger.error(
+                    "DuckDB parse oracle answered its self-check wrongly (got %r) — SQL name "
+                    "guards fall back to text scanning for the life of this process.",
+                    probe,
+                )
+        return _ORACLE_HEALTHY
+
+
+def _sql_referenced_names(sql: str) -> set[str] | None:
+    """Lowercased names of every table ``sql`` references, according to DuckDB.
+
+    Returns ``None`` — meaning "no answer, use the conservative text scan" —
+    in three cases: the statement is longer than ``_MAX_ORACLE_SQL_CHARS``,
+    the engine failed its self-check (see ``_oracle_answers_as_expected``), or
+    DuckDB would not serialize the SQL (a ``PIVOT`` subquery, a backtick-quoted
+    BQ path, anything malformed, or a non-SELECT statement anywhere in it).
+
+    Otherwise every name reported is a real reference, and every reference
+    DuckDB will resolve at bind time is reported — with two exceptions that
+    ``_assert_select_only`` blocks upstream, so no caller can meet them: SQL
+    smuggled through a string-taking table function (``query('…')``), and
+    ``EXECUTE`` of a prepared statement. A table macro hides its body from
+    this too, but equally from the text scan — neither can see a name the SQL
+    does not contain.
+    """
+    if len(sql) > _MAX_ORACLE_SQL_CHARS or not _oracle_answers_as_expected():
+        return None
+    try:
+        return _sql_referenced_names_unguarded(sql)
+    except Exception:
+        # The walk can raise on a serialized shape the probe's SELECT never
+        # exercises (a future DuckDB handing back a non-string table_name,
+        # say). An access question must degrade to the text scan, not surface
+        # as a request error. The probe keeps calling the unguarded form, so
+        # a breakage still gets diagnosed there.
+        _warn_probe_failure(
+            "DuckDB parse oracle raised while walking a query's parse tree; "
+            "falling back to the text scan for this query.",
+            exc_info=True,
+        )
+        return None
+
+
+def _sql_referenced_names_unguarded(sql: str) -> set[str] | None:
+    """The parse and walk itself, with none of the guards above it.
+
+    Call ``_sql_referenced_names`` instead — this exists unguarded only
+    because the self-check has to exercise the real parse path to be worth
+    anything, and it cannot do that through a function that asks it first.
+
+    ``json_serialize_sql`` hands back DuckDB's own parse tree, in which every
+    table reference is a ``BASE_TABLE`` node. Using the engine that will run
+    the query as the oracle is the point: a third-party SQL parser can
+    disagree with DuckDB about what a construct means, and when it does, the
+    disagreement is a security hole. sqlglot, for instance, reads DuckDB's
+    ``(TABLE v)`` shorthand as a column named ``table`` and lexes ``values``
+    as a keyword, so ``SELECT * FROM (TABLE values) t`` reads a view while
+    naming nothing. DuckDB cannot disagree with itself, and a DuckDB upgrade
+    moves both together.
+
+    It parses; it does not bind or execute. An unknown table serializes
+    happily, a non-SELECT statement is refused, and a serialized INSERT
+    inserts nothing. The SQL is passed as a bound parameter — never
+    interpolated. All statements of a multi-statement string are covered.
+    """
+    try:
+        cursor = _parse_connection().cursor()
+        try:
+            row = cursor.execute("SELECT json_serialize_sql(?)", [sql]).fetchone()
+        finally:
+            cursor.close()
+        document = json.loads(row[0]) if row and row[0] else None
+    except Exception:
+        return None
+    if not isinstance(document, dict) or document.get("error"):
+        return None
+    names: set[str] = set()
+    # Iterative walk: a deeply nested statement parses fine but would blow
+    # Python's recursion limit, and that must not decide an access question.
+    stack = [document]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            if node.get("type") == "BASE_TABLE":
+                # The bare name only: every caller compares an unqualified
+                # identifier (an information_schema view name, or a registry
+                # id, which `[a-z_][a-z0-9_]*` validation keeps dot-free), and
+                # a qualified `main.orders` still yields `orders` here. Refs
+                # into un-granted catalogs are layer (a)'s job, not this one's.
+                table = (node.get("table_name") or "").lower()
+                if table:
+                    names.add(table)
+            stack.extend(node.values())
+        elif isinstance(node, list):
+            stack.extend(node)
+    return names
+
+
+def _sql_reference_test(sql_lower: str):
+    """Return ``predicate(name) -> bool``: does the SQL reference that table?
+
+    Takes an already-lowercased statement — both guards hold one, and the
+    parameter says so, because what gets handed to the parser matters (a
+    case-folded copy folds quoted identifiers too, which is safe only because
+    DuckDB resolves names case-insensitively and this module lowercases every
+    name it extracts).
+
+    Parses once and answers every name from that result, falling back to the
+    conservative text scan when the oracle declines. Both guards go through
+    here so the "oracle, else text scan" decision cannot drift apart.
+    """
+    referenced = _sql_referenced_names(sql_lower)
+    if referenced is not None:
+        return referenced.__contains__
+    masked = _mask_backticks(sql_lower)
+    return lambda name: _sql_text_references_name(masked, name)
+
+
+@functools.lru_cache(maxsize=8192)
+def _name_reference_re(name: str) -> "re.Pattern":
+    """Compiled fallback pattern for one table/view name.
+
+    Memoized because this path is a fallback but NOT a rare one: a
+    backtick-quoted BigQuery path is first-class input that DuckDB's parser
+    rejects, so every non-admin query of that shape reaches the denylist and
+    asks for one pattern per non-granted view. `re`'s own cache holds 512 and
+    evicts FIFO, so past that many views — in the stable order this loop uses
+    — every pattern recompiles on every request: measured 17.5 ms at 1000
+    views against 0.5 ms here.
+
+    Keys are catalog names, bounded by the instance's view + registry count,
+    never free-form user input; the cap is a backstop.
+    """
+    return re.compile(rf"\b{re.escape(name)}\b(?!\s+by\b)")
+
+
+def _sql_text_references_name(sql_masked_lower: str, name: str) -> bool:
+    """Conservative word-boundary fallback for when DuckDB won't parse the SQL.
+
+    Over-matches by design — a column or alias spelled like a denied view
+    trips it — because on this path nothing is known about the statement's
+    structure and a missed reference in a deny check leaks data. Runs on a
+    backtick-masked copy (issue #201).
+
+    The one position it skips is a name immediately followed by ``BY``: the
+    keyword half of a two-word clause (ORDER BY, GROUP BY, PARTITION BY — the
+    only ones DuckDB has), which no reference can occupy because DuckDB
+    rejects a bare ``by`` as a table alias. Without it, an ungranted view
+    named ``order`` would deny every sorted query reaching this path.
+    """
+    return _name_reference_re(name).search(sql_masked_lower) is not None
+
+
 def _enforce_non_admin_sql_rbac(analytics, sql_lower: str, allowed) -> None:
     """Non-admin SQL RBAC deny checks shared by ``/api/query`` (``execute_query``)
     and the snapshot ``run_remote_select_to_arrow`` path — previously duplicated
     verbatim in both.
 
     ``allowed`` is ``get_accessible_tables(user, conn)``; ``None`` means admin →
-    no checks. Three layers, all word-boundary matched on a backtick-masked copy
-    (``_mask_backticks``, issue #201):
+    no checks. Layers (b) and (c) match against the tables DuckDB says the SQL
+    references (``_sql_referenced_names``), falling back to a word-boundary
+    scan of a backtick-masked copy (``_mask_backticks``, issue #201) when
+    DuckDB will not parse it. Three layers:
 
       (a) #868 — block catalog-qualified refs into un-granted local extract
           catalogs (``<source>.main.x``);
@@ -434,6 +740,7 @@ def _enforce_non_admin_sql_rbac(analytics, sql_lower: str, allowed) -> None:
     from src.rbac import table_not_in_stack_message
 
     sql_lower_masked = _mask_backticks(sql_lower)
+    references = _sql_reference_test(sql_lower)
 
     # (a) #868 catalog gate
     _assert_no_ungranted_catalog_ref(sql_lower_masked, analytics)
@@ -452,13 +759,13 @@ def _enforce_non_admin_sql_rbac(analytics, sql_lower: str, allowed) -> None:
     registry_rows = table_registry_repo().list_all()
     allowed_view_names = {r["name"] for r in registry_rows if r.get("name") and r.get("id") in allowed_ids}
     for table in all_views - allowed_view_names:
-        if re.search(r"\b" + re.escape(table.lower()) + r"\b", sql_lower_masked):
+        if references(table.lower()):
             raise HTTPException(status_code=403, detail=table_not_in_stack_message(table))
 
     # (c) internal extract metadata tables (audit M1) — see
     # _assert_no_ungranted_catalog_ref for why base tables slip the view denylist.
     for internal in _INTERNAL_EXTRACT_TABLES:
-        if re.search(r"\b" + re.escape(internal) + r"\b", sql_lower_masked):
+        if references(internal):
             raise HTTPException(
                 status_code=403,
                 detail="query references an internal extract metadata table (_meta/_remote_attach/_remote_links)",
@@ -511,7 +818,15 @@ class QueryResponse(BaseModel):
     truncated: bool = False
     # BigQuery dry-run scan estimate (bytes) for `query_mode='remote'`
     # queries; ``None`` for local DuckDB queries (no BQ tables involved).
-    bytes_scanned: Optional[int] = None
+    bytes_scanned: int | None = None
+    # Task 11 (§10): disclosure envelope when this result read through one
+    # or more access-policied tables -- ``{"policied_tables": [id, ...],
+    # "note": str}``, built by ``row_scope_payload``. ``None`` when no table
+    # this query touched carries a policy, or the caller is the admin
+    # bypass (§12) -- either way the result is the raw table, so there is
+    # nothing to disclose. "Silent partial scope is forbidden"
+    # (command-ux.md) applies to row filtering as much as to source scope.
+    row_scope: dict | None = None
 
 
 def _run_internal_query(
@@ -700,7 +1015,7 @@ def _next_nonspace(s: str, idx: int) -> str:
     return s[idx] if idx < n else ""
 
 
-def _normalize_table_path(raw: str) -> Optional[str]:
+def _normalize_table_path(raw: str) -> str | None:
     """Reduce a matched identifier path to the table id used for tagging.
 
     Quotes are stripped per segment and the segments are re-joined with dots,
@@ -731,7 +1046,7 @@ def _normalize_table_path(raw: str) -> Optional[str]:
     return ".".join(parts)
 
 
-def _first_table_from_sql(sql: str) -> Optional[str]:
+def _first_table_from_sql(sql: str) -> str | None:
     """Extract the first table reference after FROM or JOIN, for audit tagging.
 
     Regex-based and still best-effort, but the result is the group-by key of
@@ -1085,14 +1400,18 @@ def execute_query(
                 status_code=400,
                 detail="Internal tables can't be combined with `bq.*` paths in a single SELECT (v1 limitation).",
             )
-        # Reject if user SQL also mentions any non-internal registry id —
-        # that would be a mixed query against analytics.duckdb views.
+        # Reject if user SQL also references any non-internal registry id —
+        # that would be a mixed query against analytics.duckdb views. Matched
+        # against the tables DuckDB says are referenced, so a registered table
+        # named for a SQL keyword (`order`) no longer collides with every
+        # ORDER BY; text-scan fallback when DuckDB won't parse the SQL.
+        references = _sql_reference_test(sql_lower)
         registry_rows = table_registry_repo().list_all()
         for r in registry_rows:
             rid = r.get("id") or ""
             if not rid or is_internal_table(rid):
                 continue
-            if re.search(rf"\b{re.escape(rid)}\b", sql_lower):
+            if references(rid.lower()):
                 raise HTTPException(
                     status_code=400,
                     detail=f"Internal tables can't be joined with registered "
@@ -1112,6 +1431,33 @@ def execute_query(
         # internal-extract-table denylist (M1). Shared with the snapshot path
         # via _enforce_non_admin_sql_rbac; no-op for admins (allowed is None).
         _enforce_non_admin_sql_rbac(analytics, sql_lower, allowed)
+
+        # Table access policies (§5/§6): substitute every policied table
+        # reference in the caller's SQL with its resolved, caller-scoped
+        # relation. No special-casing for admins here — policied_relation
+        # already returns the passthrough (unfiltered) relation for a
+        # full-surface admin, so this call is a no-op for them too. Inert
+        # (byte-identical SQL, empty params) unless a table this query
+        # touches actually carries a policy.
+        try:
+            policy_rewritten_sql, policy_params, policied_table_ids = rewrite_sql(request.sql, user)
+        except PolicyNameCollision as exc:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "reason": "policy_name_collision",
+                    "table": exc.table_id,
+                    "fix": "rename your CTE",
+                },
+            )
+        except PolicyIdentityUnresolvable:
+            raise HTTPException(status_code=403, detail={"reason": "policy_identity_unresolvable"})
+        except PolicyError as exc:
+            # Never fall back to the unfiltered table (§17). The raw
+            # engine/parse detail is deliberately not surfaced (§16) — a
+            # failing policy's error can quote literal values from the
+            # policy body.
+            raise HTTPException(status_code=500, detail={"reason": "policy_error", "table": exc.table_id})
 
         # ---- #160 BQ remote-row guardrail + RBAC patch -------------------
         dry_run_set, name_lookups, blocked_bq_path = _bq_guardrail_inputs(
@@ -1164,57 +1510,144 @@ def execute_query(
             # large to return" on >100M-row sources). Helper returns the
             # original SQL unchanged when rewriting would be unsafe
             # (cross-source JOIN, no BQ tables referenced, double-wrap).
+            #
+            # This plans the push-down against ``request.sql`` — the
+            # caller's ORIGINAL, unfiltered SQL. Fine for a query that
+            # touches no policied table (the common case). When
+            # ``policied_table_ids`` is non-empty, the resulting
+            # ``execution_sql`` below is NEVER used to execute anything —
+            # see the branch immediately below, which routes those
+            # queries around this push-down entirely (§7.1: a
+            # dollar-quoted ``bigquery_query()`` payload has no bind
+            # mechanism, so ``$user_groups`` would either blow up with a
+            # DuckDB parameter-count mismatch, or — when the policy needs
+            # no bind value at all — nothing would raise and the
+            # unfiltered result would silently ship with a 200).
+            # ``did_rewrite`` is still meaningful on its own: it is True
+            # only when EVERY table this query touches is
+            # ``query_mode='remote'`` (``_bq_remote_execution_plan``'s own
+            # cross-source bail, Skip 3) — exactly the condition under
+            # which the policied branch below can run the whole query
+            # directly against BigQuery.
             execution_sql, did_rewrite = _rewrite_user_sql_for_bigquery_query(
                 request.sql,
                 conn,
             )
-            if did_rewrite:
-                # Memory-safety: ``bigquery_query()`` materialises the entire
-                # BQ result into DuckDB before fetchmany sees it (vs the
-                # ATTACH-catalog Storage Read API path, which streams rows
-                # lazily). Wrap the rewritten SQL in an outer ``LIMIT N+1``
-                # so a `SELECT *` against a billion-row remote table doesn't
-                # buffer the full table into the worker process — the cap
-                # is pushed into the BQ job itself. Aliased subquery so the
-                # outer LIMIT applies to the final rewritten result.
-                execution_sql = f"SELECT * FROM ({execution_sql}) AS _bqq_outer LIMIT {request.limit + 1}"
-                logger.info(
-                    "query_rewrite_to_bigquery_query: user_id=%s — wrapped "
-                    "SQL in bigquery_query() with outer LIMIT for BQ "
-                    "predicate pushdown",
-                    user_id,
-                )
-            else:
-                logger.debug(
-                    "query_rewrite_skipped: user_id=%s — running original SQL via ATTACH-catalog path",
-                    user_id,
-                )
 
-            # Open in read-only mode for extra safety. If the rewritten
-            # path errors (e.g. user SQL contained DuckDB-only syntax —
-            # ``::INT`` casts, ``STRPTIME``, COALESCE arity differences —
-            # that survives identifier rewrite but BQ refuses), fall back
-            # to the original SQL via the legacy ATTACH-catalog path so
-            # the request still succeeds (slower, but correct). Same
-            # safety contract as the dry-run fallback in
-            # ``_bq_quota_and_cap_guard``.
-            try:
-                result = analytics.execute(execution_sql).fetchmany(request.limit + 1)
-            except Exception as exc:
-                if did_rewrite and _looks_like_bq_rewrite_parse_error(exc):
-                    logger.warning(
-                        "query_rewrite_fallback: user_id=%s — bigquery_query() "
-                        "rewrite rejected by BQ (%s); retrying via "
-                        "ATTACH-catalog path",
-                        user_id,
-                        type(exc).__name__,
+            if did_rewrite and policied_table_ids:
+                # §7.1-§7.4: this query touches a policied
+                # ``query_mode='remote'`` table and is otherwise
+                # push-down-eligible. Never use the ``bigquery_query()``
+                # push-down above for it — run the whole query directly
+                # against the BQ jobs API instead, with the policy
+                # transpiled to BigQuery dialect and bound as named
+                # parameters (§7.2). Any failure past collision detection —
+                # building the query parameters, or the BQ job itself —
+                # becomes a table-scoped ``policy_error``; it NEVER falls
+                # back to the push-down or to an unfiltered execution
+                # (§17 — every failure denies).
+                try:
+                    bq = get_bq_access()
+                    table = _execute_policied_remote_bq(
+                        request.sql,
+                        user,
+                        bq,
+                        name_lookups=name_lookups,
+                        labels=job_labels_for(user, "query"),
+                        outer_limit=request.limit + 1,
                     )
-                    result = analytics.execute(request.sql).fetchmany(request.limit + 1)
+                except PolicyNameCollision as exc:
+                    raise HTTPException(
+                        status_code=400,
+                        detail={
+                            "reason": "policy_name_collision",
+                            "table": exc.table_id,
+                            "fix": "rename your CTE",
+                        },
+                    )
+                except PolicyIdentityUnresolvable:
+                    raise HTTPException(status_code=403, detail={"reason": "policy_identity_unresolvable"})
+                except PolicyError as exc:
+                    raise HTTPException(status_code=500, detail={"reason": "policy_error", "table": exc.table_id})
+                columns, rows, truncated = _arrow_table_to_rows(table, request.limit)
+            else:
+                if did_rewrite:
+                    # Memory-safety: ``bigquery_query()`` materialises the entire
+                    # BQ result into DuckDB before fetchmany sees it (vs the
+                    # ATTACH-catalog Storage Read API path, which streams rows
+                    # lazily). Wrap the rewritten SQL in an outer ``LIMIT N+1``
+                    # so a `SELECT *` against a billion-row remote table doesn't
+                    # buffer the full table into the worker process — the cap
+                    # is pushed into the BQ job itself. Aliased subquery so the
+                    # outer LIMIT applies to the final rewritten result.
+                    execution_sql = f"SELECT * FROM ({execution_sql}) AS _bqq_outer LIMIT {request.limit + 1}"
+                    logger.info(
+                        "query_rewrite_to_bigquery_query: user_id=%s — wrapped "
+                        "SQL in bigquery_query() with outer LIMIT for BQ "
+                        "predicate pushdown",
+                        user_id,
+                    )
                 else:
-                    raise
-            columns = [desc[0] for desc in analytics.description] if analytics.description else []
-            truncated = len(result) > request.limit
-            rows = result[: request.limit]
+                    # Non-push-down (plain ATTACH-catalog) path: run the
+                    # access-policy-rewritten SQL instead of the raw analyst SQL.
+                    # Byte-identical to request.sql — so this branch is a no-op
+                    # change — unless a table this query touches is policied
+                    # (rewrite_sql's inert-until-attached guarantee).
+                    execution_sql = policy_rewritten_sql
+                    logger.debug(
+                        "query_rewrite_skipped: user_id=%s — running original SQL via ATTACH-catalog path",
+                        user_id,
+                    )
+
+                # Open in read-only mode for extra safety. If the rewritten
+                # path errors (e.g. user SQL contained DuckDB-only syntax —
+                # ``::INT`` casts, ``STRPTIME``, COALESCE arity differences —
+                # that survives identifier rewrite but BQ refuses), fall back
+                # to the original SQL via the legacy ATTACH-catalog path so
+                # the request still succeeds (slower, but correct). Same
+                # safety contract as the dry-run fallback in
+                # ``_bq_quota_and_cap_guard``. Bind ``policy_params`` (DuckDB
+                # named params) whenever the executed SQL carries a policy's
+                # ``$name`` markers — never string-interpolated (§6.2). This
+                # branch is reachable ONLY when NOT (did_rewrite and
+                # policied_table_ids) — i.e. either no table this query
+                # touches is policied, or the policied one isn't BQ-remote —
+                # so a retry on ``policy_rewritten_sql`` below never
+                # re-exposes the unfiltered original (§7.4).
+                if policied_table_ids:
+                    # Read-path guard (§17): fail closed if a policy's output
+                    # has duplicate column names (a masking policy that
+                    # re-derives a column `*` still emits leaks the plaintext
+                    # copy). Checks the policy body itself — the outer SELECT
+                    # here would dedup the names and hide it.
+                    assert_policied_reads_unique(analytics, policied_table_ids, user)
+                try:
+                    if policy_params:
+                        result = analytics.execute(execution_sql, policy_params).fetchmany(request.limit + 1)
+                    else:
+                        result = analytics.execute(execution_sql).fetchmany(request.limit + 1)
+                except Exception as exc:
+                    if did_rewrite and _looks_like_bq_rewrite_parse_error(exc):
+                        logger.warning(
+                            "query_rewrite_fallback: user_id=%s — bigquery_query() "
+                            "rewrite rejected by BQ (%s); retrying via "
+                            "ATTACH-catalog path",
+                            user_id,
+                            type(exc).__name__,
+                        )
+                        # Retry on the policy-rewritten SQL, not the raw
+                        # request.sql — this fallback re-enters the ATTACH-catalog
+                        # path (same as the did_rewrite=False branch above), so
+                        # it must stay policy-filtered too.
+                        if policy_params:
+                            result = analytics.execute(policy_rewritten_sql, policy_params).fetchmany(request.limit + 1)
+                        else:
+                            result = analytics.execute(policy_rewritten_sql).fetchmany(request.limit + 1)
+                    else:
+                        raise
+                columns = [desc[0] for desc in analytics.description] if analytics.description else []
+                truncated = len(result) > request.limit
+                rows = result[: request.limit]
 
             # Post-flight: bill the dry-run estimate against the user's daily
             # quota. Do this AFTER execute so a downstream failure (e.g. BQ
@@ -1248,12 +1681,17 @@ def execute_query(
         # Computed before building the response so it can be surfaced to
         # REST/CLI/MCP consumers; ``None`` for local queries (no BQ tables).
         _bytes_scanned = sum(b for _, _, b in _dry_run_set) if _dry_run_set else None
+        # Task 11 (§10): policied_table_ids (from the rewrite_sql call above)
+        # discloses here as response.row_scope -- None unless this query
+        # actually touched a policied table (empty list otherwise, or the
+        # admin bypass, per rewrite_sql's own contract).
         response = QueryResponse(
             columns=columns,
             rows=serializable_rows,
             row_count=len(serializable_rows),
             truncated=truncated,
             bytes_scanned=_bytes_scanned,
+            row_scope=row_scope_payload(policied_table_ids),
         )
         # Determine action: remote when BQ tables were involved (_dry_run_set non-empty),
         # local otherwise.
@@ -1345,7 +1783,7 @@ def _materialized_hint_for_query_error(
     conn: duckdb.DuckDBPyConnection,
     sql: str,
     error_msg: str,
-) -> Optional[str]:
+) -> str | None:
     """Return a materialize-aware error message if the failed query
     references a registry row whose `query_mode='materialized'` and which
     has no master view in analytics.duckdb yet, OR ``None`` to fall back
@@ -1421,7 +1859,7 @@ def _build_materialized_hint(row: dict) -> str:
     )
 
 
-def _bq_row_target(row: dict) -> tuple[str, str, Optional[str]]:
+def _bq_row_target(row: dict) -> tuple[str, str, str | None]:
     """Resolve a BQ registry row to ``(dataset, table, project_override)``.
 
     ``bq_fqn`` (v51, issue #343) pins a row's own ``project.dataset.table``
@@ -1461,7 +1899,7 @@ def _bq_guardrail_inputs(
     sql_lower: str,
     sys_conn: duckdb.DuckDBPyConnection,
     user: dict,
-    allowed: Optional[list],
+    allowed: list | None,
 ):
     """Two-pass scan over user SQL for the upcoming BQ guardrail + RBAC patch.
 
@@ -1526,8 +1964,15 @@ def _bq_guardrail_inputs(
             # Forbidden-table loop above will have rejected the request
             # before we get here. Defensive skip.
             continue
-        pattern = r"\b" + re.escape(str(name).lower()) + r"\b"
-        if re.search(pattern, sql_lower_masked):
+        # Issue #1322: a bare `\bname\b` match also fires on the keyword
+        # half of ORDER BY / GROUP BY / PARTITION BY when a registered
+        # table is named after one of those keywords (e.g. `order`), which
+        # then corrupts the rewriter's substitution downstream. Reuse the
+        # same compiled pattern the RBAC name guards use — it already
+        # suppresses a name immediately followed by " by" via a negative
+        # lookahead, since no real reference can occupy that position
+        # (DuckDB/BQ both reject a bare `by` as an identifier).
+        if _name_reference_re(str(name).lower()).search(sql_lower_masked):
             key = (bucket.lower(), source_table.lower())
             if key not in seen_paths:
                 seen_paths.add(key)
@@ -1687,6 +2132,44 @@ def _bq_guardrail_inputs(
     return dry_run, name_lookups, None
 
 
+# Reserved SQL keywords a registered table may legally be named after — the
+# register-table id rule is `[a-z_][a-z0-9_]*`, which admits every word below.
+# Union of BigQuery's reserved-keyword list and the DuckDB-only words that can
+# appear bare in a SELECT (ASOF/ANTI/SEMI/POSITIONAL joins, PIVOT/UNPIVOT,
+# QUALIFY, SAMPLE, …). Membership only ever NARROWS where a name is
+# substituted (see `_rewrite_bq_table_refs_to_native`), so over-inclusion is
+# the safe direction; a missing word merely leaves that name on the legacy
+# substitute-everywhere path.
+_SQL_RESERVED_NAMES = frozenset(
+    """
+    all and anti any array as asc asof at between by case cast collate columns
+    contains create cross cube current default define desc distinct else end
+    enum escape except exclude exists extract false fetch following for from
+    full glob group grouping groups hash having if ignore ilike in inner
+    intersect interval into is join lateral left like limit lookup map merge
+    natural new no not null nulls of offset on or order outer over pivot
+    positional preceding proto qualify range recursive replace respect right
+    rollup rows sample select semi set similar some struct table tablesample
+    then to treat true unbounded union unnest unpivot using values when where
+    window with within
+    """.split()
+)
+
+# A bare table name can only follow one of these tokens in a SELECT-only
+# statement: `FROM x`, `… JOIN x`, or `FROM a, x` (old-style comma join).
+# Anchored with `\Z` and applied to the text PRECEDING a candidate match, so
+# it answers "is this occurrence in a table-reference position?".
+#
+# Whitespace and SQL comments may sit between the token and the name. Written
+# with single-character `\s` (not `\s+`) inside the outer `*` so the
+# alternation has no nested quantifier to backtrack over — the SQL here is
+# analyst-supplied, and the security playbook requires linear-time regexes.
+_TABLE_REF_PREFIX_RE = re.compile(
+    r"(?:\bfrom\b|\bjoin\b|,)(?:\s|/\*(?:[^*]|\*(?!/))*\*/|--[^\n]*\n)*\Z",
+    re.IGNORECASE,
+)
+
+
 def _rewrite_bq_table_refs_to_native(
     sql: str,
     name_lookups: list,
@@ -1728,6 +2211,21 @@ def _rewrite_bq_table_refs_to_native(
     the CTE as unreferenced (legal) and the rewriter's caller deals with
     the consequence — over-estimation for dry-run, fall-through-to-ATTACH
     via BQ parse error for execution.
+
+    TODO(durable fix): the residual cases above — string literals, CTE
+    shadowing, and a non-keyword name that collides with a *column* name
+    (`SELECT revenue FROM revenue` rewrites all three occurrences) — all
+    come from the same root cause: this is a regex over unparsed SQL, so it
+    cannot tell an identifier's role apart. `_sql_referenced_names` already
+    asks DuckDB's own parser (`json_serialize_sql`) which names are
+    `BASE_TABLE` references and is the right oracle here too, but it hands
+    back a *set of names*, not source positions, so position-accurate
+    rewriting needs more than a call swap: either a placeholder
+    substitution round-tripped through `json_deserialize_sql` (which
+    reformats the statement and drops comments) or a real tokenizer. It
+    also declines on backtick-quoted BQ paths — first-class input on this
+    path — so the regex must survive as the fallback either way. Left as a
+    design task rather than smuggled into the keyword fix below.
     """
     out = sql
 
@@ -1766,11 +2264,46 @@ def _rewrite_bq_table_refs_to_native(
         # left-to-right and stops at the first match — pinning longest
         # entries to the front preserves the prefix-collision invariant
         # exercised by test_rewrite_helper_longer_name_wins_over_prefix.
+        #
+        # Issue #1322: append the same `(?!\s+by\b)` suppression
+        # `_name_reference_re` uses for the RBAC name guards. Without it, a
+        # registered name that happens to be a SQL keyword (e.g. `order`)
+        # also matches the keyword half of ORDER BY / GROUP BY / PARTITION
+        # BY, and re.sub replaces THAT occurrence too — e.g. `FROM order
+        # ORDER BY x` corrupts to ``FROM `proj.ds.tbl` `proj.ds.tbl` BY x``.
+        # A name genuinely used as a table/alias is never immediately
+        # followed by " by" (DuckDB/BQ both reject a bare `by` there), so
+        # the suppression only ever silences the false keyword match.
+        #
+        # Devin review on PR #1331: `(?!\s+by\b)` covers only the two-word
+        # `<KEYWORD> BY` clauses, and only when nothing but plain whitespace
+        # separates the words — `ORDER /*c*/ BY` slips through, and so does
+        # every other keyword a table can be named after (`all` in `UNION
+        # ALL`, `on` in a JOIN condition, `as`, `and`, `limit`, `distinct`,
+        # `select`, …). `_name_repl` below therefore anchors any RESERVED-
+        # KEYWORD-named entry to a table-reference position, which is the
+        # property that actually distinguishes the two roles.
         sorted_names = sorted(name_to_target.keys(), key=len, reverse=True)
-        pattern = r"\b(" + "|".join(re.escape(n) for n in sorted_names) + r")\b"
+        pattern = r"\b(" + "|".join(re.escape(n) for n in sorted_names) + r")\b(?!\s+by\b)"
 
         def _name_repl(m: re.Match) -> str:
-            return name_to_target[m.group(1).lower()]
+            matched = m.group(1)
+            # Keyword-named tables only substitute where a table reference
+            # can actually stand (after FROM / JOIN / a FROM-list comma).
+            # Deliberately scoped to reserved words rather than applied to
+            # every name: for a keyword name the status quo is corruption,
+            # so a missed position degrades to the correct-but-slower
+            # ATTACH-catalog fallback; for an ordinary name the
+            # substitute-everywhere behaviour documented above works today
+            # and must not be narrowed on the strength of this enumeration.
+            #
+            # The check runs inside the replacement callback, NOT as a second
+            # re.sub pass, so pass 1 stays single-pass — a second pass would
+            # re-scan the backticked text this one inserts and reintroduce
+            # the project-ID-contains-name corruption.
+            if matched.lower() in _SQL_RESERVED_NAMES and not _TABLE_REF_PREFIX_RE.search(m.string[: m.start(1)]):
+                return matched
+            return name_to_target[matched.lower()]
 
         # `re.split` with a captured group returns: [outside, backtick,
         # outside, backtick, …]. Even indices are outside-backtick chunks
@@ -1939,8 +2472,15 @@ def _bq_remote_execution_plan(
             # single-project assumption. Bail out completely so we don't
             # mix rewritten and non-rewritten BQ paths in one query.
             return user_sql, False, None, None
-        pattern = r"\b" + re.escape(str(name).lower()) + r"\b"
-        if re.search(pattern, sql_lower_masked):
+        # Issue #1322: a bare `\bname\b` match also fires on the keyword
+        # half of ORDER BY / GROUP BY / PARTITION BY when a registered
+        # table is named after one of those keywords (e.g. `order`), which
+        # then corrupts the rewriter's substitution downstream. Reuse the
+        # same compiled pattern the RBAC name guards use — it already
+        # suppresses a name immediately followed by " by" via a negative
+        # lookahead, since no real reference can occupy that position
+        # (DuckDB/BQ both reject a bare `by` as an identifier).
+        if _name_reference_re(str(name).lower()).search(sql_lower_masked):
             key = (bucket.lower(), source_table.lower())
             if key not in seen_paths:
                 seen_paths.add(key)
@@ -1988,7 +2528,11 @@ def _bq_remote_execution_plan(
             # Same name registered both BQ-remote and local? Pathological;
             # skip as a safety measure.
             return user_sql, False, None, None
-        if re.search(r"\b" + re.escape(name_lc) + r"\b", sql_lower_masked):
+        # Issue #1322: same keyword-collision suppression as the bare-name
+        # pass above — a local-mode table named e.g. `order` must not make
+        # every BQ query containing an innocent `ORDER BY` fall back to the
+        # slower ATTACH-catalog path.
+        if _name_reference_re(name_lc).search(sql_lower_masked):
             logger.info(
                 "rewrite_skip_cross_source: user SQL references both "
                 "BQ-remote and local-mode tables; falling back to "
@@ -2039,6 +2583,139 @@ def _bq_remote_execution_plan(
     else:
         rewritten = f"SELECT * FROM bigquery_query('{billing_project}', {DOLLAR_TAG}{inner_sql}{DOLLAR_TAG})"
     return rewritten, True, billing_project, inner_sql
+
+
+# ---------------------------------------------------------------------------
+# Task 10 -- BigQuery arm: transpile, named params, ordering, fail-closed
+# (design §7). A query touching a policied `query_mode='remote'` table
+# cannot use the `bigquery_query()` push-down above at all (§7.1: its
+# dollar-quoted payload has no bind mechanism, so `$user_groups` would
+# either blow up with a DuckDB parameter-count mismatch or -- worse, when
+# the policy needs no bind value -- silently ship the UNFILTERED original
+# query with a 200). Both `execute_query` and `run_remote_select_to_arrow`
+# route a policied-and-otherwise-pushable query through
+# `_execute_policied_remote_bq` instead, which never falls back to either
+# the push-down or an unfiltered execution on failure (§7.4/§17).
+# ---------------------------------------------------------------------------
+
+
+def _bq_policied_execution_sql(
+    sql: str,
+    principal,
+    bq,
+    *,
+    name_lookups: list,
+) -> tuple[str, dict, list[str]]:
+    """Build the final, executable BigQuery-native SQL for a query that
+    touches a policied `query_mode='remote'` table (§7.1-§7.3).
+
+    Ordering (§7.3): the policy substitution runs FIRST -- via `rewrite_sql`
+    (Task 6) with its `resolve` callable bound to
+    `policied_relation(..., dialect='bigquery')`, so the policied table's
+    node is replaced by its policy body already transpiled to BigQuery
+    dialect (§7.2) -- and the existing bare-name -> physical-path pass
+    (`_rewrite_bq_table_refs_to_native`, the same one the non-policied
+    push-down uses) runs SECOND, over the whole substituted result. That
+    second pass is what resolves the spliced-in policy body's own
+    `FROM <name>` (still a bare registry name after transpile) to its
+    physical ``\\`project.dataset.table\\``` path -- along with any OTHER
+    bare BQ table name elsewhere in the query. Reversing the order would
+    leave the AST substitution nothing to match (a prior bare-name pass
+    would have already turned the caller's own reference into an opaque
+    backtick path sqlglot no longer recognises as the same table, §7.3).
+
+    Safe to call `rewrite_sql` a second time (the first, `dialect='duckdb'`
+    call already ran in the caller to decide whether to reach this
+    function at all): collision detection and identity resolution are
+    dialect-independent, so the only NEW failure mode here is the
+    BigQuery transpile itself, surfaced as `PolicyError` exactly like
+    every other resolution failure (§16).
+
+    `name_lookups` is the SAME bare-name -> (dataset, table, project)
+    mapping the non-policied push-down already computed from the
+    caller's original SQL (`_bq_guardrail_inputs`) -- it covers every
+    registered BQ name in the query, policied or not, so it is reused
+    as-is rather than recomputed.
+
+    Returns `(bq_sql, params, policied_table_ids)` -- `params` are the
+    RAW identity values (§6.2), not yet BigQuery `QueryParameter` objects;
+    convert via `bq_query_parameters_from_policy_params` before binding.
+    Raises `PolicyNameCollision` / `PolicyIdentityUnresolvable` /
+    `PolicyError` exactly like `rewrite_sql` -- callers map these the
+    same way they already map the `dialect='duckdb'` call's exceptions.
+    """
+    spliced_sql, params, policied_table_ids = rewrite_sql(
+        sql,
+        principal,
+        resolve=functools.partial(policied_relation, dialect="bigquery"),
+    )
+    data_project = bq.projects.data
+    bq_sql = _rewrite_bq_table_refs_to_native(spliced_sql, name_lookups, data_project)
+    return bq_sql, params, policied_table_ids
+
+
+def _execute_policied_remote_bq(
+    sql: str,
+    principal,
+    bq,
+    *,
+    name_lookups: list,
+    labels: dict,
+    outer_limit: int | None = None,
+):
+    """Execute a query that touches a policied `query_mode='remote'` table
+    directly against the BigQuery jobs API (§7.1) -- never through the
+    `bigquery_query()` DuckDB-extension push-down, and never falling back
+    to an unfiltered execution when this fails (§7.4/§17): ANY exception
+    past the `rewrite_sql`/collision-detection step -- building the query
+    parameters or the BQ job itself -- becomes a table-scoped `PolicyError`
+    rather than propagating the raw engine detail (§16's rule that a
+    `policy_error` never quotes the underlying message, which for a BQ
+    rejection can otherwise echo literal identifiers from the policy body).
+
+    `outer_limit`, when given, wraps the final SQL in an outer
+    `LIMIT <outer_limit>` -- mirroring the non-policied push-down's
+    `_bqq_outer` wrap -- so a preview-sized caller (`/api/query`) doesn't
+    materialise an entire remote table into the worker process. `None`
+    for a caller that wants the full, uncapped result (the
+    snapshot-materialize path, `run_remote_select_to_arrow`).
+
+    Returns the full `pyarrow.Table` (labeled cost-attribution job, #752
+    -- same shape `run_bq_query_to_arrow` always returns); callers needing
+    a row/column/truncated triple convert via `_arrow_table_to_rows`.
+    """
+    bq_sql, policy_params, policied_table_ids = _bq_policied_execution_sql(
+        sql, principal, bq, name_lookups=name_lookups
+    )
+    if outer_limit is not None:
+        bq_sql = f"SELECT * FROM ({bq_sql}) AS _bqq_policy_outer LIMIT {outer_limit}"
+
+    query_parameters = bq_query_parameters_from_policy_params(policy_params)
+    try:
+        table, _job_info = run_bq_query_to_arrow(
+            bq,
+            bq_sql,
+            query_parameters=query_parameters,
+            labels=labels,
+        )
+    except Exception as exc:
+        raise PolicyError(next(iter(policied_table_ids), "unknown")) from exc
+    return table
+
+
+def _arrow_table_to_rows(table, limit: int) -> tuple[list, list, bool]:
+    """Convert a fully-materialized ``pyarrow.Table`` into the same
+    ``(columns, rows, truncated)`` shape a DuckDB cursor's
+    ``.fetchmany(limit + 1)`` call + slice produces, so a caller's
+    existing "convert to serializable types" step (`execute_query`) works
+    unchanged regardless of which execution path produced the result.
+    """
+    columns = list(table.column_names)
+    truncated = table.num_rows > limit
+    if truncated:
+        table = table.slice(0, limit)
+    rows = [[row.get(c) for c in columns] for row in table.to_pylist()]
+    return columns, rows, truncated
 
 
 def _view_targets_in(dry_run_set: list) -> list[str]:
@@ -2344,7 +3021,7 @@ def _bq_quota_and_cap_guard(
         )
 
 
-def run_remote_select_to_arrow(conn, user, sql, bq, quota):
+def run_remote_select_to_arrow(conn, user, sql, bq, quota, *, policy_info: dict | None = None):
     """Materialize a raw SELECT against BigQuery into an Arrow table (#616).
 
     Backs the snapshot ``from_query`` mode used by ``agnes query --remote
@@ -2363,6 +3040,15 @@ def run_remote_select_to_arrow(conn, user, sql, bq, quota):
     result is fully materialized either way, so this is shape-equivalent. Queries
     that can't be pushed (cross-source joins, DuckDB-only syntax) fall back to
     the extension path unlabeled.
+
+    ``policy_info`` (Task 11, §10): an optional caller-supplied dict, mutated
+    in place with ``{"policied_table_ids": [...]}`` when this SELECT touched
+    an access-policied table -- the disclosure counterpart of ``job_info`` in
+    ``app/api/v2_scan.py``'s ``_run_bq_scan``. This function returns a bare
+    ``pyarrow.Table`` with no envelope of its own to carry the field, so
+    ``/api/v2/scan``'s ``from_query`` branch passes a dict here to build the
+    ``X-Agnes-Row-Scope`` response header. Callers that don't care leave it
+    ``None`` and see no behavior change.
 
     Returns a ``pyarrow.Table`` of the FULL result. Raises:
         HTTPException — on RBAC / registry / SELECT-only rejection (same
@@ -2386,6 +3072,27 @@ def run_remote_select_to_arrow(conn, user, sql, bq, quota):
         # Same non-admin SQL RBAC as /api/query (catalog gate #868 + view-name
         # denylist + internal-extract denylist M1), shared via the helper.
         _enforce_non_admin_sql_rbac(analytics, sql_lower, allowed)
+
+        # Table access policies (§5/§6) — same substitution as /api/query's
+        # execute_query, shared here so a snapshot materialize can't be used
+        # to bypass a policy /api/query would have enforced. See that
+        # handler's comment for the full rationale; error→HTTP mapping
+        # mirrors it exactly.
+        try:
+            policy_rewritten_sql, policy_params, policied_table_ids = rewrite_sql(sql, user)
+        except PolicyNameCollision as exc:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "reason": "policy_name_collision",
+                    "table": exc.table_id,
+                    "fix": "rename your CTE",
+                },
+            )
+        except PolicyIdentityUnresolvable:
+            raise HTTPException(status_code=403, detail={"reason": "policy_identity_unresolvable"})
+        except PolicyError as exc:
+            raise HTTPException(status_code=500, detail={"reason": "policy_error", "table": exc.table_id})
 
         dry_run_set, name_lookups, blocked_bq_path = _bq_guardrail_inputs(
             sql,
@@ -2433,70 +3140,157 @@ def run_remote_select_to_arrow(conn, user, sql, bq, quota):
                         },
                     ) from exc
 
+            # Plans the push-down against the ORIGINAL `sql`, not
+            # `policy_rewritten_sql`. Fine when no table this query
+            # touches is policied (the common case) — when
+            # `policied_table_ids` is non-empty, `inner_sql`/`execution_sql`
+            # below are NEVER used to execute anything; see the branch
+            # immediately below (mirrors execute_query's identically
+            # structured branch, §7.1-§7.4).
             execution_sql, did_rewrite, billing_project, inner_sql = _bq_remote_execution_plan(sql, conn)
-            try:
+
+            if did_rewrite and policied_table_ids:
+                # §7.1-§7.4: see execute_query's identically commented
+                # branch — this query touches a policied
+                # `query_mode='remote'` table and is otherwise
+                # push-down-eligible, so it runs directly against the BQ
+                # jobs API with the policy transpiled + bound as named
+                # parameters, never through the unlabeled `bigquery_query()`
+                # extension and never falling back to an unfiltered
+                # execution on failure. No outer LIMIT here — a snapshot
+                # materialize wants the full, uncapped result.
                 try:
-                    if did_rewrite and inner_sql is not None:
-                        # #752: this path fully materializes the result to Arrow
-                        # anyway, so run the billable job through
-                        # google-cloud-bigquery `client.query(labels=...)` (like
-                        # /api/v2/scan) instead of the unlabeled DuckDB
-                        # `bigquery_query()` extension. The job then carries
-                        # cost-attribution labels for the requesting user. The
-                        # BQ-native `inner_sql` is what the extension would have
-                        # sent to `jobs.query`. The bq client bills under
-                        # `bq.projects.billing` (quota_project_id), matching the
-                        # billing_project the extension path passes as
-                        # bigquery_query()'s first arg.
-                        table, _job_info = run_bq_query_to_arrow(
-                            bq,
-                            inner_sql,
-                            labels=job_labels_for(user, "query"),
+                    table = _execute_policied_remote_bq(
+                        sql,
+                        user,
+                        bq,
+                        name_lookups=name_lookups,
+                        labels=job_labels_for(user, "query"),
+                    )
+                except PolicyNameCollision as exc:
+                    raise HTTPException(
+                        status_code=400,
+                        detail={
+                            "reason": "policy_name_collision",
+                            "table": exc.table_id,
+                            "fix": "rename your CTE",
+                        },
+                    )
+                except PolicyIdentityUnresolvable:
+                    raise HTTPException(status_code=403, detail={"reason": "policy_identity_unresolvable"})
+                except PolicyError as exc:
+                    raise HTTPException(status_code=500, detail={"reason": "policy_error", "table": exc.table_id})
+            else:
+                if not (did_rewrite and inner_sql is not None):
+                    # Non-push-down (ATTACH-catalog) path: run the
+                    # access-policy-rewritten SQL instead of the raw analyst
+                    # SQL. Byte-identical to `execution_sql` here (a no-op)
+                    # unless a table this query touches is policied.
+                    execution_sql = policy_rewritten_sql
+                if policied_table_ids:
+                    # Read-path guard (§17) — the same fail-closed check
+                    # `execute_query`'s identically structured branch runs,
+                    # and it matters MORE here: this result is written
+                    # straight to the analyst's snapshot parquet, so a
+                    # masking policy that re-derives a column while `*`
+                    # still emits the original persists BOTH copies to
+                    # disk, past every live enforcement point. Arrow, unlike
+                    # the JSON row surfaces, happily carries two fields of
+                    # the same name. `probe_policy` rejects such a policy at
+                    # save time, but only once the base table has a
+                    # resolvable schema — a policy attached before the table
+                    # synced slips through, which is exactly the gap this
+                    # closes. Not needed on the push-down branch above:
+                    # BigQuery itself refuses a result with duplicate output
+                    # column names.
+                    try:
+                        assert_policied_reads_unique(analytics, policied_table_ids, user)
+                    except PolicyError as exc:
+                        raise HTTPException(
+                            status_code=500,
+                            detail={"reason": "policy_error", "table": exc.table_id},
                         )
-                    else:
-                        table = analytics.execute(execution_sql).arrow()
+                try:
+                    try:
+                        if did_rewrite and inner_sql is not None:
+                            # #752: this path fully materializes the result to Arrow
+                            # anyway, so run the billable job through
+                            # google-cloud-bigquery `client.query(labels=...)` (like
+                            # /api/v2/scan) instead of the unlabeled DuckDB
+                            # `bigquery_query()` extension. The job then carries
+                            # cost-attribution labels for the requesting user. The
+                            # BQ-native `inner_sql` is what the extension would have
+                            # sent to `jobs.query`. The bq client bills under
+                            # `bq.projects.billing` (quota_project_id), matching the
+                            # billing_project the extension path passes as
+                            # bigquery_query()'s first arg.
+                            table, _job_info = run_bq_query_to_arrow(
+                                bq,
+                                inner_sql,
+                                labels=job_labels_for(user, "query"),
+                            )
+                        elif policy_params:
+                            table = analytics.execute(execution_sql, policy_params).arrow()
+                        else:
+                            table = analytics.execute(execution_sql).arrow()
+                    except HTTPException:
+                        raise
+                    except Exception as exc:
+                        # A rewritten query rejected by BQ (DuckDB-only syntax that
+                        # survived identifier rewrite) falls back to the original SQL
+                        # via the ATTACH-catalog extension path — slower but correct.
+                        # This fallback job is unlabeled (extension-owned), matching
+                        # the interactive /api/query fallback contract. Retries on
+                        # the policy-rewritten SQL, not the raw `sql` — this
+                        # fallback re-enters the ATTACH-catalog path, so it must
+                        # stay policy-filtered too. Reachable ONLY when NOT
+                        # (did_rewrite and policied_table_ids) — see the branch
+                        # above — so this never re-exposes the unfiltered
+                        # original (§7.4).
+                        if did_rewrite and _looks_like_bq_rewrite_parse_error(exc):
+                            if policy_params:
+                                table = analytics.execute(policy_rewritten_sql, policy_params).arrow()
+                            else:
+                                table = analytics.execute(policy_rewritten_sql).arrow()
+                        else:
+                            raise
                 except HTTPException:
+                    # Don't re-wrap structured rejections raised below (RBAC,
+                    # SELECT-only, registry) — let them propagate.
+                    raise
+                except BqAccessError:
+                    # #752: the labeled client.query path raises BqAccessError with
+                    # a kind (auth_failed / bq_forbidden / bq_bad_request / …). Let
+                    # it propagate so scan_endpoint maps it to the right HTTP status
+                    # (500 / 502 / 400) instead of flattening every BQ failure into
+                    # a generic 400 duckdb_execution_error.
                     raise
                 except Exception as exc:
-                    # A rewritten query rejected by BQ (DuckDB-only syntax that
-                    # survived identifier rewrite) falls back to the original SQL
-                    # via the ATTACH-catalog extension path — slower but correct.
-                    # This fallback job is unlabeled (extension-owned), matching
-                    # the interactive /api/query fallback contract.
-                    if did_rewrite and _looks_like_bq_rewrite_parse_error(exc):
-                        table = analytics.execute(sql).arrow()
-                    else:
-                        raise
-            except HTTPException:
-                # Don't re-wrap structured rejections raised below (RBAC,
-                # SELECT-only, registry) — let them propagate.
-                raise
-            except BqAccessError:
-                # #752: the labeled client.query path raises BqAccessError with
-                # a kind (auth_failed / bq_forbidden / bq_bad_request / …). Let
-                # it propagate so scan_endpoint maps it to the right HTTP status
-                # (500 / 502 / 400) instead of flattening every BQ failure into
-                # a generic 400 duckdb_execution_error.
-                raise
-            except Exception as exc:
-                # Map DuckDB execution errors (syntax error, missing table,
-                # type mismatch) to a structured 400 mirroring the normal
-                # /api/query path (`app/api/query.py` ~line 714) so the
-                # scan_endpoint caller surfaces a user-friendly error
-                # instead of a raw 500. Devin Review ANALYSIS_0003 on #620.
-                raise HTTPException(
-                    status_code=400,
-                    detail={
-                        "reason": "duckdb_execution_error",
-                        "message": str(exc),
-                    },
-                ) from exc
+                    # Map DuckDB execution errors (syntax error, missing table,
+                    # type mismatch) to a structured 400 mirroring the normal
+                    # /api/query path (`app/api/query.py` ~line 714) so the
+                    # scan_endpoint caller surfaces a user-friendly error
+                    # instead of a raw 500. Devin Review ANALYSIS_0003 on #620.
+                    raise HTTPException(
+                        status_code=400,
+                        detail={
+                            "reason": "duckdb_execution_error",
+                            "message": str(exc),
+                        },
+                    ) from exc
 
             if dry_run_set and total_bq_bytes:
                 try:
                     quota.record_bytes(user=user_id, n=total_bq_bytes)
                 except Exception:
                     logger.warning("quota record_bytes failed for user=%s", user_id)
+        # Task 11 (§10): this function's plain pyarrow.Table return has no
+        # envelope of its own to carry policied_table_ids (from the
+        # rewrite_sql call above) — report it through policy_info instead,
+        # so /api/v2/scan's from_query branch can build the
+        # X-Agnes-Row-Scope header.
+        if policy_info is not None:
+            policy_info["policied_table_ids"] = list(policied_table_ids)
         return table
     finally:
         analytics.close()

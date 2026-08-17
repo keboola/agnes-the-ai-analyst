@@ -15,15 +15,19 @@ Implementation differences vs. DuckDB:
   the PG side (Task 1A.3 decision); ``hard_delete`` keeps the explicit
   junction wipe as belt-and-braces parity with the DuckDB sibling.
 
-Schema drift note: the DuckDB ``knowledge_items`` table has an
-``is_required`` column (v55) that the PG model does NOT replicate (Task
-1A.3 scope was the v49+ Memory Domains entities, not the v55 column on
-the pre-existing knowledge_items table). The DuckDB sibling's
-``list_items_of_domain`` projects ``ki.is_required`` and ``ki.content``;
-the PG mirror surfaces a literal ``False`` for ``is_required`` so the
-return-shape stays parity-compatible. Closing this drift is plan-Task
-followup — see commit body.
+Schema drift note, RESOLVED: this module was written while the PG
+``knowledge_items`` table still lacked the ``is_required`` column, so
+``list_items_of_domain`` projected a literal ``FALSE`` and
+``count_items_by_domain`` a literal ``0``. The column has existed on the
+PG ladder since ``0012_duckdb_v59_parity`` (nullable Boolean, mirrored in
+``src/models/knowledge.py`` and persisted by ``knowledge_pg.py``), which
+made both literals silent parity bugs — a PG-backed Library rendered
+"3 items" where DuckDB rendered "3 items · 1 required" (Devin review on
+PR #1278). Both reads now use the real column; ``NULL`` (rows written
+before the column, or by writers that omit it) counts as not-required,
+matching DuckDB's ``DEFAULT FALSE`` semantics.
 """
+
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
@@ -125,19 +129,19 @@ class MemoryDomainsPgRepository:
             )
         return bool(res.rowcount)
 
-    def get(
-        self, domain_id: str, *, include_deleted: bool = False
-    ) -> Optional[Dict[str, Any]]:
+    def get(self, domain_id: str, *, include_deleted: bool = False) -> Optional[Dict[str, Any]]:
         """Fetch a single domain. Soft-deleted rows are hidden by default
         — pass ``include_deleted=True`` (used by /restore)."""
         guard = "" if include_deleted else " AND deleted_at IS NULL"
         with self._engine.connect() as conn:
-            row = conn.execute(
-                sa.text(
-                    f"SELECT * FROM memory_domains WHERE id = :id{guard}"
-                ),
-                {"id": domain_id},
-            ).mappings().first()
+            row = (
+                conn.execute(
+                    sa.text(f"SELECT * FROM memory_domains WHERE id = :id{guard}"),
+                    {"id": domain_id},
+                )
+                .mappings()
+                .first()
+            )
         return dict(row) if row else None
 
     def get_by_slug(self, slug: str) -> Optional[Dict[str, Any]]:
@@ -145,10 +149,7 @@ class MemoryDomainsPgRepository:
         with the same slug doesn't resurrect the wrong row."""
         with self._engine.connect() as conn:
             row = conn.execute(
-                sa.text(
-                    "SELECT id FROM memory_domains "
-                    "WHERE slug = :slug AND deleted_at IS NULL"
-                ),
+                sa.text("SELECT id FROM memory_domains WHERE slug = :slug AND deleted_at IS NULL"),
                 {"slug": slug},
             ).first()
         return self.get(row[0]) if row else None
@@ -160,10 +161,7 @@ class MemoryDomainsPgRepository:
         """
         with self._engine.connect() as conn:
             row = conn.execute(
-                sa.text(
-                    "SELECT 1 FROM memory_domains "
-                    "WHERE slug = :slug AND deleted_at IS NULL"
-                ),
+                sa.text("SELECT 1 FROM memory_domains WHERE slug = :slug AND deleted_at IS NULL"),
                 {"slug": slug},
             ).first()
         return row is not None
@@ -230,10 +228,7 @@ class MemoryDomainsPgRepository:
         params["domain_id"] = domain_id
         with self._engine.begin() as conn:
             conn.execute(
-                sa.text(
-                    f"UPDATE memory_domains SET {', '.join(fields)} "
-                    f"WHERE id = :domain_id"
-                ),
+                sa.text(f"UPDATE memory_domains SET {', '.join(fields)} WHERE id = :domain_id"),
                 params,
             )
 
@@ -243,10 +238,7 @@ class MemoryDomainsPgRepository:
         undo flow can restore the domain whole."""
         with self._engine.begin() as conn:
             conn.execute(
-                sa.text(
-                    "UPDATE memory_domains SET deleted_at = CURRENT_TIMESTAMP "
-                    "WHERE id = :id"
-                ),
+                sa.text("UPDATE memory_domains SET deleted_at = CURRENT_TIMESTAMP WHERE id = :id"),
                 {"id": domain_id},
             )
 
@@ -254,10 +246,7 @@ class MemoryDomainsPgRepository:
         """Reverse a soft delete. Idempotent."""
         with self._engine.begin() as conn:
             conn.execute(
-                sa.text(
-                    "UPDATE memory_domains SET deleted_at = NULL "
-                    "WHERE id = :id"
-                ),
+                sa.text("UPDATE memory_domains SET deleted_at = NULL WHERE id = :id"),
                 {"id": domain_id},
             )
 
@@ -268,10 +257,7 @@ class MemoryDomainsPgRepository:
         DuckDB sibling."""
         with self._engine.begin() as conn:
             conn.execute(
-                sa.text(
-                    "DELETE FROM knowledge_item_domains "
-                    "WHERE domain_id = :id"
-                ),
+                sa.text("DELETE FROM knowledge_item_domains WHERE domain_id = :id"),
                 {"id": domain_id},
             )
             conn.execute(
@@ -292,10 +278,7 @@ class MemoryDomainsPgRepository:
             return {}
         with self._engine.connect() as conn:
             rows = conn.execute(
-                sa.text(
-                    "SELECT id, slug FROM memory_domains "
-                    "WHERE id = ANY(:ids) AND deleted_at IS NULL"
-                ),
+                sa.text("SELECT id, slug FROM memory_domains WHERE id = ANY(:ids) AND deleted_at IS NULL"),
                 {"ids": list(domain_ids)},
             ).all()
         return {r[0]: r[1] for r in rows}
@@ -328,30 +311,29 @@ class MemoryDomainsPgRepository:
         """Drop a junction row. Returns True iff a row was deleted."""
         with self._engine.begin() as conn:
             result = conn.execute(
-                sa.text(
-                    "DELETE FROM knowledge_item_domains "
-                    "WHERE domain_id = :domain_id AND item_id = :item_id"
-                ),
+                sa.text("DELETE FROM knowledge_item_domains WHERE domain_id = :domain_id AND item_id = :item_id"),
                 {"domain_id": domain_id, "item_id": item_id},
             )
             return (result.rowcount or 0) > 0
 
-    def list_items_of_domain(
-        self, domain_id: str, *, limit: int = 1000
-    ) -> List[Dict[str, Any]]:
+    def list_items_of_domain(self, domain_id: str, *, limit: int = 1000) -> List[Dict[str, Any]]:
         """Items tagged with a given domain (title-ordered).
 
         Projects ``id, title, status, is_required, content`` for parity
-        with the DuckDB sibling. ``knowledge_items.is_required`` does
-        NOT exist in the PG schema yet (see module docstring); surfaces
-        as a literal ``False`` so the return shape matches.
+        with the DuckDB sibling — ``is_required`` is the REAL column
+        (present since ``0012_duckdb_v59_parity``; a stale literal
+        ``FALSE`` here hid every governance mandate on this backend, see
+        module docstring). The column is nullable on PG; the ``bool()``
+        in the row mapping folds ``NULL`` to ``False``, matching
+        DuckDB's ``DEFAULT FALSE``.
         """
         with self._engine.connect() as conn:
-            rows = conn.execute(
-                sa.text(
-                    """
+            rows = (
+                conn.execute(
+                    sa.text(
+                        """
                     SELECT ki.id, ki.title, ki.status,
-                           FALSE AS is_required,
+                           ki.is_required,
                            ki.content
                     FROM knowledge_item_domains kid
                     JOIN knowledge_items ki ON ki.id = kid.item_id
@@ -359,9 +341,12 @@ class MemoryDomainsPgRepository:
                     ORDER BY ki.title
                     LIMIT :limit
                     """
-                ),
-                {"domain_id": domain_id, "limit": limit},
-            ).mappings().all()
+                    ),
+                    {"domain_id": domain_id, "limit": limit},
+                )
+                .mappings()
+                .all()
+            )
         return [
             {
                 "id": r["id"],
@@ -373,6 +358,33 @@ class MemoryDomainsPgRepository:
             for r in rows
         ]
 
+    def count_items_by_domain(self) -> Dict[str, tuple]:
+        """Per-domain ``(items, required)`` counts in ONE grouped query.
+
+        Parity sibling of the DuckDB method, for BOTH halves — the same
+        ``SUM(CASE ...)`` over the real ``knowledge_items.is_required``
+        column (a stale literal ``0`` here made a Postgres-backed Library
+        render "3 items" where DuckDB rendered "3 items · 1 required", so a
+        governance mandate was invisible on this backend; see module
+        docstring — Devin review on PR #1278). ``NULL`` falls to the
+        ``ELSE 0`` arm, matching DuckDB's ``DEFAULT FALSE`` semantics. The
+        cross-engine contract test seeds a required item so the two
+        backends must agree on ``(3, 1)``.
+        """
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                sa.text(
+                    """
+                    SELECT kid.domain_id, COUNT(*) AS n,
+                           COALESCE(SUM(CASE WHEN ki.is_required THEN 1 ELSE 0 END), 0) AS required
+                    FROM knowledge_item_domains kid
+                    JOIN knowledge_items ki ON ki.id = kid.item_id
+                    GROUP BY kid.domain_id
+                    """
+                )
+            ).all()
+        return {r[0]: (int(r[1]), int(r[2])) for r in rows}
+
     def list_domains_of_item(self, item_id: str) -> List[Dict[str, Any]]:
         """Domains an item is tagged with (name-ordered).
 
@@ -380,9 +392,10 @@ class MemoryDomainsPgRepository:
         color, cover_image_url}``. Filters soft-deleted domains.
         """
         with self._engine.connect() as conn:
-            rows = conn.execute(
-                sa.text(
-                    """
+            rows = (
+                conn.execute(
+                    sa.text(
+                        """
                     SELECT md.id, md.slug, md.name, md.icon, md.color,
                            md.cover_image_url
                     FROM knowledge_item_domains kid
@@ -391,9 +404,12 @@ class MemoryDomainsPgRepository:
                       AND md.deleted_at IS NULL
                     ORDER BY md.name
                     """
-                ),
-                {"item_id": item_id},
-            ).mappings().all()
+                    ),
+                    {"item_id": item_id},
+                )
+                .mappings()
+                .all()
+            )
         return [dict(r) for r in rows]
 
     def replace_domains_for_item(
@@ -410,34 +426,23 @@ class MemoryDomainsPgRepository:
         with self._engine.begin() as conn:
             if not slugs:
                 conn.execute(
-                    sa.text(
-                        "DELETE FROM knowledge_item_domains "
-                        "WHERE item_id = :item_id"
-                    ),
+                    sa.text("DELETE FROM knowledge_item_domains WHERE item_id = :item_id"),
                     {"item_id": item_id},
                 )
                 return []
 
             # Resolve all slugs first so we don't half-write on a typo.
             rows = conn.execute(
-                sa.text(
-                    "SELECT slug, id FROM memory_domains "
-                    "WHERE slug = ANY(:slugs)"
-                ),
+                sa.text("SELECT slug, id FROM memory_domains WHERE slug = ANY(:slugs)"),
                 {"slugs": list(slugs)},
             ).all()
             resolved = {r[0]: r[1] for r in rows}
             missing = [s for s in slugs if s not in resolved]
             if missing:
-                raise ValueError(
-                    f"Unknown memory domain slug(s): {missing}"
-                )
+                raise ValueError(f"Unknown memory domain slug(s): {missing}")
 
             conn.execute(
-                sa.text(
-                    "DELETE FROM knowledge_item_domains "
-                    "WHERE item_id = :item_id"
-                ),
+                sa.text("DELETE FROM knowledge_item_domains WHERE item_id = :item_id"),
                 {"item_id": item_id},
             )
             for slug, did in resolved.items():

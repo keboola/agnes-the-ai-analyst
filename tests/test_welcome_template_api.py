@@ -277,13 +277,19 @@ def test_put_accepts_template_with_user_guard(seeded_app):
 
 
 # ---------------------------------------------------------------------------
-# Finding #1: /dashboard clipboard CTA honours admin override
+# Finding #1: the clipboard CTA honours the admin override
 # ---------------------------------------------------------------------------
 
-def test_dashboard_clipboard_uses_override_when_set(seeded_app):
-    """When an admin override is saved, the dashboard's SETUP_INSTRUCTIONS_TEMPLATE
-    JS array must contain the override content instead of the default script.
-    The dashboard button copies that array — so the override must appear there."""
+def test_clipboard_cta_uses_override_when_set(seeded_app):
+    """When an admin override is saved, the SETUP_INSTRUCTIONS_TEMPLATE JS array
+    must carry the override content instead of the default script — the "Copy
+    install script" button copies that array.
+
+    Rendered off /install. It used to be /dashboard, which carried its own copy
+    of the CTA; that page became an unconditional redirect in Wave 0 (2026-08)
+    and its template was deleted. The payload itself never moved — it is
+    single-sourced from `_claude_setup_instructions.jinja`, which /install,
+    /home and /how-it-works all include."""
     c = seeded_app["client"]
     admin = _auth(seeded_app["admin_token"])
 
@@ -295,8 +301,8 @@ def test_dashboard_clipboard_uses_override_when_set(seeded_app):
     )
     assert r.status_code == 200
 
-    # Fetch the dashboard as the admin user (cookie-style auth via access_token).
-    r = c.get("/dashboard", cookies={"access_token": seeded_app["admin_token"]})
+    # Fetch as the admin user (cookie-style auth via access_token).
+    r = c.get("/install", cookies={"access_token": seeded_app["admin_token"]})
     assert r.status_code == 200
     body = r.text
 
@@ -307,7 +313,7 @@ def test_dashboard_clipboard_uses_override_when_set(seeded_app):
     r = c.delete("/api/admin/welcome-template", headers=admin)
     assert r.status_code == 204
 
-    # After reset, the override must no longer appear in the dashboard.
-    r = c.get("/dashboard", cookies={"access_token": seeded_app["admin_token"]})
+    # After reset, the override must no longer appear on the page.
+    r = c.get("/install", cookies={"access_token": seeded_app["admin_token"]})
     assert r.status_code == 200
     assert "CUSTOM_OVERRIDE_MARKER" not in r.text

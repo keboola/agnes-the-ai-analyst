@@ -316,6 +316,101 @@ def enforce_per_user_credential(source: Dict[str, Any], caller_user_id: Optional
 
 
 # ---------------------------------------------------------------------------
+# Source url policy — runtime enforcement (#1216 part 2)
+# ---------------------------------------------------------------------------
+
+
+class SourceUrlRefused(Exception):
+    """Raised by :func:`enforce_source_url_runtime_policy` when
+    ``mcp.source_url_runtime_enforce`` is on and a source's ``url`` fails the
+    DNS-free half of the url policy at a forward seam.
+
+    The three facts an operator needs to route themselves from a broken tool
+    call to a fix live on the exception itself, not only folded into
+    ``str()``: ``reason`` (the policy verdict, e.g.
+    ``address_in_blocked_range: 169.254.169.254``), ``admin_report_hint``
+    (where the row was already flagged, before this switch was ever turned
+    on), and ``switch`` (the name to flip off to restore the previous,
+    unenforced behavior). That split is what lets the REST seam
+    (``app/api/mcp_passthrough.py``) render a structured JSON body from the
+    attributes directly, while the MCP transport seam
+    (``app/api/mcp/tools_generator.py``) falls back to the formatted message
+    string — FastMCP tool errors are plain text.
+    """
+
+    def __init__(self, source: Dict[str, Any], reason: str):
+        self.source_id = source.get("id")
+        self.source_name = source.get("name") or self.source_id
+        self.reason = reason
+        self.switch = "mcp.source_url_runtime_enforce"
+        self.admin_report_hint = (
+            "GET /api/admin/mcp-sources (or `agnes admin mcp source list`) already "
+            "flagged this source's url_policy_verdict as 'would_refuse' before this "
+            "switch was turned on"
+        )
+        super().__init__(
+            f"MCP source {self.source_name!r} url refused by the current url policy "
+            f"({reason}); {self.admin_report_hint}. Fix the source's url, or turn off "
+            f"the {self.switch} switch to restore the previous (unenforced) behavior."
+        )
+
+
+def enforce_source_url_runtime_policy(source: Dict[str, Any]) -> None:
+    """Runtime twin of the admin-time ``check_source_url`` gate (#1216).
+
+    ``check_source_url`` gates a source's ``url`` only when it is
+    CONFIGURED — a row registered before the guard existed, or before
+    ``mcp.source_url_strict`` was turned on, keeps forwarding credentials to
+    an address the CURRENT policy would refuse, until an admin happens to PUT
+    the row. Behind ``mcp.source_url_runtime_enforce`` (default OFF — see
+    ``app.instance_config.get_mcp_source_url_runtime_enforce``), this runs
+    the DNS-free half of that policy
+    (:func:`src.net.mcp_source_url.check_source_url_dns_free`) at BOTH
+    credentialed forward seams — the SSE / Streamable-HTTP transport
+    closures (``app/api/mcp/tools_generator.py``) and the REST passthrough
+    endpoint (``app/api/mcp_passthrough.py``) — sharing this one helper so
+    the two cannot drift apart, the drift class this repo keeps re-fixing.
+
+    DNS-free ONLY, deliberately: a hot forward path must not pay for (or
+    block on) a blocking ``getaddrinfo`` call on every dial, so an ordinary
+    hostname that has not been resolved here answers ``ok`` regardless of
+    what it would really resolve to — the same trade-off the admin
+    ``url_policy_verdict`` report already accepts (see the module docstring
+    of ``src/net/mcp_source_url.py``). What it does catch, with no resolver
+    at all, is the shape #1154 is about: a literal link-local/reserved
+    address (``http://169.254.169.254/mcp``), or cleartext http to a literal
+    public address.
+
+    No-op for ``stdio``: its ``url`` (if any) is inert documentation nothing
+    ever dials — the same exemption every other caller of this policy
+    applies. Raises :class:`SourceUrlRefused` on a refused url; returns
+    ``None`` otherwise (switch off, non-network transport, or an accepted
+    verdict).
+    """
+    from app.instance_config import (
+        get_mcp_source_url_runtime_enforce,
+        get_mcp_source_url_strict,
+        get_ssrf_allowed_hosts,
+    )
+
+    if not get_mcp_source_url_runtime_enforce():
+        return
+    if (source.get("transport") or "") not in ("http", "sse"):
+        return
+
+    from src.net.mcp_source_url import check_source_url_dns_free
+
+    verdict = check_source_url_dns_free(
+        source.get("url") or "",
+        strict=get_mcp_source_url_strict(),
+        allowed_hosts=get_ssrf_allowed_hosts(),
+    )
+    if verdict.ok:
+        return
+    raise SourceUrlRefused(source, verdict.reason)
+
+
+# ---------------------------------------------------------------------------
 # PII redaction
 # ---------------------------------------------------------------------------
 

@@ -58,29 +58,38 @@ variable "prod_instance" {
     # failing the TLS handshake. Clear it once the old DNS record is retired.
     domain_alias = optional(string, "")
     # Chrome the web UI renders in. Per-VM (not module-wide) for the same
-    # reason as dispatcher_enabled / data_apps_enabled below: the redesign is
+    # reason as dispatcher_enabled / data_apps_enabled below: a look is
     # rolled out dev-first, previewed on a dev VM, and promoted to prod only
     # once it looks right. Empty (the default) writes NO env line, so the
-    # instance keeps whatever `instance.ui_layout` / `instance.theme` says in
-    # instance.yaml — or the app's own default when that is unset too.
-    #   ui_layout: "" | "topnav" (app default) | "rail"
-    #   theme:     "" | "blue" (app default) | "navy" | "dark" | "auto" | "paper"
-    # Pair rail + paper for the full redesign look — or set `experience`
-    # below instead, which covers both plus the stack-membership mode.
+    # instance keeps whatever `instance.theme` says in instance.yaml — or the
+    # app's own default when that is unset too.
+    #   theme: "" | "blue" | "navy" | "dark" | "auto" | "paper" (app default)
+    #
+    # ui_layout is RETIRED (app >= the Wave 0 legacy retirement, 2026-08): the
+    # rail is the only chrome the app can render, so there is nothing left to
+    # choose. The field stays DECLARED — and rejects the retired "topnav" in
+    # the validation below — on purpose. Terraform silently DISCARDS object
+    # attributes a type constraint does not declare, so deleting it would let
+    # a root that still sets `ui_layout = "topnav"` apply cleanly and get the
+    # rail with nothing anywhere saying why: exactly the silent-fallback
+    # hazard every validation in this file exists to catch. Declared, it
+    # becomes a plan-time error that names the retirement. Nothing is plumbed
+    # to the VM from it any more — drop the line from your root when convenient.
     ui_layout = optional(string, "")
     theme     = optional(string, "")
-    # Experience preset (app >= 0.83.1): the ONE-LINE redesign adoption
-    # switch, written as AGNES_INSTANCE_EXPERIENCE. `redesign` flips the
-    # app-side DEFAULTS of the coupled knobs (ui_layout -> rail, theme ->
-    # paper, features.stack_auto_membership -> on); any per-knob setting —
-    # the two fields above, or instance.yaml — still wins, so don't set
-    # both this and ui_layout/theme unless you mean to pin a divergence.
+    # Experience preset (app >= 0.83.1), written as AGNES_INSTANCE_EXPERIENCE.
+    # `redesign` flips the app-side DEFAULTS of the coupled knobs (theme ->
+    # paper, features.stack_auto_membership -> on); any per-knob setting — the
+    # `theme` field above, or instance.yaml — still wins, so don't set both
+    # this and `theme` unless you mean to pin a divergence. Chrome layout is
+    # NO LONGER part of the coupling: the rail is unconditional.
     # Empty (the default) writes NO env line: the instance keeps whatever
-    # `instance.experience` says in instance.yaml, or the app's `classic`
+    # `instance.experience` says in instance.yaml, or the app's `redesign`
     # default. NOTE: like every startup-script value, this reaches a VM on
     # creation/recreate only (`ignore_changes = [metadata_startup_script]`);
     # a live instance is switched at runtime via /admin/server-config.
-    #   experience: "" | "classic" (app default) | "redesign"
+    #   experience: "" | "redesign" (app default)
+    # `classic` is RETIRED and rejected below — same reasoning as ui_layout.
     experience = optional(string, "")
     # Container memory caps written to /opt/agnes/.env and read by
     # docker-compose.yml (mem_limit: $${AGNES_APP_MEM_LIMIT:-4g}). Defaults
@@ -120,9 +129,13 @@ variable "prod_instance" {
   # its default (see get_ui_layout / get_instance_theme). So a typo here
   # applies cleanly, reboots cleanly, and simply renders the old chrome with
   # nothing anywhere saying why. Catch it at plan time instead.
+  #
+  # "topnav" is REJECTED rather than merely ignored: the chrome it names no
+  # longer exists in the app, so a root asking for it is stating an intent
+  # that cannot be honored, and applying silently would hand back the rail.
   validation {
-    condition     = contains(["", "topnav", "rail"], var.prod_instance.ui_layout)
-    error_message = "prod_instance.ui_layout must be \"\", \"topnav\" or \"rail\"."
+    condition     = contains(["", "rail"], var.prod_instance.ui_layout)
+    error_message = "prod_instance.ui_layout must be \"\" or \"rail\". The \"topnav\" chrome was retired (Wave 0, 2026-08) and the rail is now unconditional — remove the line."
   }
 
   validation {
@@ -131,12 +144,13 @@ variable "prod_instance" {
   }
 
   # Same silent-fallback hazard: the app resolves an unrecognised preset
-  # value to `classic` without a word (see get_experience / the `experience`
-  # entry in app/switches.py), so a typo here would quietly strip the
-  # redesign from a fresh VM. Catch it at plan time.
+  # value to `redesign` without a word (see get_experience / the `experience`
+  # entry in app/switches.py), so a typo here would look applied and do
+  # nothing. Catch it at plan time. `classic` is retired for the same reason
+  # `topnav` is above — it names a behavior the app no longer has.
   validation {
-    condition     = contains(["", "classic", "redesign"], var.prod_instance.experience)
-    error_message = "prod_instance.experience must be \"\", \"classic\" or \"redesign\"."
+    condition     = contains(["", "redesign"], var.prod_instance.experience)
+    error_message = "prod_instance.experience must be \"\" or \"redesign\". The \"classic\" experience was retired (Wave 0, 2026-08) — remove the line."
   }
 }
 
@@ -205,12 +219,13 @@ variable "dev_instances" {
     error_message = "each dev_instances[].domain_alias must differ from its domain; two site blocks sharing one address stop Caddy from starting."
   }
 
-  # Same silent-fallback hazard as prod_instance.ui_layout / .theme above.
+  # Same silent-fallback hazard as prod_instance.ui_layout / .theme above,
+  # and the same retirement of "topnav".
   validation {
     condition = alltrue([
-      for i in var.dev_instances : contains(["", "topnav", "rail"], i.ui_layout)
+      for i in var.dev_instances : contains(["", "rail"], i.ui_layout)
     ])
-    error_message = "each dev_instances[].ui_layout must be \"\", \"topnav\" or \"rail\"."
+    error_message = "each dev_instances[].ui_layout must be \"\" or \"rail\". The \"topnav\" chrome was retired (Wave 0, 2026-08) and the rail is now unconditional — remove the line."
   }
 
   validation {
@@ -220,12 +235,13 @@ variable "dev_instances" {
     error_message = "each dev_instances[].theme must be \"\", \"blue\", \"navy\", \"dark\", \"auto\" or \"paper\"."
   }
 
-  # Same silent-fallback hazard as prod_instance.experience above.
+  # Same silent-fallback hazard as prod_instance.experience above, and the
+  # same retirement of "classic".
   validation {
     condition = alltrue([
-      for i in var.dev_instances : contains(["", "classic", "redesign"], i.experience)
+      for i in var.dev_instances : contains(["", "redesign"], i.experience)
     ])
-    error_message = "each dev_instances[].experience must be \"\", \"classic\" or \"redesign\"."
+    error_message = "each dev_instances[].experience must be \"\" or \"redesign\". The \"classic\" experience was retired (Wave 0, 2026-08) — remove the line."
   }
 }
 

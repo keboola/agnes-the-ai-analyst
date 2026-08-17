@@ -228,12 +228,17 @@ class TestManifestExtensions:
         assert flat["server_only"] is False
 
     def test_manifest_classic_excludes_unsubscribed_available_package(self, seeded_app, monkeypatch):
-        """Classic (default) membership: a granted-but-not-subscribed
-        ``available`` package is NOT in the user's stack, so neither the
-        package nor its table appears in the manifest at all — the
-        pre-redesign contract (spec 2026-08-07-default-chrome-ux-parity).
-        Subscribing brings both in, downloadable (no server_only overlay)."""
-        monkeypatch.delenv("AGNES_STACK_AUTO_MEMBERSHIP", raising=False)
+        """Classic membership: a granted-but-not-subscribed ``available``
+        package is NOT in the user's stack, so neither the package nor its
+        table appears in the manifest at all — the pre-redesign contract
+        (spec 2026-08-07-default-chrome-ux-parity). Subscribing brings both
+        in, downloadable (no server_only overlay).
+
+        Classic is no longer the presetless default (Wave 0, 2026-08, coupled
+        the sole remaining `redesign` experience to auto-membership) — forced
+        here via the still-fully-supported explicit per-knob override, which
+        wins over any preset."""
+        monkeypatch.setenv("AGNES_STACK_AUTO_MEMBERSHIP", "0")
         gid = _create_group_with_analyst("DLClassic")
         pkg_id = _create_package("dl-classic-pkg", "DlClassicPkg")
         table_id = _register_table("dl_classic_table")

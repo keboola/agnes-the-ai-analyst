@@ -1275,8 +1275,11 @@ class TestStoreSecurityFixes:
 
         page = web_client.get(f"/marketplace/flea/{eid}", cookies=admin_cookies)
         assert page.status_code == 200, page.text
-        # Admin-non-owner sees the owner-actions panel.
-        assert "owner-actions" in page.text
+        # Admin-non-owner sees the owner action ladder. `.owner-actions` was
+        # the blue-theme panel; under the default paper look the same ladder is
+        # `detail.store_menu` in the page header, and the button ids below are
+        # what both spellings share.
+        assert "detail-menu" in page.text or "owner-actions" in page.text
         # v35: admin sees Archive (soft) + Hard delete buttons.
         assert 'id="owner-archive-btn"' in page.text
         assert 'id="owner-hard-delete-btn"' in page.text

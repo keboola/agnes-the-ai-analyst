@@ -33,7 +33,6 @@ import asyncio
 import contextlib
 import logging
 import math
-import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import quote
@@ -405,6 +404,7 @@ from app.api.attachments import router as attachments_router
 from app.api.jira_webhooks import router as jira_webhooks_router
 from app.api.metrics import router as metrics_router
 from app.api.glossary import router as glossary_router
+from app.api.semantic_models import router as semantic_models_router
 from app.api.metadata import router as metadata_router
 from app.api.query_hybrid import router as query_hybrid_router
 from app.api.cli_artifacts import router as cli_artifacts_router
@@ -480,6 +480,7 @@ from app.auth.mcp_oauth import make_consent_routes as _make_mcp_consent_routes
 from app.api.cache_warmup import router as cache_warmup_router
 from app.api.bq_metadata_refresh import router as bq_metadata_refresh_router
 from app.api.keboola_semantic_layer_refresh import router as keboola_semantic_layer_refresh_router
+from app.api.databricks_semantic_layer_refresh import router as databricks_semantic_layer_refresh_router
 from app.api.activity import router as activity_router
 from app.api.observability import router as observability_router
 from app.api.admin_user_sessions import router as admin_user_sessions_router
@@ -487,6 +488,7 @@ from app.api.admin_sessions import router as admin_sessions_router
 from app.api.admin_usage import router as admin_usage_router
 from app.api.admin_usage_summary import router as admin_usage_summary_router
 from app.api.admin_reports import router as admin_reports_router
+from app.api.admin_dashboard import router as admin_dashboard_router
 from app.api.admin_adoption import router as admin_adoption_router
 from app.api.db_state import router as db_state_router
 from app.api.admin_analytics import router as admin_analytics_router
@@ -908,6 +910,19 @@ async def lifespan(app):
         log_effective_policy()
     except Exception:
         pass  # never block startup on a logging convenience
+
+    # Validate auth.providers at boot so an all-unknown value (a typo in
+    # instance.yaml / AGNES_AUTH_PROVIDERS) surfaces its error in the startup
+    # log, not only lazily on the first /auth request. configured_allowlist()
+    # logs the error itself and fails open (all providers) so a bad value can
+    # never lock the instance out; the admin API rejects the same value at
+    # set-time. Fail-soft — a config-read hiccup must not block startup.
+    try:
+        from app.auth.provider_registry import configured_allowlist
+
+        configured_allowlist()
+    except Exception:
+        pass
 
     # Bump anyio's default thread pool size from 40 → AGNES_THREADPOOL_SIZE
     # (default 200). FastAPI auto-runs every plain `def` route handler AND
@@ -1815,6 +1830,16 @@ async def lifespan(app):
             usage_accumulator.flush()
         except Exception:
             logger.exception("llm_usage accumulator flush failed during shutdown (non-fatal)")
+        # Warm stdio MCP sessions are child processes owned by keeper tasks on
+        # THIS loop. Closing them here lets each anyio task group unwind and
+        # terminate its subprocess while the loop is still running, instead of
+        # leaving them to be reaped when this process dies.
+        try:
+            from connectors.mcp.session_pool import close_all as close_mcp_sessions
+
+            await close_mcp_sessions()
+        except Exception:
+            logger.exception("MCP session pool close failed during shutdown (non-fatal)")
         from src.db import close_analytics_db, close_operational_db, close_system_db
 
         close_system_db()
@@ -1955,6 +1980,7 @@ def create_app() -> FastAPI:
         # REDUCES privilege — see the module docstring.
         from app.auth.elevation import (
             ELEVATION_COOKIE,
+            request_is_noninteractive,
             reset_for_request,
             resolve_from_cookie,
             set_paused_for_request,
@@ -1963,10 +1989,17 @@ def create_app() -> FastAPI:
         token = set_paused_for_request(
             resolve_from_cookie(
                 request.cookies.get(ELEVATION_COOKIE),
-                # Bearer callers (CLI/PAT/service tokens) have no cookie jar
-                # to re-elevate with — the instance-wide default must not
-                # apply to them (an explicit paused cookie still would).
-                bearer_auth=request.headers.get("authorization", "").lower().startswith("bearer "),
+                # Non-interactive callers (Bearer CLI/PAT/service tokens, or a
+                # sole X-StorageApi-Token header) have no cookie jar to
+                # re-elevate with, so the instance-wide default must not apply
+                # (an explicit paused cookie still would). A request carrying a
+                # session cookie stays interactive even if it also sends the
+                # header — see request_is_noninteractive (Devin review #1288).
+                bearer_auth=request_is_noninteractive(
+                    authorization=request.headers.get("authorization", ""),
+                    has_session_cookie=bool(request.cookies.get("access_token")),
+                    has_sapi_header=bool(request.headers.get("x-storageapi-token")),
+                ),
             )
         )
         try:
@@ -2170,27 +2203,22 @@ def create_app() -> FastAPI:
         if o.strip()
     ]
     cors_allow_credentials = True
-    # Data-app subdomains also make credentialed cross-origin requests to the
-    # main host (the readiness poll in data_app_waking.html). Allow any host
-    # under data_apps.subdomain_base when that is configured; the session
-    # cookie is already scoped to the shared parent domain.
-    cors_origin_regex: str | None = None
-    try:
-        from app.instance_config import get_data_apps_config
-
-        # `.strip(".")` matches DataAppSubdomainMiddleware's own normalisation:
-        # a value written `.apps.example.com` would otherwise escape to a
-        # doubled dot and match NOTHING, so the middleware would serve the
-        # subdomain while the readiness poll was CORS-blocked.
-        data_app_base = (get_data_apps_config().get("subdomain_base") or "").strip().strip(".")
-        if data_app_base:
-            escaped = re.escape(data_app_base)
-            # A SINGLE label, not `[^:\s/]+` — the middleware only routes
-            # single-label slugs, so accepting `a.b.<base>` would widen the
-            # credentialed-CORS surface past anything that can be served.
-            cors_origin_regex = rf"^https?://[^.:\s/]+\.{escaped}(:\d+)?$"
-    except Exception:
-        logger.exception("Failed to compute data-app CORS origin regex")
+    # Captured HERE, from the same read the middleware is configured with:
+    # the readiness handler's per-app CORS grant must agree with the
+    # middleware about whether a wildcard is in force, and `create_app`
+    # loads overlay env AFTER this point — a request-time env re-read could
+    # see a different value than the middleware did (Devin on #1321).
+    app.state.cors_has_wildcard = "*" in cors_origins
+    # Data-app subdomains are deliberately NOT allowed here. The holding
+    # page's readiness poll (data_app_waking.html on `<slug>.<base>`) does
+    # need a credentialed cross-origin read of ONE response — but this
+    # middleware is app-wide, those subdomains serve user-authored app code,
+    # and the session cookie already rides to the main host from them
+    # (`Domain=.<parent>`, same-site). A subdomain `allow_origin_regex`
+    # paired with `allow_credentials=True` therefore let any hosted app's JS
+    # read every authenticated endpoint as its viewer. The poll's allowance
+    # lives route-scoped and per-app instead:
+    # `app.api.data_apps._readiness_cors_headers` (Devin Review on this PR).
     if "*" in cors_origins:
         # SECURITY: Starlette's CORSMiddleware, when allow_origins contains "*"
         # AND allow_credentials=True, reflects the caller's Origin into
@@ -2206,10 +2234,29 @@ def create_app() -> FastAPI:
             "any-origin-with-credentials CORS policy. Set an explicit origin allowlist."
         )
         cors_allow_credentials = False
+        # The wildcard also OVERWRITES per-route CORS grants: with
+        # allow_all_origins the middleware stamps `Access-Control-Allow-Origin:
+        # *` (credential-less) over response headers a handler set, which
+        # breaks the data-app readiness poll's per-app credentialed grant
+        # (app/api/data_apps.py::_readiness_cors_headers) — the subdomain
+        # holding page then polls forever. Say so where the operator is
+        # already being told their CORS config is wrong.
+        try:
+            from app.instance_config import get_data_apps_config
+
+            if (get_data_apps_config().get("subdomain_base") or "").strip():
+                logger.error(
+                    "CORS_ORIGINS='*' with data_apps.subdomain_base configured: the "
+                    "readiness poll on data-app subdomains needs a credentialed "
+                    "per-app CORS grant, which the wildcard overrides — subdomain "
+                    "holding pages will not detect the app coming up until "
+                    "CORS_ORIGINS lists explicit origins."
+                )
+        except Exception:
+            pass
     app.add_middleware(
         CORSMiddleware,
         allow_origins=cors_origins,
-        allow_origin_regex=cors_origin_regex,
         allow_credentials=cors_allow_credentials,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -2346,6 +2393,22 @@ def create_app() -> FastAPI:
     except Exception as e:
         logger.warning(f"Could not load instance config: {e}")
 
+    # Warm the two retired-knob resolvers (`ui_layout`, `experience`) so their
+    # one-time warnings land in the BOOT log, which is where an operator
+    # upgrading a deployment looks and what CONFIGURATION.md /
+    # instance.yaml.example promise ("a one-time startup warning").
+    # `_warn_once` fires on first call; without this the first call was
+    # whatever request happened to render a page first, so the warning appeared
+    # minutes later, interleaved with traffic — or never, on an instance nobody
+    # opened. Both resolvers must be called: each owns its own warning.
+    try:
+        from app.instance_config import get_experience, get_ui_layout
+
+        get_ui_layout()
+        get_experience()
+    except Exception as e:  # a warning must never be able to stop a boot
+        logger.debug(f"Could not warm retired-knob resolvers: {e}")
+
     # Configure confidence scoring from instance config (corporate_memory.confidence section)
     try:
         from app.instance_config import get_corporate_memory_config
@@ -2452,12 +2515,17 @@ def create_app() -> FastAPI:
     from app.auth.providers.google import router as google_auth_router
     from app.auth.providers.password import router as password_auth_router
     from app.auth.providers.email import router as email_auth_router
+    from app.auth.providers.keboola import router as keboola_auth_router
 
     # API routers
     app.include_router(auth_router)
     app.include_router(google_auth_router)
     app.include_router(password_auth_router)
     app.include_router(email_auth_router)  # Always register, check availability per-request
+    app.include_router(keboola_auth_router)  # Always register, availability + allowlist per-request
+    from app.api.keboola_login_projects import router as keboola_login_projects_router
+
+    app.include_router(keboola_login_projects_router)  # select-mode project import (same allowlist gate)
     app.include_router(health_router)
 
     from app.api import health_probes
@@ -2489,6 +2557,7 @@ def create_app() -> FastAPI:
     app.include_router(jira_webhooks_router)
     app.include_router(metrics_router)
     app.include_router(glossary_router)
+    app.include_router(semantic_models_router)
     app.include_router(metadata_router)
     app.include_router(query_hybrid_router)
     app.include_router(cli_artifacts_router)
@@ -2608,6 +2677,7 @@ def create_app() -> FastAPI:
     app.include_router(cache_warmup_router)
     app.include_router(bq_metadata_refresh_router)
     app.include_router(keboola_semantic_layer_refresh_router)
+    app.include_router(databricks_semantic_layer_refresh_router)
     app.include_router(activity_router)
     app.include_router(observability_router)
     app.include_router(admin_user_sessions_router)
@@ -2615,6 +2685,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_usage_router)
     app.include_router(admin_usage_summary_router)
     app.include_router(admin_reports_router)
+    app.include_router(admin_dashboard_router)
     app.include_router(admin_adoption_router)
     app.include_router(admin_contributed_skills_router)
     app.include_router(db_state_router)
@@ -2788,7 +2859,7 @@ def create_app() -> FastAPI:
         """Render error.html with the same chrome (header, theme, static_url)
         as any other web route. Reuses ``_build_context`` so the page picks up
         ConfigProxy, theme overrides, session user, and ``static_url`` /
-        ``url_for`` helpers — without these, base.html + _app_header.html
+        ``url_for`` helpers — without these, base.html + _app_rail.html
         silently render empty header/stylesheets."""
         from app.logging_config import request_id_var
         from app.web.router import templates as _web_templates, _build_context

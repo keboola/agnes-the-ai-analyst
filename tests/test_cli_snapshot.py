@@ -3,11 +3,12 @@
 NOTE: Tests construct a local Typer app so cli/main.py is NOT imported.
 The snapshot_app is registered under the "snapshot" sub-app.
 """
+
 import json
 import pytest
 import typer
 from typer.testing import CliRunner
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 import pyarrow as pa
 
 from cli.snapshot_meta import SnapshotMeta, write_meta
@@ -16,6 +17,7 @@ from cli.snapshot_meta import SnapshotMeta, write_meta
 # ---------------------------------------------------------------------------
 # Shared fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def cli_env(tmp_path, monkeypatch):
@@ -29,6 +31,7 @@ def cli_env(tmp_path, monkeypatch):
 def test_app():
     """Local Typer app with snapshot sub-commands (no cli.main dependency)."""
     from cli.commands.snapshot import snapshot_app
+
     app = typer.Typer()
     app.add_typer(snapshot_app, name="snapshot")
     return app
@@ -38,18 +41,29 @@ def _seed_meta(tmp_path, name="cz_recent", rows=100):
     snap_dir = tmp_path / "user" / "snapshots"
     parquet = snap_dir / f"{name}.parquet"
     parquet.write_bytes(b"PAR1\x00\x00PAR1")
-    write_meta(snap_dir, SnapshotMeta(
-        name=name, table_id="bq_view", select=None, where=None, limit=None, order_by=None,
-        fetched_at="2026-04-27T10:00:00+00:00",
-        effective_as_of="2026-04-27T10:00:00+00:00",
-        rows=rows, bytes_local=parquet.stat().st_size,
-        estimated_scan_bytes_at_fetch=0, result_hash_md5="abc",
-    ))
+    write_meta(
+        snap_dir,
+        SnapshotMeta(
+            name=name,
+            table_id="bq_view",
+            select=None,
+            where=None,
+            limit=None,
+            order_by=None,
+            fetched_at="2026-04-27T10:00:00+00:00",
+            effective_as_of="2026-04-27T10:00:00+00:00",
+            rows=rows,
+            bytes_local=parquet.stat().st_size,
+            estimated_scan_bytes_at_fetch=0,
+            result_hash_md5="abc",
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
 # list
 # ---------------------------------------------------------------------------
+
 
 class TestSnapshotList:
     def test_list_empty(self, cli_env, test_app):
@@ -78,6 +92,7 @@ class TestSnapshotList:
 # ---------------------------------------------------------------------------
 # drop
 # ---------------------------------------------------------------------------
+
 
 class TestSnapshotDrop:
     def test_drop_removes_files(self, cli_env, test_app):
@@ -108,6 +123,7 @@ class TestSnapshotDrop:
 # refresh
 # ---------------------------------------------------------------------------
 
+
 class TestSnapshotRefresh:
     def test_refresh_missing_returns_2(self, cli_env, test_app):
         runner = CliRunner()
@@ -121,7 +137,7 @@ class TestSnapshotRefresh:
         # Build a minimal Arrow table to return from the mocked API call
         arrow_table = pa.table({"col": [1, 2, 3]})
 
-        with patch("cli.commands.snapshot.api_post_arrow", return_value=arrow_table):
+        with patch("cli.commands.snapshot.api_post_arrow_with_headers", return_value=(arrow_table, {})):
             runner = CliRunner()
             result = runner.invoke(test_app, ["snapshot", "refresh", "cz_recent"])
 
@@ -129,6 +145,7 @@ class TestSnapshotRefresh:
         assert "Refreshed" in result.output
         # Meta file should be updated
         from cli.snapshot_meta import read_meta
+
         new_meta = read_meta(snap_dir, "cz_recent")
         assert new_meta is not None
         assert new_meta.rows == 3
@@ -136,8 +153,11 @@ class TestSnapshotRefresh:
     def test_refresh_server_error_returns_5(self, cli_env, test_app):
         _seed_meta(cli_env, "cz_recent")
         from cli.v2_client import V2ClientError
-        with patch("cli.commands.snapshot.api_post_arrow",
-                   side_effect=V2ClientError(status_code=500, body="internal error")):
+
+        with patch(
+            "cli.commands.snapshot.api_post_arrow_with_headers",
+            side_effect=V2ClientError(status_code=500, body="internal error"),
+        ):
             runner = CliRunner()
             result = runner.invoke(test_app, ["snapshot", "refresh", "cz_recent"])
         assert result.exit_code == 5
@@ -146,15 +166,14 @@ class TestSnapshotRefresh:
         _seed_meta(cli_env, "cz_recent")
         arrow_table = pa.table({"col": [1]})
         captured = {}
+
         def fake_post(path, payload):
             captured["where"] = payload.get("where")
-            return arrow_table
-        with patch("cli.commands.snapshot.api_post_arrow", side_effect=fake_post):
+            return arrow_table, {}
+
+        with patch("cli.commands.snapshot.api_post_arrow_with_headers", side_effect=fake_post):
             runner = CliRunner()
-            result = runner.invoke(
-                test_app,
-                ["snapshot", "refresh", "cz_recent", "--where", "country = 'US'"]
-            )
+            result = runner.invoke(test_app, ["snapshot", "refresh", "cz_recent", "--where", "country = 'US'"])
         assert result.exit_code == 0, result.output
         assert captured["where"] == "country = 'US'"
 
@@ -162,6 +181,7 @@ class TestSnapshotRefresh:
 # ---------------------------------------------------------------------------
 # prune
 # ---------------------------------------------------------------------------
+
 
 class TestSnapshotPrune:
     def test_prune_empty(self, cli_env, test_app):

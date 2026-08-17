@@ -81,8 +81,10 @@ class TestCatalogPackageDetail:
         assert resp.status_code == 200
         body = resp.text
         assert "Admin only pkg" in body
-        # Back link to /catalog.
-        assert 'href="/catalog"' in body
+        # The back link used to be asserted here as `/catalog`. It targets the
+        # Library's Data packages band now on every instance —
+        # `test_back_link_targets_the_library_under_rail` below owns that
+        # contract; this test is about who can VIEW the package.
 
     def test_analyst_without_grant_blocked(self, seeded_app):
         _make_pkg("locked-pkg", "Locked pkg")
@@ -91,7 +93,7 @@ class TestCatalogPackageDetail:
         resp = c.get("/catalog/p/locked-pkg", headers=_auth(token))
         assert resp.status_code == 403
 
-    def test_analyst_with_grant_sees_header_and_back_link(self, seeded_app):
+    def test_analyst_with_grant_sees_header(self, seeded_app):
         pid = _make_pkg("granted-pkg", "Granted pkg")
         _grant_pkg("Everyone", pid, requirement="available", users=["analyst1"])
         c = seeded_app["client"]
@@ -101,7 +103,7 @@ class TestCatalogPackageDetail:
         body = resp.text
         assert "Granted pkg" in body
         assert "Granted pkg desc" in body
-        assert 'href="/catalog"' in body
+        # Back link: see test_back_link_targets_the_library_under_rail.
 
     def test_back_link_targets_the_library_under_rail(self, seeded_app, monkeypatch):
         """Rail retired Marketplace (/catalog) as a destination — it is not in

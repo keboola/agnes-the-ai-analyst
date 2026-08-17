@@ -16,6 +16,7 @@ def _register_table(seeded_app, **kwargs):
     """Register a table into the test DB using TableRegistryRepository."""
     from src.db import get_system_db
     from src.repositories.table_registry import TableRegistryRepository
+
     conn = get_system_db()
     try:
         repo = TableRegistryRepository(conn)
@@ -38,6 +39,7 @@ def _seed_cache_row(
     """Insert a successful refresh row into bq_metadata_cache."""
     from src.db import get_system_db
     from src.repositories.bq_metadata_cache import BqMetadataCacheRepository
+
     conn = get_system_db()
     try:
         BqMetadataCacheRepository(conn).upsert_success(
@@ -55,6 +57,7 @@ def _seed_cache_row(
 
 def _reset_catalog_caches():
     from app.api import v2_catalog
+
     v2_catalog._table_rows_cache.clear()
 
 
@@ -68,13 +71,18 @@ def test_remote_row_includes_metadata_fields(seeded_app):
 
     _register_table(
         seeded_app,
-        id="orders", source_type="bigquery", bucket="dwh_base",
-        source_table="orders_2024", query_mode="remote",
+        id="orders",
+        source_type="bigquery",
+        bucket="dwh_base",
+        source_table="orders_2024",
+        query_mode="remote",
     )
     _seed_cache_row(
         "orders",
-        rows=10000, size_bytes=2_000_000,
-        partition_by="event_date", clustered_by=["country", "platform"],
+        rows=10000,
+        size_bytes=2_000_000,
+        partition_by="event_date",
+        clustered_by=["country", "platform"],
         entity_type="BASE TABLE",
         known_columns=["event_date", "country", "platform", "amount"],
     )
@@ -107,13 +115,18 @@ def test_where_examples_filtered_against_real_columns(seeded_app):
     token = seeded_app["admin_token"]
     _register_table(
         seeded_app,
-        id="ue_like", source_type="bigquery", bucket="dwh_base",
-        source_table="unit_economics", query_mode="remote",
+        id="ue_like",
+        source_type="bigquery",
+        bucket="dwh_base",
+        source_table="unit_economics",
+        query_mode="remote",
     )
     _seed_cache_row(
         "ue_like",
-        rows=None, size_bytes=None,
-        partition_by="event_date", clustered_by=[],
+        rows=None,
+        size_bytes=None,
+        partition_by="event_date",
+        clustered_by=[],
         entity_type="VIEW",
         # Real schema: event_date present, country_code absent.
         known_columns=["event_date", "order_event_id", "merchant_country"],
@@ -140,14 +153,20 @@ def test_view_returns_null_rows_and_size_bytes(seeded_app):
     token = seeded_app["admin_token"]
     _register_table(
         seeded_app,
-        id="ue_view", source_type="bigquery", bucket="dwh_base",
-        source_table="ue_view", query_mode="remote",
+        id="ue_view",
+        source_type="bigquery",
+        bucket="dwh_base",
+        source_table="ue_view",
+        query_mode="remote",
     )
     # Provider would have set rows/size_bytes to None for views; we mirror
     # that contract here in the cache row.
     _seed_cache_row(
-        "ue_view", rows=None, size_bytes=None,
-        partition_by=None, clustered_by=[],
+        "ue_view",
+        rows=None,
+        size_bytes=None,
+        partition_by=None,
+        clustered_by=[],
         entity_type="VIEW",
         known_columns=["event_date"],
     )
@@ -173,8 +192,11 @@ def test_where_examples_empty_when_columns_unknown(seeded_app):
     token = seeded_app["admin_token"]
     _register_table(
         seeded_app,
-        id="unfetched", source_type="bigquery", bucket="dwh_base",
-        source_table="unfetched", query_mode="remote",
+        id="unfetched",
+        source_type="bigquery",
+        bucket="dwh_base",
+        source_table="unfetched",
+        query_mode="remote",
     )
 
     r = c.get(
@@ -198,8 +220,11 @@ def test_remote_row_with_no_cache_returns_null_fields(seeded_app):
     token = seeded_app["admin_token"]
     _register_table(
         seeded_app,
-        id="cold_t", source_type="bigquery", bucket="dwh_base",
-        source_table="cold_t", query_mode="remote",
+        id="cold_t",
+        source_type="bigquery",
+        bucket="dwh_base",
+        source_table="cold_t",
+        query_mode="remote",
     )
 
     # Patch the BQ provider so we can prove the request path never reaches it.
@@ -229,8 +254,11 @@ def test_local_row_metadata_freshness_is_not_applicable(seeded_app):
     token = seeded_app["admin_token"]
     _register_table(
         seeded_app,
-        id="users", source_type="keboola", bucket="in.c-crm",
-        source_table="users", query_mode="local",
+        id="users",
+        source_type="keboola",
+        bucket="in.c-crm",
+        source_table="users",
+        query_mode="local",
     )
 
     r = c.get(
@@ -253,12 +281,19 @@ def test_zero_size_bytes_reports_small_not_unknown(seeded_app):
     token = seeded_app["admin_token"]
     _register_table(
         seeded_app,
-        id="empty_t", source_type="bigquery", bucket="dwh_base",
-        source_table="empty_t", query_mode="remote",
+        id="empty_t",
+        source_type="bigquery",
+        bucket="dwh_base",
+        source_table="empty_t",
+        query_mode="remote",
     )
     _seed_cache_row(
-        "empty_t", rows=0, size_bytes=0, clustered_by=[],
-        entity_type="BASE TABLE", known_columns=["event_date"],
+        "empty_t",
+        rows=0,
+        size_bytes=0,
+        clustered_by=[],
+        entity_type="BASE TABLE",
+        known_columns=["event_date"],
     )
 
     r = c.get(
@@ -282,8 +317,11 @@ def test_catalog_request_never_calls_bq(seeded_app):
     token = seeded_app["admin_token"]
     _register_table(
         seeded_app,
-        id="orders", source_type="bigquery", bucket="dwh_base",
-        source_table="orders_2024", query_mode="remote",
+        id="orders",
+        source_type="bigquery",
+        bucket="dwh_base",
+        source_table="orders_2024",
+        query_mode="remote",
     )
 
     with patch("connectors.bigquery.metadata.fetch") as mock_fetch:
@@ -291,3 +329,106 @@ def test_catalog_request_never_calls_bq(seeded_app):
         c.get("/api/v2/catalog", headers={"Authorization": f"Bearer {token}"})
 
     mock_fetch.assert_not_called()
+
+
+# ── table access policies (design doc §11; plan Task 13) ───────────────────
+#
+# Pre-fix, `where_examples`/`partition_by`/`clustered_by` were built straight
+# from the UNFILTERED `bq_metadata_cache` regardless of any policy on the
+# row — a policied table's non-admin caller could see a WHERE-clause
+# suggestion or a partitioning hint naming a column an EXCLUDE'd policy
+# already hides from every other schema surface.
+
+
+def _set_access_policy(table_id: str, sql: str) -> None:
+    from src.db import get_system_db
+    from src.repositories.table_registry import TableRegistryRepository
+
+    conn = get_system_db()
+    try:
+        TableRegistryRepository(conn).set_access_policy(table_id, sql=sql, note="test", updated_by="admin")
+    finally:
+        conn.close()
+
+
+def test_policied_row_suppresses_column_shaped_hints_for_non_admin(seeded_app, monkeypatch):
+    from tests.conftest import grant_table_via_package
+    from src.db import get_system_db
+
+    monkeypatch.setenv("AGNES_ACCESS_POLICIES_ENABLED", "true")
+    _reset_catalog_caches()
+    c = seeded_app["client"]
+    admin_token = seeded_app["admin_token"]
+
+    _register_table(
+        seeded_app,
+        id="policied_orders",
+        source_type="bigquery",
+        bucket="dwh_base",
+        source_table="orders_2024",
+        query_mode="remote",
+        server_only=True,
+    )
+    _seed_cache_row(
+        "policied_orders",
+        rows=10000,
+        size_bytes=2_000_000,
+        partition_by="event_date",
+        clustered_by=["country_code", "platform"],
+        entity_type="BASE TABLE",
+        known_columns=["event_date", "country_code", "platform", "amount"],
+    )
+    _set_access_policy("policied_orders", "SELECT * FROM policied_orders")
+    conn = get_system_db()
+    try:
+        grant_table_via_package(conn, "policied_orders", "analyst1")
+    finally:
+        conn.close()
+
+    r = c.get("/api/v2/catalog", headers={"Authorization": f"Bearer {seeded_app['analyst_token']}"})
+    assert r.status_code == 200, r.text
+    row = next(t for t in r.json()["tables"] if t["id"] == "policied_orders")
+    assert row["where_examples"] == []
+    assert row["partition_by"] is None
+    assert row["clustered_by"] == []
+    # Aggregate/table-level metadata is UNCHANGED — §10.1's own precedent
+    # (an unfiltered row count is accepted; column-shaped content is not).
+    assert row["rows"] == 10000
+    assert row["size_bytes"] == 2_000_000
+    assert row["entity_type"] == "BASE TABLE"
+
+    # Admin/no-policy unchanged (§12) — the SAME row, unfiltered for admin.
+    admin_r = c.get("/api/v2/catalog", headers={"Authorization": f"Bearer {admin_token}"})
+    assert admin_r.status_code == 200, admin_r.text
+    admin_row = next(t for t in admin_r.json()["tables"] if t["id"] == "policied_orders")
+    assert admin_row["partition_by"] == "event_date"
+    assert admin_row["clustered_by"] == ["country_code", "platform"]
+    assert "event_date > DATE '2026-01-01'" in admin_row["where_examples"]
+
+
+def test_non_policied_sibling_row_is_unaffected(seeded_app):
+    """The inert case: a table with no access_policy_sql keeps showing its
+    where_examples/partition_by/clustered_by exactly as before."""
+    _reset_catalog_caches()
+    c = seeded_app["client"]
+    _register_table(
+        seeded_app,
+        id="plain_orders",
+        source_type="bigquery",
+        bucket="dwh_base",
+        source_table="orders_2024",
+        query_mode="remote",
+    )
+    _seed_cache_row(
+        "plain_orders",
+        partition_by="event_date",
+        clustered_by=["country_code"],
+        entity_type="BASE TABLE",
+        known_columns=["event_date", "country_code"],
+    )
+    r = c.get("/api/v2/catalog", headers={"Authorization": f"Bearer {seeded_app['admin_token']}"})
+    assert r.status_code == 200, r.text
+    row = next(t for t in r.json()["tables"] if t["id"] == "plain_orders")
+    assert row["partition_by"] == "event_date"
+    assert row["clustered_by"] == ["country_code"]
+    assert "event_date > DATE '2026-01-01'" in row["where_examples"]

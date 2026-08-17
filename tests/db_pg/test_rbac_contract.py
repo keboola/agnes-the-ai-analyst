@@ -122,6 +122,23 @@ def test_create_group_then_get_returns_it(rbac_repos):
     assert fetched["description"] == "Data Team"
 
 
+def test_ensure_group_stamps_created_by_and_noops_on_existing(rbac_repos):
+    """`ensure(created_by=…)` (Keboola login sync) stamps the creator on
+    first create and leaves an existing row — including its created_by —
+    untouched, identically on both backends."""
+    repos, _, _ = rbac_repos
+    groups = repos["groups"]
+    grp = groups.ensure("kbc-516-admin", description="Keboola project 516", created_by="system:keboola-sync")
+    assert grp["created_by"] == "system:keboola-sync"
+    again = groups.ensure("kbc-516-admin", description="changed", created_by="someone:else")
+    assert again["id"] == grp["id"]
+    assert again["created_by"] == "system:keboola-sync"
+    assert again["description"] == "Keboola project 516"
+    # Default preserved for the historical caller (Google claim sync).
+    google = groups.ensure("acme-group@example.com")
+    assert google["created_by"] == "system:google-sync"
+
+
 def test_add_member_then_list_members_returns_user(rbac_repos):
     repos, _, _ = rbac_repos
     users = repos["users"]

@@ -78,6 +78,10 @@ services:
     volumes: !override
       - /data:/data
 
+  # apps-runner's override lives BELOW caddy — one service, one key. A second
+  # `apps-runner:` block here made this file invalid YAML (duplicate mapping
+  # key), which every `docker compose` call on a deployed VM rejects outright.
+
   caddy:
     # Caddy was originally inheriting `data:/srv:ro` from the base
     # service. Once the other services switch to direct binds and
@@ -97,3 +101,43 @@ services:
       - caddy_data:/data
       - caddy_config:/config
       - /data:/srv:ro
+
+  # apps-runner (compose profile `apps`) needs the same treatment, and for the
+  # same reason spelled out for caddy above: left on the base `data:` named
+  # volume while every other service binds the host `/data`, it ends up on a
+  # filesystem nothing else can see.
+  #
+  # This does NOT break the data-app containers it starts — `_resolve_host_path`
+  # (services/apps_runner/api.py) reads this container's own Mounts and hands
+  # the daemon whatever Source it finds, which works for a named volume and a
+  # bind alike. What it breaks is everything that assumes the app and the
+  # sidecar share `${DATA_DIR}/apps/<slug>`: `_rmtree_config_dir`
+  # (app/api/data_apps.py) deletes that directory on app/draft delete because
+  # its `config.json` holds the service JWT in plaintext — and from the app's
+  # host-bound `/data` the sidecar's copy simply isn't there, so the delete
+  # hits FileNotFoundError, swallows it by design, and the credential file
+  # stays behind on every Terraform-deployed VM.
+  #
+  # UPGRADE NOTE for an instance that already ran `--profile apps` under this
+  # overlay: this moves the sidecar's `${DATA_DIR}` from the Docker-managed
+  # `data:` volume to the host `/data`, so each already-deployed app's
+  # `apps/<slug>/config.json` — the file whose plaintext service JWT motivates
+  # this change — stays behind in the OLD volume, now referenced by nothing
+  # and out of `_rmtree_config_dir`'s reach for good. Running containers are
+  # unaffected (they keep the bind they were created with); the next deploy
+  # of each app writes its config under the host path and from then on delete
+  # cleans up correctly. To clear the stranded copies, after recreating the
+  # stack:
+  #
+  #   docker run --rm -v <project>_data:/old alpine sh -c 'rm -rf /old/apps'
+  #
+  # Revoke-on-delete already happened server-side, so a JWT left in an
+  # orphaned file is dead for any app that was deleted; the live ones are
+  # simply duplicated until their next deploy.
+  #
+  # The docker socket mount must be restated: `!override` replaces the whole
+  # list, and without the socket the sidecar has no daemon at all.
+  apps-runner:
+    volumes: !override
+      - /data:/data
+      - /var/run/docker.sock:/var/run/docker.sock

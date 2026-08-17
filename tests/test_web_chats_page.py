@@ -444,47 +444,56 @@ class TestChatsPageScript:
 
 
 class TestRailWorkingSet:
-    def test_rail_caps_recents_and_links_out(self, web_client, admin_cookie, monkeypatch):
+    def test_rail_caps_recents_under_a_chats_destination(self, web_client, admin_cookie, monkeypatch):
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         _enable_chat(web_client, monkeypatch)
         rail = web_client.get("/library", cookies=admin_cookie).text
         rail = rail.split('<nav class="rail"', 1)[1].split("</nav>", 1)[0]
-        # The section says it is a slice, or the link below reads as a second way
-        # to the same thing.
+        # The section says it is a slice, or it repeats the destination row above.
         assert '<span class="rail-chatsec-txt">Recent</span>' in rail
         assert '<span class="rail-chatsec-txt">Pinned</span>' in rail
-        # One link out, to the page — and it NAVIGATES; it is not the "Show more"
-        # in-place expander the rail used to carry.
-        assert 'id="rail-view-all-chats"' in rail
+        # One way out, to the page — a DESTINATION ROW, and it NAVIGATES; it is
+        # not the "Show more" in-place expander the rail used to carry.
+        assert 'id="nav-chats"' in rail
         assert 'href="/chats"' in rail
-        assert "View all chats" in rail
         assert "Show less" not in rail and "rail-history-more" not in rail
-        # It sits directly under the lists, INSIDE the scroll box — under the last
-        # recent row rather than pinned to the foot of the region, where a tall
-        # window left it stranded a hand's width below the list.
-        body_start = rail.index('id="rail-history-body"')
-        link_at = rail.index('id="rail-view-all-chats"')
-        assert link_at > rail.index('id="rail-chats-body"'), "the link follows the Recent list"
-        assert link_at < rail.index("</section>", body_start + rail[body_start:].index("rail-history-all"))
-        # ...and it is a sibling of the two sections, not a child of Recent:
-        # railSectionsSync can hide either section, and the way to the page has to
-        # survive both.
-        assert rail.index('id="rail-chats"') < link_at
+        # It sits ABOVE the lists, in the nav zone with New chat — not at the foot
+        # of the scroll box. That is the whole fix: the scroll box is text-only, so
+        # the collapsed rail hides it, and the collapsed rail is the default on
+        # /admin — a "View all chats" link in there left /chats with no reachable
+        # entry point at all from an admin page.
+        assert 'id="rail-view-all-chats"' not in rail
+        assert "View all chats" not in rail
+        chats_at = rail.index('id="nav-chats"')
+        assert chats_at < rail.index('class="rail-history"'), "Chats leads the lists, it does not close them"
+        assert rail.index('id="new-chat"') < chats_at, "verb then noun: New chat, then Chats"
+        # And it lives in the nav zone, so it survives the collapse the lists don't.
+        zone = rail[rail.index('class="rail-nav rail-nav-top"') : rail.index('class="rail-history"')]
+        assert 'id="nav-chats"' in zone
 
-    def test_view_all_chats_takes_no_active_state(self, web_client, admin_cookie, monkeypatch):
-        """`.on` in the rail means "the thing you are looking at is in this list".
-        /chats IS the whole list, so tinting the link would put a second
-        you-are-here marker in a column whose rows already carry one for the open
-        conversation — and it would read as a fourth nav destination besides."""
+    def test_chats_row_is_active_on_the_page_it_leads_to(self, web_client, admin_cookie, monkeypatch):
+        """`.on` in the rail means "you are looking at this". /chats is a
+        destination like Library or Agents, so it takes the tint there — and only
+        there. On /chat the pre-conversation state belongs to New chat above it,
+        and an open conversation is marked in the list below; a Chats row lit on
+        either would put a second you-are-here marker in the column.
+
+        (The link this row replaced deliberately took NO active state, because a
+        quiet footer link tinted like a nav row read as a fourth destination. Now
+        that it IS a destination, the tint is the honest signal.)"""
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         _enable_chat(web_client, monkeypatch)
         _seed(web_client, title="Something")
-        rail = web_client.get("/chats", cookies=admin_cookie).text
-        rail = rail.split('<nav class="rail"', 1)[1].split("</nav>", 1)[0]
-        link = rail[rail.index('class="rail-history-all') :][:120]
-        assert "on" not in link.split(">", 1)[0].split('class="')[1].split('"')[0].split()
-        css = web_client.get("/static/css/rail.css").text
-        assert 'html[data-ui-layout="rail"] .rail-history-all.on {' not in css
+
+        def _classes(path: str) -> list[str]:
+            rail = web_client.get(path, cookies=admin_cookie).text
+            rail = rail.split('<nav class="rail"', 1)[1].split("</nav>", 1)[0]
+            row = rail[rail.index('id="nav-chats"') - 200 : rail.index('id="nav-chats"')]
+            return row[row.rindex('class="') + 7 :].split('"')[0].split()
+
+        assert "on" in _classes("/chats")
+        assert "on" not in _classes("/chat")
+        assert "on" not in _classes("/library")
 
     def test_both_renderers_cap_the_recent_feed_but_never_the_pins(self):
         """One rail, one contract: five recent rows on /library and unbounded on
@@ -519,11 +528,10 @@ class TestRailWorkingSet:
         css = (STATIC / "css" / "rail.css").read_text(encoding="utf-8")
         assert 'html[data-ui-layout="rail"] .rail-history .cloud-chat-list-group-header {' not in css
 
-    def test_topnav_reaches_the_page_too(self, web_client, admin_cookie, monkeypatch):
-        """The rail's link is the rail's; topnav's conversations column needs its
-        own or the page is unreachable in that chrome."""
-        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
-        _enable_chat(web_client, monkeypatch)
-        html = web_client.get("/chat", cookies=admin_cookie).text
-        assert 'class="cloud-chat-sidebar-all" href="/chats"' in html
-        assert "View all chats" in html
+    # `test_topnav_reaches_the_page_too` was here: the topnav's conversations
+    # column carried its own "View all chats" link, because the rail's link was
+    # the rail's alone. Wave 0 (2026-08) retired that chrome, and the rail
+    # answers reachability with a Chats DESTINATION ROW rather than a link
+    # inside the conversation region — deliberately, since a way out cannot
+    # live in the one part of the rail that collapse hides. That row is pinned
+    # by tests/test_ui_layout_theme.py::TestRailChatsDestination.

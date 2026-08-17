@@ -132,8 +132,8 @@ class TestWebUISmoke:
         resp = web_client.get("/admin/users", cookies=admin_cookie)
         assert resp.status_code == 200
         body = resp.text
-        # Shared header chrome
-        assert "app-header" in body
+        # Shared chrome — the rail, the only one there is since Wave 0 (2026-08).
+        assert 'class="rail' in body
         # User-self menu post-consolidation: Profile + My activity only.
         # Auth debug folded into /me/profile troubleshooting section; the
         # /me/debug nav entry is gone.
@@ -150,12 +150,14 @@ class TestWebUISmoke:
 
     def test_nav_shows_user_self_links_for_non_admin(self, web_client, analyst_cookie):
         """Non-admins see Profile + My activity user-menu links — no admin
-        Tokens entry, no Auth debug entry (folded into /me/profile)."""
-        resp = web_client.get("/dashboard", cookies=analyst_cookie)
-        assert resp.status_code in (200, 302)
-        if resp.status_code == 302:
-            # Dashboard may redirect in some flows; follow it for nav check.
-            resp = web_client.get(resp.headers["location"], cookies=analyst_cookie)
+        Tokens entry, no Auth debug entry (folded into /me/profile).
+
+        Rendered off /library. /dashboard is a redirect since Wave 0 (2026-08),
+        and the follow-the-Location dance this used to do dropped the cookie on
+        the second hop, landing on /login — which has no nav at all, so every
+        `not in` assertion below would have passed for the wrong reason."""
+        resp = web_client.get("/library", cookies=analyst_cookie)
+        assert resp.status_code == 200
         body = resp.text
         assert 'href="/me/profile"' in body
         assert ">Profile<" in body
@@ -170,23 +172,38 @@ class TestWebUISmoke:
         # Non-admins must NOT see the admin Tokens link inside the Admin dropdown.
         assert 'href="/admin/tokens"' not in body
 
-    def test_nav_shows_admin_dropdown_for_admin(self, web_client, admin_cookie):
-        """Admins see the same user-self menu + the Admin dropdown with
-        cross-user Tokens / Tables / Users entries."""
-        resp = web_client.get("/dashboard", cookies=admin_cookie)
-        assert resp.status_code in (200, 302)
-        if resp.status_code == 302:
-            resp = web_client.get(resp.headers["location"], cookies=admin_cookie)
+    def test_nav_shows_admin_surfaces_for_admin(self, web_client, admin_cookie):
+        """Admins see the user-self menu plus a route to the admin area, and
+        the admin area still carries cross-user Tokens / Tables / Users.
+
+        The DOM half and the inventory half are asserted separately on purpose.
+        This used to read every admin href off one page, because the topnav's
+        Admin mega-menu rendered the whole inventory at once. The rail carries
+        a single `/admin` destination and the sidebar renders only the ACTIVE
+        section's body server-side (`test_web_admin_nav.py::
+        test_only_the_active_section_renders_expanded_server_side`), so no
+        single page can show them all — scraping one would just re-encode which
+        section happens to be open.
+        """
+        resp = web_client.get("/admin/users", cookies=admin_cookie)
+        assert resp.status_code == 200
         body = resp.text
         # User-self menu — same as non-admin; Auth debug gone from nav.
         assert 'href="/me/activity"' in body
         assert 'href="/me/debug"' not in body
         assert ">My tokens<" not in body
-        # Admin dropdown — Tables / Tokens / Users / Groups / Resource access / Server config.
+        # The rail's door into the admin area, and the People tab strip.
+        assert 'href="/admin"' in body
         assert 'href="/admin/tokens"' in body
-        assert 'href="/admin/tables"' in body
-        assert ">Tables<" in body
-        assert ">Tokens<" in body
+
+        # The inventory itself — the single source both the sidebar and the
+        # coverage guard read.
+        from app.web.admin_nav import ADMIN_NAV_SECTIONS, _section_entries
+
+        hrefs = {e["href"] for s in ADMIN_NAV_SECTIONS for e in _section_entries(s)}
+        hrefs |= {s["href"] for s in ADMIN_NAV_SECTIONS if s.get("href")}
+        for href in ("/admin/tables", "/admin/tokens", "/admin/users"):
+            assert href in hrefs, f"{href} is not in the admin nav inventory"
 
     def test_profile_renders_account_details(self, web_client, admin_cookie):
         """/me/profile renders a real profile page with email + inline PAT section.
@@ -356,17 +373,17 @@ class TestClaudeSetupPreview:
         assert "3) Verify the login" not in clipboard
         assert "2) Log in" not in clipboard
 
-    def test_dashboard_setup_cta_links_to_setup(self, web_client, admin_cookie):
-        """Dashboard setup CTA shows env-setup-cta and a link to /setup instead
-        of an inline collapsed preview."""
-        resp = web_client.get("/dashboard", cookies=admin_cookie)
-        assert resp.status_code == 200
-        body = resp.text
-        assert "env-setup-cta" in body
-        assert "Open the full setup page" in body
-        assert 'href="/setup"' in body
-        # inline <details> preview block must no longer appear
-        assert 'aria-label="Preview of the clipboard payload"' not in body
+    # `test_dashboard_setup_cta_links_to_setup` was here. It pinned the
+    # `.env-setup-cta` card on /dashboard — a "link to /setup instead of an
+    # inline collapsed preview" — and both halves of the premise are gone:
+    # /dashboard became an unconditional redirect in Wave 0 (2026-08) and its
+    # template, the only place `env-setup-cta` was ever emitted, went with it.
+    # Not re-pinned onto /home or /install: those pages deliberately DO carry
+    # the inline preview (`aria-label="Preview of the clipboard payload"`), so
+    # the rule this asserted does not hold there and restating it would invent
+    # a contract. The clipboard payload itself stays guarded — it is
+    # single-sourced from `_claude_setup_instructions.jinja` and covered by
+    # `tests/test_welcome_template_api.py`.
 
     def test_install_mcp_card_removed(self, web_client):
         """The stale 'Use with Claude Code / MCP' card on /setup has been
@@ -390,15 +407,44 @@ class TestAdminRoleGuards:
         resp = web_client.get("/admin/tables", cookies=admin_cookie)
         assert resp.status_code == 200
 
-    def test_analyst_cannot_access_admin_access_page(self, web_client, analyst_cookie):
-        """The unified /admin/access page replaces the dropped
-        /admin/permissions page. Non-admin must still be blocked."""
-        resp = web_client.get("/admin/access", cookies=analyst_cookie)
+    def test_analyst_cannot_access_admin_groups_page(self, web_client, analyst_cookie):
+        """Grants moved onto the group detail page's Access tab; /admin/groups
+        is the entry point. Non-admin must still be blocked."""
+        resp = web_client.get("/admin/groups", cookies=analyst_cookie)
         assert resp.status_code == 403
 
-    def test_admin_can_access_admin_access_page(self, web_client, admin_cookie):
+    def test_admin_can_access_admin_groups_page(self, web_client, admin_cookie):
+        resp = web_client.get("/admin/groups", cookies=admin_cookie)
+        assert resp.status_code == 200
+
+    def test_access_page_renders(self, web_client, admin_cookie):
+        """/admin/access is a real page again — the cross-group Access
+        workspace plus Simulate. It was a standalone matrix, was retired into
+        the group detail page's Access tab (grants key on `group_id`), and
+        came back as the surface that tab cannot be: one place to move between
+        groups, and to answer "why can't this person see X?"."""
         resp = web_client.get("/admin/access", cookies=admin_cookie)
         assert resp.status_code == 200
+        assert "Simulate a person" in resp.text
+
+    def test_legacy_grants_url_redirects_to_access(self, web_client, admin_cookie):
+        """The page's oldest URL 308s onto it rather than 404ing, carrying
+        ?group= through so an old deep link still preselects that group."""
+        resp = web_client.get("/admin/grants", cookies=admin_cookie, follow_redirects=False)
+        assert resp.status_code == 308
+        assert resp.headers["location"] == "/admin/access"
+
+        resp = web_client.get("/admin/grants?group=grp-123", cookies=admin_cookie, follow_redirects=False)
+        assert resp.status_code == 308
+        assert resp.headers["location"] == "/admin/access?group=grp-123"
+
+    def test_access_urls_keep_their_admin_gate(self, web_client, analyst_cookie):
+        """Both the page and the legacy redirect refuse a non-admin — the
+        redirect must not answer 308 naming an internal URL where the page
+        answers 403."""
+        for url in ("/admin/access", "/admin/grants"):
+            resp = web_client.get(url, cookies=analyst_cookie, follow_redirects=False)
+            assert resp.status_code == 403, url
 
     def test_analyst_cannot_access_corporate_memory_admin(self, web_client, admin_cookie, analyst_cookie):
         resp = web_client.get("/admin/corporate-memory", cookies=analyst_cookie)
@@ -636,24 +682,81 @@ class TestUnauthenticatedHtmlRedirects:
             f"Expected google login URL with ?next in login page; snippet: {body[:800]}"
         )
 
-    def test_login_email_page_extracts_and_renders_next(self, web_client):
+    def test_login_email_page_extracts_and_renders_next(self, web_client, monkeypatch):
         """/login/email (magic link) must extract ?next from the URL and
         emit it into the hidden form field so it round-trips to the POST."""
+        monkeypatch.setenv("SMTP_HOST", "smtp.example.com")  # mail transport → page renders
         resp = web_client.get("/login/email?next=/catalog")
         assert resp.status_code == 200
         body = resp.text
         # The template renders <input type="hidden" name="next" value="/catalog">
         assert 'name="next" value="/catalog"' in body, f"Expected /catalog in next hidden field; snippet: {body[:800]}"
 
-    def test_login_email_page_rejects_open_redirect_in_next(self, web_client):
+    def test_login_email_page_rejects_open_redirect_in_next(self, web_client, monkeypatch):
         """Hostile ?next values (e.g. //evil) must be sanitized away before
         the hidden field is rendered."""
+        monkeypatch.setenv("SMTP_HOST", "smtp.example.com")
         resp = web_client.get("/login/email?next=//evil.example/")
         assert resp.status_code == 200
         body = resp.text
         assert "evil.example" not in body
         # Empty string is the sanitized default.
         assert 'name="next" value=""' in body
+
+    def test_login_email_page_renders_magic_link_form(self, web_client, monkeypatch):
+        """/login/email must render the magic-link form, not the password
+        form. The password form posts to /auth/password/*, which 404s
+        under an `auth.providers: [email]` allowlist — that mismatch used
+        to lock the whole web UI out (regression)."""
+        monkeypatch.setenv("SMTP_HOST", "smtp.example.com")
+        resp = web_client.get("/login/email")
+        assert resp.status_code == 200
+        body = resp.text
+        assert 'action="/auth/email/send-link/web"' in body
+        assert "/auth/password/login/web" not in body
+
+    def test_login_email_page_redirects_when_no_mail_transport(self, web_client, monkeypatch):
+        """Without SMTP/SendGrid (and outside dev mode) the magic-link page
+        would take an email and claim a link was sent that never arrives, so
+        it redirects to /login with an explanatory error instead of pretending
+        (Devin review on #1288)."""
+        for var in ("SMTP_HOST", "SENDGRID_API_KEY", "LOCAL_DEV_MODE"):
+            monkeypatch.delenv(var, raising=False)
+        resp = web_client.get("/login/email", follow_redirects=False)
+        assert resp.status_code == 302
+        assert resp.headers["location"] == "/login?error=email_not_configured"
+
+    def test_send_link_web_post_refuses_when_no_mail_transport(self, web_client, monkeypatch):
+        """The POST sibling must refuse on its own — it is reachable without a
+        freshly-rendered GET (stale form, bookmark, scripted client), and
+        without a transport the sent-page's "We sent a sign-in link" would be
+        a lie: delivery is silently skipped (Devin Review on PR #1288)."""
+        for var in ("SMTP_HOST", "SENDGRID_API_KEY", "LOCAL_DEV_MODE"):
+            monkeypatch.delenv(var, raising=False)
+        resp = web_client.post(
+            "/auth/email/send-link/web",
+            data={"email": "someone@example.com"},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+        assert resp.headers["location"] == "/login?error=email_not_configured"
+
+    def test_sent_page_expiry_copy_is_computed_from_the_token_ttl(self, web_client, monkeypatch):
+        """The sent-page's expiry sentence must be rendered from
+        MAGIC_LINK_EXPIRY, not hand-copied — the template said "15 minutes"
+        while the token actually lived an hour (Devin Review on PR #1288).
+        The expectation is derived from the constant so a TTL change cannot
+        re-split the copy from the behavior."""
+        from app.auth.providers.email import MAGIC_LINK_EXPIRY
+
+        monkeypatch.setenv("SMTP_HOST", "smtp.example.com")
+        monkeypatch.delenv("LOCAL_DEV_MODE", raising=False)
+        resp = web_client.post(
+            "/auth/email/send-link/web",
+            data={"email": "someone@example.com"},
+        )
+        assert resp.status_code == 200
+        assert f"The link expires in {MAGIC_LINK_EXPIRY // 60} minutes." in resp.text
 
     def test_google_login_stashes_safe_next_in_session(self, web_client, monkeypatch):
         """google_login() must stash the sanitized next_path in the session.

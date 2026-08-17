@@ -5,7 +5,9 @@ the manifest's hash for that table. If the orchestrator stores a
 fingerprint (mtime+size) or a truncated MD5, every `agnes pull` of a
 Keboola local-mode table fails with `hash mismatch: expected … got …`.
 """
+
 import hashlib
+import logging
 from unittest.mock import patch
 
 import duckdb
@@ -25,8 +27,12 @@ def system_db_path(tmp_path):
     try:
         _ensure_schema(conn)
         TableRegistryRepository(conn).register(
-            id="orders", name="orders", source_type="keboola",
-            bucket="in.c-crm", source_table="orders", query_mode="local",
+            id="orders",
+            name="orders",
+            source_type="keboola",
+            bucket="in.c-crm",
+            source_table="orders",
+            query_mode="local",
             description="",
         )
     finally:
@@ -49,22 +55,23 @@ def parquet_with_known_md5(tmp_path):
 def _run_update(system_db_path, meta_rows, data_dir):
     """Helper: invoke `_update_sync_state` with `get_system_db` redirected
     at our test DB and `_get_extracts_dir` redirected at our temp tree."""
+
     def fake_get_system_db():
         return duckdb.connect(str(system_db_path))
 
     # The orchestrator now writes sync_state through the repo factory, which
     # binds get_system_db at src.repositories import time — patch both the
     # source and the factory's binding so the redirect takes effect.
-    with patch("src.db.get_system_db", side_effect=fake_get_system_db), \
-         patch("src.repositories.get_system_db", side_effect=fake_get_system_db), \
-         patch("src.orchestrator._get_extracts_dir", return_value=data_dir / "extracts"):
+    with (
+        patch("src.db.get_system_db", side_effect=fake_get_system_db),
+        patch("src.repositories.get_system_db", side_effect=fake_get_system_db),
+        patch("src.orchestrator._get_extracts_dir", return_value=data_dir / "extracts"),
+    ):
         orch = SyncOrchestrator.__new__(SyncOrchestrator)
         orch._update_sync_state(meta_rows=meta_rows, source_name="keboola")
 
 
-def test_update_sync_state_stores_content_md5(
-    system_db_path, parquet_with_known_md5, tmp_path
-):
+def test_update_sync_state_stores_content_md5(system_db_path, parquet_with_known_md5, tmp_path):
     """The hash written into sync_state must equal MD5 of the parquet's
     raw bytes, full 32 hex chars — same shape as the CLI's `_md5_file`."""
     pq_path, expected_md5 = parquet_with_known_md5
@@ -89,9 +96,7 @@ def test_update_sync_state_stores_content_md5(
     assert len(stored) == 32, "full hex MD5, not truncated"
 
 
-def test_update_sync_state_empty_hash_when_parquet_missing(
-    system_db_path, tmp_path
-):
+def test_update_sync_state_empty_hash_when_parquet_missing(system_db_path, tmp_path):
     """If the parquet isn't on disk (race / failed extract), store empty
     string rather than crashing or writing a stale hash."""
     (tmp_path / "extracts" / "keboola" / "data").mkdir(parents=True)
@@ -110,6 +115,67 @@ def test_update_sync_state_empty_hash_when_parquet_missing(
     assert state["hash"] == ""
 
 
+def test_update_sync_state_warns_when_both_layouts_present(system_db_path, parquet_with_known_md5, tmp_path, caplog):
+    """A flat parquet sitting beside a partition dir freezes distribution
+    SILENTLY, so it has to be logged.
+
+    `_update_sync_state` prefers the flat file, which means the manifest
+    advertises the table as single-file hashed from the STALE parquet. The
+    client downloads it and the md5 MATCHES — `agnes pull` reports success
+    while the analyst keeps receiving pre-conversion data indefinitely and the
+    server's own view reads the fresh partitions. Nothing else surfaces this,
+    and nothing removes the stale sibling (a Keboola table flipped to
+    `sync_strategy: partitioned` leaves it behind; the client-side
+    `_drop_stale_layout` has no server equivalent).
+    """
+    pq_path, _ = parquet_with_known_md5
+    # Same table, now ALSO partitioned: extracts/keboola/data/orders/<part>.
+    part_dir = pq_path.parent / "orders" / "month=2026-06"
+    part_dir.mkdir(parents=True)
+    (part_dir / "data.parquet").write_bytes(b"PAR1fresh-partitioned-dataPAR1")
+
+    with caplog.at_level("WARNING"):
+        _run_update(
+            system_db_path,
+            meta_rows=[("orders", 100, pq_path.stat().st_size, "local")],
+            data_dir=tmp_path,
+        )
+
+    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert any("BOTH a flat parquet" in w and "orders" in w for w in warnings), (
+        f"both-layouts-on-disk must warn — it is otherwise invisible; got {warnings!r}"
+    )
+
+    # Logging only: the warning must not change what gets written. Precedence
+    # is unchanged (flat file still wins, `parts` still NULL) — flipping it is
+    # the deferred follow-up the TODO in `_update_sync_state` describes.
+    conn = duckdb.connect(str(system_db_path))
+    try:
+        state = SyncStateRepository(conn).get_table_state("orders")
+    finally:
+        conn.close()
+    assert state["hash"] == hashlib.md5(pq_path.read_bytes()).hexdigest(), (
+        "the flat file must still win — this change only reports the condition"
+    )
+    assert not state.get("parts"), "parts must still be NULL when the flat file wins"
+
+
+def test_update_sync_state_silent_when_only_one_layout_present(
+    system_db_path, parquet_with_known_md5, tmp_path, caplog
+):
+    """The healthy single-file case must NOT warn, or the signal is noise."""
+    pq_path, _ = parquet_with_known_md5
+    with caplog.at_level("WARNING"):
+        _run_update(
+            system_db_path,
+            meta_rows=[("orders", 100, pq_path.stat().st_size, "local")],
+            data_dir=tmp_path,
+        )
+    assert not [r for r in caplog.records if "BOTH a flat parquet" in r.getMessage()], (
+        "a normal single-file table must not warn"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Partitioned tables: per-part hashing (partitioned distribution).
 # A table stored as a directory of parquet parts (Jira hive
@@ -118,7 +184,7 @@ def test_update_sync_state_empty_hash_when_parquet_missing(
 # today (no single `{table}.parquet` for the single-file path to find).
 # ---------------------------------------------------------------------------
 
-from src.orchestrator import _hash_table_parts, _parts_rollup_hash  # noqa: E402
+from src.orchestrator import _hash_table_parts, _parts_rollup_hash
 
 
 def test_hash_table_parts_hive_layout(tmp_path):
@@ -194,9 +260,7 @@ def test_update_sync_state_stores_parts_for_partitioned_table(system_db_path, tm
     assert state["file_size_bytes"] == len(b)
 
 
-def test_update_sync_state_single_file_still_has_no_parts(
-    system_db_path, parquet_with_known_md5, tmp_path
-):
+def test_update_sync_state_single_file_still_has_no_parts(system_db_path, parquet_with_known_md5, tmp_path):
     """Backward-compat: a single-file table writes parts=None (NULL)."""
     pq_path, _ = parquet_with_known_md5
     _run_update(
@@ -210,3 +274,125 @@ def test_update_sync_state_single_file_still_has_no_parts(
     finally:
         conn.close()
     assert state["parts"] is None
+
+
+# ---------------------------------------------------------------------------
+# Both-layouts collision (#1339): a flat `<table>.parquet` file AND a
+# `<table>/` partition directory present at the same time. The flat file
+# silently wins today — unchanged by this fix (precedence + stale-sibling
+# cleanup are open human decisions, see the TODO(#1339) in the source) — but
+# until now the collision was invisible: the manifest kept advertising the
+# flat file's (possibly stale) hash with nothing to say a fresher directory
+# sat right beside it. This must be loud, not silent.
+# ---------------------------------------------------------------------------
+
+
+def _write_both_layouts(tmp_path):
+    """Flat `orders.parquet` + a sibling `orders/` partition directory."""
+    extracts = tmp_path / "extracts" / "keboola" / "data"
+    extracts.mkdir(parents=True)
+    flat_bytes = b"PAR1" + b"stale" * 50 + b"PAR1"
+    pq_path = extracts / "orders.parquet"
+    pq_path.write_bytes(flat_bytes)
+    table_dir = extracts / "orders"
+    table_dir.mkdir()
+    (table_dir / "2025_11.parquet").write_bytes(b"fresh-partitioned-bytes")
+    return pq_path, table_dir, flat_bytes
+
+
+def test_both_layouts_collision_logs_error_naming_both_paths_and_table(system_db_path, tmp_path, caplog):
+    pq_path, table_dir, _ = _write_both_layouts(tmp_path)
+
+    with caplog.at_level(logging.ERROR, logger="src.orchestrator"):
+        _run_update(
+            system_db_path,
+            meta_rows=[("orders", 100, pq_path.stat().st_size, "local")],
+            data_dir=tmp_path,
+        )
+
+    collision_records = [
+        r
+        for r in caplog.records
+        if r.levelname == "ERROR"
+        and "orders" in r.getMessage()
+        and str(pq_path) in r.getMessage()
+        and str(table_dir) in r.getMessage()
+    ]
+    assert collision_records, (
+        "expected an ERROR log naming the table id and BOTH concrete paths; "
+        f"got: {[r.getMessage() for r in caplog.records]}"
+    )
+
+
+def test_both_layouts_collision_flags_sync_state_but_keeps_flat_hash(system_db_path, tmp_path):
+    """The served bytes must stay byte-for-byte identical to the flat-only
+    case (the flat file still wins) — only the flagging is new."""
+    pq_path, table_dir, flat_bytes = _write_both_layouts(tmp_path)
+
+    _run_update(
+        system_db_path,
+        meta_rows=[("orders", 100, pq_path.stat().st_size, "local")],
+        data_dir=tmp_path,
+    )
+
+    conn = duckdb.connect(str(system_db_path))
+    try:
+        state = SyncStateRepository(conn).get_table_state("orders")
+    finally:
+        conn.close()
+
+    assert state is not None
+    # Bytes served: identical to the flat-only case — precedence unchanged.
+    assert state["hash"] == hashlib.md5(flat_bytes).hexdigest()
+    assert state["parts"] is None
+    assert state["rows"] == 100
+    # No longer invisible: flagged via the existing sync_state error
+    # mechanism (the same set_error() `GET /api/admin/registry` already
+    # surfaces as `last_sync_error`).
+    assert state["status"] == "error"
+    assert str(pq_path) in (state["error"] or "")
+    assert str(table_dir) in (state["error"] or "")
+
+
+def test_flat_only_layout_is_not_flagged_as_a_collision(system_db_path, parquet_with_known_md5, tmp_path, caplog):
+    """Regression pin: the ordinary single-file case must keep behaving
+    exactly as before — no ERROR log, no sync_state error flip."""
+    pq_path, expected_md5 = parquet_with_known_md5
+    with caplog.at_level(logging.ERROR, logger="src.orchestrator"):
+        _run_update(
+            system_db_path,
+            meta_rows=[("orders", 100, pq_path.stat().st_size, "local")],
+            data_dir=tmp_path,
+        )
+
+    assert not [r for r in caplog.records if r.levelname == "ERROR" and "orders" in r.getMessage()]
+
+    conn = duckdb.connect(str(system_db_path))
+    try:
+        state = SyncStateRepository(conn).get_table_state("orders")
+    finally:
+        conn.close()
+    assert state["hash"] == expected_md5
+    assert state["status"] == "ok"
+    assert not state.get("error")
+
+
+def test_dir_only_layout_is_not_flagged_as_a_collision(system_db_path, tmp_path, caplog):
+    """Regression pin: the ordinary partitioned-only case (no flat sibling)
+    must keep behaving exactly as before either."""
+    tdir = tmp_path / "extracts" / "keboola" / "data" / "orders" / "month=2026-06"
+    tdir.mkdir(parents=True)
+    (tdir / "data.parquet").write_bytes(b"PAR1" + b"y" * 512 + b"PAR1")
+
+    with caplog.at_level(logging.ERROR, logger="src.orchestrator"):
+        _run_update(system_db_path, meta_rows=[("orders", 50, 0, "local")], data_dir=tmp_path)
+
+    assert not [r for r in caplog.records if r.levelname == "ERROR" and "orders" in r.getMessage()]
+
+    conn = duckdb.connect(str(system_db_path))
+    try:
+        state = SyncStateRepository(conn).get_table_state("orders")
+    finally:
+        conn.close()
+    assert state["status"] == "ok"
+    assert not state.get("error")

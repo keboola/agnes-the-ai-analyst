@@ -39,6 +39,14 @@ def _metric_item(name, sql, dataset, model_uuid="model-1"):
     }
 
 
+def _dataset_item(table_id="in.c-example_source.orders", name="orders", model_uuid="model-1"):
+    return {
+        "type": "semantic-dataset",
+        "id": f"ds-{table_id}",
+        "attributes": {"name": name, "tableId": table_id, "modelUUID": model_uuid},
+    }
+
+
 class TestSyncSemanticLayer:
     def test_creates_metrics_from_metastore(self, e2e_env):
         from connectors.keboola.semantic_layer import sync_semantic_layer
@@ -1310,6 +1318,227 @@ def test_metric_definitions_has_source_ref_column(tmp_path):
     assert "source_ref" in gcols
 
 
+def _glossary_item(term, definition="A definition."):
+    return {
+        "type": "semantic-glossary",
+        "id": f"g-{term}",
+        "attributes": {"term": term, "definition": definition},
+    }
+
+
+def _multi_model_metastore(models, per_model):
+    """Fake MetastoreClient whose per-type lists are keyed by model uuid.
+
+    ``per_model`` is ``{model_uuid: {item_type: [...]}}``; anything absent
+    reads as an empty list, so a test spells out only the types it cares
+    about. The single-model fakes elsewhere in this file ignore the
+    ``model_uuid`` argument entirely — which is precisely what could not
+    catch a sync that only ever looks at one model.
+    """
+    fake = MagicMock()
+
+    def _list_items(item_type, model_uuid=None):
+        if item_type == "semantic-model":
+            return models
+        return (per_model.get(model_uuid) or {}).get(item_type, [])
+
+    fake.list_items.side_effect = _list_items
+    return fake
+
+
+class TestMultiModelSync:
+    """A project may expose more than one semantic model — the normal case
+    once a model shared from another project is linked into the consumer's
+    Metastore (keboola/ui#7739 + the `targeted` scope in
+    keboola/go-monorepo#571). Every model must be imported, and one model's
+    prune pass must never reach another model's rows."""
+
+    def _run(self, models, per_model):
+        from connectors.keboola.semantic_layer import sync_semantic_layer
+
+        fake_storage = MagicMock()
+        fake_storage.verify_token.return_value = {"isMasterToken": True}
+        fake_metastore = _multi_model_metastore(models, per_model)
+
+        with (
+            patch("connectors.keboola.storage_api.KeboolaStorageClient", return_value=fake_storage),
+            patch("connectors.keboola.metastore_client.MetastoreClient", return_value=fake_metastore),
+        ):
+            return sync_semantic_layer(
+                keboola_url="https://connection.keboola.com",
+                keboola_token="master-tok",
+            )
+
+    def test_imports_metrics_from_every_model(self, e2e_env):
+        from src.repositories import metric_repo
+
+        _register_keboola_table("in.c-example_source", "orders", "crm_orders")
+
+        result = self._run(
+            [_model_item("model-1", "core"), _model_item("model-2", "shared")],
+            {
+                "model-1": {
+                    "semantic-metric": [
+                        _metric_item("revenue", 'SUM("amount")', "in.c-example_source.orders", "model-1")
+                    ]
+                },
+                "model-2": {
+                    "semantic-metric": [
+                        _metric_item("orders_count", "COUNT(*)", "in.c-example_source.orders", "model-2")
+                    ]
+                },
+            },
+        )
+
+        assert result["status"] == "ok"
+        assert result["created_or_updated"] == 2
+        assert metric_repo().get("keboola/model-1/revenue") is not None
+        assert metric_repo().get("keboola/model-2/orders_count") is not None
+
+    def test_prune_spares_the_other_models_rows(self, e2e_env):
+        """The regression that a per-model prune would cause: model-2's pass
+        must not delete model-1's rows just because they are absent from
+        model-2's metric list."""
+        from src.repositories import metric_repo
+
+        _register_keboola_table("in.c-example_source", "orders", "crm_orders")
+
+        models = [_model_item("model-1", "core"), _model_item("model-2", "shared")]
+        self._run(
+            models,
+            {
+                "model-1": {
+                    "semantic-metric": [
+                        _metric_item("revenue", 'SUM("amount")', "in.c-example_source.orders", "model-1")
+                    ]
+                },
+                "model-2": {
+                    "semantic-metric": [
+                        _metric_item("orders_count", "COUNT(*)", "in.c-example_source.orders", "model-2"),
+                        _metric_item("aov", 'AVG("amount")', "in.c-example_source.orders", "model-2"),
+                    ]
+                },
+            },
+        )
+        assert metric_repo().get("keboola/model-1/revenue") is not None
+        assert metric_repo().get("keboola/model-2/aov") is not None
+
+        # Second run: model-2 dropped "aov". Only that row may go.
+        result = self._run(
+            models,
+            {
+                "model-1": {
+                    "semantic-metric": [
+                        _metric_item("revenue", 'SUM("amount")', "in.c-example_source.orders", "model-1")
+                    ]
+                },
+                "model-2": {
+                    "semantic-metric": [
+                        _metric_item("orders_count", "COUNT(*)", "in.c-example_source.orders", "model-2")
+                    ]
+                },
+            },
+        )
+
+        assert result["pruned"] == 1
+        assert metric_repo().get("keboola/model-2/aov") is None
+        assert metric_repo().get("keboola/model-1/revenue") is not None
+        assert metric_repo().get("keboola/model-2/orders_count") is not None
+
+    def test_imports_glossary_from_every_model(self, e2e_env):
+        from src.repositories import glossary_repo
+
+        _register_keboola_table("in.c-example_source", "orders", "crm_orders")
+
+        result = self._run(
+            [_model_item("model-1", "core"), _model_item("model-2", "shared")],
+            {
+                "model-1": {"semantic-glossary": [_glossary_item("churn")]},
+                "model-2": {"semantic-glossary": [_glossary_item("cohort")]},
+            },
+        )
+
+        assert result["glossary_created_or_updated"] == 2
+        terms = {g["term"] for g in glossary_repo().list(limit=100)}
+        assert {"churn", "cohort"} <= terms
+
+    def test_same_metric_name_in_two_models_keeps_the_first(self, e2e_env):
+        """Cross-project identity is unresolved upstream (open question #5 in
+        the prototype brief): two models can legitimately publish `revenue`.
+        Names must stay unique in the catalog, so the second is counted as a
+        conflict rather than shadowing the first."""
+        from src.repositories import metric_repo
+
+        _register_keboola_table("in.c-example_source", "orders", "crm_orders")
+
+        result = self._run(
+            [_model_item("model-1", "core"), _model_item("model-2", "shared")],
+            {
+                "model-1": {
+                    "semantic-metric": [
+                        _metric_item("revenue", 'SUM("amount")', "in.c-example_source.orders", "model-1")
+                    ]
+                },
+                "model-2": {
+                    "semantic-metric": [_metric_item("revenue", "COUNT(*)", "in.c-example_source.orders", "model-2")]
+                },
+            },
+        )
+
+        assert result["created_or_updated"] == 1
+        assert result["skipped_conflict"] == 1
+        assert metric_repo().get("keboola/model-1/revenue") is not None
+        assert metric_repo().get("keboola/model-2/revenue") is None
+
+    def test_fetch_failure_on_a_later_model_aborts_without_pruning(self, e2e_env):
+        """A partial fetch must never reach the prune loop — the models that
+        did load would prune the rows of the model that did not."""
+        from connectors.keboola.metastore_client import MetastoreApiError
+        from connectors.keboola.semantic_layer import sync_semantic_layer
+        from src.repositories import metric_repo
+
+        _register_keboola_table("in.c-example_source", "orders", "crm_orders")
+
+        models = [_model_item("model-1", "core"), _model_item("model-2", "shared")]
+        per_model = {
+            "model-1": {
+                "semantic-metric": [_metric_item("revenue", 'SUM("amount")', "in.c-example_source.orders", "model-1")]
+            },
+            "model-2": {
+                "semantic-metric": [_metric_item("orders_count", "COUNT(*)", "in.c-example_source.orders", "model-2")]
+            },
+        }
+        self._run(models, per_model)
+        assert metric_repo().get("keboola/model-1/revenue") is not None
+        assert metric_repo().get("keboola/model-2/orders_count") is not None
+
+        fake_storage = MagicMock()
+        fake_storage.verify_token.return_value = {"isMasterToken": True}
+        fake_metastore = MagicMock()
+
+        def _list_items(item_type, model_uuid=None):
+            if item_type == "semantic-model":
+                return models
+            if model_uuid == "model-2":
+                raise MetastoreApiError("Metastore 503")
+            return (per_model.get(model_uuid) or {}).get(item_type, [])
+
+        fake_metastore.list_items.side_effect = _list_items
+
+        with (
+            patch("connectors.keboola.storage_api.KeboolaStorageClient", return_value=fake_storage),
+            patch("connectors.keboola.metastore_client.MetastoreClient", return_value=fake_metastore),
+        ):
+            result = sync_semantic_layer(
+                keboola_url="https://connection.keboola.com",
+                keboola_token="master-tok",
+            )
+
+        assert result["status"] == "error"
+        assert metric_repo().get("keboola/model-1/revenue") is not None
+        assert metric_repo().get("keboola/model-2/orders_count") is not None
+
+
 class TestIsOwnedBySource:
     """Unit coverage for the ownership gate — notably the id-collision case:
     ids are (model_uuid, name)-derived with no connection component, so a
@@ -1571,3 +1800,83 @@ def test_legacy_connection_slot_path_also_gets_the_mismatch_guard(e2e_env):
     assert result["status"] == "error"
     assert result["code"] == "project_mismatch"
     assert "9999" in result["error"] and "1234" in result["error"]
+
+
+class TestSyncComposesOssieDocuments:
+    """`_sync_one_source` additionally composes an Ossie document per model
+    (connectors/keboola/semantic_ossie.py::KeboolaMetastoreAdapter) and
+    imports it via `import_documents`, right after the model_uuids guard and
+    BEFORE the pre-existing flat metric_definitions/glossary_terms writes
+    below it — every other test in this file already pins that the flat
+    writes are unaffected; these two check the additive delegation itself.
+    """
+
+    def test_populates_semantic_models_alongside_the_flat_tables(self, e2e_env):
+        from connectors.keboola.semantic_layer import sync_semantic_layer
+        from src.repositories import metric_repo, semantic_model_repo
+
+        _register_keboola_table("in.c-example_source", "orders", "crm_orders")
+
+        fake_storage = MagicMock()
+        fake_storage.verify_token.return_value = {"isMasterToken": True}
+
+        fake_metastore = MagicMock()
+        fake_metastore.list_items.side_effect = lambda item_type, model_uuid=None: {
+            "semantic-model": [_model_item()],
+            "semantic-dataset": [_dataset_item()],
+            "semantic-metric": [_metric_item("total_revenue", 'SUM("amount")', "in.c-example_source.orders")],
+            "semantic-constraint": [],
+            "semantic-relationship": [],
+            "semantic-glossary": [],
+        }[item_type]
+
+        with (
+            patch("connectors.keboola.storage_api.KeboolaStorageClient", return_value=fake_storage),
+            patch("connectors.keboola.metastore_client.MetastoreClient", return_value=fake_metastore),
+        ):
+            result = sync_semantic_layer(keboola_url="https://connection.keboola.com", keboola_token="master-tok")
+
+        assert result["status"] == "ok"
+        assert metric_repo().get("keboola/model-1/total_revenue") is not None
+
+        model = semantic_model_repo().get_by_slug("core")
+        assert model is not None
+        assert model["source"] == "keboola_metastore"
+        assert model["status"] == "valid"
+        assert model["document_json"]["semantic_model"][0]["datasets"][0]["name"] == "orders"
+
+    def test_a_broken_ossie_composition_does_not_break_the_flat_sync(self, e2e_env, monkeypatch):
+        """The composition call is wrapped defensively (see the comment at
+        its call site in `_sync_one_source`): a bug in it must never regress
+        the flat sync this function has always done."""
+        from connectors.keboola.semantic_layer import sync_semantic_layer
+        from src.repositories import metric_repo
+
+        _register_keboola_table("in.c-example_source", "orders", "crm_orders")
+
+        fake_storage = MagicMock()
+        fake_storage.verify_token.return_value = {"isMasterToken": True}
+
+        fake_metastore = MagicMock()
+        fake_metastore.list_items.side_effect = lambda item_type, model_uuid=None: {
+            "semantic-model": [_model_item()],
+            "semantic-dataset": [_dataset_item()],
+            "semantic-metric": [_metric_item("total_revenue", 'SUM("amount")', "in.c-example_source.orders")],
+            "semantic-constraint": [],
+            "semantic-relationship": [],
+            "semantic-glossary": [],
+        }[item_type]
+
+        def _boom(self, config):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr("connectors.keboola.semantic_ossie.KeboolaMetastoreAdapter.extract", _boom)
+
+        with (
+            patch("connectors.keboola.storage_api.KeboolaStorageClient", return_value=fake_storage),
+            patch("connectors.keboola.metastore_client.MetastoreClient", return_value=fake_metastore),
+        ):
+            result = sync_semantic_layer(keboola_url="https://connection.keboola.com", keboola_token="master-tok")
+
+        assert result["status"] == "ok"
+        assert metric_repo().get("keboola/model-1/total_revenue") is not None

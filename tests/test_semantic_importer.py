@@ -1,0 +1,125 @@
+"""Importing already-fetched Ossie documents: content-hash no-op, invalid
+documents stored without aborting the run, scoped prune of dropped models.
+
+Fetching (git clone / upload / connection) is Task 9's `transports.py`; this
+module exercises the pipeline with documents passed in directly.
+
+Reuses the `e2e_env` DATA_DIR-isolation fixture from `tests/conftest.py`
+under the `system_db` name the plan assumed, the same adaptation
+`tests/test_semantic_projection.py` made for Task 7 — `tests/conftest.py` has
+no fixture literally named `system_db`.
+"""
+
+import pytest
+
+from src.repositories import semantic_model_repo
+from src.semantic.importer import import_documents
+
+
+@pytest.fixture
+def system_db(e2e_env):
+    return e2e_env
+
+
+SOURCE = {"id": "s1", "kind": "upload", "adapter": "native", "source": "git", "source_ref": "repo-a"}
+
+
+def _doc(slug, metric="revenue"):
+    return (
+        "version: '0.2.0.dev0'\n"
+        "semantic_model:\n"
+        f"  - name: {slug}\n"
+        "    datasets:\n"
+        "      - name: orders\n"
+        "        source: db.public.orders\n"
+        "    metrics:\n"
+        f"      - name: {metric}\n"
+        "        expression:\n"
+        "          dialects:\n"
+        "            - dialect: ANSI_SQL\n"
+        "              expression: SUM(amount)\n"
+    )
+
+
+def test_unchanged_document_is_a_no_op_write(system_db):
+    """Re-importing identical content must not bump updated_at."""
+    import_documents(SOURCE, [_doc("retail")])
+    first = semantic_model_repo().get_by_slug("retail")["updated_at"]
+
+    report = import_documents(SOURCE, [_doc("retail")])
+
+    assert report.models_unchanged == 1
+    assert report.models_written == 0
+    assert semantic_model_repo().get_by_slug("retail")["updated_at"] == first
+
+
+def test_invalid_document_is_stored_with_its_errors_and_does_not_abort_the_run(system_db):
+    """One bad file must not cost the sync its good files."""
+    report = import_documents(SOURCE, [_doc("retail"), "semantic_model: [oops"])
+
+    assert report.models_written == 1
+    assert len(report.invalid) == 1
+    assert semantic_model_repo().get_by_slug("retail") is not None
+
+
+def test_document_dropped_upstream_is_pruned(system_db):
+    import_documents(SOURCE, [_doc("retail"), _doc("finance")])
+    dropped = semantic_model_repo().get_by_slug("finance")["id"]
+
+    report = import_documents(SOURCE, [_doc("retail")])
+
+    assert report.models_pruned == [dropped]
+    assert semantic_model_repo().get_by_slug("finance") is None
+    assert semantic_model_repo().get_by_slug("retail") is not None
+
+
+def test_two_documents_in_one_import_keep_both_their_metrics(system_db):
+    """Projection prunes per (source, source_ref), so projecting document by
+    document under one origin makes each call delete the previous one's rows.
+
+    The pipeline must project all valid documents of a call together. This
+    asserts projected CONTENT — a count- or model-row-only assertion passes
+    even when the data loss is happening.
+    """
+    from src.repositories import metric_repo
+
+    import_documents(SOURCE, [_doc("retail", "revenue"), _doc("finance", "cost")])
+
+    names = {m["name"] for m in metric_repo().list()}
+    assert names >= {"revenue", "cost"}
+
+
+def test_duplicate_model_name_in_one_import_is_reported_not_silently_collapsed(system_db):
+    """Two documents declaring the same model name collapse onto one row.
+
+    The row id derives from the slug, so the later document overwrites the
+    earlier one. Before this was handled the report claimed two models written
+    while a single row existed — silent loss, and in a git-backed source it
+    takes only a copied file.
+    """
+    report = import_documents(SOURCE, [_doc("retail", "revenue"), _doc("retail", "other")])
+
+    rows = semantic_model_repo().list_all()
+    assert len(rows) == 1
+    assert report.models_written == len(rows)
+    assert len(report.invalid) == 1
+    assert "duplicate model name" in report.invalid[0]["errors"][0]
+
+
+def test_null_source_ref_does_not_read_across_other_refs(system_db):
+    """The read scope must match the prune scope.
+
+    `list_all(source_ref=None)` means "unfiltered", while
+    `delete_missing(source_ref=None)` means "the NULL origin" — so an import
+    under a NULL ref would otherwise compare its documents against rows owned
+    by OTHER refs, call an identical one 'unchanged', and skip writing it to
+    the origin it was actually importing into. Not reachable through today's
+    callers; pinned so it cannot become reachable silently.
+    """
+    text = _doc("retail", "revenue")
+    import_documents({"source": "manual", "source_ref": "somewhere-else"}, [text])
+
+    report = import_documents({"source": "manual", "source_ref": None}, [text])
+
+    assert report.models_written == 1, "identical content under another ref is not 'unchanged' here"
+    assert report.models_unchanged == 0

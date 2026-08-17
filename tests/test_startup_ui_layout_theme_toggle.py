@@ -39,7 +39,14 @@ def _object_type_blocks(body: str) -> list[str]:
 def test_both_object_types_declare_the_chrome_fields():
     """Terraform silently DROPS attributes absent from the object type, so a
     field declared on only one of the two would reach the module for prod and
-    vanish for dev (or vice versa) with no error anywhere."""
+    vanish for dev (or vice versa) with no error anywhere.
+
+    `ui_layout` is in this list even though it is inert (the rail chrome is
+    unconditional since Wave 0, 2026-08) — precisely BECAUSE of that silent
+    drop. Undeclaring it would let a customer root that still pins
+    `ui_layout = "topnav"` apply cleanly and get the rail with nothing saying
+    why; declared, the validation below turns it into a plan-time error.
+    """
     body = (MODULE / "variables.tf").read_text()
     for block in _object_type_blocks(body):
         for field in ("ui_layout", "theme"):
@@ -48,25 +55,42 @@ def test_both_object_types_declare_the_chrome_fields():
             )
 
 
-def test_main_tf_forwards_both_per_vm():
+def test_main_tf_forwards_theme_per_vm():
     body = (MODULE / "main.tf").read_text()
-    for field in ("ui_layout", "theme"):
-        assert re.search(rf"{field}\s*=\s*each\.value\.{field}", body), (
-            f"main.tf must forward {field} per-VM (each.value), not module-wide"
-        )
+    assert re.search(r"theme\s*=\s*each\.value\.theme", body), (
+        "main.tf must forward theme per-VM (each.value), not module-wide"
+    )
 
 
-def test_tpl_emits_each_env_line_only_when_set():
+def test_ui_layout_is_declared_but_not_plumbed():
+    """The other half of the retirement: accepted at the module boundary so it
+    can be REJECTED with a message, and carried no further.
+
+    A forwarded-but-unused template var is the failure this pins — it would
+    read as "the layout still reaches the VM" to the next person to touch the
+    module, and invite the env line back.
+    """
+    assert not re.search(r"ui_layout\s*=\s*each\.value\.ui_layout", (MODULE / "main.tf").read_text()), (
+        "ui_layout must not be forwarded into the startup-script template — the chrome is unconditional"
+    )
+    tpl = (MODULE / "startup-script.sh.tpl").read_text()
+    assert "AGNES_UI_LAYOUT" not in tpl, (
+        "startup-script.sh.tpl must not write AGNES_UI_LAYOUT — get_ui_layout() ignores it and warns"
+    )
+    assert "${ui_layout}" not in tpl, "startup-script.sh.tpl must not reference the retired ui_layout template var"
+
+
+def test_tpl_emits_the_theme_env_line_only_when_set():
     body = (MODULE / "startup-script.sh.tpl").read_text()
-    for guard, env in (("ui_layout", "AGNES_UI_LAYOUT"), ("theme", "AGNES_INSTANCE_THEME")):
-        assert re.search(
-            rf'%\{{\s*if\s+{guard}\s*!=\s*""\s*~?\}}\s*\n{env}=\$\{{{guard}\}}\s*\n%\{{\s*endif\s*~?\}}',
-            body,
-        ), f"tpl must emit {env} guarded by a non-empty {guard}"
-        assert body.count(f"\n{env}=") == 1, (
-            f"{env} must be emitted exactly once — a second, unguarded line "
-            "would write an empty value and shadow instance.yaml"
-        )
+    guard, env = "theme", "AGNES_INSTANCE_THEME"
+    assert re.search(
+        rf'%\{{\s*if\s+{guard}\s*!=\s*""\s*~?\}}\s*\n{env}=\$\{{{guard}\}}\s*\n%\{{\s*endif\s*~?\}}',
+        body,
+    ), f"tpl must emit {env} guarded by a non-empty {guard}"
+    assert body.count(f"\n{env}=") == 1, (
+        f"{env} must be emitted exactly once — a second, unguarded line "
+        "would write an empty value and shadow instance.yaml"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -105,12 +129,26 @@ def _resolver_src(name: str) -> str:
     return inspect.getsource(getattr(ic, name))
 
 
-def test_tf_ui_layout_allowlist_matches_the_app():
-    """A theme or layout added to the app but not to `variables.tf` would be
-    rejected at plan time on every instance that tried to adopt it; one
-    removed from the app but left here would apply cleanly and then silently
-    fall back. Neither surface can move alone."""
-    assert _tf_allowed("ui_layout") - {""} == _app_allowed(_resolver_src("get_ui_layout"))
+def test_tf_ui_layout_allowlist_matches_the_app(monkeypatch):
+    """The retired half of the drift guard, re-aimed at what the app now does.
+
+    `get_ui_layout()` no longer has a value set to compare against — it hard-
+    wires the rail. So the contract Terraform must track is: the ONLY non-empty
+    value the module accepts is the one chrome the app can render. A root
+    pinning "topnav" has to fail the plan, because applying it would hand back
+    the rail with nothing anywhere saying why (the app only warns, on the first
+    render, into the server log nobody is reading during an apply).
+    """
+    from app.instance_config import get_ui_layout
+
+    assert _tf_allowed("ui_layout") - {""} == {"rail"}
+
+    # The app half of the same statement: whatever is configured, rail comes out.
+    for configured in ("topnav", "rail", "nonsense"):
+        monkeypatch.setenv("AGNES_UI_LAYOUT", configured)
+        assert get_ui_layout() == "rail", f"{configured!r} must resolve to the rail chrome"
+    monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
+    assert get_ui_layout() == "rail"
 
 
 def test_tf_theme_allowlist_matches_the_app():

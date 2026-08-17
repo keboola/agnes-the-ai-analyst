@@ -151,15 +151,88 @@ def load_config() -> dict:
     return {}
 
 
-def get_sync_state() -> dict:
+def _workspace_sync_state_file(workspace: Path) -> Path:
+    """`<workspace>/.claude/agnes/sync_state.json` — the Agnes-owned,
+    per-workspace scratch dir also used for the connector-params `.env`
+    (`cli/lib/initial_workspace.py`) and the `agnes update` run log
+    (`cli/commands/update.py`); workspace templates that ship a
+    `.gitignore` already exclude `.claude/agnes/`.
+
+    Deliberately NOT `<workspace>/.claude/sync_state.json` — that path is
+    step 8's own state file (`cli/lib/pull_sync.py::_read_sync_state` /
+    `_write_sync_state`, keyed by `direct_tables` / `data_packages` /
+    `memory_domains`), a different schema owned by a different module.
+    """
+    return Path(workspace) / ".claude" / "agnes" / "sync_state.json"
+
+
+def _get_workspace_sync_state(workspace: Path) -> dict:
+    """Read-only: the workspace's own state if it exists, else a one-time
+    migration seed from the legacy machine-global file (never persisted
+    here — see `get_sync_state`'s docstring for why)."""
+    state_file = _workspace_sync_state_file(workspace)
+    if state_file.exists():
+        try:
+            return json.loads(state_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+    legacy_file = _config_dir() / "sync_state.json"
+    if legacy_file.exists():
+        try:
+            legacy_state = json.loads(legacy_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            legacy_state = None
+        if isinstance(legacy_state, dict):
+            return legacy_state
+    return {}
+
+
+def get_sync_state(workspace: Optional[Path] = None) -> dict:
+    """Read the sync-state blob `run_pull` uses for its download-gate hash
+    comparison (and whatever else a caller stashes alongside ``tables``).
+
+    ``workspace=None`` (the default) preserves the historical machine-global
+    behavior — ``~/.config/agnes/sync_state.json`` (or ``$AGNES_CONFIG_DIR``)
+    — unchanged, so every caller that predates workspace scoping (e.g.
+    `agnes diagnose system --local`) keeps working exactly as before.
+
+    Passing ``workspace`` reads the WORKSPACE-scoped file instead
+    (`_workspace_sync_state_file`) — issue #1311: the machine-global file let
+    a second workspace on the same machine inherit the first workspace's
+    fresh download hashes and wrongly conclude its own stale parquet was
+    already up to date (the existence guard in `cli/lib/pull.py`'s download
+    gate catches an ABSENT file, not a stale one keyed by a hash that
+    matches only because another workspace wrote it).
+
+    One-time migration, and read-only: if the workspace has no scoped state
+    yet but the legacy machine-global file does, this returns a seed built
+    from it so the first pull after upgrading doesn't re-download every
+    table — but does NOT write the seed to disk itself. That keeps a bare
+    read (e.g. under `run_pull(dry_run=True)`, which reads sync state before
+    its own dry-run short-circuit) side-effect-free; the seed becomes
+    durable only once a caller round-trips it through `save_sync_state(...,
+    workspace)`, exactly like `run_pull`'s normal read-then-save flow. The
+    legacy file itself is never modified or deleted, so an older CLI
+    version — or a second, not-yet-migrated workspace — can still read it.
+    """
+    if workspace is not None:
+        return _get_workspace_sync_state(Path(workspace))
     state_file = _config_dir() / "sync_state.json"
     if state_file.exists():
         return json.loads(state_file.read_text(encoding="utf-8"))
     return {}
 
 
-def save_sync_state(state: dict):
-    state_file = _config_dir() / "sync_state.json"
+def save_sync_state(state: dict, workspace: Optional[Path] = None):
+    """Persist the sync-state blob. ``workspace=None`` writes the legacy
+    machine-global file (unchanged default, see `get_sync_state`); passing
+    ``workspace`` writes `_workspace_sync_state_file` instead, creating
+    `<workspace>/.claude/agnes/` on demand."""
+    if workspace is not None:
+        state_file = _workspace_sync_state_file(Path(workspace))
+        state_file.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        state_file = _config_dir() / "sync_state.json"
     state_file.write_text(json.dumps(state, indent=2), encoding="utf-8")
 
 

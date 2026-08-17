@@ -393,6 +393,118 @@ def test_sharing_unknown_resource_is_404(seeded_app):
 
 
 # ---------------------------------------------------------------------------
+# Data apps — owner-shareable like collections and agents, keyed on the SLUG
+# (grants on this type are slug-keyed everywhere: `data_apps._can_view` reads
+# `can_access(uid, 'data_app', row['slug'])`). Rendering the Library row
+# share-less had left /admin/access as the only sharing surface for the one
+# kind a user builds from chat (Devin Review on #1272).
+# ---------------------------------------------------------------------------
+
+
+def _seed_data_app(monkeypatch, slug: str, name: str, owner: str) -> None:
+    monkeypatch.setenv("AGNES_DATA_APPS_ENABLED", "true")
+    from src.repositories import data_apps_repo
+
+    data_apps_repo().create(slug=slug, name=name, owner_user_id=owner)
+
+
+def test_data_app_owner_share_roundtrip_writes_the_slug_keyed_grant(seeded_app, monkeypatch):
+    """A NON-admin owner shares their own app through the same PUT every
+    other kind uses, and the grant lands on the slug — the key the proxy's
+    `_can_view` actually reads. An id-keyed grant would be read by nothing."""
+    from src.db import get_system_db
+    from src.repositories.resource_grants import ResourceGrantsRepository
+
+    c = seeded_app["client"]
+    tok = seeded_app["analyst_token"]
+    _seed_data_app(monkeypatch, "shared-dash", "Shared Dash", "analyst1")
+
+    assert c.get("/api/sharing/data_app/shared-dash", headers=_auth(tok)).json()["visibility"] == "private"
+
+    gid = _group_with_member("analyst1", "lib-app-share-grp")
+    r = c.put("/api/sharing/data_app/shared-dash", json={"group_ids": [gid]}, headers=_auth(tok))
+    assert r.status_code == 200, r.text
+    assert r.json()["visibility"] == "shared"
+
+    rows = [
+        g for g in ResourceGrantsRepository(get_system_db()).list_all(resource_type="data_app") if g["group_id"] == gid
+    ]
+    assert [g["resource_id"] for g in rows] == ["shared-dash"], "the grant must be keyed on the slug"
+
+    # The owner's own Library badge reflects the grant instead of claiming
+    # "Private" right next to the control that just shared it.
+    lib = c.get("/library", headers=_auth(tok)).text
+    row_at = lib.index('data-item-id="shared-dash"')
+    assert "Specific groups" in lib[row_at : lib.index("</tr>", row_at)]
+
+
+def test_a_shared_data_app_appears_in_the_grantees_library_read_only(seeded_app, monkeypatch):
+    """The grantee sees the app under "Shared with you" with the read-only
+    badge — only the owner (or an admin) may change who can see it."""
+    c = seeded_app["client"]
+    _seed_data_app(monkeypatch, "granted-dash", "Granted Dash", "analyst1")
+    gid = _group_with_member("analyst1", "lib-app-grantee-grp")
+    _group_with_member("viewer1", "lib-app-grantee-grp")
+    r = c.put(
+        "/api/sharing/data_app/granted-dash", json={"group_ids": [gid]}, headers=_auth(seeded_app["analyst_token"])
+    )
+    assert r.status_code == 200, r.text
+
+    lib = c.get("/library", headers=_auth(seeded_app["viewer_token"])).text
+    assert "Granted Dash" in lib, "the grantee must see the shared app in their Library"
+    row_at = lib.index('data-item-id="granted-dash"')
+    row = lib[row_at : lib.index("</tr>", row_at)]
+    assert "lib-vis--readonly" in row, "a grantee's row must not offer the Share control"
+    assert 'data-share="granted-dash"' not in row
+
+
+def test_data_app_sharing_is_owner_only(seeded_app, monkeypatch):
+    """Someone else's app is 404 — not 403 — matching the collections
+    contract, so ownership can't be probed."""
+    c = seeded_app["client"]
+    _seed_data_app(monkeypatch, "own-dash", "Own Dash", "analyst1")
+    other = _auth(seeded_app["viewer_token"])
+    assert c.get("/api/sharing/data_app/own-dash", headers=other).status_code == 404
+    assert c.put("/api/sharing/data_app/own-dash", json={"group_ids": []}, headers=other).status_code == 404
+
+
+def test_linked_app_sharing_is_admin_only_and_deliberate(seeded_app, monkeypatch):
+    """A LINKED row (synthetic `system` owner) is shareable — by an admin
+    only. This is a conscious decision, not a `_reject_linked` gap (Devin
+    Review on #1321): sharing is visibility policy, the same `(data_app,
+    <slug>)` grants `/admin/access` already lets admins write, not a
+    runtime mutation like deploy/secrets/logs. No real user matches the
+    `system` owner, so non-admins get the probe-safe 404."""
+    from src.db import get_system_db
+    from src.repositories import data_apps_repo
+    from src.repositories.resource_grants import ResourceGrantsRepository
+
+    c = seeded_app["client"]
+    monkeypatch.setenv("AGNES_DATA_APPS_ENABLED", "true")
+    data_apps_repo().create(slug="linked-dash", name="Linked Dash", owner_user_id="system", repo_mode="linked")
+
+    # Non-admin: the synthetic owner matches nobody -> probe-safe 404.
+    other = _auth(seeded_app["viewer_token"])
+    assert c.get("/api/sharing/data_app/linked-dash", headers=other).status_code == 404
+    assert c.put("/api/sharing/data_app/linked-dash", json={"group_ids": []}, headers=other).status_code == 404
+
+    # Admin: same authority /admin/access grants, friendlier surface.
+    gid = _group_with_member("viewer1", "lib-linked-share-grp")
+    r = c.put(
+        "/api/sharing/data_app/linked-dash",
+        json={"group_ids": [gid]},
+        headers=_auth(seeded_app["admin_token"]),
+    )
+    assert r.status_code == 200, r.text
+    rows = [
+        g
+        for g in ResourceGrantsRepository(get_system_db()).list_all(resource_type="data_app")
+        if g["resource_id"] == "linked-dash"
+    ]
+    assert [g["group_id"] for g in rows] == [gid]
+
+
+# ---------------------------------------------------------------------------
 # The Library page
 # ---------------------------------------------------------------------------
 
@@ -612,8 +724,14 @@ def test_toolbar_is_a_floating_bottom_dock(seeded_app):
     for part in ("--fbar-dock-reach", "--fbar-dock-inset", "--fbar-dock-card", "--fbar-dock-chips"):
         assert part in band.split("height:", 1)[1].split(";", 1)[0]
     # Rail-aware, because the dock's stacking context sits above the rail and a
-    # band at left: 0 would blur the sidebar.
-    assert 'html[data-ui-layout="rail"] .fbar-dock__veil { left: 240px; }' in shared
+    # band at left: 0 would blur the sidebar. The clearance is the
+    # `--rail-clearance` variable rail.css publishes (240 / 56 / 0 as the rail
+    # collapses), not a literal 240px — a literal only matched the EXPANDED
+    # rail, slicing the band 184px into the page whenever the rail was
+    # collapsed. `TestRailBodyClearance` in tests/test_ui_layout_theme.py bans
+    # the literal outside rail.css for exactly that reason, and pins the
+    # variable to the `body` padding that encodes the same edge.
+    assert "left: var(--rail-clearance, 0px);" in band
 
     # Three layers, each a stronger blur admitted over a shorter distance. That
     # is what fades the RADIUS; one masked layer only fades opacity and leaves a
@@ -769,24 +887,24 @@ def test_more_coming_note_is_a_sibling_of_the_count_not_a_child(seeded_app):
     assert head_at < count_at
 
 
-def test_the_data_apps_soon_badge_is_gone_now_that_apps_ship(seeded_app):
-    """The badge was designed to delete itself when the kind shipped.
-
-    It read "Data apps coming soon" on the Files band, with a tooltip saying
-    hosted apps "will appear here" and there is "nothing to do yet". Apps now
-    have their own Library section, so leaving it would make one page both
-    list your apps and tell you they do not exist (Devin Review on #1272) —
-    and its claim was wrong on both counts, since they do not land in Files.
-    """
+def test_data_apps_schedule_badge_retired_when_the_kind_shipped(seeded_app):
+    """The "Data apps coming soon" badge promised the kind would land in the
+    Library — its own docstring said it "deletes itself when the kind ships."
+    The kind shipped (the Data apps band, tests/test_web_library_data_apps.py),
+    so a lingering badge would announce a roadmap the reader is looking at.
+    The `fbar-group__soon` seam itself stays (`_SECTION_SOON` in the router)
+    for the next kind on the roadmap; only the fulfilled entry is gone."""
     _create_collection(seeded_app, "Soon Badge Anchor", seeded_app["admin_token"])
     text = seeded_app["client"].get("/library", headers=_auth(seeded_app["admin_token"])).text
 
+    assert "Soon Badge Anchor" in text  # the Files band really rendered
     assert 'class="fbar-group__soon"' not in text
     assert "Data apps coming soon" not in text
     assert "Nothing to do yet." not in text
-    # The panels this replaced stay gone — markup and CSS both.
+    # The old pre-badge panels stay gone too — markup and CSS both.
     assert "lib-soon" not in text
     assert "lib-apps" not in text
+
 
 # ---------------------------------------------------------------------------
 # The Library also lists what has been SHARED WITH the caller
@@ -800,6 +918,31 @@ def _grant(group_id: str, resource_type: str, resource_id: str) -> None:
     grants = ResourceGrantsRepository(get_system_db())
     if not grants.has_grant([group_id], resource_type, resource_id):
         grants.create(group_id=group_id, resource_type=resource_type, resource_id=resource_id, assigned_by="admin")
+
+
+def _stock_domain(domain_id: str, item_id: str) -> None:
+    """Put one approved item into a memory domain. The Library hides empty
+    optional domains (the /corporate-memory _has_content rule moved in with
+    the merge), so a domain that should LIST must have content."""
+    from src.db import get_system_db
+    from src.repositories.knowledge import KnowledgeRepository
+
+    conn = get_system_db()
+    try:
+        KnowledgeRepository(conn).create(
+            id=item_id,
+            title="Stock item",
+            content="body",
+            category="workflow",
+            status="approved",
+            source_user="contrib@example.com",
+        )
+        conn.execute(
+            "INSERT INTO knowledge_item_domains(item_id, domain_id, added_by) VALUES (?, ?, 'test')",
+            [item_id, domain_id],
+        )
+    finally:
+        conn.close()
 
 
 def test_library_lists_granted_resources_of_every_kind(seeded_app):
@@ -838,6 +981,7 @@ def test_library_lists_granted_resources_of_every_kind(seeded_app):
     _grant(gid, "data_package", pkg)
     _grant(gid, "memory_domain", dom)
     _grant(gid, "recipe", rec)
+    _stock_domain(dom, "lib_pricing_item")
 
     text = seeded_app["client"].get("/library", headers=_auth(seeded_app["analyst_token"])).text
     assert "Sales Data" in text
@@ -877,6 +1021,7 @@ def test_granted_rows_link_to_the_individual_item(seeded_app):
     )
     _grant(gid, "data_package", pkg)
     _grant(gid, "memory_domain", dom)
+    _stock_domain(dom, "lib_drill_item")
 
     text = seeded_app["client"].get("/library", headers=_auth(seeded_app["analyst_token"])).text
     assert "/catalog/p/lib-drill-data" in text

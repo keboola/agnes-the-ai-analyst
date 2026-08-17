@@ -1,6 +1,7 @@
 """Admin commands — agnes admin."""
 
 import json
+from typing import Optional
 
 import typer
 
@@ -17,6 +18,8 @@ from cli.commands.admin_jobs import admin_jobs_app
 from cli.commands.admin_mcp import mcp_app as admin_mcp_app
 from cli.commands.admin_memory_domain import admin_memory_domain_app
 from cli.commands.admin_semantic_layer import admin_semantic_layer_app
+from cli.commands.admin_semantic_model import admin_semantic_model_app
+from cli.commands.admin_semantic_source import admin_semantic_source_app
 from cli.commands.admin_skills import admin_skills_app
 from cli.commands.admin_metrics import admin_metrics_app
 from cli.commands.db import db_app as admin_db_app
@@ -58,6 +61,8 @@ admin_app.add_typer(admin_digest_app, name="digest", help="Maintained digest CRU
 admin_app.add_typer(admin_db_app, name="db", help="Manage app-state DB backend (DuckDB / Postgres)")
 admin_app.add_typer(admin_mcp_app, name="mcp", help="Universal MCP source + tool admin")
 admin_app.add_typer(admin_semantic_layer_app, name="semantic-layer", help="Keboola semantic-layer import status")
+admin_app.add_typer(admin_semantic_model_app, name="semantic-model", help="Semantic-model CRUD (Ossie documents)")
+admin_app.add_typer(admin_semantic_source_app, name="semantic-source", help="Semantic-source sync configuration")
 admin_app.add_typer(
     admin_connection_app, name="connection", help="Named source-connection CRUD (multi-project Keboola)"
 )
@@ -67,6 +72,17 @@ admin_app.add_typer(admin_analytics_app, name="analytics", help="DuckLake analyt
 # Single direct command (mirrors `register-table` / `discover-and-register`):
 # LLM-generate descriptions for undescribed tables (#399).
 admin_app.command("autodoc-tables")(autodoc_tables)
+
+# Table access policies (design doc §13.2, plan Task 16) — a narrow,
+# purpose-specific nested group, mirroring `data-package` / `memory-domain` /
+# `connection` / `mcp` / `semantic-layer` above. NOT the generic `agnes admin
+# table` catch-all the design doc explicitly rejects hanging noun-verb
+# commands off of. Attach/replace/clear stays flat on `update-table --policy`
+# (mirrors `--query`); this group is read-only inspection — the stored policy
+# (`show`) and a single-persona dry-run (`preview`, §13.1). `preview` is the
+# CLI surface Task 14's `POST /policy/preview` EXEMPT classification names.
+table_policy_app = typer.Typer(help="Table access-policy inspection (design doc §13.2)")
+admin_app.add_typer(table_policy_app, name="table-policy")
 
 
 @admin_app.command("add-user")
@@ -120,8 +136,11 @@ def remove_user(user_id: str = typer.Argument(..., help="User ID to remove")):
 @admin_app.command("register-table")
 def register_table(
     name: str = typer.Argument(..., help="Table display name (DuckDB view name for BQ)"),
-    source_type: str = typer.Option("keboola", help="Source type: keboola | bigquery | jira | local"),
-    bucket: str = typer.Option("", help="Source bucket (Keboola) or dataset (BigQuery)"),
+    source_type: str = typer.Option("keboola", help="Source type: keboola | bigquery | jira | local | databricks"),
+    bucket: str = typer.Option(
+        "",
+        help="Source bucket (Keboola), dataset (BigQuery), or schema (Databricks; 'catalog.schema' overrides the default catalog)",
+    ),
     source_table: str = typer.Option("", help="Source table name in the bucket/dataset"),
     query_mode: str = typer.Option("local", help="Query mode: local | remote | materialized"),
     query: str = typer.Option(
@@ -234,11 +253,13 @@ def register_table(
 
     # Keboola materialized rows can omit --query: a NULL source_query means
     # "full-table export via Storage API export-async" (see v25→v26
-    # migration notes). For BigQuery materialized rows, --query is still
-    # required — BQ has no analogous "full table" semantic at the registry
-    # layer (the path is a SELECT against `<project>.<dataset>.<table>`,
-    # which the admin must spell out).
-    if query_mode == "materialized" and not source_query and source_type != "keboola":
+    # migration notes). Databricks materialized rows can omit it too — the
+    # server generates the full-table dump SQL from --bucket/--source-table
+    # (+ data_source.databricks.catalog). For BigQuery materialized rows,
+    # --query is still required — BQ has no analogous "full table" semantic
+    # at the registry layer (the path is a SELECT against
+    # `<project>.<dataset>.<table>`, which the admin must spell out).
+    if query_mode == "materialized" and not source_query and source_type not in ("keboola", "databricks"):
         typer.echo(
             "Error: --query-mode materialized requires --query (literal SQL or @path.sql) for source_type="
             + source_type,
@@ -507,7 +528,7 @@ def sync(
         "--source",
         help=(
             "Restrict the rebuild to one source_type (keboola | bigquery | "
-            "jira | local). Omit for a full sweep of every registered table."
+            "jira | local | databricks). Omit for a full sweep of every registered table."
         ),
     ),
     tables: list[str] = typer.Argument(
@@ -650,6 +671,43 @@ def update_table(
         "--source-type",
         help="Change source type. Rare — most edits keep this fixed.",
     ),
+    server_only: Optional[bool] = typer.Option(
+        None,
+        "--server-only/--no-server-only",
+        help=(
+            "Toggle server-side-only distribution (#607): keep the table "
+            "queryable via `agnes query --remote` without `agnes pull` ever "
+            "downloading it. A table must be --server-only (or "
+            "--query-mode remote) before an access policy can be attached "
+            "(design doc §3.1)."
+        ),
+    ),
+    policy: str = typer.Option(
+        None,
+        "--policy",
+        help=(
+            "New SQL access-policy body (table access policies design doc "
+            "§13.2). Must be `@path/to.sql` — unlike --query, inline SQL is "
+            "not accepted (policies are typically multi-line). Use "
+            "`--policy=` (empty value) to clear the policy. Requires "
+            "--policy-note when setting a non-empty body."
+        ),
+    ),
+    policy_note: str = typer.Option(
+        None,
+        "--policy-note",
+        help="Why this access policy exists. Required whenever --policy sets a non-empty body.",
+    ),
+    policy_mapping: Optional[bool] = typer.Option(
+        None,
+        "--policy-mapping/--no-policy-mapping",
+        help=(
+            "Mark/unmark this table as referenceable from another table's "
+            "access-policy body (design doc §15) — e.g. a person-to-cost-centre "
+            "mapping table a policy joins against. Marking does NOT itself "
+            "grant analysts access to the table."
+        ),
+    ),
 ):
     """Update a registered table.
 
@@ -660,6 +718,10 @@ def update_table(
     view picks up the change without waiting for the next scheduled sync.
     Switching `query_mode` away from `materialized` clears the stale
     `source_query` automatically.
+
+    `--policy` / `--policy-note` / `--policy-mapping` attach, replace, or
+    clear the table's access policy (design doc §13.2); inspect the result
+    with `agnes admin table-policy show|preview`.
     """
     from pathlib import Path
 
@@ -678,6 +740,8 @@ def update_table(
         payload["sync_schedule"] = sync_schedule
     if source_type is not None:
         payload["source_type"] = source_type
+    if server_only is not None:
+        payload["server_only"] = server_only
     if query is not None:
         if query.startswith("@"):
             sql_path = Path(query[1:])
@@ -687,12 +751,34 @@ def update_table(
             payload["source_query"] = sql_path.read_text(encoding="utf-8").strip()
         else:
             payload["source_query"] = query.strip()
+    if policy is not None:
+        if policy == "":
+            payload["access_policy_sql"] = None
+        elif policy.startswith("@"):
+            policy_path = Path(policy[1:])
+            if not policy_path.exists():
+                typer.echo(f"Error: policy SQL file not found: {policy_path}", err=True)
+                raise typer.Exit(2)
+            payload["access_policy_sql"] = policy_path.read_text(encoding="utf-8").strip()
+        else:
+            typer.echo(
+                "Error: --policy requires `@path/to.sql` (inline SQL is not "
+                "accepted — access policies are typically multi-line). Use "
+                "`--policy=` (empty value) to clear the policy.",
+                err=True,
+            )
+            raise typer.Exit(2)
+    if policy_note is not None:
+        payload["access_policy_note"] = policy_note
+    if policy_mapping is not None:
+        payload["policy_mapping"] = policy_mapping
 
     if not payload:
         typer.echo(
             "No fields supplied. Pass at least one of --name, --bucket, "
             "--source-table, --query-mode, --query, --description, "
-            "--sync-schedule, --source-type.",
+            "--sync-schedule, --source-type, --server-only, --policy, "
+            "--policy-note, --policy-mapping.",
             err=True,
         )
         raise typer.Exit(2)
@@ -711,7 +797,177 @@ def update_table(
     except Exception:
         detail = resp.text
     typer.echo(f"Failed: {detail}", err=True)
+    # design doc §3.1 — a policy write rejected because the table is
+    # neither query_mode='remote' nor server_only. Name the exact next
+    # command instead of leaving the operator to re-derive it from the
+    # (already actionable, but generic) server message.
+    if "access_policy_requires_undistributed" in str(detail):
+        typer.echo(
+            f"  Next: agnes admin update-table {table_id} --server-only "
+            "(or --query-mode remote) to make the table eligible for a policy.",
+            err=True,
+        )
     raise typer.Exit(1)
+
+
+@table_policy_app.command("show")
+def table_policy_show(
+    table_id: str = typer.Argument(..., help="Table id"),
+    as_json: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """Show the access policy attached to a table (design doc §4).
+
+    No single-row registry GET exists (only the collection), so this reads
+    `GET /api/admin/registry` and picks out the matching row — the same
+    approach `list-tables` / `_resolve_user_id` already use.
+    """
+    resp = api_get("/api/admin/registry")
+    if resp.status_code != 200:
+        typer.echo(f"Failed: {resp.json().get('detail', resp.text)}", err=True)
+        raise typer.Exit(1)
+
+    row = next((t for t in resp.json().get("tables", []) if t.get("id") == table_id), None)
+    if row is None:
+        typer.echo(f"Not registered: {table_id}", err=True)
+        raise typer.Exit(1)
+
+    sql = row.get("access_policy_sql")
+    if as_json:
+        typer.echo(
+            json.dumps(
+                {
+                    "id": table_id,
+                    "access_policy_sql": sql,
+                    "access_policy_note": row.get("access_policy_note"),
+                    "access_policy_updated_at": row.get("access_policy_updated_at"),
+                    "access_policy_updated_by": row.get("access_policy_updated_by"),
+                    "policy_mapping": bool(row.get("policy_mapping")),
+                },
+                indent=2,
+            )
+        )
+        return
+
+    if not sql:
+        typer.echo(f"{table_id}: no access policy attached.")
+        if row.get("policy_mapping"):
+            typer.echo("  (marked policy_mapping=true — referenceable from other tables' policies)")
+        return
+
+    typer.echo(f"Access policy for {table_id}:")
+    typer.echo(f"  note:           {row.get('access_policy_note') or ''}")
+    typer.echo(f"  updated_by:     {row.get('access_policy_updated_by') or ''}")
+    typer.echo(f"  updated_at:     {row.get('access_policy_updated_at') or ''}")
+    typer.echo(f"  policy_mapping: {bool(row.get('policy_mapping'))}")
+    typer.echo("  sql:")
+    for line in sql.splitlines():
+        typer.echo(f"    {line}")
+
+
+@table_policy_app.command("preview")
+def table_policy_preview(
+    table_id: str = typer.Argument(..., help="Table id"),
+    sql: str = typer.Option(
+        None,
+        "--sql",
+        help=(
+            "Preview a CANDIDATE policy body instead of the stored one — "
+            "`@path/to.sql` (same rule as `update-table --policy`; never "
+            "saved by this command). Omit to preview the stored policy."
+        ),
+    ),
+    as_user: str = typer.Option(
+        None, "--as", help="Preview as this real user (id or email), using their LIVE group membership."
+    ),
+    as_groups: str = typer.Option(
+        None,
+        "--as-groups",
+        help="Preview as an ad-hoc, comma-separated group set — no real user needs to exist.",
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """Run a stored or candidate access policy as a chosen persona and show
+    what it does (design doc §13.1) — calls
+    `POST /api/admin/registry/{id}/policy/preview`, the single-persona
+    primitive the admin UI's persona matrix is built from. Exactly one of
+    --as / --as-groups selects the persona. Every call is audited
+    server-side.
+    """
+    from pathlib import Path
+
+    if (as_user is None) == (as_groups is None):
+        typer.echo(
+            "Error: choose exactly one of --as <user> or --as-groups a,b to select the preview persona.",
+            err=True,
+        )
+        raise typer.Exit(2)
+
+    payload: dict = {}
+    if sql is not None:
+        if not sql.startswith("@"):
+            typer.echo(
+                "Error: --sql requires `@path/to.sql` (inline SQL is not accepted — see `update-table --policy`).",
+                err=True,
+            )
+            raise typer.Exit(2)
+        sql_path = Path(sql[1:])
+        if not sql_path.exists():
+            typer.echo(f"Error: SQL file not found: {sql_path}", err=True)
+            raise typer.Exit(2)
+        payload["sql"] = sql_path.read_text(encoding="utf-8").strip()
+    if as_user is not None:
+        payload["as_user"] = as_user
+    if as_groups is not None:
+        payload["as_groups"] = [g.strip() for g in as_groups.split(",") if g.strip()]
+
+    resp = api_post(f"/api/admin/registry/{table_id}/policy/preview", json=payload)
+    if resp.status_code != 200:
+        try:
+            detail = resp.json().get("detail", resp.text)
+        except Exception:
+            detail = resp.text
+        typer.echo(f"Failed: {detail}", err=True)
+        raise typer.Exit(1)
+
+    body = resp.json()
+    if as_json:
+        typer.echo(json.dumps(body, indent=2))
+        return
+
+    rows_visible = body.get("rows_visible", 0)
+    rows_total = body.get("rows_total", 0)
+    typer.echo(f"Preview for {table_id}: {rows_visible} of {rows_total} row(s) visible")
+
+    columns = body.get("columns") or []
+    if columns:
+        typer.echo("  columns:")
+        for col in columns:
+            marker = " (hidden)" if col.get("hidden") else ""
+            typer.echo(f"    {col['name']}{marker}")
+
+    sample = body.get("sample_rows") or []
+    if sample:
+        typer.echo(f"  sample ({len(sample)} row(s)):")
+        for sample_row in sample:
+            typer.echo("    " + ", ".join(f"{k}={v}" for k, v in sample_row.items()))
+
+    # design doc §13.2's closing sentence + plan Task 16 deliverable 4: a
+    # bare "0" reads identically whether this persona legitimately has no
+    # rows or an upstream policy_mapping table (§15) is empty/stale — don't
+    # print an unqualified 0. An unresolvable persona (co-drive-style)
+    # never reaches this line: it fails the command above, non-zero exit,
+    # before any row count is printed.
+    if rows_visible == 0 and rows_total > 0:
+        typer.echo(
+            "  Note: 0 rows visible to this persona — this can be a "
+            "legitimate empty slice (the persona genuinely has no matching "
+            "rows), or — if the policy joins a mapping table "
+            "(policy_mapping=true) — an empty/stale mapping. Run "
+            f"`agnes admin table-policy show {table_id}` for the policy body "
+            "and `agnes admin list-tables` for the mapping table's sync "
+            "status. (An unresolvable persona would have failed this "
+            "command outright, above, rather than showing 0 rows.)"
+        )
 
 
 @admin_app.command("metadata-show")

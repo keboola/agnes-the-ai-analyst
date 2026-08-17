@@ -80,6 +80,11 @@ _COHORT: dict[str, tuple[str, str]] = {
         "admin semantic-layer coverage",
         "admin_semantic_layer_coverage",
     ),
+    # Open semantic-layer contract (Task 10/11/12) — public, resource-gated
+    # export of one canonical Ossie document. `semantic_model_get` reads
+    # this same endpoint (wraps its raw YAML text into a dict); `agnes admin
+    # semantic-model export` is the CLI counterpart.
+    "/api/semantic-models/{slug}.yaml": ("admin semantic-model export", "semantic_model_get"),
     # Contributed-skill triple-surface (GET list + DELETE; POST contribute is _EXEMPT below).
     "/api/admin/contributed-skills": ("admin skill list", "list_contributed_skills"),
     "/api/admin/contributed-skills/{name}": ("admin skill delete", "delete_contributed_skill"),
@@ -323,6 +328,36 @@ _SOURCE_CONNECTIONS_CRUD_REASON = (
     "reachable via `agnes admin connection add/remove/test`; the list path carries "
     "the triple-surface contract in _COHORT"
 )
+_SEMANTIC_MODELS_ADMIN_REASON = (
+    "admin CRUD over the canonical Ossie semantic-model registry (open "
+    "semantic-layer contract, Task 10) — creating/renaming/deleting a "
+    "hand-authored document is an admin action. Reachable via `agnes admin "
+    "semantic-model list/show/import`; no MCP analogue by design — an "
+    "agent's read path is `semantic_model_search`/`semantic_model_get` "
+    "(paired with the public, resource-gated export endpoint in _COHORT "
+    "above), not the admin corpus-management surface, mirroring the "
+    "/api/admin/data-packages and /api/admin/metrics admin-CRUD precedent."
+)
+_SEMANTIC_SOURCES_ADMIN_REASON = (
+    "admin CRUD + manual sync-trigger over registered semantic-layer sync "
+    "sources (git/upload/connection), open semantic-layer contract Task 10 "
+    "— configuring where documents come from, and triggering a fetch, are "
+    "admin actions. Reachable via `agnes admin semantic-source add/list/"
+    "sync`; no MCP analogue by design, mirroring the "
+    "_SOURCE_CONNECTIONS_CRUD_REASON precedent above (an agent-invokable "
+    "tool that can point this server at an arbitrary git remote or upload "
+    "payload and trigger a fetch is a credential/config surface, not a "
+    "read tool)."
+)
+_SEMANTIC_MODELS_SEARCH_REASON = (
+    "public, resource-gated substring search over semantic models — has an "
+    "MCP tool (`semantic_model_search`) but no dedicated CLI subcommand: "
+    "`agnes admin semantic-model list` covers interactive listing via the "
+    "admin endpoint instead. Mirrors the /api/glossary + /api/glossary/"
+    "search split (list has no MCP tool; search is the agent-facing path) "
+    "in the opposite direction — here the admin list, not the search, is "
+    "the one without an MCP pairing."
+)
 _BROKER_REASON = (
     "chat sandbox secret broker (2026-07-14 incident hardening) — internal "
     "sandbox->server routes, ticket-gated (not user auth); the in-sandbox "
@@ -510,7 +545,26 @@ _OAUTH_DISCONNECT_REASON = (
     "out from under a live session is the same class of self-service "
     "identity operation the my-secret endpoints were never MCP-exposed for."
 )
+_MCP_SOURCE_GRANT_REASON = (
+    "grant/revoke every tool of one MCP source to a group — an RBAC widening "
+    "write. Reachable via `agnes admin mcp source grant [--revoke]`; "
+    "deliberately never MCP-exposed, on the same reasoning as the standing "
+    "credential-provisioning exemption in CONTRIBUTING.md: a tool an agent can "
+    "call that widens which tools a group may call is a privilege-escalation "
+    "seam, and this one widens by the whole source at once"
+)
+
+_KEBOOLA_LOGIN_PROJECTS_REASON = (
+    "select-mode Keboola project import — a continuation of the browser OAuth "
+    "login, bound to a short-TTL vaulted stash of that login's access token. "
+    "The CLI has no OAuth login to continue, and MCP exposure is ruled out by "
+    "CONTRIBUTING.md → 'Standing exemption — admin credential-provisioning "
+    "writes': the import mints + vaults upstream project credentials, exactly "
+    "the privilege-escalation seam that paragraph names"
+)
+
 _EXEMPT: dict[str, str] = {
+    "/api/auth/keboola/projects": _KEBOOLA_LOGIN_PROJECTS_REASON,
     "/api/me/display-name": (
         "self-service display-name edit (issue #1036) — UI-only affordance on "
         "/profile; a one-field personal profile edit with no CLI/MCP analogue"
@@ -567,6 +621,29 @@ _EXEMPT: dict[str, str] = {
         "(companion to register-table's defer_rebuild for bulk onboarding); no "
         "analyst CLI/MCP analogue, mirrors the cache-warmup/run + sync triggers"
     ),
+    # Table access policies (design doc §13.1/§13.2, plan Task 14/16):
+    # single-persona preview/dry-run an admin uses to check a stored or
+    # candidate policy before trusting it. CLI-reachable via `agnes admin
+    # table-policy preview` (plan Task 16) — mirrors the grandfathered
+    # /api/admin/prompts/{kind}/preview exemption (_PROMPTS_REASON), which is
+    # ALSO an admin-only preview endpoint with no MCP analogue. No MCP tool
+    # planned, by design, not merely "not yet": this endpoint runs a policy
+    # AS A CHOSEN PERSONA and returns that persona's row/column slice to the
+    # calling admin — precisely the "who looked at whose data" action §13.1
+    # says must be audited, and the same category of "must stay interactive,
+    # human-witnessed" the codebase already draws around
+    # _AGENT_MEMORY_ADMIN_REASON / _AGENT_SCOPE_REASON / _AGENT_TOKENS_REASON
+    # rather than something reachable through an agent tool call.
+    "/api/admin/registry/{table_id}/policy/preview": (
+        "admin-only access-policy preview/dry-run (table access policies design "
+        "§13.1) — reachable via `agnes admin table-policy preview` (plan Task "
+        "16). No MCP analogue by design: mirrors the grandfathered "
+        "/api/admin/prompts/{kind}/preview exemption, and separately, this "
+        "endpoint runs a policy AS A CHOSEN PERSONA and hands that persona's "
+        "row-filtered slice to the calling admin — an audited, human-witnessed "
+        "diagnostic action (§13.1), not an agent-facing data operation, the "
+        "same posture as _AGENT_MEMORY_ADMIN_REASON/_AGENT_SCOPE_REASON above."
+    ),
     "/api/collections/{collection_id}/files": _COLLECTIONS_FILES_REASON,
     "/api/collections/{collection_id}/files/{file_id}": _COLLECTIONS_FILES_REASON,
     "/api/collections/{collection_id}/files/{file_id}/raw": _LIBRARY_RAW_REASON,
@@ -614,10 +691,20 @@ _EXEMPT: dict[str, str] = {
         "persistence, no analyst CLI/MCP analogue."
     ),
     "/api/admin/reports/marketplace-digest": _REPORTS_REASON,
+    "/api/admin/dashboard/signals": (
+        "Render-path split for the /admin dashboard's 'Needs fixing' zone, not a "
+        "capability: every signal it returns is a count over a page an admin can "
+        "already open, and each row exists to link there. It is fetched after "
+        "first paint purely so the unbounded audit/history reads stay off the "
+        "page render. A CLI/MCP surface would expose nothing `agnes admin` "
+        "cannot already reach per-queue."
+    ),
     "/api/mcp-connect/token": _MCP_CONNECT_REASON,
     "/api/admin/source-connections/{connection_id}": _SOURCE_CONNECTIONS_CRUD_REASON,
     "/api/admin/source-connections/{connection_id}/secret": _SOURCE_CONNECTIONS_CRUD_REASON,
     "/api/admin/source-connections/{connection_id}/test": _SOURCE_CONNECTIONS_CRUD_REASON,
+    "/api/admin/mcp-sources/{source_id}/grants": _MCP_SOURCE_GRANT_REASON,
+    "/api/admin/mcp-sources/{source_id}/grants/{group_id}": _MCP_SOURCE_GRANT_REASON,
     "/api/admin/source-connections/{connection_id}/chat-tools": (
         "derives a Keboola MCP source from a connection and copies that "
         "connection's storage token into the MCP vault — a credential-"
@@ -631,6 +718,16 @@ _EXEMPT: dict[str, str] = {
         "keboola-only browse-and-register primitive with no analyst CLI/MCP analogue; "
         "`agnes admin register-table` already covers the actual registration step"
     ),
+    # Open semantic-layer contract (Task 10) — admin CRUD over the
+    # semantic-model registry and its sync sources. The public,
+    # resource-gated export endpoint carries the triple-surface contract in
+    # _COHORT above.
+    "/api/admin/semantic-models": _SEMANTIC_MODELS_ADMIN_REASON,
+    "/api/admin/semantic-models/{model_id}": _SEMANTIC_MODELS_ADMIN_REASON,
+    "/api/admin/semantic-sources": _SEMANTIC_SOURCES_ADMIN_REASON,
+    "/api/admin/semantic-sources/{source_id}": _SEMANTIC_SOURCES_ADMIN_REASON,
+    "/api/admin/semantic-sources/{source_id}/sync": _SEMANTIC_SOURCES_ADMIN_REASON,
+    "/api/semantic-models/search": _SEMANTIC_MODELS_SEARCH_REASON,
     "/api/attachments/{source}/{attachment_id}/download": (
         "connector-catalogued attachment binary download (Jira first) — one-shot "
         "fetch by id consumed by `agnes attachment get`; binary byte-stream with "
@@ -702,6 +799,11 @@ _EXEMPT: dict[str, str] = {
         "scheduler-driven Keboola semantic layer (Metastore) sync trigger — "
         "admin/scheduler maintenance op, mirrors the run-bq-metadata-refresh / "
         "run-knowledge-digests exemptions; no analyst CLI/MCP analogue"
+    ),
+    "/api/admin/run-databricks-semantic-layer-refresh": (
+        "scheduler-driven Databricks semantic layer (Unity Catalog metric "
+        "views) sync trigger — admin/scheduler maintenance op, mirrors the "
+        "run-keboola-semantic-layer-refresh exemption; no analyst CLI/MCP analogue"
     ),
     "/api/chat/journey": (
         "chat-driven onboarding backend foundation — internal state read/write "
