@@ -2467,9 +2467,17 @@ def _apply_databricks_policies(plan: dict, sql: str, principal, *, allowed, is_a
         if not policied_table_ids:
             return []
 
-        policied_names = {
-            str((table_registry_repo().get(tid) or {}).get("name") or "").lower() for tid in policied_table_ids
-        }
+        policied_names = set()
+        for tid in policied_table_ids:
+            name = str((table_registry_repo().get(tid) or {}).get("name") or "").strip()
+            if not name:
+                # The id came out of `rewrite_sql`, which resolved it against
+                # this same registry, so an unresolvable name here means the
+                # row moved underneath us. Deny: the alternative is an empty
+                # exclusion set, which silently reintroduces the alias-rewrite
+                # bug this exclusion exists to prevent.
+                raise PolicyError(tid)
+            policied_names.add(name.lower())
         outer_lookups = [entry for entry in name_lookups if entry[0].lower() not in policied_names]
         native_sql = rewrite_to_native(spliced_sql, outer_lookups, default_catalog)
         _lookups, blocked = guardrail_inputs(
