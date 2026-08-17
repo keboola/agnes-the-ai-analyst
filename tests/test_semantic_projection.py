@@ -276,19 +276,24 @@ class TestTableBinding:
         assert row["sql"] == "SUM(amount)"
         assert row["table_name"] is None
 
-    def test_a_binding_to_an_unregistered_table_keeps_the_fragment(self, system_db):
-        """The steady state: a semantic layer describes more tables than the
-        instance registers. The metric must still land — dropping it would make
-        the projector quietly lose rows the legacy path kept."""
+    def test_a_binding_to_an_unregistered_table_is_skipped(self, system_db):
+        """A metric that DECLARES a table binding it cannot honor is dropped,
+        matching the legacy Keboola composer (which skips `unresolved_table`).
+        The steady state — a semantic layer describing more tables than the
+        instance registers — is exactly when this fires, and keeping the metric
+        as a bare fragment would make the flat-table cutover start surfacing
+        unrunnable metrics on tables nobody registered. Contrast
+        `test_an_unbound_metric_keeps_its_fragment`: a metric that declares NO
+        binding keeps its fragment, because it never claimed a table."""
+        from src.repositories import metric_repo
+
         project_document(
             _doc(metric_ext={"dataset": "in.c-nowhere.ghosts"}),
             source="keboola_metastore",
             source_ref="conn-1",
         )
 
-        row = _only_metric()
-        assert row["sql"] == "SUM(amount)"
-        assert row["table_name"] is None
+        assert [m for m in metric_repo().list() if m.get("source") == "keboola_metastore"] == []
 
 
 class TestConstraints:

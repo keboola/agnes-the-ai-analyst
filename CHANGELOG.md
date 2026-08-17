@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- **A projected metric that declares a table binding it cannot honor is now skipped, not written as an unrunnable fragment.** `project_document` kept such a metric with its bare expression and no `table_name` — the reasoning being "never drop a row" — but the legacy Keboola composer it is being lined up to replace *skips* a metric whose table is unregistered (or whose fragment carries an embedded `--` comment, or references a foreign alias). Keeping it would have made the coming flat-table cutover start surfacing unrunnable metrics on tables nobody registered. The projector now matches the composer: a metric with **no** binding (a plain upstream Ossie file, e.g. from a git source) still keeps its fragment, but a metric that *declares* a binding and cannot resolve it is dropped. Backed by a new golden regression test (`tests/test_semantic_layer_cutover_parity.py`) that runs a fixture Metastore project through both writers and asserts they agree on the load-bearing fields (`sql`, `table_name`, `validation`) — the gate for the cutover, and a permanent regression after the composer is gone.
+
 ## [0.83.30] - 2026-08-17
 
 ### Fixed

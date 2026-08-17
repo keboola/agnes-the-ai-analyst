@@ -72,20 +72,29 @@ def _table_binder():
     return lambda table_id: resolve_table_name(table_id, lookup)
 
 
-def _bind_metric_sql(fragment: str, table_id: str, binder) -> tuple[str, Optional[str]]:
-    """Compose runnable SQL for a metric bound to a registered table.
+def _bind_metric_sql(fragment: str, table_id: str, binder) -> Optional[tuple[str, Optional[str]]]:
+    """Resolve one metric's SQL against its declared table binding.
 
-    Returns ``(sql, table_name)`` — falling back to ``(fragment, None)``
-    whenever the binding cannot be made safely. Never drops the metric: the
-    legacy composer skipped these, and a projector that skipped them too would
-    silently write fewer rows than the path it replaces.
+    Three outcomes, keyed on whether a binding was declared and whether it can
+    be honored:
 
-    The two guards are `compose_sql`'s documented preconditions. A trailing
-    `--` comment would swallow the appended FROM clause, and a foreign-alias
-    reference needs a JOIN this path cannot compose.
+    - **No binding declared** (``table_id`` empty) → ``(fragment, None)``. A
+      plain upstream Ossie metric — e.g. from a git source — whose expression
+      stands on its own; kept verbatim, no table.
+    - **Binding declared and honored** → ``(runnable_sql, table_name)``.
+    - **Binding declared but cannot be honored** → ``None``, meaning the caller
+      SKIPS the metric. This matches the legacy Keboola composer, which drops a
+      metric whose table is unregistered, whose fragment carries an embedded
+      ``--`` comment (it would swallow the appended FROM), or which references a
+      foreign alias (needs a JOIN this path cannot compose). Keeping such a
+      metric as a bare fragment would make the flat-table cutover start
+      surfacing unrunnable metrics on tables nobody registered — a regression,
+      not the extra coverage the earlier "never drop" wording assumed.
     """
-    if binder is None or not table_id:
+    if not table_id:
         return fragment, None
+    if binder is None:
+        return None
     from connectors.keboola.semantic_layer import (
         compose_sql,
         has_embedded_sql_comment,
@@ -93,10 +102,10 @@ def _bind_metric_sql(fragment: str, table_id: str, binder) -> tuple[str, Optiona
     )
 
     if has_embedded_sql_comment(fragment) or references_foreign_alias(fragment):
-        return fragment, None
+        return None
     table_name = binder(table_id)
     if not table_name:
-        return fragment, None
+        return None
     return compose_sql(fragment, table_name), table_name
 
 
@@ -248,7 +257,13 @@ def project_document(document_json: dict, *, source: str, source_ref: Optional[s
                 report.skipped.append({"kind": "metric", "name": metric_name, "reason": reason})
                 continue
             table_id = _agnes_payload(metric).get("dataset") or ""
-            sql, table_name = _bind_metric_sql(sql, table_id, binder)
+            bound = _bind_metric_sql(sql, table_id, binder)
+            if bound is None:
+                # A binding was declared but cannot be honored — skip, as the
+                # legacy composer does, rather than write an unrunnable row.
+                report.skipped.append({"kind": "metric", "name": metric_name, "reason": "unresolved_binding"})
+                continue
+            sql, table_name = bound
             grain = grain_by_table.get(table_id)
             notes = [f"dataset grain: {grain}"] if grain else None
             metric_id = _scoped_id(source, source_ref, model_name, metric_name)
