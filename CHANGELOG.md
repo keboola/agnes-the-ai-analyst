@@ -14,6 +14,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 - **Admin / Tables: Databricks tables can now be registered from the UI.** The `+ Register new table` dropdown on `/admin/tables` includes a Databricks option that opens a registration drawer for both live (remote SQL warehouse) and synced (materialized parquet) modes, supporting whole-table auto `SELECT *` or custom SQL.
 
+## [0.83.30] - 2026-08-17
+
 ### Fixed
 
 - **Web chat: the agent's AskUserQuestion tool now works — questions render as an interactive card and the answer reaches the agent.** The tool routes through the agent SDK's `can_use_tool` control channel (its permission check is unconditionally "ask", which `bypassPermissions` does not swallow), and the sandbox runner registered no callback — the SDK raised "canUseTool callback is not provided" and every AskUserQuestion call died with nothing on screen. The runner now suspends the call on a `question_request` frame; web chat renders the questions with their options (multi-select and an "Other…" free-text answer included; co-drive participants may answer too) and sends the choice back as a `question_answer`, which the runner returns to the SDK as the tool's `answers` map — the model sees the canonical "Your questions have been answered" result. Pending question cards follow the approval-card lifecycle: they survive reconnect/replay and transcript redraws, retire when the sandbox respawns, share `chat.approval_timeout_seconds` as their answer window, nudge Slack-origin threads to continue on the web when nobody is watching, and resolve immediately with an actionable deny on agent-API sessions that can never show a card. A dismissal/timeout tells the agent to continue with its best judgment.
