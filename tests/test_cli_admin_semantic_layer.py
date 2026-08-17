@@ -1,5 +1,3 @@
-
-
 def test_every_agnes_command_this_module_suggests_is_runnable():
     """Devin Review on #1248: the empty-state hint printed a flag that does not exist.
 
@@ -75,15 +73,14 @@ def test_a_registry_gap_is_not_reported_as_a_definition_defect():
     assert "foreign_alias_reference" in DEFINITION_BLOCKED_REASONS
 
 
-def test_the_new_reason_still_lands_in_the_published_counter():
-    """The per-source counters are a stable surface — the split must not add one."""
-    import inspect
-
-    from connectors.keboola import semantic_layer
-
-    src = inspect.getsource(semantic_layer)
-    assert 'skip_reason in ("foreign_alias_reference", "unresolved_joined_table")' in src
-    assert "skipped_unresolved_joined_table" not in src, "a new counter key leaked into the payload"
+# (removed: test_the_new_reason_still_lands_in_the_published_counter — it
+# source-grepped the legacy flat writer's per-reason skip-counter folding
+# (`skip_reason in ("foreign_alias_reference", "unresolved_joined_table")`),
+# which the flat-table cutover retired: the projector is the single writer and
+# the fine-grained skip counters are no longer computed. The user-facing
+# invariant it guarded — a registry gap is not reported as a definition defect
+# — still holds and is covered by test_a_registry_gap_is_not_reported_as_a_
+# definition_defect via DEFINITION_BLOCKED_REASONS.)
 
 
 def test_the_token_mismatch_strip_stays_hidden_when_empty():
@@ -115,9 +112,7 @@ class TestTheStorageTokenReadHonoursTheAllowlist:
         from connectors.keboola.semantic_layer import _connection_storage_token
 
         monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "should-never-be-read")
-        monkeypatch.setattr(
-            "src.orchestrator_security.get_allowed_token_envs", lambda: {"KEBOOLA_STORAGE_TOKEN"}
-        )
+        monkeypatch.setattr("src.orchestrator_security.get_allowed_token_envs", lambda: {"KEBOOLA_STORAGE_TOKEN"})
         token = _connection_storage_token({"id": "c1", "token_env": "AWS_SECRET_ACCESS_KEY"})
         assert token == "", "an arbitrary host env var was read as a Storage token"
 
@@ -125,9 +120,7 @@ class TestTheStorageTokenReadHonoursTheAllowlist:
         from connectors.keboola.semantic_layer import _connection_storage_token
 
         monkeypatch.setenv("KEBOOLA_STORAGE_TOKEN", "legit")
-        monkeypatch.setattr(
-            "src.orchestrator_security.get_allowed_token_envs", lambda: {"KEBOOLA_STORAGE_TOKEN"}
-        )
+        monkeypatch.setattr("src.orchestrator_security.get_allowed_token_envs", lambda: {"KEBOOLA_STORAGE_TOKEN"})
         assert _connection_storage_token({"id": "c1", "token_env": "KEBOOLA_STORAGE_TOKEN"}) == "legit"
 
     def test_both_env_reads_in_this_module_go_through_one_gated_helper(self):
@@ -153,7 +146,5 @@ class TestTheStorageTokenReadHonoursTheAllowlist:
         from connectors.keboola.semantic_layer import _token_from_env
 
         monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "should-never-be-read")
-        monkeypatch.setattr(
-            "src.orchestrator_security.get_allowed_token_envs", lambda: {"KEBOOLA_STORAGE_TOKEN"}
-        )
+        monkeypatch.setattr("src.orchestrator_security.get_allowed_token_envs", lambda: {"KEBOOLA_STORAGE_TOKEN"})
         assert _token_from_env({"id": "c1", "token_env": "AWS_SECRET_ACCESS_KEY"}) == ""

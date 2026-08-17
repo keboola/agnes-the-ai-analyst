@@ -232,13 +232,11 @@ class TestUpstreamFailure:
 
 
 class TestNameConflicts:
-    """Mapping cleanly is not the same as landing. The sync refuses a name
-    another source already holds, and that check runs AFTER the mapper — so
-    counting mapped rows alone overstates coverage.
-
-    Found live: a Keboola `mrr` never landed because the bundled yaml starter
-    pack already owned that name, while every skip counter the sync reports
-    read 0.
+    """Since the flat-table cutover the projector enforces no name-ownership
+    gate: a name another source already holds no longer blocks a Keboola
+    metric from landing — both definitions coexist under distinct scoped ids.
+    The coverage report surfaces the collision as purely informational
+    (`conflicts`), without subtracting it from `importable`.
     """
 
     def _seed_foreign_metric(self, name: str):
@@ -266,7 +264,9 @@ class TestNameConflicts:
             datasets=[_dataset_item("in.c-example_source.orders")],
         )
 
-        assert source["metrics"] == {"upstream": 2, "importable": 1}
+        # Both definitions coexist now — the collision no longer costs the
+        # Keboola metric its spot.
+        assert source["metrics"] == {"upstream": 2, "importable": 2}
         assert [c["metric"] for c in source["conflicts"]] == ["mrr"]
         assert source["conflicts"][0]["held_by"] == "yaml_import"
         assert "name_conflict" in _warning_codes(source)
@@ -518,10 +518,12 @@ class TestEveryModelIsReported:
         assert source["metrics"] == {"upstream": 2, "importable": 1}
         assert source["unregistered_tables"] == ["in.c-nowhere.ghosts"]
 
-    def test_a_name_claimed_by_an_earlier_model_is_a_conflict(self, e2e_env):
-        """Mirrors the sync's own `claimed_names` tie-break: two linked models
-        each publishing `revenue` land ONE row, first model wins. A report that
-        counted both as importable would promise a metric that never arrives.
+    def test_a_name_shared_by_two_models_is_importable_from_both(self, e2e_env):
+        """Since the flat-table cutover there is no first-model-wins tie-break:
+        two linked models each publishing `revenue` write two distinct
+        scoped-id rows, and both coexist. Neither model's own metric conflicts
+        with the other — `conflicts` only fires against a DIFFERENT source's
+        pre-existing row (see TestNameConflicts).
         """
         _register_keboola_table("in.c-example_source", "orders", "crm_orders")
         _register_keboola_table("in.c-shared", "invoices", "fin_invoices")
@@ -542,6 +544,6 @@ class TestEveryModelIsReported:
             },
         )
 
-        assert source["metrics"] == {"upstream": 2, "importable": 1}
-        assert [c["metric"] for c in source["conflicts"]] == ["revenue"]
-        assert "name_conflict" in _warning_codes(source)
+        assert source["metrics"] == {"upstream": 2, "importable": 2}
+        assert source["conflicts"] == []
+        assert "name_conflict" not in _warning_codes(source)

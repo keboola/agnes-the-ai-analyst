@@ -13,12 +13,15 @@ See ``docs/superpowers/specs/2026-08-13-open-semantic-layer-contract-design.md``
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from src.repositories import column_metadata_repo, glossary_repo, metric_repo
 from src.semantic.dialect import resolve_expression
+
+logger = logging.getLogger(__name__)
 
 # Vendor name under which Agnes rides its own concepts (glossary entries,
 # keywords, constraints — see Task 13) through Ossie's generic
@@ -199,6 +202,8 @@ class ProjectionReport:
     metrics_written: int = 0
     glossary_written: int = 0
     columns_written: int = 0
+    metrics_pruned: int = 0
+    glossary_pruned: int = 0
     skipped: list[dict] = field(default_factory=list)
 
 
@@ -264,13 +269,25 @@ def _glossary_entries(model: dict) -> list[dict]:
     return entries
 
 
-def project_document(document_json: dict, *, source: str, source_ref: Optional[str]) -> ProjectionReport:
+def project_document(
+    document_json: dict, *, source: str, source_ref: Optional[str], safe_prune: bool = False
+) -> ProjectionReport:
     """Project one Ossie document, then prune rows this (source, source_ref)
     previously wrote that the document no longer mentions.
 
     Never a global delete: pruning always reads and deletes within this
     document's own (source, source_ref) scope, so re-projecting a shrunk
     document cannot touch another source's — or another ref's — rows.
+
+    ``safe_prune`` adds a full-wipe guard on top of that scoping: when the
+    projection wrote ZERO metrics (resp. glossary terms) while in-scope rows
+    already exist, the prune is skipped and logged rather than deleting every
+    row. A document that legitimately shrinks to zero is indistinguishable
+    from a transient upstream that returned an empty-but-valid document, and
+    the second must not wipe an installation's whole metric registry in one
+    pass. Off by default (a git source emptying a model is a real delete
+    signal); the Keboola sync — whose upstream can 200 with nothing usable —
+    opts in. Mirrors the legacy ``_sync_one_source`` valve the cutover retired.
     """
     report = ProjectionReport()
 
@@ -372,25 +389,41 @@ def project_document(document_json: dict, *, source: str, source_ref: Optional[s
             written_glossary_ids.add(glossary_id)
             report.glossary_written += 1
 
-    _prune_metrics(source, source_ref, written_metric_ids)
-    _prune_glossary(source, source_ref, written_glossary_ids)
+    report.metrics_pruned = _prune_metrics(source, source_ref, written_metric_ids, safe_prune=safe_prune)
+    report.glossary_pruned = _prune_glossary(source, source_ref, written_glossary_ids, safe_prune=safe_prune)
     _prune_columns(source, written_columns_by_table)
 
     return report
 
 
-def _prune_metrics(source: str, source_ref: Optional[str], written: set[str]) -> None:
+def _prune_metrics(source: str, source_ref: Optional[str], written: set[str], *, safe_prune: bool = False) -> int:
     repo = metric_repo()
     in_scope = {
         m["id"]
         for m in repo.list()
         if (m.get("source") or "") == source and (m.get("source_ref") or "") == (source_ref or "")
     }
+    if safe_prune and not written and in_scope:
+        # Full-wipe guard: wrote nothing this pass while rows exist — a likely
+        # empty-but-valid upstream, not a genuine "all metrics deleted". Skip
+        # rather than delete every in-scope row (see project_document's
+        # ``safe_prune``).
+        logger.warning(
+            "Semantic projection (%s/%s): wrote zero metrics while %d in-scope rows exist; "
+            "skipping prune to avoid a full wipe. Existing rows retained.",
+            source,
+            source_ref,
+            len(in_scope),
+        )
+        return 0
+    pruned = 0
     for metric_id in in_scope - written:
         repo.delete(metric_id)
+        pruned += 1
+    return pruned
 
 
-def _prune_glossary(source: str, source_ref: Optional[str], written: set[str]) -> None:
+def _prune_glossary(source: str, source_ref: Optional[str], written: set[str], *, safe_prune: bool = False) -> int:
     repo = glossary_repo()
     # No list_all(): list(limit=...) with a high ceiling is the established
     # pattern for "give me every row" reads elsewhere (app/web/router.py).
@@ -399,8 +432,20 @@ def _prune_glossary(source: str, source_ref: Optional[str], written: set[str]) -
         for g in repo.list(limit=100_000)
         if (g.get("source") or "") == source and (g.get("source_ref") or "") == (source_ref or "")
     }
+    if safe_prune and not written and in_scope:
+        logger.warning(
+            "Semantic projection (%s/%s): wrote zero glossary terms while %d in-scope rows exist; "
+            "skipping prune to avoid a full wipe. Existing rows retained.",
+            source,
+            source_ref,
+            len(in_scope),
+        )
+        return 0
+    pruned = 0
     for glossary_id in in_scope - written:
         repo.delete(glossary_id)
+        pruned += 1
+    return pruned
 
 
 def _prune_columns(source: str, written_by_table: dict[str, set[str]]) -> None:

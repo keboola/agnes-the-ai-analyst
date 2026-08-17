@@ -678,31 +678,21 @@ def _enumerate_master_sources() -> list[dict]:
     return sources
 
 
-def _store_ossie_documents(documents: list[str], *, source: str, source_ref: Optional[str]) -> None:
-    """Validate and store composed Ossie documents into ``semantic_models``
-    ONLY — deliberately NOT through
-    ``src/semantic/importer.py::import_documents``'s flat-table projection.
+def _store_ossie_documents(documents: list[str], *, source: str, source_ref: Optional[str]) -> list[dict]:
+    """Validate and store composed Ossie documents into ``semantic_models``,
+    returning the parsed ``document_json`` of every document kept.
 
-    That importer's ``project_document`` step writes ``metric_definitions``
-    rows keyed by each metric's own declared ``name`` — the exact same
-    ``metric_definitions.name`` the flat write in ``_sync_one_source`` below
-    already claims, under ``source="keboola_semantic_layer"``, for the same
-    real-world metric. Calling ``import_documents`` here makes two writers
-    race for one name: composing before the flat loop makes ITS OWN
-    name-ownership check see the name as already taken by "a different
-    owner" and silently skip writing its row (reproduced in
-    tests/test_keboola_semantic_layer_sync.py while building this); composing
-    after leaves the flat loop's row alone but adds a SECOND, duplicate-by-
-    name row under ``source="keboola_metastore"`` (``metric_definitions`` has
-    no uniqueness constraint on ``name``, only on ``id``). Neither is
-    acceptable, and reconciling the two into one writer is the flat-table
-    CUTOVER a later task ("Golden regression") exists to validate with its
-    own regression test — not something to do silently here. This function
-    therefore replicates only the storage half of ``import_documents``
-    (validate, hash, upsert-if-changed, prune-scoped-to-this-source) so this
-    adapter's real deliverable — full-fidelity documents, queryable via the
-    semantic-model REST/CLI/MCP surfaces — lands without touching a table
-    the flat importer still owns.
+    The full-fidelity document is the canon: it is stored whole (validate,
+    hash, upsert-if-changed, prune-scoped-to-this-source) and queryable via the
+    semantic-model REST/CLI/MCP surfaces. The returned parsed documents are
+    what the caller then projects into the flat query tables
+    (``metric_definitions`` / ``glossary_terms`` / ``column_metadata``) via
+    ``src.semantic.projection.project_document`` — the SINGLE writer of those
+    tables since the flat-table cutover. (Before the cutover this function
+    deliberately stored but did not project, because a legacy flat composer in
+    ``_sync_one_source`` still owned those tables and two writers raced for one
+    metric name; that composer is gone and the projector now owns them
+    outright — see ``tests/test_semantic_layer_cutover_parity.py``.)
     """
     import hashlib
     from datetime import datetime, timezone
@@ -713,6 +703,7 @@ def _store_ossie_documents(documents: list[str], *, source: str, source_ref: Opt
     repo = semantic_model_repo()
     existing_by_slug = {m["slug"]: m for m in repo.list_all(source=source, source_ref=source_ref)}
     keep_slugs: list[str] = []
+    parsed_documents: list[dict] = []
 
     for text in documents:
         result = validate_document(text)
@@ -731,6 +722,8 @@ def _store_ossie_documents(documents: list[str], *, source: str, source_ref: Opt
         if not slug:
             continue
         keep_slugs.append(slug)
+        if result.parsed is not None:
+            parsed_documents.append(result.parsed)
 
         content_hash = hashlib.sha256(text.encode()).hexdigest()
         existing = existing_by_slug.get(slug)
@@ -754,6 +747,7 @@ def _store_ossie_documents(documents: list[str], *, source: str, source_ref: Opt
         )
 
     repo.delete_missing(source=source, source_ref=source_ref, keep_slugs=keep_slugs)
+    return parsed_documents
 
 
 def _sync_one_source(
@@ -801,7 +795,7 @@ def _sync_one_source(
 
     from connectors.keboola.metastore_client import MetastoreApiError, MetastoreClient
     from connectors.keboola.storage_api import KeboolaStorageClient, StorageApiError
-    from src.repositories import column_metadata_repo, glossary_repo, metric_repo, table_registry_repo
+    from src.repositories import metric_repo, table_registry_repo
 
     scope_refs: set = set(prune_scope_refs) if prune_scope_refs is not None else {source_ref}
 
@@ -896,295 +890,97 @@ def _sync_one_source(
     if not models:
         return empty_result
 
-    # Sorted, not API order: when two models publish the same metric name the
-    # first one processed keeps it (below), so the iteration order decides a
-    # user-visible outcome. Metastore list order is not a documented guarantee,
-    # and a flapping order would silently swap what `revenue` means between
-    # syncs. Model uuids are immutable, so sorting on them is stable — and a
-    # no-op for the single-model case.
-    model_uuids = sorted(m["id"] for m in models if m.get("id"))
-    if not model_uuids:
-        return empty_result
-
-    # Compose full Ossie documents (one per model) alongside the flat
-    # metric_definitions/glossary_terms writes below: nothing upstream is
-    # discarded on the way in, even the fields the flat projection has no
-    # column for (per-field descriptions, the declared SQL dialect,
-    # relationships beyond the single JOIN case, ai.keywords, constraints,
-    # glossary terms — see connectors/keboola/semantic_ossie.py). Stored via
-    # `_store_ossie_documents`, NOT `src/semantic/importer.py::import_documents`
-    # — see that function's docstring for why running the generic importer's
-    # flat-table projection here would collide with the write below. A
-    # dedicated MetastoreClient fetch (inside KeboolaMetastoreAdapter) rather
-    # than reusing the fetch below keeps the adapter self-contained — the
-    # same "hand it connection config, get documents back" contract every
-    # semantic-source adapter uses — at the cost of one extra round-trip per
-    # sync. This is strictly additive: failures are logged and swallowed
-    # rather than raised, so a bug in it can never regress the flat sync
-    # this function has always done.
+    # Compose full-fidelity Ossie documents (one per model) and store them
+    # whole under source="keboola_metastore" — nothing upstream is discarded,
+    # even the fields the flat projection has no column for (per-field
+    # descriptions, the declared SQL dialect, relationships, ai.keywords,
+    # constraints, glossary terms — see connectors/keboola/semantic_ossie.py).
+    # The stored documents are then PROJECTED into the flat query tables by
+    # src.semantic.projection.project_document — the SINGLE writer of
+    # metric_definitions / glossary_terms / column_metadata since the
+    # flat-table cutover (this function's own legacy flat composer was removed;
+    # parity is pinned in tests/test_semantic_layer_cutover_parity.py). The
+    # adapter runs its own MetastoreClient fetch — the self-contained "hand it
+    # connection config, get documents back" contract every semantic-source
+    # adapter uses.
     try:
         from connectors.keboola.semantic_ossie import KeboolaMetastoreAdapter
 
         ossie_documents = KeboolaMetastoreAdapter().extract({"url": url, "token": token})
-        _store_ossie_documents(ossie_documents, source="keboola_metastore", source_ref=source_ref)
-    except Exception:
-        logger.exception(
-            "Keboola semantic layer: Ossie document composition failed for source %s; "
-            "the flat metric_definitions/glossary_terms sync below is unaffected",
-            source_ref,
-        )
+    except Exception as e:
+        # Composition IS the write now — there is no separate flat sync to fall
+        # back to — so a failure here is a hard, structured error, never
+        # swallowed. Reaching the prune below on a failed compose would delete
+        # against an empty projection.
+        logger.exception("Keboola semantic layer: Ossie document composition failed for source %s", source_ref)
+        return {
+            "status": "error",
+            "error": f"Ossie document composition failed: {e}",
+            "code": _upstream_error_code(e),
+            "source_ref": source_ref,
+        }
 
-    # EVERY model, not just the first. A project exposes more than one the
-    # moment a model shared from another project is linked into it — the
-    # direction Keboola's catalog is heading (keboola/ui#7739 makes the model
-    # the unit of sharing; keboola/go-monorepo#571 adds the `targeted` scope
-    # that lets a sibling project see it). Importing only `models[0]` would
-    # drop every shared metric behind a log line nobody reads.
-    #
-    # All models are fetched BEFORE anything is written: a failure partway
-    # through must abort while the tables are still untouched, or the models
-    # that did load would prune the rows of the model that did not.
-    per_model: list[tuple[str, dict[str, list[dict]]]] = []
-    item_types = (
-        "semantic-dataset",
-        "semantic-metric",
-        "semantic-constraint",
-        "semantic-relationship",
-        "semantic-glossary",
-    )
-    for model_uuid in model_uuids:
-        try:
-            per_model.append((model_uuid, {t: metastore.list_items(t, model_uuid) for t in item_types}))
-        except (MetastoreApiError, requests.RequestException) as e:
-            logger.error("Keboola Metastore fetch failed (model %s): %s", model_uuid, e)
-            return {
-                "status": "error",
-                "error": f"Metastore fetch failed: {e}",
-                "code": _upstream_error_code(e),
-                "source_ref": source_ref,
-            }
+    parsed_documents = _store_ossie_documents(ossie_documents, source="keboola_metastore", source_ref=source_ref)
 
+    # Project the stored documents as ONE merged model list. project_document's
+    # prune is scoped to (source, source_ref) so it can only touch this
+    # project's own rows, and safe_prune keeps an empty-but-valid upstream from
+    # wiping the whole registry — the full-wipe guard the retired flat loop
+    # carried. Merge-then-project-once matches the golden regression fixture.
+    from src.semantic.projection import _agnes_payload, project_document
+
+    merged: dict[str, list] = {"semantic_model": []}
+    for doc in parsed_documents:
+        merged["semantic_model"].extend(doc.get("semantic_model") or [])
+    report = project_document(merged, source="keboola_metastore", source_ref=source_ref, safe_prune=True)
+
+    # `unresolved_tables` is a plain fact for the admin Semantic layer page: the
+    # tables a metric needs but this instance never registered, i.e. the set to
+    # go register. Derived from the composed documents (each metric carries its
+    # dataset tableId in the AGNES extension), so no extra Metastore round-trip.
     table_lookup = table_lookup_from_registry(table_registry_repo().list_by_source("keboola"))
-    column_metadata = column_metadata_repo()
-    column_lookup = {
-        name: {c["column_name"] for c in column_metadata.list_for_table(name)} for name in set(table_lookup.values())
-    }
-
-    # Every metric hangs off a dataset, and a dataset whose Keboola table is not
-    # registered in Agnes takes all of its metrics down with it as
-    # `skipped_unresolved_table`. That count alone is a dead end — verified on a
-    # live instance where 50 of 50 metrics vanished and neither the UI nor the
-    # log named a single table, so the only way to find out was querying the
-    # Metastore by hand. Name the tables here, once, and hand them to the caller
-    # so the admin page can say which ones to register. Computed over the union
-    # of every model's datasets, since the write loop below is per-model.
-    all_dataset_table_ids: set[str] = set()
-    for _model_uuid, model_items in per_model:
-        all_dataset_table_ids.update(dataset_lookup_by_table_id(model_items["semantic-dataset"]).keys())
-    unresolved_tables = sorted(tid for tid in all_dataset_table_ids if resolve_table_name(tid, table_lookup) is None)
+    unresolved_set: set[str] = set()
+    skipped_unresolved_table = 0
+    for model in merged["semantic_model"]:
+        for metric in model.get("metrics") or []:
+            tid = _agnes_payload(metric).get("dataset") or ""
+            if tid and resolve_table_name(tid, table_lookup) is None:
+                unresolved_set.add(tid)
+                skipped_unresolved_table += 1
+    unresolved_tables = sorted(unresolved_set)
     if unresolved_tables:
         logger.warning(
-            "Keboola semantic layer: %d of %d datasets reference tables that are not registered "
-            "in Agnes; every metric on them will be skipped. Register them to pick the metrics up: %s",
+            "Keboola semantic layer: %d dataset table(s) referenced by metrics are not registered "
+            "in Agnes; those metrics are skipped. Register them to pick the metrics up: %s",
             len(unresolved_tables),
-            len(all_dataset_table_ids),
             ", ".join(unresolved_tables[:_MAX_REPORTED_UNRESOLVED_TABLES]),
         )
 
-    repo = metric_repo()
-    seen_ids: set[str] = set()
-    # Ids this run refused to write because another owner holds the name. They
-    # are NOT "gone upstream" — upstream still publishes them — so they must be
-    # held back from the prune loop, which would otherwise delete this source's
-    # own previously-written row the first time a conflict appears.
-    retained_ids: set[str] = set()
-    # Names claimed earlier in THIS run. `_is_owned_by_source` cannot cover
-    # this: it permits a write when the incumbent row belongs to this source
-    # under a different id, which is correct across runs (the project's model
-    # was recreated under a new uuid — the stale row prunes at the end) but
-    # wrong within one, where both rows are in `seen_ids` and both survive.
-    # Two linked models publishing a `revenue` is exactly that case.
-    claimed_names: set[str] = set()
-    skipped_unresolved_table = 0
-    skipped_foreign_alias = 0
-    skipped_embedded_comment = 0
-    skipped_ambiguous_relationship = 0
-    skipped_unsupported_relationship_type = 0
-    skipped_unverified_relationship_direction = 0
-    skipped_conflict = 0
-
-    # Datasets, constraints and relationships are model-scoped: each model's
-    # metrics resolve against its OWN objects, never a merged pool, or a
-    # dataset in one model could silently satisfy a metric in another.
-    for model_uuid, model_items in per_model:
-        dataset_lookup = dataset_lookup_by_table_id(model_items["semantic-dataset"])
-        relationship_lookup = relationship_lookup_by_dataset(model_items["semantic-relationship"])
-        constraints = model_items["semantic-constraint"]
-
-        for item in model_items["semantic-metric"]:
-            row, skip_reason = build_metric_row(
-                item,
-                table_lookup,
-                dataset_lookup,
-                constraints,
-                model_uuid,
-                relationship_lookup=relationship_lookup,
-                column_lookup=column_lookup,
-            )
-            if row is None:
-                if skip_reason == "unresolved_table":
-                    skipped_unresolved_table += 1
-                elif skip_reason in ("foreign_alias_reference", "unresolved_joined_table"):
-                    # One counter for both: the published per-source counters are a
-                    # stable surface, and the distinction only matters to the
-                    # coverage report's fixable/unfixable split.
-                    skipped_foreign_alias += 1
-                elif skip_reason == "embedded_sql_comment":
-                    skipped_embedded_comment += 1
-                elif skip_reason == "ambiguous_relationship":
-                    skipped_ambiguous_relationship += 1
-                elif skip_reason == "unsupported_relationship_type":
-                    skipped_unsupported_relationship_type += 1
-                elif skip_reason == "unverified_relationship_direction":
-                    skipped_unverified_relationship_direction += 1
-                else:
-                    logger.warning(
-                        "Keboola semantic metric skipped (%s): %r",
-                        skip_reason,
-                        (item.get("attributes") or {}).get("name"),
-                    )
-                continue
-            # Name-uniqueness gate: another source (or a hand-authored row) may
-            # already hold this metric name. Ownership is sticky — skip and count
-            # rather than shadowing the incumbent with a second same-named row.
-            # Across models this is also the tie-break for the unresolved
-            # cross-project identity problem (two linked models can each publish
-            # a `revenue`): first model wins, the rest are counted, none shadowed.
-            if row["name"] in claimed_names or not _is_owned_by_source(
-                repo.find_by_name(row["name"]), row["id"], scope_refs, adopt_null
-            ):
-                logger.warning(
-                    "Keboola semantic metric %r already exists under a different owner; skipping",
-                    row["name"],
-                )
-                skipped_conflict += 1
-                retained_ids.add(row["id"])
-                continue
-            repo.create(**row, source_ref=source_ref)
-            seen_ids.add(row["id"])
-            claimed_names.add(row["name"])
-
-    # Prune once, against the union of every model's ids — a per-model prune
-    # would delete the other models' rows on each pass.
-    existing = [m for m in repo.list() if _in_scope(m, scope_refs, adopt_null)]
-    pruned = 0
-    if not seen_ids and existing:
-        # Safety valve: the fetch succeeded (HTTP 200) but produced zero
-        # usable metrics while we already hold keboola_semantic_layer rows.
-        # Pruning here would wipe *every* imported business-metric
-        # definition in one pass. A successful-but-empty/wrong-shaped
-        # Metastore response (e.g. the client-side modelUUID filter drifting
-        # on an upstream schema change) is the likely cause, not a genuine
-        # "all metrics deleted upstream". Mirror the `if not models` guard —
-        # skip the prune and log loudly rather than silently delete.
-        logger.warning(
-            "Keboola semantic layer: upstream returned zero usable metrics "
-            "while %d existing rows are present for source %s; skipping prune "
-            "to avoid a full wipe. Existing rows retained.",
-            len(existing),
-            source_ref,
-        )
-    else:
-        for m in existing:
-            if m["id"] not in seen_ids and m["id"] not in retained_ids:
-                repo.delete(m["id"])
-                pruned += 1
-
-    glossary_repository = glossary_repo()
-    used_glossary_ids: set[str] = set()
-    seen_glossary_ids: set[str] = set()
-    retained_glossary_ids: set[str] = set()
-    claimed_terms: set[str] = set()
-    skipped_missing_term = 0
-
-    # ``used_glossary_ids`` is deliberately shared across models: ids already
-    # carry the model uuid, so cross-model collision is impossible, but the
-    # set is what makes within-model slug suffixing deterministic and it costs
-    # nothing to keep one.
-    for model_uuid, model_items in per_model:
-        for item in model_items["semantic-glossary"]:
-            row, skip_reason = build_glossary_row(item, model_uuid, used_glossary_ids)
-            if row is None:
-                if skip_reason == "missing_term":
-                    skipped_missing_term += 1
-                else:
-                    logger.warning(
-                        "Keboola glossary item skipped (%s): %r",
-                        skip_reason,
-                        (item.get("attributes") or {}).get("term"),
-                    )
-                continue
-            # Same sticky-ownership gate as the metric loop, keyed on the term,
-            # with the same within-run first-claim rule (see `claimed_names`).
-            if row["term"] in claimed_terms or not _is_owned_by_source(
-                glossary_repository.find_by_term(row["term"]), row["id"], scope_refs, adopt_null
-            ):
-                logger.warning(
-                    "Keboola glossary term %r already exists under a different owner; skipping",
-                    row["term"],
-                )
-                skipped_conflict += 1
-                retained_glossary_ids.add(row["id"])
-                continue
-            # refresh_fts=False: rebuilding the BM25 index is O(N) per call, so
-            # doing it once per imported term is O(N^2) over a sync. Refresh once
-            # after the full create+prune loop below instead.
-            glossary_repository.create(**row, source_ref=source_ref, refresh_fts=False)
-            seen_glossary_ids.add(row["id"])
-            claimed_terms.add(row["term"])
-
-    existing_glossary = [g for g in glossary_repository.list(limit=100000) if _in_scope(g, scope_refs, adopt_null)]
-    glossary_pruned = 0
-    if not seen_glossary_ids and existing_glossary:
-        # Same safety valve as the metric prune above: a successful-but-empty
-        # glossary response must not wipe every previously-imported term.
-        logger.warning(
-            "Keboola glossary: upstream returned zero usable terms while %d "
-            "existing rows are present for source %s; skipping prune to avoid a full wipe.",
-            len(existing_glossary),
-            source_ref,
-        )
-    else:
-        for g in existing_glossary:
-            if g["id"] not in seen_glossary_ids and g["id"] not in retained_glossary_ids:
-                glossary_repository.delete(g["id"])
-                glossary_pruned += 1
-
-    if seen_glossary_ids:
-        # Single rebuild for the whole batch (see the refresh_fts=False note
-        # in the create loop above).
-        glossary_repository.refresh_search_index()
+    # One-time retirement of the pre-cutover source. Rows this project wrote
+    # under the old source="keboola_semantic_layer" are superseded by the
+    # projection above; purge them within THIS source's scope. Gated on the
+    # projection having actually written rows, so an empty/failed upstream
+    # (0 written) can never delete the last good copy of a metric. Idempotent:
+    # a later sync finds none.
+    purged_legacy = 0
+    if report.metrics_written:
+        legacy_repo = metric_repo()
+        for m in legacy_repo.list():
+            if (m.get("source") or "") == "keboola_semantic_layer" and _in_scope(m, scope_refs, adopt_null):
+                legacy_repo.delete(m["id"])
+                purged_legacy += 1
 
     return {
         "status": "ok",
-        "created_or_updated": len(seen_ids),
-        "pruned": pruned,
+        "created_or_updated": report.metrics_written,
+        "pruned": report.metrics_pruned + purged_legacy,
         "skipped_unresolved_table": skipped_unresolved_table,
-        "skipped_foreign_alias": skipped_foreign_alias,
-        "skipped_embedded_comment": skipped_embedded_comment,
-        "skipped_ambiguous_relationship": skipped_ambiguous_relationship,
-        "skipped_unsupported_relationship_type": skipped_unsupported_relationship_type,
-        "skipped_unverified_relationship_direction": skipped_unverified_relationship_direction,
-        "skipped_conflict": skipped_conflict,
-        "glossary_created_or_updated": len(seen_glossary_ids),
-        "glossary_pruned": glossary_pruned,
-        "skipped_missing_term": skipped_missing_term,
-        "skipped_duplicate_project": 0,
-        # Truncated for the payload, but the TOTAL rides along: the admin
-        # page presents this list as the set to go and register, so a
-        # silent cut at 20 meant an admin could register everything shown,
-        # sync again, and still lose metrics with nothing naming the rest.
-        # (Devin Review on this PR.)
+        "glossary_created_or_updated": report.glossary_written,
+        "glossary_pruned": report.glossary_pruned,
+        # Truncated for the payload, but the TOTAL rides along: the admin page
+        # presents this list as the set to go and register, so a silent cut
+        # meant an admin could register everything shown, sync again, and still
+        # lose metrics with nothing naming the rest.
         "unresolved_tables": unresolved_tables[:_MAX_REPORTED_UNRESOLVED_TABLES],
         "unresolved_tables_total": len(unresolved_tables),
         "source_ref": source_ref,
@@ -1669,6 +1465,48 @@ def _project_identity(url: str, token: str) -> Optional[dict]:
     }
 
 
+def _predict_metric_binding(
+    metric_item: dict,
+    table_lookup: dict[tuple[str, str], str],
+    relationship_lookup: dict[str, list[dict]],
+    column_lookup: dict[str, set[str]],
+) -> tuple[Optional[str], Optional[str]]:
+    """Predict whether a Metastore semantic-metric will bind to a table, and if
+    not, why — the coverage report's predictor of what ``project_document`` (the
+    single writer of the flat query tables since the cutover) does with it.
+
+    Returns ``(table_name, None)`` when the metric binds — simply or via a JOIN
+    — or ``(None, skip_reason)`` with the same reasons the projector's binder
+    acts on: ``unresolved_table``, ``embedded_sql_comment``,
+    ``foreign_alias_reference`` (or the finer relationship reasons from
+    ``try_join_composition``). Built on the exact primitives the projector's
+    ``_bind_metric`` uses, so predicting here and binding there cannot drift.
+    Keboola's ``attributes.sql`` is already the bare aggregation fragment the
+    projector reaches via ``resolve_expression``, so the two see the same input.
+    """
+    attrs = metric_item.get("attributes") or {}
+    name = attrs.get("name")
+    expression = attrs.get("sql") or ""
+    dataset_table_id = attrs.get("dataset") or ""
+    if not name:
+        return None, "missing_name"
+    if references_foreign_alias(expression):
+        if has_embedded_sql_comment(expression):
+            return None, "embedded_sql_comment"
+        fields, join_reason = try_join_composition(
+            expression, dataset_table_id, table_lookup, relationship_lookup, column_lookup
+        )
+        if fields is None:
+            return None, join_reason
+        return fields["table_name"], None
+    if has_embedded_sql_comment(expression):
+        return None, "embedded_sql_comment"
+    table_name = resolve_table_name(dataset_table_id, table_lookup)
+    if table_name is None:
+        return None, "unresolved_table"
+    return table_name, None
+
+
 def compute_semantic_coverage(*, warnings_only: bool = False) -> dict:
     """How much of each connected Keboola project's semantic layer actually
     lands in Agnes, computed live against the Metastore and the table registry.
@@ -1727,15 +1565,6 @@ def compute_semantic_coverage(*, warnings_only: bool = False) -> dict:
     column_lookup = {
         name: {c["column_name"] for c in column_metadata.list_for_table(name)} for name in set(table_lookup.values())
     }
-
-    # The sync lets the DEFAULT connection claim legacy unattributed rows
-    # (`adopt_null=(connection_id == default_id)`); coverage must judge
-    # ownership the same way or it reports a name as taken by another source
-    # that the sync would in fact adopt and import — telling the admin a
-    # metric will not land when it will, which is the direction that costs
-    # them the most. (Devin Review on this PR.)
-    _default = _default_keboola_connection()
-    default_id = _default["id"] if _default else None
 
     sources: list[dict] = []
     for source in _enumerate_master_sources():
@@ -1858,57 +1687,39 @@ def compute_semantic_coverage(*, warnings_only: bool = False) -> dict:
         upstream_metrics = 0
         importable = 0
         unregistered: set[str] = set()
-        # Names claimed by an EARLIER model in this same walk. The sync keeps
-        # the identical set (`claimed_names`) and lets the first model win, so
-        # counting a second model's same-named metric as importable would
-        # promise the admin a row the sync will never write.
-        claimed_names: set[str] = set()
 
-        # Datasets and relationships are model-scoped, exactly as in the sync:
-        # each model's metrics resolve against its OWN objects, never a merged
-        # pool, or a dataset in one model could silently satisfy a metric in
-        # another.
-        for model_uuid, model_items in per_model:
-            dataset_lookup = dataset_lookup_by_table_id(model_items["semantic-dataset"])
+        # Datasets and relationships are model-scoped, exactly as in the
+        # projector: each model's metrics resolve against its OWN objects, never
+        # a merged pool, or a dataset in one model could silently satisfy a
+        # metric in another.
+        for _model_uuid, model_items in per_model:
             relationship_lookup = relationship_lookup_by_dataset(model_items["semantic-relationship"])
             metrics = model_items["semantic-metric"]
             upstream_metrics += len(metrics)
             entry["glossary"]["upstream"] += len(model_items["semantic-glossary"])
 
             for item in metrics:
-                row, reason = build_metric_row(
-                    item,
-                    table_lookup,
-                    dataset_lookup,
-                    [],
-                    model_uuid,
-                    relationship_lookup=relationship_lookup,
-                    column_lookup=column_lookup,
-                )
-                if row is not None:
-                    # Mapping cleanly is not enough to land: the sync refuses to
-                    # take a name another source already holds, and that check
-                    # happens after the mapper, so counting mapped rows alone
-                    # overstates coverage by exactly the number of conflicts.
-                    # Found live — a Keboola `mrr` never landed because the
-                    # bundled yaml starter pack already owned that name, and the
-                    # sync's own `skipped_unresolved_table` counter read 0.
-                    existing = metric_repository.find_by_name(row["name"])
-                    if row["name"] in claimed_names or not _is_owned_by_source(
-                        existing, row["id"], {conn_id}, adopt_null=(conn_id == default_id)
-                    ):
+                attrs = item.get("attributes") or {}
+                table_name, reason = _predict_metric_binding(item, table_lookup, relationship_lookup, column_lookup)
+                if table_name is not None:
+                    importable += 1
+                    # The projector writes under a scoped id and enforces NO
+                    # name-ownership gate (unlike the retired flat composer), so
+                    # a name another source also defines no longer blocks this
+                    # metric — both now coexist in the catalog. Surface that (it
+                    # is the top confusion source) as information, without
+                    # subtracting it from importable.
+                    name = attrs.get("name") or ""
+                    existing = metric_repository.find_by_name(name)
+                    if existing is not None and (existing.get("source") or "") != "keboola_metastore":
                         entry["conflicts"].append(
                             {
-                                "metric": row["name"],
-                                "held_by": (existing or {}).get("source") or "",
-                                "held_id": (existing or {}).get("id") or "",
+                                "metric": name,
+                                "held_by": existing.get("source") or "",
+                                "held_id": existing.get("id") or "",
                             }
                         )
-                        continue
-                    importable += 1
-                    claimed_names.add(row["name"])
                     continue
-                attrs = item.get("attributes") or {}
                 if reason == "unresolved_table":
                     unregistered.add(attrs.get("dataset") or "")
                 elif reason in DEFINITION_BLOCKED_REASONS:
@@ -1948,9 +1759,9 @@ def compute_semantic_coverage(*, warnings_only: bool = False) -> dict:
                 {
                     "code": "name_conflict",
                     "message": (
-                        f"{len(entry['conflicts'])} metric name(s) are already held by another "
-                        f"source and are never overwritten ({names}). Two definitions of the same "
-                        f"metric exist; the one in use is not this project's."
+                        f"{len(entry['conflicts'])} metric name(s) are also defined by another source "
+                        f"({names}). Both definitions now coexist in the catalog under different ids, so "
+                        f"a lookup by name may return either — reconcile the duplicate definitions."
                     ),
                 }
             )
