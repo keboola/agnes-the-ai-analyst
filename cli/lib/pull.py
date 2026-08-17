@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import functools
 import hashlib
+import logging
 import os
 import re
 import shutil
@@ -46,7 +47,10 @@ from cli.client import api_get, api_post, stream_download
 from cli.config import get_sync_state, save_sync_state
 from cli.snapshot_meta import list_snapshots
 from src.distribution import CONTENT_MD5_HEADER
+from src.object_store import OBJECT_STORE_MD5_METADATA_HEADER
 from src.sql_ident import quote_ident
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -196,7 +200,7 @@ _SIGNED_URL_TIMEOUT = httpx.Timeout(connect=10.0, read=300.0, write=300.0, pool=
 _SIGNED_URL_CHUNK_BYTES = 8192
 
 
-def _fetch_signed_url(url: str, target_path: str, progress_callback=None) -> None:
+def _fetch_signed_url(url: str, target_path: str, progress_callback=None, headers_out: dict | None = None) -> None:
     """SSRF-guarded direct-to-object-storage download of a manifest
     `signed_url` (WF-4, wave 2H) into `target_path`.
 
@@ -208,6 +212,22 @@ def _fetch_signed_url(url: str, target_path: str, progress_callback=None) -> Non
     manifest hash happens afterwards, unconditionally, via
     `_verify_and_promote`, on whichever path's bytes end up in the
     sidecar.
+
+    `headers_out`, when given, is populated with the response headers on a
+    successful (< 300) response — same shape as `cli/client.py::stream_download`'s
+    own `headers_out` (clear-then-update with `httpx.Headers(response.headers)`,
+    readers re-wrap in `httpx.Headers` for case-insensitive lookup). The two
+    paths carry genuinely different headers — `stream_download`'s caller
+    reads `X-Agnes-Content-MD5` (`src.distribution.CONTENT_MD5_HEADER`, an
+    Agnes-defined header on the app-served part route), this one reads S3's
+    own `x-amz-meta-md5` (`src.object_store.OBJECT_STORE_MD5_METADATA_HEADER`
+    — whatever an object was stamped with by `S3ObjectStore.put_file`,
+    echoed back on GET) — but the shape a caller reads them through is the
+    same seam on purpose: `_download_one` uses it to tell "the object moved
+    on since the manifest was built" from "the bytes were damaged in
+    transit" when a signed-URL fetch fails `_verify_and_promote`, issue
+    #1360. Not populated on a raised exception (SSRF rejection, transport
+    error, non-2xx) — there is no response to read headers off.
 
     SSRF guard: reuses `_resolve_safe` *and* `_SSRFGuardTransport` from
     `src.marketplace_asset_mirror` — the same DNS-rebinding-aware
@@ -268,6 +288,9 @@ def _fetch_signed_url(url: str, target_path: str, progress_callback=None) -> Non
             with client.stream("GET", url) as resp:
                 if resp.status_code >= 300:
                     raise ValueError(f"signed_url http_{resp.status_code}")
+                if headers_out is not None:
+                    headers_out.clear()
+                    headers_out.update(httpx.Headers(resp.headers))
                 with open(target_path, "wb") as f:
                     for chunk in resp.iter_bytes(chunk_size=_SIGNED_URL_CHUNK_BYTES):
                         f.write(chunk)
@@ -275,6 +298,45 @@ def _fetch_signed_url(url: str, target_path: str, progress_callback=None) -> Non
                             progress_callback(len(chunk))
         except _SSRFRejected as e:
             raise ValueError(f"signed_url rejected: {e.reason}") from e
+
+
+def _signed_url_mismatch_reason(headers: dict, expected_hash: str) -> str | None:
+    """After a signed-URL fetch fails `_verify_and_promote`, explain WHY —
+    purely diagnostic (issue #1360), never changes what `_download_one`
+    does: a mismatch still falls back to the app-served route
+    unconditionally regardless of this function's answer, and
+    `_verify_and_promote` stays the only promotion gate either way.
+
+    Reads `headers` (the `headers_out` `_fetch_signed_url` populated) for
+    `OBJECT_STORE_MD5_METADATA_HEADER` — the object's own stamp, echoed
+    back by S3 on a plain GET — the same "absent means an older/unlabeled
+    store, say nothing" contract `cli/client.py::stream_download`'s
+    `headers_out` + `CONTENT_MD5_HEADER` already established for the
+    app-served part route: returns `None` when the header is missing, same
+    as before this existed.
+
+    When present, distinguishes the two things that otherwise look
+    identical (both are just "hash mismatch" to `_verify_and_promote`):
+
+    - the store's stamp disagrees with the manifest's `expected_hash` too
+      -> the object moved on (a newer sync landed after the manifest was
+      built) — self-consistent, not corruption.
+    - the store's stamp agrees with `expected_hash` -> the object was
+      exactly what was expected, yet what arrived did not hash to it —
+      the bytes were damaged in transit.
+    """
+    served = httpx.Headers(headers).get(OBJECT_STORE_MD5_METADATA_HEADER, "")
+    if not served:
+        return None
+    if served != expected_hash:
+        return (
+            f"object moved on: the store holds {served[:12]}, the manifest expected "
+            f"{expected_hash[:12]} — a newer sync likely landed after the manifest was built"
+        )
+    return (
+        f"possible transfer corruption: the store's stamp ({served[:12]}) matches the "
+        "manifest, but the downloaded bytes did not hash to it"
+    )
 
 
 def _verify_and_promote(sidecar: Path, target: Path, expected_hash: str) -> tuple[bool, str | None]:
@@ -1163,13 +1225,21 @@ def run_pull(
 
             try:
                 if signed_url:
+                    signed_url_headers: dict = {}
                     try:
-                        _fetch_signed_url(signed_url, str(sidecar), progress_callback=cb)
+                        _fetch_signed_url(
+                            signed_url, str(sidecar), progress_callback=cb, headers_out=signed_url_headers
+                        )
                         ok, _verify_err = _verify_and_promote(sidecar, target, expected_hash)
                         if ok:
                             return tid, _entry(), None, "signed_url"
                         # md5 mismatch (or, on a hash-less legacy manifest, a
                         # failed PAR1 check) — fall through to the app path.
+                        # Diagnostic only (issue #1360): explain, don't decide —
+                        # the fallback below runs unconditionally either way.
+                        reason = _signed_url_mismatch_reason(signed_url_headers, expected_hash)
+                        if reason:
+                            logger.debug("signed-url fetch for %s fell back to the app path: %s", tid, reason)
                     except Exception:
                         sidecar.unlink(missing_ok=True)
                     if reset_progress is not None:

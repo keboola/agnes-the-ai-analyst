@@ -27,12 +27,60 @@ mirroring the singleton-cache shape used by
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import threading
 from pathlib import Path
 from typing import Optional, Protocol
 
 log = logging.getLogger(__name__)
+
+# The `Metadata` key `put_file`/`put_bytes`/`head_md5` stamp and read
+# (`{"md5": ...}`). One constant so the PUT side and the HEAD/GET side can
+# never drift apart on the key name.
+_MD5_METADATA_KEY = "md5"
+
+# S3 echoes user-supplied object metadata back as `x-amz-meta-<key>` response
+# headers on HEAD *and* plain GET — lowercase, boto3/S3's own convention, not
+# an Agnes-defined contract (contrast `src.distribution.CONTENT_MD5_HEADER`,
+# which IS ours, on the app-served part-download response). A GET caller that
+# wants to know what an object's stamp claims about itself — e.g.
+# `cli/lib/pull.py::_fetch_signed_url`, distinguishing "the object moved on"
+# from "the bytes are damaged" on a signed-URL fetch that fails
+# `_verify_and_promote` — reads this header rather than issuing a separate
+# HEAD.
+OBJECT_STORE_MD5_METADATA_HEADER = f"x-amz-meta-{_MD5_METADATA_KEY}"
+
+# Matches every other content-md5 chunking in this codebase (`cli/lib/pull.py
+# ::_file_md5`, `app/api/sync.py::_file_hash`) — kept identical so a
+# byte-for-byte-equal file always hashes to the same digest, though nothing
+# here requires that; it is just one fewer thing to explain if someone reads
+# them side by side.
+_HASH_CHUNK_BYTES = 8192
+
+
+def hash_file_md5(path: str | Path, chunk_size: int = _HASH_CHUNK_BYTES) -> str:
+    """Stream *path* and return the md5 of the bytes actually read — never
+    loaded fully into memory, so this is safe on a multi-GB parquet.
+
+    Exists so a caller about to stamp an object's metadata (:func:`put_file`)
+    can hash the SAME bytes it is about to upload rather than trusting a
+    label that came from somewhere else (e.g. a DB row read earlier, and
+    possibly staler than the file by the time it is sent) — the same
+    "hash exactly what you serve, from one read" rule
+    ``app/api/data.py::_serve_part_self_describing`` established for the
+    app-served part-download response (``CONTENT_MD5_HEADER`` /
+    ``X-Agnes-Content-MD5``, wired via ``src/distribution.py``). This is the
+    object-store side of that same rule — see
+    ``app/worker/kinds.py::_run_distribution_mirror`` (issue #1360), its
+    first caller.
+    """
+    h = hashlib.md5()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(chunk_size), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
 
 try:
     import boto3
@@ -146,7 +194,7 @@ class S3ObjectStore:
             str(local_path),
             self.bucket,
             self._key(key),
-            ExtraArgs={"Metadata": {"md5": md5}},
+            ExtraArgs={"Metadata": {_MD5_METADATA_KEY: md5}},
         )
 
     def head_md5(self, key: str) -> Optional[str]:
@@ -157,7 +205,7 @@ class S3ObjectStore:
                 return None
             raise
         metadata: dict = response.get("Metadata", {}) or {}
-        value = metadata.get("md5")
+        value = metadata.get(_MD5_METADATA_KEY)
         return str(value) if value is not None else None
 
     def put_bytes(self, key: str, data: bytes, md5: str) -> None:
@@ -165,7 +213,7 @@ class S3ObjectStore:
             Bucket=self.bucket,
             Key=self._key(key),
             Body=data,
-            Metadata={"md5": md5},
+            Metadata={_MD5_METADATA_KEY: md5},
         )
 
     def get_bytes(self, key: str) -> Optional[bytes]:
