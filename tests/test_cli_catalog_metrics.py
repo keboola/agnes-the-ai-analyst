@@ -1,16 +1,17 @@
 """Tests for `agnes catalog --metrics`."""
 
+import re
+
 from typer.testing import CliRunner
 
+from cli.commands.catalog import catalog_app
+
 # CI-safety: Typer/rich emits ANSI escapes in --help output. Strip before asserts.
-_ANSI_RE = __import__("re").compile(r"\x1b\[[0-9;]*m")
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
 def _clean(s: str) -> str:
     return _ANSI_RE.sub("", s)
-
-
-from cli.commands.catalog import catalog_app
 
 
 def test_catalog_metrics_help():
