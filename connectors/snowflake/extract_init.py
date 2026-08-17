@@ -45,6 +45,7 @@ def write_remote_attach(
     warehouse: str,
     user: str,
     role: str,
+    token_env: str = SF_TOKEN_ENV,
 ) -> None:
     """Write the single ``_remote_attach`` row the orchestrator will replay."""
     conn.execute("DROP TABLE IF EXISTS _remote_attach")
@@ -62,7 +63,7 @@ def write_remote_attach(
             SF_ALIAS,
             SF_EXTENSION,
             build_remote_attach_url(account, database, warehouse, user, role),
-            SF_TOKEN_ENV,
+            token_env,
         ],
     )
 
@@ -90,6 +91,7 @@ def init_extract(
     table_configs: list[dict[str, Any]],
     *,
     token: str = "",
+    token_env: str = SF_TOKEN_ENV,
     attach_fn: Optional[_AttachFn] = None,
 ) -> dict[str, Any]:
     """Create ``extract.duckdb`` containing ``_meta``, ``_remote_attach`` and one view per remote table."""
@@ -121,7 +123,7 @@ def init_extract(
                 )
             return stats
 
-        write_remote_attach(conn, account, database, warehouse, user, role)
+        write_remote_attach(conn, account, database, warehouse, user, role, token_env=token_env)
 
         # Remove remote rows from a previous rebuild; the orchestrator will
         # recreate master views from this fresh extract.
@@ -185,6 +187,7 @@ def rebuild_from_registry(output_dir: str | None = None) -> dict[str, Any]:
         settings.get("role") or "",
         rows,
         token=settings["password"],
+        token_env=settings.get("token_env") or SF_TOKEN_ENV,
     )
     result["skipped"] = False
     return result

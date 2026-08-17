@@ -2263,8 +2263,8 @@ def _sf_guardrail_inputs(sql: str, sql_lower: str, sys_conn, user, allowed) -> O
         row = None
         for r in repo.list_by_source("snowflake"):
             if (
-                r.get("bucket", "").lower() == schema_raw.lower()
-                and r.get("source_table", "").lower() == table_raw.lower()
+                (r.get("bucket") or "").lower() == schema_raw.lower()
+                and (r.get("source_table") or "").lower() == table_raw.lower()
             ):
                 row = r
                 break

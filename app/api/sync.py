@@ -676,6 +676,8 @@ def _run_materialized_pass(
                 output_dir_for_hash = bq_output_dir
             elif row_source_type == "databricks":
                 output_dir_for_hash = dbx_output_dir
+            elif row_source_type == "snowflake":
+                output_dir_for_hash = sf_output_dir
             else:
                 output_dir_for_hash = str(kb_output_dir.parent)
             parquet_path = Path(output_dir_for_hash) / "data" / f"{ref_name}.parquet"

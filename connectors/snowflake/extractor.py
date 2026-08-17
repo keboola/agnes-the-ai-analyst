@@ -198,7 +198,7 @@ def materialize_query(
 
     parquet_path = data_dir / f"{table_id}.parquet"
     tmp_path = data_dir / f"{table_id}.parquet.tmp"
-    tmp_db = out_path / ".tmp_materialize.duckdb"
+    tmp_db = out_path / f".tmp_materialize_{table_id}.duckdb"
 
     lock = _get_table_lock(table_id)
     if not lock.acquire(blocking=False):
@@ -268,9 +268,7 @@ def materialize_query(
             limit=max_bytes,
         )
 
-    if parquet_path.exists():
-        parquet_path.unlink()
-    tmp_path.rename(parquet_path)
+    os.replace(tmp_path, parquet_path)
 
     size_bytes = parquet_path.stat().st_size
 

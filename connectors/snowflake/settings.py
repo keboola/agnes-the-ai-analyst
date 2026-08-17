@@ -33,7 +33,7 @@ def resolve_snowflake_settings() -> Optional[dict[str, Any]]:
     password = os.environ.get(token_env, "")
     if not password:
         try:
-            password = datasource_secret("SNOWFLAKE_PASSWORD") or ""
+            password = datasource_secret(token_env) or ""
         except Exception:
             password = ""
 

@@ -3085,6 +3085,11 @@ def _validate_snowflake_register_payload(req: "RegisterTableRequest") -> None:
             detail="snowflake: data_source.snowflake.database is required",
         )
 
+    if req.query_mode == "materialized" and req.source_query and req.source_query.strip():
+        # Custom SQL is self-contained; bucket/source_table are only required when
+        # the server generates the full-table dump itself (mirrors Databricks validator).
+        return
+
     bucket = (req.bucket or "").strip()
     source_table = (req.source_table or "").strip()
     if not bucket or not source_table:
@@ -3125,8 +3130,7 @@ def _validate_snowflake_register_payload(req: "RegisterTableRequest") -> None:
         return
 
     if req.query_mode == "materialized":
-        if req.source_query and req.source_query.strip():
-            return
+        # No custom SQL provided; generate the full-table SELECT for the scheduler.
         try:
             req.source_query = full_table_sql(schema, source_table)
         except ValueError as e:
@@ -3149,7 +3153,11 @@ def _rebuild_snowflake_remote_extract() -> tuple[bool, str]:
         return (False, f"snowflake remote extract rebuild failed: {exc}")
 
     if result.get("skipped"):
-        return (False, f"snowflake remote extract skipped: {result.get('reason')}")
+        reason = result.get("reason")
+        if reason == "not_configured":
+            return (False, "snowflake remote extract skipped: not configured")
+        # `no_remote_rows` is a no-op (e.g. update_table background), not a failure.
+        return (True, f"snowflake remote extract skipped: {reason}")
 
     errors = result.get("errors") or []
     if errors:
