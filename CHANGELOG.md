@@ -10,7 +10,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
-## [0.83.27] - 2026-08-17
+## [0.83.28] - 2026-08-17
+
+### Fixed
+
+- **An MCP tool that answers with structured content looked like it returned nothing.** The MCP spec's own channel for machine-readable output — `structuredContent`, returned by any server whose tool declares an `outputSchema`, alongside a human-readable rendering in `content` — was discarded at the call boundary: only `result.content` was passed on, and the prose half naturally failed to parse. Materialize mode then reported `tool X did not return parseable JSON`, so a correct upstream registered as a broken one (found against a Keboola MCP data-app lister, but nothing about it is vendor-specific). Structured content is now preferred over the text — authoritative even when the text also parses, since a server may render a *summary* into the text while the structured half carries the full rows. A second shape joins it: one JSON document per content block, which `"\n".join` turned into an invalid document. That one is accepted only when **every** non-empty block parses — a single JSON block next to a line of prose is not a table, and picking the parseable half would invent rows.
+
+- **`materialize_failed` now says what arrived, not just what was required.** The error named the contract ("requires a JSON response with a list-of-dicts") and stopped there, leaving one route to the actual shape: reproduce the upstream call by hand — with a credential that lives write-only in the vault, so the operator frequently cannot. It now carries whether `structuredContent` was present, the content-block types, and the first 200 characters of the text.
 
 ### Added
 
