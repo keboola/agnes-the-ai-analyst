@@ -3403,8 +3403,11 @@ html[data-ui-layout="rail"] .cloud-chat-shell.has-thread .cloud-chat-main::after
   border-color: var(--ds-primary);
   box-shadow: inset 0 0 0 1px var(--ds-primary);
 }
-/* A typed answer reads as picked — same tint as a selected option. */
-.cloud-chat-question-otherwrap:has(.cloud-chat-question-other:not(:placeholder-shown)) {
+/* A typed answer reads as picked — same tint as a selected option.
+   JS toggles .is-filled from the input handler on the TRIMMED value
+   (the same test answerOf applies), so whitespace the card would not
+   accept never shows the picked tint. */
+.cloud-chat-question-otherwrap.is-filled {
   border-color: var(--ds-primary);
   background: var(--ds-primary-light);
 }
@@ -3466,11 +3469,12 @@ html[data-ui-layout="rail"] .cloud-chat-shell.has-thread .cloud-chat-main::after
   background: var(--ds-primary-dark);
 }
 /* Unanswered → Submit is visibly parked, not a half-faded twin of the
-   enabled state. */
+   enabled state. Muted (not disabled) ink: the label must stay readable
+   on the sunken fill — disabled ink lands near 1.2:1 there. */
 .cloud-chat-question-btn.is-submit:disabled {
   border-color: var(--ds-border);
   background: var(--ds-surface-sunken);
-  color: var(--ds-text-disabled);
+  color: var(--ds-text-muted);
   opacity: 1;
 }
 

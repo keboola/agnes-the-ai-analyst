@@ -2532,6 +2532,7 @@ function renderQuestionRequest(frame) {
           state[i].selected.clear();
           state[i].other = "";
           otherInput.value = "";
+          otherWrap.classList.remove("is-filled");
           if (!wasSelected) state[i].selected.add(label);
         }
         optButtons.forEach((btn) =>
@@ -2559,6 +2560,9 @@ function renderQuestionRequest(frame) {
     otherInput.maxLength = 2000;
     otherInput.oninput = () => {
       state[i].other = otherInput.value;
+      // "is-filled" mirrors answerOf's trimmed test, so the picked tint
+      // never shows on whitespace the card would not accept.
+      otherWrap.classList.toggle("is-filled", otherInput.value.trim() !== "");
       if (!qq.multiSelect && otherInput.value.trim()) {
         // Free text replaces a picked option on single-select questions.
         state[i].selected.clear();
