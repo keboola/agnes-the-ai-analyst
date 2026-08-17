@@ -4998,8 +4998,12 @@
         var serverOnly = !!(document.getElementById('dbxServerOnly') && document.getElementById('dbxServerOnly').checked);
 
         if (accessMode === 'synced' && loadMode === 'custom') {
+            var customName = (viewName || sourceTable || '').trim();
+            if (!customName) {
+                throw new Error('View name is required for a custom SQL registration.');
+            }
             return {
-                name: viewName,
+                name: customName,
                 source_type: 'databricks',
                 query_mode: 'materialized',
                 source_query: (document.getElementById('dbxSourceQuery').value || '').trim(),
