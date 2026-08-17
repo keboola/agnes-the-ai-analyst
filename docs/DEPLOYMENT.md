@@ -289,10 +289,31 @@ joins the VPN) cannot reach a private-network address at all — the
 connection fails outright, no matter how correctly it is configured. Two
 supported responses, pick one:
 
-1. **Expose the endpoint.** Put a TLS-terminating reverse proxy in front of
-   Agnes that is reachable from the public internet and authenticates the
-   same way as the rest of the deployment (see [TLS](#tls-optional) above).
-   This is the only way to make a cloud-side client work.
+1. **Expose it — via your own outbound tunnel.** Agnes itself never owns or
+   creates a Cloudflare or Tailscale account; you run an outbound tunnel
+   (`cloudflared` or `tailscaled`) whose ingress rules forward only the
+   paths you choose while the rest of the instance stays on the VPN. Two
+   patterns, same tunnel, different path allowlists — templates and the full
+   reasoning for each exclusion: [`infra/examples/vpn-agent-tunnel/`](../infra/examples/vpn-agent-tunnel/).
+
+   - **Agent-only tunnel (recommended).** Expose just `POST
+     /api/v1/agents/{slug}/responses` and its session/job companions
+     (`app/api/agent_runtime.py`, `app/api/agent_sessions.py`) — Bearer-**PAT**-
+     authenticated, scoped to exactly one `'selected'`-mode agent whose
+     effective authority is the intersection of its own declared scope and
+     its owner's grants (`src/agent_scope_intersection.py`). Bare agent
+     create/list/get/put/delete, `/scope`, `/tokens`, `/memories*`, and
+     `/webhooks` are deliberately excluded from the allowlist even though
+     they share the `/api/v1/agents/*` prefix — defense-in-depth on top of
+     `require_session_token` already rejecting a bare PAT there.
+   - **Full-connector tunnel.** For operators who want the complete
+     assistant experience despite being VPN-only, expose `/api/mcp/http*` +
+     `/.well-known/*` instead — the same OAuth-authenticated connector
+     already documented above, unchanged; the tunnel is the only new part,
+     and it is a materially bigger exposure than the agent-only option
+     (every RBAC-visible resource for every user who authenticates through
+     it, not one agent's scoped authority).
+
 2. **Accept the surface doesn't apply, and hide it.** If in-network clients
    are the only ones you support, set `mcp.connector_ui_enabled: false` in
    `instance.yaml` (or `AGNES_MCP_CONNECTOR_UI_ENABLED=0`) — see

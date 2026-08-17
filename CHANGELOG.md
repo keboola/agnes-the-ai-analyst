@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- **Tunnel recipe for VPN/intranet-only instances that still want to be reached (#1024).** #1291 let an operator hide the "connect your AI client" instructions on a VPN-only instance; this adds the other half — actually exposing an outbound path when hiding isn't the goal. Two operator-run patterns, templated under `infra/examples/vpn-agent-tunnel/` (Cloudflare Tunnel or Tailscale Funnel) and documented in `docs/DEPLOYMENT.md`'s VPN/intranet section: an agent-only tunnel exposing just the Bearer-PAT-authenticated, owner-scoped agent-as-API surface (recommended — narrowest exposure), or the existing full OAuth MCP connector for operators who want the complete assistant experience despite being VPN-only. Agnes itself owns no tunnel infrastructure; both are operator-run outbound tunnels with a path allowlist in front of endpoints that already enforce their own auth.
+
 ## [0.83.26] - 2026-08-16
 
 ### Fixed
