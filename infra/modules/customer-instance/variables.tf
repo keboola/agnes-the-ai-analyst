@@ -113,6 +113,72 @@ variable "prod_instance" {
     # dev-first rollout doesn't touch prod. Brings up the apps-runner sidecar +
     # the AGNES_DATA_APPS_ENABLED env override on that VM's .env only.
     data_apps_enabled = optional(bool, false)
+
+    # --- Vendor-neutral per-instance branding (all OPTIONAL) ---
+    # Written into the VM's /data/state/instance.yaml on FIRST boot only. The
+    # startup script never clobbers an existing instance.yaml (so an operator's
+    # later theme edits and DB-backend migrations survive a reboot/recreate),
+    # which means these values seed a FRESH instance — to restyle a LIVE one,
+    # edit instance.yaml through the app/admin surface or recreate the VM.
+    # Leaving every field below unset writes a byte-for-byte identical
+    # instance.yaml — the branding blocks are emitted only for the keys set.
+    #
+    # The app reads these back from /data/state/instance.yaml
+    # (app/instance_config.py); config/instance.yaml.example documents the full
+    # contract. Keep values generic here — nothing customer-specific belongs in
+    # a module default or example (use example.com / <your-brand> placeholders).
+    #
+    #   logo_svg    -> instance.logo_svg   (inline <svg> for header + /login brand slot)
+    #   brand       -> instance.brand      (product name in analyst-facing copy)
+    #   brand_short -> instance.brand_short (short form used mid-sentence)
+    #   subtitle    -> instance.subtitle   (tagline shown under the instance name)
+    #   copyright   -> instance.copyright  (footer credit, rendered "Deployed by <this>")
+    logo_svg    = optional(string, "")
+    brand       = optional(string, "")
+    brand_short = optional(string, "")
+    subtitle    = optional(string, "")
+    copyright   = optional(string, "")
+
+    # theme_colors -> the top-level `theme:` block in instance.yaml. Known color
+    # keys recolor the design-system --ds-* tokens (primary -> --ds-primary,
+    # background -> --ds-bg, surface -> --ds-surface, border -> --ds-border,
+    # text_primary / text_secondary -> --ds-text-primary / --ds-text-secondary,
+    # success / warning / error -> --ds-accent-{success,warn,danger}-ink); see
+    # THEME_CSS_VAR_MAP in app/instance_config.py. font_primary / radius stay
+    # legacy-only (no single --ds-* equivalent) and font_url is a stylesheet URL,
+    # not a CSS variable. Values are free-form CSS (hex, rgba(), font stacks) —
+    # only the keys you set are written. This generic recolor is independent of
+    # the named `theme` preset above and composes with it: a preset picks the
+    # base palette, theme_colors overrides individual tokens on top.
+    theme_colors = optional(object({
+      primary        = optional(string)
+      primary_dark   = optional(string)
+      primary_light  = optional(string)
+      background     = optional(string)
+      surface        = optional(string)
+      border         = optional(string)
+      text_primary   = optional(string)
+      text_secondary = optional(string)
+      success        = optional(string)
+      warning        = optional(string)
+      error          = optional(string)
+      font_primary   = optional(string)
+      font_url       = optional(string)
+      radius         = optional(string)
+    }), {})
+
+    # custom_scripts -> instance.custom_scripts, written verbatim. Each entry is
+    # an operator-injected HTML/JS block (feedback widget, analytics, error
+    # capture — or the hero/accent CSS the theme_colors block can't express)
+    # rendered into every page. Admin-authored, emitted with `| safe`, so this
+    # is trusted operator content by contract. Empty list (default) writes
+    # nothing.  placement: head_start | head_end | body_end
+    custom_scripts = optional(list(object({
+      name      = string
+      enabled   = bool
+      placement = string
+      html      = string
+    })), [])
   })
 
   # An alias equal to `domain` produces two Caddy site blocks with the same
@@ -206,6 +272,40 @@ variable "dev_instances" {
     data_apps_enabled = optional(bool, false)
     # See prod_instance for the rationale; same default.
     upgrade_schedule = optional(string, "*/5 * * * *")
+
+    # Vendor-neutral per-instance branding — see prod_instance for the full
+    # contract (seeded into /data/state/instance.yaml on FIRST boot; unset =
+    # byte-for-byte identical file; the app reads them back via
+    # app/instance_config.py). MUST be declared on this object type: Terraform
+    # silently drops attributes absent from the type, so a bare entry in a
+    # caller's dev_instances list would never reach the module.
+    logo_svg    = optional(string, "")
+    brand       = optional(string, "")
+    brand_short = optional(string, "")
+    subtitle    = optional(string, "")
+    copyright   = optional(string, "")
+    theme_colors = optional(object({
+      primary        = optional(string)
+      primary_dark   = optional(string)
+      primary_light  = optional(string)
+      background     = optional(string)
+      surface        = optional(string)
+      border         = optional(string)
+      text_primary   = optional(string)
+      text_secondary = optional(string)
+      success        = optional(string)
+      warning        = optional(string)
+      error          = optional(string)
+      font_primary   = optional(string)
+      font_url       = optional(string)
+      radius         = optional(string)
+    }), {})
+    custom_scripts = optional(list(object({
+      name      = string
+      enabled   = bool
+      placement = string
+      html      = string
+    })), [])
   }))
   default = []
 

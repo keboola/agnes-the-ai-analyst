@@ -79,6 +79,67 @@ locals {
     var.dispatcher_key_secret,
     var.dispatcher_vertex_sa_secret,
   ])) : toset([])
+
+  # --- Vendor-neutral per-instance branding -> /data/state/instance.yaml ---
+  # The startup script seeds instance.yaml on FIRST boot only (it never clobbers
+  # an existing file). These locals turn the optional per-VM branding fields into
+  # the `instance:` + `theme:` YAML blocks the script appends. Assembled here —
+  # not in the shell template — so yamlencode handles the multi-line SVG /
+  # custom_scripts HTML escaping + indentation for us, and so an unset caller
+  # collapses to "" (no bytes appended -> a byte-for-byte identical file).
+  #
+  # Each map keeps ONLY the keys the caller actually set (drop null + ""), so
+  # partial branding (e.g. a logo but no theme colours) emits exactly its subset.
+  instance_brand_scalars = {
+    for inst in local.all_instances : inst.name => {
+      for k, v in {
+        logo_svg    = try(inst.logo_svg, "")
+        brand       = try(inst.brand, "")
+        brand_short = try(inst.brand_short, "")
+        subtitle    = try(inst.subtitle, "")
+        copyright   = try(inst.copyright, "")
+      } : k => v if v != null && v != ""
+    }
+  }
+  instance_theme_colors = {
+    for inst in local.all_instances : inst.name => {
+      for k, v in {
+        primary        = try(inst.theme_colors.primary, null)
+        primary_dark   = try(inst.theme_colors.primary_dark, null)
+        primary_light  = try(inst.theme_colors.primary_light, null)
+        background     = try(inst.theme_colors.background, null)
+        surface        = try(inst.theme_colors.surface, null)
+        border         = try(inst.theme_colors.border, null)
+        text_primary   = try(inst.theme_colors.text_primary, null)
+        text_secondary = try(inst.theme_colors.text_secondary, null)
+        success        = try(inst.theme_colors.success, null)
+        warning        = try(inst.theme_colors.warning, null)
+        error          = try(inst.theme_colors.error, null)
+        font_primary   = try(inst.theme_colors.font_primary, null)
+        font_url       = try(inst.theme_colors.font_url, null)
+        radius         = try(inst.theme_colors.radius, null)
+      } : k => v if v != null && v != ""
+    }
+  }
+  # Assemble the top-level YAML map, dropping empty sub-blocks: `instance:` gets
+  # the scalar branding keys plus custom_scripts (verbatim); `theme:` gets the
+  # set colours. base64(yamlencode(...)) — but only when the map is non-empty, so
+  # a no-branding VM resolves to "" and the startup script appends nothing.
+  instance_branding_map = {
+    for inst in local.all_instances : inst.name => merge(
+      (length(local.instance_brand_scalars[inst.name]) > 0 || length(try(inst.custom_scripts, [])) > 0) ? {
+        instance = merge(
+          local.instance_brand_scalars[inst.name],
+          length(try(inst.custom_scripts, [])) > 0 ? { custom_scripts = inst.custom_scripts } : {}
+        )
+      } : {},
+      length(local.instance_theme_colors[inst.name]) > 0 ? { theme = local.instance_theme_colors[inst.name] } : {}
+    )
+  }
+  instance_branding_b64 = {
+    for name, m in local.instance_branding_map :
+    name => length(m) > 0 ? base64encode(yamlencode(m)) : ""
+  }
 }
 
 # --- Secrets ---
@@ -396,24 +457,28 @@ resource "google_compute_instance" "vm" {
   }
 
   metadata_startup_script = templatefile("${path.module}/startup-script.sh.tpl", {
-    customer_name                   = var.customer_name
-    image_repo                      = var.image_repo
-    image_tag                       = each.value.image_tag
-    app_mem_limit                   = each.value.app_mem_limit
-    scheduler_mem_limit             = each.value.scheduler_mem_limit
-    app_cpus                        = each.value.app_cpus
-    scheduler_cpus                  = each.value.scheduler_cpus
-    upgrade_mode                    = each.value.upgrade_mode
-    upgrade_schedule                = each.value.upgrade_schedule
-    tls_mode                        = each.value.tls_mode
-    domain                          = each.value.domain
-    domain_alias                    = each.value.domain_alias
+    customer_name       = var.customer_name
+    image_repo          = var.image_repo
+    image_tag           = each.value.image_tag
+    app_mem_limit       = each.value.app_mem_limit
+    scheduler_mem_limit = each.value.scheduler_mem_limit
+    app_cpus            = each.value.app_cpus
+    scheduler_cpus      = each.value.scheduler_cpus
+    upgrade_mode        = each.value.upgrade_mode
+    upgrade_schedule    = each.value.upgrade_schedule
+    tls_mode            = each.value.tls_mode
+    domain              = each.value.domain
+    domain_alias        = each.value.domain_alias
     # ui_layout is deliberately NOT forwarded: the rail chrome is
     # unconditional in the app (Wave 0, 2026-08), so there is no env line to
     # write. The variable stays declared + validated in variables.tf so a root
     # still asking for "topnav" fails the plan instead of silently getting rail.
-    theme                           = each.value.theme
-    experience                      = each.value.experience
+    theme      = each.value.theme
+    experience = each.value.experience
+    # Vendor-neutral branding for the FIRST-boot instance.yaml (logo/brand/
+    # theme colours/custom_scripts), pre-rendered to a base64'd YAML fragment —
+    # "" when the caller set no branding on this VM.
+    instance_branding_b64           = local.instance_branding_b64[each.value.name]
     acme_email                      = var.acme_email != "" ? var.acme_email : var.seed_admin_email
     data_source                     = var.data_source
     keboola_stack_url               = var.keboola_stack_url
