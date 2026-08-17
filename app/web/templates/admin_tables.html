@@ -605,6 +605,27 @@
             font-size: 12px;
         }
 
+        /* Task B (access-policy-builder-ux Slice 2): before/after render of
+           base_sample_rows. A dropped row (present in the raw sample, gone
+           from the policied one) strikes its whole row; a hidden column
+           strikes in the header and shows an em-dash in every cell; a
+           masked-but-visible column shows the raw value struck next to the
+           masked one. */
+        .ap-preview-row--dropped td {
+            text-decoration: line-through;
+            opacity: 0.55;
+        }
+
+        .ap-preview-hidden-cell {
+            color: var(--ds-text-disabled);
+        }
+
+        .ap-preview-diff-raw {
+            text-decoration: line-through;
+            color: var(--ds-text-muted);
+            margin-right: 4px;
+        }
+
         .ap-history-row {
             padding: 6px 0;
             border-bottom: 1px solid var(--ds-border);
@@ -6436,11 +6457,45 @@
         }
     }
 
+    // Task B (access-policy-builder-ux Slice 2) — best-effort before/after
+    // matching. There is no guaranteed PK (design doc §13.1), so this is a
+    // heuristic, not an exact join: for each raw row, pick the not-yet-
+    // claimed policied row sharing the most VISIBLE-column values with it.
+    // A row_rules WHERE that drops a row naturally shares nothing with
+    // anything left unclaimed and renders "dropped"; a mask that only
+    // touches SOME visible columns (the common case — one PII column
+    // masked, the rest untouched) still matches correctly on the rest and
+    // diffs the changed column(s). When every compare column is hidden
+    // (nothing left to compare on) this degrades to a positional claim, in
+    // document order, rather than refusing to match at all.
+    function _apMatchPreviewRows(baseRows, policiedRows, compareCols) {
+        var used = new Array(policiedRows.length).fill(false);
+        return baseRows.map(function(baseRow) {
+            var bestIdx = -1;
+            var bestScore = -1;
+            for (var j = 0; j < policiedRows.length; j++) {
+                if (used[j]) continue;
+                var score = 0;
+                for (var k = 0; k < compareCols.length; k++) {
+                    var c = compareCols[k];
+                    if (JSON.stringify(baseRow[c]) === JSON.stringify(policiedRows[j][c])) score++;
+                }
+                if (score > bestScore) { bestScore = score; bestIdx = j; }
+            }
+            if (bestIdx !== -1 && (bestScore > 0 || compareCols.length === 0)) {
+                used[bestIdx] = true;
+                return policiedRows[bestIdx];
+            }
+            return null;
+        });
+    }
+
     function _apRenderPreviewResult(body) {
         var cols = body.columns || [];
         var hiddenCols = cols.filter(function(c) { return c.hidden; }).map(function(c) { return c.name; });
-        var visibleCols = cols.filter(function(c) { return !c.hidden; }).map(function(c) { return c.name; });
-        var rows = body.sample_rows || [];
+        var visibleColNames = cols.filter(function(c) { return !c.hidden; }).map(function(c) { return c.name; });
+        var baseRows = body.base_sample_rows || [];
+        var policiedRows = body.sample_rows || [];
 
         var html = '<div class="ap-preview-result">';
         html += '<strong>' + formatNumber(body.rows_visible) + '</strong> of <strong>'
@@ -6449,17 +6504,43 @@
             html += '<div class="form-hint" style="margin-top:6px;">Hidden columns: '
                  + escapeHtml(hiddenCols.join(', ')) + '</div>';
         }
-        if (rows.length && visibleCols.length) {
-            html += '<div style="margin-top:8px; max-height:220px; overflow:auto; '
+        if (baseRows.length && cols.length) {
+            var matches = _apMatchPreviewRows(baseRows, policiedRows, visibleColNames);
+            var droppedCount = matches.filter(function(m) { return m === null; }).length;
+            if (droppedCount) {
+                html += '<div class="form-hint" style="margin-top:4px;">'
+                     + formatNumber(droppedCount) + ' of ' + formatNumber(baseRows.length)
+                     + ' rows in this sample are struck through below — dropped for this persona.</div>';
+            }
+            html += '<div style="margin-top:8px; max-height:260px; overflow:auto; '
                  + 'border:1px solid var(--ds-border); border-radius:6px;">';
             html += '<table class="data-table"><thead><tr>';
-            visibleCols.forEach(function(c) { html += '<th>' + escapeHtml(c) + '</th>'; });
+            cols.forEach(function(c) {
+                html += c.hidden
+                    ? '<th style="text-decoration:line-through; color:var(--ds-text-disabled);">' + escapeHtml(c.name) + '</th>'
+                    : '<th>' + escapeHtml(c.name) + '</th>';
+            });
             html += '</tr></thead><tbody>';
-            rows.slice(0, 10).forEach(function(row) {
-                html += '<tr>';
-                visibleCols.forEach(function(c) {
-                    var v = row[c];
-                    html += '<td>' + escapeHtml(v === null || v === undefined ? '' : String(v)) + '</td>';
+            baseRows.slice(0, 10).forEach(function(baseRow, i) {
+                var policiedRow = matches[i];
+                var dropped = policiedRow === null;
+                html += '<tr' + (dropped ? ' class="ap-preview-row--dropped"' : '') + '>';
+                cols.forEach(function(c) {
+                    if (c.hidden) {
+                        html += '<td class="ap-preview-hidden-cell">&mdash;</td>';
+                        return;
+                    }
+                    var rawVal = baseRow[c.name];
+                    var rawStr = rawVal === null || rawVal === undefined ? '' : String(rawVal);
+                    if (dropped) {
+                        html += '<td>' + escapeHtml(rawStr) + '</td>';
+                        return;
+                    }
+                    var newVal = policiedRow[c.name];
+                    var newStr = newVal === null || newVal === undefined ? '' : String(newVal);
+                    html += (rawStr === newStr)
+                        ? '<td>' + escapeHtml(rawStr) + '</td>'
+                        : '<td><span class="ap-preview-diff-raw">' + escapeHtml(rawStr) + '</span>' + escapeHtml(newStr) + '</td>';
                 });
                 html += '</tr>';
             });

@@ -290,3 +290,21 @@ def test_row_rule_controls_respect_the_eligibility_interlock(seeded_app):
     # The row-rule renderer computes its own disabled flag the same way
     # _apRenderColList does.
     assert body.count("!_apIsEligible(_apTable)") >= 2
+
+
+def test_preview_shows_before_after_on_the_raw_sample(seeded_app):
+    """access-policy-builder-ux Slice 2, Task B: the preview renders every
+    ``base_sample_rows`` row — struck-through when the policy drops it,
+    diffed cell-by-cell when a visible column's value changed, and struck
+    in the header with an em-dash body for a hidden column."""
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = c.get("/admin/tables", headers=_auth(token))
+    body = r.text
+    assert "base_sample_rows" in body
+    assert "function _apMatchPreviewRows" in body
+    assert "ap-preview-row--dropped" in body
+    assert "ap-preview-diff-raw" in body
+    assert "ap-preview-hidden-cell" in body
+    # The transient result grid still uses the product's ONE table class.
+    assert 'class="data-table"' in body
