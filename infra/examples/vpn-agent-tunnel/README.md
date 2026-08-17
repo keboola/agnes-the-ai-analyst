@@ -9,6 +9,11 @@ decide which paths it forwards to this instance while everything else stays
 on the VPN. Full write-up: [`docs/DEPLOYMENT.md`](../../../docs/DEPLOYMENT.md)
 (search "Private-network-only deployments").
 
+**Additive, not a replacement**: in-network clients keep reaching Agnes over
+the VPN exactly as before — the tunnel is a second, narrow door for whichever
+paths its allowlist forwards, not a way to route VPN traffic differently or a
+switch that turns the VPN posture off.
+
 Two exposure patterns, same underlying tunnel software, different path
 allowlists:
 
@@ -23,6 +28,13 @@ brokered request (`src/agent_scope_intersection.py`), so it can never exceed
 what the agent's owner could already do. This is the option to reach for when
 you want some external automation to call one scoped agent without exposing
 anything else.
+
+This is a plain REST endpoint, not an MCP server — it does **not** register as
+a connector in Claude Desktop or Claude.ai (their connector settings only speak
+the MCP protocol; see Option B for that). Once the tunnel is up and a PAT is
+minted, the whole integration surface is a URL plus a bearer token: any
+HTTP-capable caller — a script, a backend job, or a no-code automation tool's
+"HTTP request" node — can call it directly with no Agnes-side code to write.
 
 Allowlisted paths:
 
@@ -84,13 +96,16 @@ For operators who want the complete "Claude as my assistant" experience
 despite being VPN-only: expose `/api/mcp/http*` and `/.well-known/*` instead.
 This is the same general, OAuth-authenticated MCP connector already
 documented as the normal manual-connector flow at `/how-it-works#connect` —
-full RBAC access as whichever user authenticates through it. Nothing new to
-build here; a tunnel in front of the existing connector is the only new
-part, and it is a materially bigger exposure than Option A (every
-RBAC-visible resource for every user who connects, not one agent's scoped
-authority). No template in this directory for it — point either tool's
-ingress at `/api/mcp/http*` + `/.well-known/*` the same way Option A's
-templates point at the agent-API allowlist.
+full RBAC access as whichever user authenticates through it. This is the
+option that actually shows up in Claude Desktop/Claude.ai's own connector
+settings (Option A's plain REST endpoint does not); once connected, the
+signed-in user gets Agnes's tools inside their normal chat, not a single
+named agent's persona. Nothing new to build here; a tunnel in front of the
+existing connector is the only new part, and it is a materially bigger
+exposure than Option A (every RBAC-visible resource for every user who
+connects, not one agent's scoped authority). No template in this directory
+for it — point either tool's ingress at `/api/mcp/http*` + `/.well-known/*`
+the same way Option A's templates point at the agent-API allowlist.
 
 ## Not exposing anything
 

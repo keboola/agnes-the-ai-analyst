@@ -298,8 +298,12 @@ supported responses, pick one:
    than you want, run your own outbound tunnel (Agnes never owns or creates
    a Cloudflare or Tailscale account — this is an operator-side networking
    decision) that forwards only the paths you choose while the rest of the
-   instance stays on the VPN. Two options, same underlying idea — one
-   outbound tunnel, a path allowlist deciding what it forwards:
+   instance stays on the VPN. **Additive, not a replacement**: in-network
+   clients keep reaching Agnes over the VPN exactly as before — the tunnel
+   is a second, narrow door for the specific paths its allowlist forwards,
+   not a way to route VPN traffic differently or a switch that turns the
+   VPN posture off. Two options, same underlying idea — one outbound
+   tunnel, a path allowlist deciding what it forwards:
 
    - **Option A — agent-only tunnel (recommended).** Expose only the
      agent-as-API runtime surface: `POST /api/v1/agents/{slug}/responses`
@@ -317,6 +321,14 @@ supported responses, pick one:
      request's public origin (contrast the MCP-OAuth issuer machinery in
      `app/auth/public_url.py`, which is unrelated to this path and does need
      the instance's public origin pinned).
+
+     This is a plain REST endpoint, not an MCP server — it does **not**
+     register as a connector in Claude Desktop or Claude.ai (their connector
+     settings only speak the MCP protocol; see Option B for that). Once the
+     tunnel is up and a PAT is minted, the whole integration surface is a URL
+     plus a bearer token: any HTTP-capable caller — a script, a backend job,
+     or a no-code automation tool's "HTTP request" node — can call it
+     directly with no Agnes-side code to write.
 
      Deliberately **excluded** from the tunnel's allowlist, even though they
      live under the same `/api/v1/agents/*` prefix: bare agent create/list/
@@ -354,11 +366,14 @@ supported responses, pick one:
      expose `/api/mcp/http*` and `/.well-known/*` instead — the same
      general, OAuth-authenticated MCP connector already documented as the
      normal manual-connector flow at `/how-it-works#connect` (any signed-in
-     user, full RBAC access as that user). This is the existing connector,
-     unchanged; a tunnel in front of it is the only new part, and it is a
-     materially bigger exposure than Option A — every RBAC-visible resource
-     for every user who authenticates through it, not one agent's scoped
-     authority.
+     user, full RBAC access as that user). This is the option that actually
+     shows up in Claude Desktop/Claude.ai's own connector settings (Option
+     A's plain REST endpoint does not); once connected, the signed-in user
+     gets Agnes's tools inside their normal chat, not a single named agent's
+     persona. This is the existing connector, unchanged; a tunnel in front
+     of it is the only new part, and it is a materially bigger exposure than
+     Option A — every RBAC-visible resource for every user who authenticates
+     through it, not one agent's scoped authority.
 3. **Accept the surface doesn't apply, and hide it.** If in-network clients
    are the only ones you support and you don't want to run a tunnel either,
    set `mcp.connector_ui_enabled: false` in `instance.yaml` (or
