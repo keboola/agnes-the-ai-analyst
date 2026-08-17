@@ -101,7 +101,10 @@ def test_start_pgserver_stops_postmaster_on_cleanup(monkeypatch):
 
     def spying_mkdtemp(*args, **kwargs):
         d = real_mkdtemp(*args, **kwargs)
-        captured["dir"] = d
+        # pgserver may mkdtemp internally (e.g. a short socket dir); pin the
+        # capture to the fixture's own data dir by its prefix.
+        if os.path.basename(d).startswith("agnes-pgserver-"):
+            captured["dir"] = d
         return d
 
     monkeypatch.setattr(tempfile, "mkdtemp", spying_mkdtemp)

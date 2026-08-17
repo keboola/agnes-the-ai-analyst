@@ -66,6 +66,33 @@ def _owner_pid(pgdata: Path) -> int | None:
         return None
 
 
+def _cmdline_matches_pgdata(cmdline: list[str], pgdata: Path) -> bool:
+    """Does this cmdline look like a postgres postmaster running on ``pgdata``?
+
+    Paths are compared resolved, not as substrings: on macOS the fixture
+    creates the dir under ``/var/folders/…`` (what ``tempfile.gettempdir()``
+    yields) while the postmaster's ``-D`` argument carries the resolved
+    ``/private/var/folders/…`` — a literal comparison would silently never
+    match a real orphan on the very platform the leak was observed on
+    (Devin Review on #1367). A plain substring check remains as fallback.
+    """
+    if not cmdline or "postgres" not in os.path.basename(cmdline[0]):
+        return False
+    try:
+        target = pgdata.resolve()
+    except OSError:
+        return False
+    for part in cmdline[1:]:
+        if not part or not part.startswith(("/", ".")):
+            continue  # flags and empty args, not paths
+        try:
+            if Path(part).resolve() == target:
+                return True
+        except OSError:
+            continue
+    return any(str(pgdata) in part for part in cmdline[1:])
+
+
 def _is_postmaster_for(pid: int, pgdata: Path) -> bool:
     """True only if ``pid`` is verifiably a postgres postmaster on ``pgdata``.
 
@@ -80,9 +107,7 @@ def _is_postmaster_for(pid: int, pgdata: Path) -> bool:
         cmdline = psutil.Process(pid).cmdline()
     except Exception:
         return False
-    if not cmdline:
-        return False
-    return "postgres" in os.path.basename(cmdline[0]) and any(str(pgdata) in part for part in cmdline[1:])
+    return _cmdline_matches_pgdata(cmdline, pgdata)
 
 
 def _stop_orphan_postmaster(pid: int, *, timeout: float = 10.0) -> bool:

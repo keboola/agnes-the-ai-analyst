@@ -16,6 +16,7 @@ from pathlib import Path
 import tests.db_pg.pgserver_reaper as reaper_mod
 from tests.db_pg.pgserver_reaper import (
     OWNER_SENTINEL,
+    _cmdline_matches_pgdata,
     _is_postmaster_for,
     reap_orphaned_pgserver_dirs,
 )
@@ -187,3 +188,27 @@ def test_is_postmaster_for_rejects_dead_and_foreign_pids(tmp_path):
     finally:
         proc.kill()
         proc.wait()
+
+
+def test_cmdline_match_survives_symlinked_tmpdir(tmp_path):
+    """macOS: the fixture sees ``/var/folders/…`` (tempfile.gettempdir()),
+    the postmaster's ``-D`` carries the resolved ``/private/var/folders/…``.
+    The identity check must match across that symlink, both directions."""
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real)
+    postmaster = ["/opt/pg/bin/postgres", "-D", str(real), "-h", "", "-k", str(real)]
+    assert _cmdline_matches_pgdata(postmaster, link) is True
+    via_link = ["/opt/pg/bin/postgres", "-D", str(link)]
+    assert _cmdline_matches_pgdata(via_link, real) is True
+
+
+def test_cmdline_match_rejects_other_dir_and_non_postgres(tmp_path):
+    a = tmp_path / "a"
+    a.mkdir()
+    b = tmp_path / "b"
+    b.mkdir()
+    assert _cmdline_matches_pgdata(["/opt/pg/bin/postgres", "-D", str(a)], b) is False
+    assert _cmdline_matches_pgdata(["/usr/bin/python3", "-D", str(a)], a) is False
+    assert _cmdline_matches_pgdata([], a) is False

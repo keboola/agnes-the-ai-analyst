@@ -114,31 +114,34 @@ def _start_pgserver() -> Iterator[str]:
     from tests.db_pg.pgserver_reaper import OWNER_SENTINEL
 
     tmpdir = tempfile.mkdtemp(prefix="agnes-pgserver-")
-    # cleanup_mode='stop' (#1362): cleanup() then actually runs
-    # `pg_ctl -w … stop` (graceful, waited, terminate/kill fallback) and
-    # pgserver's own atexit handler becomes a real second net. With the
-    # previous ``None``, cleanup() returned before the stop path and clean
-    # runs only shut the postmaster down via PostgreSQL's PANIC on the
-    # rmtree'd pidfile ~15 s later.
-    server = pgserver.get_server(tmpdir, cleanup_mode="stop")
-    # Owner sentinel (#1362): records which pytest process created this data
-    # dir. A hard-killed run (SIGKILL, OOM) leaks a live postmaster; the
-    # reaper uses this file to tell that orphan (owner dead → stop + reap)
-    # from a concurrent worktree session's live Postgres (owner alive →
-    # never touch). Written AFTER get_server — initdb insists on an empty
-    # directory; a crash before this line leaves no postmaster to reap and
-    # the age-based dir sweep covers it.
-    (Path(tmpdir) / OWNER_SENTINEL).write_text(str(os.getpid()), encoding="utf-8")
+    server = None
     try:
+        # cleanup_mode='stop' (#1362): cleanup() then actually runs
+        # `pg_ctl -w … stop` (graceful, waited, terminate/kill fallback) and
+        # pgserver's own atexit handler becomes a real second net. With the
+        # previous ``None``, cleanup() returned before the stop path and clean
+        # runs only shut the postmaster down via PostgreSQL's PANIC on the
+        # rmtree'd pidfile ~15 s later.
+        server = pgserver.get_server(tmpdir, cleanup_mode="stop")
+        # Owner sentinel (#1362): records which pytest process created this
+        # data dir. A hard-killed run (SIGKILL, OOM) leaks a live postmaster;
+        # the reaper uses this file to tell that orphan (owner dead → stop +
+        # reap) from a concurrent worktree session's live Postgres (owner
+        # alive → never touch). Written AFTER get_server — initdb insists on
+        # an empty directory — but inside this try, so a failed write (ENOSPC
+        # is exactly the scenario this work is about) still stops the
+        # just-started postmaster in the finally (Devin Review on #1367).
+        (Path(tmpdir) / OWNER_SENTINEL).write_text(str(os.getpid()), encoding="utf-8")
         # pgserver returns a unix-socket URI; rewrite to psycopg dialect.
         raw_uri = server.get_uri()
         url = raw_uri.replace("postgresql://", "postgresql+psycopg://", 1)
         yield url
     finally:
-        try:
-            server.cleanup()
-        except Exception:
-            pass
+        if server is not None:
+            try:
+                server.cleanup()
+            except Exception:
+                pass
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
