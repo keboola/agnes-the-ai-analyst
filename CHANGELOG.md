@@ -16,6 +16,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 - **`tests/db_pg/test_jobs_contract.py` no longer fails on machines outside UTC.** Its `_naive` helper stripped tzinfo without converting, so a Postgres session rendering `timestamptz` in the machine's local zone made lease-expiry comparisons off by the UTC offset; tz-aware values are now normalized to UTC first.
 
+- **A second wall-clock benchmark stopped failing CI on a slow runner.** `tests/test_grants_soft_downgrade.py` carried the same contradiction `test_stack_resolver_perf.py` shed in 0.83.27: its assertion message called the 1 s budget a "guidance target — document the actual time and tune in a follow-up", then enforced it with a plain `assert`. A documentation-only PR (two files, neither reachable from `resource_grants`) went red at 1.088 s, costing a full CI cycle to a runner that was merely busy. The policy now lives once, in `tests/perf_policy.py`, and both benchmarks call it: under the target is silent, over it records the measurement and warns, and only `PERF_CEILING_FACTOR`× the target (default 4, `AGNES_PERF_CEILING_FACTOR` to override) fails. The ceiling is what makes that safe — a 4× overshoot is a regression, not a bad morning, and unlike the per-benchmark targets it never needs bumping.
+
 ## [0.83.29] - 2026-08-17
 
 ### Added
