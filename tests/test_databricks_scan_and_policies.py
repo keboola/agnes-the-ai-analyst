@@ -928,3 +928,140 @@ class TestReviewFindings:
         )
         assert r.status_code == 500, r.text
         assert r.json()["detail"]["reason"] == "policy_error"
+
+
+class TestSecondReviewRound:
+    """Four more, from a second review pass over the fixes above.
+
+    Three of them share a root: a decision that was correct for the shape the
+    first tests happened to use, and wrong for a shape they did not cover.
+    """
+
+    def test_empty_result_keeps_its_column_types(self):
+        """A zero-row scan has no Arrow batch to carry the schema, and the
+        fallback typed every column as string. Both callers PERSIST that — the
+        scan endpoint serializes it, `agnes snapshot create` writes it to
+        parquet and registers a view — so an empty snapshot's numeric and date
+        columns became text, and the analyst's next aggregate over them fails
+        or compares lexically."""
+        import pyarrow as pa
+
+        from connectors.databricks.remote import arrow_schema_from_manifest
+
+        schema = arrow_schema_from_manifest(
+            [
+                {"name": "country", "type_name": "STRING"},
+                {"name": "n", "type_name": "LONG"},
+                {"name": "amount", "type_name": "DOUBLE"},
+                {"name": "d", "type_name": "DATE"},
+                {"name": "ts", "type_name": "TIMESTAMP"},
+                {"name": "ok", "type_name": "BOOLEAN"},
+            ]
+        )
+        assert schema.field("n").type == pa.int64()
+        assert schema.field("amount").type == pa.float64()
+        assert schema.field("d").type == pa.date32()
+        assert pa.types.is_timestamp(schema.field("ts").type)
+        assert schema.field("ok").type == pa.bool_()
+        assert pa.Table.from_batches([], schema=schema).num_rows == 0
+
+    def test_unmodelable_column_types_fall_back_to_string(self):
+        """A STRUCT/MAP/VARIANT column in an EMPTY result is worth a string
+        placeholder; guessing a nested Arrow type from a name is not."""
+        import pyarrow as pa
+
+        from connectors.databricks.remote import arrow_schema_from_manifest
+
+        schema = arrow_schema_from_manifest([{"name": "payload", "type_name": "STRUCT"}])
+        assert schema.field("payload").type == pa.string()
+
+    def test_policy_body_resolves_the_policied_rows_own_path(self, seeded_app):
+        """The severe one: the policy body's own `FROM` was rewritten using
+        lookups built by scanning the CALLER's statement, and
+        `guardrail_inputs` records an entry only for a name the caller wrote
+        BARE (it masks backticks first). Whenever the caller's spelling does
+        not produce that entry, the body shipped unqualified, to resolve
+        against whatever the warehouse's default context holds.
+
+        Asserted at the resolver with EMPTY caller lookups, which is exactly
+        the state that produced the bug — an end-to-end test cannot reach it
+        today, see `test_a_purely_backticked_statement_does_not_route_yet`.
+        """
+        from app.api.query import _databricks_policy_resolver
+
+        _register(
+            id="dbx.sales.orders_raw",
+            name="orders_raw",
+            source_type="databricks",
+            bucket="sales",
+            source_table="orders_raw",
+        )
+        _set_policy("dbx.sales.orders_raw", "SELECT * FROM orders_raw WHERE country = 'CZ'")
+
+        resolve = _databricks_policy_resolver(name_lookups=[], default_catalog="main")
+        relation = resolve("orders_raw", {"id": "analyst1", "email": "analyst1@test.com"})
+
+        assert relation.policied
+        assert "`main`.`sales`.`orders_raw`" in relation.relation_sql, relation.relation_sql
+        assert "FROM orders_raw" not in relation.relation_sql, "body still carries a bare name"
+
+    def test_a_purely_backticked_statement_does_not_route_yet(self):
+        """Scope boundary, pinned so it is a decision and not an oversight.
+
+        A statement that names its table ONLY as `` `catalog`.`schema`.`table` ``
+        never reaches the Databricks planner: engine detection masks backtick
+        segments and then looks for the registered bare name or a `dbx."x"."y"`
+        path, so it finds neither. That is a pre-existing phase-2 gap, not
+        something the policy work introduced, and it fails closed (the query
+        errors rather than reading anything). Fixing it means teaching
+        `_rows_referenced` to recognise native three-part paths — shared with
+        BigQuery, whose native spelling is also backticked, so it wants its own
+        change.
+        """
+        from src.remote_engines import referenced_remote_rows, resolve_single_engine
+
+        _register(
+            id="dbx.sales.orders_raw",
+            name="orders_raw",
+            source_type="databricks",
+            bucket="sales",
+            source_table="orders_raw",
+        )
+        sql = "SELECT * FROM `main`.`sales`.`orders_raw`"
+        assert resolve_single_engine(referenced_remote_rows(sql, sql.lower())) is None
+
+        # The two spellings that DO route.
+        bare = "SELECT * FROM orders_raw"
+        assert resolve_single_engine(referenced_remote_rows(bare, bare.lower())) == "databricks"
+        prefixed = 'SELECT * FROM dbx."sales"."orders_raw"'
+        assert resolve_single_engine(referenced_remote_rows(prefixed, prefixed.lower())) == "databricks"
+
+    def test_dialect_stays_duckdb_when_the_statement_will_run_locally(self):
+        """With the Unity Catalog ATTACH on, a statement mixing a Databricks
+        row with local data is planned as an ordinary DuckDB query. Rendering
+        the caller's SQL through sqlglot's Databricks generator and then
+        executing it on DuckDB changes its meaning, and DuckDB-only syntax
+        would fail the Databricks parse and deny."""
+        from app.api.query import _policy_parse_dialect
+
+        _register(
+            id="dbx.sales.orders_raw",
+            name="orders_raw",
+            source_type="databricks",
+            bucket="sales",
+            source_table="orders_raw",
+        )
+        _register(
+            id="local.shop.customers",
+            name="customers",
+            source_type="local",
+            bucket="shop",
+            source_table="customers",
+            query_mode="local",
+        )
+
+        pure = "SELECT * FROM orders_raw"
+        assert _policy_parse_dialect(pure, pure.lower()) == "databricks"
+
+        mixed = "SELECT * FROM orders_raw JOIN customers USING (id)"
+        assert _policy_parse_dialect(mixed, mixed.lower()) == "duckdb"

@@ -443,6 +443,49 @@ def wrap_with_limit(sql: str, limit: int) -> str:
     return f"SELECT * FROM (\n{sql}\n) AS agnes_remote_q LIMIT {int(limit)}"
 
 
+#: Databricks manifest ``type_name`` → Arrow type. Only matters for a
+#: zero-row result, where there is no batch to carry the schema; a result with
+#: rows brings its own Arrow types off the wire and never consults this.
+#: Anything unmapped (STRUCT, MAP, ARRAY, VARIANT, INTERVAL, …) falls back to
+#: string, which is what an empty column of a shape Agnes cannot model locally
+#: is worth.
+_ARROW_TYPE_BY_DATABRICKS_NAME: Dict[str, str] = {
+    "BOOLEAN": "bool_",
+    "BYTE": "int8",
+    "SHORT": "int16",
+    "INT": "int32",
+    "LONG": "int64",
+    "FLOAT": "float32",
+    "DOUBLE": "float64",
+    "DATE": "date32",
+    "STRING": "string",
+    "CHAR": "string",
+    "BINARY": "binary",
+}
+
+
+def arrow_schema_from_manifest(schema_columns: Sequence[Dict[str, Any]]):
+    """Build a ``pyarrow.Schema`` from the statement manifest's column list."""
+    import pyarrow as pa
+
+    fields = []
+    for column in schema_columns or []:
+        name = str(column.get("name", ""))
+        type_name = str(column.get("type_name") or "").upper()
+        if type_name == "DECIMAL":
+            # Precision/scale ride alongside; a decimal with unknown scale is
+            # worse than a float64 for the empty case, and the manifest does
+            # not always carry them.
+            arrow_type = pa.float64()
+        elif type_name in ("TIMESTAMP", "TIMESTAMP_NTZ"):
+            arrow_type = pa.timestamp("us")
+        else:
+            factory = _ARROW_TYPE_BY_DATABRICKS_NAME.get(type_name, "string")
+            arrow_type = getattr(pa, factory)()
+        fields.append(pa.field(name, arrow_type))
+    return pa.schema(fields)
+
+
 def _build_client(settings: Dict[str, Any]) -> Any:
     from connectors.databricks.client import DatabricksStatementClient
 
@@ -562,10 +605,14 @@ def execute_scan_to_arrow(
 
     if batches:
         return pa.Table.from_batches(batches)
-    # An empty result still has to carry its column names — a zero-row Arrow
-    # table with no schema would surface downstream as "no such column".
-    names = [str(c.get("name", "")) for c in result.schema_columns]
-    return pa.table({n: pa.array([], type=pa.string()) for n in names}) if names else pa.table({})
+    # A zero-row result still has to carry its schema — names AND types. The
+    # names alone are not enough: both callers persist this. `/api/v2/scan`
+    # serializes it to Arrow IPC and `agnes snapshot create` writes it to a
+    # parquet and registers a view over it, so typing everything as string
+    # would leave a snapshot whose numeric and date columns are text, and the
+    # analyst's next local aggregate over it fails or silently compares
+    # lexically. The manifest carries the real types; use them.
+    return pa.Table.from_batches([], schema=arrow_schema_from_manifest(result.schema_columns))
 
 
 def execute_select(

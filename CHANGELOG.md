@@ -44,6 +44,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 - **`agnes snapshot create --from-query` works with the Unity Catalog ATTACH enabled.** When the attachment already covered every referenced table, the planner correctly declined — and the caller then fell straight into the `snapshot_engine_unsupported` refusal instead of the local path the branch exists to reach.
 
+- **An empty Databricks snapshot keeps its column types.** A zero-row scan has no Arrow batch to carry the schema, and the fallback typed every column as string — which both callers persist: `/api/v2/scan` serializes it and `agnes snapshot create` writes it to parquet and registers a view, so a snapshot whose filter matched nothing stored its numeric and date columns as text and the analyst's next aggregate over them failed or compared lexically. The statement manifest's own types are used instead.
+
+- **A policy body's own `FROM` resolves from the registry, not from the caller's spelling.** The rewrite used lookups built by scanning the caller's statement, and those record an entry only for a name written *bare* (backticks are masked first) — so whenever the caller's spelling produced no entry, the body shipped an unqualified name to resolve against the warehouse's default context. The policied row's path now comes from its own registry row.
+
+- **The policy dialect follows where the statement will RUN, not what it mentions.** With the experimental Unity Catalog ATTACH on, a statement mixing a Databricks table with local data is planned as an ordinary DuckDB query; rendering it through sqlglot's Databricks generator and then executing it on DuckDB would change its meaning, and DuckDB-only syntax such as `SELECT * EXCLUDE (col)` would fail the Databricks parse and deny.
+
+- **A policy gate refusal is diagnosable.** The caller's error stays table-scoped — naming the policy body's tables would leak its contents — but the gate's real reason now goes to the server log, so an admin can tell an unregistered name from a mapping table registered `local`/`materialized` (which a warehouse cannot read, and which therefore must itself be a `query_mode='remote'` row).
+
 ### Internal
 
 - **The schema TTL cache is reset between tests.** Keyed on `table_id` with a 1 h TTL and process-global, so two suites registering the same id with different columns handed each other the wrong schema — a failure that depended only on file ordering. Added to the existing `_reset_module_caches` autouse fixture alongside the catalog and quota caches.

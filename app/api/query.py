@@ -2424,14 +2424,36 @@ def _policy_parse_dialect(sql: str, sql_lower: str) -> str:
     early. A cross-engine statement resolves to no single engine here; the
     planner reports that properly a few lines later, so this just falls back
     to the historical default rather than raising twice.
+
+    Mentioning a Databricks table is NOT sufficient. With the experimental
+    Unity Catalog ATTACH on, a statement that also references local data is
+    planned as an ordinary DuckDB query (the planner declines, and DuckDB has a
+    view for the remote row) — rendering the caller's SQL through sqlglot's
+    Databricks generator and then executing it on DuckDB would change its
+    meaning, and DuckDB-only syntax such as ``SELECT * EXCLUDE (col)`` would
+    fail the Databricks parse and deny. So the answer is "databricks" only for
+    a statement that will actually run on the warehouse: single-engine, and
+    naming nothing the warehouse cannot see.
     """
-    from src.remote_engines import CrossEngineError, referenced_remote_rows, resolve_single_engine
+    from src.remote_engines import (
+        CrossEngineError,
+        referenced_remote_rows,
+        references_non_engine_tables,
+        resolve_single_engine,
+    )
 
     try:
         engine = resolve_single_engine(referenced_remote_rows(sql, sql_lower))
     except CrossEngineError:
         return "duckdb"
-    return "databricks" if engine == "databricks" else "duckdb"
+    if engine != "databricks":
+        return "duckdb"
+    if references_non_engine_tables(sql_lower, "databricks"):
+        # Either the planner refuses this outright (ATTACH off) or it falls
+        # through to local execution (ATTACH on). Neither runs on the
+        # warehouse, so neither wants the warehouse's dialect.
+        return "duckdb"
+    return "databricks"
 
 
 def _databricks_policy_resolver(*, name_lookups, default_catalog: str):
@@ -2455,7 +2477,21 @@ def _databricks_policy_resolver(*, name_lookups, default_catalog: str):
         DatabricksPolicyBindingError,
         bind_policy_parameters,
     )
-    from connectors.databricks.remote import rewrite_to_native
+    from connectors.databricks.remote import rewrite_to_native, row_target
+
+    def _body_lookups(policied_id: str):
+        """Lookups for rewriting ONE policy body: the caller's, plus the
+        policied row's own target resolved from the registry rather than from
+        whatever the caller happened to type."""
+        row = table_registry_repo().get(policied_id)
+        if not row:
+            return list(name_lookups)
+        name = str(row.get("name") or "")
+        if not name:
+            return list(name_lookups)
+        catalog, schema, table = row_target(row, default_catalog)
+        others = [e for e in name_lookups if e[0].lower() != name.lower()]
+        return [(name, catalog, schema, table), *others]
 
     def resolve(table_id: str, principal):
         relation = policied_relation(table_id, principal, dialect="databricks")
@@ -2467,7 +2503,16 @@ def _databricks_policy_resolver(*, name_lookups, default_catalog: str):
             raise PolicyError(relation.table_id) from exc
         return dataclasses.replace(
             relation,
-            relation_sql=rewrite_to_native(body_sql, name_lookups, default_catalog),
+            # `_body_lookups` and not the caller-derived `name_lookups`: the
+            # policied row's own path has to come from the ROW, because
+            # `guardrail_inputs` records a lookup only for a registered name
+            # the caller wrote BARE (it masks backticks first). A caller who
+            # writes the fully-qualified ``main`.`sales`.`orders_raw`` — a
+            # spelling this connector documents and tests — produces no entry
+            # at all, so the policy body's own `FROM orders_raw` stayed bare
+            # and shipped unqualified, to resolve against whatever the
+            # warehouse's default context holds.
+            relation_sql=rewrite_to_native(body_sql, _body_lookups(relation.table_id), default_catalog),
             # The WHOLE API entry is the value, not just its ``value`` field.
             # `bind_policy_parameters` omits ``value`` entirely for a NULL bind
             # (that is how the Statement Execution API binds SQL NULL, and it
@@ -2581,8 +2626,19 @@ def _apply_databricks_policies(plan: dict, sql: str, principal) -> list[str]:
         )
         if blocked is not None:
             # §17: a policied read that cannot be fully verified denies.
-            # Reporting the gate's own reason would name tables from inside the
-            # policy body (§16), so it collapses to the table-scoped error.
+            # Reporting the gate's own reason to the CALLER would name tables
+            # from inside the policy body (§16), so the response collapses to
+            # the table-scoped error — but the admin who wrote the policy still
+            # has to be able to find out why, and the two most likely causes
+            # (an unregistered name, or a mapping table registered `local` /
+            # `materialized`, which this gate cannot see because a warehouse
+            # cannot read a local parquet) are indistinguishable from the
+            # response alone. Log the real reason server-side.
+            logger.warning(
+                "databricks policy gate refused the substituted statement for %s: %s",
+                policied_table_ids[0],
+                blocked,
+            )
             raise PolicyError(policied_table_ids[0])
 
         outer_lookups = [entry for entry in body_lookups if entry[0].lower() not in policied_names]

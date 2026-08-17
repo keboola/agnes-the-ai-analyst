@@ -354,12 +354,18 @@ Two details worth knowing:
 - **The registry gate runs twice.** The first pass sees the caller's SQL and
   enforces *their* grants. The second sees the statement *after* substitution,
   because a policy body can name tables the caller never wrote — §15's
-  `policy_mapping` join. That second pass checks **registration only**: an
-  unregistered table inside a policy body denies (`policy_error`) rather than
-  resolving against whatever the default catalog holds, while a registered
-  mapping table works without the caller holding a grant on it. Requiring one
-  would defeat the idiom, whose whole point is that the admin picks a table the
-  analyst cannot read directly.
+  `policy_mapping` join. That second pass checks **registration only**: a table
+  the caller may not read is fine inside a policy body — that is the whole
+  point of the idiom — but a table Agnes cannot resolve denies (`policy_error`)
+  rather than shipping a bare name to resolve against whatever the default
+  catalog holds.
+
+  **A mapping table joined by a policy on a remote row must itself be a
+  `query_mode='remote'` Databricks row.** The statement runs entirely on the
+  warehouse, which cannot read a local parquet, so a mapping table registered
+  `local` or `materialized` denies. The caller's error is deliberately
+  table-scoped (naming the policy body's tables would leak its contents), so
+  the specific reason is written to the server log instead.
 - **A duplicate output column denies.** A masking policy written
   `SELECT * EXCEPT (national_id), md5(email) AS email` still emits the
   plaintext `email` from the star alongside the masked one. DuckDB reads are
