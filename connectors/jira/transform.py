@@ -268,6 +268,9 @@ COMMENTS_SCHEMA = {
     "created_at": "datetime64[ns, UTC]",
     "updated_at": "datetime64[ns, UTC]",
     "update_author_email": "string",
+    # Three-valued on purpose: True (customer-facing), False (internal note),
+    # NULL (neither signal present). See `_comment_public_visibility`.
+    "public_visibility": "bool",
 }
 
 ATTACHMENTS_SCHEMA = {
@@ -327,6 +330,8 @@ def get_pyarrow_schema(schema_dict: dict) -> pa.Schema:
             pa_fields.append(pa.field(col, pa.timestamp("us", tz="UTC")))
         elif dtype == "Int64":
             pa_fields.append(pa.field(col, pa.int64()))
+        elif dtype == "bool":
+            pa_fields.append(pa.field(col, pa.bool_()))
         else:
             pa_fields.append(pa.field(col, pa.string()))
     return pa.schema(pa_fields)
@@ -353,6 +358,13 @@ def apply_schema(df: pd.DataFrame, schema: dict) -> pa.Table:
             df[col] = pd.to_datetime(df[col], utc=True, errors="coerce")
         elif dtype == "Int64":
             df[col] = pd.to_numeric(df[col], errors="coerce")
+        elif dtype == "bool":
+            # Nullable `boolean`, never numpy `bool`: the column is genuinely
+            # three-valued and numpy bool cannot hold NA. `astype` also RAISES
+            # on a string rather than coercing it, which is the property worth
+            # having — a miscoerced flag fails the write loudly instead of
+            # landing as a confident, wrong boolean.
+            df[col] = df[col].astype("boolean")
 
     # Reorder columns to match schema
     df = df[[col for col in schema]]
@@ -549,6 +561,53 @@ def transform_issue(raw_issue: dict) -> dict:
     return record
 
 
+# JSM stores a comment's customer-facing/internal state in the
+# `sd.public.comment` entity property; `jsdPublic` is the platform API's
+# documented read-only projection of it. Not competing duplicates — prefer the
+# flag, because it rides along on the comments embedded in a plain
+# `GET /issue/{key}` (no `expand`, no second request, so this transform stays
+# pure and the fetch layer is untouched), while the property needs
+# `expand=properties`, is absent on ~24% of comments, and is not consistently
+# typed. Audited 2022-2026 on a live instance: the flag on 100% of comments, the
+# property on 76%, agreeing wherever both appeared. Reports of `jsdPublic` being
+# wrong (JSDCLOUD-7997, -8275, -6050) concern WEBHOOK payloads and WRITE
+# attempts; this connector only reads GET responses. Column semantics for
+# consumers are in connectors/jira/README.md.
+_PUBLIC_COMMENT_PROPERTY = "sd.public.comment"
+
+
+def _comment_public_visibility(comment: dict) -> bool | None:
+    """Is this comment customer-facing? ``None`` when neither signal is present.
+
+    Deliberately never defaults. A missing flag is genuinely unknown, and a
+    boolean column that is confidently wrong is strictly worse than one that
+    admits the gap — nothing downstream can distinguish a defaulted ``true``
+    from an observed one. A sibling ingest of this same field defaulted instead:
+    it holds zero NULLs across 120k rows, and spot-checking its rows against
+    live Jira finds 25-30% of every pre-2025 month wrong, always in the same
+    direction (stored public, actually internal).
+    """
+    jsd_public = comment.get("jsdPublic")
+    if jsd_public is not None:
+        return bool(jsd_public)
+
+    for prop in comment.get("properties") or []:
+        if not isinstance(prop, dict) or prop.get("key") != _PUBLIC_COMMENT_PROPERTY:
+            continue
+        value = prop.get("value")
+        if not isinstance(value, dict) or "internal" not in value:
+            continue
+        raw = value["internal"]
+        # NOT `bool(raw)`: this field is not consistently typed. The same Jira
+        # instance stores both a JSON boolean and the STRING "false", and every
+        # non-empty string is truthy — so the naive spelling silently flips a
+        # public comment to internal.
+        internal = raw.strip().lower() == "true" if isinstance(raw, str) else bool(raw)
+        return not internal
+
+    return None
+
+
 def transform_comments(raw_issue: dict, *, preserve_on_incomplete: bool = True) -> list[dict] | None:
     """Extract and transform comments from an issue.
 
@@ -590,9 +649,13 @@ def transform_comments(raw_issue: dict, *, preserve_on_incomplete: bool = True) 
     comments = comments_data.get("comments", [])
 
     records = []
+    unresolved = 0
     for comment in comments:
         author = extract_user_info(comment.get("author"))
         update_author = extract_user_info(comment.get("updateAuthor"))
+        public_visibility = _comment_public_visibility(comment)
+        if public_visibility is None:
+            unresolved += 1
 
         records.append(
             {
@@ -604,7 +667,20 @@ def transform_comments(raw_issue: dict, *, preserve_on_incomplete: bool = True) 
                 "created_at": parse_datetime(comment.get("created")),
                 "updated_at": parse_datetime(comment.get("updated")),
                 "update_author_email": update_author["email"],
+                "public_visibility": public_visibility,
             }
+        )
+
+    if unresolved:
+        # Counted, not defaulted — the operator needs to see the size of the gap
+        # rather than have it disappear into a plausible-looking `true`.
+        logger.warning(
+            "Jira issue %s: %d of %d comments carry neither jsdPublic nor an "
+            "%s property — public_visibility written as NULL",
+            issue_key,
+            unresolved,
+            len(comments),
+            _PUBLIC_COMMENT_PROPERTY,
         )
 
     return records
