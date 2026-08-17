@@ -1,14 +1,16 @@
-"""Table access policy builder — Task 2 of the no-SQL builder UX plan
+"""Table access policy builder — Task 2/3 of the no-SQL builder UX plan
 (``docs/superpowers/plans/2026-08-17-access-policy-builder-ux.md``).
 
 ``GET /api/admin/registry/{table_id}/policy/columns`` gives the builder UI
 real schema + sample values so an admin never has to know a table's
-structure up front — the column list Task 3's ``policy/compile`` spec is
-built from.
+structure up front; ``POST /api/admin/registry/{table_id}/policy/compile``
+turns a structured spec into the same validated SQL
+``src.access_policy_compile.compile_policy`` (Task 1) already generates
+in-process — the stored artifact stays SQL, this endpoint only returns it.
 
 Mirrors ``tests/test_admin_access_policy_api.py`` for the ``seeded_app`` +
-``mock_extract_factory`` + real-data fixture shape; the new route sits
-right next to ``preview_table_policy`` and shares its posture (admin-only,
+``mock_extract_factory`` + real-data fixture shape; both new routes sit
+right next to ``preview_table_policy`` and share its posture (admin-only,
 never gated on ``access_policies.enabled`` — that flag gates ATTACHING a
 policy via PUT only, per its own hint text in ``app/api/admin.py``).
 """
@@ -239,6 +241,86 @@ class TestPolicyBuilderColumns:
         token = seeded_app["admin_token"]
         resp = c.get(
             "/api/admin/registry/does-not-exist/policy/columns",
+            headers=_auth(token),
+        )
+        assert resp.status_code == 404, resp.text
+
+
+# ── Task 3: POST /registry/{table_id}/policy/compile ────────────────────
+
+
+@pytest.mark.journey
+class TestPolicyBuilderCompile:
+    def test_compile_endpoint_builds_safe_sql(self, policy_builder_table):
+        c = policy_builder_table["client"]
+        token = policy_builder_table["admin_token"]
+
+        resp = c.post(
+            "/api/admin/registry/policy_builder_invoices/policy/compile",
+            json={
+                "row_rules": [{"column": "cost_center", "op": "in_caller_groups"}],
+                "row_combine": "and",
+                "column_masks": {"email": "hash", "national_id": "hide"},
+            },
+            headers=_auth(token),
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        sql = body["sql"]
+        assert "EXCLUDE" in sql
+        assert '"national_id"' in sql and '"email"' in sql
+        assert 'md5("email") AS "email"' in sql
+        assert 'list_contains($user_groups, "cost_center")' in sql
+        assert '"policy_builder_invoices"' in sql
+        assert body["warnings"] == []
+
+    def test_compile_endpoint_ignores_unknown_columns_with_a_warning(self, policy_builder_table):
+        c = policy_builder_table["client"]
+        token = policy_builder_table["admin_token"]
+
+        resp = c.post(
+            "/api/admin/registry/policy_builder_invoices/policy/compile",
+            json={"row_rules": [], "column_masks": {"not_a_real_column": "hide"}},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert "not_a_real_column" not in body["sql"]
+        assert any("not_a_real_column" in w for w in body["warnings"])
+
+    def test_compile_endpoint_never_trusts_a_client_supplied_table_name(self, policy_builder_table):
+        """The request body has no ``table`` field at all — even if a
+        client sends one, the compiled SQL always names the REGISTRY
+        row's own name."""
+        c = policy_builder_table["client"]
+        token = policy_builder_table["admin_token"]
+
+        resp = c.post(
+            "/api/admin/registry/policy_builder_invoices/policy/compile",
+            json={"row_rules": [], "column_masks": {}, "table": "some_other_table"},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 200, resp.text
+        sql = resp.json()["sql"]
+        assert "some_other_table" not in sql
+        assert '"policy_builder_invoices"' in sql
+
+    def test_compile_endpoint_is_admin_only(self, policy_builder_table):
+        c = policy_builder_table["client"]
+        token = policy_builder_table["analyst_token"]
+        resp = c.post(
+            "/api/admin/registry/policy_builder_invoices/policy/compile",
+            json={"row_rules": [], "column_masks": {}},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 403, resp.text
+
+    def test_compile_endpoint_404_for_unknown_table(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/registry/does-not-exist/policy/compile",
+            json={"row_rules": [], "column_masks": {}},
             headers=_auth(token),
         )
         assert resp.status_code == 404, resp.text

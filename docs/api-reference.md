@@ -79,6 +79,7 @@ are the unit of curation and user-facing discovery.
 | `DELETE` | `/api/admin/registry/{table_id}` | — | Unregister |
 | `POST` | `/api/admin/registry/{table_id}/policy/preview` | see §3.7 | Preview a stored or candidate access policy as a chosen persona |
 | `GET` | `/api/admin/registry/{table_id}/policy/columns` | — | No-SQL policy builder: real column schema + sample values (see §3.8) |
+| `POST` | `/api/admin/registry/{table_id}/policy/compile` | see §3.8 | No-SQL policy builder: structured spec → validated SQL (never persisted) |
 | `GET` | `/api/admin/metadata/{table_id}` | — | Get per-column metadata (see §3.6) |
 | `POST` | `/api/admin/metadata/{table_id}` | see §3.6 | Save per-column metadata |
 | `POST` | `/api/admin/metadata/{table_id}/push` | — | Push saved column metadata downstream (no body) |
@@ -274,7 +275,7 @@ curl -s -X POST \
 it for that persona; `rows_visible` is the count through the policy, `rows_total` the
 unfiltered count (admin bypass).
 
-### 3.8 No-SQL policy builder — `GET .../policy/columns`
+### 3.8 No-SQL policy builder — `GET .../policy/columns`, `POST .../policy/compile`
 
 Lets an admin author a policy by picking columns and masks instead of writing SQL by
 hand. `GET /api/admin/registry/{table_id}/policy/columns` returns the table's real
@@ -291,6 +292,34 @@ curl -s "https://{your-instance}/api/admin/registry/orders_daily/policy/columns"
 `eligible` mirrors the distribution interlock (§3.7's PUT gate): a policy can only be
 attached to a `query_mode='remote'` or `server_only=true` table — the builder shows
 this so the UI can nudge toward `server_only` first rather than fail silently later.
+
+`POST /api/admin/registry/{table_id}/policy/compile` turns a structured spec into the
+same canonical SQL the resolver runs — the anti-leak invariant (a masked column is
+always `EXCLUDE`d before it is re-derived) is enforced in `src/access_policy_compile.py`,
+not duplicated here:
+
+| Field | Type | Notes |
+|---|---|---|
+| `row_rules` | array, optional | `[{"column", "op", "value"}]` — `op` is one of `in_caller_groups`, `eq_caller_email`, `eq_caller_id`, `eq`, `in` |
+| `row_combine` | string, optional | `"and"` (default) or `"or"` |
+| `column_masks` | object, optional | `{column: "show"\|"hide"\|"nullify"\|"hash"\|"unmask"}` — `"unmask"` takes `{"choice": "unmask", "group": "..."}` |
+
+```bash
+curl -s -X POST \
+  "https://{your-instance}/api/admin/registry/orders_daily/policy/compile" \
+  -H "Authorization: Bearer $PAT" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "row_rules": [{"column": "cost_center", "op": "in_caller_groups"}],
+    "column_masks": {"email": "hash", "national_id": "hide"}
+  }'
+# {"sql": "SELECT * EXCLUDE (\"national_id\", \"email\"), md5(\"email\") AS \"email\" FROM \"orders_daily\" WHERE list_contains($user_groups, \"cost_center\")",
+#  "warnings": []}
+```
+
+This endpoint never persists anything — it only returns SQL text. Save it the same way
+as any hand-written policy: `PUT /api/admin/registry/{table_id}` with the returned `sql`
+as `access_policy_sql` (plus the mandatory `access_policy_note`).
 
 ---
 
@@ -658,6 +687,7 @@ checks against.
 - /api/admin/registry/{table_id}/docs
 - /api/admin/registry/{table_id}/policy/preview
 - /api/admin/registry/{table_id}/policy/columns
+- /api/admin/registry/{table_id}/policy/compile
 
 ### `/api/admin/register-table` — Table registration
 

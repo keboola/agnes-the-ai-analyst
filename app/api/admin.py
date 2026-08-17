@@ -5253,6 +5253,53 @@ async def policy_builder_columns(
     return {"columns": columns, "mapping_tables": mapping_tables, "eligible": eligible}
 
 
+class PolicyCompileRequest(BaseModel):
+    """Body for ``POST /registry/{table_id}/policy/compile`` (plan Task 3)
+    -- the structured spec the builder UI assembles from Task 2's column
+    list plus its own mask/row-rule pickers. Deliberately has NO ``table``
+    field: the compiled SQL always names the REGISTRY row's own ``name``,
+    resolved server-side, so a stale or tampered client can never smuggle
+    a different table into the generated SQL.
+    """
+
+    row_rules: List[Dict[str, Any]] = Field(default_factory=list)
+    row_combine: str = "and"
+    column_masks: Dict[str, Any] = Field(default_factory=dict)
+
+
+@router.post("/registry/{table_id}/policy/compile")
+async def policy_builder_compile(
+    table_id: str,
+    request: PolicyCompileRequest,
+    user: dict = Depends(require_admin),
+):
+    """Turn a structured builder spec into the canonical policy SQL (plan
+    Task 3) via ``src.access_policy_compile.compile_policy`` -- the ONLY
+    place that generator's anti-leak EXCLUDE-before-derive invariant is
+    exercised over HTTP. Returns SQL only; nothing is persisted here -- an
+    admin who likes the result still saves it through the existing ``PUT
+    /registry/{id}`` (``access_policy_sql``), unchanged, so the stored
+    artifact stays SQL, never a structured spec.
+    """
+    row = table_registry_repo().get(table_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Table not found")
+
+    name = row.get("name") or table_id
+    columns = [c[0] for c in _policy_builder_describe(name)]
+
+    from src.access_policy_compile import compile_policy
+
+    spec = {
+        "table": name,
+        "row_rules": request.row_rules,
+        "row_combine": request.row_combine,
+        "column_masks": request.column_masks,
+    }
+    compiled = compile_policy(spec, columns)
+    return {"sql": compiled.sql, "warnings": compiled.warnings}
+
+
 class _GotchaItem(BaseModel):
     """v56: a single gotcha entry. ``key=True`` marks the first one as
     the "Key gotcha" rendered distinctly by the package detail page."""

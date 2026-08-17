@@ -12,7 +12,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
-- **No-SQL access-policy builder, backend groundwork.** New admin-only endpoint `GET /api/admin/registry/{table_id}/policy/columns` returns a table's real column schema plus sample values (from the stored profile, if any) and which tables are `policy_mapping`-eligible for a join — the column list the builder UI picks masks from, without the admin needing to already know the table's structure. No UI wiring yet — see `docs/superpowers/plans/2026-08-17-access-policy-builder-ux.md`.
+- **No-SQL access-policy builder, backend groundwork.** Two new admin-only endpoints under `/api/admin/registry/{table_id}/policy/`: `GET .../policy/columns` returns a table's real column schema plus sample values (from the stored profile, if any) and which tables are `policy_mapping`-eligible for a join; `POST .../policy/compile` turns a structured `{row_rules, row_combine, column_masks}` spec into the same canonical SQL the resolver runs, via `src.access_policy_compile.compile_policy` — a masked column is always `EXCLUDE`d before it is re-derived, so the two-column plaintext leak (`SELECT *, md5(col) AS col`) is structurally impossible. Neither endpoint persists anything; saving still goes through the existing `PUT /api/admin/registry/{table_id}` (`access_policy_sql`). No UI wiring yet — see `docs/superpowers/plans/2026-08-17-access-policy-builder-ux.md`.
 
 ## [0.83.28] - 2026-08-17
 
