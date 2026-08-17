@@ -6362,6 +6362,7 @@
     document.addEventListener('keydown', function(e) {
         if (e.key === 'Escape') {
             closeRegisterBqModal();
+            if (typeof closeRegisterDatabricksModal === 'function') closeRegisterDatabricksModal();
             if (typeof closeRegisterKeboolaModal === 'function') closeRegisterKeboolaModal();
             if (typeof closeEditKeboolaModal === 'function') closeEditKeboolaModal();
             if (typeof closeEditBqModal === 'function') closeEditBqModal();
