@@ -36,6 +36,7 @@ from app.auth.dependencies import _get_db, get_current_user
 from app.resource_types import ResourceType
 from src.repositories import semantic_model_repo, semantic_source_repo
 from src.semantic.document_validation import validate_document
+from src.semantic_validation import validate_query
 
 router = APIRouter(tags=["semantic-models"])
 
@@ -53,6 +54,12 @@ class SemanticModelCreate(BaseModel):
 class SemanticModelUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
+
+
+class SemanticQueryValidate(BaseModel):
+    sql: str
+    expected: Optional[list[dict]] = None
+    target_engine: str = "duckdb"
 
 
 class SemanticSourceCreate(BaseModel):
@@ -338,3 +345,71 @@ async def export_semantic_model(
     if not _can_read_model(user, row, conn):
         raise HTTPException(status_code=403, detail=_export_denied_message(slug))
     return Response(content=row["document"], media_type="text/yaml")
+
+
+# ---------------------------------------------------------------------------
+# Public: query validation against the caller's semantic models (parity
+# spec §5) — same RBAC tier as search/export (a Data Package or direct
+# model grant, not admin-only).
+# ---------------------------------------------------------------------------
+
+
+_NO_MODEL_MESSAGE = (
+    "No semantic model is available to validate against. Ask an admin to "
+    "import or author one (see docs/semantic-layer.md)."
+)
+
+
+def _accessible_valid_documents(user: dict, conn: duckdb.DuckDBPyConnection) -> list[dict[str, Any]]:
+    """The individual model dicts (``document_json["semantic_model"]``
+    entries) of every ``status='valid'`` semantic-model row ``user`` may
+    read.
+
+    ``validate_query`` operates on a list of single-model dicts (its own
+    module docstring's shape — ``datasets``/``metrics``/``custom_extensions``
+    at the top level), not the stored row's full parsed-YAML wrapper
+    (``{"semantic_model": [...]}``, per ``document_validation.py``'s Ossie
+    schema) — so this unwraps one level. A stored row's ``semantic_model``
+    list is usually one entry, but is flattened in full in case a document
+    ever declares more than one model.
+
+    Scoped the same way search/export are (``_can_read_model``): a query may
+    span more than one row, so every accessible valid document is handed to
+    the validator, which unions its detection across all of them.
+    """
+    documents: list[dict[str, Any]] = []
+    for row in semantic_model_repo().list_all():
+        if row.get("status") != "valid" or not row.get("document_json"):
+            continue
+        if not _can_read_model(user, row, conn):
+            continue
+        models = row["document_json"].get("semantic_model")
+        if not isinstance(models, list):
+            continue
+        documents.extend(m for m in models if isinstance(m, dict))
+    return documents
+
+
+@router.post("/api/semantic-models/validate-query")
+async def validate_semantic_query(
+    body: SemanticQueryValidate,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Validate a SQL statement against the caller's accessible semantic
+    models: constraint violations, dialect fit, and (optionally) which
+    expected datasets/metrics/relationships it hits.
+
+    Wraps the pure ``src.semantic_validation.validate_query`` — best-effort
+    text matching against declared document content, not SQL parsing; see
+    that module's own LIMITATIONS. Gated fail-closed: when the caller has no
+    accessible ``status='valid'`` model, this returns ``{"available": False,
+    ...}`` rather than the engine's all-clear default for an empty document
+    list, which would otherwise read as a false "valid: true".
+    """
+    documents = _accessible_valid_documents(user, conn)
+    if not documents:
+        return {"available": False, "error": "no_semantic_model", "message": _NO_MODEL_MESSAGE}
+    result = validate_query(body.sql, documents, expected=body.expected, target_engine=body.target_engine)
+    result["available"] = True
+    return result

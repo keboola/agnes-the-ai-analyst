@@ -51,6 +51,13 @@ def test_semantic_model_tools_are_foundation_tools():
         assert name in FOUNDATION_TOOL_NAMES
 
 
+def test_validate_semantic_query_is_a_foundation_tool():
+    """Query-validation engine wiring (wave 3)."""
+    from app.api.mcp.foundation_tools import FOUNDATION_TOOL_NAMES
+
+    assert "validate_semantic_query" in FOUNDATION_TOOL_NAMES
+
+
 def test_data_apps_tools_are_foundation_tools():
     from app.api.mcp.foundation_tools import FOUNDATION_TOOL_NAMES
 

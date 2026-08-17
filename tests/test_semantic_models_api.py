@@ -393,3 +393,172 @@ def test_export_succeeds_via_a_direct_model_grant(seeded_app):
     r = c.get("/api/semantic-models/retail.yaml", headers=_auth(seeded_app["analyst_token"]))
     assert r.status_code == 200
     assert r.text == DOC
+
+
+# ---------------------------------------------------------------------------
+# validate-query — wave 3 (query-validation engine wiring)
+# ---------------------------------------------------------------------------
+
+
+def _upsert_model_with_constraints(*, id: str = "manual/_/retail_vq", slug: str = "retail_vq") -> dict:
+    """A ``status='valid'`` model with a checkable error-severity constraint
+    on ``revenue``, an unverifiable constraint on the same metric (degrades
+    to ``post_execution_checks``), and a metric (``mrr``) whose only declared
+    dialect is neither DuckDB nor ANSI SQL (``locally_executable=false``).
+
+    Written straight through the repo (like ``git_backed_model`` above) so
+    the fixture can carry ``custom_extensions``/``expression.dialects``
+    without fighting the vendored Ossie schema's exact shape for those
+    provisional, storage-layer-owned fields.
+    """
+    import json as jsonlib
+
+    from src.repositories import semantic_model_repo
+
+    document_json = {
+        "semantic_model": [
+            {
+                "name": slug,
+                "datasets": [{"name": "orders", "source": "db.public.orders", "fields": [{"name": "region"}]}],
+                "metrics": [
+                    {
+                        "name": "revenue",
+                        "dataset": "orders",
+                        "expression": {"dialects": [{"dialect": "duckdb", "expression": "SUM(amount)"}]},
+                    },
+                    {
+                        "name": "mrr",
+                        "dataset": "orders",
+                        "expression": {"dialects": [{"dialect": "snowflake", "expression": "SUM(mrr_amount)"}]},
+                    },
+                ],
+                "custom_extensions": [
+                    {
+                        "vendor_name": "agnes",
+                        "data": jsonlib.dumps(
+                            {
+                                "constraints": [
+                                    {
+                                        "name": "region_filter_required",
+                                        "type": "required_filter",
+                                        "rule": "region = 'EU'",
+                                        "severity": "error",
+                                        "metrics": ["revenue"],
+                                    },
+                                    {
+                                        "name": "non_negative_value",
+                                        "type": "value_range",
+                                        "rule": "value >= 0",
+                                        "severity": "warning",
+                                        "metrics": ["revenue"],
+                                    },
+                                ]
+                            }
+                        ),
+                    }
+                ],
+            }
+        ]
+    }
+    return semantic_model_repo().upsert(
+        id=id,
+        slug=slug,
+        name=slug,
+        description=None,
+        document="# native fixture, not schema-authored",
+        document_json=document_json,
+        spec_version="0.2.0.dev0",
+        content_hash=f"hash-{slug}",
+        source="manual",
+        source_ref=None,
+        status="valid",
+        validation_errors=None,
+        validated_at=None,
+    )
+
+
+class TestValidateQuery:
+    def test_no_semantic_model_is_gated_closed(self, seeded_app):
+        """With zero valid models the endpoint must not offer a misleading
+        all-clear — it returns an explicit 'unavailable' shape instead of
+        `validate_query`'s empty-documents default (`valid: True`)."""
+        c = seeded_app["client"]
+        r = c.post(
+            "/api/semantic-models/validate-query",
+            json={"sql": "SELECT * FROM orders"},
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["available"] is False
+        assert body["error"] == "no_semantic_model"
+        assert "valid" not in body
+
+    def test_error_severity_violation_marks_invalid(self, seeded_app):
+        _upsert_model_with_constraints()
+        c = seeded_app["client"]
+        r = c.post(
+            "/api/semantic-models/validate-query",
+            json={"sql": "SELECT SUM(revenue) FROM orders"},  # no region filter -> violates the constraint
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["available"] is True
+        assert body["valid"] is False
+        assert any(v["severity"] == "error" for v in body["violations"])
+
+    def test_unverifiable_rule_is_a_post_execution_check_not_a_violation(self, seeded_app):
+        """Fail-open: a rule this module cannot statically check must land in
+        `post_execution_checks`, never flip `valid` to False by itself."""
+        _upsert_model_with_constraints()
+        c = seeded_app["client"]
+        r = c.post(
+            "/api/semantic-models/validate-query",
+            json={"sql": "SELECT SUM(revenue) FROM orders WHERE region = 'EU'"},
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        body = r.json()
+        assert body["valid"] is True, "the checkable constraint is satisfied; only the unverifiable one remains"
+        assert any(chk["name"] == "non_negative_value" for chk in body["post_execution_checks"])
+        assert all(v["name"] != "non_negative_value" for v in body["violations"])
+
+    def test_non_local_dialect_metric_is_not_locally_executable(self, seeded_app):
+        _upsert_model_with_constraints()
+        c = seeded_app["client"]
+        r = c.post(
+            "/api/semantic-models/validate-query",
+            json={"sql": "SELECT mrr FROM orders"},
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        body = r.json()
+        assert body["locally_executable"] is False
+        assert body["mixed_dialect_warning"] is None or "mrr" not in (body["mixed_dialect_warning"] or "")
+
+    def test_rbac_matches_search_and_export(self, seeded_app):
+        """Same tier as search/export: a non-admin with no grant sees the
+        model as absent from the accessible set -> gated closed for them,
+        even though it exists and is valid for an admin."""
+        _upsert_model_with_constraints()
+        c = seeded_app["client"]
+        r = c.post(
+            "/api/semantic-models/validate-query",
+            json={"sql": "SELECT SUM(revenue) FROM orders"},
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        assert r.json()["available"] is False
+
+    def test_expected_objects_are_diffed_when_passed(self, seeded_app):
+        _upsert_model_with_constraints()
+        c = seeded_app["client"]
+        r = c.post(
+            "/api/semantic-models/validate-query",
+            json={
+                "sql": "SELECT SUM(revenue) FROM orders WHERE region = 'EU'",
+                "expected": [{"type": "metric", "name": "revenue"}, {"type": "metric", "name": "mrr"}],
+            },
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        body = r.json()
+        assert {"type": "metric", "name": "revenue"} in body["matched_expected_objects"]
+        assert {"type": "metric", "name": "mrr"} in body["missing_expected_objects"]
