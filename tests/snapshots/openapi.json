@@ -10840,7 +10840,7 @@
   "info": {
     "description": "Self-hosted AI harness: governed data access, skills marketplace, corporate memory, and agent workspaces",
     "title": "AI Harness",
-    "version": "0.83.23"
+    "version": "0.83.30"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -48969,6 +48969,46 @@
           }
         },
         "summary": "Keboola Login",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/auth/microsoft/callback": {
+      "get": {
+        "description": "Handle Microsoft Entra ID OAuth callback.",
+        "operationId": "microsoft_callback_auth_microsoft_callback_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Microsoft Callback",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/auth/microsoft/login": {
+      "get": {
+        "description": "Redirect to Microsoft Entra ID OAuth.\n\nHonors `?next=<path>` by stashing the sanitized value in the session so the\ncallback can redirect there instead of the default /dashboard. The session\nis the right stash \u2014 OAuth flow is stateful and the `state` param is\nmanaged by Authlib.",
+        "operationId": "microsoft_login_auth_microsoft_login_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Microsoft Login",
         "tags": [
           "auth"
         ]
