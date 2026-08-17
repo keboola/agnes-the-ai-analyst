@@ -578,9 +578,16 @@ async def _materialize_one_tool_async(
     if result.is_error:
         raise RuntimeError(f"upstream tool {original_name} returned error: {result.text[:300]}")
     if result.data is None:
+        # Name what arrived, not just what was required: the operator's only
+        # other route to the actual shape is reproducing the call by hand,
+        # and the credential this job used lives write-only in the vault.
+        blocks = ", ".join(result.block_types) if result.block_types else "none"
+        sample = " ".join(result.text.split())[:200]
         raise ValueError(
             f"tool {original_name} did not return parseable JSON; "
-            f"materialize mode requires a JSON response with a list-of-dicts"
+            f"materialize mode requires a JSON response with a list-of-dicts. "
+            f"Got: structuredContent={'yes' if result.structured_present else 'no'}, "
+            f"content blocks=[{blocks}], text starts: {sample!r}" + ("" if sample else " (empty)")
         )
     parquet_path = output_path / "data" / f"{tool['exposed_name']}.parquet"
     rows = _find_data_array(result.data)
