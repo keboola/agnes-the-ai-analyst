@@ -293,6 +293,31 @@ class TestPolicyPreview:
         assert body["rows_visible"] == 1
         assert {r["id"] for r in body["sample_rows"]} == {"3"}
 
+    def test_preview_returns_base_rows_for_a_before_after_view(self, policied_invoices_for_preview):
+        # Slice 2: the persona before/after preview needs the RAW sample the
+        # authoring admin (god-mode) may see, so the UI can strike through the
+        # rows the policy drops and show real->masked cells side by side.
+        c = policied_invoices_for_preview["client"]
+        token = policied_invoices_for_preview["admin_token"]
+
+        resp = c.post(
+            "/api/admin/registry/preview_invoices/policy/preview",
+            json={"as_groups": ["Finance"]},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+
+        # base sample carries EVERY row (incl. the Ops row the policy filters
+        # out) and the raw `secret` column the policy hides — that is the
+        # "before" the UI diffs the policied "after" against.
+        assert "base_sample_rows" in body
+        assert {r["id"] for r in body["base_sample_rows"]} == {"1", "2", "3"}
+        assert any("secret" in r for r in body["base_sample_rows"])
+        # the policied slice stays filtered + masked
+        assert {r["id"] for r in body["sample_rows"]} == {"1", "2"}
+        assert all("secret" not in r for r in body["sample_rows"])
+
     def test_preview_candidate_sql_before_saving_does_not_touch_the_stored_policy(self, policied_invoices_for_preview):
         c = policied_invoices_for_preview["client"]
         token = policied_invoices_for_preview["admin_token"]

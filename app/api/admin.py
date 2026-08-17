@@ -5113,12 +5113,24 @@ async def preview_table_policy(
             )
             sample_col_names = [d[0] for d in sample_cursor.description]
             sample_rows = [dict(zip(sample_col_names, r)) for r in sample_cursor.fetchall()]
+            # Slice 2 (§13.1 before/after): the RAW sample the authoring admin
+            # (god-mode) may see, so the UI can diff it against the policied
+            # slice above — struck-through dropped rows, real->masked cells.
+            # One bounded LIMIT read (not another full scan): it must NOT add
+            # to the two full COUNT(*) scans above, which are the pre-existing
+            # per-call cost on a remote/BQ-backed table.
+            base_sample_cursor = analytics_conn.execute(
+                f"SELECT * FROM {quote_ident(row['name'])} LIMIT {_POLICY_PREVIEW_SAMPLE_LIMIT}"
+            )
+            base_sample_col_names = [d[0] for d in base_sample_cursor.description]
+            base_sample_rows = [dict(zip(base_sample_col_names, r)) for r in base_sample_cursor.fetchall()]
         except Exception as exc:
             raise HTTPException(status_code=422, detail=f"policy_preview_failed: {exc}") from exc
     finally:
         analytics_conn.close()
 
     sample_rows = _sanitize_for_json(sample_rows)
+    base_sample_rows = _sanitize_for_json(base_sample_rows)
 
     audit_repo().log(
         user_id=user.get("id"),
@@ -5138,6 +5150,7 @@ async def preview_table_policy(
     return {
         "columns": columns,
         "sample_rows": sample_rows,
+        "base_sample_rows": base_sample_rows,
         "rows_visible": int(rows_visible),
         "rows_total": int(rows_total),
     }
