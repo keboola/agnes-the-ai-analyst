@@ -10840,7 +10840,7 @@
   "info": {
     "description": "Self-hosted AI harness: governed data access, skills marketplace, corporate memory, and agent workspaces",
     "title": "AI Harness",
-    "version": "0.83.23"
+    "version": "0.83.19"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -23517,6 +23517,69 @@
           }
         },
         "summary": "Update Table Docs",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/admin/registry/{table_id}/policy/columns": {
+      "get": {
+        "description": "Real schema + sample values for the no-SQL policy builder (plan\nTask 2, access-policy-builder-ux) -- the column list a\n``policy/compile`` spec (Task 3) is built from, so the builder UI\nnever has to know a table's structure up front.\n\nRead-only and never gated on ``access_policies.enabled``: like\n``preview_table_policy`` right above, this is an admin-authoring\nread/compute surface, not the ATTACH action that flag actually gates\n(``PUT /registry/{id}`` writing a non-null ``access_policy_sql``, per\nthat flag's own hint text in ``_flag_default(\"access_policies\", ...)``\nabove).",
+        "operationId": "policy_builder_columns_api_admin_registry__table_id__policy_columns_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "table_id",
+            "required": true,
+            "schema": {
+              "title": "Table Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Policy Builder Columns",
         "tags": [
           "admin"
         ]

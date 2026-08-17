@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- **No-SQL access-policy builder, backend groundwork.** New admin-only endpoint `GET /api/admin/registry/{table_id}/policy/columns` returns a table's real column schema plus sample values (from the stored profile, if any) and which tables are `policy_mapping`-eligible for a join — the column list the builder UI picks masks from, without the admin needing to already know the table's structure. No UI wiring yet — see `docs/superpowers/plans/2026-08-17-access-policy-builder-ux.md`.
+
 ## [0.83.28] - 2026-08-17
 
 ### Added

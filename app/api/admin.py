@@ -28,6 +28,7 @@ from src.identifier_validation import (
 from src.repositories import (
     audit_repo,
     knowledge_repo,
+    profile_repo,
     store_entities_repo,
     store_submissions_repo,
     sync_state_repo,
@@ -5140,6 +5141,116 @@ async def preview_table_policy(
         "rows_visible": int(rows_visible),
         "rows_total": int(rows_total),
     }
+
+
+def _policy_builder_describe(name: str) -> list:
+    """``DESCRIBE {name}`` on the read-only analytics connection -- the
+    same query ``preview_table_policy`` already runs (line ~5054),
+    factored out here because both new builder endpoints below need it:
+    Task 2's columns list wants types too, Task 3's compile just wants the
+    names. Never trusts a caller-supplied name -- every caller resolves
+    ``name`` from the registry row first, never from the URL/body.
+    """
+    from src.db import get_analytics_db_readonly
+    from src.sql_ident import quote_ident
+
+    analytics_conn = get_analytics_db_readonly()
+    try:
+        try:
+            return analytics_conn.execute(f"DESCRIBE {quote_ident(name)}").fetchall()
+        except Exception:
+            return []
+    finally:
+        analytics_conn.close()
+
+
+# Best-effort name hints for the builder's `pii` flag (plan Task 2) -- never
+# authoritative, just a nudge toward masking a column an admin might not
+# think to check.
+_POLICY_BUILDER_PII_NAME_HINTS = (
+    "email",
+    "phone",
+    "ssn",
+    "national_id",
+    "passport",
+    "address",
+    "birth",
+    "dob",
+    "credit_card",
+    "iban",
+    "ip_address",
+    "first_name",
+    "last_name",
+    "full_name",
+    "tax_id",
+)
+
+
+def _policy_builder_looks_like_pii(col_name: str, profile_col: dict) -> bool:
+    """A name-substring match against common PII field names, OR the
+    profiler's own ``"unique"`` alert on a non-numeric column (uniquely
+    identifies every row -- a plausible identifier even when the name
+    itself gives no hint)."""
+    lname = col_name.lower()
+    if any(hint in lname for hint in _POLICY_BUILDER_PII_NAME_HINTS):
+        return True
+    return (
+        bool(profile_col)
+        and "unique" in (profile_col.get("alerts") or [])
+        and profile_col.get("type_category") != "NUMERIC"
+    )
+
+
+@router.get("/registry/{table_id}/policy/columns")
+async def policy_builder_columns(
+    table_id: str,
+    user: dict = Depends(require_admin),
+):
+    """Real schema + sample values for the no-SQL policy builder (plan
+    Task 2, access-policy-builder-ux) -- the column list a
+    ``policy/compile`` spec (Task 3) is built from, so the builder UI
+    never has to know a table's structure up front.
+
+    Read-only and never gated on ``access_policies.enabled``: like
+    ``preview_table_policy`` right above, this is an admin-authoring
+    read/compute surface, not the ATTACH action that flag actually gates
+    (``PUT /registry/{id}`` writing a non-null ``access_policy_sql``, per
+    that flag's own hint text in ``_flag_default("access_policies", ...)``
+    above).
+    """
+    row = table_registry_repo().get(table_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Table not found")
+
+    name = row.get("name") or table_id
+    eligible = row.get("query_mode") == "remote" or bool(row.get("server_only"))
+
+    base_rows = _policy_builder_describe(name)
+
+    # A profile may be keyed by the registry id or the table name depending
+    # on when/how it was saved (mirrors `catalog.py::get_table_profile`'s own
+    # `repo.get(table_name)` lookup -- profiles are keyed by whichever the
+    # caller passed at save time, historically the name).
+    profile = profile_repo().get(table_id) or profile_repo().get(name)
+    profile_by_col = {c["name"]: c for c in (profile or {}).get("columns", []) if isinstance(c, dict)}
+
+    columns = []
+    for col_row in base_rows:
+        col_name, col_type = col_row[0], col_row[1]
+        prof_col = profile_by_col.get(col_name, {})
+        columns.append(
+            {
+                "name": col_name,
+                "type": col_type,
+                "samples": [str(v) for v in (prof_col.get("sample_values") or [])],
+                "distinct": prof_col.get("unique_count"),
+                "pii": _policy_builder_looks_like_pii(col_name, prof_col),
+            }
+        )
+
+    mapping_tables = [r["name"] for r in table_registry_repo().list_all() if r.get("policy_mapping") and r.get("name")]
+
+    return {"columns": columns, "mapping_tables": mapping_tables, "eligible": eligible}
 
 
 class _GotchaItem(BaseModel):

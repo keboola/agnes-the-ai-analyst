@@ -78,6 +78,7 @@ are the unit of curation and user-facing discovery.
 | `PATCH` | `/api/admin/registry/{table_id}/docs` | see §3.5 | Update **extended LLM-facing docs** (grain, gotchas, …) |
 | `DELETE` | `/api/admin/registry/{table_id}` | — | Unregister |
 | `POST` | `/api/admin/registry/{table_id}/policy/preview` | see §3.7 | Preview a stored or candidate access policy as a chosen persona |
+| `GET` | `/api/admin/registry/{table_id}/policy/columns` | — | No-SQL policy builder: real column schema + sample values (see §3.8) |
 | `GET` | `/api/admin/metadata/{table_id}` | — | Get per-column metadata (see §3.6) |
 | `POST` | `/api/admin/metadata/{table_id}` | see §3.6 | Save per-column metadata |
 | `POST` | `/api/admin/metadata/{table_id}/push` | — | Push saved column metadata downstream (no body) |
@@ -272,6 +273,24 @@ curl -s -X POST \
 `columns` marks every base column `hidden: true` if the policy's `EXCLUDE`/rewrite drops
 it for that persona; `rows_visible` is the count through the policy, `rows_total` the
 unfiltered count (admin bypass).
+
+### 3.8 No-SQL policy builder — `GET .../policy/columns`
+
+Lets an admin author a policy by picking columns and masks instead of writing SQL by
+hand. `GET /api/admin/registry/{table_id}/policy/columns` returns the table's real
+schema plus sample values (from the stored profile, if one exists) so the builder UI
+never has to know the table's structure up front:
+
+```bash
+curl -s "https://{your-instance}/api/admin/registry/orders_daily/policy/columns" \
+  -H "Authorization: Bearer $PAT"
+# {"columns": [{"name": "email", "type": "VARCHAR", "samples": ["a@x.com"], "distinct": 42, "pii": true}, ...],
+#  "mapping_tables": ["cost_centers"], "eligible": true}
+```
+
+`eligible` mirrors the distribution interlock (§3.7's PUT gate): a policy can only be
+attached to a `query_mode='remote'` or `server_only=true` table — the builder shows
+this so the UI can nudge toward `server_only` first rather than fail silently later.
 
 ---
 
@@ -638,6 +657,7 @@ checks against.
 - /api/admin/registry/{table_id}
 - /api/admin/registry/{table_id}/docs
 - /api/admin/registry/{table_id}/policy/preview
+- /api/admin/registry/{table_id}/policy/columns
 
 ### `/api/admin/register-table` — Table registration
 
