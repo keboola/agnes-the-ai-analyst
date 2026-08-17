@@ -2643,10 +2643,14 @@ function resolveQuestionCard(frame) {
     if (answered && frame.answers && typeof frame.answers === "object") {
       // Echo what was chosen so the card reads as transcript after the
       // buttons are gone (an answer given on another device shows up too).
-      Object.values(frame.answers).forEach((val) => {
+      // One chip per question; the answers map is keyed by question text,
+      // which rides along as the chip's tooltip so a multi-question card
+      // keeps each answer tied to what it answered.
+      Object.entries(frame.answers).forEach(([question, val]) => {
         const chip = document.createElement("span");
         chip.className = "cloud-chat-question-answer-summary";
         chip.textContent = String(val);
+        chip.title = String(question);
         actions.appendChild(chip);
       });
     }

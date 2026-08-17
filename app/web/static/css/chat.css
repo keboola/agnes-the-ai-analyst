@@ -3351,7 +3351,12 @@ html[data-ui-layout="rail"] .cloud-chat-shell.has-thread .cloud-chat-main::after
 }
 
 .cloud-chat-question-opt { cursor: pointer; }
-.cloud-chat-question-opt:hover:not(:disabled) { background: var(--ds-surface-dim); }
+/* The :not([aria-pressed="true"]) guard keeps this (0,4,0) hover rule from
+   outranking the (0,2,0) selected rule below — a hovered picked option
+   keeps its primary tint. */
+.cloud-chat-question-opt:hover:not(:disabled):not([aria-pressed="true"]) {
+  background: var(--ds-surface-dim);
+}
 .cloud-chat-question-opt:focus-visible {
   outline: var(--ds-focus-outline);
   outline-offset: var(--ds-focus-outline-offset);
