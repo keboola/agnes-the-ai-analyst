@@ -5,18 +5,65 @@ SECRET token live in one place across the codebase (cf. `v2_scan` / `v2_sample`
 / `v2_schema`). Tests inject a stub BqAccess whose `duckdb_session()` yields
 an in-memory connection with a pre-attached `bq` catalog containing fixture
 tables, exercising the COPY path end-to-end without any GCP traffic.
+
+The atomic-write section is routed through `src.parquet_publish` (#1359) —
+`atomic_publish_temp_path` + `atomic_publish_finalize`, the manual two-step
+form (this function's retry-on-timeout / lock-guarded structure spans too
+much control flow to nest inside `atomic_publish`'s single `with` block).
+Modeled on tests/test_parquet_publish.py / tests/test_jira_atomic_parquet_writes.py:
+the failure stub writes the footerless bytes a killed COPY leaves AT THE PATH
+THE STATEMENT TARGETS, then raises — a no-op stub that raises without
+touching the filesystem first would pass even against code that isn't atomic
+at all, which is the trap those tests' own history calls out explicitly.
 """
-import duckdb
-import pytest
+
+import os
+import re
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import duckdb
+import pytest
+
 from connectors.bigquery.access import BqAccess, BqProjects
-from connectors.bigquery.extractor import materialize_query, MaterializeBudgetError
+from connectors.bigquery.extractor import materialize_query
+
+FOOTERLESS = b"PAR1" + b"\x00" * 64
 
 
-def _make_stub_bq(tables: dict[str, str] | None = None) -> BqAccess:
+class _ExecuteProxy:
+    """Wraps a DuckDB connection so ``execute`` can be intercepted — DuckDB's
+    native connection object doesn't allow monkeypatching bound methods
+    directly (``AttributeError: attribute 'execute' is read-only``)."""
+
+    def __init__(self, conn, on_execute):
+        self._conn = conn
+        self._on_execute = on_execute
+
+    def execute(self, sql, *a, **kw):
+        return self._on_execute(self._conn, sql, *a, **kw)
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+
+def _boom_on_copy(real_conn, sql, *a, **kw):
+    """The SQL-level equivalent of a killed `pq.write_table`: write footerless
+    bytes AT THE PATH THE COPY STATEMENT TARGETS, then raise. Modeled on
+    tests/test_parquet_publish.py's `_boom` — a stub that raises without
+    touching the filesystem first would pass even against a writer with no
+    temp-staging at all, which is not a test of atomicity."""
+    upper = sql.upper()
+    if "COPY" in upper and "FORMAT PARQUET" in upper:
+        m = re.search(r"TO '([^']+)'", sql)
+        assert m, f"could not find COPY target in: {sql}"
+        Path(m.group(1)).write_bytes(FOOTERLESS)
+        raise RuntimeError("simulated mid-COPY failure")
+    return real_conn.execute(sql, *a, **kw)
+
+
+def _make_stub_bq(tables: dict[str, str] | None = None, *, fail_copy: bool = False) -> BqAccess:
     """Return a BqAccess wired to factories that yield an in-memory DuckDB
     with a pretend `bq` catalog containing test tables. `tables` maps
     DuckDB-three-part references like `'bq.test.orders'` to a SELECT
@@ -26,6 +73,9 @@ def _make_stub_bq(tables: dict[str, str] | None = None) -> BqAccess:
     wrapping added by `_wrap_admin_sql_for_jobs_api` (Task 2 — routes COPY
     through the BQ jobs API for views) resolves against the in-memory tables
     without needing the real BQ extension.
+
+    `fail_copy=True` wraps the session connection so the materialize COPY
+    dies midway — see `_boom_on_copy`.
     """
     tables = tables or {}
 
@@ -42,10 +92,9 @@ def _make_stub_bq(tables: dict[str, str] | None = None) -> BqAccess:
             # Stub bigquery_query() so materialize_query's wrapped COPY works
             # against the in-memory bq catalog without the real BQ extension.
             conn.execute(
-                "CREATE OR REPLACE MACRO bigquery_query(project, sql_text) "
-                "AS TABLE SELECT * FROM query(sql_text)"
+                "CREATE OR REPLACE MACRO bigquery_query(project, sql_text) AS TABLE SELECT * FROM query(sql_text)"
             )
-            yield conn
+            yield _ExecuteProxy(conn, _boom_on_copy) if fail_copy else conn
         finally:
             conn.close()
 
@@ -69,12 +118,9 @@ def test_materialize_writes_parquet_and_returns_stats(tmp_path):
     out = tmp_path / "extracts" / "bigquery"
     out.mkdir(parents=True)
 
-    bq = _make_stub_bq({
-        "bq.test.orders": (
-            "SELECT 'EU' AS region, 100 AS revenue UNION ALL "
-            "SELECT 'US' AS region, 250 AS revenue"
-        )
-    })
+    bq = _make_stub_bq(
+        {"bq.test.orders": ("SELECT 'EU' AS region, 100 AS revenue UNION ALL SELECT 'US' AS region, 250 AS revenue")}
+    )
 
     stats = materialize_query(
         table_id="orders_summary",
@@ -90,9 +136,11 @@ def test_materialize_writes_parquet_and_returns_stats(tmp_path):
     assert stats["query_mode"] == "materialized"
 
     # Parquet readable end-to-end
-    rows = duckdb.connect().execute(
-        f"SELECT region, revenue FROM read_parquet('{parquet_path}') ORDER BY region"
-    ).fetchall()
+    rows = (
+        duckdb.connect()
+        .execute(f"SELECT region, revenue FROM read_parquet('{parquet_path}') ORDER BY region")
+        .fetchall()
+    )
     assert rows == [("EU", 100), ("US", 250)]
 
 
@@ -112,8 +160,70 @@ def test_materialize_atomic_on_failure(tmp_path):
             output_dir=str(out),
         )
     assert not parquet_path.exists()
-    # Tmp also cleaned
-    assert not (out / "data" / "broken.parquet.tmp").exists()
+    assert list((out / "data").glob("*.tmp")) == []
+
+
+def test_materialize_killed_copy_leaves_previous_publish_intact(tmp_path):
+    """#1359: a write that dies MIDWAY, not one that never starts — the
+    footerless-bytes-then-raise stub `_boom_on_copy` models a SIGKILL'd COPY,
+    not a bind-time SQL error like the test above. A no-op failure stub would
+    pass even against a writer with no temp-staging at all."""
+    out = tmp_path / "extracts" / "bigquery"
+    out.mkdir(parents=True)
+    parquet_path = out / "data" / "t1.parquet"
+    parquet_path.parent.mkdir(parents=True)
+    parquet_path.write_bytes(b"previously published")
+
+    bq = _make_stub_bq({"bq.test.orders": "SELECT 1 AS n"}, fail_copy=True)
+
+    with pytest.raises(RuntimeError, match="simulated mid-COPY failure"):
+        materialize_query(table_id="t1", sql="SELECT n FROM bq.test.orders", bq=bq, output_dir=str(out))
+
+    assert parquet_path.read_bytes() == b"previously published"
+    assert list((out / "data").glob("*.tmp")) == []
+
+
+def test_materialize_published_mode_is_0644_under_restrictive_umask(tmp_path):
+    """DuckDB's COPY creates the temp as `0666 & umask`; a 0077 umask (seen in
+    container/systemd units) would publish 0600 without the explicit chmod
+    incident #203 documents."""
+    out = tmp_path / "extracts" / "bigquery"
+    out.mkdir(parents=True)
+    bq = _make_stub_bq({"bq.test.orders": "SELECT 1 AS n"})
+
+    previous = os.umask(0o077)
+    try:
+        materialize_query(table_id="t1", sql="SELECT n FROM bq.test.orders", bq=bq, output_dir=str(out))
+    finally:
+        os.umask(previous)
+
+    pq_path = out / "data" / "t1.parquet"
+    assert oct(pq_path.stat().st_mode & 0o777) == oct(0o644)
+
+
+def test_materialize_temp_is_per_process_and_never_matches_the_parquet_glob(tmp_path, monkeypatch):
+    out = tmp_path / "extracts" / "bigquery"
+    out.mkdir(parents=True)
+    bq = _make_stub_bq({"bq.test.orders": "SELECT 1 AS n"})
+
+    real_replace = os.replace
+    captured = {}
+
+    def trace_replace(src, dst):
+        captured["src"] = str(src)
+        real_replace(src, dst)
+
+    monkeypatch.setattr("connectors.bigquery.extractor.os.replace", trace_replace)
+    materialize_query(table_id="t1", sql="SELECT n FROM bq.test.orders", bq=bq, output_dir=str(out))
+
+    data_dir = out / "data"
+    assert captured["src"] != str(data_dir / "t1.parquet"), "wrote straight onto the live path"
+    assert str(os.getpid()) in Path(captured["src"]).name
+    assert [p.name for p in data_dir.glob("*.parquet")] == ["t1.parquet"]
+    # `*.parquet.*` also matches the deliberate `t1.parquet.lock` advisory
+    # file lock — a different mechanism entirely — so check for a leftover
+    # temp specifically.
+    assert not list(data_dir.glob("*.tmp"))
 
 
 def test_materialize_rejects_unsafe_table_id(tmp_path):
@@ -137,16 +247,18 @@ def test_materialize_overwrites_existing_parquet(tmp_path):
     bq = _make_stub_bq({"bq.test.tiny": "SELECT 1 AS n"})
 
     materialize_query(
-        table_id="t1", sql="SELECT 1 AS n",
-        bq=bq, output_dir=str(out),
+        table_id="t1",
+        sql="SELECT 1 AS n",
+        bq=bq,
+        output_dir=str(out),
     )
     materialize_query(
-        table_id="t1", sql="SELECT 2 AS n",
-        bq=bq, output_dir=str(out),
+        table_id="t1",
+        sql="SELECT 2 AS n",
+        bq=bq,
+        output_dir=str(out),
     )
-    rows = duckdb.connect().execute(
-        f"SELECT n FROM read_parquet('{out}/data/t1.parquet')"
-    ).fetchall()
+    rows = duckdb.connect().execute(f"SELECT n FROM read_parquet('{out}/data/t1.parquet')").fetchall()
     assert rows == [(2,)]
 
 
@@ -174,17 +286,11 @@ def test_materialize_persists_meta_and_inner_view_in_extract_db(tmp_path):
             extracted_at TIMESTAMP,
             query_mode VARCHAR DEFAULT 'remote'
         )""")
-        ext.execute(
-            "INSERT INTO _meta VALUES ('s1_session_landings', '', 0, 0, "
-            "CURRENT_TIMESTAMP, 'remote')"
-        )
+        ext.execute("INSERT INTO _meta VALUES ('s1_session_landings', '', 0, 0, CURRENT_TIMESTAMP, 'remote')")
 
-    bq = _make_stub_bq({
-        "bq.test.orders": (
-            "SELECT 'EU' AS region, 100 AS revenue UNION ALL "
-            "SELECT 'US' AS region, 250 AS revenue"
-        )
-    })
+    bq = _make_stub_bq(
+        {"bq.test.orders": ("SELECT 'EU' AS region, 100 AS revenue UNION ALL SELECT 'US' AS region, 250 AS revenue")}
+    )
 
     materialize_query(
         table_id="orders_summary",
@@ -199,19 +305,11 @@ def test_materialize_persists_meta_and_inner_view_in_extract_db(tmp_path):
 
     # _meta has BOTH the legacy remote row AND the new materialized row.
     with duckdb.connect(str(extract_db), read_only=True) as ext:
-        rows = ext.execute(
-            "SELECT table_name, query_mode, rows FROM _meta ORDER BY table_name"
-        ).fetchall()
-        assert ("orders_summary", "materialized", 2) in [
-            (r[0], r[1], r[2]) for r in rows
-        ]
-        assert ("s1_session_landings", "remote", 0) in [
-            (r[0], r[1], r[2]) for r in rows
-        ]
+        rows = ext.execute("SELECT table_name, query_mode, rows FROM _meta ORDER BY table_name").fetchall()
+        assert ("orders_summary", "materialized", 2) in [(r[0], r[1], r[2]) for r in rows]
+        assert ("s1_session_landings", "remote", 0) in [(r[0], r[1], r[2]) for r in rows]
         # Inner view backing the master view exists, points at the parquet.
-        view_rows = ext.execute(
-            "SELECT * FROM \"orders_summary\" ORDER BY region"
-        ).fetchall()
+        view_rows = ext.execute('SELECT * FROM "orders_summary" ORDER BY region').fetchall()
         assert view_rows == [("EU", 100), ("US", 250)]
 
 
@@ -237,32 +335,31 @@ def test_materialize_replaces_meta_row_on_re_run(tmp_path):
             query_mode VARCHAR DEFAULT 'remote'
         )""")
 
-    bq = _make_stub_bq({
-        "bq.test.t1": "SELECT 'EU' AS region, 100 AS revenue",
-        "bq.test.t2": (
-            "SELECT 'EU' AS region, 100 AS revenue UNION ALL "
-            "SELECT 'US' AS region, 250 AS revenue"
-        ),
-    })
+    bq = _make_stub_bq(
+        {
+            "bq.test.t1": "SELECT 'EU' AS region, 100 AS revenue",
+            "bq.test.t2": ("SELECT 'EU' AS region, 100 AS revenue UNION ALL SELECT 'US' AS region, 250 AS revenue"),
+        }
+    )
 
     # First pass — 1 row.
     materialize_query(
         table_id="orders_summary",
         sql="SELECT region, revenue FROM bq.test.t1",
-        bq=bq, output_dir=str(out),
+        bq=bq,
+        output_dir=str(out),
     )
     # Second pass — different SQL, 2 rows. Must overwrite, not duplicate.
     materialize_query(
         table_id="orders_summary",
         sql="SELECT region, revenue FROM bq.test.t2",
-        bq=bq, output_dir=str(out),
+        bq=bq,
+        output_dir=str(out),
     )
 
     extract_db = out / "extract.duckdb"
     with duckdb.connect(str(extract_db), read_only=True) as ext:
-        rows = ext.execute(
-            "SELECT COUNT(*), MAX(rows) FROM _meta WHERE table_name = 'orders_summary'"
-        ).fetchone()
+        rows = ext.execute("SELECT COUNT(*), MAX(rows) FROM _meta WHERE table_name = 'orders_summary'").fetchone()
         assert rows[0] == 1, "must be exactly one _meta row, not duplicated"
         assert rows[1] == 2, "row count reflects the latest run, not the first"
 
@@ -282,7 +379,8 @@ def test_materialize_skips_inner_view_when_extract_db_missing(tmp_path):
     stats = materialize_query(
         table_id="solo_table",
         sql="SELECT n FROM bq.test.t",
-        bq=bq, output_dir=str(out),
+        bq=bq,
+        output_dir=str(out),
     )
     assert stats["rows"] == 1
     # Parquet is on disk, extract.duckdb still doesn't exist (no force-create).

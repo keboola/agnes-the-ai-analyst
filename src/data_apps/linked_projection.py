@@ -24,6 +24,12 @@ class ProjectionResult:
     created: int
     updated: int
     hidden: int
+    # Rows the lister returned that carry no usable id/url. Surfaced (not just
+    # logged) because "0 new, 0 updated" over N skipped rows reads as "the
+    # upstream has nothing", sending the reader at the wrong end of the
+    # problem — the columns are there, under names nothing recognised.
+    skipped: int = 0
+    columns: tuple[str, ...] = ()
 
 
 def project(
@@ -105,6 +111,7 @@ def project_from_extract(
     *,
     repo: Optional[Any] = None,
     table_name: Optional[str] = None,
+    projection_map: Optional[dict] = None,
 ) -> Optional[ProjectionResult]:
     """Project linked apps from an MCP source's freshly-materialized
     ``extract.duckdb``.
@@ -135,7 +142,7 @@ def project_from_extract(
         cols = [d[0] for d in cur.description]
         raw_rows = [dict(zip(cols, r)) for r in cur.fetchall()]
 
-    records = [adapter.map_row(r) for r in raw_rows]
+    records = [adapter.map_row(r, projection_map) for r in raw_rows]
     linkable = [rec for rec in records if rec.external_app_id and rec.external_url]
     # Present-but-unlinkable rows (blank/renamed URL column, a scheme the
     # adapter rejects) are STILL present upstream — passing only `linkable` to
@@ -152,4 +159,9 @@ def project_from_extract(
             skipped,
             len(unlinkable_ids),
         )
-    return project(source_id, linkable, repo=repo, keep_external_ids=unlinkable_ids)
+    result = project(source_id, linkable, repo=repo, keep_external_ids=unlinkable_ids)
+    # Carry the diagnosis out with the counts: what was dropped, and which
+    # columns were on offer to map instead.
+    result.skipped = skipped
+    result.columns = tuple(cols)
+    return result

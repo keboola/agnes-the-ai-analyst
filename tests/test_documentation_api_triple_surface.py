@@ -565,6 +565,15 @@ _KEBOOLA_LOGIN_PROJECTS_REASON = (
 
 _EXEMPT: dict[str, str] = {
     "/api/auth/keboola/projects": _KEBOOLA_LOGIN_PROJECTS_REASON,
+    "/api/admin/mcp-tools/{tool_id}/projection-map": (
+        "names which of a lister tool's columns carry an app's id, URL and "
+        "name. The decision is only makeable against the column list a fetch "
+        "actually produced, and the wizard's step 2 is the only surface that "
+        "renders it — `agnes admin mcp tool list` shows registered tools, not "
+        "what one emitted — so a CLI flag or MCP tool would be choosing column "
+        "names blind. If a surface ever exposes the fetched columns, this "
+        "should follow it there rather than stay REST-only"
+    ),
     "/api/me/display-name": (
         "self-service display-name edit (issue #1036) — UI-only affordance on "
         "/profile; a one-field personal profile edit with no CLI/MCP analogue"
