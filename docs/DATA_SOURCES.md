@@ -304,13 +304,64 @@ warehouse, so it cannot see anything that only exists on this server:
 - A statement naming remote tables on two engines (Databricks + BigQuery) is
   refused (`remote_cross_engine_unsupported`). There is no join layer between
   them.
-- `agnes snapshot create` and `/api/v2/scan` are BigQuery-only paths and say
-  so rather than 404-ing as if the table were un-synced.
-- A table carrying an **access policy** cannot be queried this way
-  (`policy_unsupported_on_remote_engine`). BigQuery has a path that transpiles
-  the policy and binds it as parameters; Databricks does not yet, and
-  forwarding the unfiltered statement would return exactly the rows the policy
-  exists to hide.
+
+### Snapshots of a remote Databricks row
+
+`agnes snapshot create` works on a remote Databricks row, in both shapes —
+the `table_id` form (`--select` / `--where` / `--limit` / `--order-by`) and
+`--from-query`. The predicate is written in **Databricks SQL**, the flavor
+`agnes schema` advertises for the row.
+
+```bash
+agnes snapshot create orders --select country,n \
+    --where "country = 'CZ' AND o_date >= DATE_SUB(CURRENT_DATE(), 30)" --estimate
+agnes snapshot create orders --select country,n --where "country = 'CZ'" --as cz_orders
+agnes query "SELECT country, COUNT(*) FROM cz_orders GROUP BY 1"
+```
+
+**`--estimate` reports differently here, on purpose.** Databricks has no
+dry-run, so `estimated_scan_bytes` is `n/a`, not `0` — `0` already means
+"served locally, nothing billable" on this response, and printing it for a
+warehouse scan would read as *free*. What the estimate does give you is a
+**real row count**: a `COUNT(*)` carrying your own predicate, which the
+warehouse answers as an aggregate without shipping rows. The `engine` field
+names which engine answered.
+
+Size is bounded by `api.scan.max_result_bytes` (default 2 GiB) rather than the
+interactive `max_bytes_per_remote_query`, and the statement timeout by
+`data_source.databricks.scan_timeout_seconds` (default 900) — a snapshot is a
+materialize, not an answer somebody is waiting on. A result that hits the byte
+cap raises `remote_scan_too_large` rather than arriving short.
+
+### Access policies on a remote row
+
+A table carrying an [access policy](table-access-policies.md) **is** enforced
+on Databricks. The policy body is transpiled to Databricks SQL, substituted
+into the caller's statement, and its identity values are bound through the
+Statement Execution API's `parameters` field — never spliced into SQL text.
+sqlglot renders a policy's `$user_email` as `:user_email`, which is exactly
+the API's named-parameter marker, so one authored policy body keeps that
+guarantee on all three engines (DuckDB `$name`, BigQuery `@name`, Databricks
+`:name`).
+
+Two details worth knowing:
+
+- **`$user_groups` is expanded, not interpolated.** The API binds scalar
+  parameters only, so the array marker is rewritten to `ARRAY(:p0, :p1, …)`
+  over generated scalar markers. The group names still travel as request
+  fields; only the *number* of them is visible in the statement. A caller in
+  no groups gets a typed empty array and matches nothing.
+- **The registry gate runs twice.** The first pass sees the caller's SQL; the
+  second sees the statement *after* substitution, because a policy body can
+  name tables the caller never wrote (a `policy_mapping` join). An
+  unregistered table inside a policy body denies (`policy_error`) rather than
+  resolving against whatever the default catalog holds.
+
+`/api/v2/scan` is the one surface that still refuses a policied Databricks
+table (`policy_unsupported_on_scan_engine`). It has no caller-authored
+statement to substitute a policy into — it builds one from `table_id` +
+`select` + `where` — so it points you at `agnes query --remote`, which does
+enforce, or at a materialized row whose scan reads a local parquet.
 
 ### Unity Catalog ATTACH (experimental, off by default)
 

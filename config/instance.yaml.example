@@ -468,6 +468,11 @@ data_source:
   #                                      # (byte_limit) — not bytes scanned, which Databricks does not expose.
   #                                      # A capped result is refused, never returned short. Default 1 GiB.
   #   remote_query_timeout_seconds: 120  # Deadline on an interactive remote query (a human is waiting).
+  #   scan_timeout_seconds: 900          # Deadline on a SNAPSHOT statement (`agnes snapshot create` /
+  #                                      # /api/v2/scan). Longer than the interactive one on purpose: a
+  #                                      # snapshot is a materialize, not an answer someone is waiting on.
+  #                                      # Its SIZE bound is api.scan.max_result_bytes, not the interactive
+  #                                      # max_bytes_per_remote_query. Default 900.
   #   attach_enabled: false              # EXPERIMENTAL. Attach Unity Catalog into DuckDB via the uc_catalog +
   #                                      # delta community extensions so remote Databricks tables can be
   #                                      # JOINed against local parquets. Off by default: it installs
