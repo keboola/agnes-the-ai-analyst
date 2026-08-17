@@ -260,6 +260,29 @@ by construction and a program, not a person, on the other end, so its
 requests resolve immediately to a deny that explains why rather than
 stalling the caller for 300 s.
 
+**Question gate (AskUserQuestion).** The agent's AskUserQuestion tool —
+Claude Code's built-in multiple-choice clarifying-question tool — reaches
+the runner through the SDK's `can_use_tool` control channel: the tool's
+own permission check is unconditionally "ask", which `bypassPermissions`
+does *not* swallow (unlike ordinary tools' prompts). With no callback
+registered the SDK raised "canUseTool callback is not provided" and the
+tool call died, so questions never reached any UI. The runner now
+registers a callback (`QuestionGate` in `app/chat/runner.py`): a call
+suspends on a `question_request` frame (web chat renders the questions
+with their options as an interactive card — multi-select and an
+"Other…" free-text answer included; co-drive participants may answer
+too), and the user's `question_answer` resolves it. An answer is
+returned to the SDK as the tool input's `answers` map — the same shape
+the CLI's own interactive UI produces — so the model sees the canonical
+"Your questions have been answered" tool result. A dismissal, a Stop, or
+no answer within `chat.approval_timeout_seconds` (the same knob as the
+approval gate — both bound "how long a tool call may wait on a human")
+resolves to a deny whose message tells the agent to continue with its
+best judgment. Attendance follows the approval gate's rules exactly:
+same `supports_approvals` sink capability, same pending-card replay to a
+late-attaching browser, same Slack Continue-on-web nudge, and the same
+immediate actionable deny on `Surface.API`.
+
 **Warehouse data is sent to Anthropic by design** — do not store data
 the operator does not want Anthropic to process.
 

@@ -111,7 +111,12 @@ const _previewToolCallIds = new Map();
 let lastSeenSeqByChat = new Map();
 // Frame types whose handlers are idempotent (keyed by request_id) and
 // which therefore must survive the seq-dedup guard on a reconnect replay.
-const REPLAYABLE_FRAME_TYPES = new Set(["approval_request", "approval_resolved"]);
+const REPLAYABLE_FRAME_TYPES = new Set([
+  "approval_request",
+  "approval_resolved",
+  "question_request",
+  "question_resolved",
+]);
 // Approval cards the user has not answered yet, keyed by request_id. Same
 // reason the server keeps them outside its turn buffer: a pending approval
 // is not part of the transcript, so it must be re-rendered after ANY redraw
@@ -123,6 +128,11 @@ const pendingApprovalFrames = new Map();
 // one: the durable replay stream re-sends the original request frame, and
 // after a transcript wipe there is no DOM card left to dedup against.
 const answeredApprovalIds = new Set();
+// Question cards (AskUserQuestion round-trip) — same lifecycle rules as the
+// approval maps above, kept separate because the render/resolve handlers
+// differ.
+const pendingQuestionFrames = new Map();
+const answeredQuestionIds = new Set();
 
 // §5.3 Co-presence: the current user's email for per-message sender attribution.
 // Sourced from <body data-user-email="..."> set by the server-rendered template.
@@ -1200,6 +1210,10 @@ async function loadAndRenderHistory(chatId) {
   for (const frame of pendingApprovalFrames.values()) {
     renderApprovalRequest(frame);
   }
+  // Same rule for pending question cards (AskUserQuestion round-trip).
+  for (const frame of pendingQuestionFrames.values()) {
+    renderQuestionRequest(frame);
+  }
 }
 
 /** Open (or resume) a chat session.
@@ -1226,6 +1240,8 @@ async function openSession(chatId, wsUrlOverride) {
   // nothing.
   pendingApprovalFrames.clear();
   answeredApprovalIds.clear();
+  pendingQuestionFrames.clear();
+  answeredQuestionIds.clear();
   currentChatId = chatId;
   markActiveSidebar(chatId);
   // Sidebar cache holds the title — look it up so the header reads
@@ -1334,6 +1350,13 @@ function handleFrame(frame) {
         clearThinkingPlaceholder();
         break;
       }
+      if (frame.tool === "AskUserQuestion") {
+        // The question card (question_request frame) IS this tool's UI —
+        // the generic "running…" block would just duplicate it. Its
+        // tool_result no-ops in renderToolCallEnd (no card was started).
+        clearThinkingPlaceholder();
+        break;
+      }
       renderToolCallStart(frame);
       break;
     case "tool_result": {
@@ -1386,6 +1409,12 @@ function handleFrame(frame) {
       break;
     case "approval_resolved":
       resolveApprovalCard(frame);
+      break;
+    case "question_request":
+      renderQuestionRequest(frame);
+      break;
+    case "question_resolved":
+      resolveQuestionCard(frame);
       break;
     // The terminal frames below all disarm the long-run notification nudge —
     // a turn that has stopped is no longer worth offering to be pinged about.
@@ -2394,6 +2423,215 @@ function resolveApprovalCard(frame) {
     badge.className = "cloud-chat-approval-outcome " + (allowed ? "is-allow" : "is-deny");
     badge.textContent = labels[frame.decision] || frame.decision || "resolved";
     actions.appendChild(badge);
+  }
+}
+
+/** Interactive card for an AskUserQuestion round-trip (question_request
+ *  frame). Each question renders its options as toggle buttons plus an
+ *  "Other…" free-text input; Submit sends every answer back in one
+ *  ``question_answer`` frame (answers keyed by question text — the shape
+ *  the runner returns to the agent SDK). Dedup/replay rules mirror
+ *  renderApprovalRequest exactly. */
+function renderQuestionRequest(frame) {
+  if (!frame.request_id) return;
+  if (answeredQuestionIds.has(frame.request_id)) return;
+  if (document.querySelector(`[data-question-id="${CSS.escape(frame.request_id)}"]`)) return;
+  const questions = Array.isArray(frame.questions) ? frame.questions : [];
+  if (!questions.length) return;
+  pendingQuestionFrames.set(frame.request_id, frame);
+  clearThinkingPlaceholder();
+
+  const wrap = document.createElement("section");
+  wrap.className = "cloud-chat-tool cloud-chat-question is-running";
+  wrap.dataset.questionId = frame.request_id;
+
+  const head = document.createElement("div");
+  head.className = "cloud-chat-tool-head";
+  const icon = document.createElement("span");
+  icon.className = "cloud-chat-tool-icon";
+  icon.setAttribute("aria-hidden", "true");
+  icon.textContent = "❓";
+  head.appendChild(icon);
+  const name = document.createElement("span");
+  name.className = "cloud-chat-tool-name";
+  name.textContent = questions.length > 1 ? "Agnes has some questions" : "Agnes has a question";
+  head.appendChild(name);
+  wrap.appendChild(head);
+
+  // Per-question selection state. `selected` holds chosen option labels
+  // (Set — multiSelect keeps several); `other` the free-text alternative.
+  const state = questions.map(() => ({ selected: new Set(), other: "" }));
+
+  const answerOf = (i) => {
+    const parts = [...state[i].selected];
+    if (state[i].other.trim()) parts.push(state[i].other.trim());
+    // Multi-select answers are comma-joined — the AskUserQuestion output
+    // contract ("multi-select answers are comma-separated").
+    return parts.join(", ");
+  };
+
+  const actions = document.createElement("div");
+  const submitBtn = document.createElement("button");
+  const updateSubmit = () => {
+    submitBtn.disabled = !questions.every((_, i) => answerOf(i) !== "");
+  };
+
+  questions.forEach((q, i) => {
+    const qq = q && typeof q === "object" ? q : {};
+    const body = document.createElement("div");
+    body.className = "cloud-chat-question-body";
+
+    const qline = document.createElement("div");
+    qline.className = "cloud-chat-question-q";
+    if (qq.header) {
+      const chip = document.createElement("span");
+      chip.className = "cloud-chat-question-chip";
+      chip.textContent = String(qq.header);
+      qline.appendChild(chip);
+    }
+    const qtext = document.createElement("span");
+    qtext.className = "cloud-chat-question-text";
+    qtext.textContent = String(qq.question || "");
+    qline.appendChild(qtext);
+    body.appendChild(qline);
+
+    const opts = document.createElement("div");
+    opts.className = "cloud-chat-question-options";
+    const optButtons = [];
+    (Array.isArray(qq.options) ? qq.options : []).forEach((opt) => {
+      const oo = opt && typeof opt === "object" ? opt : {};
+      const label = String(oo.label || "");
+      if (!label) return;
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "cloud-chat-question-opt";
+      b.setAttribute("aria-pressed", "false");
+      const lbl = document.createElement("span");
+      lbl.className = "cloud-chat-question-opt-label";
+      lbl.textContent = label;
+      b.appendChild(lbl);
+      if (oo.description) {
+        b.title = String(oo.description);
+        const desc = document.createElement("span");
+        desc.className = "cloud-chat-question-opt-desc";
+        desc.textContent = String(oo.description);
+        b.appendChild(desc);
+      }
+      b.onclick = () => {
+        if (qq.multiSelect) {
+          if (state[i].selected.has(label)) state[i].selected.delete(label);
+          else state[i].selected.add(label);
+        } else {
+          const wasSelected = state[i].selected.has(label);
+          state[i].selected.clear();
+          state[i].other = "";
+          otherInput.value = "";
+          if (!wasSelected) state[i].selected.add(label);
+        }
+        optButtons.forEach((btn) =>
+          btn.el.setAttribute("aria-pressed", state[i].selected.has(btn.label) ? "true" : "false")
+        );
+        updateSubmit();
+      };
+      optButtons.push({ el: b, label });
+      opts.appendChild(b);
+    });
+
+    const otherInput = document.createElement("input");
+    otherInput.type = "text";
+    otherInput.className = "cloud-chat-question-other";
+    otherInput.placeholder = "Other…";
+    otherInput.maxLength = 2000;
+    otherInput.oninput = () => {
+      state[i].other = otherInput.value;
+      if (!qq.multiSelect && otherInput.value.trim()) {
+        // Free text replaces a picked option on single-select questions.
+        state[i].selected.clear();
+        optButtons.forEach((btn) => btn.el.setAttribute("aria-pressed", "false"));
+      }
+      updateSubmit();
+    };
+    opts.appendChild(otherInput);
+    body.appendChild(opts);
+    wrap.appendChild(body);
+  });
+
+  actions.className = "cloud-chat-question-actions";
+  const sendAnswer = (payload) => {
+    // Same wire guard as the approval buttons: only lock the card once the
+    // frame is actually on the socket (review finding #1145).
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      setStatus("Not connected — reconnecting. Try answering again in a moment.", "warn");
+      return false;
+    }
+    ws.send(JSON.stringify({ type: "question_answer", request_id: frame.request_id, ...payload }));
+    wrap.querySelectorAll("button, input").forEach((x) => {
+      x.disabled = true;
+    });
+    return true;
+  };
+  submitBtn.type = "button";
+  submitBtn.className = "cloud-chat-question-btn is-submit";
+  submitBtn.textContent = "Submit";
+  submitBtn.disabled = true;
+  submitBtn.onclick = () => {
+    const answers = {};
+    questions.forEach((q, i) => {
+      const key = String((q && q.question) || "");
+      const val = answerOf(i);
+      if (key && val) answers[key] = val;
+    });
+    if (Object.keys(answers).length) sendAnswer({ answers });
+  };
+  actions.appendChild(submitBtn);
+  const dismissBtn = document.createElement("button");
+  dismissBtn.type = "button";
+  dismissBtn.className = "cloud-chat-question-btn is-dismiss";
+  dismissBtn.textContent = "Dismiss";
+  dismissBtn.onclick = () => sendAnswer({ dismissed: true });
+  actions.appendChild(dismissBtn);
+  wrap.appendChild(actions);
+
+  $("chat-messages").appendChild(wrap);
+  maybeScrollToBottom();
+}
+
+function resolveQuestionCard(frame) {
+  if (frame.request_id) {
+    pendingQuestionFrames.delete(frame.request_id);
+    answeredQuestionIds.add(frame.request_id);
+  }
+  const el = frame.request_id
+    ? document.querySelector(`[data-question-id="${CSS.escape(frame.request_id)}"]`)
+    : null;
+  if (!el) return;
+  el.classList.remove("is-running");
+  el.querySelectorAll("button, input").forEach((x) => {
+    x.disabled = true;
+  });
+  const labels = {
+    answered: "Answered",
+    dismissed: "Dismissed",
+    timeout: "Timed out",
+    cancelled: "Cancelled",
+    unattended: "Unattended",
+  };
+  const answered = frame.decision === "answered";
+  const actions = el.querySelector(".cloud-chat-question-actions");
+  if (actions) {
+    actions.textContent = "";
+    const badge = document.createElement("span");
+    badge.className = "cloud-chat-approval-outcome " + (answered ? "is-allow" : "is-deny");
+    badge.textContent = labels[frame.decision] || frame.decision || "resolved";
+    actions.appendChild(badge);
+    if (answered && frame.answers && typeof frame.answers === "object") {
+      // Echo what was chosen so the card reads as transcript after the
+      // buttons are gone (an answer given on another device shows up too).
+      const summary = document.createElement("span");
+      summary.className = "cloud-chat-question-answer-summary";
+      summary.textContent = Object.values(frame.answers).join(" · ");
+      actions.appendChild(summary);
+    }
   }
 }
 

@@ -2,10 +2,12 @@
 
 Stdin: JSON lines, one per frame. Inbound types: user_msg, cancel,
        approval_decision (resolves a pending ApprovalGate request),
+       question_answer (resolves a pending QuestionGate request),
        ticket_push (routed to the in-sandbox relay, never enqueued).
 Stdout: JSON lines. Outbound types: runner_ready, token, tool_call,
         tool_result, assistant_message, error, done,
-        approval_request / approval_resolved (ApprovalGate round-trip).
+        approval_request / approval_resolved (ApprovalGate round-trip),
+        question_request / question_resolved (QuestionGate round-trip).
 
 Env (set by ChatManager via the sandbox provider — under v1 the
 E2BProvider passes these through ``AsyncSandbox.create(envs=...)``):
@@ -368,6 +370,188 @@ class ApprovalGate:
         return _hook_output("deny", f"The user denied this action: {reason}")
 
 
+#: Hard caps on a ``question_answer`` payload accepted from stdin. The
+#: manager hardens shapes before forwarding, but the runner revalidates:
+#: answers are interpolated into the model's tool result, so an oversized
+#: or non-string payload must never reach the SDK unchecked.
+_MAX_QUESTION_ANSWERS = 8
+_MAX_QUESTION_KEY_CHARS = 2000
+_MAX_QUESTION_ANSWER_CHARS = 4000
+
+
+class QuestionGate:
+    """In-process ``can_use_tool`` gate that turns the agent's
+    ``AskUserQuestion`` tool into a real user round-trip in cloud chat.
+
+    The SDK surfaces AskUserQuestion through the ``can_use_tool`` control
+    channel: the tool's own permission check is unconditionally "ask", even
+    under ``permission_mode="bypassPermissions"`` (verified empirically —
+    the bypass short-circuits ordinary tools before their permission prompt,
+    but an unconditional ask still routes to the callback). Without a
+    registered callback the SDK raises ``canUseTool callback is not
+    provided`` at the control request and the tool call dies — which is why
+    questions never reached any UI before this gate existed.
+
+    ``ask`` emits a ``question_request`` frame carrying the tool's
+    ``questions`` payload, suspends the tool call on a future, and resolves
+    when the user's ``question_answer`` frame arrives on stdin (or the
+    timeout / a cancel fires). An answered request is returned to the SDK as
+    ``PermissionResultAllow(updated_input={**input, "answers": {question:
+    label}})`` — the exact shape the CLI's own interactive permission
+    component produces (its input schema's ``answers`` field is documented
+    as "User answers collected by the permission component"), so the model
+    sees the canonical ``Your questions have been answered: …`` tool result.
+    Multi-select answers are comma-joined by the client, matching the tool's
+    output contract.
+
+    Deliberately SDK-import-free (returns plain outcome tuples; the
+    ``can_use_tool`` adapter in ``_real_agent_loop`` converts them to
+    PermissionResult objects) so the fake-agent test path can exercise the
+    full stdin round-trip without claude-agent-sdk installed.
+    """
+
+    def __init__(self, emit, *, timeout_seconds: float = 300.0) -> None:
+        self._emit = emit
+        self.timeout_seconds = timeout_seconds
+        self._pending: "dict[str, asyncio.Future]" = {}
+        self._counter = 0
+
+    @staticmethod
+    def _clean_answers(raw) -> "dict[str, str]":
+        """Coerce an inbound answers payload to a bounded str→str dict.
+
+        Anything non-conforming is dropped rather than raising: the frame
+        crossed a process boundary from a browser, and a malformed answer
+        must degrade to "dismissed", not crash the turn.
+        """
+        if not isinstance(raw, dict):
+            return {}
+        cleaned: dict[str, str] = {}
+        for key, value in raw.items():
+            if len(cleaned) >= _MAX_QUESTION_ANSWERS:
+                break
+            if not isinstance(key, str) or not isinstance(value, str):
+                continue
+            text = value.strip()
+            if not text:
+                continue
+            cleaned[key[:_MAX_QUESTION_KEY_CHARS]] = text[:_MAX_QUESTION_ANSWER_CHARS]
+        return cleaned
+
+    def resolve(self, request_id: str, outcome) -> bool:
+        """Deliver a user outcome to a pending request. ``outcome`` is the
+        answers dict (answered), ``None`` (dismissed), or :data:`UNATTENDED`.
+        False if unknown (stale answer after respawn/timeout — dropped
+        silently, mirroring ``ApprovalGate.resolve``)."""
+        fut = self._pending.pop(request_id, None)
+        if fut is None or fut.done():
+            return False
+        if outcome == UNATTENDED:
+            fut.set_result(UNATTENDED)
+        else:
+            # {} cleans to "no usable answer" → dismissed, not answered-empty:
+            # an empty answers dict would make the model read "Your questions
+            # have been answered" with nothing attached.
+            fut.set_result(self._clean_answers(outcome) or None)
+        return True
+
+    def cancel_all(self) -> None:
+        """Dismiss every pending request (user hit Stop / turn is over)."""
+        for fut in self._pending.values():
+            if not fut.done():
+                fut.set_result(None)
+        self._pending.clear()
+
+    def awaiting_answer(self) -> bool:
+        """True while at least one tool call is suspended waiting for an
+        answer. The turn watchdog consults this so it doesn't mistake a
+        question wait for a wedged tool (same contract as
+        ``ApprovalGate.awaiting_approval``)."""
+        return any(not fut.done() for fut in self._pending.values())
+
+    async def ask(self, tool_input: dict) -> "tuple[str, dict[str, str] | None]":
+        """Run one question round-trip.
+
+        Returns ``(outcome, answers)`` where outcome is ``"answered"``
+        (answers is the question→label dict), or ``"dismissed"`` /
+        ``"timeout"`` / :data:`UNATTENDED` (answers is ``None``).
+        """
+        questions = tool_input.get("questions")
+        if not isinstance(questions, list) or not questions:
+            # Unreachable through the SDK (the CLI validates the tool input
+            # schema before the permission round-trip), kept as a guard for
+            # a direct caller: nothing to render means nothing to wait for.
+            return ("dismissed", None)
+        self._counter += 1
+        # Globally unique for the same reason as ApprovalGate's ids: a
+        # respawned sandbox restarts the counter and the client dedups cards
+        # by request_id, so a reused id would silently never be drawn.
+        request_id = f"ques-{self._counter}-{uuid.uuid4().hex[:12]}"
+        self._emit(
+            {
+                "type": "question_request",
+                "request_id": request_id,
+                "questions": questions,
+                "timeout_seconds": int(self.timeout_seconds),
+            }
+        )
+        fut: "asyncio.Future" = asyncio.get_running_loop().create_future()
+        self._pending[request_id] = fut
+        try:
+            outcome = await asyncio.wait_for(fut, timeout=self.timeout_seconds)
+        except asyncio.TimeoutError:
+            outcome = "__timeout__"
+        except asyncio.CancelledError:
+            # Announce the outcome before unwinding — the manager retires the
+            # card only when it sees question_resolved, so skipping this
+            # would replay a dead card on every reconnect (same failure the
+            # ApprovalGate cancellation path guards against).
+            self._emit(
+                {
+                    "type": "question_resolved",
+                    "request_id": request_id,
+                    "decision": "cancelled",
+                }
+            )
+            raise
+        finally:
+            # finally, not just the timeout branch: a cancellation would
+            # otherwise leave the future in _pending forever and
+            # awaiting_answer() would pin the turn watchdog open.
+            self._pending.pop(request_id, None)
+        if isinstance(outcome, dict):
+            self._emit(
+                {
+                    "type": "question_resolved",
+                    "request_id": request_id,
+                    "decision": "answered",
+                    "answers": outcome,
+                }
+            )
+            return ("answered", outcome)
+        decision = "timeout" if outcome == "__timeout__" else (UNATTENDED if outcome == UNATTENDED else "dismissed")
+        self._emit(
+            {
+                "type": "question_resolved",
+                "request_id": request_id,
+                "decision": decision,
+            }
+        )
+        return (decision, None)
+
+
+def _question_outcome(frame: dict):
+    """Map an inbound ``question_answer`` stdin frame to a
+    ``QuestionGate.resolve`` outcome. ``unattended`` is manager-originated
+    only (the WS handler never forwards it from a client, mirroring how
+    ``deliver_approval_decision`` hardens decisions)."""
+    if frame.get("unattended"):
+        return UNATTENDED
+    if frame.get("dismissed"):
+        return None
+    return frame.get("answers")
+
+
 def _stream_event_delta_text(event: dict) -> str:
     """Extract the user-visible text delta from a raw Anthropic stream event.
 
@@ -624,6 +808,7 @@ async def _fake_agent_loop(
     per_tool_seconds: float = 90.0,
     tool_calls_per_turn: int = 50,
     gate: "ApprovalGate | None" = None,
+    question_gate: "QuestionGate | None" = None,
 ) -> None:
     """Used by tests via AGNES_RUNNER_FAKE_AGENT=1. Echoes user_msg back.
 
@@ -636,6 +821,10 @@ async def _fake_agent_loop(
     - ``__approval__:<command>`` — runs the ApprovalGate against a
       synthetic Bash call so tests exercise the real stdin round-trip
       (approval_request out → approval_decision in) without the SDK.
+    - ``__question__:<question>`` — runs the QuestionGate against a
+      synthetic AskUserQuestion input so tests exercise the real stdin
+      round-trip (question_request out → question_answer in) without the
+      SDK.
     """
     while True:
         frame = await queue.get()
@@ -643,6 +832,9 @@ async def _fake_agent_loop(
             return
         if frame.get("type") == "approval_decision" and gate is not None:
             gate.resolve(str(frame.get("request_id", "")), str(frame.get("decision", "")))
+            continue
+        if frame.get("type") == "question_answer" and question_gate is not None:
+            question_gate.resolve(str(frame.get("request_id", "")), _question_outcome(frame))
             continue
         if frame.get("type") == "user_msg":
             text = frame.get("text", "")
@@ -658,6 +850,33 @@ async def _fake_agent_loop(
                 # Concurrent task: the loop must keep reading stdin so the
                 # approval_decision frame can reach gate.resolve above.
                 _spawn(_run_gate(command))
+                continue
+            if text.startswith("__question__:") and question_gate is not None:
+                question = text.split(":", 1)[1]
+
+                async def _run_question(q: str) -> None:
+                    outcome, answers = await question_gate.ask(
+                        {
+                            "questions": [
+                                {
+                                    "question": q,
+                                    "header": "Test",
+                                    "options": [{"label": "A"}, {"label": "B"}],
+                                    "multiSelect": False,
+                                }
+                            ]
+                        }
+                    )
+                    _emit(
+                        {
+                            "type": "assistant_message",
+                            "content": f"question:{outcome}:{json.dumps(answers or {}, sort_keys=True)}",
+                        }
+                    )
+                    _emit({"type": "done"})
+
+                # Concurrent task for the same reason as __approval__ above.
+                _spawn(_run_question(question))
                 continue
             if text == "__slow_tool__":
                 _emit({"type": "tool_call", "tool": "run_query", "args": {"sql": "..."}})
@@ -726,6 +945,7 @@ async def _real_agent_loop(
     *,
     tool_calls_per_turn: int = 50,
     gate: "ApprovalGate | None" = None,
+    question_gate: "QuestionGate | None" = None,
 ) -> None:
     """Real claude-agent-sdk-backed loop.
 
@@ -878,6 +1098,76 @@ async def _real_agent_loop(
                 )
                 _matcher = HookMatcher(matcher="Bash", hooks=[_gate_hook])
             options_kwargs["hooks"] = {"PreToolUse": [_matcher]}
+    # Question gate (SDK can_use_tool callback). The AskUserQuestion tool's
+    # permission check is unconditionally "ask" — bypassPermissions does NOT
+    # swallow it the way it swallows ordinary tools' prompts, so every
+    # AskUserQuestion call routes to this callback (and with no callback
+    # registered the SDK raises "canUseTool callback is not provided" and the
+    # tool call dies — the pre-gate behavior). Ordinary tools never reach the
+    # callback under bypassPermissions; the passthrough allow below only
+    # covers a hypothetical future unconditional-ask tool, preserving bypass
+    # semantics for it. Registering can_use_tool makes the SDK pass
+    # ``--permission-prompt-tool stdio`` to the CLI, which requires streaming
+    # mode — ClaudeSDKClient always is. Same degrade-not-crash posture as the
+    # hooks probe above for older sandbox-template SDKs.
+    _can_use_tool_supported = "can_use_tool" in getattr(ClaudeAgentOptions, "__dataclass_fields__", {})
+    if question_gate is not None:
+        try:
+            from claude_agent_sdk import (  # type: ignore[attr-defined]
+                PermissionResultAllow,
+                PermissionResultDeny,
+            )
+        except ImportError:
+            PermissionResultAllow = PermissionResultDeny = None
+
+        if not _can_use_tool_supported or PermissionResultAllow is None or PermissionResultDeny is None:
+            print(
+                "question gate: not armed — the installed claude-agent-sdk cannot register "
+                "a can_use_tool callback; AskUserQuestion tool calls will fail in this "
+                "session — upgrade the sandbox template's SDK",
+                file=sys.stderr,
+                flush=True,
+            )
+        else:
+
+            async def _can_use_tool(tool_name, tool_input, context):
+                if tool_name != "AskUserQuestion":
+                    # Never reached for ordinary tools under bypassPermissions;
+                    # keep bypass semantics if some other unconditional-ask
+                    # tool ever lands here. No updated_input → the SDK echoes
+                    # the original input.
+                    return PermissionResultAllow()
+                outcome, answers = await question_gate.ask(tool_input)
+                if outcome == "answered":
+                    # {**tool_input, "answers": ...} is the shape the CLI's own
+                    # interactive permission component returns — the tool then
+                    # renders the canonical "Your questions have been
+                    # answered: ..." result for the model.
+                    return PermissionResultAllow(updated_input={**tool_input, "answers": answers})
+                if outcome == UNATTENDED:
+                    return PermissionResultDeny(
+                        message=(
+                            "This session has no interactive client that can be shown a "
+                            "question card (it runs through the agent API). Continue with "
+                            "your best judgment, or state the question in your final answer."
+                        )
+                    )
+                if outcome == "timeout":
+                    return PermissionResultDeny(
+                        message=(
+                            f"Nobody answered the questions within {int(question_gate.timeout_seconds)}s. "
+                            "Continue with your best judgment and note the open question in your answer."
+                        )
+                    )
+                return PermissionResultDeny(
+                    message=(
+                        "The user dismissed the questions without answering. Continue with "
+                        "your best judgment; ask in plain text if you truly need an answer."
+                    )
+                )
+
+            options_kwargs["can_use_tool"] = _can_use_tool
+
     # Token-level streaming (include_partial_messages) when the installed SDK
     # supports it: the UI then renders text as the model produces it instead
     # of one token frame per completed content block (which for a long answer
@@ -953,6 +1243,8 @@ async def _real_agent_loop(
                 # still race a just-finished turn — best-effort.
                 if gate is not None:
                     gate.cancel_all()
+                if question_gate is not None:
+                    question_gate.cancel_all()
                 await _interrupt(client)
                 continue
 
@@ -961,6 +1253,13 @@ async def _real_agent_loop(
                 # drops unknown ids silently.
                 if gate is not None:
                     gate.resolve(str(frame.get("request_id", "")), str(frame.get("decision", "")))
+                continue
+
+            if t == "question_answer":
+                # Stale (turn already over / runner respawned) — resolve()
+                # drops unknown ids silently, same as approval_decision.
+                if question_gate is not None:
+                    question_gate.resolve(str(frame.get("request_id", "")), _question_outcome(frame))
                 continue
 
             if t != "user_msg":
@@ -976,7 +1275,9 @@ async def _real_agent_loop(
             # arriving MID-TURN sat in the queue until the turn finished
             # naturally — by which point interrupt() was a no-op and the
             # Stop button did nothing (Devin Review on #975).
-            turn_task = asyncio.create_task(_consume_turn(client, tool_calls_per_turn=tool_calls_per_turn, gate=gate))
+            turn_task = asyncio.create_task(
+                _consume_turn(client, tool_calls_per_turn=tool_calls_per_turn, gate=gate, question_gate=question_gate)
+            )
             interrupted_this_turn = False
             while not turn_task.done():
                 ft = _frame_task()
@@ -987,11 +1288,13 @@ async def _real_agent_loop(
                     if mid.get("type") == "cancel":
                         # Interrupt the LIVE turn; receive_response() then
                         # winds down and turn_task completes. Pending
-                        # approvals must resolve (deny) too — the SDK hook
-                        # awaiting them would otherwise pin the turn until
-                        # its timeout despite the interrupt.
+                        # approvals/questions must resolve too — the SDK
+                        # callback awaiting them would otherwise pin the turn
+                        # until its timeout despite the interrupt.
                         if gate is not None:
                             gate.cancel_all()
+                        if question_gate is not None:
+                            question_gate.cancel_all()
                         interrupted_this_turn = True
                         await _interrupt(client)
                     elif mid.get("type") == "approval_decision":
@@ -1001,6 +1304,15 @@ async def _real_agent_loop(
                             gate.resolve(
                                 str(mid.get("request_id", "")),
                                 str(mid.get("decision", "")),
+                            )
+                    elif mid.get("type") == "question_answer":
+                        # Mid-turn is the normal case here too: the
+                        # AskUserQuestion call is suspended inside the
+                        # question gate right now.
+                        if question_gate is not None:
+                            question_gate.resolve(
+                                str(mid.get("request_id", "")),
+                                _question_outcome(mid),
                             )
                     else:
                         # user_msg / _eof: keep for after the turn, in order.
@@ -1028,7 +1340,13 @@ async def _real_agent_loop(
             _emit({"type": "done"})
 
 
-async def _consume_turn(client, *, tool_calls_per_turn: int = 50, gate: "ApprovalGate | None" = None) -> None:
+async def _consume_turn(
+    client,
+    *,
+    tool_calls_per_turn: int = 50,
+    gate: "ApprovalGate | None" = None,
+    question_gate: "QuestionGate | None" = None,
+) -> None:
     """Drain one turn's ``receive_response()`` stream into outbound frames.
 
     Runs as its own task so ``_real_agent_loop`` can keep consuming stdin
@@ -1126,14 +1444,16 @@ async def _consume_turn(client, *, tool_calls_per_turn: int = 50, gate: "Approva
             pending = None
             break
         except asyncio.TimeoutError:
-            # A tool call suspended on a human approval produces no stream
-            # activity by design — that is NOT a wedged tool, and the time
-            # spent deciding must not eat the budget the approved tool then
-            # needs. The ApprovalGate's own timeout
+            # A tool call suspended on a human approval or question produces
+            # no stream activity by design — that is NOT a wedged tool, and
+            # the time spent deciding must not eat the budget the approved
+            # tool then needs. Each gate's own timeout
             # (AGNES_APPROVAL_TIMEOUT_SECONDS) bounds the wait and resolves
             # to deny, after which a genuinely-idle turn trips this watchdog
             # normally.
-            if gate is not None and gate.awaiting_approval():
+            if (gate is not None and gate.awaiting_approval()) or (
+                question_gate is not None and question_gate.awaiting_answer()
+            ):
                 deadline = time.monotonic() + idle_seconds
                 continue
             if time.monotonic() < deadline:
@@ -1429,12 +1749,19 @@ async def amain() -> None:
         enabled=os.environ.get("AGNES_APPROVALS", "on").lower() not in ("off", "0", "false"),
         timeout_seconds=float(os.environ.get("AGNES_APPROVAL_TIMEOUT_SECONDS", "300")),
     )
+    # Deliberately shares the approval timeout knob: both bound "how long a
+    # tool call may wait on a human" and a second env var would just drift.
+    question_gate = QuestionGate(
+        _emit,
+        timeout_seconds=float(os.environ.get("AGNES_APPROVAL_TIMEOUT_SECONDS", "300")),
+    )
     if fake_agent:
         await _fake_agent_loop(
             queue,
             per_tool_seconds=per_tool,
             tool_calls_per_turn=tool_calls_per_turn,
             gate=gate,
+            question_gate=question_gate,
         )
     else:
         loop_fn = _select_harness(os.environ.get("AGNES_HARNESS"))
@@ -1444,6 +1771,7 @@ async def amain() -> None:
                 workdir,
                 tool_calls_per_turn=tool_calls_per_turn,
                 gate=gate,
+                question_gate=question_gate,
             )
         except Exception as exc:
             _emit({"type": "error", "kind": "runner_exception", "message": str(exc)})
