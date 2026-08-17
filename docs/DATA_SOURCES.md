@@ -351,11 +351,21 @@ Two details worth knowing:
   over generated scalar markers. The group names still travel as request
   fields; only the *number* of them is visible in the statement. A caller in
   no groups gets a typed empty array and matches nothing.
-- **The registry gate runs twice.** The first pass sees the caller's SQL; the
-  second sees the statement *after* substitution, because a policy body can
-  name tables the caller never wrote (a `policy_mapping` join). An
+- **The registry gate runs twice.** The first pass sees the caller's SQL and
+  enforces *their* grants. The second sees the statement *after* substitution,
+  because a policy body can name tables the caller never wrote — §15's
+  `policy_mapping` join. That second pass checks **registration only**: an
   unregistered table inside a policy body denies (`policy_error`) rather than
-  resolving against whatever the default catalog holds.
+  resolving against whatever the default catalog holds, while a registered
+  mapping table works without the caller holding a grant on it. Requiring one
+  would defeat the idiom, whose whole point is that the admin picks a table the
+  analyst cannot read directly.
+- **A duplicate output column denies.** A masking policy written
+  `SELECT * EXCEPT (national_id), md5(email) AS email` still emits the
+  plaintext `email` from the star alongside the masked one. DuckDB reads are
+  checked before execution and BigQuery rejects such a result itself, but
+  Spark permits duplicate column names, so the returned column list is checked
+  and the rows are refused rather than handed over.
 
 `/api/v2/scan` is the one surface that still refuses a policied Databricks
 table (`policy_unsupported_on_scan_engine`). It has no caller-authored

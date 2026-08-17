@@ -756,3 +756,175 @@ class TestPolicyEnforcement:
         assert table is not None
         assert "country = 'CZ'" in wh.statements[-1]
         assert policy_info.get("policied_table_ids") == ["dbx.sales.orders_raw"]
+
+
+# ---------------------------------------------------------------------------
+# 6. Devin review findings (PR #1383) — each of these shipped in the first pass
+# ---------------------------------------------------------------------------
+
+
+class TestReviewFindings:
+    """Five defects a reviewer caught that the original tests did not.
+
+    Kept together because what they have in common is more useful than where
+    they live: every one is a place where a *correct* local decision
+    (bind NULL by omitting the field, fall through to the local path, deny an
+    unverifiable read) was undone by the code that consumed it.
+    """
+
+    def test_null_identity_survives_the_parameter_hand_off(self):
+        """Finding 1. `bind_policy_parameters` omits `value` for a NULL bind;
+        the consumer flattened entries to `{name: value}` and raised KeyError.
+
+        Flattening was lossy in both directions — even with `.get()` the
+        rebuild emitted `"value": None`, shipping JSON null instead of omitting
+        the field, which is the difference between "matches no row" and
+        "matches rows whose column is empty"."""
+        from app.api.query import _databricks_policy_resolver
+
+        entries = bind_policy_parameters("SELECT * FROM t WHERE o = :user_email", {"user_email": None})[1]
+        # The shape the resolver stores must round-trip to exactly this.
+        assert entries == [{"name": "user_email", "type": "STRING"}]
+
+        as_stored = {p["name"]: p for p in entries}
+        assert list(as_stored.values()) == entries
+        assert "value" not in list(as_stored.values())[0]
+        assert callable(_databricks_policy_resolver(name_lookups=[], default_catalog="main"))
+
+    def test_policy_gating_parses_databricks_statements_as_databricks(self):
+        """Finding 3. The gating `rewrite_sql` used the DuckDB dialect, and
+        sqlglot's DuckDB parser rejects backticked identifiers outright — so a
+        statement copied out of the Databricks UI, or any `MEASURE()` query,
+        failed to parse and then DENIED on any policied table it mentioned.
+        That is the exact refusal this feature set out to remove."""
+        import sqlglot
+
+        from app.api.query import _policy_parse_dialect
+
+        _register(
+            id="dbx.sales.orders_raw",
+            name="orders_raw",
+            source_type="databricks",
+            bucket="sales",
+            source_table="orders_raw",
+        )
+        sql = "SELECT o_date, MEASURE(`Total Revenue`) FROM orders_raw GROUP BY o_date"
+        assert _policy_parse_dialect(sql, sql.lower()) == "databricks"
+
+        # The premise, pinned: these do NOT parse as DuckDB, so the old default
+        # was not merely a cosmetic mismatch.
+        for unparseable in (sql, "SELECT * FROM `main`.`sales`.`orders_raw`"):
+            with pytest.raises(Exception):
+                sqlglot.parse_one(unparseable, read="duckdb")
+        # ...and do parse as Databricks.
+        assert sqlglot.parse_one(sql, dialect="databricks") is not None
+
+    def test_an_all_local_statement_keeps_the_duckdb_dialect(self):
+        """The dialect switch must not touch queries that never leave DuckDB."""
+        from app.api.query import _policy_parse_dialect
+
+        sql = "SELECT * FROM some_local_table"
+        assert _policy_parse_dialect(sql, sql.lower()) == "duckdb"
+
+    def test_duplicate_output_columns_deny_on_the_databricks_arm(self):
+        """Finding 4. DuckDB reads get `assert_policied_reads_unique`; BigQuery
+        needs no guard because its jobs API rejects duplicate result columns.
+        Spark permits them, so a masking policy shaped
+        `SELECT * EXCEPT (national_id), md5(email) AS email` would have shipped
+        the plaintext copy alongside the masked one."""
+        from app.api.query import _assert_databricks_policy_columns_unique
+
+        plan = {"policied_table_ids": ["dbx.sales.orders_raw"]}
+        _assert_databricks_policy_columns_unique(plan, ["country", "n"])  # unique: fine
+
+        with pytest.raises(PolicyError) as exc:
+            _assert_databricks_policy_columns_unique(plan, ["email", "n", "EMAIL"])
+        assert exc.value.table_id == "dbx.sales.orders_raw"
+
+    def test_the_guard_is_inert_when_no_policy_is_in_play(self):
+        """An ordinary self-join may legitimately return same-named columns."""
+        from app.api.query import _assert_databricks_policy_columns_unique
+
+        _assert_databricks_policy_columns_unique({}, ["id", "id"])
+        _assert_databricks_policy_columns_unique({"policied_table_ids": []}, ["id", "id"])
+
+    def test_policy_body_mapping_table_is_rewritten_to_a_native_path(self, seeded_app, warehouse, monkeypatch):
+        """Finding 5. `name_lookups` was built by scanning the CALLER's SQL, so
+        a table named only inside the policy body — §15's `policy_mapping` join
+        — was never rewritten and shipped as a bare name, resolving against
+        whatever the warehouse's default context holds.
+
+        The caller deliberately holds NO grant on the mapping table: that is
+        the point of the idiom, and requiring one would make it deny."""
+        from src.db import get_system_db
+        from tests.conftest import grant_table_via_package
+
+        wh, _settings = warehouse
+        monkeypatch.setenv("AGNES_ACCESS_POLICIES_ENABLED", "true")
+        _register(
+            id="dbx.sales.orders_raw",
+            name="orders_raw",
+            source_type="databricks",
+            bucket="sales",
+            source_table="orders_raw",
+        )
+        _register(
+            id="dbx.sec.region_map",
+            name="region_map",
+            source_type="databricks",
+            bucket="sec",
+            source_table="region_map",
+        )
+        _set_policy(
+            "dbx.sales.orders_raw",
+            "SELECT * FROM orders_raw WHERE country IN (SELECT c FROM region_map)",
+        )
+        conn = get_system_db()
+        try:
+            grant_table_via_package(conn, "dbx.sales.orders_raw", "analyst1")
+        finally:
+            conn.close()
+
+        c = seeded_app["client"]
+        r = c.post(
+            "/api/query",
+            json={"sql": "SELECT country, n FROM orders_raw"},
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        assert r.status_code == 200, r.text
+        submitted = wh.statements[-1]
+        assert "`main`.`sec`.`region_map`" in submitted, f"mapping table left bare: {submitted}"
+        assert "`main`.`sales`.`orders_raw`" in submitted
+
+    def test_an_unregistered_table_in_a_policy_body_still_denies(self, seeded_app, warehouse, monkeypatch):
+        """The mapping-table fix must not weaken the registration check that
+        stops an unknown name reaching the warehouse."""
+        from src.db import get_system_db
+        from tests.conftest import grant_table_via_package
+
+        monkeypatch.setenv("AGNES_ACCESS_POLICIES_ENABLED", "true")
+        _register(
+            id="dbx.sales.orders_raw",
+            name="orders_raw",
+            source_type="databricks",
+            bucket="sales",
+            source_table="orders_raw",
+        )
+        _set_policy(
+            "dbx.sales.orders_raw",
+            "SELECT * FROM orders_raw WHERE country IN (SELECT c FROM never_registered)",
+        )
+        conn = get_system_db()
+        try:
+            grant_table_via_package(conn, "dbx.sales.orders_raw", "analyst1")
+        finally:
+            conn.close()
+
+        c = seeded_app["client"]
+        r = c.post(
+            "/api/query",
+            json={"sql": "SELECT country, n FROM orders_raw"},
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        assert r.status_code == 500, r.text
+        assert r.json()["detail"]["reason"] == "policy_error"
