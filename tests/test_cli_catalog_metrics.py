@@ -1,16 +1,17 @@
 """Tests for `agnes catalog --metrics`."""
 
+import re
+
 from typer.testing import CliRunner
 
+from cli.commands.catalog import catalog_app
+
 # CI-safety: Typer/rich emits ANSI escapes in --help output. Strip before asserts.
-_ANSI_RE = __import__("re").compile(r"\x1b\[[0-9;]*m")
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
 def _clean(s: str) -> str:
     return _ANSI_RE.sub("", s)
-
-
-from cli.commands.catalog import catalog_app
 
 
 def test_catalog_metrics_help():
@@ -107,3 +108,87 @@ def test_show_falls_back_to_the_raw_column(monkeypatch):
     result = runner.invoke(catalog_app, ["--show", "revenue/mrr"])
     assert result.exit_code == 0, result.output
     assert "Description:  Total MRR." in _clean(result.output)
+
+
+# ---------------------------------------------------------------------------
+# Constraints. `cli/templates/global_rails.md` sends agents to this exact
+# command for the canonical definition, under the instruction "Never invent
+# metric SQL". Handing over the SQL while silently dropping the rule that
+# governs it is the worst of both: the agent acts on an authoritative-looking
+# answer that is missing its own caveat.
+# ---------------------------------------------------------------------------
+
+
+def _show(monkeypatch, payload: dict) -> str:
+    import cli.commands.catalog as catalog_mod
+
+    monkeypatch.setattr(catalog_mod, "api_get", lambda path: _FakeResponse(payload))
+    runner = CliRunner()
+    result = runner.invoke(catalog_app, ["--show", payload.get("id", "revenue/mrr")])
+    assert result.exit_code == 0, result.output
+    return _clean(result.output)
+
+
+def test_show_prints_imported_constraints(monkeypatch):
+    out = _show(
+        monkeypatch,
+        {
+            "id": "revenue/mrr",
+            "name": "mrr",
+            "sql": "SELECT SUM(mrr_amount) FROM subscriptions",
+            "validation": {
+                "rules": [
+                    {
+                        "name": "non_negative",
+                        "constraint_type": "range",
+                        "rule": "value >= 0",
+                        "severity": "error",
+                    }
+                ]
+            },
+        },
+    )
+
+    assert "Constraints:" in out
+    assert "non_negative" in out
+    assert "value >= 0" in out
+    assert "error" in out
+
+
+def test_show_prints_every_rule(monkeypatch):
+    out = _show(
+        monkeypatch,
+        {
+            "id": "revenue/mrr",
+            "name": "mrr",
+            "validation": {
+                "rules": [
+                    {"name": "non_negative", "rule": "value >= 0", "severity": "error"},
+                    {"name": "sane_ceiling", "rule": "value < 1e9", "severity": "warning"},
+                ]
+            },
+        },
+    )
+
+    assert "non_negative" in out
+    assert "sane_ceiling" in out
+    assert "value < 1e9" in out
+
+
+def test_show_without_constraints_prints_no_header(monkeypatch):
+    out = _show(monkeypatch, {"id": "revenue/mrr", "name": "mrr", "sql": "SELECT 1"})
+    assert "Constraints:" not in out
+
+
+def test_show_does_not_swallow_an_unrecognized_validation_shape(monkeypatch):
+    """`validation` is a free-form JSON column — the Keboola importer writes
+    `{"rules": [...]}`, but a hand-authored or scaffolded metric may carry
+    anything. An unknown shape must still reach the reader rather than be
+    dropped for not matching the one shape this renderer knows."""
+    out = _show(
+        monkeypatch,
+        {"id": "revenue/mrr", "name": "mrr", "validation": {"expected_range": [0, 100]}},
+    )
+
+    assert "Constraints:" in out
+    assert "expected_range" in out

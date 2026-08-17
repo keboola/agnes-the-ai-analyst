@@ -26,6 +26,97 @@ from src.semantic.dialect import resolve_expression
 # metastore adapter uses for the same purpose.
 _GLOSSARY_VENDOR = "AGNES"
 
+
+def _agnes_payload(obj: dict) -> dict:
+    """The AGNES `custom_extensions` payload of one object, merged.
+
+    Ossie pins `additionalProperties: false` on every object and gives Metric
+    no dataset link at all, so a metric's table binding, its dataset's grain
+    and the model's constraints have nowhere to live but this escape hatch.
+    `data` is a JSON-ENCODED STRING per the schema; an entry that fails to
+    parse is skipped rather than raised, like `_glossary_entries`.
+    """
+    merged: dict = {}
+    for ext in obj.get("custom_extensions") or []:
+        if ext.get("vendor_name") != _GLOSSARY_VENDOR:
+            continue
+        try:
+            data = json.loads(ext.get("data") or "")
+        except (TypeError, ValueError):
+            continue
+        if isinstance(data, dict):
+            merged.update(data)
+    return merged
+
+
+def _table_binder():
+    """Return ``resolve(table_id) -> view_name | None`` over the registered
+    Keboola tables, or ``None`` when nothing is registered.
+
+    The binding path is Keboola-shaped today by construction: the metastore
+    adapter is the only one that writes a `dataset` key, and its value is a
+    Keboola tableId. Imported lazily and behind this one seam so the core
+    projector keeps no import-time dependency on a connector, and so a second
+    adapter can be given its own resolver here rather than at every callsite.
+    Never raises: an instance with no Keboola tables simply binds nothing.
+    """
+    try:
+        from connectors.keboola.semantic_layer import resolve_table_name, table_lookup_from_registry
+        from src.repositories import table_registry_repo
+
+        lookup = table_lookup_from_registry(table_registry_repo().list_by_source("keboola"))
+    except Exception:  # pragma: no cover - a registry read failure must not lose metrics
+        return None
+    if not lookup:
+        return None
+    return lambda table_id: resolve_table_name(table_id, lookup)
+
+
+def _bind_metric_sql(fragment: str, table_id: str, binder) -> tuple[str, Optional[str]]:
+    """Compose runnable SQL for a metric bound to a registered table.
+
+    Returns ``(sql, table_name)`` — falling back to ``(fragment, None)``
+    whenever the binding cannot be made safely. Never drops the metric: the
+    legacy composer skipped these, and a projector that skipped them too would
+    silently write fewer rows than the path it replaces.
+
+    The two guards are `compose_sql`'s documented preconditions. A trailing
+    `--` comment would swallow the appended FROM clause, and a foreign-alias
+    reference needs a JOIN this path cannot compose.
+    """
+    if binder is None or not table_id:
+        return fragment, None
+    from connectors.keboola.semantic_layer import (
+        compose_sql,
+        has_embedded_sql_comment,
+        references_foreign_alias,
+    )
+
+    if has_embedded_sql_comment(fragment) or references_foreign_alias(fragment):
+        return fragment, None
+    table_name = binder(table_id)
+    if not table_name:
+        return fragment, None
+    return compose_sql(fragment, table_name), table_name
+
+
+def _constraints_for(metric_name: str, constraints: list) -> Optional[dict]:
+    """The `validation` payload for one metric — the constraints whose
+    `metrics[]` names it. Mirrors the legacy importer's `merge_constraints`
+    output shape, which `agnes catalog --metrics --show` already renders."""
+    rules = [
+        {
+            "name": c.get("name"),
+            "constraint_type": c.get("constraint_type"),
+            "rule": c.get("rule"),
+            "severity": c.get("severity"),
+        }
+        for c in constraints
+        if isinstance(c, dict) and metric_name in (c.get("metrics") or [])
+    ]
+    return {"rules": rules} if rules else None
+
+
 _NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
 
 
@@ -132,9 +223,21 @@ def project_document(document_json: dict, *, source: str, source_ref: Optional[s
     # prune).
     written_columns_by_table: dict[str, set[str]] = {}
 
+    # Resolved once per call, not per metric: a registry read per metric would
+    # turn a routine sync of a few hundred metrics into a few hundred queries.
+    binder = _table_binder()
+
     for model in document_json.get("semantic_model") or []:
         model_name = model.get("name") or ""
         synonyms = _model_synonyms(model)
+        constraints = _agnes_payload(model).get("constraints") or []
+        # A dataset's grain describes the DATASET. It rides along as a note on
+        # the metrics bound to it, never as `metric_definitions.grain`, which
+        # would restate it as a fact about the metric's own time dimension.
+        grain_by_table = {
+            (d.get("source") or d.get("name") or ""): _agnes_payload(d).get("grain")
+            for d in model.get("datasets") or []
+        }
 
         for metric in model.get("metrics") or []:
             metric_name = metric.get("name")
@@ -144,6 +247,10 @@ def project_document(document_json: dict, *, source: str, source_ref: Optional[s
             if sql is None:
                 report.skipped.append({"kind": "metric", "name": metric_name, "reason": reason})
                 continue
+            table_id = _agnes_payload(metric).get("dataset") or ""
+            sql, table_name = _bind_metric_sql(sql, table_id, binder)
+            grain = grain_by_table.get(table_id)
+            notes = [f"dataset grain: {grain}"] if grain else None
             metric_id = _scoped_id(source, source_ref, model_name, metric_name)
             metric_repo().create(
                 id=metric_id,
@@ -153,6 +260,9 @@ def project_document(document_json: dict, *, source: str, source_ref: Optional[s
                 sql=sql,
                 description=metric.get("description"),
                 synonyms=synonyms,
+                table_name=table_name,
+                notes=notes,
+                validation=_constraints_for(metric_name, constraints),
                 source=source,
                 source_ref=source_ref,
             )
