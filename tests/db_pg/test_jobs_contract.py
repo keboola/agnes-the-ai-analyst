@@ -23,10 +23,13 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 def _naive(dt: datetime) -> datetime:
     """DuckDB TIMESTAMP columns have no timezone (see src/duckdb_conn.py) —
-    strip tzinfo before comparing a DB-returned value against a
-    tz-aware datetime we constructed locally (PG returns tz-aware
-    values back, so this is a no-op there)."""
-    return dt.replace(tzinfo=None) if dt.tzinfo is not None else dt
+    normalize before comparing a DB-returned value against a tz-aware
+    datetime we constructed locally. Tz-aware values (PG returns these)
+    are converted to UTC first: the PG session may render timestamptz in
+    the machine's local zone, and stripping tzinfo without converting
+    made lease/expiry comparisons off by the UTC offset on any non-UTC
+    machine."""
+    return dt.astimezone(timezone.utc).replace(tzinfo=None) if dt.tzinfo is not None else dt
 
 
 # ---------------------------------------------------------------------------
