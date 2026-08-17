@@ -1,0 +1,379 @@
+<svg viewBox="0 0 1680 1906" role="img" aria-label="Layered architecture of Agnes: surfaces, the authorization boundary, the api/gateway/worker application plane, the agent and LLM plane, knowledge and governance, dual-backend app state, the analytics data plane, connectors, and external systems." xmlns="http://www.w3.org/2000/svg" fill="none" style="font-variant-ligatures:none" color="#0B2545"><rect x="0" y="0" width="1680" height="1906" fill="#FFFFFF"/>
+<text x="26" y="34" font-family="'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, serif" font-size="27" fill="currentColor" font-weight="600" fill-opacity="0.95">Agnes</text>
+<text x="134" y="34" font-family="'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, serif" font-size="27" fill="currentColor" fill-opacity="0.45" font-style="italic">platform architecture</text>
+<text x="1656" y="26" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.5" text-anchor="end">v0.83.30  ·  state schema v118</text>
+<text x="1656" y="42" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.5" text-anchor="end">one image  ·  one entrypoint  ·  roles select planes</text>
+<line x1="26" y1="66" x2="1656" y2="66" stroke="currentColor" stroke-opacity="0.2" stroke-width="1"/>
+<text x="26" y="88" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11.5" fill="currentColor" font-weight="700" fill-opacity="0.9" letter-spacing="1.3">SURFACES</text>
+<text x="26" y="106" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="10" fill="currentColor" fill-opacity="0.5">clients and</text>
+<text x="26" y="120" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="10" fill="currentColor" fill-opacity="0.5">protocols</text>
+<rect x="190" y="82" width="356" height="86" rx="6" fill="currentColor" fill-opacity="0.035" stroke="currentColor" stroke-opacity="0.22"/>
+<text x="203" y="103" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="12.5" fill="currentColor" font-weight="600" fill-opacity="0.95">Web UI</text>
+<text x="203" y="123" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">chat · dashboard · catalog · stack · news</text>
+<text x="203" y="139" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">/admin/* · /agents builder · data-app pages</text>
+<text x="203" y="155" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">Jinja + design system (ds-* tokens, rail)</text>
+<rect x="560" y="82" width="356" height="86" rx="6" fill="currentColor" fill-opacity="0.035" stroke="currentColor" stroke-opacity="0.22"/>
+<text x="573" y="103" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="12.5" fill="currentColor" font-weight="600" fill-opacity="0.95">Slack</text>
+<text x="573" y="123" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">Socket Mode or HTTP events</text>
+<text x="573" y="139" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">/agnes slash command · threaded replies</text>
+<text x="573" y="155" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">one leader lease per workspace</text>
+<rect x="930" y="82" width="356" height="86" rx="6" fill="currentColor" fill-opacity="0.035" stroke="currentColor" stroke-opacity="0.22"/>
+<text x="943" y="103" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="12.5" fill="currentColor" font-weight="600" fill-opacity="0.95">Telegram</text>
+<text x="943" y="123" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">long-poll bot · /status</text>
+<text x="943" y="139" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">notification scripts</text>
+<text x="943" y="155" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">linked via /api/telegram</text>
+<rect x="1300" y="82" width="356" height="86" rx="6" fill="currentColor" fill-opacity="0.035" stroke="currentColor" stroke-opacity="0.22"/>
+<text x="1313" y="103" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="12.5" fill="currentColor" font-weight="600" fill-opacity="0.95">MCP</text>
+<text x="1313" y="123" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">streamable HTTP + stdio</text>
+<text x="1313" y="139" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">foundation tools, per-table servers,</text>
+<text x="1313" y="155" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">passthrough to upstream MCP servers</text>
+<rect x="190" y="182" width="479.3" height="70" rx="6" fill="currentColor" fill-opacity="0.035" stroke="currentColor" stroke-opacity="0.22"/>
+<text x="203" y="203" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="12.5" fill="currentColor" font-weight="600" fill-opacity="0.95">CLI  agnes</text>
+<text x="203" y="223" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">pull · query · snapshot · push · stack · agent · chat · admin</text>
+<text x="203" y="239" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">workspace hooks: SessionStart → agnes update, SessionEnd → push</text>
+<rect x="683.3" y="182" width="479.3" height="70" rx="6" fill="currentColor" fill-opacity="0.035" stroke="currentColor" stroke-opacity="0.22"/>
+<text x="696.3" y="203" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="12.5" fill="currentColor" font-weight="600" fill-opacity="0.95">Agent API</text>
+<text x="696.3" y="223" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">POST /api/v1/agents/{slug}/responses  (one-shot, PAT-auth)</text>
+<text x="696.3" y="239" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">multi-turn AG-UI SSE sessions · outbound webhooks</text>
+<rect x="1176.7" y="182" width="479.3" height="70" rx="6" fill="currentColor" fill-opacity="0.035" stroke="currentColor" stroke-opacity="0.22"/>
+<text x="1189.7" y="203" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="12.5" fill="currentColor" font-weight="600" fill-opacity="0.95">Hosted data apps</text>
+<text x="1189.7" y="223" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">/apps/&lt;slug&gt;/…  or  &lt;slug&gt;.&lt;subdomain_base&gt;</text>
+<text x="1189.7" y="239" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">RBAC-gated ingress · wake-on-request · idle sleep</text>
+<line x1="663" y1="260" x2="663" y2="280" stroke="currentColor" stroke-opacity="0.75" stroke-width="1.4"/>
+<polygon points="663,286 659.3,280 666.7,280" fill="currentColor" fill-opacity="0.75"/>
+<text x="677" y="277" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="10.5" fill="currentColor" fill-opacity="0.62">every request carries a JWT cookie, a Bearer PAT, or a broker ticket</text>
+<line x1="26" y1="294" x2="1656" y2="294" stroke="currentColor" stroke-opacity="0.2" stroke-width="1"/>
+<text x="26" y="316" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11.5" fill="currentColor" font-weight="700" fill-opacity="0.9" letter-spacing="1.3">IDENTITY</text>
+<text x="26" y="334" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="10" fill="currentColor" fill-opacity="0.5">&amp; authorization —</text>
+<text x="26" y="348" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="10" fill="currentColor" fill-opacity="0.5">the boundary every</text>
+<text x="26" y="362" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="10" fill="currentColor" fill-opacity="0.5">request crosses</text>
+<rect x="190" y="310" width="1466" height="112" rx="8" fill="currentColor" fill-opacity="0.05" stroke="currentColor" stroke-opacity="0.3" stroke-dasharray="5 4"/>
+<rect x="203" y="323" width="276.8" height="86" rx="6" fill="currentColor" fill-opacity="0.035" stroke="currentColor" stroke-opacity="0.22"/>
+<text x="216" y="344" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="12.5" fill="currentColor" font-weight="600" fill-opacity="0.95">auth providers</text>
+<text x="216" y="364" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">Google OIDC · magic link</text>
+<text x="216" y="380" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">password · Keboola OAuth</text>
+<text x="216" y="396" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">→ JWT cookie or Bearer</text>
+<rect x="493.8" y="323" width="276.8" height="86" rx="6" fill="currentColor" fill-opacity="0.035" stroke="currentColor" stroke-opacity="0.22"/>
+<text x="506.8" y="344" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="12.5" fill="currentColor" font-weight="600" fill-opacity="0.95">tokens</text>
+<text x="506.8" y="364" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">user PAT · agent PAT</text>
+<text x="506.8" y="380" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">broker ticket · setup st_</text>
+<text x="506.8" y="396" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">scheduler shared secret</text>
+<rect x="784.6" y="323" width="276.8" height="86" rx="6" fill="currentColor" fill-opacity="0.035" stroke="currentColor" stroke-opacity="0.22"/>
+<text x="797.6" y="344" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="12.5" fill="currentColor" font-weight="600" fill-opacity="0.95">groups &amp; grants</text>
+<text x="797.6" y="364" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">Admin group short-circuits</text>
+<text x="797.6" y="380" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">resource_grants(group,type,id)</text>
+<text x="797.6" y="396" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">Everyone = auto-membership</text>
+<rect x="1075.4" y="323" width="276.8" height="86" rx="6" fill="currentColor" fill-opacity="0.035" stroke="currentColor" stroke-opacity="0.22"/>
+<text x="1088.4" y="344" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="12.5" fill="currentColor" font-weight="600" fill-opacity="0.95">effective stack</text>
+<text x="1088.4" y="364" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">data packages · memory domains</text>
+<text x="1088.4" y="380" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">· marketplace plugins</text>
+<text x="1088.4" y="396" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">= what a caller actually gets</text>
+<rect x="1366.2" y="323" width="276.8" height="86" rx="6" fill="currentColor" fill-opacity="0.035" stroke="currentColor" stroke-opacity="0.22"/>
+<text x="1379.2" y="344" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="12.5" fill="currentColor" font-weight="600" fill-opacity="0.95">row/column policies</text>
+<text x="1379.2" y="364" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">one SQL policy per table,</text>
+<text x="1379.2" y="380" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">$user_email · $user_groups</text>
+<text x="1379.2" y="396" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">server-side tables only</text>
+<line x1="663" y1="430" x2="663" y2="450" stroke="currentColor" stroke-opacity="0.75" stroke-width="1.4"/>
+<polygon points="663,456 659.3,450 666.7,450" fill="currentColor" fill-opacity="0.75"/>
+<text x="677" y="447" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="10.5" fill="currentColor" fill-opacity="0.62">an authorized principal — re-checked at every read and write, never cached as a verdict</text>
+<line x1="26" y1="464" x2="1656" y2="464" stroke="currentColor" stroke-opacity="0.2" stroke-width="1"/>
+<text x="26" y="486" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11.5" fill="currentColor" font-weight="700" fill-opacity="0.9" letter-spacing="1.3">APPLICATION</text>
+<text x="26" y="504" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="10" fill="currentColor" fill-opacity="0.5">plane — FastAPI,</text>
+<text x="26" y="518" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="10" fill="currentColor" fill-opacity="0.5">one image; AGNES_ROLE</text>
+<text x="26" y="532" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="10" fill="currentColor" fill-opacity="0.5">picks which planes</text>
+<text x="26" y="546" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="10" fill="currentColor" fill-opacity="0.5">this process runs</text>
+<text x="190" y="490" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="10.5" fill="currentColor" fill-opacity="0.55">AGNES_ROLE=api,gateway,worker   ·   default `all` = a single process   ·   role-split requires Postgres + a coordination backend</text>
+<rect x="190" y="500" width="479.3" height="118" rx="6" fill="currentColor" fill-opacity="0.035" stroke="currentColor" stroke-opacity="0.22"/>
+<text x="203" y="521" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="12.5" fill="currentColor" font-weight="600" fill-opacity="0.95">role: api</text>
+<text x="203" y="541" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">REST routers — query · data · catalog · sync · admin · users</text>
+<text x="203" y="557" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">memory · agents · semantic · marketplace · stack · jobs</text>
+<text x="203" y="573" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">web pages (base_ds / base_page) + admin console</text>
+<text x="203" y="589" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">/api/query = SELECT-only sandbox; /api/query/hybrid (admin)</text>
+<text x="203" y="605" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">builds the per-user manifest that agnes pull reads</text>
+<rect x="683.3" y="500" width="479.3" height="118" rx="6" fill="currentColor" fill-opacity="0.035" stroke="currentColor" stroke-opacity="0.22"/>
+<text x="696.3" y="521" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="12.5" fill="currentColor" font-weight="600" fill-opacity="0.95">role: gateway</text>
+<text x="696.3" y="541" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">ChatManager — sessions, turns, streaming sink, copresence</text>
+<text x="696.3" y="557" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">routing lease chat:{id} names the replica owning a sandbox</text>
+<text x="696.3" y="573" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">outbound replay stream + monotonic seq → reconnect w/ last_seq</text>
+<text x="696.3" y="589" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">inbound stream forwards commands to the owning replica</text>
+<text x="696.3" y="605" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">WS /api/notifications/ws (desktop + browser notifications)</text>
+<rect x="1176.7" y="500" width="479.3" height="118" rx="6" fill="currentColor" fill-opacity="0.035" stroke="currentColor" stroke-opacity="0.22"/>
+<text x="1189.7" y="521" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="12.5" fill="currentColor" font-weight="600" fill-opacity="0.95">role: worker</text>
+<text x="1189.7" y="541" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">durable jobs table on both backends · lease + heartbeat</text>
+<text x="1189.7" y="557" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">heavy lane (1): data-refresh · jira-refresh</text>
+<text x="1189.7" y="573" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">light lane (2): marketplaces-sync · session-collector ·</text>
+<text x="1189.7" y="589" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">corporate-memory · distribution-mirror · ducklake-maintenance</text>
+<text x="1189.7" y="605" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">idempotency_key dedup · expired leases reaped</text>
+<rect x="190" y="632" width="356" height="86" rx="6" fill="currentColor" fill-opacity="0.035" stroke="currentColor" stroke-opacity="0.22"/>
+<text x="203" y="653" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="12.5" fill="currentColor" font-weight="600" fill-opacity="0.95">scheduler sidecar</text>
+<text x="203" y="673" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">no state of its own — calls REST on</text>
+<text x="203" y="689" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">offset cadences (sync 15m, memory 17m,</text>
+<text x="203" y="705" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">marketplace 03:00) with a shared secret</text>
+<rect x="560" y="632" width="356" height="86" rx="6" fill="currentColor" fill-opacity="0.035" stroke="currentColor" stroke-opacity="0.22"/>
+<text x="573" y="653" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="12.5" fill="currentColor" font-weight="600" fill-opacity="0.95">coordination backend</text>
+<text x="573" y="673" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">memory (default)  |  redis</text>
+<text x="573" y="689" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">leases · pub/sub · TTL kv · counters</text>
+<text x="573" y="705" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">same contract suite for both</text>
+<rect x="930" y="632" width="356" height="86" rx="6" fill="currentColor" fill-opacity="0.035" stroke="currentColor" stroke-opacity="0.22"/>
+<text x="943" y="653" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="12.5" fill="currentColor" font-weight="600" fill-opacity="0.95">apps-runner sidecar</text>
+<text x="943" y="673" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">the only process holding the docker</text>
+<text x="943" y="689" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">socket — image allowlist, fixed mounts,</text>
+<text x="943" y="705" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">no registry access, no RBAC of its own</text>
+<rect x="1300" y="632" width="356" height="86" rx="6" fill="currentColor" fill-opacity="0.035" stroke="currentColor" stroke-opacity="0.22"/>
+<text x="1313" y="653" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="12.5" fill="currentColor" font-weight="600" fill-opacity="0.95">egress-proxy sidecar</text>
+<text x="1313" y="673" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">fail-closed CONNECT allowlist for</text>
+<text x="1313" y="689" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">sandboxes; their network has no other</text>
+<text x="1313" y="705" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">route out — proxy is the policy layer</text>
+<line x1="663" y1="726" x2="663" y2="746" stroke="#1B57C4" stroke-opacity="0.75" stroke-width="1.4"/>
+<polygon points="663,752 659.3,746 666.7,746" fill="#1B57C4" fill-opacity="0.75"/>
+<text x="677" y="743" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="10.5" fill="currentColor" fill-opacity="0.62">spawn a sandbox, then broker every call out — API keys never enter it</text>
+<line x1="26" y1="760" x2="1656" y2="760" stroke="currentColor" stroke-opacity="0.2" stroke-width="1"/>
+<text x="26" y="782" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11.5" fill="currentColor" font-weight="700" fill-opacity="0.9" letter-spacing="1.3">AGENT + LLM</text>
+<text x="26" y="800" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="10" fill="currentColor" fill-opacity="0.5">plane — how one</text>
+<text x="26" y="814" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="10" fill="currentColor" fill-opacity="0.5">turn actually runs</text>
+<rect x="190" y="776" width="347" height="102" rx="6" fill="#1B57C4" fill-opacity="0.07" stroke="#1B57C4" stroke-opacity="0.7"/>
+<text x="203" y="797" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="12.5" fill="#1B57C4" font-weight="600">sandbox   E2B | Docker</text>
+<text x="203" y="817" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">one per chat or agent session</text>
+<text x="203" y="833" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">workspace = the caller's stack:</text>
+<text x="203" y="849" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">skills · data · CLAUDE.md · notebook</text>
+<text x="203" y="865" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">authority = owner grants, cut by scope</text>
+<rect x="563" y="776" width="347" height="102" rx="6" fill="#1B57C4" fill-opacity="0.07" stroke="#1B57C4" stroke-opacity="0.7"/>
+<text x="576" y="797" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="12.5" fill="#1B57C4" font-weight="600">Claude Code harness</text>
+<text x="576" y="817" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">runs inside the sandbox</text>
+<text x="576" y="833" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">MCP foundation tools + agnes CLI</text>
+<text x="576" y="849" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">artifacts harvested back into the chat</text>
+<text x="576" y="865" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">no host filesystem, no host network</text>
+<rect x="936" y="776" width="347" height="102" rx="6" fill="#1B57C4" fill-opacity="0.07" stroke="#1B57C4" stroke-opacity="0.7"/>
+<text x="949" y="797" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="12.5" fill="#1B57C4" font-weight="600">secret broker  /api/broker/*</text>
+<text x="949" y="817" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">ticket-gated egress; keys stay server-side</text>
+<text x="949" y="833" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">pins the agent's model</text>
+<text x="949" y="849" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">token_budget_monthly → 429 budget_exhausted</text>
+<text x="949" y="865" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">admin routes refused by route introspection</text>
+<rect x="1309" y="776" width="347" height="102" rx="6" fill="#1B57C4" fill-opacity="0.07" stroke="#1B57C4" stroke-opacity="0.6" stroke-dasharray="5 4"/>
+<text x="1322" y="797" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="12.5" fill="#1B57C4" font-weight="600">LLM API</text>
+<text x="1322" y="817" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">external — Anthropic, or any</text>
+<text x="1322" y="833" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">OpenAI-compatible gateway</text>
+<text x="1322" y="849" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">(LiteLLM · OpenRouter · vLLM)</text>
+<line x1="540" y1="827" x2="555.5" y2="827" stroke="#1B57C4" stroke-opacity="0.85" stroke-width="1.4"/>
+<polygon points="561,827 555.5,823.6 555.5,830.4" fill="#1B57C4" fill-opacity="0.85"/>
+<line x1="913" y1="827" x2="928.5" y2="827" stroke="#1B57C4" stroke-opacity="0.85" stroke-width="1.4"/>
+<polygon points="934,827 928.5,823.6 928.5,830.4" fill="#1B57C4" fill-opacity="0.85"/>
+<line x1="1286" y1="827" x2="1301.5" y2="827" stroke="#1B57C4" stroke-opacity="0.85" stroke-width="1.4"/>
+<polygon points="1307,827 1301.5,823.6 1301.5,830.4" fill="#1B57C4" fill-opacity="0.85"/>
+<line x1="663" y1="898" x2="663" y2="892" stroke="currentColor" stroke-opacity="0.75" stroke-width="1.4"/>
+<polygon points="663,886 659.3,892 666.7,892" fill="currentColor" fill-opacity="0.75"/>
+<line x1="663" y1="900" x2="663" y2="906" stroke="currentColor" stroke-opacity="0.75" stroke-width="1.4"/>
+<polygon points="663,912 659.3,906 666.7,906" fill="currentColor" fill-opacity="0.75"/>
+<text x="677" y="903" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="10.5" fill="currentColor" fill-opacity="0.62">agents read the stack and the catalog · sessions and notes flow back as knowledge</text>
+<line x1="26" y1="920" x2="1656" y2="920" stroke="currentColor" stroke-opacity="0.2" stroke-width="1"/>
+<text x="26" y="942" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11.5" fill="currentColor" font-weight="700" fill-opacity="0.9" letter-spacing="1.3">KNOWLEDGE</text>
+<text x="26" y="960" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="10" fill="currentColor" fill-opacity="0.5">&amp; governance —</text>
+<text x="26" y="974" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="10" fill="currentColor" fill-opacity="0.5">what the agents are</text>
+<text x="26" y="988" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="10" fill="currentColor" fill-opacity="0.5">allowed to know</text>
+<rect x="190" y="936" width="356" height="150" rx="6" fill="currentColor" fill-opacity="0.035" stroke="currentColor" stroke-opacity="0.22"/>
+<text x="203" y="957" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="12.5" fill="currentColor" font-weight="600" fill-opacity="0.95">semantic layer</text>
+<text x="203" y="977" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">an Apache Ossie document is the owner</text>
+<text x="203" y="993" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">(semantic_models, schema-validated)</text>
+<text x="203" y="1009" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">→ projections, regenerable from it:</text>
+<text x="203" y="1025" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">metric_definitions · glossary_terms ·</text>
+<text x="203" y="1041" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">column_metadata</text>
+<text x="203" y="1057" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">sources: git · upload · connection;</text>
+<text x="203" y="1073" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">source-owned ⇒ 409 on API edits</text>
+<rect x="560" y="936" width="356" height="150" rx="6" fill="currentColor" fill-opacity="0.035" stroke="currentColor" stroke-opacity="0.22"/>
+<text x="573" y="957" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="12.5" fill="currentColor" font-weight="600" fill-opacity="0.95">corporate memory</text>
+<text x="573" y="977" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">knowledge_items × memory_domains (M:N)</text>
+<text x="573" y="993" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">Haiku extraction from CLAUDE.local.md</text>
+<text x="573" y="1009" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">and session transcripts</text>
+<text x="573" y="1025" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">contradiction judge + suggested fix</text>
+<text x="573" y="1041" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">verification_evidence keeps raw signal</text>
+<text x="573" y="1057" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">confidence computed in code, never</text>
+<text x="573" y="1073" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">trusted from the model</text>
+<rect x="930" y="936" width="356" height="150" rx="6" fill="currentColor" fill-opacity="0.035" stroke="currentColor" stroke-opacity="0.22"/>
+<text x="943" y="957" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="12.5" fill="currentColor" font-weight="600" fill-opacity="0.95">marketplace</text>
+<text x="943" y="977" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">admin-registered git repos cloned nightly</text>
+<text x="943" y="993" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">→ ONE aggregated, RBAC-filtered feed</text>
+<text x="943" y="1009" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">GET /marketplace.zip</text>
+<text x="943" y="1025" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">GET /marketplace.git/*  (PAT-gated)</text>
+<text x="943" y="1041" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">plugins joined against the caller's</text>
+<text x="943" y="1057" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">groups via resource_grants</text>
+<text x="943" y="1073" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">contributed skills reviewed in /admin</text>
+<rect x="1300" y="936" width="356" height="150" rx="6" fill="currentColor" fill-opacity="0.035" stroke="currentColor" stroke-opacity="0.22"/>
+<text x="1313" y="957" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="12.5" fill="currentColor" font-weight="600" fill-opacity="0.95">stack &amp; packages</text>
+<text x="1313" y="977" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">data_packages (+ tables) · memory</text>
+<text x="1313" y="993" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">domains · plugins → the analyst's stack</text>
+<text x="1313" y="1009" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">required grants land automatically,</text>
+<text x="1313" y="1025" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">the rest via agnes stack add</text>
+<text x="1313" y="1041" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">catalog + table_profiles + metrics</text>
+<text x="1313" y="1057" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">feed discovery (agnes catalog, MCP)</text>
+<text x="1313" y="1073" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">audit_log records every action</text>
+<line x1="663" y1="1094" x2="663" y2="1114" stroke="#0369A1" stroke-opacity="0.75" stroke-width="1.4"/>
+<polygon points="663,1120 659.3,1114 666.7,1114" fill="#0369A1" fill-opacity="0.75"/>
+<text x="677" y="1111" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="10.5" fill="currentColor" fill-opacity="0.62">persisted as rows — one schema, two engines</text>
+<line x1="26" y1="1128" x2="1656" y2="1128" stroke="currentColor" stroke-opacity="0.2" stroke-width="1"/>
+<text x="26" y="1150" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11.5" fill="currentColor" font-weight="700" fill-opacity="0.9" letter-spacing="1.3">APP STATE</text>
+<text x="26" y="1168" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="10" fill="currentColor" fill-opacity="0.5">dual-backend;</text>
+<text x="26" y="1182" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="10" fill="currentColor" fill-opacity="0.5">parity is a</text>
+<text x="26" y="1196" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="10" fill="currentColor" fill-opacity="0.5">review gate</text>
+<rect x="190" y="1144" width="356" height="102" rx="6" fill="currentColor" fill-opacity="0.035" stroke="currentColor" stroke-opacity="0.22"/>
+<text x="203" y="1165" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="12.5" fill="currentColor" font-weight="600" fill-opacity="0.95">repositories factory</text>
+<text x="203" y="1185" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">src/repositories/__init__.py</text>
+<text x="203" y="1201" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">*_repo() dispatch on use_pg() /</text>
+<text x="203" y="1217" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">DATABASE_URL — callsites never</text>
+<text x="203" y="1233" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">instantiate a repository class</text>
+<rect x="560" y="1144" width="541" height="102" rx="6" fill="currentColor" fill-opacity="0.035" stroke="currentColor" stroke-opacity="0.22"/>
+<text x="573" y="1165" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="12.5" fill="currentColor" font-weight="600" fill-opacity="0.95">DuckDB   state/system.duckdb</text>
+<text x="573" y="1185" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">one shared connection per DATA_DIR (write-lock safe)</text>
+<text x="573" y="1201" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">auto-migrating ladder _vN_to_v(N+1) → v118</text>
+<text x="573" y="1217" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">single-process only, enforced by a startup guard</text>
+<text x="573" y="1233" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">zero-config default for a self-hosted instance</text>
+<rect x="1115" y="1144" width="541" height="102" rx="6" fill="currentColor" fill-opacity="0.035" stroke="currentColor" stroke-opacity="0.22"/>
+<text x="1128" y="1165" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="12.5" fill="currentColor" font-weight="600" fill-opacity="0.95">Postgres   DATABASE_URL</text>
+<text x="1128" y="1185" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">Alembic ladder must reach the same schema endpoint</text>
+<text x="1128" y="1201" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">required for role-split and multi-replica topologies</text>
+<text x="1128" y="1217" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">advisory locks (rebuild_lease) serialize cross-process writers</text>
+<text x="1128" y="1233" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">cross-engine contract tests run the same assertions on both</text>
+<text x="190" y="1256" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="10.5" fill="currentColor" fill-opacity="0.55">rows:  users · user_groups · user_group_members · resource_grants · table_registry · sync_state / sync_history · jobs · audit_log</text>
+<text x="190" y="1276" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="10.5" fill="currentColor" fill-opacity="0.55">       chat_sessions / chat_messages · knowledge_items / votes / contradictions · memory_domains · semantic_models / semantic_sources · data_packages · agents · tokens · data_apps</text>
+<line x1="663" y1="1320" x2="663" y2="1300" stroke="#0369A1" stroke-opacity="0.75" stroke-width="1.4"/>
+<polygon points="663,1294 659.3,1300 666.7,1300" fill="#0369A1" fill-opacity="0.75"/>
+<text x="677" y="1311" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="10.5" fill="currentColor" fill-opacity="0.62">read-only views  ·  per-user manifest  ·  profiles</text>
+<line x1="26" y1="1328" x2="1656" y2="1328" stroke="currentColor" stroke-opacity="0.2" stroke-width="1"/>
+<text x="26" y="1350" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11.5" fill="currentColor" font-weight="700" fill-opacity="0.9" letter-spacing="1.3">ANALYTICS</text>
+<text x="26" y="1368" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="10" fill="currentColor" fill-opacity="0.5">data plane —</text>
+<text x="26" y="1382" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="10" fill="currentColor" fill-opacity="0.5">one contract,</text>
+<text x="26" y="1396" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="10" fill="currentColor" fill-opacity="0.5">two engines</text>
+<rect x="190" y="1344" width="347" height="134" rx="6" fill="currentColor" fill-opacity="0.035" stroke="currentColor" stroke-opacity="0.22"/>
+<text x="203" y="1365" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="12.5" fill="currentColor" font-weight="600" fill-opacity="0.95">/data/extracts/&lt;source&gt;/</text>
+<text x="203" y="1385" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">extract.duckdb — _meta (+ _remote_attach)</text>
+<text x="203" y="1401" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">data/*.parquet for local sources</text>
+<text x="203" y="1417" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">the distribution artifact AND the</text>
+<text x="203" y="1433" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">rollback truth for both backends;</text>
+<text x="203" y="1449" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">switching backends is a rebuild</text>
+<text x="203" y="1465" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">from this tree, never a re-sync</text>
+<rect x="563" y="1344" width="347" height="134" rx="6" fill="currentColor" fill-opacity="0.035" stroke="currentColor" stroke-opacity="0.22"/>
+<text x="576" y="1365" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="12.5" fill="currentColor" font-weight="600" fill-opacity="0.95">SyncOrchestrator</text>
+<text x="576" y="1385" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">scans extracts, validates every</text>
+<text x="576" y="1401" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">identifier, ATTACHes each source,</text>
+<text x="576" y="1417" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">re-attaches remote extensions with a</text>
+<text x="576" y="1433" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">session secret, builds master views</text>
+<text x="576" y="1449" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">rebuild_mutex() = thread lock +</text>
+<text x="576" y="1465" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">Postgres advisory lease</text>
+<rect x="936" y="1344" width="347" height="134" rx="6" fill="currentColor" fill-opacity="0.035" stroke="currentColor" stroke-opacity="0.22"/>
+<text x="949" y="1365" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="12.5" fill="currentColor" font-weight="600" fill-opacity="0.95">legacy backend  (default)</text>
+<text x="949" y="1385" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">rebuild into analytics.duckdb.tmp,</text>
+<text x="949" y="1401" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">CHECKPOINT, then an atomic move</text>
+<text x="949" y="1417" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">swaps it in — readers never see a</text>
+<text x="949" y="1433" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">half-built database</text>
+<text x="949" y="1449" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">any single source change costs a</text>
+<text x="949" y="1465" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">full rebuild</text>
+<rect x="1309" y="1344" width="347" height="134" rx="6" fill="currentColor" fill-opacity="0.035" stroke="currentColor" stroke-opacity="0.22"/>
+<text x="1322" y="1365" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="12.5" fill="currentColor" font-weight="600" fill-opacity="0.95">ducklake backend  (opt-in)</text>
+<text x="1322" y="1385" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">catalog in Postgres + data files</text>
+<text x="1322" y="1401" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">DuckLake owns</text>
+<text x="1322" y="1417" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">worker is the only writer and</text>
+<text x="1322" y="1433" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">copy-ingests per source → genuinely</text>
+<text x="1322" y="1449" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">incremental; readers hold one attach</text>
+<text x="1322" y="1465" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">and get MVCC snapshots</text>
+<line x1="540" y1="1411" x2="555.5" y2="1411" stroke="#0369A1" stroke-opacity="0.85" stroke-width="1.4"/>
+<polygon points="561,1411 555.5,1407.6 555.5,1414.4" fill="#0369A1" fill-opacity="0.85"/>
+<line x1="913" y1="1411" x2="928.5" y2="1411" stroke="#0369A1" stroke-opacity="0.85" stroke-width="1.4"/>
+<polygon points="934,1411 928.5,1407.6 928.5,1414.4" fill="#0369A1" fill-opacity="0.85"/>
+<line x1="1286" y1="1411" x2="1301.5" y2="1411" stroke="#0369A1" stroke-opacity="0.85" stroke-width="1.4"/>
+<polygon points="1307,1411 1301.5,1407.6 1301.5,1414.4" fill="#0369A1" fill-opacity="0.85"/>
+<rect x="190" y="1492" width="356" height="86" rx="6" fill="currentColor" fill-opacity="0.035" stroke="currentColor" stroke-opacity="0.22"/>
+<text x="203" y="1513" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="12.5" fill="currentColor" font-weight="600" fill-opacity="0.95">/api/query   sandbox</text>
+<text x="203" y="1533" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">SELECT / WITH only; ~30 keywords and all</text>
+<text x="203" y="1549" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">file + URL functions blocked; no ';'</text>
+<text x="203" y="1565" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">RBAC checked against referenced view names</text>
+<rect x="560" y="1492" width="356" height="86" rx="6" fill="currentColor" fill-opacity="0.035" stroke="currentColor" stroke-opacity="0.22"/>
+<text x="573" y="1513" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="12.5" fill="currentColor" font-weight="600" fill-opacity="0.95">query_mode per table</text>
+<text x="573" y="1533" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">local (parquet) · materialized (SQL → parquet)</text>
+<text x="573" y="1549" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">· remote (nothing downloaded) · server_only</text>
+<text x="573" y="1565" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">agnes query, scope=auto, labels where it ran</text>
+<rect x="930" y="1492" width="356" height="86" rx="6" fill="currentColor" fill-opacity="0.035" stroke="currentColor" stroke-opacity="0.22"/>
+<text x="943" y="1513" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="12.5" fill="currentColor" font-weight="600" fill-opacity="0.95">src/remote_engines.py</text>
+<text x="943" y="1533" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">picks the engine a statement needs and</text>
+<text x="943" y="1549" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">refuses one that straddles two</text>
+<text x="943" y="1565" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">(remote_cross_engine_unsupported)</text>
+<rect x="1300" y="1492" width="356" height="86" rx="6" fill="currentColor" fill-opacity="0.035" stroke="currentColor" stroke-opacity="0.22"/>
+<text x="1313" y="1513" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="12.5" fill="currentColor" font-weight="600" fill-opacity="0.95">cost guardrails</text>
+<text x="1313" y="1533" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">BigQuery: dry-run scan cap (default 5 GiB)</text>
+<text x="1313" y="1549" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">Databricks: byte_limit — a capped result is</text>
+<text x="1313" y="1565" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">refused, never returned short</text>
+<line x1="663" y1="1612" x2="663" y2="1592" stroke="#0369A1" stroke-opacity="0.75" stroke-width="1.4"/>
+<polygon points="663,1586 659.3,1592 666.7,1592" fill="#0369A1" fill-opacity="0.75"/>
+<text x="677" y="1603" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="10.5" fill="currentColor" fill-opacity="0.62">connectors write the contract, nothing else does</text>
+<line x1="26" y1="1620" x2="1656" y2="1620" stroke="currentColor" stroke-opacity="0.2" stroke-width="1"/>
+<text x="26" y="1642" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11.5" fill="currentColor" font-weight="700" fill-opacity="0.9" letter-spacing="1.3">CONNECTORS</text>
+<text x="26" y="1660" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="10" fill="currentColor" fill-opacity="0.5">extract.duckdb</text>
+<text x="26" y="1674" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="10" fill="currentColor" fill-opacity="0.5">producers</text>
+<rect x="190" y="1636" width="232.7" height="86" rx="6" fill="currentColor" fill-opacity="0.035" stroke="currentColor" stroke-opacity="0.22"/>
+<text x="203" y="1657" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="12.5" fill="currentColor" font-weight="600" fill-opacity="0.95">keboola</text>
+<text x="203" y="1677" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">DuckDB extension → parquet</text>
+<text x="203" y="1693" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">batch pull · remote attach</text>
+<text x="203" y="1709" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">full / incremental / part.</text>
+<rect x="436.7" y="1636" width="232.7" height="86" rx="6" fill="currentColor" fill-opacity="0.035" stroke="currentColor" stroke-opacity="0.22"/>
+<text x="449.7" y="1657" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="12.5" fill="currentColor" font-weight="600" fill-opacity="0.95">bigquery</text>
+<text x="449.7" y="1677" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">remote views, no download</text>
+<text x="449.7" y="1693" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">+ materialized SQL →</text>
+<text x="449.7" y="1709" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">parquet (dry-run capped)</text>
+<rect x="683.3" y="1636" width="232.7" height="86" rx="6" fill="currentColor" fill-opacity="0.035" stroke="currentColor" stroke-opacity="0.22"/>
+<text x="696.3" y="1657" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="12.5" fill="currentColor" font-weight="600" fill-opacity="0.95">databricks</text>
+<text x="696.3" y="1677" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">SQL warehouse materialize</text>
+<text x="696.3" y="1693" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">remote per-query · Unity</text>
+<text x="696.3" y="1709" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">Catalog metric views</text>
+<rect x="930" y="1636" width="232.7" height="86" rx="6" fill="currentColor" fill-opacity="0.035" stroke="currentColor" stroke-opacity="0.22"/>
+<text x="943" y="1657" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="12.5" fill="currentColor" font-weight="600" fill-opacity="0.95">jira</text>
+<text x="943" y="1677" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">webhook → HMAC verify →</text>
+<text x="943" y="1693" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">monthly parquet shards</text>
+<text x="943" y="1709" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">SLA + consistency polls</text>
+<rect x="1176.7" y="1636" width="232.7" height="86" rx="6" fill="currentColor" fill-opacity="0.035" stroke="currentColor" stroke-opacity="0.22"/>
+<text x="1189.7" y="1657" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="12.5" fill="currentColor" font-weight="600" fill-opacity="0.95">local / upload</text>
+<text x="1189.7" y="1677" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">CSV and parquet uploads</text>
+<text x="1189.7" y="1693" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">no external source</text>
+<text x="1189.7" y="1709" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">same contract, same rails</text>
+<rect x="1423.3" y="1636" width="232.7" height="86" rx="6" fill="currentColor" fill-opacity="0.035" stroke="currentColor" stroke-opacity="0.22"/>
+<text x="1436.3" y="1657" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="12.5" fill="currentColor" font-weight="600" fill-opacity="0.95">openmetadata</text>
+<text x="1436.3" y="1677" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">catalog export (outbound)</text>
+<text x="1436.3" y="1693" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">+ MCP passthrough to</text>
+<text x="1436.3" y="1709" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">upstream servers</text>
+<line x1="663" y1="1756" x2="663" y2="1736" stroke="#0369A1" stroke-opacity="0.75" stroke-width="1.4"/>
+<polygon points="663,1730 659.3,1736 666.7,1736" fill="#0369A1" fill-opacity="0.75"/>
+<text x="677" y="1747" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="10.5" fill="currentColor" fill-opacity="0.62">credentials live only server-side, in the vault</text>
+<line x1="26" y1="1764" x2="1656" y2="1764" stroke="currentColor" stroke-opacity="0.2" stroke-width="1"/>
+<text x="26" y="1786" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11.5" fill="currentColor" font-weight="700" fill-opacity="0.9" letter-spacing="1.3">EXTERNAL</text>
+<text x="26" y="1804" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="10" fill="currentColor" fill-opacity="0.5">systems — outside</text>
+<text x="26" y="1818" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="10" fill="currentColor" fill-opacity="0.5">the trust boundary</text>
+<rect x="190" y="1780" width="232.7" height="70" rx="6" fill="currentColor" fill-opacity="0.035" stroke="currentColor" stroke-opacity="0.3" stroke-dasharray="5 4"/>
+<text x="203" y="1801" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="12.5" fill="currentColor" font-weight="600" fill-opacity="0.95">Keboola Storage</text>
+<text x="203" y="1821" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">master token or</text>
+<text x="203" y="1837" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">per-project OAuth</text>
+<rect x="436.7" y="1780" width="232.7" height="70" rx="6" fill="currentColor" fill-opacity="0.035" stroke="currentColor" stroke-opacity="0.3" stroke-dasharray="5 4"/>
+<text x="449.7" y="1801" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="12.5" fill="currentColor" font-weight="600" fill-opacity="0.95">BigQuery</text>
+<text x="449.7" y="1821" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">service-account JSON</text>
+<text x="449.7" y="1837" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">or ADC / metadata</text>
+<rect x="683.3" y="1780" width="232.7" height="70" rx="6" fill="currentColor" fill-opacity="0.035" stroke="currentColor" stroke-opacity="0.3" stroke-dasharray="5 4"/>
+<text x="696.3" y="1801" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="12.5" fill="currentColor" font-weight="600" fill-opacity="0.95">Databricks + UC</text>
+<text x="696.3" y="1821" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">SQL warehouse via</text>
+<text x="696.3" y="1837" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">Statement Execution</text>
+<rect x="930" y="1780" width="232.7" height="70" rx="6" fill="currentColor" fill-opacity="0.035" stroke="currentColor" stroke-opacity="0.3" stroke-dasharray="5 4"/>
+<text x="943" y="1801" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="12.5" fill="currentColor" font-weight="600" fill-opacity="0.95">Jira Cloud</text>
+<text x="943" y="1821" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">webhooks + REST</text>
+<text x="943" y="1837" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">HMAC-SHA256 signed</text>
+<rect x="1176.7" y="1780" width="232.7" height="70" rx="6" fill="currentColor" fill-opacity="0.035" stroke="currentColor" stroke-opacity="0.3" stroke-dasharray="5 4"/>
+<text x="1189.7" y="1801" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="12.5" fill="currentColor" font-weight="600" fill-opacity="0.95">Google Workspace</text>
+<text x="1189.7" y="1821" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">OAuth sign-in +</text>
+<text x="1189.7" y="1837" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">nightly group sync</text>
+<rect x="1423.3" y="1780" width="232.7" height="70" rx="6" fill="currentColor" fill-opacity="0.035" stroke="currentColor" stroke-opacity="0.3" stroke-dasharray="5 4"/>
+<text x="1436.3" y="1801" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="12.5" fill="currentColor" font-weight="600" fill-opacity="0.95">Object store  (S3)</text>
+<text x="1436.3" y="1821" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">optional mirror behind</text>
+<text x="1436.3" y="1837" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="currentColor" fill-opacity="0.66">15-min signed URLs</text>
+<line x1="26" y1="1860" x2="1656" y2="1860" stroke="currentColor" stroke-opacity="0.2" stroke-width="1"/>
+<line x1="26" y1="1878" x2="60" y2="1878" stroke="#0369A1" stroke-opacity="0.9" stroke-width="2"/>
+<text x="70" y="1882" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="10.5" fill="currentColor" font-weight="600" fill-opacity="0.8">data path</text>
+<line x1="158" y1="1878" x2="192" y2="1878" stroke="#1B57C4" stroke-opacity="0.9" stroke-width="2"/>
+<text x="202" y="1882" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="10.5" fill="currentColor" font-weight="600" fill-opacity="0.8">agent / LLM path</text>
+<line x1="336" y1="1878" x2="370" y2="1878" stroke="currentColor" stroke-opacity="0.35" stroke-width="1.4" stroke-dasharray="5 4"/>
+<text x="380" y="1882" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="10.5" fill="currentColor" fill-opacity="0.6">external, or off by default</text>
+<text x="1656" y="1882" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="10.5" fill="currentColor" fill-opacity="0.45" text-anchor="end">source: docs/architecture.md · CLAUDE.md · app/main.py</text>
+</svg>

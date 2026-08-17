@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- **Architecture figures: the whole platform on one page.** `ARCHITECTURE.md` now opens with a layered diagram of the nine planes — surfaces, the authorization boundary, the `api`/`gateway`/`worker` application plane, the agent + LLM path, knowledge & governance, dual-backend app state, the analytics data plane, connectors, external systems — plus two companion figures for the cycles a layered view flattens: the analyst loop (manifest → `agnes pull` → laptop → Claude Code → `agnes push` → corporate memory → the next session's stack) and query routing (which engine actually executes a statement, and the cost guardrail on each remote one). The SVGs live in `docs/diagrams/` and are produced by `scripts/dev/gen_architecture_diagrams.py`, which measures every drawn line against its box and exits non-zero rather than shipping clipped text — the failure mode a hand-edited SVG hides. Also corrects the stale schema version in `docs/architecture.md` (109 → 118, the actual `SCHEMA_VERSION`).
+
 ## [0.83.30] - 2026-08-17
 
 ### Fixed
