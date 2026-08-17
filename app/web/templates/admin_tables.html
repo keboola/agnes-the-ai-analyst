@@ -615,6 +615,131 @@
             border-bottom: none;
         }
 
+        /* ── Access Policy builder tabs + column list (access-policy-builder-ux
+           plan, Task 4). Builder is the default tab; Advanced SQL keeps
+           today's plain textarea untouched underneath. The Builder never
+           generates SQL itself — every mask change re-POSTs the assembled
+           spec to policy/compile and drops the result into #apSql, so
+           apRunPreview()/apSavePolicy() need no changes at all. ── */
+        .ap-tabs {
+            display: flex;
+            gap: 4px;
+            margin-bottom: 12px;
+            border-bottom: 1px solid var(--ds-border);
+        }
+
+        .ap-tab {
+            padding: 8px 12px;
+            background: none;
+            border: none;
+            border-bottom: 2px solid transparent;
+            margin-bottom: -1px;
+            font-size: 13px;
+            font-weight: 600;
+            font-family: inherit;
+            color: var(--ds-text-secondary);
+            cursor: pointer;
+        }
+
+        .ap-tab:hover {
+            color: var(--ds-text-primary);
+        }
+
+        .ap-tab.is-active {
+            color: var(--ds-primary);
+            border-bottom-color: var(--ds-primary);
+        }
+
+        .ap-col-list {
+            border: 1px solid var(--ds-border);
+            border-radius: 8px;
+            max-height: 320px;
+            overflow-y: auto;
+        }
+
+        .ap-col-row {
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+            padding: 8px 10px;
+            border-bottom: 1px solid var(--ds-border);
+            flex-wrap: wrap;
+        }
+
+        .ap-col-row:last-child {
+            border-bottom: none;
+        }
+
+        .ap-col-main {
+            flex: 1 1 220px;
+            min-width: 180px;
+        }
+
+        .ap-col-name {
+            font-weight: 600;
+            font-size: 12.5px;
+            color: var(--ds-text-primary);
+        }
+
+        .ap-col-type {
+            font-size: 11px;
+            color: var(--ds-text-muted);
+            margin-left: 6px;
+        }
+
+        .ap-col-pii {
+            font-size: 10px;
+            font-weight: 600;
+            color: var(--ds-accent-warn-ink);
+            background: var(--ds-accent-warn-bg);
+            border-radius: var(--ds-radius-pill);
+            padding: 1px 6px;
+            margin-left: 6px;
+        }
+
+        .ap-col-samples {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px;
+            margin-top: 4px;
+        }
+
+        .ap-sample-chip {
+            display: inline-flex;
+            max-width: 130px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            padding: 1px 6px;
+            border-radius: var(--ds-radius-pill);
+            background: var(--ds-surface-dim);
+            color: var(--ds-text-secondary);
+            font-size: 10.5px;
+            white-space: nowrap;
+        }
+
+        .ap-col-distinct {
+            font-size: 10.5px;
+            color: var(--ds-text-muted);
+            margin-top: 2px;
+        }
+
+        .ap-col-mask {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            flex: 0 0 170px;
+        }
+
+        .ap-col-mask select {
+            min-height: 30px;
+            padding: 3px 6px;
+        }
+
+        .ap-unmask-group {
+            min-height: 28px;
+            padding: 3px 6px;
+        }
+
         /* ── Row actions — one ⋯ per row, one menu for the table ────────
            Five icon buttons per row spent the widest column in the table on
            controls used once a month, and read as noise beside the data. The
@@ -3606,7 +3731,30 @@
                          rejected PUT. -->
                 </div>
 
-                <div class="form-group">
+                <!-- Task 4: Builder (default) + Advanced SQL tabs. Builder
+                     never writes SQL directly — every mask change re-POSTs
+                     the assembled spec to policy/compile and drops the
+                     result into #apSql below, so apRunPreview()/
+                     apSavePolicy() need no changes at all. -->
+                <div class="ap-tabs" role="tablist">
+                    <button type="button" class="ap-tab is-active" data-ap-tab="builder" role="tab"
+                            aria-selected="true" onclick="apSwitchTab('builder')">Builder</button>
+                    <button type="button" class="ap-tab" data-ap-tab="sql" role="tab"
+                            aria-selected="false" onclick="apSwitchTab('sql')">Advanced SQL</button>
+                </div>
+
+                <div data-ap-panel="builder" id="apBuilder">
+                    <div class="form-hint" style="margin-top:0;">
+                        Pick a mask for any column that needs to change for some callers — everything
+                        else passes through unchanged. Rows are not filtered here yet; use the Advanced
+                        SQL tab for a row-level <code>WHERE</code> clause.
+                    </div>
+                    <div id="apColList" class="ap-col-list">
+                        <div class="form-hint" style="margin:0; padding:10px;">Loading columns…</div>
+                    </div>
+                </div>
+
+                <div class="form-group" data-ap-panel="sql" id="apSqlPanel" style="display:none;">
                     <label class="form-label" for="apSql">Policy SQL</label>
                     <textarea class="form-textarea" id="apSql" rows="8"
                               placeholder="SELECT * FROM &lt;table&gt; WHERE ..."></textarea>
@@ -5684,12 +5832,15 @@
         document.getElementById('apClearBtn').style.display = table.access_policy_sql ? '' : 'none';
         _apRenderInterlockWarning();
         _apLoadHistory(table.id);
+        apSwitchTab('builder');
+        _apLoadColumns(table.id);
         document.getElementById('accessPolicyModal').classList.add('active');
     }
 
     function closeAccessPolicyModal() {
         document.getElementById('accessPolicyModal').classList.remove('active');
         _apTable = null;
+        if (_apCompileTimer) { clearTimeout(_apCompileTimer); _apCompileTimer = null; }
     }
 
     // Inline interlock warning (design doc §3.1/§13) — computed and shown
@@ -5710,6 +5861,137 @@
     function apUseTableAsBase() {
         if (!_apTable) return;
         document.getElementById('apSql').value = 'SELECT * FROM ' + (_apTable.name || _apTable.id);
+    }
+
+    // ── Builder tab (no-SQL policy editor, access-policy-builder-ux plan
+    // Task 4) — Builder vs Advanced SQL. Switching tabs never touches
+    // #apSql; only a mask change (via policy/compile) does. ──
+    function apSwitchTab(tab) {
+        document.querySelectorAll('.ap-tab').forEach(function(btn) {
+            var active = btn.getAttribute('data-ap-tab') === tab;
+            btn.classList.toggle('is-active', active);
+            btn.setAttribute('aria-selected', active ? 'true' : 'false');
+        });
+        document.querySelectorAll('[data-ap-panel]').forEach(function(panel) {
+            panel.style.display = (panel.getAttribute('data-ap-panel') === tab) ? '' : 'none';
+        });
+    }
+
+    var _AP_MASK_LABELS = { show: 'Show', hide: 'Hide', nullify: 'Nullify', hash: 'Pseudonymize', unmask: 'Unmask for group' };
+    let _apColumns = [];
+    let _apMaskState = {};
+    let _apCompileTimer = null;
+
+    // Real schema + samples for the builder (Task 2's endpoint) — fetched
+    // once per modal open, independent of which tab is showing.
+    async function _apLoadColumns(tableId) {
+        var list = document.getElementById('apColList');
+        _apColumns = [];
+        _apMaskState = {};
+        list.innerHTML = '<div class="form-hint" style="margin:0; padding:10px;">Loading columns…</div>';
+        try {
+            var r = await fetch('/api/admin/registry/' + encodeURIComponent(tableId) + '/policy/columns');
+            if (!r.ok) {
+                list.innerHTML = '<div class="form-hint form-hint--danger" style="margin:0;">Could not load columns for this table.</div>';
+                return;
+            }
+            var body = await r.json();
+            _apColumns = body.columns || [];
+            _apRenderColList();
+        } catch (err) {
+            list.innerHTML = '<div class="form-hint form-hint--danger" style="margin:0;">Network error: '
+                + escapeHtml(err.message) + '</div>';
+        }
+    }
+
+    function _apRenderColList() {
+        var list = document.getElementById('apColList');
+        if (!_apColumns.length) {
+            list.innerHTML = '<div class="form-hint" style="margin:0; padding:10px;">No columns found.</div>';
+            return;
+        }
+        var disabled = !_apTable || !_apIsEligible(_apTable);
+        list.innerHTML = _apColumns.map(function(col) {
+            var maskEntry = _apMaskState[col.name];
+            var maskChoice = (maskEntry && typeof maskEntry === 'object') ? maskEntry.choice : (maskEntry || 'show');
+            var samples = (col.samples || []).slice(0, 3).map(function(s) {
+                return '<span class="ap-sample-chip">' + escapeHtml(s) + '</span>';
+            }).join('');
+            var distinct = (col.distinct === null || col.distinct === undefined) ? '' : (formatNumber(col.distinct) + ' distinct');
+            var pii = col.pii ? '<span class="ap-col-pii">PII</span>' : '';
+            var colArg = escapeHtmlAttr(JSON.stringify(col.name));
+            var options = ['show', 'hide', 'nullify', 'hash', 'unmask'].map(function(m) {
+                return '<option value="' + m + '"' + (m === maskChoice ? ' selected' : '') + '>' + _AP_MASK_LABELS[m] + '</option>';
+            }).join('');
+            var groupInput = (maskChoice === 'unmask')
+                ? '<input type="text" class="form-input ap-unmask-group" placeholder="group name" '
+                  + (disabled ? 'disabled ' : '')
+                  + 'value="' + escapeHtmlAttr((maskEntry && maskEntry.group) || '') + '" '
+                  + 'oninput="_apOnUnmaskGroupChange(' + colArg + ', this.value)">'
+                : '';
+            return ''
+                + '<div class="ap-col-row">'
+                +   '<div class="ap-col-main">'
+                +     '<span class="ap-col-name">' + escapeHtml(col.name) + '</span>'
+                +     '<span class="ap-col-type">' + escapeHtml(col.type || '') + '</span>' + pii
+                +     '<div class="ap-col-samples">' + samples + '</div>'
+                +     (distinct ? '<div class="ap-col-distinct">' + escapeHtml(distinct) + '</div>' : '')
+                +   '</div>'
+                +   '<div class="ap-col-mask">'
+                +     '<select class="form-input" ' + (disabled ? 'disabled ' : '')
+                +       'onchange="_apOnMaskChange(' + colArg + ', this.value)">' + options + '</select>'
+                +     groupInput
+                +   '</div>'
+                + '</div>';
+        }).join('');
+    }
+
+    function _apOnMaskChange(colName, maskValue) {
+        if (maskValue === 'show') {
+            delete _apMaskState[colName];
+        } else if (maskValue === 'unmask') {
+            var prev = _apMaskState[colName];
+            _apMaskState[colName] = { choice: 'unmask', group: (prev && prev.group) || '' };
+        } else {
+            _apMaskState[colName] = maskValue;
+        }
+        _apRenderColList();
+        _apScheduleCompile();
+    }
+
+    function _apOnUnmaskGroupChange(colName, group) {
+        var entry = _apMaskState[colName];
+        if (entry && typeof entry === 'object') {
+            entry.group = group;
+        }
+        _apScheduleCompile();
+    }
+
+    // Debounced (~250ms) compile — assembles the spec from the mask state
+    // and POSTs it to Task 3's endpoint, dropping the returned SQL into
+    // #apSql. Never fires on modal open, so opening the builder on a table
+    // that already carries a saved policy does not clobber it.
+    function _apScheduleCompile() {
+        if (_apCompileTimer) clearTimeout(_apCompileTimer);
+        _apCompileTimer = setTimeout(_apCompileNow, 250);
+    }
+
+    async function _apCompileNow() {
+        if (!_apTable) return;
+        var spec = { row_rules: [], row_combine: 'and', column_masks: _apMaskState };
+        try {
+            var r = await fetch('/api/admin/registry/' + encodeURIComponent(_apTable.id) + '/policy/compile', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(spec),
+            });
+            if (!r.ok) return; // compile is a convenience; leave #apSql as-is on error
+            var body = await r.json();
+            document.getElementById('apSql').value = body.sql || '';
+        } catch (err) {
+            // Network hiccup — leave #apSql unchanged; the Advanced SQL tab
+            // still works standalone.
+        }
     }
 
     function _apShowSaveError(msg) {

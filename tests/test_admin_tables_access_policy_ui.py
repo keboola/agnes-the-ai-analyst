@@ -185,6 +185,20 @@ def test_access_policy_history_reads_the_existing_activity_endpoint(seeded_app):
     assert "action_prefix=update_table" in body
 
 
+def test_builder_scaffold_renders_when_flag_on(seeded_app):
+    """Task 4 (access-policy-builder-ux plan): the modal's default tab is a
+    no-SQL Builder — a column-list mount fed by ``GET .../policy/columns``
+    — with today's textarea demoted to an "Advanced SQL" tab. Both tabs
+    ship in the same static HTML; JS toggles which panel is visible."""
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = c.get("/admin/tables", headers=_auth(token))
+    body = r.text
+    assert 'id="apBuilder"' in body
+    assert 'id="apColList"' in body
+    assert 'data-ap-tab="builder"' in body and 'data-ap-tab="sql"' in body
+
+
 def test_registered_table_row_wires_the_access_chip_to_the_modal(seeded_app):
     """A registered table's row calls ``openAccessPolicyModal(t)`` with the
     full registry row as payload, so the modal can prefill from
