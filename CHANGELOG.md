@@ -10,6 +10,30 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- **`agnes snapshot create` works on a remote Databricks row** — both the `table_id` form (`--select` / `--where` / `--limit` / `--order-by`) and `--from-query`. `/api/v2/scan` and `/api/v2/scan/estimate` gained a Databricks branch instead of refusing with `scan_engine_unsupported`, which had left an analyst no way to pull a filtered subset of a large Databricks table short of asking an admin for a materialized row. Predicates are written in Databricks SQL — the flavor `agnes schema` already advertises for the row — and size is bounded by `api.scan.max_result_bytes` with its own longer statement timeout (`data_source.databricks.scan_timeout_seconds`, default 900), because a snapshot is a materialize rather than an answer someone is waiting on.
+
+- **`--estimate` reports honestly on an engine that cannot be asked.** Databricks has no dry-run, so `estimated_scan_bytes` is now `null` rather than `0` — `0` on this response already means "served locally, nothing billable", so reporting it for a warehouse scan reads as *free*. In exchange the row count stops being a heuristic: it comes from a real `COUNT(*)` carrying the caller's own predicate, which the warehouse answers as an aggregate without shipping rows. The response and the CLI both carry a new `engine` field naming which engine answered.
+
+- **Access policies are enforced on Databricks instead of denying.** A policied table bound for a Databricks warehouse previously refused outright (`policy_unsupported_on_remote_engine`) because the only alternative was shipping the caller's unfiltered statement. The policy body is now transpiled to Databricks SQL, substituted into the statement, and its identity values bound through the Statement Execution API's `parameters` field — never spliced into SQL text. sqlglot renders `$user_email` as `:user_email`, exactly the API's named-parameter marker, so one authored policy keeps §6.2's binding guarantee on all three engines. `$user_groups` needs one extra step: the API binds scalars only, so the array marker is rewritten (AST-level, not by regex — a policy body is exactly the kind of SQL that contains literals) into `ARRAY(:p0, :p1, …)` over generated scalar markers, leaving only the *number* of groups visible in the statement. The registry gate runs a second time over the substituted statement, so a table named inside a policy body but never registered denies rather than resolving against whatever the warehouse's default catalog holds.
+
+### Changed
+
+- **`rewrite_sql` (access-policy AST substitution) takes a `dialect`.** Default `"duckdb"` keeps every pre-existing caller byte-identical. The Databricks path must pass `"databricks"`: round-tripping a Databricks statement through the DuckDB dialect comes out *wrong* rather than merely different (`RLIKE` is rewritten to `REGEXP_MATCHES`, a function the warehouse does not have), and `MEASURE(...)` — the metric-view idiom that is the whole point of the remote mode — does not parse as DuckDB at all, so a policied table in such a query would have denied instead of filtering.
+
+- **Saving an access policy now checks it transpiles to *both* remote engines**, not just BigQuery. A policy that transpiled to one and not the other saved clean and then denied at read time on the other engine's tables — an outage shipped as an access rule.
+
+### Fixed
+
+- **`/api/v2/scan` no longer refuses a policied Databricks table with a bare `policy_error`.** The refusal is deliberate — this endpoint builds its own statement rather than substituting into a caller's, so it has nowhere to attach a policy — but it fired *after* the effective-schema resolve, which fails first on a remote row. It now denies up front with `policy_unsupported_on_scan_engine` plus the two paths that do work.
+
+- **`agnes snapshot create` crashed after a successful fetch when the estimate carried a null scan size.** `est.get("estimated_scan_bytes", 0)` returns `None` when the key exists and maps to `None`, and `int(None)` raises.
+
+### Internal
+
+- **The schema TTL cache is reset between tests.** Keyed on `table_id` with a 1 h TTL and process-global, so two suites registering the same id with different columns handed each other the wrong schema — a failure that depended only on file ordering. Added to the existing `_reset_module_caches` autouse fixture alongside the catalog and quota caches.
+
 ## [0.83.30] - 2026-08-17
 
 ### Fixed
