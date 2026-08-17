@@ -3821,6 +3821,11 @@
     // page is package-centric and source_type is just an inline tag.
     function toggleRegisterNewTableMenu(evt) {
         if (evt) evt.stopPropagation();
+        // When the instance has a single primary source type, open that
+        // register modal directly instead of the source dropdown.
+        if (DATA_SOURCE_TYPE === 'databricks') {
+            return openRegisterModal();
+        }
         var menu = document.getElementById('registerNewTableMenu');
         if (!menu) return;
         menu.style.display = (menu.style.display === 'block') ? 'none' : 'block';
