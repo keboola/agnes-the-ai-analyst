@@ -182,6 +182,55 @@ def test_unknown_kid_triggers_one_refetch_and_succeeds_on_rotation(monkeypatch):
     assert calls["jwks"] == 2
 
 
+def test_token_missing_exp_rejected(monkeypatch):
+    """PyJWT only checks exp/nbf when present; a token omitting it entirely
+    would otherwise verify. `options={"require": [...]}` closes that gap."""
+    key = _rsa_keypair()
+    jwk = _jwk_for(key, "kid-1")
+    _install_jwks_transport(monkeypatch, lambda: [jwk])
+    now = int(time.time())
+    payload = {"aud": APP_ID, "iss": ISSUER, "iat": now, "nbf": now}  # no exp
+    pem = key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    token = pyjwt.encode(payload, pem, algorithm="RS256", headers={"kid": "kid-1"})
+
+    result = asyncio.run(sigverify.verify_bot_framework_token(f"Bearer {token}", APP_ID))
+    assert result is False
+
+
+def test_failed_first_fetch_does_not_block_immediate_retry(monkeypatch):
+    """A transient failure on the very first JWKS fetch must not stamp the
+    throttle timestamp — otherwise every request for the next 60s fails
+    closed with no retry, turning a one-off blip into a fixed outage."""
+    key = _rsa_keypair()
+    jwk = _jwk_for(key, "kid-1")
+    attempt = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url) == sigverify.BOTFRAMEWORK_OPENID_CONFIG_URL:
+            return httpx.Response(200, json={"jwks_uri": JWKS_URI})
+        attempt["n"] += 1
+        if attempt["n"] == 1:
+            return httpx.Response(503)
+        return httpx.Response(200, json={"keys": [jwk]})
+
+    monkeypatch.setattr(
+        sigverify, "_http_client", lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler), timeout=10)
+    )
+    token = _token(key, "kid-1")
+
+    first = asyncio.run(sigverify.verify_bot_framework_token(f"Bearer {token}", APP_ID))
+    assert first is False  # fetch failed, cache still empty
+
+    # No sleep, no throttle-window manipulation — must retry immediately
+    # because the failed attempt above never stamped _LAST_REFETCH_AT.
+    second = asyncio.run(sigverify.verify_bot_framework_token(f"Bearer {token}", APP_ID))
+    assert second is True
+
+
 def test_unknown_kid_throttled_does_not_refetch_every_request(monkeypatch):
     key = _rsa_keypair()
     jwk = _jwk_for(key, "kid-1")

@@ -73,9 +73,14 @@ async def _refresh_jwks_cache() -> None:
     Never raises — a failure just leaves the existing cache in place (an
     unknown `kid` then fails verification, which is the fail-closed
     behavior we want).
+
+    ``_LAST_REFETCH_AT`` is stamped only on a *successful* fetch. Stamping
+    it unconditionally would mean a single transient failure (network
+    blip, Microsoft-side hiccup) locks out every verification for the
+    full throttle window with no retry — turning a one-off error into a
+    fixed-length outage of the Teams surface.
     """
     global _LAST_REFETCH_AT
-    _LAST_REFETCH_AT = time.monotonic()
     try:
         async with _http_client() as client:
             jwks_uri = await _resolve_jwks_uri(client)
@@ -85,6 +90,7 @@ async def _refresh_jwks_cache() -> None:
     except Exception:
         logger.warning("failed to fetch Bot Framework JWKS", exc_info=True)
         return
+    _LAST_REFETCH_AT = time.monotonic()
     _JWKS_CACHE.clear()
     for jwk in keys:
         kid = jwk.get("kid")
@@ -129,6 +135,10 @@ async def verify_bot_framework_token(authorization_header: str | None, app_id: s
             algorithms=["RS256"],  # never derive from the token's own `alg` header
             audience=app_id,
             issuer=BOTFRAMEWORK_ISSUER,
+            # PyJWT only checks exp/nbf if present — passing audience=/issuer=
+            # already forces aud/iss presence, but exp/nbf need an explicit
+            # `require` or a token that omits them entirely would verify fine.
+            options={"require": ["exp", "nbf"]},
         )
     except Exception:
         return False
