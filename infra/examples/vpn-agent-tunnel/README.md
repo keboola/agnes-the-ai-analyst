@@ -102,7 +102,11 @@ Templates:
   serve` + `funnel`. Read the header comment first: Tailscale's `serve`
   mounts route by path **prefix**, not by regex, so it cannot carve the
   excluded management routes out of `/api/v1/agents/*` the way Cloudflare's
-  ingress can — see that file for the trade-off and how it's handled.
+  ingress can — see that file for the trade-off and how it's handled. That
+  trade-off is bigger than "a bare PAT gets rejected": those routes accept
+  any interactive session cookie, and this script moves them from
+  tailnet-only to public-internet-reachable. Prefer `cloudflared-ingress.yml`
+  when that network-boundary loss matters for your threat model.
 
 ## Option B — full-connector tunnel (existing option, more exposure)
 

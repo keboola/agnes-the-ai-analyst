@@ -32,13 +32,22 @@
 # very same dynamic prefix (`.../scope`, `.../tokens`, `.../memories*`,
 # `.../webhooks`, and the bare agent CRUD routes) stay excluded — a
 # distinction Cloudflare's regex `path:` ingress can express and a plain
-# path-prefix mount cannot. If you need the tunnel itself to enforce that
-# exclusion (defense-in-depth, not just Agnes's own
-# `require_session_token` gate on those routes), use
-# `cloudflared-ingress.yml` instead. This script mounts the whole
-# `/api/v1/agents` prefix and relies on Agnes's own auth layer — which
-# already rejects a bare PAT on every excluded route — as the actual
-# enforcement for that one prefix.
+# path-prefix mount cannot.
+#
+# This is not just "a bare PAT gets rejected on those routes" — it's a
+# bigger trade-off than that. Those excluded routes are gated by
+# `require_session_token` (app/auth/dependencies.py), which accepts any
+# INTERACTIVE session credential (a normal logged-in user's cookie/JWT),
+# with no additional network-location check. Before this script runs,
+# that credential only works from inside the VPN/tailnet; once Funnel is
+# on, `tailscale serve --set-path=/api/v1/agents` makes those same
+# cookie-authenticated management routes (mint/revoke PATs, change an
+# agent's scope, inspect its memories, bare CRUD) reachable from the
+# public internet — the VPN-only network boundary that was implicitly
+# protecting them is gone for this whole prefix, not just for a PAT.
+# If that matters for your threat model, use `cloudflared-ingress.yml`
+# instead — its regex ingress keeps those routes edge-404'd and off the
+# public internet entirely, which is why Option A's README recommends it.
 
 set -euo pipefail
 
@@ -49,12 +58,14 @@ AGNES_LOCAL="http://127.0.0.1:8000"
 tailscale serve --bg --set-path=/api/v1/sessions "${AGNES_LOCAL}/api/v1/sessions"
 tailscale serve --bg --set-path=/api/v1/jobs "${AGNES_LOCAL}/api/v1/jobs"
 
-# Broad prefix mount — see the header comment above. Covers
+# Broad prefix mount — see the IMPORTANT header comment above. Covers
 # .../responses, .../usage, .../sessions (allowed) AND .../scope,
 # .../tokens, .../memories*, .../webhooks, bare agent CRUD (excluded by
-# the plan, but not excludable by a path-prefix mount) — Agnes's own
-# require_session_token gate is what actually blocks a bare PAT on the
-# latter group.
+# the plan, but not excludable by a path-prefix mount). This moves those
+# require_session_token-gated, cookie-authenticated management routes
+# from tailnet-only to public-internet-reachable once Funnel is on below
+# — Agnes's own auth layer (rejects a bare PAT, still requires a valid
+# interactive session) is what actually protects them, not the network.
 tailscale serve --bg --set-path=/api/v1/agents "${AGNES_LOCAL}/api/v1/agents"
 
 # Publish the mounts above to the public internet over HTTPS on :443.
