@@ -17,6 +17,21 @@ logger = logging.getLogger(__name__)
 
 KIND_CONCURRENT = "concurrent_scans"
 KIND_DAILY_BYTES = "daily_bytes"
+#: A daily budget denominated in STATEMENTS, not bytes.
+#:
+#: The byte budget prices what a scan moved. That works for an engine that
+#: reports what a statement cost — BigQuery's dry run prices a query before it
+#: runs — but it cannot bound an engine that only reports what a statement
+#: RETURNED. A Databricks ``COUNT(*)`` scans a Delta table and returns one row:
+#: real warehouse compute, ~0 bytes recorded. Ten thousand of them are ten
+#: thousand billable statements that the byte ledger reads as free.
+#:
+#: So this counter measures the one unit that is honestly available there —
+#: how many billable statements a caller submitted today. It is deliberately
+#: NOT folded into ``daily_bytes``: inventing a byte figure for a statement
+#: whose bytes are unknown would corrupt the ledger for the engine that
+#: reports real ones.
+KIND_DAILY_ESTIMATES = "daily_estimates"
 
 
 @dataclass
@@ -51,19 +66,29 @@ class QuotaTracker:
     and after the BQ result lands records bytes via `record_bytes(user, n)`.
     """
 
-    def __init__(self, *, max_concurrent_per_user: int, max_daily_bytes_per_user: int):
+    def __init__(
+        self,
+        *,
+        max_concurrent_per_user: int,
+        max_daily_bytes_per_user: int,
+        max_daily_estimates_per_user: int = 500,
+    ):
         self._max_concurrent = max_concurrent_per_user
         self._max_daily_bytes = max_daily_bytes_per_user
+        self._max_daily_estimates = max_daily_estimates_per_user
         self._lock = threading.Lock()
-        # state: { user_id: { "concurrent": int, "bucket_day": "YYYY-MM-DD", "bytes": int } }
+        # state: { user_id: { "concurrent": int, "bucket_day": "YYYY-MM-DD",
+        #                     "bytes": int, "estimates": int } }
         self._state: dict[str, dict] = {}
 
     def _ensure_bucket(self, user: str) -> dict:
         today = _utc_today()
-        s = self._state.setdefault(user, {"concurrent": 0, "bucket_day": today, "bytes": 0})
+        s = self._state.setdefault(user, {"concurrent": 0, "bucket_day": today, "bytes": 0, "estimates": 0})
         if s["bucket_day"] != today:
             s["bucket_day"] = today
             s["bytes"] = 0
+            s["estimates"] = 0
+        s.setdefault("estimates", 0)
         return s
 
     @contextlib.contextmanager
@@ -119,6 +144,45 @@ class QuotaTracker:
         with self._lock:
             return self._ensure_bucket(user)["bytes"]
 
+    # ------------------------------------------------------------------
+    # Statement-count budget (see KIND_DAILY_ESTIMATES)
+    # ------------------------------------------------------------------
+
+    def check_daily_estimates(self, user: str) -> None:
+        """Pre-flight: raise if the user is AT or OVER the daily statement cap.
+
+        Mirrors ``check_daily_budget``'s contract — call it BEFORE submitting
+        the billable statement, so the refusal costs nothing.
+        """
+        with self._lock:
+            current = self._ensure_bucket(user)["estimates"]
+            if current >= self._max_daily_estimates:
+                raise QuotaExceededError(
+                    kind=KIND_DAILY_ESTIMATES,
+                    current=current,
+                    limit=self._max_daily_estimates,
+                    retry_after_seconds=_seconds_until_utc_midnight(),
+                )
+
+    def record_estimate(self, user: str, n: int = 1) -> None:
+        """Count billable statements a caller has submitted today.
+
+        Deliberately recorded at SUBMISSION, not on success: what the
+        warehouse charges for is the statement reaching it, so a loop of
+        statements that time out or error costs exactly as much as a loop that
+        succeeds, and must be bounded the same way. Never raises — like
+        ``record_bytes``, enforcement lives in the pre-flight check.
+        """
+        if n <= 0:
+            return
+        with self._lock:
+            s = self._ensure_bucket(user)
+            s["estimates"] = s["estimates"] + n
+
+    def estimates_used_today(self, user: str) -> int:
+        with self._lock:
+            return self._ensure_bucket(user)["estimates"]
+
 
 # Module-level singleton (process-local quota state per spec §3.8). FastAPI
 # dispatches sync handlers via a thread pool, so two concurrent first-time
@@ -145,18 +209,19 @@ def _build_quota_tracker() -> QuotaTracker:
     across both BQ-touching paths.
     """
     from app.instance_config import get_value
+
     global _quota_singleton
     if _quota_singleton is not None:
         return _quota_singleton
     with _quota_init_lock:
         if _quota_singleton is None:
             _quota_singleton = QuotaTracker(
-                max_concurrent_per_user=int(
-                    get_value("api", "scan", "max_concurrent_per_user", default=5) or 5
-                ),
+                max_concurrent_per_user=int(get_value("api", "scan", "max_concurrent_per_user", default=5) or 5),
                 max_daily_bytes_per_user=int(
-                    get_value("api", "scan", "max_daily_bytes_per_user", default=53687091200)
-                    or 53687091200
+                    get_value("api", "scan", "max_daily_bytes_per_user", default=53687091200) or 53687091200
+                ),
+                max_daily_estimates_per_user=int(
+                    get_value("api", "scan", "max_daily_estimates_per_user", default=500) or 500
                 ),
             )
     return _quota_singleton

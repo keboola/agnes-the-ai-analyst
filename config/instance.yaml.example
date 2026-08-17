@@ -780,6 +780,12 @@ catalog:
 #     max_concurrent_per_user: 5      # In-flight /api/v2/scan requests allowed per user (default: 5)
 #                                     # Note: quota is process-local; N replicas → effective N× cap.
 #     max_daily_bytes_per_user: 53687091200  # Per-user daily byte quota: 50 GB (default). Resets at UTC midnight.
+#     max_daily_estimates_per_user: 500  # Per-user daily cap on BILLABLE estimate statements (default: 500).
+#                                     # Resets at UTC midnight. Applies to engines whose estimate is real
+#                                     # compute rather than a free dry run (Databricks: a COUNT(*) on the
+#                                     # warehouse). Those engines report no scanned-byte figure, so the byte
+#                                     # quota above cannot bound them — this counts statements instead.
+#                                     # BigQuery estimates are dry runs and are not counted here.
 #     bq_cost_per_tb_usd: 5.00        # Cost rate shown in /api/v2/scan/estimate response (default: $5/TB)
 #     request_timeout_seconds: 300    # Server-side timeout for a single scan request (default: 300 s)
 #   # --- Discovery cache TTLs ---

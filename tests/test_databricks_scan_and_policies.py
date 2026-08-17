@@ -378,6 +378,145 @@ class TestEstimate:
         # request in the first place.
         assert not any("COUNT(*)" in s for s in wh.statements), "the billable COUNT ran despite an exhausted budget"
 
+    @staticmethod
+    def _install_tracker(monkeypatch, **kw):
+        """Give the test its own quota tracker.
+
+        `_build_quota_tracker` memoizes a process-wide singleton, so a test
+        that wants a small cap has to replace the global rather than build a
+        second tracker the endpoint would never consult.
+        """
+        from app.api.v2_quota import QuotaTracker
+
+        tracker = QuotaTracker(
+            max_concurrent_per_user=kw.pop("max_concurrent_per_user", 5),
+            max_daily_bytes_per_user=kw.pop("max_daily_bytes_per_user", 10**12),
+            **kw,
+        )
+        monkeypatch.setattr("app.api.v2_quota._quota_singleton", tracker)
+        return tracker
+
+    def _estimate(self):
+        from app.api.v2_scan import estimate
+        from src.db import get_system_db
+
+        conn = get_system_db()
+        try:
+            return estimate(
+                conn,
+                {"id": "admin1", "email": "admin@test.com"},
+                {"table_id": "dbx.sales.orders_raw"},
+                bq=None,
+            )
+        finally:
+            conn.close()
+
+    def test_a_handful_of_estimates_still_works(self, seeded_app, warehouse, monkeypatch):
+        """The guard must not cost a normal analyst anything.
+
+        Someone sizing a few snapshots before fetching runs well inside the
+        default cap (500/day); a control that refused the tenth estimate would
+        be worse than the problem it solves.
+        """
+        wh, _settings = warehouse
+        _register(
+            id="dbx.sales.orders_raw",
+            name="orders_raw",
+            source_type="databricks",
+            bucket="sales",
+            source_table="orders_raw",
+        )
+        tracker = self._install_tracker(monkeypatch, max_daily_estimates_per_user=500)
+
+        for _ in range(10):
+            out = self._estimate()
+            assert out["estimated_result_rows"] == 42
+
+        assert tracker.estimates_used_today(user="admin@test.com") == 10
+        assert sum("COUNT(*)" in s for s in wh.statements) == 10
+
+    def test_an_estimate_loop_is_refused_once_the_statement_budget_is_spent(self, seeded_app, warehouse, monkeypatch):
+        """The finding this guards.
+
+        Every Databricks estimate is billable warehouse compute, and the byte
+        budget cannot see it: the API reports only bytes RETURNED, and a
+        COUNT returns one row. So an agent looping on `/api/v2/scan/estimate`
+        would spend real money while the ledger read ~0. The statement budget
+        is what stops it.
+        """
+        from fastapi import HTTPException
+
+        from app.api.v2_quota import KIND_DAILY_ESTIMATES
+
+        wh, _settings = warehouse
+        _register(
+            id="dbx.sales.orders_raw",
+            name="orders_raw",
+            source_type="databricks",
+            bucket="sales",
+            source_table="orders_raw",
+        )
+        tracker = self._install_tracker(monkeypatch, max_daily_estimates_per_user=3)
+
+        for _ in range(3):
+            self._estimate()
+        spent = sum("COUNT(*)" in s for s in wh.statements)
+        assert spent == 3
+
+        with pytest.raises(HTTPException) as exc:
+            self._estimate()
+
+        assert exc.value.status_code == 429
+        assert exc.value.detail["reason"] == "daily_estimate_budget_exceeded"
+        assert exc.value.detail["kind"] == KIND_DAILY_ESTIMATES
+        assert exc.value.detail["current"] == 3
+        assert exc.value.detail["limit"] == 3
+        # Tells the caller to wait for the UTC-midnight reset rather than
+        # hot-retrying, which is exactly the loop being bounded.
+        assert exc.value.detail["retry_after_seconds"] > 0
+        # And the refusal was free: no fourth statement reached the warehouse.
+        assert sum("COUNT(*)" in s for s in wh.statements) == spent
+
+        # And this is *why* the statement counter has to exist. The byte
+        # ledger recorded only the genuine bytes those statements RETURNED —
+        # a couple of dozen, for three real scans of a Delta table. No
+        # synthetic charge was invented to paper over the gap (that would
+        # misprice BigQuery, which reports real scanned bytes), so the byte
+        # budget remains physically incapable of bounding this path: at this
+        # rate the 50 GiB default would take billions of calls to trip.
+        recorded = tracker.bytes_used_today(user="admin@test.com")
+        assert 0 < recorded < 1000, f"expected a trivially small returned-byte figure, got {recorded}"
+        assert recorded < 10**12 // 1000, "the byte budget must not be what bounds this path"
+
+    def test_a_failed_statement_still_counts_against_the_budget(self, seeded_app, warehouse, monkeypatch):
+        """What the warehouse bills for is the statement reaching it. If only
+        successes were counted, a loop of statements that time out — the
+        expensive ones — would be unbounded."""
+        from connectors.databricks.remote import DatabricksRemoteError
+
+        _register(
+            id="dbx.sales.orders_raw",
+            name="orders_raw",
+            source_type="databricks",
+            bucket="sales",
+            source_table="orders_raw",
+        )
+        tracker = self._install_tracker(monkeypatch, max_daily_estimates_per_user=10)
+
+        def _boom(*a, **kw):
+            raise DatabricksRemoteError(status=504, reason="databricks_timeout", message="too slow")
+
+        # `_estimate_databricks` imports `execute_select` at call time, so
+        # patching it on the module is what the endpoint will actually see.
+        monkeypatch.setattr("connectors.databricks.remote.execute_select", _boom)
+
+        from fastapi import HTTPException
+
+        with pytest.raises(HTTPException):
+            self._estimate()
+
+        assert tracker.estimates_used_today(user="admin@test.com") == 1
+
     def test_limit_caps_the_reported_row_count(self, seeded_app, warehouse):
         from app.api.v2_scan import estimate
         from src.db import get_system_db

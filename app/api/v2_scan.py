@@ -38,7 +38,12 @@ from src.repositories import (
 )
 from app.api.v2_schema import NotFound, build_schema  # reused for column resolution
 from app.api.v2_arrow import CONTENT_TYPE, arrow_to_ipc_bytes_capped
-from app.api.v2_quota import KIND_DAILY_BYTES, QuotaTracker, QuotaExceededError
+from app.api.v2_quota import (
+    KIND_DAILY_BYTES,
+    KIND_DAILY_ESTIMATES,
+    QuotaTracker,
+    QuotaExceededError,
+)
 from connectors.bigquery.access import BqAccess, BqAccessError, get_bq_access
 from connectors.bigquery.labels import job_labels_for
 from src.sql_ident import quote_ident
@@ -473,6 +478,18 @@ def estimate(conn, user, raw_request: dict, *, bq: BqAccess) -> dict:
     }
 
 
+#: Quota kind → the stable `reason` code a refused estimate reports. Each kind
+#: gets its OWN code rather than collapsing into one: an analyst told
+#: "daily_estimate_budget_exceeded" knows to stop looping and wait for the
+#: UTC-midnight reset, where "concurrent_scans_exceeded" means retry shortly
+#: and "daily_budget_exceeded" means their byte quota is gone. Same status,
+#: three different next actions.
+_ESTIMATE_QUOTA_REASONS = {
+    KIND_DAILY_BYTES: "daily_budget_exceeded",
+    KIND_DAILY_ESTIMATES: "daily_estimate_budget_exceeded",
+}
+
+
 def _estimate_databricks(req: ScanRequest, row: dict, schema: dict, safe_where: str | None, user) -> dict:
     """Estimate a Databricks remote scan.
 
@@ -494,30 +511,38 @@ def _estimate_databricks(req: ScanRequest, row: dict, schema: dict, safe_where: 
     settings = _databricks_settings_or_400(req.table_id)
 
     # Unlike BigQuery's arm, this is not a free dry-run: a filtered COUNT(*)
-    # over a Delta table is a real scan on the warehouse. So it takes the same
-    # two guards the FETCH path applies to every engine — the daily-budget
+    # over a Delta table is a real scan on the warehouse. So it takes the
+    # guards the FETCH path applies to every engine — the daily-budget
     # pre-flight and the caller's concurrent-scan slot — and gets the
     # INTERACTIVE deadline rather than the materialize one, since somebody is
     # waiting on an estimate and a 15-minute count is not an estimate.
     #
-    # What those guards do and do not bound is worth stating plainly. The
-    # concurrent slot caps how many warehouse statements one caller has in
-    # flight, not how many they issue in a day. The daily budget is
-    # denominated in BYTES, and the only byte figure Databricks reports is
-    # what a statement RETURNED (there is no scanned-bytes metric and no
-    # dry-run to price one) — so a COUNT, which returns one row, records
-    # essentially nothing against it. The pre-flight still matters: a caller
-    # who has burned the budget on real fetches stops being able to spend more
-    # warehouse compute here. But a loop issuing only estimates is bounded by
-    # concurrency and the statement timeout, not by a byte budget, and no
-    # rearrangement of these two guards changes that — it would need a quota
-    # denominated in statements rather than bytes.
+    # Those two are necessary and not sufficient, for a reason worth stating
+    # rather than leaving implied. The concurrent slot caps how many warehouse
+    # statements one caller has IN FLIGHT, not how many they issue in a day.
+    # The daily budget is denominated in BYTES, and the only byte figure
+    # Databricks reports is what a statement RETURNED — there is no
+    # scanned-bytes metric and no dry-run to price one — so a COUNT, which
+    # returns one row, records essentially nothing against a 50 GiB budget. An
+    # agent loop calling this endpoint would therefore run unbounded: every
+    # call billable, none of them visible to the ledger.
+    #
+    # Hence the third guard, denominated in the one unit that is honestly
+    # available here: STATEMENTS submitted today. It is deliberately a
+    # separate counter rather than a synthetic byte charge, because inventing
+    # a byte number for a statement whose bytes are unknown would corrupt the
+    # budget for BigQuery, which reports real ones.
     quota = _build_quota_tracker()
     user_id = identity_for_audit(user)[1] or "anon"
     try:
         quota.check_daily_budget(user=user_id)
+        quota.check_daily_estimates(user=user_id)
         with quota.acquire(user=user_id):
             count_sql = _build_databricks_sql(row, req, settings, safe_where=safe_where, count_only=True)
+            # Counted at submission, before the result is known: what the
+            # warehouse bills for is the statement reaching it, so a loop of
+            # statements that error out costs the same as a loop that works.
+            quota.record_estimate(user=user_id)
             _columns, rows, _truncated, returned_bytes = execute_select(
                 count_sql,
                 settings=settings,
@@ -526,13 +551,14 @@ def _estimate_databricks(req: ScanRequest, row: dict, schema: dict, safe_where: 
                 timeout_s=_databricks_estimate_timeout_s(),
             )
         # Accurate, and small by construction — recorded so the estimate is not
-        # simply invisible to the budget, never as the control that bounds it.
+        # simply invisible to the byte budget, never as the control that bounds
+        # it. `record_estimate` above is that control.
         quota.record_bytes(user=user_id, n=int(returned_bytes or 0))
     except QuotaExceededError as exc:
         raise HTTPException(
             status_code=429,
             detail={
-                "reason": "daily_budget_exceeded" if exc.kind == KIND_DAILY_BYTES else "concurrent_scans_exceeded",
+                "reason": _ESTIMATE_QUOTA_REASONS.get(exc.kind, "concurrent_scans_exceeded"),
                 "kind": exc.kind,
                 "current": exc.current,
                 "limit": exc.limit,
