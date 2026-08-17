@@ -197,6 +197,32 @@ def _scoped_id(source: str, source_ref: Optional[str], *parts: str) -> str:
     return "/".join([source, source_ref or "_", *parts])
 
 
+def _model_key(model: dict) -> str:
+    """The id component that identifies ONE model within a (source,
+    source_ref) — the upstream object's stable identifier when the document
+    carries one, its display name otherwise.
+
+    A model's ``name`` is a display name: neither unique nor stable. Keying
+    projected ids on it makes two like-named models collapse onto identical
+    ids, and since ``metric_repo().create`` upserts on id, the later model
+    silently OVERWRITES the earlier one — no prune, no skip, and
+    ``metrics_written`` still counts both. The retired Keboola writer keyed
+    on the immutable Metastore model UUID for exactly this reason, and the
+    adapter still carries it: ``custom_extensions[AGNES].metastore_id`` (see
+    ``connectors/keboola/semantic_ossie.py::_identity``, written for every
+    model, since only models with an ``id`` are composed at all).
+
+    A document from a source with no such identifier — a hand-authored or
+    git-hosted Ossie file — falls back to the name, and
+    :func:`project_document` reports a name collision there as an explicit
+    skip rather than overwriting.
+    """
+    raw = _agnes_payload(model).get("metastore_id")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    return model.get("name") or ""
+
+
 @dataclass
 class ProjectionReport:
     metrics_written: int = 0
@@ -275,7 +301,7 @@ def project_document(
     source: str,
     source_ref: Optional[str],
     safe_prune: bool = False,
-    prune: bool = True,
+    partial: bool = False,
 ) -> ProjectionReport:
     """Project one Ossie document, then prune rows this (source, source_ref)
     previously wrote that the document no longer mentions.
@@ -294,14 +320,17 @@ def project_document(
     signal); the Keboola sync — whose upstream can 200 with nothing usable —
     opts in. Mirrors the legacy ``_sync_one_source`` valve the cutover retired.
 
-    ``prune`` gates the whole delete-what's-missing pass (metrics, glossary,
-    columns), independent of ``safe_prune``. Off when the caller knows this
-    call is projecting a PARTIAL merged model list — e.g. one of several
-    composed documents failed validation and was dropped before reaching
-    here — because pruning against an incomplete list would delete the
-    dropped model's own previously-written rows, which upstream never asked
-    to have removed. Upserts still run normally; only the prune is skipped.
-    Defaults to True, the ordinary complete-document case.
+    ``partial`` says "``document_json`` is NOT the complete picture for this
+    (source, source_ref)" — one of several composed documents failed
+    validation and was dropped before reaching here, so a model that belongs
+    to this scope is missing. Pruning at full scope against that incomplete
+    list would delete the dropped model's own previously-written rows, which
+    upstream never asked to have removed. The prune then NARROWS to the models
+    actually present in this call rather than being skipped outright: a model
+    still present that genuinely lost a metric upstream is reconciled in the
+    same pass, while the missing model is out of reach by construction. Off by
+    default, because the full scope is what reclaims a model deleted upstream
+    — a caller that knows its input is complete must keep it.
     """
     report = ProjectionReport()
 
@@ -318,22 +347,33 @@ def project_document(
     binder = _table_binder()
     kb_lookups = _keboola_lookups()
 
-    # A model name shared by two models in the same document (a real upstream
-    # possibility — nothing prevents two Keboola semantic models being named
-    # the same) would otherwise upsert both onto the same `_scoped_id`s and
-    # silently overwrite one with the other; `report.metrics_written` would
-    # still count both, hiding the loss entirely. Skip the collision and
-    # report it instead. The durable fix is keying `_scoped_id` on the
-    # adapter's own `metastore_id` rather than the model name; this is the
-    # minimal guard until that lands.
-    seen_model_names: set[str] = set()
+    # One id prefix per model projected here. Used only when ``partial`` — see
+    # the docstring — to keep the prune off models this call never saw.
+    model_prefixes: set[str] = set()
+    seen_model_keys: set[str] = set()
 
     for model in document_json.get("semantic_model") or []:
         model_name = model.get("name") or ""
-        if model_name in seen_model_names:
-            report.skipped.append({"kind": "model", "name": model_name, "reason": "duplicate_model_name"})
+        model_key = _model_key(model)
+        if model_key in seen_model_keys:
+            # Two models sharing an id component. With a stable upstream
+            # identifier this cannot happen; without one (a hand-authored
+            # document with two like-named models) every id would collide and
+            # the later model would silently overwrite the earlier — reported
+            # as a skip instead, because a silent overwrite is
+            # indistinguishable from "the second model imported fine".
+            logger.warning(
+                "Semantic projection (%s/%s): model %r reuses the id key %r of an earlier model in this "
+                "document; skipping it rather than overwriting the first model's rows.",
+                source,
+                source_ref,
+                model_name,
+                model_key,
+            )
+            report.skipped.append({"kind": "model", "name": model_name, "reason": "duplicate_model_key"})
             continue
-        seen_model_names.add(model_name)
+        seen_model_keys.add(model_key)
+        model_prefixes.add(_scoped_id(source, source_ref, model_key) + "/")
 
         synonyms = _model_synonyms(model)
         constraints = _agnes_payload(model).get("constraints") or []
@@ -372,7 +412,7 @@ def project_document(
             sql, table_name, tables = bound
             grain = grain_by_table.get(table_id)
             notes = [f"dataset grain: {grain}"] if grain else None
-            metric_id = _scoped_id(source, source_ref, model_name, metric_name)
+            metric_id = _scoped_id(source, source_ref, model_key, metric_name)
             metric_repo().create(
                 id=metric_id,
                 name=metric_name,
@@ -425,7 +465,7 @@ def project_document(
             term = entry.get("term")
             if not term:
                 continue
-            base_glossary_id = _scoped_id(source, source_ref, model_name, _slugify(term))
+            base_glossary_id = _scoped_id(source, source_ref, model_key, _slugify(term))
             # Two distinct terms can slugify identically ("Revenue (net)" and
             # "Revenue net" both -> "revenue_net"); without a dedup, the
             # second silently overwrites the first while `glossary_written`
@@ -455,10 +495,16 @@ def project_document(
             written_glossary_ids.add(glossary_id)
             report.glossary_written += 1
 
-    if prune:
-        report.metrics_pruned = _prune_metrics(source, source_ref, written_metric_ids, safe_prune=safe_prune)
-        report.glossary_pruned = _prune_glossary(source, source_ref, written_glossary_ids, safe_prune=safe_prune)
-        _prune_columns(source, written_columns_by_table)
+    prune_prefixes = model_prefixes if partial else None
+    report.metrics_pruned = _prune_metrics(
+        source, source_ref, written_metric_ids, safe_prune=safe_prune, scope_prefixes=prune_prefixes
+    )
+    report.glossary_pruned = _prune_glossary(
+        source, source_ref, written_glossary_ids, safe_prune=safe_prune, scope_prefixes=prune_prefixes
+    )
+    # `_prune_columns` needs no narrowing: it only visits tables THIS call
+    # wrote to, so a dropped model's tables are out of its reach already.
+    _prune_columns(source, written_columns_by_table)
 
     if report.glossary_written or report.glossary_pruned:
         glossary_repo().refresh_search_index()
@@ -466,12 +512,32 @@ def project_document(
     return report
 
 
-def _prune_metrics(source: str, source_ref: Optional[str], written: set[str], *, safe_prune: bool = False) -> int:
+def _in_prune_scope(row_id: str, scope_prefixes: Optional[set[str]]) -> bool:
+    """Whether an in-(source, source_ref) row is also inside the narrowed
+    prune scope. ``None`` means "no narrowing" — the whole (source,
+    source_ref), which is what reclaims a model deleted upstream. A set of id
+    prefixes restricts the prune to the models a partial projection actually
+    carried; see ``project_document``'s ``partial``."""
+    if scope_prefixes is None:
+        return True
+    return any(row_id.startswith(prefix) for prefix in scope_prefixes)
+
+
+def _prune_metrics(
+    source: str,
+    source_ref: Optional[str],
+    written: set[str],
+    *,
+    safe_prune: bool = False,
+    scope_prefixes: Optional[set[str]] = None,
+) -> int:
     repo = metric_repo()
     in_scope = {
         m["id"]
         for m in repo.list()
-        if (m.get("source") or "") == source and (m.get("source_ref") or "") == (source_ref or "")
+        if (m.get("source") or "") == source
+        and (m.get("source_ref") or "") == (source_ref or "")
+        and _in_prune_scope(m["id"], scope_prefixes)
     }
     if safe_prune and not written and in_scope:
         # Full-wipe guard: wrote nothing this pass while rows exist — a likely
@@ -493,14 +559,23 @@ def _prune_metrics(source: str, source_ref: Optional[str], written: set[str], *,
     return pruned
 
 
-def _prune_glossary(source: str, source_ref: Optional[str], written: set[str], *, safe_prune: bool = False) -> int:
+def _prune_glossary(
+    source: str,
+    source_ref: Optional[str],
+    written: set[str],
+    *,
+    safe_prune: bool = False,
+    scope_prefixes: Optional[set[str]] = None,
+) -> int:
     repo = glossary_repo()
     # No list_all(): list(limit=...) with a high ceiling is the established
     # pattern for "give me every row" reads elsewhere (app/web/router.py).
     in_scope = {
         g["id"]
         for g in repo.list(limit=100_000)
-        if (g.get("source") or "") == source and (g.get("source_ref") or "") == (source_ref or "")
+        if (g.get("source") or "") == source
+        and (g.get("source_ref") or "") == (source_ref or "")
+        and _in_prune_scope(g["id"], scope_prefixes)
     }
     if safe_prune and not written and in_scope:
         logger.warning(

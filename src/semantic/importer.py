@@ -168,6 +168,10 @@ def import_documents(source: dict, documents: List[str]) -> ImportReport:
 
     if valid_documents:
         merged = {"semantic_model": [m for doc in valid_documents for m in (doc.get("semantic_model") or [])]}
-        report.projection = project_document(merged, source=src_name, source_ref=src_ref)
+        # `partial` when a document failed validation and was recorded rather
+        # than projected: the merged list is then an incomplete picture of this
+        # (source, source_ref), and a full-scope prune would delete the invalid
+        # model's previously-written rows on the strength of that partial read.
+        report.projection = project_document(merged, source=src_name, source_ref=src_ref, partial=bool(report.invalid))
 
     return report

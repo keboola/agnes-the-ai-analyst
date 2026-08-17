@@ -177,6 +177,20 @@ accessible valid models the response is `{"available": false, "error":
 all-clear — do not read a missing `available` (or `available: true`) as
 "no semantic layer configured".
 
+Constraints have no slot in core Ossie, so they ride `custom_extensions`
+under the Agnes vendor name, and the key naming the rule kind is
+`constraint_type` — the same key the Keboola adapter composes, the projector
+copies into `metric_definitions.validation.rules[]`, and
+`agnes catalog --metrics --show` renders:
+
+```yaml
+custom_extensions:
+  - vendor_name: AGNES
+    data: >-
+      {"constraints": [{"name": "eu_only", "constraint_type": "required_filter",
+       "rule": "region = 'EU'", "severity": "error", "metrics": ["revenue"]}]}
+```
+
 Not to be confused with `agnes admin semantic-model validate <file>` below,
 which schema-checks a *document*, offline, before it is ever stored.
 

@@ -258,9 +258,13 @@ class TestIntendedDifferences:
 
     def test_id_shape(self, synced):
         metastore, _ = synced
-        # source/source_ref/model/name — source_ref is None for the explicit
-        # single-source path, so the ref segment is `_`.
-        assert metastore["total_revenue"]["id"] == "keboola_metastore/_/core/total_revenue"
+        # source/source_ref/model-key/name — source_ref is None for the
+        # explicit single-source path, so the ref segment is `_`. The model
+        # segment is the model's STABLE upstream id (the Metastore UUID the
+        # adapter carries), not its display name: names are neither unique nor
+        # stable, and two like-named models keyed on the name collapse onto
+        # one id, the later silently overwriting the earlier.
+        assert metastore["total_revenue"]["id"] == "keboola_metastore/_/model-1/total_revenue"
 
     def test_grain_is_dropped(self, synced):
         metastore, _ = synced

@@ -535,6 +535,7 @@ def _store_ossie_documents(documents: list[str], *, source: str, source_ref: Opt
 
     from src.repositories import semantic_model_repo
     from src.semantic.document_validation import validate_document
+    from src.semantic.projection import _model_key
 
     repo = semantic_model_repo()
     existing_by_slug = {m["slug"]: m for m in repo.list_all(source=source, source_ref=source_ref)}
@@ -557,6 +558,23 @@ def _store_ossie_documents(documents: list[str], *, source: str, source_ref: Opt
         slug = models[0].get("name") if models else None
         if not slug:
             continue
+        if slug in keep_slugs:
+            # A model NAME is not unique upstream, and the slug is this
+            # table's storage key — two models named the same upserted onto
+            # ONE row, so the second document silently replaced the first (and
+            # `keep_slugs` listed the name twice, hiding it from the prune
+            # too). Disambiguate with the model's own stable Metastore id,
+            # which the adapter carries. The first model keeps the clean slug,
+            # so an existing install's export URL does not move.
+            disambiguator = _model_key(models[0]) or str(len(keep_slugs))
+            logger.warning(
+                "Keboola semantic layer: two composed models share the name %r for source %s; "
+                "storing the later one as %r so neither document is lost.",
+                slug,
+                source_ref,
+                f"{slug}-{disambiguator}",
+            )
+            slug = f"{slug}-{disambiguator}"
         keep_slugs.append(slug)
         if result.parsed is not None:
             parsed_documents.append(result.parsed)
@@ -764,15 +782,17 @@ def _sync_one_source(
     # PARTIAL view of what the adapter actually composed — projecting it with
     # pruning on would delete the dropped model's own previously-written rows,
     # which upstream never asked to have removed (mirrors the retired
-    # "fetch all models before writing anything" invariant). Skip the prune
-    # for this pass only; the write/upsert side is unaffected, and the next
-    # fully-valid sync prunes normally.
+    # "fetch all models before writing anything" invariant). `partial=True`
+    # NARROWS the projector's prune to the models this projection actually
+    # carried rather than skipping it wholesale, so a model that IS here and
+    # genuinely lost a metric upstream is still reconciled this pass while the
+    # dropped model's rows stay out of reach.
     partial_composition = len(parsed_documents) < len(ossie_documents)
     if partial_composition:
         logger.warning(
             "Keboola semantic layer: %d of %d composed document(s) failed validation and were "
-            "dropped this pass (source_ref=%s); skipping prune to avoid deleting the dropped "
-            "model(s)' previously-written rows. A later fully-valid sync will prune normally.",
+            "dropped this pass (source_ref=%s); narrowing the prune to the models that survived, "
+            "so the dropped model(s)' previously-written rows are left intact.",
             len(ossie_documents) - len(parsed_documents),
             len(ossie_documents),
             source_ref,
@@ -789,7 +809,7 @@ def _sync_one_source(
     for doc in parsed_documents:
         merged["semantic_model"].extend(doc.get("semantic_model") or [])
     report = project_document(
-        merged, source="keboola_metastore", source_ref=source_ref, safe_prune=True, prune=not partial_composition
+        merged, source="keboola_metastore", source_ref=source_ref, safe_prune=True, partial=partial_composition
     )
 
     # `unresolved_tables` is a plain fact for the admin Semantic layer page: the

@@ -71,7 +71,7 @@ class TestValidateQuery:
             "violations": [
                 {
                     "name": "region_filter_required",
-                    "type": "required_filter",
+                    "constraint_type": "required_filter",
                     "rule": "region = 'EU'",
                     "severity": "error",
                     "metrics": ["revenue"],
@@ -92,7 +92,7 @@ class TestValidateQuery:
             "post_execution_checks": [
                 {
                     "name": "non_negative_value",
-                    "type": "value_range",
+                    "constraint_type": "value_range",
                     "rule": "value >= 0",
                     "severity": "warning",
                     "metrics": ["revenue"],
