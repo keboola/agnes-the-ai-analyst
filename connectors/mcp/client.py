@@ -37,7 +37,19 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
-from mcp.client.streamable_http import streamablehttp_client
+
+# `streamablehttp_client` is the OLD spelling. The SDK renamed it to
+# `streamable_http_client`, shipped both names for a while, and a later release
+# dropped the alias — at which point every import of this module raised
+# `ImportError` and, because `app.main` reaches it at import time, the whole
+# test suite errored out rather than failing one case. The new name is tried
+# first so this keeps working as the alias disappears, and the fallback keeps
+# it working on an installed SDK old enough to have only the old spelling.
+# `mcp>=1.28.1` in pyproject spans both, so neither branch is dead.
+try:
+    from mcp.client.streamable_http import streamable_http_client as streamablehttp_client
+except ImportError:  # pragma: no cover - depends on the installed SDK version
+    from mcp.client.streamable_http import streamablehttp_client
 
 logger = logging.getLogger(__name__)
 

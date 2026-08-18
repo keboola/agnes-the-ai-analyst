@@ -295,3 +295,24 @@ def test_stdio_pool_key_is_salted_with_the_user_for_per_user_sources(monkeypatch
 
     asyncio.run(_drive())
     assert pool.salts == [expected]
+
+
+def test_the_http_transport_symbol_survives_the_sdk_rename():
+    """`connectors/mcp/client.py` is reached at import time from `app.main`, so
+    an ImportError here is not one failing test — it errors out every test that
+    builds the app, which is what a whole CI run looked like when the SDK
+    dropped the old `streamablehttp_client` alias in favour of
+    `streamable_http_client`.
+
+    Pinned as a behaviour, not a spelling: whichever name the installed SDK
+    exports, the module must bind a usable callable, so this keeps passing
+    across the rename in either direction."""
+    import inspect
+
+    from connectors.mcp import client as mcp_client
+
+    fn = mcp_client.streamablehttp_client
+    assert callable(fn)
+    # The transport is an async context manager factory in both spellings —
+    # a plain re-export of something else would satisfy `callable` alone.
+    assert inspect.isasyncgenfunction(fn) or hasattr(fn, "__wrapped__") or inspect.isfunction(fn)

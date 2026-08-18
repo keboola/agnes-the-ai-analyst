@@ -10,6 +10,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.83.57] - 2026-08-18
+
+### Fixed
+
+- **The MCP client survives the SDK's `streamablehttp_client` rename.** `connectors/mcp/client.py` imported the old spelling, which the SDK renamed to `streamable_http_client`, carried as an alias for a while, and then dropped. Because `app.main` reaches that module at import time, the removal did not fail one test — it raised `ImportError` during collection and errored out essentially every test that builds the app, on every branch at once, with nothing in the diff to explain it. The import now prefers the new name and falls back to the old, so it spans both (`mcp>=1.28.1` covers SDK versions with either), and a guard in `tests/test_mcp_client_transport.py` pins the symbol rather than the spelling.
+
+
 ## [0.83.56] - 2026-08-18
 
 ### Added
