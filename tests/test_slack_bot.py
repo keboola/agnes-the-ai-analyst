@@ -958,9 +958,10 @@ def test_mention_unbound_channel_stays_unrouted_and_unprefixed(monkeypatch):
     assert reactions == []
 
 
-def test_mention_routed_existing_thread_no_header_but_still_acks(monkeypatch):
-    """Dedupe wins over the binding: an existing thread session keeps its
-    agent and gets no second context header — but every mention still acks."""
+def test_mention_routed_existing_thread_with_messages_gets_no_second_header(monkeypatch):
+    """Dedupe wins over the binding: an existing thread session that already
+    DELIVERED a turn keeps its agent and gets no second context header — but
+    every mention still acks."""
     import asyncio
     import services.slack_bot.events as ev
 
@@ -978,14 +979,46 @@ def test_mention_routed_existing_thread_no_header_but_still_acks(monkeypatch):
     _seed_channel_bound_agent(conn, owner=uid, slug="router-2")
     conn.execute(
         "INSERT INTO chat_sessions(id, user_email, surface, slack_channel_id, "
-        "slack_thread_ts, title, started_at) VALUES "
-        "('s_bound', 'u@x', 'slack_thread', 'C_OK', '9.7', NULL, current_timestamp)"
+        "slack_thread_ts, title, started_at, message_count) VALUES "
+        "('s_bound', 'u@x', 'slack_thread', 'C_OK', '9.7', NULL, current_timestamp, 1)"
     )
     mgr = _FakeMgr()
     app = _FakeApp(conn=conn, mgr=mgr)
     asyncio.run(ev._handle_mention(app, {"channel": "C_OK", "ts": "9.7", "user": "U_OK", "text": "<@U07BOT> follow-up"}))
     assert mgr.sent and mgr.sent[0][1] == "follow-up"
     assert reactions == [("C_OK", "9.7", "eyes")]
+
+
+def test_mention_routed_zero_message_session_still_gets_header(monkeypatch):
+    """A first mention that timed out on startup persists the session row
+    but delivers nothing — the RETRY must still carry the slack-context
+    header, or the agent permanently never learns its channel/thread ids
+    (Devin Review on this PR). Keyed on message_count == 0, not row absence."""
+    import asyncio
+    import services.slack_bot.events as ev
+
+    monkeypatch.setattr(ev, "send_ephemeral_to_user", lambda *a, **k: None)
+
+    async def _fake_react(channel, ts, emoji):
+        return None
+
+    monkeypatch.setattr(ev, "add_reaction", _fake_react)
+    conn = get_system_db()
+    _ensure_schema(conn)
+    uid = _seed_bound_chat_user(conn)
+    _allow_channel(conn)
+    _seed_channel_bound_agent(conn, owner=uid, slug="router-4")
+    conn.execute(
+        "INSERT INTO chat_sessions(id, user_email, surface, slack_channel_id, "
+        "slack_thread_ts, title, started_at, message_count) VALUES "
+        "('s_stalled', 'u@x', 'slack_thread', 'C_OK', '9.9', NULL, current_timestamp, 0)"
+    )
+    mgr = _FakeMgr()
+    app = _FakeApp(conn=conn, mgr=mgr)
+    asyncio.run(ev._handle_mention(app, {"channel": "C_OK", "ts": "9.9", "user": "U_OK", "text": "<@U07BOT> retry"}))
+    assert mgr.sent
+    assert mgr.sent[0][1].startswith("[slack context: channel=C_OK thread_ts=9.9 ")
+    assert mgr.sent[0][1].endswith("retry")
 
 
 def test_mention_routed_but_foreign_thread_rejected_without_ack(monkeypatch):

@@ -410,9 +410,13 @@ async def _handle_mention(app, event: dict) -> None:
 
     # 7b. Routed sessions get a one-time context header on their FIRST turn
     # so an agent granted Slack tools can operate on the correct thread —
-    # the sandbox otherwise never learns channel/ts identifiers. Existing
-    # thread sessions (dedupe wins over the binding) already received it.
-    if bound_agent is not None and existing is None:
+    # the sandbox otherwise never learns channel/ts identifiers. Keyed on
+    # "no message ever delivered", not on row existence: create_session
+    # persists the row BEFORE the liveness wait, so a first mention that
+    # times out on startup leaves a zero-message session behind and the
+    # retry must still carry the header. A pre-binding session with real
+    # messages gets none (dedupe wins over the binding).
+    if bound_agent is not None and (existing is None or (existing.message_count or 0) == 0):
         clean = (
             f"[slack context: channel={channel} thread_ts={thread_ts} "
             f"message_ts={event['ts']} sender=<@{slack_user_id}>]\n{clean}"
