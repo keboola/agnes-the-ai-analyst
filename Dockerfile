@@ -43,6 +43,8 @@ COPY . .
 #   - tls-fetch.sh — generic URL fetcher (sm:// gs:// https:// file://)
 #   - agnes-state-applier.{sh,service,timer} — DB backend state machine
 #     (applies compose lifecycle changes when /data/state/db-state-target.flag changes)
+#   - post-deploy-smoke-test.sh — deploy gate (docs/ONBOARDING.md step 8):
+#     public API + new-instance doctor + host-side consistency checks
 #   - docker-compose.{yml,prod.yml,host-mount.yml,tls.yml} — host runtime
 #   - Caddyfile — TLS reverse proxy config
 #   - static/maintenance.html — Caddy's handle_errors 502/503 fallback page
@@ -59,6 +61,7 @@ RUN mkdir -p /opt/agnes-host/static /opt/agnes-host && \
        /app/scripts/ops/agnes-state-applier.service \
        /app/scripts/ops/agnes-state-applier.timer \
        /app/scripts/ops/agnes-state-applier-bootstrap.service \
+       /app/scripts/ops/post-deploy-smoke-test.sh \
        /app/scripts/tls-fetch.sh \
        /opt/agnes-host/ && \
     cp /app/docker-compose.yml /app/docker-compose.prod.yml \
@@ -70,6 +73,7 @@ RUN mkdir -p /opt/agnes-host/static /opt/agnes-host && \
     chmod 0755 /opt/agnes-host/agnes-auto-upgrade.sh \
               /opt/agnes-host/agnes-tls-rotate.sh \
               /opt/agnes-host/agnes-state-applier.sh \
+              /opt/agnes-host/post-deploy-smoke-test.sh \
               /opt/agnes-host/tls-fetch.sh && \
     chmod 0644 /opt/agnes-host/agnes-state-applier.service \
               /opt/agnes-host/agnes-state-applier.timer \
