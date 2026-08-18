@@ -10,6 +10,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.83.37] - 2026-08-17
+
+### Internal
+
+- **Groundwork for a Microsoft Teams chat surface.** `Surface.TEAMS_DM` and a Bot Framework Connector JWT/JWKS verifier (`services/teams_bot/sigverify.py`) land ahead of the webhook route and router registration that will actually reach them. Teams' auth model is a bearer JWT verified against Microsoft's rotating JWKS rather than Slack's symmetric HMAC signing secret, so verification needed its own module rather than reusing `services/slack_bot/sigverify.py`. Nothing is wired to an endpoint yet — first increment of the Teams bot MVP.
+
 ## [0.83.36] - 2026-08-17
 
 ### Added
