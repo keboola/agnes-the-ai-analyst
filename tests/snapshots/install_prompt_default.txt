@@ -47,7 +47,10 @@ verification; turning verification off hides the problem instead of
 solving it.
 
 1) Install the CLI:
-   uv tool install --force {server_url}/cli/wheel/agnes-X.Y.Z-py3-none-any.whl
+   TMPDIR_WHEEL=$(mktemp -d -t agnes_cli.XXXXXX)
+   (cd "$TMPDIR_WHEEL" && curl -fsSL -OJ {server_url}/cli/download)
+   WHEEL=$(ls "$TMPDIR_WHEEL"/*.whl 2>/dev/null | head -n1)
+   uv tool install --force "$WHEEL"
 
    If uv is not installed yet, install it from the official instructions at
    https://docs.astral.sh/uv/ — on Windows `winget install --id=astral-sh.uv`,

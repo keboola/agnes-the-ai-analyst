@@ -4,10 +4,13 @@ Both the JS-embedded clipboard renderer (`_claude_setup_instructions.jinja`)
 and the read-only HTML preview on the dashboard and /install pages consume
 these lines. Keep it in Python so there is exactly ONE place that edits.
 
-Placeholders `{server_url}`, `{wheel_filename}`, and `{server_host}` are
-substituted at render time. `{wheel_filename}` and `{server_host}` are
-pre-substituted server-side via `resolve_lines()`; `{server_url}` survives
-into the JS template and is filled in at click time.
+Placeholders `{server_url}` and `{server_host}` are substituted at render
+time — `{server_host}` server-side via `resolve_lines()`, `{server_url}`
+surviving into the JS template to be filled in at click time.
+`{wheel_filename}` is still accepted by `resolve_lines()` /
+`render_setup_instructions()` for backward compatibility with existing
+callers, but no longer appears anywhere in the rendered body — see the note
+near "server-pre-substituted" below.
 
 The analyst's access token is deliberately NOT a placeholder in this
 template. It is written to `~/.agnes/token` out-of-band, before this
@@ -21,10 +24,15 @@ on an explicit second click.) `render_setup_instructions()` still accepts a
 a no-op today: nothing in the rendered body contains `{token}` to
 substitute.
 
-`{wheel_filename}` is server-pre-substituted because `uv tool install`
-validates the PEP 427 filename *in the URL path* before fetching, so a
-stable alias like `agnes.whl` fails with "Must have a version" — we need
-the real versioned filename inlined.
+`{wheel_filename}` USED to be server-pre-substituted into a
+`/cli/wheel/{wheel_filename}` URL, because `uv tool install` validates the
+PEP 427 filename *in the URL path* before fetching, so a stable alias like
+`agnes.whl` fails with "Must have a version". That pinned the filename
+captured at RENDER time, though, so a server upgrade between render and
+execution 404d it. Step 1 now downloads via the unversioned `/cli/download`
+endpoint instead (immune to that race — see `_install_cli_lines`), and
+`{wheel_filename}` is kept only for backward compatibility with callers
+that still pass it.
 
 `{server_host}` is server-pre-substituted because the `git config` and
 `claude plugin marketplace add` lines need the bare host (no scheme), and
@@ -304,8 +312,21 @@ def _tls_trust_block(ca_pem: str) -> list[str]:
 def _install_cli_lines(*, has_ca: bool, server_url_placeholder: str = "{server_url}") -> list[str]:
     """Step 1 — install the `agnes` CLI.
 
-    When the trust block was emitted (`has_ca=True`), we MUST avoid
-    `uv tool install <https-url>` against the Agnes wheel endpoint:
+    Downloads via the unversioned `/cli/download` endpoint (`curl -OJ`,
+    which honours `Content-Disposition` and saves the wheel under its real
+    PEP-427 filename) into a fresh temp dir, then installs from that local
+    file — the same pattern `app/api/cli_artifacts.py::cli_install_script`
+    (`/cli/install.sh`) already uses. This is deliberately NOT a
+    `/cli/wheel/{wheel_filename}` URL pinned to the filename captured when
+    this prompt was *rendered*: `app/api/cli_artifacts.py::cli_wheel_versioned`
+    serves only the wheel currently on disk, so if the server auto-upgrades
+    between render and execution (a background version roll, or simply time
+    passing before the user pastes the prompt), a pinned URL 404s.
+    `/cli/download` always serves whichever wheel is current at fetch time,
+    so the install survives a mid-session version roll.
+
+    When the trust block was emitted (`has_ca=True`), we MUST additionally
+    avoid `uv tool install <https-url>` against the Agnes server:
     rustls rejects the Agnes leaf cert with `CaUsedAsEndEntity`, regardless
     of `--native-tls` (the rejection is at chain validation, not at trust
     lookup — putting the cert in the OS store doesn't fix it). Solution:
@@ -315,22 +336,23 @@ def _install_cli_lines(*, has_ca: bool, server_url_placeholder: str = "{server_u
     store for that path, which is fine because PyPI's CA chain is public.
 
     When `has_ca=False`, we trust the server's cert is publicly valid, so
-    the simple direct install works.
+    the simple curl-then-install pattern works without the cert flags.
     """
     if has_ca:
         return [
             "1) Install the CLI.",
             "   The Agnes server's self-signed cert trips rustls' CaUsedAsEndEntity check,",
-            "   so direct `uv tool install <https-url>` against the wheel endpoint fails",
-            "   (even with --native-tls). Workaround: curl-then-local-install.",
+            "   so direct `uv tool install <https-url>` against the server fails (even",
+            "   with --native-tls). Workaround: curl-then-local-install.",
             "",
             "   If uv is missing first, install it from the official instructions at",
             "   https://docs.astral.sh/uv/ — on Windows `winget install --id=astral-sh.uv`,",
             "   on macOS `brew install uv`. If you use the shell installer instead,",
             "   download it to a file and show it to me before running it.",
             "",
-            "   WHEEL=/tmp/{wheel_filename}",
-            f'   curl -fsSL --cacert ~/.agnes/ca.pem -o "$WHEEL" {server_url_placeholder}/cli/wheel/{{wheel_filename}}',
+            "   TMPDIR_WHEEL=$(mktemp -d -t agnes_cli.XXXXXX)",
+            f'   (cd "$TMPDIR_WHEEL" && curl -fsSL --cacert ~/.agnes/ca.pem -OJ {server_url_placeholder}/cli/download)',
+            '   WHEEL=$(ls "$TMPDIR_WHEEL"/*.whl 2>/dev/null | head -n1)',
             '   uv tool install --native-tls --force "$WHEEL"',
             "",
             "   If `agnes --version` fails after install because ~/.local/bin is not on PATH:",
@@ -345,7 +367,10 @@ def _install_cli_lines(*, has_ca: bool, server_url_placeholder: str = "{server_u
         ]
     return [
         "1) Install the CLI:",
-        f"   uv tool install --force {server_url_placeholder}/cli/wheel/{{wheel_filename}}",
+        "   TMPDIR_WHEEL=$(mktemp -d -t agnes_cli.XXXXXX)",
+        f'   (cd "$TMPDIR_WHEEL" && curl -fsSL -OJ {server_url_placeholder}/cli/download)',
+        '   WHEEL=$(ls "$TMPDIR_WHEEL"/*.whl 2>/dev/null | head -n1)',
+        '   uv tool install --force "$WHEEL"',
         "",
         "   If uv is not installed yet, install it from the official instructions at",
         "   https://docs.astral.sh/uv/ — on Windows `winget install --id=astral-sh.uv`,",
@@ -1131,9 +1156,7 @@ def _preamble_lines(*, has_ca: bool, custom_preamble: str = "") -> list[str]:
     return lines
 
 
-def _step_numbers(
-    *, has_connectors: bool = True, has_required_connectors: bool = False
-) -> dict[str, str]:
+def _step_numbers(*, has_connectors: bool = True, has_required_connectors: bool = False) -> dict[str, str]:
     """Compute the step numbers for the unified layout.
 
     Returns a dict keyed by logical step name; values are stringified
@@ -1212,10 +1235,13 @@ def resolve_lines(
 ) -> list[str]:
     """Return the template lines with server-side placeholders substituted.
 
-    Pre-substitutes `{wheel_filename}` and `{server_host}`. Leaves
-    `{server_url}` as a placeholder for click-time JS substitution (or for
-    `render_setup_instructions()` below). The access token is never a
-    placeholder here — see the module docstring.
+    Pre-substitutes `{server_host}`; `{wheel_filename}` is accepted for
+    backward compatibility with existing callers but no longer appears in
+    the rendered body — step 1 downloads via the unversioned `/cli/download`
+    endpoint instead of a filename-pinned URL (see `_install_cli_lines`).
+    Leaves `{server_url}` as a placeholder for click-time JS substitution
+    (or for `render_setup_instructions()` below). The access token is never
+    a placeholder here — see the module docstring.
 
     `ca_pem` (PEM-encoded fullchain of the Agnes server's TLS cert) gates
     the cross-platform step-0 trust-bootstrap block AND switches step 1 to
@@ -1231,10 +1257,10 @@ def resolve_lines(
     load. ``[]`` (empty list) is treated differently from ``None``: it
     intentionally renders no connector blocks.
 
-    Fallback: callers pass `"agnes.whl"` when no wheel is present on disk.
-    The resulting URL (`/cli/wheel/agnes.whl`) will 404 at download time, but
-    the instruction text still renders so operators can see the snippet shape
-    and diagnose the missing wheel on the server.
+    Fallback: callers pass `"agnes.whl"` when no wheel is present on disk —
+    the value is accepted but unused (see above). The instruction text still
+    renders so operators can see the snippet shape; `/cli/download` itself
+    404s at fetch time, surfacing the missing-wheel diagnosis the same way.
     """
     names = list(plugin_install_names or [])
     has_ca = bool(ca_pem and ca_pem.strip())
@@ -1258,9 +1284,7 @@ def resolve_lines(
     # is plugging the user's tools. An absent group (no required entries,
     # no optional entries, or an empty manifest) drops its step and the
     # rest renumber — _step_numbers handles it.
-    steps = _step_numbers(
-        has_connectors=has_connectors, has_required_connectors=has_required
-    )
+    steps = _step_numbers(has_connectors=has_connectors, has_required_connectors=has_required)
 
     lines: list[str] = []
     if has_ca:

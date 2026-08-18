@@ -405,14 +405,16 @@ def init(
     ),
     workspace_str: Optional[str] = typer.Option(None, "--workspace", help="Target dir (default: cwd)"),
     skip_materialize: bool = typer.Option(
-        False,
-        "--skip-materialize",
+        True,
+        "--skip-materialize/--materialize",
         help=(
-            "Skip materialized-mode tables on the first pull. The first "
-            "init can otherwise spend tens of minutes silently downloading "
-            "a single multi-GB scheduled-query parquet. Materialized rows "
-            "are still discoverable via `agnes catalog`; rerun `agnes pull` "
-            "without this flag once you actually need them locally."
+            "Skip materialized-mode tables on the first pull (default: on). "
+            "The first init can otherwise spend tens of minutes silently "
+            "downloading a single multi-GB scheduled-query parquet while "
+            "every lighter table waits behind it. Materialized rows are "
+            "still discoverable via `agnes catalog`; fetch them on demand "
+            "with a later `agnes pull` (no flag needed there), or force "
+            "them into this first pull with --materialize."
         ),
     ),
     no_shortcut: bool = typer.Option(
@@ -1284,13 +1286,16 @@ def init(
     # `tables_updated` is the count of those actually fetched this run.
     # The catalog can carry many more remote-only rows that aren't part
     # of `parquets_total` at all — surface that explicitly so analysts
-    # who see "0 synced (0 total)" after `--skip-materialize` don't
-    # conclude the server returned an empty catalog. Issue #257.
-    if skip_materialize:
+    # who see "0 synced (0 total)" after the default `--skip-materialize`
+    # don't conclude the server returned an empty catalog. Issue #257.
+    # Gated on parquets_total > 0 so an instance with no materialized
+    # tables at all doesn't print a "skipped" note about nothing.
+    if skip_materialize and result.parquets_total > 0:
         typer.echo(
             f"  Tables   : 0 fetched locally — {result.parquets_total} "
-            f"materialized row(s) skipped (re-run without --skip-materialize "
-            f"to download). Catalog still serves all registered tables."
+            f"materialized row(s) skipped by default. Fetch them on demand "
+            f"with `agnes pull`, or re-run `agnes init --materialize` for "
+            f"the full first pull. Catalog still serves all registered tables."
         )
     else:
         typer.echo(f"  Tables   : {result.tables_updated}/{result.parquets_total} local materialized rows fetched")
