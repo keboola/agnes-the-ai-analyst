@@ -414,6 +414,52 @@ def test_get_info_by_ids_empty_input_returns_empty(users_repo):
 
 
 # ---------------------------------------------------------------------------
+# get_by_email_ci — case-insensitive identity lookup parity
+#
+# Both engines compare strings case-SENSITIVELY on `=`, so the shared
+# provisioning path (app/auth/provisioning.py::ensure_user) needs an explicit
+# case-folded lookup to keep one person on one account across providers.
+# ---------------------------------------------------------------------------
+
+
+def test_get_by_email_ci_matches_regardless_of_case(users_repo):
+    repo, _, _ = users_repo
+    _make_user(repo, id="user-mixed", email="Mixed.Case@Example.com")
+    assert repo.get_by_email("mixed.case@example.com") is None  # exact match is case-sensitive
+    row = repo.get_by_email_ci("mixed.case@example.com")
+    assert row is not None
+    assert row["id"] == "user-mixed"
+    assert row["email"] == "Mixed.Case@Example.com"
+
+
+def test_get_by_email_ci_no_match_returns_none(users_repo):
+    repo, _, _ = users_repo
+    _make_user(repo, id="user-a", email="a@example.com")
+    assert repo.get_by_email_ci("nobody@example.com") is None
+
+
+def test_get_by_email_ci_is_not_a_prefix_or_wildcard_match(users_repo):
+    repo, _, _ = users_repo
+    _make_user(repo, id="user-a", email="alice@example.com")
+    assert repo.get_by_email_ci("alic") is None
+    assert repo.get_by_email_ci("%@example.com") is None
+
+
+def test_get_by_email_ci_picks_the_oldest_when_case_variants_coexist(users_repo):
+    """Historic rows may already differ only in case. The oldest wins on both
+    backends so the answer is deterministic and the original account keeps the
+    identity."""
+    repo, _, backend = users_repo
+    _make_user(repo, id="user-old", email="Dup@example.com")
+    _make_user(repo, id="user-new", email="dup@example.com")
+    _set_created_at(repo, backend, "user-old", datetime(2025, 1, 1, tzinfo=timezone.utc))
+    _set_created_at(repo, backend, "user-new", datetime(2026, 6, 1, tzinfo=timezone.utc))
+    row = repo.get_by_email_ci("DUP@EXAMPLE.COM")
+    assert row is not None
+    assert row["id"] == "user-old"
+
+
+# ---------------------------------------------------------------------------
 # get_by_email_prefix — session-directory-name → user resolution parity
 # ---------------------------------------------------------------------------
 

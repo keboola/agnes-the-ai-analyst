@@ -381,11 +381,29 @@
             ],
             "title": "Surfaces"
           },
+          "template_entity_id": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Template Entity Id"
+          },
           "tone": {
-            "default": "concise",
-            "maxLength": 50,
-            "title": "Tone",
-            "type": "string"
+            "anyOf": [
+              {
+                "maxLength": 50,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tone"
           }
         },
         "title": "AgentCreate",
@@ -3064,6 +3082,17 @@
       },
       "CreateSessionBody": {
         "properties": {
+          "agent_slug": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Slug"
+          },
           "profile": {
             "anyOf": [
               {
@@ -6495,6 +6524,31 @@
           "name"
         ],
         "title": "PluginResponse",
+        "type": "object"
+      },
+      "PolicyCompileRequest": {
+        "description": "Body for ``POST /registry/{table_id}/policy/compile`` (plan Task 3)\n-- the structured spec the builder UI assembles from Task 2's column\nlist plus its own mask/row-rule pickers. Deliberately has NO ``table``\nfield: the compiled SQL always names the REGISTRY row's own ``name``,\nresolved server-side, so a stale or tampered client can never smuggle\na different table into the generated SQL.",
+        "properties": {
+          "column_masks": {
+            "additionalProperties": true,
+            "title": "Column Masks",
+            "type": "object"
+          },
+          "row_combine": {
+            "default": "and",
+            "title": "Row Combine",
+            "type": "string"
+          },
+          "row_rules": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Row Rules",
+            "type": "array"
+          }
+        },
+        "title": "PolicyCompileRequest",
         "type": "object"
       },
       "PolicyPreviewRequest": {
@@ -23616,6 +23670,142 @@
         ]
       }
     },
+    "/api/admin/registry/{table_id}/policy/columns": {
+      "get": {
+        "description": "Real schema + sample values for the no-SQL policy builder (plan\nTask 2, access-policy-builder-ux) -- the column list a\n``policy/compile`` spec (Task 3) is built from, so the builder UI\nnever has to know a table's structure up front.\n\nRead-only and never gated on ``access_policies.enabled``: like\n``preview_table_policy`` right above, this is an admin-authoring\nread/compute surface, not the ATTACH action that flag actually gates\n(``PUT /registry/{id}`` writing a non-null ``access_policy_sql``, per\nthat flag's own hint text in ``_flag_default(\"access_policies\", ...)``\nabove).",
+        "operationId": "policy_builder_columns_api_admin_registry__table_id__policy_columns_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "table_id",
+            "required": true,
+            "schema": {
+              "title": "Table Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Policy Builder Columns",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/admin/registry/{table_id}/policy/compile": {
+      "post": {
+        "description": "Turn a structured builder spec into the canonical policy SQL (plan\nTask 3) via ``src.access_policy_compile.compile_policy`` -- the ONLY\nplace that generator's anti-leak EXCLUDE-before-derive invariant is\nexercised over HTTP. Returns SQL only; nothing is persisted here -- an\nadmin who likes the result still saves it through the existing ``PUT\n/registry/{id}`` (``access_policy_sql``), unchanged, so the stored\nartifact stays SQL, never a structured spec.\n\nRead-only and, like ``policy_builder_columns`` above, deliberately not\ngated on ``access_policies.enabled``: it neither reads nor writes a\nstored policy. The flag gates ATTACHING one (``PUT /registry/{id}``\nwith a non-null ``access_policy_sql``).",
+        "operationId": "policy_builder_compile_api_admin_registry__table_id__policy_compile_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "table_id",
+            "required": true,
+            "schema": {
+              "title": "Table Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PolicyCompileRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Policy Builder Compile",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/api/admin/registry/{table_id}/policy/preview": {
       "post": {
         "description": "Run a stored or candidate access policy as a chosen persona and\nreport what it does (design doc \u00a713.1) \u2014 the single-persona primitive\nadmins use to check a policy before trusting it, and that Task 15's\nadmin-UI matrix (multiple personas, union/overlap) is built from\nrepeated calls to.\n\nDeliberately does NOT route through ``policied_relation``'s admin-bypass\npath (\u00a712): that bypass exists for LIVE reads, where \"is this caller\nexempt from filtering\" is a real authorization decision keyed off the\nCALLING admin's own credential surface. A preview's entire point is\n\"what would THIS CHOSEN persona see\", independent of who is asking for\nit \u2014 so identity/groups are resolved directly from the request (or, for\n``as_user``, from that user's own live membership), never from the\ncalling admin's principal.\n\nEvery preview is audited (\u00a713.1: \"it shows one person another person's\nslice, and 'who looked at whose data, when' is the first question asked\nafter an incident\").",
@@ -29641,7 +29831,7 @@
         ]
       },
       "post": {
-        "description": "Create an agent owned by (and private to) the caller.\n\nAn unnamed agent is legal \u2014 the builder creates the row first and the user\nnames it as they go, so a blank name must not 422 the whole flow.",
+        "description": "Create an agent owned by (and private to) the caller.\n\nAn unnamed agent is legal \u2014 the builder creates the row first and the user\nnames it as they go, so a blank name must not 422 the whole flow.\n\n``template_entity_id`` starts the agent from a Library Agent Template. It\nonly ever fills fields the caller left blank, so an explicit value in the\npayload still wins \u2014 the template is a starting point, not an override.",
         "operationId": "create_agent_api_agents_post",
         "parameters": [
           {
@@ -49068,6 +49258,46 @@
         ]
       }
     },
+    "/auth/microsoft/callback": {
+      "get": {
+        "description": "Handle Microsoft Entra ID OAuth callback.",
+        "operationId": "microsoft_callback_auth_microsoft_callback_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Microsoft Callback",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/auth/microsoft/login": {
+      "get": {
+        "description": "Redirect to Microsoft Entra ID OAuth.\n\nHonors `?next=<path>` by stashing the sanitized value in the session so the\ncallback can redirect there instead of the default /dashboard. The session\nis the right stash \u2014 OAuth flow is stateful and the `state` param is\nmanaged by Authlib.",
+        "operationId": "microsoft_login_auth_microsoft_login_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Microsoft Login",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
     "/auth/password/login": {
       "post": {
         "description": "Login with email + password.",
@@ -52565,6 +52795,28 @@
         ]
       }
     },
+    "/privacy": {
+      "get": {
+        "description": "What this instance does with data \u2014 deliberately UNAUTHENTICATED.\n\nEvery connector directory asks for a privacy policy URL and fetches it\nwithout credentials; an unreachable one is an automatic rejection. The\nsame content already existed as ``/how-it-works#privacy``, but that route\nrequires a signed-in session, so handing out that anchor produced a\nlogin redirect rather than a policy.\n\nTwo shapes, one URL. When the operator has published their own policy\n(``instance.privacy_policy_url``) this redirects there, because on a\nself-hosted deployment *they* are the data controller and their document\nis the authoritative one. Otherwise it renders the built-in page, which\nstates that plainly and describes only what the software itself does \u2014\nthe honest limit of what a vendor can say about someone else's instance.\n\nNo auth, no DB read: it must answer for a reviewer, a crawler, and a\nlogged-out user on an instance whose database is down.",
+        "operationId": "privacy_page_privacy_get",
+        "responses": {
+          "200": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Privacy Page",
+        "tags": [
+          "web"
+        ]
+      }
+    },
     "/profile/sessions": {
       "get": {
         "description": "Legacy redirect \u2014 ``/profile/sessions`` \u2192 ``/me/activity?tab=sessions``.",
@@ -52765,7 +53017,7 @@
     },
     "/skills": {
       "get": {
-        "description": "Builder \u2014 one authoring surface for skills, plugins and shareable agents.\n\nFormerly the single-type Skill Builder. Two in-page steps: a TYPE PICKER,\nthen a type-adapted BUILDER that keeps one shell (identity, access,\nnumbered sections, live preview, advisory check) and swaps only the\ncontent section and its validation.\n\nMarkdown types (skill, agent) publish to\n``POST /api/store/entities/from-markdown``; plugins are real ZIP bundles\nand publish to the multipart ``POST /api/store/entities``. Both honour the\nbuilder's private/everyone ``access`` choice, and both run the same quota,\nguardrail and review pipeline. Category options come from the shared store\ntaxonomy.\n\nThe route keeps its ``/skills`` path: it is the target of the Marketplace\n\"submit\" CTA, the ``?from=skills`` detail back-link and the tour anchors.\n``?type=skill|plugin|agent`` deep-links past the picker.",
+        "description": "Builder \u2014 one authoring surface for skills, plugins and agent templates.\n\nFormerly the single-type Skill Builder. Two in-page steps: a TYPE PICKER,\nthen a type-adapted BUILDER that keeps one shell (identity, access,\nnumbered sections, live preview, advisory check) and swaps only the\ncontent section and its validation.\n\nMarkdown types (skill, agent) publish to\n``POST /api/store/entities/from-markdown``; plugins are real ZIP bundles\nand publish to the multipart ``POST /api/store/entities``. Both honour the\nbuilder's private/everyone ``access`` choice, and both run the same quota,\nguardrail and review pipeline. Category options come from the shared store\ntaxonomy.\n\nThe route keeps its ``/skills`` path: it is the target of the Marketplace\n\"submit\" CTA, the ``?from=skills`` detail back-link and the tour anchors.\n``?type=skill|plugin|agent`` deep-links past the picker.",
         "operationId": "skills_page_skills_get",
         "parameters": [
           {

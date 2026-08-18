@@ -311,13 +311,14 @@ def _escapes(path: Path, bases: List[Path]) -> bool:
 
 
 def _is_stripped(rel_parts: tuple) -> bool:
-    """Only ``.DS_Store`` + Agnes-only paths are dropped — the reference zip
-    keeps everything else (``data/``, ``scripts/``, ``CLAUDE.md`` …)."""
+    """Only ``.DS_Store``, Agnes-only paths and VCS internals (a root-source
+    plugin's ``.git/**``) are dropped — the reference zip keeps everything
+    else (``data/``, ``scripts/``, ``CLAUDE.md`` …)."""
     if not rel_parts:
         return True
     if any(p == ".DS_Store" for p in rel_parts):
         return True
-    if marketplace_filter.is_agnes_only_path(rel_parts):
+    if marketplace_filter.is_unserved_path(rel_parts):
         return True
     return False
 

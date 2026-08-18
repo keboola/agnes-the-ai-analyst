@@ -150,10 +150,15 @@ def _signed_url_fetcher(store: FakeObjectStore, *, deliver: bytes | None = None,
     ``deliver`` overrides what's served, simulating an object that exists
     but doesn't match the expected content (corruption / wrong object).
     ``raise_error`` simulates a network failure / expired-URL rejection.
+
+    Also populates ``headers_out`` from ``store.metadata`` — a real S3 GET
+    echoes an object's stamped metadata back as ``x-amz-meta-*`` response
+    headers (issue #1360, fix 2), so this stand-in does the same rather
+    than silently ignoring the parameter `_download_one` now always passes.
     """
     prefix = FAKE_STORE_URL_PREFIX
 
-    def _fetch(url: str, target_path: str, progress_callback=None) -> None:
+    def _fetch(url: str, target_path: str, progress_callback=None, headers_out: dict | None = None) -> None:
         if raise_error:
             raise ConnectionError("simulated signed-url fetch failure")
         assert url.startswith(prefix), f"unexpected signed url shape: {url}"
@@ -162,6 +167,11 @@ def _signed_url_fetcher(store: FakeObjectStore, *, deliver: bytes | None = None,
         if data is None:
             raise FileNotFoundError(f"no such object: {key}")
         Path(target_path).write_bytes(data)
+        if headers_out is not None:
+            headers_out.clear()
+            stamped = store.metadata.get(key, {}).get("md5")
+            if stamped is not None:
+                headers_out["x-amz-meta-md5"] = stamped
 
     return _fetch
 

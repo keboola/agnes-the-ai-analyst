@@ -600,9 +600,46 @@
             margin-bottom: 14px;
         }
 
+        .ap-compile-warnings {
+            margin-top: 10px;
+            margin-bottom: 0;
+        }
+
+        .ap-compile-warnings > div + div {
+            margin-top: 4px;
+        }
+
         .ap-preview-result {
             margin-top: 10px;
             font-size: 12px;
+        }
+
+        /* Why a before/after diff was NOT rendered for this preview — the
+           two samples are not guaranteed to cover the same rows. */
+        .ap-preview-note {
+            color: var(--ds-text-muted);
+            margin-top: 6px;
+        }
+
+        /* Task B (access-policy-builder-ux Slice 2): before/after render of
+           base_sample_rows. A dropped row (present in the raw sample, gone
+           from the policied one) strikes its whole row; a hidden column
+           strikes in the header and shows an em-dash in every cell; a
+           masked-but-visible column shows the raw value struck next to the
+           masked one. */
+        .ap-preview-row--dropped td {
+            text-decoration: line-through;
+            opacity: 0.55;
+        }
+
+        .ap-preview-hidden-cell {
+            color: var(--ds-text-disabled);
+        }
+
+        .ap-preview-diff-raw {
+            text-decoration: line-through;
+            color: var(--ds-text-muted);
+            margin-right: 4px;
         }
 
         .ap-history-row {
@@ -613,6 +650,188 @@
 
         .ap-history-row:last-child {
             border-bottom: none;
+        }
+
+        /* ── Access Policy builder tabs + column list (access-policy-builder-ux
+           plan, Task 4). Builder is the default tab; Advanced SQL keeps
+           today's plain textarea untouched underneath. The Builder never
+           generates SQL itself — every mask change re-POSTs the assembled
+           spec to policy/compile and drops the result into #apSql, so
+           apRunPreview()/apSavePolicy() need no changes at all. ── */
+        .ap-tabs {
+            display: flex;
+            gap: 4px;
+            margin-bottom: 12px;
+            border-bottom: 1px solid var(--ds-border);
+        }
+
+        .ap-tab {
+            padding: 8px 12px;
+            background: none;
+            border: none;
+            border-bottom: 2px solid transparent;
+            margin-bottom: -1px;
+            font-size: 13px;
+            font-weight: 600;
+            font-family: inherit;
+            color: var(--ds-text-secondary);
+            cursor: pointer;
+        }
+
+        .ap-tab:hover {
+            color: var(--ds-text-primary);
+        }
+
+        .ap-tab.is-active {
+            color: var(--ds-primary);
+            border-bottom-color: var(--ds-primary);
+        }
+
+        /* Task 5: table-level "referenceable from other policies" switch,
+           above the tabs — a table property, not something either tab
+           owns. */
+        .ap-mapping-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 14px;
+        }
+
+        .ap-col-list {
+            border: 1px solid var(--ds-border);
+            border-radius: 8px;
+            max-height: 320px;
+            overflow-y: auto;
+        }
+
+        .ap-col-row {
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+            padding: 8px 10px;
+            border-bottom: 1px solid var(--ds-border);
+            flex-wrap: wrap;
+        }
+
+        .ap-col-row:last-child {
+            border-bottom: none;
+        }
+
+        .ap-col-main {
+            flex: 1 1 220px;
+            min-width: 180px;
+        }
+
+        .ap-col-name {
+            font-weight: 600;
+            font-size: 12.5px;
+            color: var(--ds-text-primary);
+        }
+
+        .ap-col-type {
+            font-size: 11px;
+            color: var(--ds-text-muted);
+            margin-left: 6px;
+        }
+
+        .ap-col-pii {
+            font-size: 10px;
+            font-weight: 600;
+            color: var(--ds-accent-warn-ink);
+            background: var(--ds-accent-warn-bg);
+            border-radius: var(--ds-radius-pill);
+            padding: 1px 6px;
+            margin-left: 6px;
+        }
+
+        .ap-col-samples {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px;
+            margin-top: 4px;
+        }
+
+        .ap-sample-chip {
+            display: inline-flex;
+            max-width: 130px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            padding: 1px 6px;
+            border-radius: var(--ds-radius-pill);
+            background: var(--ds-surface-dim);
+            color: var(--ds-text-secondary);
+            font-size: 10.5px;
+            white-space: nowrap;
+        }
+
+        .ap-col-distinct {
+            font-size: 10.5px;
+            color: var(--ds-text-muted);
+            margin-top: 2px;
+        }
+
+        .ap-col-mask {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            flex: 0 0 170px;
+        }
+
+        .ap-col-mask select {
+            min-height: 30px;
+            padding: 3px 6px;
+        }
+
+        .ap-unmask-group {
+            min-height: 28px;
+            padding: 3px 6px;
+        }
+
+        /* Task A (access-policy-builder-ux Slice 2): row-rule repeater —
+           [column ▾] [operator ▾] [value] per rule, plus a remove button.
+           Mirrors .where-filters-builder's .wfb-* layout (a different
+           builder, same shape) rather than inventing new proportions. */
+        .ap-row-rules-section {
+            margin-bottom: 16px;
+        }
+
+        .ap-rr-list {
+            margin-bottom: 8px;
+        }
+
+        .ap-rr-row {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 8px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .ap-rr-col {
+            flex: 1 1 26%;
+            min-width: 130px;
+        }
+
+        .ap-rr-op {
+            flex: 1 1 34%;
+            min-width: 190px;
+        }
+
+        .ap-rr-val {
+            flex: 1 1 26%;
+            min-width: 120px;
+        }
+
+        .ap-rr-remove {
+            flex: 0 0 auto;
+            padding: 4px 10px;
+            line-height: 1;
+        }
+
+        .ap-rr-controls {
+            display: flex;
+            align-items: center;
+            gap: 10px;
         }
 
         /* ── Row actions — one ⋯ per row, one menu for the table ────────
@@ -753,6 +972,21 @@
         }
 
         .tbl-register { flex: 0 0 auto; position: relative; }
+        /* One button visually, two targets: the label shortcuts, the caret
+           always opens the menu. Hairline seam in the primary's own colour
+           so the pair still reads as a single CTA. */
+        .tbl-register__split { display: inline-flex; align-items: stretch; }
+        .tbl-register__split > .btn { border-radius: 0; }
+        .tbl-register__main {
+            border-top-left-radius: var(--ds-radius-btn);
+            border-bottom-left-radius: var(--ds-radius-btn);
+        }
+        .tbl-register__more {
+            padding-left: 10px; padding-right: 10px;
+            border-left: 1px solid color-mix(in srgb, var(--ds-surface) 35%, transparent);
+            border-top-right-radius: var(--ds-radius-btn);
+            border-bottom-right-radius: var(--ds-radius-btn);
+        }
         .tbl-register__menu {
             display: none; position: absolute; top: calc(100% + 4px); right: 0; z-index: 40;
             min-width: 240px; padding: 6px;
@@ -1243,15 +1477,31 @@
              filled and pinned right — the position People gives "+ Invite
              person" and the Library gives its primary. #}
           <div class="tbl-register">
-            <button id="registerNewTableBtn" class="btn btn-primary" type="button"
-                    onclick="toggleRegisterNewTableMenu(event)">
-              + Register new table ▾
-            </button>
+            {# A SPLIT button. The left segment carries the click an admin makes
+               almost every time, and on a single-source instance it shortcuts
+               straight to that source's drawer — one click saved. The right
+               segment always opens the full list, so the shortcut costs
+               nothing: without it the shortcut would be the button's only
+               behaviour and the Jira docs link plus the other connectors'
+               register items would be unreachable from this page. #}
+            <div class="tbl-register__split">
+              <button id="registerNewTableBtn" class="btn btn-primary tbl-register__main" type="button"
+                      onclick="toggleRegisterNewTableMenu(event)">
+                + Register new table
+              </button>
+              <button id="registerNewTableMoreBtn" class="btn btn-primary tbl-register__more" type="button"
+                      aria-haspopup="true" aria-expanded="false" aria-controls="registerNewTableMenu"
+                      aria-label="Choose which source to register from"
+                      title="Register from another source"
+                      onclick="openRegisterNewTableMenu(event)">▾</button>
+            </div>
             <div id="registerNewTableMenu" class="tbl-register__menu">
               <button class="tbl-register__item" type="button" data-register-source="bigquery"
                       onclick="closeRegisterNewTableMenu(); openRegisterModal('bigquery')">BigQuery</button>
               <button class="tbl-register__item" type="button" data-register-source="keboola"
                       onclick="closeRegisterNewTableMenu(); openRegisterModal('keboola')">Keboola</button>
+              <button class="tbl-register__item" type="button" data-register-source="databricks"
+                      onclick="closeRegisterNewTableMenu(); openRegisterModal('databricks')">Databricks</button>
               <button class="tbl-register__item" type="button" data-register-source="snowflake"
                       onclick="closeRegisterNewTableMenu(); openRegisterModal('snowflake')">Snowflake</button>
               <a class="tbl-register__item" href="docs/connectors/jira.md"
@@ -1996,6 +2246,149 @@
                     </div>
                 </div>
             </div>
+
+            <!-- ── Databricks Register Modal ── -->
+            <div class="ds-drawer ds-drawer--wide" id="registerDatabricksModal" role="dialog" aria-modal="true" aria-labelledby="registerDatabricksModal-title">
+                <div class="ds-drawer__backdrop" onclick="closeRegisterDatabricksModal()"></div>
+                <div class="ds-drawer__panel">
+                    <div class="ds-drawer__head"><div class="ds-drawer__head-main">
+                        <h2 class="ds-drawer__title" id="registerDatabricksModal-title">Register a Databricks table</h2>
+                        <p class="ds-drawer__sub">Point Agnes at a Databricks SQL warehouse table or view. Live queries hit the warehouse; synced copies materialize to parquet.</p>
+                        </div>
+                        <button class="ds-drawer__x" aria-label="Close" onclick="closeRegisterDatabricksModal()">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <line x1="18" y1="6" x2="6" y2="18"/>
+                                <line x1="6" y1="6" x2="18" y2="18"/>
+                            </svg>
+                        </button>
+                    </div>
+                    <div class="ds-drawer__body">
+                        {% if data_source_type != 'databricks' and 'databricks' not in (connected_source_types or []) %}
+                        <div class="alert-v2 alert-warning-v2" style="font-size:13px;">
+                            <svg style="flex-shrink:0; margin-top:1px; color:var(--warning);" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                            <span>Databricks is not connected — set host/token/catalog in <a href="/admin/server-config#cfg-s-data_source" style="color:inherit; text-decoration:underline;">Instance settings</a> before this table can sync.</span>
+                        </div>
+                        {% endif %}
+
+                        <div class="form-group">
+                            <label class="form-label">How should analysts access this data?</label>
+                            <div style="display:flex; gap:12px; margin-top:6px; flex-wrap:wrap;">
+                                <label class="sync-option-card" style="flex:1; min-width:200px; padding:12px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
+                                    <input type="radio" name="dbxAccessMode" value="live" onchange="onDbxAccessModeChange()">
+                                    <strong>Live from Databricks</strong>
+                                    <div style="font-size:12px; color:var(--text-secondary); margin-top:4px;">
+                                        Each query goes to the SQL warehouse. Requires Unity Catalog ATTACH config.
+                                    </div>
+                                </label>
+                                <label class="sync-option-card" style="flex:1; min-width:200px; padding:12px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
+                                    <input type="radio" name="dbxAccessMode" value="synced" checked onchange="onDbxAccessModeChange()">
+                                    <strong>Synced locally</strong>
+                                    <div style="font-size:12px; color:var(--text-secondary); margin-top:4px;">
+                                        Agnes runs a SELECT on a schedule and ships a parquet. Best for speed and repeated queries.
+                                    </div>
+                                </label>
+                            </div>
+                        </div>
+
+                        <div class="form-group dbx-access-synced" style="display:none;">
+                            <label class="form-label">What to sync?</label>
+                            <div style="display:flex; gap:12px; margin-top:6px; flex-wrap:wrap;">
+                                <label class="sync-option-card" style="flex:1; min-width:200px; padding:12px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
+                                    <input type="radio" name="dbxLoadMode" value="whole" checked onchange="onDbxLoadModeChange()">
+                                    <strong>Whole table</strong>
+                                    <div style="font-size:12px; color:var(--text-secondary); margin-top:4px;">
+                                        <code>SELECT *</code> is generated automatically. No SQL required.
+                                    </div>
+                                </label>
+                                <label class="sync-option-card" style="flex:1; min-width:200px; padding:12px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
+                                    <input type="radio" name="dbxLoadMode" value="custom" onchange="onDbxLoadModeChange()">
+                                    <strong>Custom query</strong>
+                                    <div style="font-size:12px; color:var(--text-secondary); margin-top:4px;">
+                                        You write the SELECT — filter, project, or aggregate before the sync.
+                                    </div>
+                                </label>
+                            </div>
+                        </div>
+
+                        <div class="form-group dbx-source-table">
+                            <label class="form-label" for="dbxBucket">
+                                Schema / bucket
+                            </label>
+                            <input type="text" class="form-input" id="dbxBucket" placeholder="e.g. catalog.schema or schema">
+                            <div class="form-hint">For Databricks this is the schema. Use <code>catalog.schema</code> to override the default catalog.</div>
+                        </div>
+                        <div class="form-group dbx-source-table">
+                            <label class="form-label" for="dbxSourceTable">Source Table</label>
+                            <input type="text" class="form-input" id="dbxSourceTable" placeholder="e.g. orders">
+                        </div>
+                        <div class="form-group dbx-source-custom" style="display:none;">
+                            <label class="form-label" for="dbxSourceQuery">
+                                SQL
+                            </label>
+                            <textarea class="form-textarea" id="dbxSourceQuery" rows="8"></textarea>
+                            <div class="form-hint">SELECT against the Databricks warehouse. Result is materialized to parquet.</div>
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label" for="dbxViewName">View Name</label>
+                            <input type="text" class="form-input" id="dbxViewName" placeholder="e.g. orders">
+                            <div class="form-hint">Name analysts use to query the data. Defaults to the source table name.</div>
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label" for="dbxDescription">Description <span class="optional">(optional)</span></label>
+                            <textarea class="form-textarea" id="dbxDescription" placeholder="Brief description of the table contents..."></textarea>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label" for="dbxFolder">Folder <span class="optional">(optional)</span></label>
+                            <input type="text" class="form-input" id="dbxFolder" placeholder="e.g. crm, finance, marketing">
+                        </div>
+
+                        <div class="form-group dbx-access-synced" style="display:none;">
+                            <label class="form-label" for="dbxSyncSchedule">Sync Schedule <span class="optional">(optional, default <code>every 1h</code>)</span></label>
+                            <input type="text" class="form-input" id="dbxSyncSchedule" placeholder="every 6h">
+                            <div class="form-hint">
+                                How often Agnes refreshes the local copy. Examples:
+                                <code>every 15m</code>, <code>every 6h</code>,
+                                <code>daily 03:00</code>, <code>daily 07:00,13:00,18:00</code>,
+                                <code>cron 0 5 7 * *</code> (UTC).
+                            </div>
+                        </div>
+
+                        <div class="form-group dbx-access-synced" style="display:none;">
+                            <label class="form-label">
+                                <input type="checkbox" id="dbxServerOnly">
+                                Server-only (don't distribute to laptops)
+                            </label>
+                            <div class="form-hint">Keep the parquet server-side and queryable via <code>agnes query --remote</code>, but skip it in <code>agnes pull</code>.</div>
+                        </div>
+
+                        {# v49 (Task 8.8): Data Packages chip-input field.
+                           The submit handler (registerDatabricksTable) is intentionally
+                           NOT wired to forward `package_ids` to /api/admin/tables
+                           in this pass — backend extension lives in a focused
+                           follow-up. For now the chip-input persists chosen
+                           packages locally and the admin can attach via
+                           `POST /api/admin/data-packages/<id>/tables` from the
+                           CLI / package admin UI. #}
+                        <div class="form-group">
+                            <label class="form-label">Data Packages <span class="optional">(optional)</span></label>
+                            <div class="chip-input"
+                                 data-source-url="/api/admin/data-packages"
+                                 data-allow-create="true"
+                                 data-name="dbx_package_ids"
+                                 data-placeholder="Type to search or create…"
+                                 data-chip-input="data_package"></div>
+                            <div class="form-hint">Data package assignment is not yet wired during registration; use the package admin UI or CLI to attach this table after it is registered.</div>
+                        </div>
+                    </div>
+                    <div class="ds-drawer__foot">
+                        <button class="btn btn-secondary" onclick="closeRegisterDatabricksModal()">Cancel</button>
+                        <button class="btn btn-primary" id="registerDatabricksSubmitBtn" onclick="registerDatabricksTable()">Register</button>
+                    </div>
+                </div>
+            </div>
+
 
             <!-- ── Snowflake Register Modal ── -->
             <div class="ds-drawer ds-drawer--wide" id="registerSnowflakeModal" role="dialog" aria-modal="true" aria-labelledby="registerSnowflakeModal-title">
@@ -3749,10 +4142,76 @@
                     <!-- Filled by _apRenderInterlockWarning() — mirrors the
                          onEditBqAccessModeChange() pattern: computed and
                          shown BEFORE save, not discovered only from a
-                         rejected PUT. -->
+                         rejected PUT. Task 5: the fix is now an inline
+                         #apMakeServerOnly action, not just a sentence. -->
                 </div>
 
-                <div class="form-group">
+                <!-- Task 5: table-level "referenceable from other policies"
+                     switch — reuses the existing PUT's policy_mapping field
+                     (today CLI-only via `agnes admin table set-policy-mapping`). -->
+                <div class="ap-mapping-row">
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="apMappingToggle" onchange="apToggleMapping(this.checked)">
+                        <span class="toggle-slider"></span>
+                    </label>
+                    <div>
+                        <div class="form-label" style="margin-bottom:2px;">Allow other policies to reference this table</div>
+                        <div class="form-hint" style="margin:0;">Referenceable from any policy — not a grant.</div>
+                    </div>
+                </div>
+
+                <!-- Task 4: Builder (default) + Advanced SQL tabs. Builder
+                     never writes SQL directly — every mask change re-POSTs
+                     the assembled spec to policy/compile and drops the
+                     result into #apSql below, so apRunPreview()/
+                     apSavePolicy() need no changes at all. -->
+                <div class="ap-tabs" role="tablist">
+                    <button type="button" class="ap-tab is-active" data-ap-tab="builder" role="tab"
+                            aria-selected="true" onclick="apSwitchTab('builder')">Builder</button>
+                    <button type="button" class="ap-tab" data-ap-tab="sql" role="tab"
+                            aria-selected="false" onclick="apSwitchTab('sql')">Advanced SQL</button>
+                </div>
+
+                <div data-ap-panel="builder" id="apBuilder">
+                    <!-- Task A (access-policy-builder-ux Slice 2): repeatable row rules,
+                         ABOVE the column list — the flagship no-SQL row scope. Every
+                         change re-assembles row_rules/row_combine and feeds them into the
+                         SAME _apCompileNow() the mask pickers already drive; nothing here
+                         talks to policy/compile directly. -->
+                    <div class="ap-row-rules-section">
+                        <div class="form-label" style="margin-bottom:2px;">Who sees which rows</div>
+                        <div class="form-hint" style="margin-top:0;">
+                            Add a rule to scope which rows a caller can see. With two or more rules,
+                            choose whether every rule must match (AND) or any one does (OR). No rules
+                            means every row passes through.
+                        </div>
+                        <div id="apRowRules" class="ap-rr-list"></div>
+                        <div class="ap-rr-controls">
+                            <button type="button" class="btn btn-secondary btn-sm" id="apAddRuleBtn"
+                                    onclick="_apAddRowRule()">Add rule</button>
+                            <select class="form-input" id="apRowCombine" style="display:none; max-width:260px;"
+                                    onchange="_apOnRowCombineChange(this.value)">
+                                <option value="and">Match ALL rules (AND)</option>
+                                <option value="or">Match ANY rule (OR)</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-hint" style="margin-top:0;">
+                        Pick a mask for any column that needs to change for some callers — everything
+                        else passes through unchanged.
+                    </div>
+                    <div id="apColList" class="ap-col-list">
+                        <div class="form-hint" style="margin:0; padding:10px;">Loading columns…</div>
+                    </div>
+                    <!-- What policy/compile said about the spec it just
+                         compiled — an unknown column it dropped, or "this
+                         policy filters and masks nothing". Shown BEFORE the
+                         admin saves, not discovered afterwards. -->
+                    <div class="form-hint form-hint--warn ap-compile-warnings" id="apCompileWarnings"
+                         style="display:none;" role="status"></div>
+                </div>
+
+                <div class="form-group" data-ap-panel="sql" id="apSqlPanel" style="display:none;">
                     <label class="form-label" for="apSql">Policy SQL</label>
                     <textarea class="form-textarea" id="apSql" rows="8"
                               placeholder="SELECT * FROM &lt;table&gt; WHERE ..."></textarea>
@@ -3828,22 +4287,52 @@
     // Replaces the per-connector tab nav. The user picks the connector
     // here only to choose which register modal to open; otherwise the
     // page is package-centric and source_type is just an inline tag.
-    function toggleRegisterNewTableMenu(evt) {
+    function _dbxIsOnlyConnectedSource() {
+        var active = CONNECTED_SOURCE_TYPES.filter(Boolean);
+        return active.length === 1 && active[0] === 'databricks';
+    }
+
+    // The caret segment's handler: opens/closes the full source list and
+    // NOTHING else. Deliberately free of any source sniffing — it is the
+    // path that must stay open when the label segment below shortcuts to a
+    // drawer, or the other connectors (and Jira's docs link) would only be
+    // reachable through the API/CLI.
+    function openRegisterNewTableMenu(evt) {
         if (evt) evt.stopPropagation();
         var menu = document.getElementById('registerNewTableMenu');
         if (!menu) return;
-        menu.style.display = (menu.style.display === 'block') ? 'none' : 'block';
+        var opening = menu.style.display !== 'block';
+        menu.style.display = opening ? 'block' : 'none';
+        var more = document.getElementById('registerNewTableMoreBtn');
+        if (more) more.setAttribute('aria-expanded', opening ? 'true' : 'false');
+    }
+
+    function toggleRegisterNewTableMenu(evt) {
+        if (evt) evt.stopPropagation();
+        // When the instance has Databricks as its only configured source,
+        // open the Databricks register modal directly. If other sources are
+        // also connected — or nothing is recorded in the connection registry
+        // — this segment opens the dropdown too. Either way the caret beside
+        // it still reaches every register entry point.
+        if (DATA_SOURCE_TYPE === 'databricks' && _dbxIsOnlyConnectedSource()) {
+            return openRegisterModal();
+        }
+        openRegisterNewTableMenu();
     }
     function closeRegisterNewTableMenu() {
         var menu = document.getElementById('registerNewTableMenu');
         if (menu) menu.style.display = 'none';
+        var more = document.getElementById('registerNewTableMoreBtn');
+        if (more) more.setAttribute('aria-expanded', 'false');
     }
     document.addEventListener('click', function(e) {
         var btn = document.getElementById('registerNewTableBtn');
+        var more = document.getElementById('registerNewTableMoreBtn');
         var menu = document.getElementById('registerNewTableMenu');
         if (!btn || !menu) return;
         if (btn.contains(e.target) || menu.contains(e.target)) return;
-        menu.style.display = 'none';
+        if (more && more.contains(e.target)) return;
+        closeRegisterNewTableMenu();
     });
 
     // State
@@ -4011,8 +4500,10 @@
 
     function openRegisterModal(arg) {
         // Phase E + F: dispatch by string argument.
-        //   'bigquery' → BQ tab Register button → #registerBqModal.
-        //   'keboola'  → Keboola tab Register button → #registerKeboolaModal.
+        //   'bigquery'   → BQ tab Register button → #registerBqModal.
+        //   'keboola'    → Keboola tab Register button → #registerKeboolaModal.
+        //   'snowflake'  → Snowflake Register button → #registerSnowflakeModal.
+        //   'databricks' → Databricks Register button → #registerDatabricksModal.
         if (arg === 'bigquery') {
             return _openBqRegisterModal({});
         }
@@ -4022,9 +4513,15 @@
         if (arg === 'snowflake') {
             return _openSnowflakeRegisterModal();
         }
+        if (arg === 'databricks') {
+            return _openDatabricksRegisterModal();
+        }
         // Fallback when called with no argument — pick by instance type.
         if (DATA_SOURCE_TYPE === 'bigquery') {
             return _openBqRegisterModal({});
+        }
+        if (DATA_SOURCE_TYPE === 'databricks') {
+            return _openDatabricksRegisterModal();
         }
         return _openKeboolaTabRegisterModal();
     }
@@ -4960,6 +5457,175 @@
         });
     }
 
+    // ── Databricks register modal ─────────────────────────────
+
+    function _openDatabricksRegisterModal(table) {
+        table = table || {};
+        var modal = document.getElementById('registerDatabricksModal');
+        if (!modal) return;
+        // Default to synced/whole.
+        var syncedRadio = modal.querySelector('input[name="dbxAccessMode"][value="synced"]');
+        if (syncedRadio) syncedRadio.checked = true;
+        var liveRadio = modal.querySelector('input[name="dbxAccessMode"][value="live"]');
+        if (liveRadio) liveRadio.checked = false;
+        var wholeRadio = modal.querySelector('input[name="dbxLoadMode"][value="whole"]');
+        if (wholeRadio) wholeRadio.checked = true;
+        ['dbxBucket', 'dbxSourceTable', 'dbxSourceQuery', 'dbxViewName',
+         'dbxDescription', 'dbxFolder', 'dbxSyncSchedule'].forEach(function(id) {
+            var el = document.getElementById(id);
+            if (el) el.value = '';
+        });
+        var serverOnly = document.getElementById('dbxServerOnly');
+        if (serverOnly) serverOnly.checked = false;
+        onDbxAccessModeChange();
+        var btn = document.getElementById('registerDatabricksSubmitBtn');
+        btn.disabled = false;
+        btn.textContent = 'Register';
+        modal.classList.add('is-open');
+    }
+
+    function closeRegisterDatabricksModal() {
+        document.getElementById('registerDatabricksModal').classList.remove('is-open');
+    }
+
+    function _getDbxAccessMode() {
+        var el = document.querySelector('input[name="dbxAccessMode"]:checked');
+        return el ? el.value : 'synced';
+    }
+
+    function _getDbxLoadMode() {
+        var el = document.querySelector('input[name="dbxLoadMode"]:checked');
+        return el ? el.value : 'whole';
+    }
+
+    function onDbxAccessModeChange() {
+        var accessMode = _getDbxAccessMode();
+        document.querySelectorAll('.dbx-access-synced').forEach(function(el) {
+            el.style.display = (accessMode === 'synced') ? '' : 'none';
+        });
+        if (accessMode === 'synced') {
+            onDbxLoadModeChange();
+        } else {
+            document.querySelectorAll('.dbx-source-table').forEach(function(el) { el.style.display = ''; });
+            document.querySelectorAll('.dbx-source-custom').forEach(function(el) { el.style.display = 'none'; });
+        }
+    }
+
+    function onDbxLoadModeChange() {
+        var loadMode = _getDbxLoadMode();
+        document.querySelectorAll('.dbx-source-table').forEach(function(el) {
+            el.style.display = (loadMode === 'custom') ? 'none' : '';
+        });
+        document.querySelectorAll('.dbx-source-custom').forEach(function(el) {
+            el.style.display = (loadMode === 'custom') ? '' : 'none';
+        });
+    }
+
+    function _buildDatabricksPayload() {
+        var accessMode = _getDbxAccessMode();
+        var loadMode = _getDbxLoadMode();
+        var viewName = (document.getElementById('dbxViewName').value || '').trim();
+        var bucket = (document.getElementById('dbxBucket').value || '').trim();
+        var sourceTable = (document.getElementById('dbxSourceTable').value || '').trim();
+        var description = (document.getElementById('dbxDescription').value || '').trim() || null;
+        var folder = (document.getElementById('dbxFolder').value || '').trim() || null;
+        var syncSchedule = (document.getElementById('dbxSyncSchedule').value || '').trim() || null;
+        var serverOnly = !!(document.getElementById('dbxServerOnly') && document.getElementById('dbxServerOnly').checked);
+
+        if (accessMode === 'synced' && loadMode === 'custom') {
+            var customName = viewName;
+            if (!customName) {
+                throw new Error('View name is required for a custom SQL registration.');
+            }
+            var customSql = (document.getElementById('dbxSourceQuery').value || '').trim();
+            if (!customSql) {
+                throw new Error('SQL is required for a custom SQL registration.');
+            }
+            return {
+                name: customName,
+                source_type: 'databricks',
+                query_mode: 'materialized',
+                source_query: customSql,
+                profile_after_sync: false,
+                server_only: serverOnly,
+                description: description,
+                folder: folder,
+                sync_schedule: syncSchedule,
+            };
+        }
+        if (accessMode === 'synced' && loadMode === 'whole') {
+            return {
+                name: viewName || sourceTable,
+                source_type: 'databricks',
+                query_mode: 'materialized',
+                bucket: bucket,
+                source_table: sourceTable,
+                profile_after_sync: false,
+                server_only: serverOnly,
+                description: description,
+                folder: folder,
+                sync_schedule: syncSchedule,
+            };
+        }
+        return {
+            name: viewName || sourceTable,
+            source_type: 'databricks',
+            query_mode: 'remote',
+            bucket: bucket,
+            source_table: sourceTable,
+            profile_after_sync: false,
+            server_only: false,
+            description: description,
+            folder: folder,
+            sync_schedule: syncSchedule,
+        };
+    }
+
+    function registerDatabricksTable() {
+        var btn = document.getElementById('registerDatabricksSubmitBtn');
+        btn.disabled = true;
+        btn.textContent = 'Registering...';
+        var payload;
+        try {
+            payload = _buildDatabricksPayload();
+        } catch (e) {
+            showToast('' + e.message, 'error');
+            btn.disabled = false;
+            btn.textContent = 'Register';
+            return;
+        }
+        fetch('/api/admin/register-table', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        })
+        .then(function(r) {
+            if (!r.ok) {
+                return r.json().then(function(d) {
+                    throw new Error(d.detail || d.error || 'Registration failed');
+                });
+            }
+            return r.json();
+        })
+        .then(function(d) {
+            closeRegisterDatabricksModal();
+            var note = d.message
+                || (payload.query_mode === 'materialized'
+                    ? 'Registered — the parquet is written on the next sync tick.'
+                    : 'Queryable as ' + (d.view_name || d.id || payload.name));
+            showToast(note, 'success');
+            loadRegistry();
+        })
+        .catch(function(err) {
+            showToast('' + err.message, 'error');
+        })
+        .finally(function() {
+            btn.disabled = false;
+            btn.textContent = 'Register';
+        });
+    }
+
+
     // ── Snowflake register helpers ──────────────────────────────────
 
     function _getSfAccessMode() {
@@ -5069,6 +5735,7 @@
         var schema = parts.join('.').replace(/"/g, '""');
         ta.value = 'SELECT *\nFROM sf."' + schema + '"."' + table + '"\nWHERE -- filter or aggregate before the COPY runs\nLIMIT 1000';
     }
+
 
     // The discover / list-tables / prefill helpers are shared between the
     // Register and Edit modals. The default datalist + input ids match the
@@ -6050,34 +6717,398 @@
         previewEl.innerHTML = '';
         _apHideSaveError();
         document.getElementById('apClearBtn').style.display = table.access_policy_sql ? '' : 'none';
+        var mappingToggle = document.getElementById('apMappingToggle');
+        if (mappingToggle) mappingToggle.checked = !!table.policy_mapping;
+        // The stored artifact is always SQL (never a structured spec, per
+        // policy/compile's own docstring), so there is nothing to reverse-
+        // compile a saved policy's row filter back into — the row-rule
+        // builder always starts empty, same as _apMaskState above.
+        _apRowRules = [];
+        _apRowCombine = 'and';
+        _apRenderCompileWarnings([]);
+        _apRenderRowRules();
         _apRenderInterlockWarning();
         _apLoadHistory(table.id);
+        apSwitchTab('builder');
+        _apLoadColumns(table.id);
         document.getElementById('accessPolicyModal').classList.add('active');
     }
 
     function closeAccessPolicyModal() {
         document.getElementById('accessPolicyModal').classList.remove('active');
         _apTable = null;
+        if (_apCompileTimer) { clearTimeout(_apCompileTimer); _apCompileTimer = null; }
     }
 
     // Inline interlock warning (design doc §3.1/§13) — computed and shown
-    // BEFORE save, not discovered only from a rejected PUT.
+    // BEFORE save, not discovered only from a rejected PUT. Task 5
+    // (access-policy-builder-ux plan): the former dead-end sentence ("set
+    // server_only first") is now an inline #apMakeServerOnly action that
+    // PUTs the fix and re-opens the builder enabled, same tab, no reload.
     function _apRenderInterlockWarning() {
         var warn = document.getElementById('apInterlockWarning');
         if (!_apTable || _apIsEligible(_apTable)) {
             warn.style.display = 'none';
-            warn.textContent = '';
+            warn.innerHTML = '';
             return;
         }
-        warn.textContent = 'This table is distributed — agnes pull downloads it, so a policy here could be '
-            + 'routed around by pulling the raw parquet. Set server_only=true first, or move this table to '
-            + "query_mode='remote', before attaching a policy.";
+        warn.innerHTML = 'This table is distributed — agnes pull downloads it, so a policy here could be '
+            + 'routed around by pulling the raw parquet. '
+            + '<button type="button" class="btn btn-secondary btn-sm" id="apMakeServerOnly" '
+            + 'onclick="apMakeServerOnly()">Set server_only=true</button> unlocks the builder below — '
+            + "or move this table to query_mode='remote' instead.";
         warn.style.display = '';
+    }
+
+    // Sets server_only=true on the current table via the existing PUT, then
+    // re-renders the warning (which hides once eligible) and the column
+    // list (which re-enables its mask selects) — no modal reload needed.
+    async function apMakeServerOnly() {
+        if (!_apTable) return;
+        var btn = document.getElementById('apMakeServerOnly');
+        var btnLabel = btn ? btn.textContent : '';
+        if (btn) { btn.disabled = true; btn.textContent = 'Setting…'; }
+        try {
+            var r = await fetch('/api/admin/registry/' + encodeURIComponent(_apTable.id), {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ server_only: true }),
+            });
+            if (!r.ok) {
+                var d = await r.json().catch(function() { return {}; });
+                _apShowSaveError(typeof d.detail === 'string' ? d.detail : (d.detail || d.error || ('HTTP ' + r.status)));
+                return;
+            }
+            _apTable.server_only = true;
+            _apRenderInterlockWarning();
+            _apRenderColList();
+            _apRenderRowRules();
+            if (typeof loadAdminTablesLayout === 'function') loadAdminTablesLayout();
+            showToast('Table set to server_only — the builder is unlocked', 'success');
+        } catch (err) {
+            _apShowSaveError('Network error: ' + err.message);
+        } finally {
+            // Same contract as apSavePolicy()/apClearPolicy(): the button
+            // goes back to being clickable no matter how the PUT ended.
+            // Only the success path re-renders the warning (which replaces
+            // this node outright, so touching it there is a harmless no-op)
+            // — on either failure path the button is still on the page, and
+            // leaving it disabled + "Setting…" would strand the admin with
+            // no way to retry.
+            if (btn) { btn.disabled = false; btn.textContent = btnLabel; }
+        }
+    }
+
+    // Task 5: policy_mapping switch — PUTs the existing field so a table
+    // can be marked referenceable from another table's policy SQL (an
+    // allowance, not a grant) without dropping to the CLI.
+    async function apToggleMapping(checked) {
+        if (!_apTable) return;
+        var toggle = document.getElementById('apMappingToggle');
+        try {
+            var r = await fetch('/api/admin/registry/' + encodeURIComponent(_apTable.id), {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ policy_mapping: checked }),
+            });
+            if (!r.ok) {
+                var d = await r.json().catch(function() { return {}; });
+                _apShowSaveError(typeof d.detail === 'string' ? d.detail : (d.detail || d.error || ('HTTP ' + r.status)));
+                if (toggle) toggle.checked = !checked;
+                return;
+            }
+            _apTable.policy_mapping = checked;
+            showToast(checked ? 'Table marked referenceable from other policies' : 'Table no longer referenceable from other policies', 'success');
+        } catch (err) {
+            _apShowSaveError('Network error: ' + err.message);
+            if (toggle) toggle.checked = !checked;
+        }
     }
 
     function apUseTableAsBase() {
         if (!_apTable) return;
         document.getElementById('apSql').value = 'SELECT * FROM ' + (_apTable.name || _apTable.id);
+    }
+
+    // ── Builder tab (no-SQL policy editor, access-policy-builder-ux plan
+    // Task 4) — Builder vs Advanced SQL. Switching tabs never touches
+    // #apSql; only a mask change (via policy/compile) does. ──
+    function apSwitchTab(tab) {
+        document.querySelectorAll('.ap-tab').forEach(function(btn) {
+            var active = btn.getAttribute('data-ap-tab') === tab;
+            btn.classList.toggle('is-active', active);
+            btn.setAttribute('aria-selected', active ? 'true' : 'false');
+        });
+        document.querySelectorAll('[data-ap-panel]').forEach(function(panel) {
+            panel.style.display = (panel.getAttribute('data-ap-panel') === tab) ? '' : 'none';
+        });
+    }
+
+    var _AP_MASK_LABELS = { show: 'Show', hide: 'Hide', nullify: 'Nullify', hash: 'Pseudonymize', unmask: 'Unmask for group' };
+    let _apColumns = [];
+    let _apMaskState = {};
+    let _apCompileTimer = null;
+
+    // Task A (access-policy-builder-ux Slice 2) — the row-rule repeater's
+    // state. Every op here is one the compiler (src/access_policy_compile.py)
+    // already understands; the three "caller identity" ops need no value —
+    // the compiler binds them straight to $user_groups/$user_email/$user_id
+    // server-side, so the builder never handles a real caller identity value.
+    var _AP_ROW_OPS = {
+        in_caller_groups: "is one of the caller's groups",
+        eq_caller_email: "equals the caller's email",
+        eq_caller_id: "equals the caller's ID",
+        eq: 'equals',
+        in: 'is one of',
+    };
+    var _AP_ROW_OPS_NO_VALUE = ['in_caller_groups', 'eq_caller_email', 'eq_caller_id'];
+    let _apRowRules = [];
+    let _apRowCombine = 'and';
+
+    // Real schema + samples for the builder (Task 2's endpoint) — fetched
+    // once per modal open, independent of which tab is showing.
+    async function _apLoadColumns(tableId) {
+        var list = document.getElementById('apColList');
+        _apColumns = [];
+        _apMaskState = {};
+        list.innerHTML = '<div class="form-hint" style="margin:0; padding:10px;">Loading columns…</div>';
+        try {
+            var r = await fetch('/api/admin/registry/' + encodeURIComponent(tableId) + '/policy/columns');
+            if (!r.ok) {
+                list.innerHTML = '<div class="form-hint form-hint--danger" style="margin:0;">Could not load columns for this table.</div>';
+                return;
+            }
+            var body = await r.json();
+            _apColumns = body.columns || [];
+            _apRenderColList();
+        } catch (err) {
+            list.innerHTML = '<div class="form-hint form-hint--danger" style="margin:0;">Network error: '
+                + escapeHtml(err.message) + '</div>';
+        }
+    }
+
+    function _apRenderColList() {
+        var list = document.getElementById('apColList');
+        if (!_apColumns.length) {
+            list.innerHTML = '<div class="form-hint" style="margin:0; padding:10px;">No columns found.</div>';
+            return;
+        }
+        var disabled = !_apTable || !_apIsEligible(_apTable);
+        list.innerHTML = _apColumns.map(function(col) {
+            var maskEntry = _apMaskState[col.name];
+            var maskChoice = (maskEntry && typeof maskEntry === 'object') ? maskEntry.choice : (maskEntry || 'show');
+            var samples = (col.samples || []).slice(0, 3).map(function(s) {
+                return '<span class="ap-sample-chip">' + escapeHtml(s) + '</span>';
+            }).join('');
+            var distinct = (col.distinct === null || col.distinct === undefined) ? '' : (formatNumber(col.distinct) + ' distinct');
+            var pii = col.pii ? '<span class="ap-col-pii">PII</span>' : '';
+            var colArg = escapeHtmlAttr(JSON.stringify(col.name));
+            var options = ['show', 'hide', 'nullify', 'hash', 'unmask'].map(function(m) {
+                return '<option value="' + m + '"' + (m === maskChoice ? ' selected' : '') + '>' + _AP_MASK_LABELS[m] + '</option>';
+            }).join('');
+            var groupInput = (maskChoice === 'unmask')
+                ? '<input type="text" class="form-input ap-unmask-group" placeholder="group name" '
+                  + (disabled ? 'disabled ' : '')
+                  + 'value="' + escapeHtmlAttr((maskEntry && maskEntry.group) || '') + '" '
+                  + 'oninput="_apOnUnmaskGroupChange(' + colArg + ', this.value)">'
+                : '';
+            return ''
+                + '<div class="ap-col-row">'
+                +   '<div class="ap-col-main">'
+                +     '<span class="ap-col-name">' + escapeHtml(col.name) + '</span>'
+                +     '<span class="ap-col-type">' + escapeHtml(col.type || '') + '</span>' + pii
+                +     '<div class="ap-col-samples">' + samples + '</div>'
+                +     (distinct ? '<div class="ap-col-distinct">' + escapeHtml(distinct) + '</div>' : '')
+                +   '</div>'
+                +   '<div class="ap-col-mask">'
+                +     '<select class="form-input" ' + (disabled ? 'disabled ' : '')
+                +       'onchange="_apOnMaskChange(' + colArg + ', this.value)">' + options + '</select>'
+                +     groupInput
+                +   '</div>'
+                + '</div>';
+        }).join('');
+    }
+
+    function _apOnMaskChange(colName, maskValue) {
+        if (maskValue === 'show') {
+            delete _apMaskState[colName];
+        } else if (maskValue === 'unmask') {
+            var prev = _apMaskState[colName];
+            _apMaskState[colName] = { choice: 'unmask', group: (prev && prev.group) || '' };
+        } else {
+            _apMaskState[colName] = maskValue;
+        }
+        _apRenderColList();
+        _apScheduleCompile();
+    }
+
+    function _apOnUnmaskGroupChange(colName, group) {
+        var entry = _apMaskState[colName];
+        if (entry && typeof entry === 'object') {
+            entry.group = group;
+        }
+        _apScheduleCompile();
+    }
+
+    // ── Row-rule builder ("Who sees which rows", Task A) ── Repeatable
+    // [column ▾] [operator ▾] [value] rows, ABOVE the column list. Every
+    // add/remove/select change re-renders (mirrors _apOnMaskChange); a value
+    // keystroke only updates state + schedules a compile, same as
+    // _apOnUnmaskGroupChange, so typing never loses focus to a re-render.
+    function _apRenderRowRules() {
+        var list = document.getElementById('apRowRules');
+        var combineSelect = document.getElementById('apRowCombine');
+        var disabled = !_apTable || !_apIsEligible(_apTable);
+        if (!_apRowRules.length) {
+            list.innerHTML = '<div class="form-hint" style="margin:0 0 8px; padding:0;">'
+                + 'No row rules — every caller sees every row.</div>';
+        } else {
+            list.innerHTML = _apRowRules.map(function(rule, i) {
+                var colOptions = _apColumns.map(function(col) {
+                    return '<option value="' + escapeHtmlAttr(col.name) + '"'
+                        + (col.name === rule.column ? ' selected' : '') + '>' + escapeHtml(col.name) + '</option>';
+                }).join('');
+                var opOptions = Object.keys(_AP_ROW_OPS).map(function(op) {
+                    return '<option value="' + op + '"' + (op === rule.op ? ' selected' : '') + '>'
+                        + _AP_ROW_OPS[op] + '</option>';
+                }).join('');
+                var needsValue = _AP_ROW_OPS_NO_VALUE.indexOf(rule.op) === -1;
+                var valueField = needsValue
+                    ? '<input type="text" class="form-input ap-rr-val" '
+                      + (disabled ? 'disabled ' : '')
+                      + 'placeholder="' + (rule.op === 'in' ? 'comma-separated values' : 'value') + '" '
+                      + 'value="' + escapeHtmlAttr(rule.value || '') + '" '
+                      + 'oninput="_apOnRowRuleValueChange(' + i + ', this.value)">'
+                    : '<span class="ap-rr-val"></span>';
+                return ''
+                    + '<div class="ap-rr-row">'
+                    +   '<select class="form-input ap-rr-col" ' + (disabled ? 'disabled ' : '')
+                    +     'onchange="_apOnRowRuleColumnChange(' + i + ', this.value)">' + colOptions + '</select>'
+                    +   '<select class="form-input ap-rr-op" ' + (disabled ? 'disabled ' : '')
+                    +     'onchange="_apOnRowRuleOpChange(' + i + ', this.value)">' + opOptions + '</select>'
+                    +   valueField
+                    +   '<button type="button" class="btn btn-secondary btn-sm ap-rr-remove" ' + (disabled ? 'disabled ' : '')
+                    +     'onclick="_apRemoveRowRule(' + i + ')" aria-label="Remove rule">×</button>'
+                    + '</div>';
+            }).join('');
+        }
+        if (combineSelect) {
+            combineSelect.style.display = _apRowRules.length >= 2 ? '' : 'none';
+            combineSelect.value = _apRowCombine;
+        }
+        var addBtn = document.getElementById('apAddRuleBtn');
+        if (addBtn) addBtn.disabled = disabled;
+    }
+
+    function _apAddRowRule() {
+        _apRowRules.push({ column: (_apColumns[0] && _apColumns[0].name) || '', op: 'eq', value: '' });
+        _apRenderRowRules();
+        _apScheduleCompile();
+    }
+
+    function _apRemoveRowRule(index) {
+        _apRowRules.splice(index, 1);
+        _apRenderRowRules();
+        _apScheduleCompile();
+    }
+
+    function _apOnRowRuleColumnChange(index, value) {
+        if (_apRowRules[index]) _apRowRules[index].column = value;
+        _apScheduleCompile();
+    }
+
+    function _apOnRowRuleOpChange(index, value) {
+        if (_apRowRules[index]) _apRowRules[index].op = value;
+        _apRenderRowRules(); // the value field's visibility depends on the op
+        _apScheduleCompile();
+    }
+
+    function _apOnRowRuleValueChange(index, value) {
+        if (_apRowRules[index]) _apRowRules[index].value = value;
+        _apScheduleCompile();
+    }
+
+    function _apOnRowCombineChange(value) {
+        _apRowCombine = value;
+        _apScheduleCompile();
+    }
+
+    // Turns the builder's row-rule state into the policy/compile request
+    // shape ({column, op[, value]}) — a half-filled rule (no column, or an
+    // eq/in rule with no value typed yet) never reaches the compiler, same
+    // spirit as where-filters-builder.js dropping a blank-column row.
+    function _apAssembleRowRules() {
+        return _apRowRules
+            .filter(function(r) { return r.column; })
+            .map(function(r) {
+                var out = { column: r.column, op: r.op };
+                if (_AP_ROW_OPS_NO_VALUE.indexOf(r.op) === -1) {
+                    out.value = (r.op === 'in')
+                        ? String(r.value || '').split(',').map(function(s) { return s.trim(); }).filter(Boolean)
+                        : r.value;
+                }
+                return out;
+            })
+            .filter(function(r) {
+                if (_AP_ROW_OPS_NO_VALUE.indexOf(r.op) !== -1) return true;
+                if (r.op === 'in') return Array.isArray(r.value) && r.value.length > 0;
+                return r.value !== undefined && r.value !== null && String(r.value).trim() !== '';
+            });
+    }
+
+    // Debounced (~250ms) compile — assembles the spec from the mask state
+    // and POSTs it to Task 3's endpoint, dropping the returned SQL into
+    // #apSql. Never fires on modal open, so opening the builder on a table
+    // that already carries a saved policy does not clobber it.
+    function _apScheduleCompile() {
+        if (_apCompileTimer) clearTimeout(_apCompileTimer);
+        _apCompileTimer = setTimeout(_apCompileNow, 250);
+    }
+
+    async function _apCompileNow() {
+        if (!_apTable) return;
+        var spec = { row_rules: _apAssembleRowRules(), row_combine: _apRowCombine, column_masks: _apMaskState };
+        try {
+            var r = await fetch('/api/admin/registry/' + encodeURIComponent(_apTable.id) + '/policy/compile', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(spec),
+            });
+            if (!r.ok) {
+                // compile is a convenience; leave #apSql as-is on error —
+                // but drop the warnings, which described an older spec.
+                _apRenderCompileWarnings([]);
+                return;
+            }
+            var body = await r.json();
+            document.getElementById('apSql').value = body.sql || '';
+            _apRenderCompileWarnings(body.warnings);
+        } catch (err) {
+            // Network hiccup — leave #apSql unchanged; the Advanced SQL tab
+            // still works standalone.
+            _apRenderCompileWarnings([]);
+        }
+    }
+
+    // The compiler's own warnings (an unknown column it dropped, or "this
+    // policy returns the full table to every caller") — rendered where the
+    // spec was assembled so the admin reads them BEFORE saving. Server text
+    // goes in through textContent, never innerHTML.
+    function _apRenderCompileWarnings(warnings) {
+        var el = document.getElementById('apCompileWarnings');
+        if (!el) return;
+        while (el.firstChild) el.removeChild(el.firstChild);
+        var lines = (warnings || []).filter(function(w) { return typeof w === 'string' && w.trim(); });
+        if (!lines.length) {
+            el.style.display = 'none';
+            return;
+        }
+        lines.forEach(function(w) {
+            var line = document.createElement('div');
+            line.textContent = w;
+            el.appendChild(line);
+        });
+        el.style.display = '';
     }
 
     function _apShowSaveError(msg) {
@@ -6237,11 +7268,80 @@
         }
     }
 
+    // Task B (access-policy-builder-ux Slice 2) — best-effort before/after
+    // matching. There is no guaranteed PK (design doc §13.1), so this is a
+    // heuristic, not an exact join: for each raw row, pick the not-yet-
+    // claimed policied row sharing the most VISIBLE-column values with it.
+    // A row_rules WHERE that drops a row naturally shares nothing with
+    // anything left unclaimed and renders "dropped"; a mask that only
+    // touches SOME visible columns (the common case — one PII column
+    // masked, the rest untouched) still matches correctly on the rest and
+    // diffs the changed column(s). When every compare column is hidden
+    // (nothing left to compare on) this degrades to a positional claim, in
+    // document order, rather than refusing to match at all.
+    function _apMatchPreviewRows(baseRows, policiedRows, compareCols) {
+        var used = new Array(policiedRows.length).fill(false);
+        return baseRows.map(function(baseRow) {
+            var bestIdx = -1;
+            var bestScore = -1;
+            for (var j = 0; j < policiedRows.length; j++) {
+                if (used[j]) continue;
+                var score = 0;
+                for (var k = 0; k < compareCols.length; k++) {
+                    var c = compareCols[k];
+                    if (JSON.stringify(baseRow[c]) === JSON.stringify(policiedRows[j][c])) score++;
+                }
+                if (score > bestScore) { bestScore = score; bestIdx = j; }
+            }
+            if (bestIdx !== -1 && (bestScore > 0 || compareCols.length === 0)) {
+                used[bestIdx] = true;
+                return policiedRows[bestIdx];
+            }
+            return null;
+        });
+    }
+
+    // The pre-Slice-2 render: the policied slice alone, hidden columns
+    // struck in the header and em-dashed in the body, no raw-vs-masked
+    // diff. Used when the server reports the two samples are not
+    // comparable (`base_sample_comparable === false`).
+    function _apRenderPoliciedOnlyRows(cols, policiedRows) {
+        var html = '<div style="margin-top:8px; max-height:260px; overflow:auto; '
+                 + 'border:1px solid var(--ds-border); border-radius:6px;">';
+        html += '<table class="data-table"><thead><tr>';
+        cols.forEach(function(c) {
+            html += c.hidden
+                ? '<th style="text-decoration:line-through; color:var(--ds-text-disabled);">' + escapeHtml(c.name) + '</th>'
+                : '<th>' + escapeHtml(c.name) + '</th>';
+        });
+        html += '</tr></thead><tbody>';
+        policiedRows.slice(0, 10).forEach(function(policiedRow) {
+            html += '<tr>';
+            cols.forEach(function(c) {
+                if (c.hidden) {
+                    html += '<td class="ap-preview-hidden-cell">&mdash;</td>';
+                    return;
+                }
+                var val = policiedRow[c.name];
+                html += '<td>' + escapeHtml(val === null || val === undefined ? '' : String(val)) + '</td>';
+            });
+            html += '</tr>';
+        });
+        html += '</tbody></table></div>';
+        return html;
+    }
+
     function _apRenderPreviewResult(body) {
         var cols = body.columns || [];
         var hiddenCols = cols.filter(function(c) { return c.hidden; }).map(function(c) { return c.name; });
-        var visibleCols = cols.filter(function(c) { return !c.hidden; }).map(function(c) { return c.name; });
-        var rows = body.sample_rows || [];
+        var visibleColNames = cols.filter(function(c) { return !c.hidden; }).map(function(c) { return c.name; });
+        var baseRows = body.base_sample_rows || [];
+        var policiedRows = body.sample_rows || [];
+        // The server only guarantees the two samples cover the same source
+        // rows when it could bound BOTH to one window. When it could not,
+        // pairing them would invent dropped rows and masked-cell diffs out
+        // of nothing — so show the policied slice on its own and say why.
+        var comparable = body.base_sample_comparable !== false;
 
         var html = '<div class="ap-preview-result">';
         html += '<strong>' + formatNumber(body.rows_visible) + '</strong> of <strong>'
@@ -6250,17 +7350,48 @@
             html += '<div class="form-hint" style="margin-top:6px;">Hidden columns: '
                  + escapeHtml(hiddenCols.join(', ')) + '</div>';
         }
-        if (rows.length && visibleCols.length) {
-            html += '<div style="margin-top:8px; max-height:220px; overflow:auto; '
+        if (!comparable && policiedRows.length) {
+            html += '<div class="form-hint ap-preview-note">Showing what this persona sees. A '
+                 + 'before/after comparison is not available for this policy — its sample and the '
+                 + 'raw sample are not guaranteed to cover the same rows.</div>';
+            html += _apRenderPoliciedOnlyRows(cols, policiedRows);
+        } else if (comparable && baseRows.length && cols.length) {
+            var matches = _apMatchPreviewRows(baseRows, policiedRows, visibleColNames);
+            var droppedCount = matches.filter(function(m) { return m === null; }).length;
+            if (droppedCount) {
+                html += '<div class="form-hint" style="margin-top:4px;">'
+                     + formatNumber(droppedCount) + ' of ' + formatNumber(baseRows.length)
+                     + ' rows in this sample are struck through below — dropped for this persona.</div>';
+            }
+            html += '<div style="margin-top:8px; max-height:260px; overflow:auto; '
                  + 'border:1px solid var(--ds-border); border-radius:6px;">';
             html += '<table class="data-table"><thead><tr>';
-            visibleCols.forEach(function(c) { html += '<th>' + escapeHtml(c) + '</th>'; });
+            cols.forEach(function(c) {
+                html += c.hidden
+                    ? '<th style="text-decoration:line-through; color:var(--ds-text-disabled);">' + escapeHtml(c.name) + '</th>'
+                    : '<th>' + escapeHtml(c.name) + '</th>';
+            });
             html += '</tr></thead><tbody>';
-            rows.slice(0, 10).forEach(function(row) {
-                html += '<tr>';
-                visibleCols.forEach(function(c) {
-                    var v = row[c];
-                    html += '<td>' + escapeHtml(v === null || v === undefined ? '' : String(v)) + '</td>';
+            baseRows.slice(0, 10).forEach(function(baseRow, i) {
+                var policiedRow = matches[i];
+                var dropped = policiedRow === null;
+                html += '<tr' + (dropped ? ' class="ap-preview-row--dropped"' : '') + '>';
+                cols.forEach(function(c) {
+                    if (c.hidden) {
+                        html += '<td class="ap-preview-hidden-cell">&mdash;</td>';
+                        return;
+                    }
+                    var rawVal = baseRow[c.name];
+                    var rawStr = rawVal === null || rawVal === undefined ? '' : String(rawVal);
+                    if (dropped) {
+                        html += '<td>' + escapeHtml(rawStr) + '</td>';
+                        return;
+                    }
+                    var newVal = policiedRow[c.name];
+                    var newStr = newVal === null || newVal === undefined ? '' : String(newVal);
+                    html += (rawStr === newStr)
+                        ? '<td>' + escapeHtml(rawStr) + '</td>'
+                        : '<td><span class="ap-preview-diff-raw">' + escapeHtml(rawStr) + '</span>' + escapeHtml(newStr) + '</td>';
                 });
                 html += '</tr>';
             });
@@ -6397,6 +7528,7 @@
     document.addEventListener('keydown', function(e) {
         if (e.key === 'Escape') {
             closeRegisterBqModal();
+            if (typeof closeRegisterDatabricksModal === 'function') closeRegisterDatabricksModal();
             if (typeof closeRegisterKeboolaModal === 'function') closeRegisterKeboolaModal();
             if (typeof closeEditKeboolaModal === 'function') closeEditKeboolaModal();
             if (typeof closeEditBqModal === 'function') closeEditBqModal();

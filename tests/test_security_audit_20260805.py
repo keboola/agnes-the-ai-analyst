@@ -299,8 +299,8 @@ def test_f1b_zip_packager_skips_symlinked_files(tmp_path, monkeypatch):
         "deadbeef",
     )
 
-    arcs = [arc for arc, _ in members]
-    payloads = b"".join(data for _, data in members)
+    arcs = [arc for arc, _data, _x in members]
+    payloads = b"".join(data for _arc, data, _x in members)
     assert not any(a.endswith("leak.txt") for a in arcs)
     assert b"SUPER-SECRET" not in payloads
     assert any(a.endswith("README.md") for a in arcs)

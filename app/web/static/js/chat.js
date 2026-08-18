@@ -1148,10 +1148,31 @@ function _sidebarRows() {
   return rows;
 }
 
-async function newChat() {
+/** `?agent=<slug>` on /chat — arriving from the Chat button on an agent card.
+ *
+ * Read once and consumed: the slug picks the agent this session RUNS AS, and
+ * `chat_sessions.agent_id` is only written at INSERT, so it applies to the
+ * session being created and not to every later "New chat" in the same tab.
+ * (Switching persona mid-conversation is a separate, larger feature.) */
+function _takeAgentSlugFromUrl() {
+  try {
+    const url = new URL(window.location.href);
+    const slug = url.searchParams.get("agent");
+    if (!slug) return null;
+    url.searchParams.delete("agent");
+    window.history.replaceState({}, "", url.toString());
+    return slug;
+  } catch (_) {
+    return null;
+  }
+}
+
+async function newChat(agentSlug) {
+  const body = { surface: "web" };
+  if (agentSlug) body.agent_slug = agentSlug;
   const created = await api("/api/chat/sessions", {
     method: "POST",
-    body: JSON.stringify({ surface: "web" }),
+    body: JSON.stringify(body),
   });
   // Reset the thread title — a brand-new session has no real title
   // yet, so the empty-state should show the capability panel and not
@@ -2448,9 +2469,9 @@ function renderQuestionRequest(frame) {
   const head = document.createElement("div");
   head.className = "cloud-chat-tool-head";
   const icon = document.createElement("span");
-  icon.className = "cloud-chat-tool-icon";
+  icon.className = "cloud-chat-tool-icon cloud-chat-question-icon";
   icon.setAttribute("aria-hidden", "true");
-  icon.textContent = "❓";
+  icon.textContent = "?";
   head.appendChild(icon);
   const name = document.createElement("span");
   name.className = "cloud-chat-tool-name";
@@ -2493,6 +2514,12 @@ function renderQuestionRequest(frame) {
     qtext.className = "cloud-chat-question-text";
     qtext.textContent = String(qq.question || "");
     qline.appendChild(qtext);
+    if (qq.multiSelect) {
+      const hint = document.createElement("span");
+      hint.className = "cloud-chat-question-hint";
+      hint.textContent = "Select all that apply";
+      qline.appendChild(hint);
+    }
     body.appendChild(qline);
 
     const opts = document.createElement("div");
@@ -2526,6 +2553,7 @@ function renderQuestionRequest(frame) {
           state[i].selected.clear();
           state[i].other = "";
           otherInput.value = "";
+          otherWrap.classList.remove("is-filled");
           if (!wasSelected) state[i].selected.add(label);
         }
         optButtons.forEach((btn) =>
@@ -2537,13 +2565,25 @@ function renderQuestionRequest(frame) {
       opts.appendChild(b);
     });
 
+    // "Other" renders as a peer cell in the option grid — a <label>
+    // wrapper (click anywhere in the cell focuses the input) around a
+    // bare text input.
+    const otherWrap = document.createElement("label");
+    otherWrap.className = "cloud-chat-question-otherwrap";
+    const otherLabel = document.createElement("span");
+    otherLabel.className = "cloud-chat-question-opt-label";
+    otherLabel.textContent = "Other";
+    otherWrap.appendChild(otherLabel);
     const otherInput = document.createElement("input");
     otherInput.type = "text";
     otherInput.className = "cloud-chat-question-other";
-    otherInput.placeholder = "Other…";
+    otherInput.placeholder = "Type your own answer…";
     otherInput.maxLength = 2000;
     otherInput.oninput = () => {
       state[i].other = otherInput.value;
+      // "is-filled" mirrors answerOf's trimmed test, so the picked tint
+      // never shows on whitespace the card would not accept.
+      otherWrap.classList.toggle("is-filled", otherInput.value.trim() !== "");
       if (!qq.multiSelect && otherInput.value.trim()) {
         // Free text replaces a picked option on single-select questions.
         state[i].selected.clear();
@@ -2551,7 +2591,8 @@ function renderQuestionRequest(frame) {
       }
       updateSubmit();
     };
-    opts.appendChild(otherInput);
+    otherWrap.appendChild(otherInput);
+    opts.appendChild(otherWrap);
     body.appendChild(opts);
     wrap.appendChild(body);
   });
@@ -2627,10 +2668,16 @@ function resolveQuestionCard(frame) {
     if (answered && frame.answers && typeof frame.answers === "object") {
       // Echo what was chosen so the card reads as transcript after the
       // buttons are gone (an answer given on another device shows up too).
-      const summary = document.createElement("span");
-      summary.className = "cloud-chat-question-answer-summary";
-      summary.textContent = Object.values(frame.answers).join(" · ");
-      actions.appendChild(summary);
+      // One chip per question; the answers map is keyed by question text,
+      // which rides along as the chip's tooltip so a multi-question card
+      // keeps each answer tied to what it answered.
+      Object.entries(frame.answers).forEach(([question, val]) => {
+        const chip = document.createElement("span");
+        chip.className = "cloud-chat-question-answer-summary";
+        chip.textContent = String(val);
+        chip.title = String(question);
+        actions.appendChild(chip);
+      });
     }
   }
 }
@@ -4640,8 +4687,26 @@ function renderCoPresence(host, participants) {
   }
   updateDashboardSuggestions(_sidebarOk ? _sessionsCache : null);
   // Sidebar cache (_sessionsCache) is now populated so openSession can
-  // resolve the title; fire the one-shot deep-link open.
+  // resolve the title; fire the one-shot deep-link open. Captured BEFORE the
+  // call: `_maybeOpenInitialSession` consumes `_initialSessionId` (nulls it)
+  // synchronously but defers the actual `openSession` into a
+  // `requestAnimationFrame` callback, so `currentChatId` below is not yet set
+  // even when a session deep-link is about to open.
+  const _hadInitialSession = !!_initialSessionId;
   _maybeOpenInitialSession();
+  // `/chat?agent=<slug>` — the Chat button on an agent card. Spawns a session
+  // running AS that agent. Skipped when a session deep-link already claimed
+  // the page, since that names a specific existing conversation.
+  const _agentSlug = _takeAgentSlugFromUrl();
+  if (_agentSlug && !currentChatId && !_hadInitialSession) {
+    hideCapabilities();
+    newChat(_agentSlug).catch((err) => {
+      console.error("chat: could not start a session as agent", err);
+      if (window.appToast) {
+        window.appToast({ kind: "error", msg: "Could not start a chat with that agent." });
+      }
+    });
+  }
   // Chat-driven onboarding — render the journey panel and prime the greeting/
   // gap-resolver hooks. Best-effort: a failure here never blocks the chat.
   initChatOnboarding({

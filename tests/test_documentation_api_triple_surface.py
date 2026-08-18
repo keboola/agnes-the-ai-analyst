@@ -653,6 +653,30 @@ _EXEMPT: dict[str, str] = {
         "diagnostic action (§13.1), not an agent-facing data operation, the "
         "same posture as _AGENT_MEMORY_ADMIN_REASON/_AGENT_SCOPE_REASON above."
     ),
+    # access-policy-builder-ux plan, Tasks 2/3: the no-SQL builder's
+    # columns+samples list and structured-spec-to-SQL compile. Same posture
+    # as the policy/preview exemption right above (admin-only authoring
+    # surface for the builder UI folded into the existing policy editor
+    # modal) — no MCP analogue by design: an agent should never author a
+    # masking/filtering policy on another caller's behalf, and no CLI
+    # counterpart is planned for this slice (the builder is web-UI-only;
+    # `agnes admin table-policy preview` above is the one CLI surface this
+    # feature area has). `/policy/compile` additionally never persists
+    # anything — it only returns SQL for the admin to review/save through
+    # the existing PUT, so there is no state-changing action a CLI/MCP
+    # wrapper would even give an agent access to.
+    "/api/admin/registry/{table_id}/policy/columns": (
+        "admin-only access-policy builder: real schema + sample values for "
+        "the no-SQL builder (plan Task 2). No MCP analogue by design, same "
+        "reasoning as the policy/preview exemption above; no CLI planned for "
+        "this web-UI-only builder slice."
+    ),
+    "/api/admin/registry/{table_id}/policy/compile": (
+        "admin-only access-policy builder: structured spec -> validated SQL "
+        "(plan Task 3), never persists anything itself. No MCP analogue by "
+        "design, same reasoning as the policy/preview exemption above; no "
+        "CLI planned for this web-UI-only builder slice."
+    ),
     "/api/collections/{collection_id}/files": _COLLECTIONS_FILES_REASON,
     "/api/collections/{collection_id}/files/{file_id}": _COLLECTIONS_FILES_REASON,
     "/api/collections/{collection_id}/files/{file_id}/raw": _LIBRARY_RAW_REASON,
