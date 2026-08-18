@@ -455,7 +455,11 @@ async def get_semantic_context_endpoint(
         ),
     ),
     model_ids: Optional[list[str]] = Query(
-        None, description="Restrict to these model ids/slugs (repeatable); default = every accessible model."
+        None,
+        description=(
+            "Restrict to these models by id, slug, or model name (the `model` label each object "
+            "carries; repeatable, case-insensitive); default = every accessible model."
+        ),
     ),
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),

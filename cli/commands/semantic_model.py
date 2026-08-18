@@ -120,7 +120,10 @@ def context(
         None, "--id", help="Specific object id/name — repeatable. Omit for every object of this type (compact)."
     ),
     model: Optional[List[str]] = typer.Option(
-        None, "--model", help="Restrict to this model id/slug — repeatable. Omit for every accessible model."
+        None,
+        "--model",
+        help="Restrict to this model id, slug, or name (the `[model]` label shown in output) — "
+        "repeatable, case-insensitive. Omit for every accessible model.",
     ),
     limit: int = typer.Option(0, "--limit", help="Cap objects shown per type (0 = no cap)."),
     as_json: bool = typer.Option(False, "--json", help="Emit raw JSON"),
@@ -154,6 +157,11 @@ def context(
                 entry["objects"] = objs[:limit]
 
     if as_json:
+        # The JSON surface discloses the cap too — a machine caller must not
+        # read a sliced list as "these are all of them" (command-UX standard:
+        # silent partial scope is forbidden; Devin review on #1398).
+        if truncated:
+            body["truncated"] = {"limit": limit, "total_by_type": truncated}
         typer.echo(json.dumps(body, indent=2, default=str))
         return
 

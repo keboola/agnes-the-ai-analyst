@@ -41885,7 +41885,7 @@
             }
           },
           {
-            "description": "Restrict to these model ids/slugs (repeatable); default = every accessible model.",
+            "description": "Restrict to these models by id, slug, or model name (the `model` label each object carries; repeatable, case-insensitive); default = every accessible model.",
             "in": "query",
             "name": "model_ids",
             "required": false,
@@ -41901,7 +41901,7 @@
                   "type": "null"
                 }
               ],
-              "description": "Restrict to these model ids/slugs (repeatable); default = every accessible model.",
+              "description": "Restrict to these models by id, slug, or model name (the `model` label each object carries; repeatable, case-insensitive); default = every accessible model.",
               "title": "Model Ids"
             }
           },
@@ -53163,6 +53163,203 @@
         "summary": "Readyz",
         "tags": [
           "probes"
+        ]
+      }
+    },
+    "/semantic-layer": {
+      "get": {
+        "description": "Level 1 \u2014 every semantic model the caller can read, with its object\ncounts, SQL dialect(s) and validation status.\n\nA ``status='invalid'`` row still lists (an invalid import must be\nvisible, not silent) and renders its stored ``validation_errors``\ninstead of object counts, since an invalid document's ``document_json``\nmay be stale or absent.",
+        "operationId": "semantic_layer_list_semantic_layer_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Semantic Layer List",
+        "tags": [
+          "web"
+        ]
+      }
+    },
+    "/semantic-layer/{slug}": {
+      "get": {
+        "description": "Level 2 \u2014 one model, one tab per object type (datasets default).\n\n``q`` is the cross-link prefilter carried from another tab (a metric\nrow links to its constraints with ``?tab=constraints&q=<metric name>``,\na dataset row links to its metrics with ``?tab=metrics&q=<dataset\nname>``) \u2014 a plain case-insensitive substring match scoped to whichever\ntab is active, not a new search endpoint.",
+        "operationId": "semantic_layer_detail_semantic_layer__slug__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tab",
+            "required": false,
+            "schema": {
+              "default": "datasets",
+              "title": "Tab",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Q",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Semantic Layer Detail",
+        "tags": [
+          "web"
+        ]
+      }
+    },
+    "/semantic-layer/{slug}/{object_id}": {
+      "get": {
+        "description": "Level 3 \u2014 one object, rendering everything the flat projection drops:\na dataset's ``fields[]`` as a Name/Type/Role/Description table, the\n``ai_context`` block in five groups (keywords, synonyms, anti_keywords,\nhints, warnings), a metric's SQL fragment(s) with their dialect, a\nrelationship with both sides linked.\n\n``object_id`` is ``\"<type>:<name>\"`` (one path segment, per the design\nspec's URL) \u2014 ``type`` one of dataset/metric/relationship/constraint/\nglossary, ``name`` the object's ``name`` (``term`` for glossary),\ncase-insensitively matched.",
+        "operationId": "semantic_layer_object_semantic_layer__slug___object_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "object_id",
+            "required": true,
+            "schema": {
+              "title": "Object Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Semantic Layer Object",
+        "tags": [
+          "web"
         ]
       }
     },

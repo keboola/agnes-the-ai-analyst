@@ -95,6 +95,26 @@ class TestContext:
         assert "1 more" in result.output
         assert "d0" in result.output and "d1" in result.output and "d2" not in result.output
 
+    def test_limit_truncation_is_disclosed_in_json_too(self):
+        """Devin #1398 r4: the machine-readable surface must NOT return a
+        silently-sliced list — a `truncated` marker states the cap and totals."""
+        body = {
+            "results": [
+                {
+                    "semantic_type": "dataset",
+                    "mode": "compact",
+                    "objects": [{"name": f"d{i}", "summary": "s", "model": "m"} for i in range(3)],
+                }
+            ],
+            "unknown_types": [],
+        }
+        with patch("cli.commands.semantic_model.api_get", return_value=_resp(200, body)):
+            result = runner.invoke(app, ["semantic-model", "context", "dataset", "--limit", "2", "--json"])
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert len(payload["results"][0]["objects"]) == 2
+        assert payload["truncated"] == {"limit": 2, "total_by_type": {"dataset": 3}}
+
     def test_unmatched_id_hints_the_compact_listing(self):
         """Command-UX: a 'not found' path points at the next step."""
         body = {
