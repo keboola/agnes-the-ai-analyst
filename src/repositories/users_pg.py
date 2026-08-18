@@ -69,6 +69,22 @@ class UsersPgRepository:
             )
         return dict(row) if row else None
 
+    def list_by_email_ci(self, email: str) -> List[Dict[str, Any]]:
+        """PG sibling of the DuckDB ``list_by_email_ci`` — every row colliding
+        on this address, oldest first."""
+        with self._engine.connect() as conn:
+            rows = (
+                conn.execute(
+                    sa.text(
+                        "SELECT * FROM users WHERE lower(email) = lower(:email) ORDER BY created_at NULLS LAST, id"
+                    ),
+                    {"email": email},
+                )
+                .mappings()
+                .all()
+            )
+        return [dict(r) for r in rows]
+
     def get_by_email_prefix(self, local_part: str) -> Optional[Dict[str, Any]]:
         """PG sibling of the DuckDB ``get_by_email_prefix``."""
         escaped = local_part.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
@@ -215,25 +231,25 @@ class UsersPgRepository:
                 {**updates, "user_id": id},
             )
 
-    def consume_reset_token(self, *, email: str, token: str, cutoff, consume_id: str) -> bool:
+    def consume_reset_token(self, *, email: str, token: str, cutoff, consume_id: str) -> Optional[str]:
         """Atomically consume a password-reset token (PG sibling of the DuckDB
-        method). UPDATE + verifying SELECT run in one transaction; returns True
-        iff this call won the race."""
+        method). UPDATE + verifying SELECT run in one transaction; returns the
+        id of the stamped row, or ``None`` when this call did not win."""
         with self._engine.begin() as conn:
             conn.execute(
                 sa.text(
                     "UPDATE users SET reset_token = :cid, reset_token_created = NULL "
-                    "WHERE email = :email AND reset_token = :token "
+                    "WHERE lower(email) = lower(:email) AND reset_token = :token "
                     "AND reset_token_created IS NOT NULL AND reset_token_created >= :cutoff "
                     "AND active = TRUE"
                 ),
                 {"cid": consume_id, "email": email, "token": token, "cutoff": cutoff},
             )
             row = conn.execute(
-                sa.text("SELECT reset_token FROM users WHERE email = :email"),
-                {"email": email},
+                sa.text("SELECT id FROM users WHERE lower(email) = lower(:email) AND reset_token = :cid"),
+                {"email": email, "cid": consume_id},
             ).fetchone()
-        return bool(row and row[0] == consume_id)
+        return row[0] if row else None
 
     def count_admins(self, active_only: bool = True) -> int:
         sql = """

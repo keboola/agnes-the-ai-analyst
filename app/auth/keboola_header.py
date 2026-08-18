@@ -246,7 +246,11 @@ def resolve_header_user(token: str, request) -> Tuple[Optional[dict], str]:
     from src.repositories import users_repo
 
     try:
-        user = users_repo().get_by_email(identity.email)
+        # Case-insensitive, like every other auth door: ensure_user stores
+        # addresses lower-cased, so a Keboola identity whose address carries
+        # upper-case characters would sign in through OAuth and get
+        # keboola_user_unknown here.
+        user = users_repo().get_by_email_ci(identity.email)
     except Exception:
         # Same never-raises contract. Deliberately NOT recorded as a failure:
         # the token verified fine — this is a backend hiccup on a valid
