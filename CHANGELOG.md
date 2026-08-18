@@ -16,6 +16,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 - **Semantic layer: a read-only browse UI for the stored document itself.** `GET /semantic-layer` lists every model the caller can read (name, description, SQL dialect(s), source badge, per-type object counts, validation status — an invalid import renders its stored errors rather than staying silent); `GET /semantic-layer/{slug}?tab=` drills into one model, one tab per object type (datasets default · metrics · constraints · relationships · glossary), tabs as query params so every view has a URL, with `?q=` cross-link prefilters between tabs (a dataset row links to its metrics, a metric row to its constraints); `GET /semantic-layer/{slug}/{type}:{name}` renders everything the flat `metric_definitions` projection drops — a dataset's `fields[]` as a Name/Type/Role/Description table, the `ai_context` block in five groups (keywords, synonyms, anti-keywords, hints, warnings — the negative signal renders even when empty), a metric's SQL fragment(s) per dialect, a relationship with both sides linked. Same read-tier RBAC as the rest of the semantic-model surface (a Data Package or direct `semantic_model` grant, not admin-only) — an inaccessible model is absent from the list and 404s on direct access. A model whose `source` isn't `'manual'` (an import) carries an "Imported from …" badge; no page anywhere in this UI offers a write affordance yet (editing native models is a later increment). `/admin/semantic-layer` (sync-ops) and `/catalog/semantics` (the flat projection) are untouched; reached from the Library page's Definitions footer.
 
+### Fixed
+
+- **The semantic-layer projector now matches the Agnes `custom_extensions` vendor tag case-insensitively**, like the query validator and the browse UI already do. A hand-authored document spelling the tag `agnes` (rather than the canonical `AGNES` the Keboola adapter emits) previously browsed and validated fine but was silently dropped from the flat `metric_definitions` / `glossary_terms` / constraint projections; any casing now projects.
+
 ## [0.83.47] - 2026-08-18
 
 ### Added

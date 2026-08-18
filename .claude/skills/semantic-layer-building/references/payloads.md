@@ -88,11 +88,10 @@ instead of a single vendor-specific one when the expression is portable SQL
 
 The core Apache Ossie schema has no constraint slot; Agnes constraints ride
 `custom_extensions` under `vendor_name: AGNES`, `data` a JSON *string*.
-Write the tag as `AGNES` (upper-case): that is the canonical spelling the
-Keboola adapter emits and the only one the projector recognises when it writes
-the flat `metric_definitions` / `glossary_terms` / constraint projections —
-readers (the query validator and the browse UI) accept any casing, but a
-document authored with a lower-case tag would silently fail to project.
+`AGNES` (upper-case) is the canonical spelling the Keboola adapter emits and
+what you should write; the tag is matched case-insensitively everywhere (the
+projector, the query validator, and the browse UI), so casing never changes
+whether an extension projects or resolves.
 
 ```yaml
 custom_extensions:

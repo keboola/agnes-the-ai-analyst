@@ -4065,10 +4065,9 @@ async def semantic_layer_detail(
             # friendly `name`, so resolve name → source: a needle that names a
             # dataset also matches every metric bound to that dataset's source.
             # Read the binding through the view's `agnes_extension_payload`,
-            # which casefolds the vendor tag like the query validator and the
-            # rest of this browse module — NOT the projector's case-sensitive
-            # `_agnes_payload`, which would miss a document authored with the
-            # lower-case `agnes` tag the skill docs prescribe (Devin #1398).
+            # which casefolds the vendor tag like the query validator, the
+            # projector and the rest of this browse module — so any casing of
+            # the `agnes`/`AGNES` tag resolves (Devin #1398).
             def _metric_dataset(m: dict) -> str:
                 return str(agnes_extension_payload(m).get("dataset") or "").lower()
 

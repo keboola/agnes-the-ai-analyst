@@ -18,13 +18,10 @@ import json
 from typing import Optional
 
 # custom_extensions[].vendor_name Agnes rides its own concepts under. Compared
-# casefolded here — matching the query validator's read
-# (src/semantic_validation.py::extract_constraints, `vendor.casefold()`), the
-# established case-insensitive posture for reading imported document text. The
-# projector (src/semantic/projection.py::_agnes_payload) matches "AGNES"
-# case-sensitively instead — that exact spelling is the canonical tag the
-# Keboola adapter emits and what actually projects — so a reader must NOT reach
-# through the projector's helper if it wants to be lenient about casing.
+# casefolded here — matching the query validator (src/semantic_validation.py::
+# extract_constraints) and the projector (src/semantic/projection.py::
+# _is_agnes_vendor), which all read the tag case-insensitively. The Keboola
+# adapter emits the canonical `AGNES`; any casing resolves everywhere.
 _AGNES_VENDOR = "agnes"
 
 # The object types this browse UI knows how to list/drill into, and the
