@@ -1029,6 +1029,23 @@ class TestNeedsRefetchSidecarMarker:
 
         assert not (backfill.issues_dir / "PROJ-6.json.incomplete").exists()
 
+    def test_backfill_marker_failure_does_not_fail_the_saved_issue(self, tmp_path):
+        """Sibling of the webhook-path guard: the JSON is already written, so
+        an OSError from the marker sync must not make save_issue report the
+        issue as failed."""
+        backfill = self._make_backfill(tmp_path)
+        backfill.issues_dir.mkdir(parents=True, exist_ok=True)
+        issue = _issue_with_comments(total=3, embedded=3, issue_key="PROJ-7")
+
+        with patch(
+            "connectors.jira.scripts.backfill._sync_incomplete_marker",
+            side_effect=OSError("permission denied"),
+        ):
+            saved = backfill.save_issue(issue)
+
+        assert saved is not None
+        assert (backfill.issues_dir / "PROJ-7.json").exists()
+
 
 class TestWebhookSaveIssueSyncsSidecarMarker:
     """``JiraService.save_issue`` (the webhook path) must keep the sidecar
@@ -1085,6 +1102,28 @@ class TestWebhookSaveIssueSyncsSidecarMarker:
             "a complete webhook save must clear the marker, or the next "
             "--skip-existing backfill refetches a healed issue forever"
         )
+
+    def test_marker_failure_does_not_abort_the_publish(self, tmp_path):
+        """The marker only schedules a heal — best-effort bookkeeping. An
+        OSError from it (e.g. a marker file owned by the backfill's OS user
+        that the webhook process cannot touch) must not abort the save or
+        skip the parquet transform: the JSON is already replaced."""
+        service = self._make_service(tmp_path)
+        issue = _issue_with_comments(total=3, embedded=3, issue_key="PROJ-902")
+
+        with (
+            patch("connectors.jira.service.trigger_incremental_transform", return_value=True) as transform,
+            patch.object(service, "download_all_attachments", return_value=[]),
+            patch(
+                "connectors.jira.service._sync_incomplete_marker",
+                side_effect=OSError("permission denied"),
+            ),
+        ):
+            saved = service.save_issue(issue)
+
+        assert saved is not None, "a marker failure must not turn a successful save into a failure"
+        transform.assert_called_once()
+        assert (tmp_path / "issues" / "PROJ-902.json").exists()
 
 
 class TestDryRunCountsMatchRealSkipDecision:

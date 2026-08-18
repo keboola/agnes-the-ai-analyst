@@ -1145,7 +1145,15 @@ class JiraService:
                 # under the zero in-request retry budget) would persist a
                 # truncated JSON that a later --skip-existing backfill can
                 # never see, so the issue would only heal on further activity.
-                _sync_incomplete_marker(file_path, issue_data)
+                # Best-effort: the marker only schedules a heal, so a failure
+                # here (e.g. a marker file owned by the backfill's OS user
+                # that this process cannot touch) must never abort the
+                # publish — the JSON is already replaced — or skip the
+                # parquet transform below.
+                try:
+                    _sync_incomplete_marker(file_path, issue_data)
+                except OSError as marker_err:
+                    logger.warning(f"Could not sync .incomplete marker for {issue_key}: {marker_err}")
                 logger.info(f"Saved issue {issue_key} to {file_path}")
 
                 # Trigger incremental Parquet transform FIRST for real-time rsync.

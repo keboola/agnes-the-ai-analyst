@@ -397,8 +397,13 @@ class JiraBackfill:
             # Keep the sidecar marker in sync with this write's incomplete
             # state (set it when _comments_incomplete is True, clear it
             # otherwise) so _needs_refetch can answer with a stat instead of
-            # parsing the JSON body (Devin Review on #1283).
-            _sync_incomplete_marker(file_path, issue_data)
+            # parsing the JSON body (Devin Review on #1283). Best-effort: a
+            # marker failure (e.g. a file owned by another process's OS user)
+            # must not turn a successfully saved issue into a "failed" one.
+            try:
+                _sync_incomplete_marker(file_path, issue_data)
+            except OSError as marker_err:
+                logger.warning(f"Could not sync .incomplete marker for {issue_key}: {marker_err}")
             return file_path
         except Exception as e:
             logger.error(f"Failed to save {issue_key}: {e}")
