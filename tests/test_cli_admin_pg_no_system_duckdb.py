@@ -53,7 +53,7 @@ def test_break_glass_grant_admin_never_opens_system_duckdb_on_pg(monkeypatch):
     monkeypatch.setattr(repos_mod, "use_pg", lambda: True)
 
     class _Users:
-        def get_by_email(self, _email):
+        def get_by_email_ci(self, _email):
             return {"id": "u1"}
 
     class _Groups:
@@ -70,3 +70,45 @@ def test_break_glass_grant_admin_never_opens_system_duckdb_on_pg(monkeypatch):
 
     # Would raise RuntimeError before the fix.
     admin_mod.break_glass_grant_admin(email="ops@example.com", yes=True)
+
+
+def test_break_glass_grant_admin_tolerates_a_padded_address(monkeypatch):
+    """``get_by_email_ci`` folds case in SQL but does NOT trim, while the create
+    below normalizes (strip + lower). A padded argument therefore missed the
+    existing row and then hit ``UNIQUE(email)`` on insert — the last-resort
+    admin recovery dying with a raw database error on a stray space."""
+    import cli.commands.admin as admin_mod
+
+    looked_up: list[str] = []
+    created: list[dict] = []
+
+    class _Users:
+        def get_by_email_ci(self, email):
+            looked_up.append(email)
+            return {"id": "u1"} if email == "ops@example.com" else None
+
+        def create(self, **kw):  # pragma: no cover - must not be reached
+            created.append(kw)
+            raise AssertionError("existing account must be found, not re-created")
+
+    class _Groups:
+        def get_by_name(self, _name):
+            return {"id": "g1"}
+
+    class _Members:
+        def has_membership(self, _uid, _gid):
+            return True  # already a member → clean early return
+
+    monkeypatch.setattr(admin_mod, "users_repo", lambda: _Users())
+    monkeypatch.setattr(admin_mod, "user_groups_repo", lambda: _Groups())
+    monkeypatch.setattr(admin_mod, "user_group_members_repo", lambda: _Members())
+    # `break_glass_grant_admin` imports use_pg INSIDE the function body, so the
+    # name resolves against src.repositories at call time — patching it on the
+    # admin module would be inert (and would silently let the real
+    # get_system_db run). Same shape as the sibling tests above.
+    monkeypatch.setattr(db_mod, "get_system_db", _boom)
+    monkeypatch.setattr(repos_mod, "use_pg", lambda: True)
+
+    admin_mod.break_glass_grant_admin(email="  Ops@Example.com  ", yes=True)
+    assert looked_up == ["ops@example.com"], looked_up
+    assert created == []

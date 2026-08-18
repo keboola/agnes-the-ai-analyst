@@ -111,7 +111,7 @@
       <div class="page-header__eyebrow">Administration · Marketplace</div>
       <h1 class="page-header__title" id="contrib-title">Contribute a skill</h1>
       <p class="page-header__subtitle">
-        Paste a generated <code>SKILL.md</code> and publish it into your Agnes
+        Paste a generated <code>SKILL.md</code> and publish it into your {{ instance_brand or 'Agnes' }}
         marketplace. It lands in the <strong>Agnes Contributed</strong> collection,
         ready for your team to install in Claude Code.
       </p>
@@ -123,7 +123,7 @@
     <strong>Published.</strong> &ldquo;{{ result.skill_name }}&rdquo; is now in your
     marketplace{% if result.granted_group %}, visible to <strong>{{ result.granted_group }}</strong>{% endif %}.
     <div class="contrib-result-actions">
-      {{ ds.button('Open in Agnes →', variant='primary', href=result.detail_url) }}
+      {{ ds.button('Open in ' ~ (instance_brand or 'Agnes') ~ ' →', variant='primary', href=result.detail_url) }}
       <form method="post" action="/admin/contribute-skill/{{ result.plugin_name }}/delete" style="margin:0">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         {{ ds.button('Remove this skill', variant='secondary', type='submit') }}
@@ -140,7 +140,7 @@
     <h2>Skill source</h2>
     <p class="help">
       The full <code>SKILL.md</code>, including the <code>--- name: … ---</code>
-      frontmatter. Agnes derives the plugin from the skill&rsquo;s <code>name:</code>.
+      frontmatter. {{ instance_brand or 'Agnes' }} derives the plugin from the skill&rsquo;s <code>name:</code>.
     </p>
     <div class="contrib-toolbar">
       {{ ds.button('Paste from clipboard', variant='secondary', type='button', id='paste-btn') }}
@@ -173,15 +173,15 @@
     <textarea name="skill_md" id="skill_md" required
       placeholder="---&#10;name: my-skill&#10;description: ...&#10;---&#10;&#10;# My skill ...">{{ skill_md or '' }}</textarea>
     <div class="contrib-actions">
-      {{ ds.button('Publish to Agnes', variant='primary', type='submit') }}
+      {{ ds.button('Publish to ' ~ (instance_brand or 'Agnes'), variant='primary', type='submit') }}
     </div>
   </form>
 
   <div class="contrib-pitch">
-    <strong>What is this?</strong> Agnes turns a recorded process into a governed,
+    <strong>What is this?</strong> {{ instance_brand or 'Agnes' }} turns a recorded process into a governed,
     RBAC-controlled Claude Code skill the whole team can install &mdash; one
     marketplace, per-group access, no copy-pasting files around. This page is the
-    landing target for a &ldquo;Load skill to Agnes&rdquo; button in your recording tool:
+    landing target for a &ldquo;Load skill to {{ instance_brand or 'Agnes' }}&rdquo; button in your recording tool:
     it copies the skill to the clipboard and opens this page with <code>?prefill=1</code>.
   </div>
 </div>

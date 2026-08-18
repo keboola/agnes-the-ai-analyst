@@ -1,0 +1,225 @@
+{% extends "base_page.html" %}
+
+{% block title %}{{ object_name }} — {{ model_name }} — Semantic layer — {{ config.INSTANCE_NAME }}{% endblock %}
+
+{% block head_extra %}
+<style>
+.slb-back {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: var(--space-6) 0 0;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--ds-text-secondary);
+    text-decoration: none;
+}
+.slb-back:hover { color: var(--ds-text-primary); }
+
+.slb-meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-3);
+    margin: 0 0 var(--space-5);
+}
+
+.slb-panel {
+    border: 1px solid var(--ds-border);
+    border-radius: var(--radius-lg);
+    background: var(--ds-surface);
+    padding: var(--space-4) var(--space-5);
+    margin-bottom: var(--space-5);
+}
+.slb-panel h2 {
+    font-size: 13px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--ds-text-muted);
+    margin: 0 0 var(--space-3);
+}
+
+.slb-expr {
+    font-family: var(--ds-font-mono, monospace);
+    font-size: 12.5px;
+    background: var(--ds-surface-dim);
+    border: 1px solid var(--ds-border);
+    border-radius: var(--radius-md);
+    padding: var(--space-3);
+    white-space: pre-wrap;
+    word-break: break-word;
+    margin: 0 0 var(--space-3);
+}
+.slb-expr:last-child { margin-bottom: 0; }
+.slb-expr-dialect {
+    display: inline-block;
+    margin-bottom: 4px;
+}
+
+.slb-ai-groups {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: var(--space-4);
+}
+.slb-ai-group h3 {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--ds-text-primary);
+    margin: 0 0 6px;
+}
+.slb-ai-group ul {
+    margin: 0;
+    padding: 0 0 0 16px;
+    font-size: 12.5px;
+    color: var(--ds-text-secondary);
+}
+.slb-ai-group p.slb-ai-empty {
+    margin: 0;
+    font-size: 12px;
+    color: var(--ds-text-muted);
+    font-style: italic;
+}
+.slb-ai-group--anti_keywords ul { color: var(--ds-accent-danger-ink); }
+
+.slb-rel-sides {
+    display: flex;
+    align-items: center;
+    gap: var(--space-4);
+    font-size: 14px;
+}
+.slb-rel-sides a { font-weight: 600; }
+.slb-rel-arrow { color: var(--ds-text-muted); }
+</style>
+{% endblock %}
+
+{% block page_prehead %}
+<a class="slb-back" href="/semantic-layer/{{ slug }}?tab={{ back_tab }}">&larr; {{ model_name }}</a>
+{% endblock %}
+
+{% set page_hero_eyebrow = model_name ~ " · " ~ object_type_label %}
+{% set page_hero_title = object_name %}
+
+{% block toolbar %}
+<div class="slb-meta">
+    {% if is_imported %}
+    <span class="badge">Imported from {{ source_label }} — read-only</span>
+    {% else %}
+    <span class="badge">Native</span>
+    {% endif %}
+</div>
+{% endblock %}
+
+{% block page %}
+
+{% if object_type == 'dataset' %}
+<div class="slb-panel">
+    <h2>Fields</h2>
+    {% if fields %}
+    <table class="data-table">
+        <thead>
+            <tr><th>Name</th><th>Type</th><th>Role</th><th>Description</th></tr>
+        </thead>
+        <tbody>
+            {% for f in fields %}
+            <tr>
+                <td>{{ f.name }}</td>
+                <td><span class="badge">{{ f.datatype }}</span></td>
+                <td>
+                    <span class="badge{% if f.role == 'Primary key' %} badge--info{% elif f.role == 'Time dimension' or f.role == 'Dimension' %} badge--success{% endif %}">
+                        {{ f.role }}
+                    </span>
+                </td>
+                <td>{{ f.description }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="empty-state__description">No fields declared.</p>
+    {% endif %}
+</div>
+{% if obj.source %}
+<div class="slb-panel"><h2>Source</h2><p>{{ obj.source }}</p></div>
+{% endif %}
+{% endif %}
+
+{% if object_type == 'metric' %}
+<div class="slb-panel">
+    <h2>SQL expression</h2>
+    {% if expressions %}
+    {% for e in expressions %}
+    <span class="badge slb-expr-dialect">{{ e.dialect }}</span>
+    <pre class="slb-expr">{{ e.expression }}</pre>
+    {% endfor %}
+    {% else %}
+    <p class="empty-state__description">No expression declared.</p>
+    {% endif %}
+</div>
+{% endif %}
+
+{% if object_type == 'relationship' %}
+<div class="slb-panel">
+    <h2>Linkage</h2>
+    <div class="slb-rel-sides">
+        {% if from_dataset %}
+        <a href="/semantic-layer/{{ slug }}/dataset:{{ obj.from | urlencode }}">{{ obj.from }}</a>
+        {% else %}
+        <span>{{ obj.from }}</span>
+        {% endif %}
+        <span class="slb-rel-arrow">&rarr;</span>
+        {% if to_dataset %}
+        <a href="/semantic-layer/{{ slug }}/dataset:{{ obj.to | urlencode }}">{{ obj.to }}</a>
+        {% else %}
+        <span>{{ obj.to }}</span>
+        {% endif %}
+    </div>
+    <p>{{ (obj.from_columns or []) | join(', ') }} = {{ (obj.to_columns or []) | join(', ') }}</p>
+</div>
+{% endif %}
+
+{% if object_type == 'constraint' %}
+<div class="slb-panel">
+    <h2>Rule</h2>
+    <p><span class="badge{% if (obj.severity or '') | lower == 'error' %} badge--danger{% else %} badge--warn{% endif %}">{{ obj.severity or "warning" }}</span> &middot; {{ obj.constraint_type or "—" }}</p>
+    <pre class="slb-expr">{{ obj.rule or "" }}</pre>
+    <p>Applies to metrics: {{ (obj.metrics or []) | join(', ') }}</p>
+</div>
+{% endif %}
+
+{% if object_type == 'glossary' %}
+<div class="slb-panel">
+    <h2>Definition</h2>
+    <p>{{ obj.definition or "" }}</p>
+    {% if obj.see_also %}
+    <p>See also: {{ obj.see_also | join(', ') }}</p>
+    {% endif %}
+</div>
+{% endif %}
+
+{% if ai is not none %}
+<div class="slb-panel">
+    <h2>AI context</h2>
+    {% if ai_instructions %}<p>{{ ai_instructions }}</p>{% endif %}
+    {% if ai_examples %}
+    <p><strong>Examples:</strong> {{ ai_examples | join(' · ') }}</p>
+    {% endif %}
+    <div class="slb-ai-groups">
+        {% for group, label in [('keywords', 'Keywords'), ('synonyms', 'Synonyms'), ('anti_keywords', 'Anti-keywords'), ('hints', 'Hints'), ('warnings', 'Warnings')] %}
+        <div class="slb-ai-group slb-ai-group--{{ group }}">
+            <h3>{{ label }}</h3>
+            {% if ai[group] %}
+            <ul>
+                {% for value in ai[group] %}
+                <li>{{ value }}</li>
+                {% endfor %}
+            </ul>
+            {% else %}
+            <p class="slb-ai-empty">None declared.</p>
+            {% endif %}
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endif %}
+{% endblock %}

@@ -154,7 +154,7 @@
 
 {# Example questions #}
 {% if sample_questions %}
-{{ detail.section_open('Example questions you can ask Agnes', icon='spark') }}
+{{ detail.section_open('Example questions you can ask ' ~ (instance_brand_short or 'Agnes'), icon='spark') }}
   {{ detail.questions(sample_questions) }}
 {{ detail.section_close() }}
 {% endif %}

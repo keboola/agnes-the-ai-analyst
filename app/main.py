@@ -1222,7 +1222,15 @@ async def lifespan(app):
         # block the worker.
         from app.auth.dependencies import is_local_dev_mode, get_local_dev_email
 
-        seed_email = os.environ.get("SEED_ADMIN_EMAIL") or (get_local_dev_email() if is_local_dev_mode() else None)
+        from src.user_identity import normalize_email
+
+        # Normalized on the way in: this is an account-CREATING path, and a
+        # mixed-case SEED_ADMIN_EMAIL over an existing normalized row used to
+        # mint a second account and put Admin/Everyone on the copy the person
+        # never signs in as (every auth door resolves the OLDEST match).
+        seed_email = normalize_email(
+            os.environ.get("SEED_ADMIN_EMAIL") or (get_local_dev_email() if is_local_dev_mode() else None) or ""
+        )
         if seed_email:
             try:
                 from src.db import SYSTEM_ADMIN_GROUP, SYSTEM_EVERYONE_GROUP
@@ -1236,7 +1244,7 @@ async def lifespan(app):
                     from argon2 import PasswordHasher
 
                     password_hash = PasswordHasher().hash(seed_password)
-                existing = repo.get_by_email(seed_email)
+                existing = repo.get_by_email_ci(seed_email)
                 if not existing:
                     import uuid
 
