@@ -32,6 +32,7 @@ from app.instance_config import (
     get_instance_brand,
     get_instance_brand_short,
     get_instance_copyright,
+    get_privacy_policy_url,
     get_workspace_dir_name,
     get_instance_logo_svg,
     get_instance_overview,
@@ -902,6 +903,32 @@ async def setup_wizard(request: Request):
     return templates.TemplateResponse(request, "setup.html", _build_context(request))
 
 
+@router.get("/privacy", response_class=HTMLResponse)
+async def privacy_page(request: Request):
+    """What this instance does with data — deliberately UNAUTHENTICATED.
+
+    Every connector directory asks for a privacy policy URL and fetches it
+    without credentials; an unreachable one is an automatic rejection. The
+    same content already existed as ``/how-it-works#privacy``, but that route
+    requires a signed-in session, so handing out that anchor produced a
+    login redirect rather than a policy.
+
+    Two shapes, one URL. When the operator has published their own policy
+    (``instance.privacy_policy_url``) this redirects there, because on a
+    self-hosted deployment *they* are the data controller and their document
+    is the authoritative one. Otherwise it renders the built-in page, which
+    states that plainly and describes only what the software itself does —
+    the honest limit of what a vendor can say about someone else's instance.
+
+    No auth, no DB read: it must answer for a reviewer, a crawler, and a
+    logged-out user on an instance whose database is down.
+    """
+    policy_url = get_privacy_policy_url()
+    if policy_url:
+        return RedirectResponse(url=policy_url, status_code=302)
+    return templates.TemplateResponse(request, "privacy.html", _build_context(request))
+
+
 @router.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request):
     from app.auth.dependencies import is_local_dev_mode, _get_local_dev_user
@@ -953,6 +980,13 @@ async def login_page(request: Request):
             providers.append({"name": "keboola", "display_name": "Keboola", "icon": "keboola"})
     except Exception:
         pass
+    try:
+        from app.auth.providers.microsoft import is_available as microsoft_available
+
+        if microsoft_available() and provider_allowed("microsoft"):
+            providers.append({"name": "microsoft", "display_name": "Microsoft", "icon": "microsoft"})
+    except Exception:
+        pass
 
     # Convert to login_buttons format expected by template
     login_buttons = []
@@ -984,6 +1018,13 @@ async def login_page(request: Request):
                 _url += f"?next={quote(next_path, safe='')}"
             login_buttons.append(
                 {"url": _url, "text": "Sign in with Keboola", "css_class": "btn-primary", "icon_html": ""}
+            )
+        elif p["name"] == "microsoft":
+            _url = "/auth/microsoft/login"
+            if next_path:
+                _url += f"?next={quote(next_path, safe='')}"
+            login_buttons.append(
+                {"url": _url, "text": "Sign in with Microsoft", "css_class": "btn-primary", "icon_html": ""}
             )
 
     keboola_expected_project = ""
@@ -3493,7 +3534,7 @@ async def library_page(
         "files": "Artefacts",
         "skill": "Skills",
         "plugin": "Plugins",
-        "agent": "Agents",
+        "agent": "Agent templates",
         "recipe": "Recipes",
         "data_package": "Data packages",
         "data_app": "Apps",
@@ -3749,7 +3790,7 @@ async def skills_page(
     request: Request,
     user: dict = Depends(get_current_user),
 ):
-    """Builder — one authoring surface for skills, plugins and shareable agents.
+    """Builder — one authoring surface for skills, plugins and agent templates.
 
     Formerly the single-type Skill Builder. Two in-page steps: a TYPE PICKER,
     then a type-adapted BUILDER that keeps one shell (identity, access,
@@ -8378,6 +8419,7 @@ def _chats_rows(request: Request, user: dict) -> tuple[list[dict], dict[str, int
         "web": "Web",
         "slack_dm": "Slack DM",
         "slack_thread": "Slack thread",
+        "teams_dm": "Teams DM",
         "api": "API",
     }
 

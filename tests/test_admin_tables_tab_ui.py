@@ -225,6 +225,74 @@ def test_admin_tables_renders_register_modals_in_dom(seeded_app):
     assert 'id="editBqModal"' in html
     assert 'id="registerKeboolaModal"' in html
     assert 'id="editKeboolaModal"' in html
+    assert 'id="registerDatabricksModal"' in html
+    assert 'name="dbxAccessMode"' in html
+    assert 'id="registerDatabricksSubmitBtn"' in html
+    assert 'onclick="registerDatabricksTable()"' in html
+
+
+def test_databricks_only_instance_keeps_the_full_register_menu_reachable(seeded_app, monkeypatch):
+    """The Databricks shortcut must not swallow the only path to the menu.
+
+    On an instance whose ``data_source.type`` is ``databricks`` and whose
+    connection registry holds nothing else, the primary button opens the
+    Databricks drawer straight away — one click saved on the source an admin
+    registers every time. That shortcut used to be the button's ONLY
+    behaviour, which made the dropdown unreachable and with it the Jira docs
+    link and the BigQuery / Keboola register items: registering any of them
+    meant dropping to the API or the CLI.
+
+    So the primary is a split button — a second segment that ALWAYS opens the
+    full list, whatever the first one shortcuts to.
+    """
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+
+    class _OnlyDatabricks:
+        def list(self):
+            return [{"id": "dbx1", "name": "Warehouse", "source_type": "databricks"}]
+
+    monkeypatch.setattr(
+        "src.repositories.source_connections_repo",
+        lambda: _OnlyDatabricks(),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.instance_config.load_instance_config",
+        lambda: {"data_source": {"type": "databricks", "databricks": {}}},
+        raising=False,
+    )
+    from app.instance_config import reset_cache
+
+    reset_cache()
+    try:
+        r = c.get("/admin/tables", headers=_auth(token))
+        assert r.status_code == 200
+        html = r.text
+        # Precondition: this IS the configuration that arms the shortcut.
+        assert 'data-source-type="databricks"' in html
+        assert 'data-connected-source-types="databricks"' in html
+
+        # The second segment of the split button, and the handler it calls.
+        assert 'id="registerNewTableMoreBtn"' in html
+        assert 'onclick="openRegisterNewTableMenu(event)"' in html
+        assert "function openRegisterNewTableMenu(" in html
+
+        # That handler opens the menu unconditionally — no source sniffing,
+        # no drawer shortcut inside it.
+        opener = html.split("function openRegisterNewTableMenu(", 1)[1]
+        opener = opener.split("\n    function ", 1)[0]
+        assert "DATA_SOURCE_TYPE" not in opener
+        assert "_dbxIsOnlyConnectedSource" not in opener
+        assert "openRegisterModal" not in opener
+        assert "registerNewTableMenu" in opener
+
+        # …and the items it reveals are still all there.
+        assert "openRegisterModal('bigquery')" in html
+        assert "openRegisterModal('keboola')" in html
+        assert "docs/connectors/jira.md" in html
+    finally:
+        reset_cache()
 
 
 def test_registry_listing_renders_manage_access_button(seeded_app):

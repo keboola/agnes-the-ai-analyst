@@ -285,10 +285,25 @@ def _print_estimate(d: dict) -> None:
     # `dict.get(k, default)` returns `default` only when k is missing; if k
     # maps to None (server returns None for non-BQ tables) the default doesn't
     # kick in. `or 0` covers both cases.
-    typer.echo(f"  estimated_scan_bytes:   {(d.get('estimated_scan_bytes') or 0):>15,} bytes")
+    #
+    # `None` and `0` are NOT interchangeable for the two cost fields, though.
+    # A local/materialized row genuinely scans zero billable bytes; a
+    # Databricks row's scan volume is *unknown* — the engine has no dry-run —
+    # and printing `0` there would read as "free". Distinguish them, and label
+    # which engine answered (`engine` is absent on servers older than the
+    # field, hence the `or`-chain rather than a bare lookup).
+    engine = d.get("engine") or "bigquery"
+    typer.echo(f"  engine:                 {engine:>15}")
+    scan_bytes = d.get("estimated_scan_bytes")
+    if scan_bytes is None:
+        typer.echo(f"  estimated_scan_bytes:   {'n/a':>15}  ({engine} cannot price a statement before running it)")
+    else:
+        typer.echo(f"  estimated_scan_bytes:   {scan_bytes:>15,} bytes")
     typer.echo(f"  estimated_result_rows:  {(d.get('estimated_result_rows') or 0):>15,}")
     typer.echo(f"  estimated_result_bytes: {(d.get('estimated_result_bytes') or 0):>15,} bytes")
-    typer.echo(f"  bq_cost_estimate_usd:   $ {(d.get('bq_cost_estimate_usd') or 0):.4f}")
+    cost = d.get("bq_cost_estimate_usd")
+    if cost is not None:
+        typer.echo(f"  bq_cost_estimate_usd:   $ {cost:.4f}")
 
 
 def _exit_code_for(e: V2ClientError) -> int:
@@ -608,7 +623,12 @@ def _create_snapshot(
             effective_as_of=now,
             rows=int(table.num_rows),
             bytes_local=parquet_path.stat().st_size,
-            estimated_scan_bytes_at_fetch=int(est.get("estimated_scan_bytes", 0)) if est is not None else 0,
+            # `.get(k, 0)` returns None when the key EXISTS and maps to None,
+            # which a Databricks estimate does (that engine cannot price a
+            # statement ahead of time) — `int(None)` would raise. The meta
+            # field records billable scan bytes, of which an unpriceable
+            # engine has none to record, so unknown stores as 0.
+            estimated_scan_bytes_at_fetch=int((est or {}).get("estimated_scan_bytes") or 0),
             result_hash_md5=result_hash,
             expires_at=expires_at,
             policy_fingerprint=policy_fingerprint_header,

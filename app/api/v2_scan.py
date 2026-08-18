@@ -38,7 +38,12 @@ from src.repositories import (
 )
 from app.api.v2_schema import NotFound, build_schema  # reused for column resolution
 from app.api.v2_arrow import CONTENT_TYPE, arrow_to_ipc_bytes_capped
-from app.api.v2_quota import QuotaTracker, QuotaExceededError
+from app.api.v2_quota import (
+    KIND_DAILY_BYTES,
+    KIND_DAILY_ESTIMATES,
+    QuotaTracker,
+    QuotaExceededError,
+)
 from connectors.bigquery.access import BqAccess, BqAccessError, get_bq_access
 from connectors.bigquery.labels import job_labels_for
 from src.sql_ident import quote_ident
@@ -80,6 +85,17 @@ def _executes_on_bigquery(row: dict) -> bool:
     return (row.get("source_type") or "") == "bigquery" and (row.get("query_mode") or "") != "materialized"
 
 
+def _executes_on_databricks(row: dict) -> bool:
+    """True when a scan must run on a Databricks SQL warehouse.
+
+    Mirrors ``_executes_on_bigquery``: a ``query_mode='materialized'``
+    Databricks row already has its server-side parquet, so it belongs on the
+    local branch. Only a ``query_mode='remote'`` row — which has no parquet
+    anywhere and never will — executes upstream.
+    """
+    return (row.get("source_type") or "") == "databricks" and (row.get("query_mode") or "") == "remote"
+
+
 def _assert_scannable_engine(row: dict) -> None:
     """Refuse a scan/estimate on a remote row this endpoint cannot execute.
 
@@ -90,6 +106,9 @@ def _assert_scannable_engine(row: dict) -> None:
     request would surface as a bare 404 that reads like "your table isn't
     synced yet" when the truth is "this endpoint doesn't speak that engine".
 
+    Databricks is no longer such an engine — it has its own scan branch — so
+    the refusal now covers only engines that genuinely cannot execute here.
+
     Raises ``ValueError``, which both callers already map to HTTP 400.
     """
     source_type = (row.get("source_type") or "").strip()
@@ -97,11 +116,125 @@ def _assert_scannable_engine(row: dict) -> None:
         return
     if (row.get("query_mode") or "") != "remote":
         return
+    if _executes_on_databricks(row):
+        return
     raise ValueError(
         f"table '{row.get('id') or row.get('name')}' is a query_mode='remote' {source_type} table; "
         "/api/v2/scan cannot execute against that engine. Use `agnes query --remote` for an "
         "interactive answer, or register the table as query_mode='materialized' so it syncs to a parquet."
     )
+
+
+def _assert_scan_policy_supported(row: dict, table_id: str, user) -> None:
+    """Refuse a policied table on an engine this endpoint cannot filter on.
+
+    ``/api/query`` CAN carry a policy to a Databricks warehouse: it substitutes
+    the policy body into a statement the caller wrote. This endpoint has no
+    caller statement to substitute into — it BUILDS one from
+    ``table_id`` + ``select`` + ``where`` — so the two need different plumbing,
+    and the statement this builder produces is unfiltered. Shipping it would
+    return exactly the rows the policy exists to hide (§17).
+
+    Runs BEFORE the schema resolve, for two reasons. It refuses without doing
+    any work, and — the reason it is not merely tidier — ``build_schema``
+    resolves the *effective* (policy-shaped) schema, which for a remote row it
+    cannot compute locally, so leaving this check downstream surfaced the
+    refusal as a bare ``policy_error`` instead of the reason and next step.
+
+    ``estimate`` is covered too, not just ``run_scan``: it returns a row COUNT
+    over the caller's predicate, and the count of rows someone may not see is
+    itself the thing a policy withholds.
+    """
+    if not _executes_on_databricks(row):
+        return
+    try:
+        relation = policied_relation(table_id, user)
+    except PolicyIdentityUnresolvable:
+        raise HTTPException(status_code=403, detail={"reason": "policy_identity_unresolvable"})
+    except PolicyError as exc:
+        raise HTTPException(status_code=500, detail={"reason": "policy_error", "table": exc.table_id})
+    if not relation.policied:
+        return
+    raise HTTPException(
+        status_code=400,
+        detail={
+            "reason": "policy_unsupported_on_scan_engine",
+            "engine": "databricks",
+            "table": table_id,
+            "message": (
+                "This table carries an access policy and would be scanned on Databricks, "
+                "where this endpoint cannot apply it. Refused."
+            ),
+            "hint": (
+                "Query it with `agnes query --remote`, which does enforce the policy on "
+                "Databricks, or register a query_mode='materialized' row so the scan reads "
+                "a local parquet."
+            ),
+        },
+    )
+
+
+def _databricks_settings_or_400(table_id: str) -> dict:
+    from connectors.databricks.semantic_layer import resolve_databricks_settings
+
+    settings = resolve_databricks_settings()
+    if settings is None:
+        raise ValueError(
+            f"table '{table_id}' is a Databricks table but this instance has no Databricks connection "
+            "configured; set data_source.databricks.host + warehouse_id and DATABRICKS_TOKEN."
+        )
+    return settings
+
+
+def _build_databricks_sql(
+    table_row: dict,
+    req: ScanRequest,
+    settings: dict,
+    *,
+    safe_where: str | None = None,
+    count_only: bool = False,
+) -> str:
+    """Build the warehouse-native SQL for a scan or its row-count estimate.
+
+    Identifier quoting goes through ``quote_dbx_path``, which REFUSES a
+    registry segment outside the safe alphabet rather than escaping it — the
+    same rule the interactive remote path applies, kept identical so a row
+    means one physical table no matter which surface reads it.
+    """
+    from connectors.databricks.remote import quote_dbx_path, row_target
+
+    catalog, schema, table = row_target(table_row, str(settings.get("catalog") or ""))
+    table_ref = quote_dbx_path(catalog, schema, table)
+
+    if count_only:
+        sql = f"SELECT COUNT(*) AS n FROM {table_ref}"
+        if safe_where:
+            sql += f" WHERE {safe_where}"
+        return sql
+
+    select_sql = ", ".join(f"`{c}`" for c in req.select) if req.select else "*"
+    sql = f"SELECT {select_sql} FROM {table_ref}"
+    if safe_where:
+        sql += f" WHERE {safe_where}"
+    if req.order_by:
+        sql += f" ORDER BY {', '.join(_quote_order_by_databricks(e) for e in req.order_by)}"
+    if req.limit:
+        sql += f" LIMIT {int(req.limit)}"
+    return sql
+
+
+def _execution_dialect(row: dict, use_bq: bool) -> str:
+    """Which SQL flavor the scan actually executes in.
+
+    BigQuery for a live BQ scan, Databricks for a remote Databricks row, and
+    DuckDB for everything served from a local parquet — including
+    ``query_mode='materialized'`` rows on either engine, whose scan is a local
+    read no matter where the data came from."""
+    if use_bq:
+        return "bigquery"
+    if _executes_on_databricks(row):
+        return "databricks"
+    return "duckdb"
 
 
 def _validated_where_fragment(req: "ScanRequest", schema: dict, row: dict, use_bq: bool) -> str | None:
@@ -119,11 +252,22 @@ def _validated_where_fragment(req: "ScanRequest", schema: dict, row: dict, use_b
     either flavor. That is fine — sqlglot's BigQuery parser is permissive
     and accepts DuckDB-style syntax (``x::int`` parses and normalizes to
     ``CAST``), and rendering in the execution dialect makes the result
-    correct in both cases (pinned by test_accepts_duckdb_flavor_where)."""
+    correct in both cases (pinned by test_accepts_duckdb_flavor_where).
+
+    A remote Databricks row parses AND renders as ``databricks``: the schema
+    endpoint advertises ``sql_flavor='databricks'`` for it, so that is the
+    flavor the client was taught to write, and it is also the flavor the
+    warehouse executes."""
     if not req.where:
         return None
-    parse_dialect = "bigquery" if (row.get("source_type") or "") == "bigquery" else "duckdb"
-    render_dialect = "bigquery" if use_bq else "duckdb"
+    source_type = (row.get("source_type") or "").strip()
+    if source_type == "bigquery":
+        parse_dialect = "bigquery"
+    elif _executes_on_databricks(row):
+        parse_dialect = "databricks"
+    else:
+        parse_dialect = "duckdb"
+    render_dialect = _execution_dialect(row, use_bq)
     return safe_where_predicate(req.where, req.table_id, schema, dialect=parse_dialect, render_dialect=render_dialect)
 
 
@@ -197,6 +341,15 @@ def _quote_order_by_duckdb(entry: str) -> str:
     return quote_ident(parts[0]) + ("" if len(parts) == 1 else " " + " ".join(parts[1:]))
 
 
+def _quote_order_by_databricks(entry: str) -> str:
+    """Backtick-quote the column part; Databricks/Spark SQL quotes identifiers
+    with backticks like BigQuery, not double quotes. ``_validate_order_by`` has
+    already constrained the entry to ``<column>[ ASC|DESC]`` against the
+    schema, so this only has to survive reserved words."""
+    parts = entry.strip().split()
+    return f"`{parts[0]}`" + ("" if len(parts) == 1 else " " + " ".join(parts[1:]))
+
+
 def _build_bq_sql(
     table_row: dict,
     project_id: str,
@@ -263,6 +416,7 @@ def estimate(conn, user, raw_request: dict, *, bq: BqAccess) -> dict:
         raise PermissionError(req.table_id)
 
     _assert_scannable_engine(row)
+    _assert_scan_policy_supported(row, req.table_id, user)
     schema = _resolve_schema(conn, user, req.table_id, bq)
     use_bq = _executes_on_bigquery(row)
 
@@ -278,11 +432,15 @@ def estimate(conn, user, raw_request: dict, *, bq: BqAccess) -> dict:
             raise ValueError(f"unknown columns: {unknown}")
     _validate_order_by(req.order_by, schema)
 
+    if _executes_on_databricks(row):
+        return _estimate_databricks(req, row, schema, safe_where, user)
+
     # Materialized rows join the non-BQ sources here: served from the
     # server-side parquet, so there is no billable scan to estimate.
     if not use_bq:
         return {
             "table_id": req.table_id,
+            "engine": "local",
             "estimated_scan_bytes": 0,
             "estimated_result_rows": None,
             "estimated_result_bytes": None,
@@ -312,10 +470,121 @@ def estimate(conn, user, raw_request: dict, *, bq: BqAccess) -> dict:
 
     return {
         "table_id": req.table_id,
+        "engine": "bigquery",
         "estimated_scan_bytes": int(scan_bytes),
         "estimated_result_rows": int(rows_est),
         "estimated_result_bytes": int(rows_est * avg_row_bytes),
         "bq_cost_estimate_usd": round(cost, 4),
+    }
+
+
+#: Quota kind → the stable `reason` code a refused estimate reports. Each kind
+#: gets its OWN code rather than collapsing into one: an analyst told
+#: "daily_estimate_budget_exceeded" knows to stop looping and wait for the
+#: UTC-midnight reset, where "concurrent_scans_exceeded" means retry shortly
+#: and "daily_budget_exceeded" means their byte quota is gone. Same status,
+#: three different next actions.
+_ESTIMATE_QUOTA_REASONS = {
+    KIND_DAILY_BYTES: "daily_budget_exceeded",
+    KIND_DAILY_ESTIMATES: "daily_estimate_budget_exceeded",
+}
+
+
+def _estimate_databricks(req: ScanRequest, row: dict, schema: dict, safe_where: str | None, user) -> dict:
+    """Estimate a Databricks remote scan.
+
+    ``estimated_scan_bytes`` is ``None``, not ``0``. Databricks has no dry-run
+    primitive, so the bytes a statement will scan genuinely cannot be known
+    before running it — and ``0`` is not the neutral answer it looks like: on
+    every other row in this response it means "served locally, costs nothing",
+    which is the opposite of what a warehouse scan does. ``None`` says
+    unknown, and the CLI renders it as such.
+
+    What CAN be known exactly, and cheaply, is the row count: a
+    ``COUNT(*)`` with the caller's own predicate is an aggregate the warehouse
+    answers without shipping the rows. So this estimate is *better* than the
+    BigQuery one where it counts (real count vs. bytes/avg-row-size division)
+    and honest where it cannot be.
+    """
+    from connectors.databricks.remote import DatabricksRemoteError, execute_select
+
+    settings = _databricks_settings_or_400(req.table_id)
+
+    # Unlike BigQuery's arm, this is not a free dry-run: a filtered COUNT(*)
+    # over a Delta table is a real scan on the warehouse. So it takes the
+    # guards the FETCH path applies to every engine — the daily-budget
+    # pre-flight and the caller's concurrent-scan slot — and gets the
+    # INTERACTIVE deadline rather than the materialize one, since somebody is
+    # waiting on an estimate and a 15-minute count is not an estimate.
+    #
+    # Those two are necessary and not sufficient, for a reason worth stating
+    # rather than leaving implied. The concurrent slot caps how many warehouse
+    # statements one caller has IN FLIGHT, not how many they issue in a day.
+    # The daily budget is denominated in BYTES, and the only byte figure
+    # Databricks reports is what a statement RETURNED — there is no
+    # scanned-bytes metric and no dry-run to price one — so a COUNT, which
+    # returns one row, records essentially nothing against a 50 GiB budget. An
+    # agent loop calling this endpoint would therefore run unbounded: every
+    # call billable, none of them visible to the ledger.
+    #
+    # Hence the third guard, denominated in the one unit that is honestly
+    # available here: STATEMENTS submitted today. It is deliberately a
+    # separate counter rather than a synthetic byte charge, because inventing
+    # a byte number for a statement whose bytes are unknown would corrupt the
+    # budget for BigQuery, which reports real ones.
+    quota = _build_quota_tracker()
+    user_id = identity_for_audit(user)[1] or "anon"
+    try:
+        quota.check_daily_budget(user=user_id)
+        quota.check_daily_estimates(user=user_id)
+        with quota.acquire(user=user_id):
+            count_sql = _build_databricks_sql(row, req, settings, safe_where=safe_where, count_only=True)
+            # Counted at submission, before the result is known: what the
+            # warehouse bills for is the statement reaching it, so a loop of
+            # statements that error out costs the same as a loop that works.
+            quota.record_estimate(user=user_id)
+            _columns, rows, _truncated, returned_bytes = execute_select(
+                count_sql,
+                settings=settings,
+                limit=1,
+                cap_bytes=0,  # a single COUNT row; the byte cap is meaningless here
+                timeout_s=_databricks_estimate_timeout_s(),
+            )
+        # Accurate, and small by construction — recorded so the estimate is not
+        # simply invisible to the byte budget, never as the control that bounds
+        # it. `record_estimate` above is that control.
+        quota.record_bytes(user=user_id, n=int(returned_bytes or 0))
+    except QuotaExceededError as exc:
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "reason": _ESTIMATE_QUOTA_REASONS.get(exc.kind, "concurrent_scans_exceeded"),
+                "kind": exc.kind,
+                "current": exc.current,
+                "limit": exc.limit,
+                "retry_after_seconds": exc.retry_after_seconds,
+            },
+        )
+    except DatabricksRemoteError as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.detail())
+
+    matched = int(rows[0][0]) if rows and rows[0] and rows[0][0] is not None else 0
+    if req.limit:
+        matched = min(matched, req.limit)
+
+    schema_lower = {k.lower(): v for k, v in schema.items()}
+    cols_for_estimate = [schema_lower[c.lower()] for c in (req.select or []) if c.lower() in schema_lower] or list(
+        schema.values()
+    )
+    avg_row_bytes = max(1, sum(_avg_bytes_for_type(t) for t in cols_for_estimate))
+
+    return {
+        "table_id": req.table_id,
+        "engine": "databricks",
+        "estimated_scan_bytes": None,
+        "estimated_result_rows": matched,
+        "estimated_result_bytes": int(matched * avg_row_bytes),
+        "bq_cost_estimate_usd": None,
     }
 
 
@@ -365,6 +634,30 @@ def scan_estimate_endpoint(
         except Exception:
             logger.exception("audit_log write failed for snapshot.estimate; continuing")
         return result
+    except HTTPException as exc:
+        # Mirrors the branch `scan_endpoint` already carries, and for the same
+        # reason it was added there: `estimate()` now raises HTTPException
+        # directly for structured rejections — a policied table on this engine,
+        # an unresolvable policy identity, a quota refusal, a warehouse error —
+        # and none of those are in the tuple below, so the request answered
+        # correctly while writing NO audit row. Every other estimate failure
+        # writes one. Log it, then re-raise unchanged so the client still sees
+        # the original status and detail.
+        try:
+            audit_repo().log(
+                user_id=identity_for_audit(user)[0],
+                action="snapshot.estimate",
+                resource=resource,
+                params={
+                    "duration_ms": int((time.monotonic() - t0) * 1000),
+                    "error": str(exc.detail)[:200],
+                },
+                result=f"error.{exc.status_code}",
+                client_kind=client_kind_from_user(user),
+            )
+        except Exception:
+            logger.exception("audit_log write failed on error path for snapshot.estimate; continuing")
+        raise
     except (WhereValidationError, PermissionError, FileNotFoundError, ValueError, BqAccessError) as exc:
         try:
             if isinstance(exc, PermissionError):
@@ -424,6 +717,52 @@ def _max_result_bytes() -> int:
 
 def _max_limit() -> int:
     return int(get_value("api", "scan", "max_limit", default=10_000_000) or 10_000_000)
+
+
+def _databricks_estimate_timeout_s() -> float:
+    """Deadline for the estimate's COUNT(*).
+
+    The interactive remote-query timeout, not the snapshot one: `--estimate`
+    is what an analyst runs BEFORE deciding whether to fetch, so it has a
+    person waiting on it. Letting it inherit the 900 s materialize budget
+    would hold a request thread for fifteen minutes to answer "should I bother".
+
+    Delegates to `/api/query`'s reader rather than re-reading the key, so the
+    two interactive callers cannot drift apart on what a bad or zero value
+    means. (Function-local import: the module-level dependency runs
+    query → v2_scan, and reversing it at import time would cycle.)
+    """
+    from app.api.query import _databricks_statement_timeout_s
+
+    return _databricks_statement_timeout_s()
+
+
+def _databricks_scan_timeout_s() -> Optional[float]:
+    """Statement timeout for the scan path, or ``None`` for no deadline.
+
+    Deliberately NOT `data_source.databricks.remote_query_timeout_seconds`
+    (default 120), which bounds an *interactive* answer someone is waiting on.
+    A snapshot fetch is a materialize — the analyst expects it to take a while
+    — so it gets its own, longer budget, and the byte cap remains the control
+    that bounds size.
+
+    `0` disables the deadline, the same meaning the sibling materialize knob
+    `statement_timeout_seconds` carries in `app/api/sync.py` — an operator who
+    sets it wants an unbounded fetch, not a silent snap back to 900. A
+    non-numeric value warns and uses the default: a typo must not be the thing
+    that removes the deadline.
+    """
+    raw = get_value("data_source", "databricks", "scan_timeout_seconds", default=900)
+    try:
+        t = float(raw) if raw is not None else 900.0
+    except (TypeError, ValueError):
+        logger.warning(
+            "data_source.databricks.scan_timeout_seconds is not numeric (%r); "
+            "using the 900s default. Set a number of seconds or 0 to disable.",
+            raw,
+        )
+        t = 900.0
+    return t if t > 0 else None
 
 
 def _run_bq_scan(bq: BqAccess, sql: str, *, user: dict | None = None) -> tuple[pa.Table, dict]:
@@ -514,6 +853,7 @@ def run_scan(
         raise ValueError(f"limit {req.limit} exceeds max {_max_limit()}")
 
     _assert_scannable_engine(row)
+    _assert_scan_policy_supported(row, req.table_id, user)
     schema = _resolve_schema(conn, user, req.table_id, bq)
     use_bq = _executes_on_bigquery(row)
     # Validate WHERE and capture the comment-stripped fragment for splicing,
@@ -538,7 +878,27 @@ def run_scan(
     quota.check_daily_budget(user=user_id)
 
     with quota.acquire(user=user_id):
-        if not use_bq:
+        if _executes_on_databricks(row):
+            from connectors.databricks.remote import DatabricksRemoteError, execute_scan_to_arrow
+
+            settings = _databricks_settings_or_400(req.table_id)
+            try:
+                # Inside the try: `_build_databricks_sql` raises
+                # DatabricksRemoteError for a registry segment outside the safe
+                # alphabet, and `scan_endpoint` catches neither that nor
+                # anything it is not listed in — so an operator's typo in a
+                # registry row surfaced as an unexplained 500 instead of the
+                # 400 naming the bad value that the BigQuery sibling returns.
+                dbx_sql = _build_databricks_sql(row, req, settings, safe_where=safe_where)
+                table = execute_scan_to_arrow(
+                    dbx_sql,
+                    settings=settings,
+                    cap_bytes=_max_result_bytes(),
+                    timeout_s=_databricks_scan_timeout_s(),
+                )
+            except DatabricksRemoteError as exc:
+                raise HTTPException(status_code=exc.status, detail=exc.detail())
+        elif not use_bq:
             # Local execution: query the parquet directly. Covers non-BQ
             # sources AND `query_mode='materialized'` BQ rows — their parquet
             # was already written by the scheduled materialize run, so scanning

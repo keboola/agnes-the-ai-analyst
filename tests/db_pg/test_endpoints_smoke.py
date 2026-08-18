@@ -1672,6 +1672,26 @@ class TestReportsSmoke:
 
 
 # ---------------------------------------------------------------------------
+# Privacy (public, unauthenticated statement — CON-2)
+# ---------------------------------------------------------------------------
+
+
+class TestPrivacyPageSmoke:
+    """Behavioral depth (auth bypass, operator-override redirect) is in
+    tests/test_privacy_page.py; this is the parameter-free cross-backend
+    smoke check the route-coverage guard requires."""
+
+    COVERED_ROUTES = {
+        "GET /privacy",
+    }
+
+    def test_answers_without_credentials(self, seeded_app_both):
+        r = seeded_app_both["client"].get("/privacy", follow_redirects=False)
+        assert r.status_code == 200
+        assert "Where your data goes" in r.text
+
+
+# ---------------------------------------------------------------------------
 # Route-coverage guard
 # ---------------------------------------------------------------------------
 
@@ -1877,6 +1897,9 @@ KNOWN_UNTESTED = {
     # Google OAuth — requires live credentials
     "GET /auth/google/login",
     "GET /auth/google/callback",
+    # Microsoft Entra ID OAuth — requires live credentials
+    "GET /auth/microsoft/login",
+    "GET /auth/microsoft/callback",
     # Keboola OAuth — redirects to an external OAuth server; behaviour
     # covered by tests/test_keboola_oauth_provider.py
     "GET /auth/keboola/login",
@@ -2320,6 +2343,13 @@ KNOWN_UNTESTED = {
     "PUT /api/admin/workspace-prompt-template",
     # Admin misc operations
     "DELETE /api/admin/metrics/{metric_id}",
+    # Access-policy no-SQL builder helpers — admin-only authoring surfaces that
+    # take a path param (and, for compile, a request body); behaviorally covered
+    # on both backends in tests/test_admin_access_policy_builder_api.py
+    # (schema+samples, spec->SQL, table-name-from-registry, RBAC, 404), not
+    # duplicated in this parameter-free smoke sweep.
+    "GET /api/admin/registry/{table_id}/policy/columns",
+    "POST /api/admin/registry/{table_id}/policy/compile",
     "PATCH /api/admin/registry/{table_id}/docs",
     "POST /api/admin/bigquery/test-connection",
     "POST /api/admin/discover-and-register",

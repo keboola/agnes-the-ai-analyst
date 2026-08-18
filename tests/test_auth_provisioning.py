@@ -41,6 +41,46 @@ class TestEnsureUser:
         second = ensure_user("again@example.com", "A", source="test")
         assert first["id"] == second["id"]
 
+    def test_email_case_does_not_split_the_account(self, sysdb):
+        """Cross-provider identity must not be case-sensitive.
+
+        Providers disagree on normalization — Microsoft lower-cases the
+        resolved claim, Google passes the raw `email` claim through — and
+        ``repo.get_by_email`` is an exact string match on both backends. So the
+        same person signing in through two providers (or through one IdP that
+        changed the casing of a claim) would land on two accounts. Normalize
+        once here, where every provider passes.
+        """
+        from app.auth.provisioning import ensure_user
+        from src.repositories import users_repo
+
+        first = ensure_user("Mixed.Case@Example.com", "M", source="test")
+        second = ensure_user("mixed.case@example.com", "M", source="test")
+        assert first["id"] == second["id"]
+        # Stored normalized, so a later exact-match lookup finds it too.
+        assert first["email"] == "mixed.case@example.com"
+        assert users_repo().get_by_email("mixed.case@example.com") is not None
+
+    def test_surrounding_whitespace_does_not_split_the_account(self, sysdb):
+        from app.auth.provisioning import ensure_user
+
+        first = ensure_user("spaced@example.com", "S", source="test")
+        second = ensure_user("  spaced@example.com  ", "S", source="test")
+        assert first["id"] == second["id"]
+
+    def test_preexisting_mixed_case_row_is_matched_not_duplicated(self, sysdb):
+        """An account created before normalization landed (raw Google claim)
+        must still be matched, never duplicated."""
+        import uuid
+
+        from app.auth.provisioning import ensure_user
+        from src.repositories import users_repo
+
+        legacy_id = str(uuid.uuid4())
+        users_repo().create(id=legacy_id, email="Legacy.User@Example.com", name="L")
+        user = ensure_user("legacy.user@example.com", "L", source="test")
+        assert user["id"] == legacy_id
+
     def test_deactivated_user_raises(self, sysdb):
         from app.auth.provisioning import UserDeactivatedError, ensure_user
         from src.repositories import users_repo

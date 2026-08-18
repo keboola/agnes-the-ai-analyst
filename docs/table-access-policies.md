@@ -101,14 +101,29 @@ The function and construct allowlist is intentionally narrow and closed (logical
 
 ### The group-membership idiom
 
-Use `list_contains($user_groups, col)`, not `col IN (SELECT unnest($user_groups))`. Both execute correctly on DuckDB, but only the first survives the BigQuery transpile cleanly:
+Use `list_contains($user_groups, col)`, not `col IN (SELECT unnest($user_groups))`. Both execute correctly on DuckDB, but only the first survives the remote transpiles cleanly:
 
 ```
-list_contains($g, unit)        →  EXISTS(SELECT 1 FROM UNNEST(@g) AS _col WHERE _col = unit)
+list_contains($g, unit)        →  BQ:  EXISTS(SELECT 1 FROM UNNEST(@g) AS _col WHERE _col = unit)
+                                  DBX: ARRAY_CONTAINS(:g, unit)
 unit IN (SELECT unnest($g))    →  a GENERATE_ARRAY/CROSS JOIN construct, ~10× longer
 ```
 
 The `unnest` form isn't rejected — the save-time validator logs a server-side warning rather than blocking the save — but there's no reason to reach for it over `list_contains`.
+
+### One authored body, three engines
+
+You write the policy once, in DuckDB SQL. Each engine gets it in its own dialect, and — the part that matters — each engine's own **named-parameter** syntax, so the caller's identity is never text inside the statement:
+
+| engine | marker | how values travel |
+|---|---|---|
+| DuckDB | `$user_email` | native named parameters |
+| BigQuery | `@user_email` | `QueryParameter` on the job config |
+| Databricks | `:user_email` | the Statement Execution API's `parameters` field |
+
+Databricks needs one extra step for `$user_groups` alone: its API binds **scalars only**, so the array marker is rewritten into `ARRAY(:p0, :p1, …)` over generated scalar markers. The group names still travel as request fields — only how many of them there are becomes visible in the statement. A caller in no groups binds a typed empty array and matches nothing.
+
+A policy that fails to transpile to *either* remote engine is rejected at save time (`policy_untranspilable`), not at read time — a policy that denies because it cannot be compiled is an outage wearing an access rule's clothes.
 
 ## Mapping tables
 
@@ -225,7 +240,7 @@ The table id is what makes this work for `--from-query` snapshots (including eve
 
 Three known gaps, all fail-closed (nothing here degrades to leaking unfiltered data — the failure mode in each case is "answers less than it should," not "answers more than it should"):
 
-1. **BigQuery `remote` policied tables 500 on the quick-preview surfaces.** `/api/v2/sample` ("Preview data" in the catalog) and `/api/v2/scan` (what `agnes snapshot create` calls) only wired policy enforcement into the AST-rewrite path used by `agnes query` / `POST /api/query`; their BigQuery live-query branches have no execution path for a policy yet, so for a non-admin they fail closed with `500 policy_error` rather than ever returning the raw table. This is an **availability gap, not a leak** — the same data is reachable, filtered, via `agnes query --remote` or `POST /api/query`. Full BigQuery jobs-API wiring for these two surfaces is a planned follow-up.
+1. **`remote` policied tables are refused on the quick-preview surfaces.** `/api/v2/sample` ("Preview data" in the catalog) and `/api/v2/scan` (what `agnes snapshot create` calls) only wired policy enforcement into the AST-rewrite path used by `agnes query` / `POST /api/query`. Neither has a caller-authored statement to substitute a policy into — each *builds* one from `table_id` + `select` + `where` — so for a non-admin they fail closed rather than ever returning the raw table: BigQuery rows with `500 policy_error`, Databricks rows with `400 policy_unsupported_on_scan_engine`, which names the two paths that do work. This is an **availability gap, not a leak** — the same data is reachable, filtered, via `agnes query --remote` or `POST /api/query`. Wiring these two surfaces properly is a planned follow-up.
 2. **The admin preview is single-persona.** `table-policy preview` / the web modal's preview runner shows one chosen persona (a user, or an ad-hoc group set) at a time — not the full persona matrix (union coverage across every distinct group-set, pairwise overlap) that would catch a `CASE`-with-a-missing-branch bug automatically. Preview as more than one persona by hand before trusting a policy that branches on `$user_groups`; the full matrix view is a planned enhancement.
 3. **An empty or stale mapping table fails closed silently on the query path.** A policy that joins a `policy_mapping` table with zero (or never-synced) rows currently returns an ordinary empty result on a live query — indistinguishable from "you legitimately have no data" unless you go check. `GET /api/me/effective-access` **does** distinguish this case explicitly (`reason: "mapping_empty"`, naming the mapping table and its last sync), and `table-policy preview`'s `0`-rows note points at the same possibility — but the live query surfaces themselves (`agnes query`, the sample/scan endpoints) do not yet raise a distinct error for it. An explicit error on the query path itself is a planned enhancement; until then, a suspiciously-empty result from a policied table is worth checking against effective-access before treating it as a real answer.
 

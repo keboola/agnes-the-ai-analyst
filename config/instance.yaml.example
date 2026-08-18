@@ -19,6 +19,14 @@ instance:
                                      # Leave unset and the footer shows only the
                                      # product name + running build — it never
                                      # invents an attribution.
+  # privacy_policy_url: "https://example.com/legal/privacy"
+                                     # Your organization's own privacy policy. When set, /privacy
+                                     # redirects there instead of rendering the built-in page.
+                                     # Agnes is self-hosted, so YOU are the data controller — the
+                                     # built-in page can only describe what the software does.
+                                     # Give <instance>/privacy as the privacy URL when registering
+                                     # a connector; it answers correctly either way.
+                                     # Env override: AGNES_PRIVACY_POLICY_URL.
   # brand: "Agnes"                   # Product-name brand string used in analyst-facing UI copy
                                      # (/home hero, /setup, /login messages, clipboard setup
                                      # script). Default "Agnes". Set to e.g. "Foundry AI" to
@@ -213,7 +221,7 @@ auth:
   google_client_id: "${GOOGLE_CLIENT_ID}"
   google_client_secret: "${GOOGLE_CLIENT_SECRET}"
 
-  # providers: [google, email, password, keboola]
+  # providers: [google, email, password, keboola, microsoft]
   #                                 # Which login methods this instance offers.
   #                                 # Unset = every configured provider (default).
   #                                 # Explicit empty list is rejected. Excluded
@@ -441,6 +449,11 @@ data_source:
   #                                      # (byte_limit) — not bytes scanned, which Databricks does not expose.
   #                                      # A capped result is refused, never returned short. Default 1 GiB.
   #   remote_query_timeout_seconds: 120  # Deadline on an interactive remote query (a human is waiting).
+  #   scan_timeout_seconds: 900          # Deadline on a SNAPSHOT statement (`agnes snapshot create` /
+  #                                      # /api/v2/scan). Longer than the interactive one on purpose: a
+  #                                      # snapshot is a materialize, not an answer someone is waiting on.
+  #                                      # Its SIZE bound is api.scan.max_result_bytes, not the interactive
+  #                                      # max_bytes_per_remote_query. Default 900. 0 disables.
   #   attach_enabled: false              # EXPERIMENTAL. Attach Unity Catalog into DuckDB via the uc_catalog +
   #                                      # delta community extensions so remote Databricks tables can be
   #                                      # JOINed against local parquets. Off by default: it installs
@@ -775,6 +788,12 @@ catalog:
 #     max_concurrent_per_user: 5      # In-flight /api/v2/scan requests allowed per user (default: 5)
 #                                     # Note: quota is process-local; N replicas → effective N× cap.
 #     max_daily_bytes_per_user: 53687091200  # Per-user daily byte quota: 50 GB (default). Resets at UTC midnight.
+#     max_daily_estimates_per_user: 500  # Per-user daily cap on BILLABLE estimate statements (default: 500).
+#                                     # Resets at UTC midnight. Applies to engines whose estimate is real
+#                                     # compute rather than a free dry run (Databricks: a COUNT(*) on the
+#                                     # warehouse). Those engines report no scanned-byte figure, so the byte
+#                                     # quota above cannot bound them — this counts statements instead.
+#                                     # BigQuery estimates are dry runs and are not counted here.
 #     bq_cost_per_tb_usd: 5.00        # Cost rate shown in /api/v2/scan/estimate response (default: $5/TB)
 #     request_timeout_seconds: 300    # Server-side timeout for a single scan request (default: 300 s)
 #   # --- Discovery cache TTLs ---
