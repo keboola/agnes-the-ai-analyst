@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.83.47] - 2026-08-18
+
 ### Added
 
 - **Terraform (`infra/modules/customer-instance`): vendor-neutral per-instance branding.** `prod_instance` and `dev_instances[*]` gain optional `logo_svg`, `brand`, `brand_short`, `subtitle`, `copyright`, a `theme_colors` object (the design-system recolor keys — `primary`, `primary_dark`, `primary_light`, `background`, `surface`, `border`, `text_primary`, `text_secondary`, `success`, `warning`, `error`, `font_primary`, `font_url`, `radius`), and a `custom_scripts` list (`{name, enabled, placement, html}`). The module renders the set keys into the VM's `/data/state/instance.yaml` as top-level `instance:` + `theme:` blocks (via `yamlencode`, base64'd across the metadata boundary so multi-line SVG / script HTML survives intact), letting an infra repo set a customer's logo, colours and product name from tfvars without forking or hand-editing the VM — `theme_colors` maps onto the app's `--ds-*` recolor. Written on **first boot only** (the startup script never clobbers an existing `instance.yaml`, so operator edits and DB-backend migrations survive); restyle a live instance via the app/admin surface or a VM recreate. Every field is `optional(...)` with an empty/null default, so existing callers are unaffected and a call that sets no branding produces a byte-for-byte identical `instance.yaml`.
@@ -17,6 +19,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Fixed
 
 - **The operator `theme:` colour block (`instance.yaml`) now actually recolors the design-system surfaces — "paper"/"navy"/"dark" — not just the pre-redesign chrome.** Two bugs, fixed together: the raw YAML key (e.g. `primary`) was emitted as the CSS *property* name with no `--` prefix, so a legacy override set nothing at all; and the override was injected as a bare `:root { … }` block (specificity 0,1,0), which always lost to the built-in `:root[data-theme="…"]` blocks in `design-tokens.css` (0,2,0+) on any non-default theme. `get_theme_css_overrides()` now maps each known `theme:` key to its correct legacy `--*` variable and, where a clean equivalent exists, the matching `--ds-*` token (`primary` → `--ds-primary`, `background` → `--ds-bg`, `surface` → `--ds-surface`, `border` → `--ds-border`, `text_primary`/`text_secondary` → `--ds-text-primary`/`--ds-text-secondary`, `success`/`warning`/`error` → `--ds-accent-{success,warn,danger}-ink`), and `_theme.html` emits it into a selector list specific enough to win on every theme. No `theme:` block configured → byte-identical output.
+
+## [0.83.46] - 2026-08-18
+
+### Internal
+
+- **The nightly `/catalog` smoke tests the page that exists.** `scripts/e2e/smoke_catalog.sh` asserted a "Browse" tab and a `2` hotkey that select "My Stack" — both of which belong to `/marketplace` (`marketplace.html`), not to `/catalog`, which has rendered `catalog_unified.html`'s kind tabs (Data · Plugins · Memory · Recipes, click-driven) since the unified-catalog cutover. So the smoke had been failing every night against a page it was no longer describing — three consecutive tracking issues (#1351, #1358, #1392) reporting the same stale assertion rather than a regression. It now asserts the kind tabs that actually render (Data and Memory are `hidden` when empty, so Plugins and Recipes are the dependable pair) and drives the switch by clicking the Recipes tab. The new check reads the accessibility snapshot's own `[selected]` marker instead of matching the word "recipe", which the tab's own label contains either way — a text match there would have passed even when the click did nothing.
 
 ## [0.83.45] - 2026-08-18
 
