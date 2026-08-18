@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Internal
+
+- **`seeded_app` (the ~9.7k-call-site E2E test fixture) now builds the FastAPI app once per test session instead of once per test.** `create_app()` measured ~343ms warm — the app object does not bind to a DATA_DIR, so rebuilding it per test bought no isolation. Per-test DATA_DIR, DB seed and TestClient are unchanged; a new `_shared_seeded_app` session fixture restores `app.state`/`app.dependency_overrides` to their pristine post-construction snapshot on every test's teardown so a test that mutates either (e.g. `app.state.chat_config`, since lifespan never runs under a bare `TestClient`) can't leak into the next test. Per-test `seeded_app` setup drops from ~380ms to ~100ms on a representative sample.
+
 ## [0.83.51] - 2026-08-18
 
 ### Fixed
