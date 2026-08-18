@@ -14,7 +14,7 @@ from services.slack_bot.binding import (
     is_channel_allowlisted,
     lookup_user_email,
 )
-from services.slack_bot.sender import send_ephemeral_to_user, send_thread_reply
+from services.slack_bot.sender import add_reaction, send_ephemeral_to_user, send_thread_reply
 from services.slack_bot.sink import SlackSinkBridge
 
 logger = logging.getLogger(__name__)
@@ -121,7 +121,9 @@ def _has_slack_sink(mgr, chat_id: str, channel: str) -> bool:
     return False
 
 
-async def _produce_slack_message(app, *, user_email: str, surface, channel: str, thread_ts: str, text: str) -> None:
+async def _produce_slack_message(
+    app, *, user_email: str, surface, channel: str, thread_ts: str, text: str, agent_id: Optional[str] = None
+) -> None:
     """Thin-producer forward for a Slack message handled on a process with
     NO ChatManager — i.e. an api-role replica, where ``app.state.
     chat_manager`` is ``None`` because only ``Role.GATEWAY`` processes
@@ -156,6 +158,7 @@ async def _produce_slack_message(app, *, user_email: str, surface, channel: str,
         surface=surface,
         slack_channel_id=channel,
         slack_thread_ts=thread_ts if surface == Surface.SLACK_THREAD else None,
+        agent_id=agent_id,
     )
     await chat_manager_mod.produce_inbound_user_message(
         repo,
@@ -363,6 +366,25 @@ async def _handle_mention(app, event: dict) -> None:
         )
         return
 
+    # 5b. Channel→agent binding: an agent holding scope item
+    # ('slack_channel', <channel_id>) owns mentions in this channel — the
+    # session runs with that agent's persona, scope, and budget. Unbound
+    # channels keep the agent-less behavior bit-for-bit. Best-effort: a
+    # routing lookup failure degrades to unrouted rather than dropping the
+    # mention.
+    from src.repositories import agents_repo
+
+    bound_agent = None
+    try:
+        bound_agent = agents_repo().agent_for_scope_item("slack_channel", channel)
+    except Exception:
+        logger.exception("slack_channel binding lookup failed for %s — continuing unrouted", channel)
+    if bound_agent is not None:
+        # Instant acknowledgement on the mentioning message, before the
+        # (seconds-long) session spawn. Fire-and-forget; add_reaction
+        # swallows its own failures.
+        _schedule(add_reaction(channel, event["ts"], "eyes"))
+
     # 6. Thread session: reuse or create; reject if owned by someone else.
     mgr = app.state.chat_manager
     from app.chat.types import Surface
@@ -382,6 +404,16 @@ async def _handle_mention(app, event: dict) -> None:
     # api-role thin-producer branch below can forward the cleaned text.)
     clean = _strip_bot_mention(text, bot_user_id)
 
+    # 7b. Routed sessions get a one-time context header on their FIRST turn
+    # so an agent granted Slack tools can operate on the correct thread —
+    # the sandbox otherwise never learns channel/ts identifiers. Existing
+    # thread sessions (dedupe wins over the binding) already received it.
+    if bound_agent is not None and existing is None:
+        clean = (
+            f"[slack context: channel={channel} thread_ts={thread_ts} "
+            f"message_ts={event['ts']} sender=<@{slack_user_id}>]\n{clean}"
+        )
+
     if mgr is None:
         # api-role replica (no ChatManager in this process): thin-producer
         # forward — see _handle_dm's twin branch and _produce_slack_message.
@@ -392,6 +424,7 @@ async def _handle_mention(app, event: dict) -> None:
             channel=channel,
             thread_ts=thread_ts,
             text=clean,
+            agent_id=bound_agent["id"] if bound_agent else None,
         )
         return
     session = await mgr.create_session(
@@ -399,6 +432,7 @@ async def _handle_mention(app, event: dict) -> None:
         surface=Surface.SLACK_THREAD,
         slack_channel_id=channel,
         slack_thread_ts=thread_ts,
+        agent_id=bound_agent["id"] if bound_agent else None,
     )
 
     # 8. Attach (NOT awaited — keep the 3s ack budget). wave-2F task 7: skip
