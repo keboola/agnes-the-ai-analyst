@@ -10,7 +10,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
-## [0.83.49] - 2026-08-18
+## [0.83.50] - 2026-08-18
 
 ### Added
 
@@ -21,6 +21,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Fixed
 
 - **The semantic-layer projector now matches the Agnes `custom_extensions` vendor tag case-insensitively**, like the query validator and the browse UI already do. A hand-authored document spelling the tag `agnes` (rather than the canonical `AGNES` the Keboola adapter emits) previously browsed and validated fine but was silently dropped from the flat `metric_definitions` / `glossary_terms` / constraint projections; any casing now projects.
+
+## [0.83.49] - 2026-08-18
+
+### Fixed
+
+- **"Skip onboarding" now marks all six onboarding steps complete.** The panel sends the new `agent_created` flag and `PUT /api/chat/journey` accepts it, so the checklist reaches `6/6` and the card retires. "Start over onboarding" also resets the same flag. Previously the sixth step was neither sent by the panel nor accepted by the backend, leaving the checklist stuck at `5/6`.
+
 ## [0.83.48] - 2026-08-18
 
 ### Fixed

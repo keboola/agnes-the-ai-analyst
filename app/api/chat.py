@@ -6,7 +6,6 @@ import asyncio
 import json
 import logging
 import secrets
-from typing import Optional
 
 import duckdb
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -79,7 +78,7 @@ def _issue_ticket(chat_id: str, user_email: str) -> str:
     return ticket
 
 
-def _consume_ticket(ticket: str) -> Optional[tuple[str, str]]:
+def _consume_ticket(ticket: str) -> tuple[str, str] | None:
     raw = coordination().kv_delete(f"{_TICKET_KEY_PREFIX}{ticket}")
     if raw is None:
         return None
@@ -92,16 +91,16 @@ def _consume_ticket(ticket: str) -> Optional[tuple[str, str]]:
 
 class CreateSessionBody(BaseModel):
     surface: str = "web"
-    title: Optional[str] = None
+    title: str | None = None
     # Optional authoring-agent profile (see app/chat/profiles.py). Spawn-time
     # only — shapes the session persona + knowledge skill; not persisted.
-    profile: Optional[str] = None
+    profile: str | None = None
     #: Run one of the caller's OWN named agents in this session instead of
     #: their default. The runtime for this already existed and is surface-
     #: agnostic (``ChatManager.create_session(agent_id=...)``, the same seam
     #: ``POST /api/v1/agents/{slug}/sessions`` uses); web chat was simply never
     #: wired to it, which is why agents could be configured but not used.
-    agent_slug: Optional[str] = None
+    agent_slug: str | None = None
 
 
 def _get_manager(request: Request) -> ChatManager:
@@ -134,7 +133,7 @@ def _default_agent_id(owner_user_id: str) -> str:
         return agents_repo().get_or_create_default(owner_user_id)["id"]
 
 
-def _resolve_agent_id(agent_slug: Optional[str], user: dict) -> str:
+def _resolve_agent_id(agent_slug: str | None, user: dict) -> str:
     """Which agent this session runs as — a named one, else the default.
 
     Ownership is checked here rather than left to the broker: an agent is a
@@ -415,13 +414,14 @@ async def list_skills(
 class JourneyUpdateBody(BaseModel):
     """Partial update — every field optional; only the ones present change."""
 
-    first_asked: Optional[bool] = None
-    stack_setup_done: Optional[bool] = None
-    explored_stack: Optional[bool] = None
-    catalog_discovered: Optional[bool] = None
-    use_anywhere: Optional[bool] = None
-    onboarded: Optional[bool] = None
-    successful_answers: Optional[int] = None
+    first_asked: bool | None = None
+    stack_setup_done: bool | None = None
+    explored_stack: bool | None = None
+    catalog_discovered: bool | None = None
+    use_anywhere: bool | None = None
+    agent_created: bool | None = None
+    onboarded: bool | None = None
+    successful_answers: int | None = None
 
 
 @router.get("/journey")
@@ -478,7 +478,7 @@ async def reissue_ticket(
 async def list_messages(
     chat_id: str,
     request: Request,
-    after_id: Optional[str] = None,
+    after_id: str | None = None,
     user: dict = Depends(require_chat_access),
 ):
     repo = _get_repo(request)
