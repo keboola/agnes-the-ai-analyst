@@ -6,23 +6,71 @@ from typing import Any, Optional, List, Dict
 import duckdb
 
 
+# The report projects these columns and no others. `users` also carries
+# `password_hash`, `setup_token` and `reset_token`: a `SELECT *` here would put
+# password hashes and live one-time-link tokens into `--json`, which an operator
+# reconciling accounts is likely to redirect to a file or paste into a ticket.
+# `last_pull_at` and `has_password` earn their place — they are how you tell
+# which duplicate is the one actually in use.
+DUPLICATE_REPORT_COLUMNS = (
+    "id",
+    "email",
+    "name",
+    "active",
+    "created_at",
+    "updated_at",
+    "deactivated_at",
+    "deactivated_by",
+    "onboarded",
+    "last_pull_at",
+)
+
+_DUPLICATE_SELECT = ", ".join(DUPLICATE_REPORT_COLUMNS) + ", (password_hash IS NOT NULL) AS has_password"
+
+# Grouped on the address as a PERSON writes it: case folded AND trimmed. The
+# sign-in doors normalize their input with strip + lower (`normalize_email`), so
+# a stored ` ann@x` and a stored `ann@x` are the same address to a human and
+# collide in the same way — but see `_group_case_variants` for the twist.
+_DUPLICATE_SQL = f"""
+    SELECT {_DUPLICATE_SELECT} FROM users
+    WHERE lower(trim(email)) IN (
+        SELECT lower(trim(email)) FROM users GROUP BY lower(trim(email)) HAVING COUNT(*) > 1
+    )
+    ORDER BY lower(trim(email)), created_at NULLS LAST, id
+"""
+
+
 def _group_case_variants(rows) -> List[Dict[str, Any]]:
     """Fold an email-ordered row stream into duplicate groups.
 
     Shared by the DuckDB and Postgres repositories: both run the same SQL and
     both must return byte-identical structure, so the grouping lives in one
     place rather than being reimplemented twice and drifting. Expects rows
-    pre-sorted by ``lower(email)`` then the get_by_email_ci tie-break."""
+    pre-sorted by ``lower(trim(email))`` then the get_by_email_ci tie-break.
+
+    ``resolved_id`` is the row a sign-in actually lands on, and that is NOT
+    simply the first row of the group. ``get_by_email_ci`` matches
+    ``lower(email)`` without trimming, so a stored address carrying whitespace
+    matches nothing at all — the caller strips its *input*, not the column. Such
+    a row is reachable by no door, which is why it is grouped here (it is the
+    same address to a person) and flagged rather than treated as the winner.
+    A group where every row is padded has ``resolved_id = None``: nobody can
+    sign in to that address.
+    """
     groups: List[Dict[str, Any]] = []
     for row in rows:
-        folded = (row.get("email") or "").lower()
+        folded = (row.get("email") or "").strip().lower()
         if groups and groups[-1]["email"] == folded:
             groups[-1]["users"].append(row)
         else:
             groups.append({"email": folded, "users": [row]})
     for g in groups:
         g["count"] = len(g["users"])
-        g["resolved_id"] = g["users"][0]["id"]
+        for u in g["users"]:
+            # The exact predicate get_by_email_ci runs, evaluated per row.
+            u["unreachable_by_sign_in"] = (u.get("email") or "").lower() != g["email"]
+        reachable = [u for u in g["users"] if not u["unreachable_by_sign_in"]]
+        g["resolved_id"] = reachable[0]["id"] if reachable else None
     return groups
 
 
@@ -139,15 +187,7 @@ class UserRepository:
         Read-only by design: which row to keep is a judgement call (group
         memberships, PATs and sessions hang off the id), so this reports and
         the operator merges."""
-        rows = self.conn.execute(
-            """
-            SELECT * FROM users
-            WHERE lower(email) IN (
-                SELECT lower(email) FROM users GROUP BY lower(email) HAVING COUNT(*) > 1
-            )
-            ORDER BY lower(email), created_at NULLS LAST, id
-            """
-        ).fetchall()
+        rows = self.conn.execute(_DUPLICATE_SQL).fetchall()
         return _group_case_variants(d for d in (self._row_to_dict(r) for r in rows) if d is not None)
 
     def get_by_email_prefix(self, local_part: str) -> Optional[Dict[str, Any]]:

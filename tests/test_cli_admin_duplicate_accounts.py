@@ -19,8 +19,17 @@ def _boom(*_a, **_k):
     raise RuntimeError("system DuckDB must not be opened on a Postgres instance")
 
 
-def _group(email, rows):
-    return {"email": email, "count": len(rows), "resolved_id": rows[0]["id"], "users": rows}
+def _group(email, rows, resolved_id=-1):
+    for r in rows:
+        r.setdefault("unreachable_by_sign_in", False)
+        r.setdefault("has_password", False)
+    reachable = [r for r in rows if not r["unreachable_by_sign_in"]]
+    return {
+        "email": email,
+        "count": len(rows),
+        "resolved_id": (reachable[0]["id"] if reachable else None) if resolved_id == -1 else resolved_id,
+        "users": rows,
+    }
 
 
 DUP = _group(
@@ -173,3 +182,48 @@ def test_never_opens_system_duckdb_on_a_postgres_instance(monkeypatch, capsys):
     _wire(monkeypatch, [DUP])
     admin_mod.duplicate_accounts(limit=0, as_json=False)
     assert "ann@corp.example" in capsys.readouterr().out
+
+
+def test_a_padded_row_is_named_unreachable_rather_than_just_unmarked(monkeypatch, capsys):
+    """A whitespace-padded address is reached by no sign-in door at all, which
+    is a different and worse state than "not the resolved one". Leaving it
+    blank would read as an ordinary duplicate the operator could still keep."""
+    group = _group(
+        "pad@corp.example",
+        [
+            {"id": "p1", "email": " pad@corp.example", "active": True, "unreachable_by_sign_in": True},
+            {"id": "p2", "email": "pad@corp.example", "active": True},
+        ],
+    )
+    _wire(monkeypatch, [group])
+    admin_mod.duplicate_accounts(limit=0, as_json=False)
+    out = capsys.readouterr().out
+
+    lines = {u: next(ln for ln in out.splitlines() if f" {u}  " in ln) for u in ("p1", "p2")}
+    assert "unreachable" in lines["p1"]
+    assert "sign-in resolves here" not in lines["p1"]
+    assert "sign-in resolves here" in lines["p2"]
+
+
+def test_a_group_nobody_can_sign_in_to_says_so_loudly(monkeypatch, capsys):
+    group = _group(
+        "ghost@corp.example",
+        [
+            {"id": "g1", "email": " ghost@corp.example", "active": True, "unreachable_by_sign_in": True},
+            {"id": "g2", "email": "ghost@corp.example ", "active": True, "unreachable_by_sign_in": True},
+        ],
+    )
+    _wire(monkeypatch, [group])
+    admin_mod.duplicate_accounts(limit=0, as_json=False)
+    out = capsys.readouterr().out
+    assert "no row here is reachable by sign-in" in out
+
+
+def test_json_carries_no_credential_columns(monkeypatch, capsys):
+    """The repository projects an allow-list, but the CLI is what an operator
+    redirects to a file — so assert on the bytes it actually writes."""
+    _wire(monkeypatch, [DUP])
+    admin_mod.duplicate_accounts(limit=0, as_json=True)
+    raw = capsys.readouterr().out
+    for banned in ("password_hash", "reset_token", "setup_token"):
+        assert banned not in raw

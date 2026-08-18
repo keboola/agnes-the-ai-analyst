@@ -15,7 +15,7 @@ from sqlalchemy.engine import Engine
 # The duplicate-group folding is shared with the DuckDB repo on purpose:
 # both backends run the same SQL and the contract test asserts identical
 # structure, so reimplementing the fold here would be two chances to drift.
-from src.repositories.users import _group_case_variants
+from src.repositories.users import _DUPLICATE_SQL, _group_case_variants
 
 
 class UsersPgRepository:
@@ -93,22 +93,12 @@ class UsersPgRepository:
     def list_case_variant_duplicates(self) -> List[Dict[str, Any]]:
         """PG sibling of the DuckDB ``list_case_variant_duplicates`` — every
         address held by more than one account, grouped, oldest row first
-        within each group. Shares the DuckDB grouping helper so the returned
-        structure cannot drift between backends."""
+        within each group. Shares both the SQL and the grouping helper with the
+        DuckDB repo, so neither the projected columns (which deliberately
+        exclude `password_hash` and the one-time-link tokens) nor the returned
+        structure can drift between backends."""
         with self._engine.connect() as conn:
-            rows = (
-                conn.execute(
-                    sa.text(
-                        "SELECT * FROM users "
-                        "WHERE lower(email) IN ("
-                        "  SELECT lower(email) FROM users GROUP BY lower(email) HAVING COUNT(*) > 1"
-                        ") "
-                        "ORDER BY lower(email), created_at NULLS LAST, id"
-                    )
-                )
-                .mappings()
-                .all()
-            )
+            rows = conn.execute(sa.text(_DUPLICATE_SQL)).mappings().all()
         return _group_case_variants(dict(r) for r in rows)
 
     def get_by_email_prefix(self, local_part: str) -> Optional[Dict[str, Any]]:

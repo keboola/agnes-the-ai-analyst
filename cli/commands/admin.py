@@ -1680,9 +1680,19 @@ def duplicate_accounts(
     disabled the identity at all. This names every collision and marks which
     row sign-in actually reaches.
 
+    Two classes of collision are reported, because both are the same address
+    to a person: rows differing only in case, and rows differing only by
+    surrounding whitespace. The second is worse — `get_by_email_ci` folds case
+    but does NOT trim the column, so a stored ` ann@corp.com` is reached by no
+    address anyone can type, and such a row is marked unreachable rather than
+    ever named as the resolved one. A LONE padded row is equally unreachable but
+    is not a duplicate, so it is out of this report's scope.
+
     Read-only. Which row to keep is a judgement call — group memberships,
     PATs, sessions and audit history hang off the id — so this reports and the
-    operator merges.
+    operator merges. `--json` carries an explicit column projection, never the
+    whole row: `users` also holds `password_hash` and live one-time-link
+    tokens, and this output is meant to be pasted into a ticket.
 
     Reads the active state backend directly through the repository factory
     rather than an API endpoint, like `break-glass`: it is an operator
@@ -1721,8 +1731,18 @@ def duplicate_accounts(
     typer.echo(f"{len(groups)} address(es) held by more than one account:\n")
     for g in shown:
         typer.echo(f"  {g['email']}  ({g['count']} accounts)")
+        if g["resolved_id"] is None:
+            typer.echo("      !! no row here is reachable by sign-in — every variant is padded")
         for u in g["users"]:
-            resolves = "← sign-in resolves here" if u["id"] == g["resolved_id"] else ""
+            if u["id"] == g["resolved_id"]:
+                resolves = "← sign-in resolves here"
+            elif u.get("unreachable_by_sign_in"):
+                # Stored with surrounding whitespace. The doors normalize their
+                # INPUT but the lookup does not trim the column, so no address
+                # anyone can type reaches this row at all.
+                resolves = "← unreachable: address stored with whitespace"
+            else:
+                resolves = ""
             state = "active" if u.get("active", True) else "DEACTIVATED"
             # Full id, not the 8-char prefix `list-users` shows: this report
             # exists to be acted on, and the reconciliation below addresses

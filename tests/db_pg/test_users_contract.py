@@ -742,3 +742,80 @@ def test_list_case_variant_duplicates_reports_deactivation_state_per_row(users_r
     assert by_id["user-new"]["active"] is False
     assert by_id["user-old"]["active"] is True
     assert g["resolved_id"] == "user-old", "the still-active row is the one sign-in reaches"
+
+
+def test_list_case_variant_duplicates_never_returns_credentials(users_repo):
+    """`users` carries `password_hash`, `setup_token` and `reset_token`. A
+    `SELECT *` here would put password hashes and live one-time-link tokens into
+    `agnes admin duplicate-accounts --json` — output an operator reconciling
+    accounts is likely to redirect to a file or paste into a ticket."""
+    repo, _, _ = users_repo
+    _make_user(repo, id="user-a", email="Dup@example.com")
+    _make_user(repo, id="user-b", email="dup@example.com")
+    repo.update(
+        "user-a",
+        password_hash="$argon2id$v=19$SECRETHASH",
+        reset_token="LIVE-RESET-TOKEN",
+        setup_token="LIVE-SETUP-TOKEN",
+    )
+
+    rows = repo.list_case_variant_duplicates()[0]["users"]
+
+    for row in rows:
+        for banned in ("password_hash", "reset_token", "setup_token", "reset_token_created", "setup_token_created"):
+            assert banned not in row, f"{banned} must not reach the duplicate report"
+    # The useful part survives: whether a password exists, without the hash.
+    assert {r["id"]: r["has_password"] for r in rows} == {"user-a": True, "user-b": False}
+
+
+def test_list_case_variant_duplicates_also_groups_whitespace_padded_rows(users_repo):
+    """The sign-in doors normalize their input with strip + lower, so a stored
+    ` ann@x` and a stored `ann@x` are the same address to a person and shadow
+    each other in the same way a case variant does."""
+    repo, _, _ = users_repo
+    _make_user(repo, id="user-clean", email="pad@example.com")
+    _make_user(repo, id="user-padded", email=" pad@example.com")
+
+    groups = repo.list_case_variant_duplicates()
+    assert len(groups) == 1
+    assert groups[0]["email"] == "pad@example.com"
+    assert {u["id"] for u in groups[0]["users"]} == {"user-clean", "user-padded"}
+
+
+def test_a_padded_row_is_flagged_unreachable_and_never_named_as_resolved(users_repo):
+    """`get_by_email_ci` folds case but does NOT trim the column, so a padded
+    row is matched by no address anyone can type. Naming it `resolved_id`
+    because it happens to be oldest would point the operator at the one row
+    sign-in can never reach — the exact inversion this report exists to prevent.
+    """
+    repo, _, backend = users_repo
+    _make_user(repo, id="user-padded", email=" pad@example.com")
+    _make_user(repo, id="user-clean", email="pad@example.com")
+    _set_created_at(repo, backend, "user-padded", datetime(2025, 1, 1, tzinfo=timezone.utc))
+    _set_created_at(repo, backend, "user-clean", datetime(2026, 6, 1, tzinfo=timezone.utc))
+
+    g = repo.list_case_variant_duplicates()[0]
+    by_id = {u["id"]: u for u in g["users"]}
+    assert by_id["user-padded"]["unreachable_by_sign_in"] is True
+    assert by_id["user-clean"]["unreachable_by_sign_in"] is False
+    assert g["resolved_id"] == "user-clean", "the older padded row must not win"
+    # And the claim the flag encodes is true of the real lookup, checked with
+    # the address a door actually passes. `normalize_email` strips before the
+    # call, so the padded row is unreachable however the person typed it —
+    # feeding the padded string straight in would match, but no door does that.
+    from src.user_identity import normalize_email
+
+    for typed in (" pad@example.com", "pad@example.com ", " PAD@Example.com "):
+        assert repo.get_by_email_ci(normalize_email(typed))["id"] == "user-clean"
+
+
+def test_a_group_of_only_padded_rows_resolves_to_nobody(users_repo):
+    """Both rows unreachable means the address signs nobody in at all. `None`
+    says that; picking one would invent a winner."""
+    repo, _, _ = users_repo
+    _make_user(repo, id="user-p1", email=" ghost@example.com")
+    _make_user(repo, id="user-p2", email="ghost@example.com ")
+
+    g = repo.list_case_variant_duplicates()[0]
+    assert g["resolved_id"] is None
+    assert all(u["unreachable_by_sign_in"] for u in g["users"])
