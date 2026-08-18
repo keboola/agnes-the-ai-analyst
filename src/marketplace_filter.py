@@ -332,7 +332,7 @@ BUNDLE_PREFIXED_NAME = "flea"
 Lives under ``plugins/flea/...``. v49 phase-4: renamed from ``store-bundle``
 for parity with the manifest plugin name."""
 
-BUNDLE_DESCRIPTION = "Skills and agents you've installed from the Agnes Store"
+BUNDLE_DESCRIPTION = "Skills and agent templates you've installed from the Agnes Store"
 
 # Files we strip from the per-entity tree when we merge it into the bundle —
 # each entity's plugin.json is replaced by a single bundle plugin.json that

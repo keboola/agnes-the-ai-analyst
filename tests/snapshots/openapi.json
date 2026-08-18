@@ -381,11 +381,29 @@
             ],
             "title": "Surfaces"
           },
+          "template_entity_id": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Template Entity Id"
+          },
           "tone": {
-            "default": "concise",
-            "maxLength": 50,
-            "title": "Tone",
-            "type": "string"
+            "anyOf": [
+              {
+                "maxLength": 50,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tone"
           }
         },
         "title": "AgentCreate",
@@ -3064,6 +3082,17 @@
       },
       "CreateSessionBody": {
         "properties": {
+          "agent_slug": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Slug"
+          },
           "profile": {
             "anyOf": [
               {
@@ -29802,7 +29831,7 @@
         ]
       },
       "post": {
-        "description": "Create an agent owned by (and private to) the caller.\n\nAn unnamed agent is legal \u2014 the builder creates the row first and the user\nnames it as they go, so a blank name must not 422 the whole flow.",
+        "description": "Create an agent owned by (and private to) the caller.\n\nAn unnamed agent is legal \u2014 the builder creates the row first and the user\nnames it as they go, so a blank name must not 422 the whole flow.\n\n``template_entity_id`` starts the agent from a Library Agent Template. It\nonly ever fills fields the caller left blank, so an explicit value in the\npayload still wins \u2014 the template is a starting point, not an override.",
         "operationId": "create_agent_api_agents_post",
         "parameters": [
           {
@@ -52766,6 +52795,28 @@
         ]
       }
     },
+    "/privacy": {
+      "get": {
+        "description": "What this instance does with data \u2014 deliberately UNAUTHENTICATED.\n\nEvery connector directory asks for a privacy policy URL and fetches it\nwithout credentials; an unreachable one is an automatic rejection. The\nsame content already existed as ``/how-it-works#privacy``, but that route\nrequires a signed-in session, so handing out that anchor produced a\nlogin redirect rather than a policy.\n\nTwo shapes, one URL. When the operator has published their own policy\n(``instance.privacy_policy_url``) this redirects there, because on a\nself-hosted deployment *they* are the data controller and their document\nis the authoritative one. Otherwise it renders the built-in page, which\nstates that plainly and describes only what the software itself does \u2014\nthe honest limit of what a vendor can say about someone else's instance.\n\nNo auth, no DB read: it must answer for a reviewer, a crawler, and a\nlogged-out user on an instance whose database is down.",
+        "operationId": "privacy_page_privacy_get",
+        "responses": {
+          "200": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Privacy Page",
+        "tags": [
+          "web"
+        ]
+      }
+    },
     "/profile/sessions": {
       "get": {
         "description": "Legacy redirect \u2014 ``/profile/sessions`` \u2192 ``/me/activity?tab=sessions``.",
@@ -52966,7 +53017,7 @@
     },
     "/skills": {
       "get": {
-        "description": "Builder \u2014 one authoring surface for skills, plugins and shareable agents.\n\nFormerly the single-type Skill Builder. Two in-page steps: a TYPE PICKER,\nthen a type-adapted BUILDER that keeps one shell (identity, access,\nnumbered sections, live preview, advisory check) and swaps only the\ncontent section and its validation.\n\nMarkdown types (skill, agent) publish to\n``POST /api/store/entities/from-markdown``; plugins are real ZIP bundles\nand publish to the multipart ``POST /api/store/entities``. Both honour the\nbuilder's private/everyone ``access`` choice, and both run the same quota,\nguardrail and review pipeline. Category options come from the shared store\ntaxonomy.\n\nThe route keeps its ``/skills`` path: it is the target of the Marketplace\n\"submit\" CTA, the ``?from=skills`` detail back-link and the tour anchors.\n``?type=skill|plugin|agent`` deep-links past the picker.",
+        "description": "Builder \u2014 one authoring surface for skills, plugins and agent templates.\n\nFormerly the single-type Skill Builder. Two in-page steps: a TYPE PICKER,\nthen a type-adapted BUILDER that keeps one shell (identity, access,\nnumbered sections, live preview, advisory check) and swaps only the\ncontent section and its validation.\n\nMarkdown types (skill, agent) publish to\n``POST /api/store/entities/from-markdown``; plugins are real ZIP bundles\nand publish to the multipart ``POST /api/store/entities``. Both honour the\nbuilder's private/everyone ``access`` choice, and both run the same quota,\nguardrail and review pipeline. Category options come from the shared store\ntaxonomy.\n\nThe route keeps its ``/skills`` path: it is the target of the Marketplace\n\"submit\" CTA, the ``?from=skills`` detail back-link and the tour anchors.\n``?type=skill|plugin|agent`` deep-links past the picker.",
         "operationId": "skills_page_skills_get",
         "parameters": [
           {

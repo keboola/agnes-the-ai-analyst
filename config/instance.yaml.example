@@ -19,6 +19,14 @@ instance:
                                      # Leave unset and the footer shows only the
                                      # product name + running build — it never
                                      # invents an attribution.
+  # privacy_policy_url: "https://example.com/legal/privacy"
+                                     # Your organization's own privacy policy. When set, /privacy
+                                     # redirects there instead of rendering the built-in page.
+                                     # Agnes is self-hosted, so YOU are the data controller — the
+                                     # built-in page can only describe what the software does.
+                                     # Give <instance>/privacy as the privacy URL when registering
+                                     # a connector; it answers correctly either way.
+                                     # Env override: AGNES_PRIVACY_POLICY_URL.
   # brand: "Agnes"                   # Product-name brand string used in analyst-facing UI copy
                                      # (/home hero, /setup, /login messages, clipboard setup
                                      # script). Default "Agnes". Set to e.g. "Foundry AI" to

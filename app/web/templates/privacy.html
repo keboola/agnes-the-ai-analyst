@@ -1,0 +1,95 @@
+{% extends "base_login.html" %}
+{# Public privacy statement — served WITHOUT authentication (CON-2).
+
+   Extends base_login.html rather than base_ds.html on purpose: this page has
+   to render for someone who is not signed in (a connector-directory reviewer,
+   a crawler), and base_ds carries the app chrome — nav, user menu, journey
+   rail — none of which means anything to a logged-out visitor.
+
+   The content is the four guarantees that already lived at
+   /how-it-works#privacy, which is behind auth. Kept deliberately narrow: this
+   describes what the SOFTWARE does with data. On a self-hosted deployment the
+   data controller is the operator, and an operator with their own policy sets
+   `instance.privacy_policy_url` — the route then redirects there instead of
+   rendering this. #}
+
+{% block title %}Privacy — {{ config.INSTANCE_NAME or 'Agnes' }}{% endblock %}
+
+{% block content %}
+<main class="pv-page">
+  <div class="pv-wrap">
+    <p class="pv-eyebrow">Privacy</p>
+    <h1 class="pv-title">Where your data goes</h1>
+    <p class="pv-lede">
+      {{ instance_brand }} is self-hosted: this instance runs on infrastructure
+      operated by <strong>{{ config.INSTANCE_NAME or 'the organization that deployed it' }}</strong>.
+      Your rows do not leave that infrastructure to reach a software vendor.
+    </p>
+
+    <div class="pv-card">
+      <div class="pv-row">
+        <span class="pv-mark" aria-hidden="true">&check;</span>
+        <div><strong>You only ever see what you're granted.</strong> Every request is
+          checked against your groups &mdash; and an agent you build can never exceed
+          your own access.</div>
+      </div>
+      <div class="pv-row">
+        <span class="pv-mark" aria-hidden="true">&check;</span>
+        <div><strong>Query results stay local.</strong> With the CLI, data packages sync
+          to your machine and analysis runs there.</div>
+      </div>
+      <div class="pv-row">
+        <span class="pv-mark is-flow" aria-hidden="true">&rarr;</span>
+        <div><strong>Session transcripts are collected.</strong> Prompts, tool calls and
+          tool responses flow back to the catalog so your team can spot failure
+          patterns and close knowledge gaps. Raw data rows you query locally do not
+          travel.</div>
+      </div>
+      <div class="pv-row">
+        <span class="pv-mark" aria-hidden="true">&check;</span>
+        <div><strong>You can go off the record.</strong> Run <span class="pv-code">/agnes-private</span>
+          in Claude Code to disable telemetry for that session &mdash; nothing from it
+          reaches the catalog.</div>
+      </div>
+    </div>
+
+    {# The limit of what this page can honestly claim. A vendor cannot write
+       the controller's policy for them, and pretending otherwise is worse
+       than saying so. #}
+    <section class="pv-note">
+      <h2 class="pv-h2">Who is responsible for this data</h2>
+      <p>
+        This page describes what the {{ instance_brand }} software does with data.
+        It is not a substitute for the data-protection policy of the organization
+        running this instance &mdash; they decide what is collected here, how long it
+        is kept, and who may see it. For questions about your personal data, or to
+        exercise a right over it, contact that organization.
+      </p>
+      {% if config.INSTANCE_SUPPORT %}
+      <p>Support contact for this instance: {{ config.INSTANCE_SUPPORT | safe }}</p>
+      {% endif %}
+    </section>
+  </div>
+</main>
+
+<style>
+  /* Page-local chrome. Colors ride --ds-* tokens only (design-system contract);
+     the layout is bespoke because this page has no app shell around it. */
+  .pv-page { padding: 56px 20px 72px; }
+  .pv-wrap { max-width: 68ch; margin: 0 auto; }
+  .pv-eyebrow { font-size: 12px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ds-text-muted); margin: 0 0 6px; }
+  .pv-title { font-size: 30px; line-height: 1.2; margin: 0 0 14px; color: var(--ds-text-primary); }
+  .pv-lede { font-size: 16px; line-height: 1.6; color: var(--ds-text-secondary); margin: 0 0 26px; }
+  .pv-card { border: 1px solid var(--ds-border); border-radius: 14px; background: var(--ds-surface); padding: 6px 18px; }
+  .pv-row { display: flex; gap: 12px; align-items: flex-start; padding: 15px 0; line-height: 1.6; color: var(--ds-text-secondary); }
+  .pv-row + .pv-row { border-top: 1px solid var(--ds-border); }
+  .pv-row strong { color: var(--ds-text-primary); }
+  .pv-mark { flex-shrink: 0; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font-size: 13px; background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); }
+  /* An arrow, not a tick: this row describes what DOES travel. */
+  .pv-mark.is-flow { background: var(--ds-info-bg); color: var(--ds-info-ink); }
+  .pv-code { background: var(--ds-surface-sunken); border: 1px solid var(--ds-border); border-radius: 4px; padding: 1px 6px; font-family: var(--ds-font-mono, monospace); font-size: 13px; }
+  .pv-note { margin-top: 30px; color: var(--ds-text-secondary); line-height: 1.65; }
+  .pv-h2 { font-size: 17px; margin: 0 0 8px; color: var(--ds-text-primary); }
+  .pv-note p { margin: 0 0 10px; }
+</style>
+{% endblock %}
