@@ -17,7 +17,6 @@ from __future__ import annotations
 import uuid
 
 import duckdb
-import pytest
 
 from src.db import (
     SYSTEM_ADMIN_GROUP,
