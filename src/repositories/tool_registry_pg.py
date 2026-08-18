@@ -2,6 +2,7 @@
 
 Mirrors ``src/repositories/tool_registry.py``.
 """
+
 from __future__ import annotations
 
 import json
@@ -23,7 +24,7 @@ class ToolRegistryPgRepository:
     @staticmethod
     def _decode_row(row: Dict[str, Any]) -> Dict[str, Any]:
         d = dict(row)
-        for k in ("input_schema", "pii_fields"):
+        for k in ("input_schema", "pii_fields", "projection_map"):
             if d.get(k) is not None and isinstance(d[k], str):
                 try:
                     d[k] = json.loads(d[k])
@@ -47,6 +48,7 @@ class ToolRegistryPgRepository:
         rate_limit_pm: Optional[int] = None,
         schedule: Optional[str] = None,
         enabled: bool = True,
+        projection_map: Optional[Dict[str, str]] = None,
     ) -> None:
         if mode not in _VALID_MODES:
             raise ValueError(f"invalid mode: {mode}; must be one of {_VALID_MODES}")
@@ -59,10 +61,11 @@ class ToolRegistryPgRepository:
                     """INSERT INTO tool_registry
                        (tool_id, source_id, original_name, exposed_name, mode, table_id,
                         input_schema, description, mutating, pii_fields, rate_limit_pm,
-                        schedule, enabled, created_at, updated_at)
+                        schedule, enabled, projection_map, created_at, updated_at)
                        VALUES (:tool_id, :source_id, :original_name, :exposed_name,
                                :mode, :table_id, :input_schema, :description, :mutating,
-                               :pii_fields, :rate_limit_pm, :schedule, :enabled, :now, :now)
+                               :pii_fields, :rate_limit_pm, :schedule, :enabled,
+                               CAST(:projection_map AS JSONB), :now, :now)
                        ON CONFLICT (tool_id) DO UPDATE SET
                            source_id     = EXCLUDED.source_id,
                            original_name = EXCLUDED.original_name,
@@ -76,43 +79,81 @@ class ToolRegistryPgRepository:
                            rate_limit_pm = EXCLUDED.rate_limit_pm,
                            schedule      = EXCLUDED.schedule,
                            enabled       = EXCLUDED.enabled,
+                           -- COALESCE, not overwrite — see the DuckDB twin:
+                           -- a re-register does not restate the mapping, and
+                           -- dropping it sends the projection back to guessing
+                           -- column names.
+                           projection_map = COALESCE(EXCLUDED.projection_map, tool_registry.projection_map),
                            updated_at    = EXCLUDED.updated_at"""
                 ),
                 {
-                    "tool_id": tool_id, "source_id": source_id,
-                    "original_name": original_name, "exposed_name": exposed_name,
-                    "mode": mode, "table_id": table_id,
+                    "tool_id": tool_id,
+                    "source_id": source_id,
+                    "original_name": original_name,
+                    "exposed_name": exposed_name,
+                    "mode": mode,
+                    "table_id": table_id,
                     "input_schema": json.dumps(input_schema) if input_schema is not None else None,
-                    "description": description, "mutating": mutating,
+                    "description": description,
+                    "mutating": mutating,
                     "pii_fields": json.dumps(pii_fields) if pii_fields is not None else None,
-                    "rate_limit_pm": rate_limit_pm, "schedule": schedule,
-                    "enabled": enabled, "now": now,
+                    "rate_limit_pm": rate_limit_pm,
+                    "schedule": schedule,
+                    "enabled": enabled,
+                    "projection_map": json.dumps(projection_map) if projection_map is not None else None,
+                    "now": now,
+                },
+            )
+
+    def set_projection_map(self, tool_id: str, projection_map: Optional[Dict[str, str]]) -> None:
+        """Set (or clear, with ``None``) which columns the projection reads.
+
+        Separate from ``upsert`` because the admin chooses this AFTER a fetch,
+        against the columns the tool actually emitted — at registration time
+        nobody knows what they are.
+        """
+        with self._engine.begin() as conn:
+            conn.execute(
+                sa.text(
+                    "UPDATE tool_registry SET projection_map = CAST(:pm AS JSONB), updated_at = :now "
+                    "WHERE tool_id = :tool_id"
+                ),
+                {
+                    "pm": json.dumps(projection_map) if projection_map is not None else None,
+                    "now": datetime.now(timezone.utc),
+                    "tool_id": tool_id,
                 },
             )
 
     def get(self, tool_id: str) -> Optional[Dict[str, Any]]:
         with self._engine.connect() as conn:
-            row = conn.execute(
-                sa.text("SELECT * FROM tool_registry WHERE tool_id = :tool_id"),
-                {"tool_id": tool_id},
-            ).mappings().first()
+            row = (
+                conn.execute(
+                    sa.text("SELECT * FROM tool_registry WHERE tool_id = :tool_id"),
+                    {"tool_id": tool_id},
+                )
+                .mappings()
+                .first()
+            )
         return self._decode_row(dict(row)) if row else None
 
     def list_all(self) -> List[Dict[str, Any]]:
         with self._engine.connect() as conn:
-            rows = conn.execute(
-                sa.text("SELECT * FROM tool_registry ORDER BY source_id, exposed_name")
-            ).mappings().all()
+            rows = (
+                conn.execute(sa.text("SELECT * FROM tool_registry ORDER BY source_id, exposed_name")).mappings().all()
+            )
         return [self._decode_row(dict(r)) for r in rows]
 
     def list_for_source(self, source_id: str) -> List[Dict[str, Any]]:
         with self._engine.connect() as conn:
-            rows = conn.execute(
-                sa.text(
-                    "SELECT * FROM tool_registry WHERE source_id = :sid ORDER BY exposed_name"
-                ),
-                {"sid": source_id},
-            ).mappings().all()
+            rows = (
+                conn.execute(
+                    sa.text("SELECT * FROM tool_registry WHERE source_id = :sid ORDER BY exposed_name"),
+                    {"sid": source_id},
+                )
+                .mappings()
+                .all()
+            )
         return [self._decode_row(dict(r)) for r in rows]
 
     def list_by_mode(self, mode: str, *, enabled_only: bool = True) -> List[Dict[str, Any]]:
@@ -132,18 +173,22 @@ class ToolRegistryPgRepository:
         params = {f"g{i}": gid for i, gid in enumerate(group_ids)}
         params["mode"] = PASSTHROUGH
         with self._engine.connect() as conn:
-            rows = conn.execute(
-                sa.text(
-                    f"""SELECT DISTINCT t.*
+            rows = (
+                conn.execute(
+                    sa.text(
+                        f"""SELECT DISTINCT t.*
                           FROM tool_registry t
                           JOIN tool_grants g ON g.tool_id = t.tool_id
                          WHERE t.mode = :mode
                            AND t.enabled = true
                            AND g.group_id IN ({placeholders})
                          ORDER BY t.source_id, t.exposed_name"""
-                ),
-                params,
-            ).mappings().all()
+                    ),
+                    params,
+                )
+                .mappings()
+                .all()
+            )
         return [self._decode_row(dict(r)) for r in rows]
 
     def is_granted_to_groups(self, tool_id: str, group_ids: List[str]) -> bool:
@@ -154,10 +199,7 @@ class ToolRegistryPgRepository:
         params["tool_id"] = tool_id
         with self._engine.connect() as conn:
             row = conn.execute(
-                sa.text(
-                    f"SELECT 1 FROM tool_grants "
-                    f"WHERE tool_id = :tool_id AND group_id IN ({placeholders}) LIMIT 1"
-                ),
+                sa.text(f"SELECT 1 FROM tool_grants WHERE tool_id = :tool_id AND group_id IN ({placeholders}) LIMIT 1"),
                 params,
             ).first()
         return row is not None
@@ -191,8 +233,7 @@ class ToolRegistryPgRepository:
         with self._engine.begin() as conn:
             conn.execute(
                 sa.text(
-                    "INSERT INTO tool_grants (tool_id, group_id) "
-                    "VALUES (:tool_id, :group_id) ON CONFLICT DO NOTHING"
+                    "INSERT INTO tool_grants (tool_id, group_id) VALUES (:tool_id, :group_id) ON CONFLICT DO NOTHING"
                 ),
                 {"tool_id": tool_id, "group_id": group_id},
             )
@@ -200,9 +241,7 @@ class ToolRegistryPgRepository:
     def remove_grant(self, tool_id: str, group_id: str) -> None:
         with self._engine.begin() as conn:
             conn.execute(
-                sa.text(
-                    "DELETE FROM tool_grants WHERE tool_id = :tool_id AND group_id = :group_id"
-                ),
+                sa.text("DELETE FROM tool_grants WHERE tool_id = :tool_id AND group_id = :group_id"),
                 {"tool_id": tool_id, "group_id": group_id},
             )
 

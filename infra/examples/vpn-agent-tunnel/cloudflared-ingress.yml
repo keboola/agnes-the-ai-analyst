@@ -1,0 +1,104 @@
+# Cloudflare Tunnel ingress — Option A, agent-only exposure (issue #1024).
+#
+# Run cloudflared as a `cloudflared` daemon/container on a host that can
+# already reach this Agnes instance on its VPN/intranet address (127.0.0.1
+# in this example — adjust `service:` if Agnes runs on a different host).
+# cloudflared makes an OUTBOUND connection to Cloudflare's edge, so nothing
+# needs to be opened on your firewall for this to work — that is the whole
+# point for a VPN-only instance.
+#
+# Setup (once):
+#   cloudflared tunnel login
+#   cloudflared tunnel create agnes-agent-api
+#   cloudflared tunnel route dns agnes-agent-api agent-api.example.com
+#   cloudflared tunnel run --config cloudflared-ingress.yml agnes-agent-api
+#
+# Replace the placeholders below with your own tunnel ID and hostname —
+# `agent-api.example.com` is deliberately a SEPARATE hostname from whatever
+# public/internal name the rest of the instance answers on, so this tunnel's
+# blast radius is obviously scoped to just the agent API, not "Agnes".
+#
+# Path matching is REGEX (RE2), evaluated top to bottom, first match wins —
+# this is what makes it possible to expose
+# `/api/v1/agents/{slug}/responses` while excluding sibling paths under the
+# same `/api/v1/agents/{slug}/...` prefix (`/scope`, `/tokens`, `/memories*`,
+# `/webhooks`) that are management-only and already `require_session_token`-
+# gated (a bare PAT is rejected there regardless — this ingress is
+# defense-in-depth, not the only guard). A plain hostname wildcard with no
+# `path:` would forward every one of those too; don't do that.
+#
+# HTTP method is NOT filtered here — cloudflared ingress matches by
+# hostname + path only. `DELETE /api/v1/sessions/{id}` and
+# `GET /api/v1/sessions/{id}` share one rule below on purpose; Agnes's own
+# routing rejects a mismatched method with 405.
+
+tunnel: <YOUR-TUNNEL-ID>
+credentials-file: /etc/cloudflared/<YOUR-TUNNEL-ID>.json
+
+ingress:
+  # POST /api/v1/agents/{slug}/responses — the one-shot agent runtime call.
+  # This waits synchronously for up to `timeout_s` (default 120s, max
+  # 600s — see app/api/agent_runtime.py) before degrading to a background
+  # job. A default Cloudflare Tunnel edge cuts an idle origin response off
+  # around 100s (a 524 to the caller) before that degrade response can be
+  # sent. Callers should pass `"background": true` in the request body (or
+  # a `timeout_s` comfortably under your tunnel's own limit) and poll
+  # GET /api/v1/jobs/{job_id} below instead of relying on the sync wait —
+  # see the README's "Long-running calls" note.
+  - hostname: agent-api.example.com
+    path: ^/api/v1/agents/[^/]+/responses$
+    service: http://127.0.0.1:8000
+
+  # GET /api/v1/agents/{slug}/usage — token-budget usage for the agent.
+  - hostname: agent-api.example.com
+    path: ^/api/v1/agents/[^/]+/usage$
+    service: http://127.0.0.1:8000
+
+  # POST /api/v1/agents/{slug}/sessions — open a multi-turn session.
+  - hostname: agent-api.example.com
+    path: ^/api/v1/agents/[^/]+/sessions$
+    service: http://127.0.0.1:8000
+
+  # POST /api/v1/sessions/{id}/messages — send a message on an open session.
+  - hostname: agent-api.example.com
+    path: ^/api/v1/sessions/[^/]+/messages$
+    service: http://127.0.0.1:8000
+
+  # POST /api/v1/sessions/{id}/memories — the agent's own "remember" tool
+  # call (app/api/agent_memory.py), gated by the same require_session_
+  # principal dependency as the rest of this session surface — not the
+  # unrelated, excluded /api/v1/agents/{id}/memories* (owner-facing
+  # inspect/approve/archive, require_session_token-gated) below.
+  - hostname: agent-api.example.com
+    path: ^/api/v1/sessions/[^/]+/memories$
+    service: http://127.0.0.1:8000
+
+  # POST /api/v1/sessions/{id}/cancel — cancel an in-flight turn.
+  - hostname: agent-api.example.com
+    path: ^/api/v1/sessions/[^/]+/cancel$
+    service: http://127.0.0.1:8000
+
+  # GET /api/v1/sessions/{id}/artifacts and .../artifacts/{artifact_id} —
+  # list / fetch artifacts a session produced. Ordered before the bare
+  # GET/DELETE session rule below since RE2 stops at the first match.
+  - hostname: agent-api.example.com
+    path: ^/api/v1/sessions/[^/]+/artifacts(/[^/]+)?$
+    service: http://127.0.0.1:8000
+
+  # GET /api/v1/sessions/{id} (session status) and
+  # DELETE /api/v1/sessions/{id} (end a session) — same path, two methods.
+  - hostname: agent-api.example.com
+    path: ^/api/v1/sessions/[^/]+$
+    service: http://127.0.0.1:8000
+
+  # GET /api/v1/jobs/{job_id} — poll an async job spawned by a responses call.
+  - hostname: agent-api.example.com
+    path: ^/api/v1/jobs/[^/]+$
+    service: http://127.0.0.1:8000
+
+  # Catch-all — anything not matched above (every agents-admin CRUD route,
+  # /scope, /tokens, /memories*, /webhooks, and everything outside
+  # /api/v1 entirely) gets a 404 from Cloudflare's edge. It never reaches
+  # this Agnes instance at all. cloudflared requires this rule to be last
+  # and to carry no hostname/path.
+  - service: http_status:404

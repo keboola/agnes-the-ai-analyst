@@ -27,6 +27,7 @@ class Surface(str, Enum):
     WEB = "web"
     SLACK_DM = "slack_dm"
     SLACK_THREAD = "slack_thread"
+    TEAMS_DM = "teams_dm"
     API = "api"
 
 

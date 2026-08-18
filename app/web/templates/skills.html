@@ -1,6 +1,6 @@
 {% extends "base_index.html" %}
 {# Builder — one authoring surface for the three things a person can add to
-   the Library: a Skill, a Plugin, or a shareable Agent.
+   the Library: a Skill, a Plugin, or an Agent Template.
 
    This replaces the single-type Skill Builder. ONE view, no navigation
    between states — the form grows downward as it is answered:
@@ -31,11 +31,11 @@
      skill   markdown body -> POST /api/store/entities/from-markdown
              Check runs the skill linter (dry_run) — the only type with one.
      agent   markdown body -> the same endpoint with type=agent.
-             A SHAREABLE agent: a Library resource other people install. It is
-             NOT the personal agent a user configures on /agents, and the copy
-             says so in three places (picker card, builder callout, preview
-             row) because the two are one word apart and a wrong guess here
-             wastes real authoring effort.
+             An AGENT TEMPLATE: a Library resource others build their own agent
+             from. `type='agent'` stays the wire/DB value — only the display
+             name changed (#865 asked for this: the two entities were one word
+             apart, and the copy used to spend three places insisting they were
+             different things. The name now does that work).
      plugin  .zip bundle  -> POST /api/store/entities (multipart).
              The bundle is validated server-side by /entities/preview, whose
              component rows double as this type's Check result.
@@ -202,7 +202,7 @@
   .sk-note strong { color: var(--ds-info-ink); font-weight: 650; }
   .sk-note code { background: color-mix(in srgb, var(--ds-info-line) 16%, transparent); color: var(--ds-info-ink); padding: 1px 5px; border-radius: 4px; }
 
-  /* Callout that separates a shareable agent from a personal one. Uses the
+  /* Callout explaining what an agent template is and is not. Uses the
      agent accent as a left rule so it reads as "about agents" without
      competing with the danger/warn semantics. */
   .sk-callout { display: flex; gap: 11px; align-items: flex-start; border: 1px solid var(--ds-border); border-left: 3px solid var(--ds-kind-agent); border-radius: 10px; background: var(--ds-surface-sunken); padding: 12px 14px; margin: 0 0 14px; }
@@ -371,7 +371,7 @@
   <div class="sk-head">
     <div>
       <h1>Builder <span class="sk-wip">WIP</span></h1>
-      <p class="lede">Author a skill, a plugin, or a shareable agent. Keep it as a draft while you work, then save it to your Library — privately, or published for everyone here.</p>
+      <p class="lede">Author a skill, a plugin, or an agent template. Keep it as a draft while you work, then save it to your Library — privately, or published for everyone here.</p>
     </div>
   </div>
 </div>
@@ -438,7 +438,7 @@
   };
 
   /* ── The type table.
-     Everything that differs between a skill, a plugin and a shareable agent
+     Everything that differs between a skill, a plugin and an agent template
      is declared here; the render functions below stay type-agnostic and read
      from it. `source` is the one structural fork: 'markdown' types author a
      body in a textarea and publish as JSON, 'bundle' types attach a .zip and
@@ -490,17 +490,17 @@
     },
     agent: {
       key: 'agent',
-      label: 'Agent',
-      kicker: 'Authoring shareable agent',
-      newTitle: 'New shareable agent',
+      label: 'Agent Template',
+      kicker: 'Authoring agent template',
+      newTitle: 'New agent template',
       source: 'markdown',
-      what: 'A role definition other people can install from the Library — a named specialist with its own brief, shared as a reusable resource.',
+      what: 'A starting point other people build their own agent from — a named role with its own brief, shared through the Library. Behaviour only: the person who uses it brings their own data.',
       takes: 'Markdown role definition',
       bodyLabel: 'Role definition',
       bodyNote: 'Markdown',
       secTitle: 'Role & instructions',
-      secNote: 'the agent body',
-      secSub: 'Who this agent is, what it is for, and how it should work. This is what an installer gets.',
+      secNote: 'the template body',
+      secSub: 'Who this agent is, what it is for, and how it should work. This is what someone starts from when they build an agent out of your template.',
       bodyPlaceholder: 'You are …\n\n## What you do\n- …\n\n## How you work\n- …',
       descLabel: 'Description',
       descNote: '— what it does, and when to use it',
@@ -733,9 +733,9 @@
     if (type !== 'agent') return '';
     return '<div class="sk-callout">' +
       '<span class="sk-ava sk-ava--agent">' + ICONS.agent + '</span>' +
-      '<span class="sk-callout-body">This is a <strong>shareable agent</strong> — a Library resource other people install and run for themselves. ' +
-      'It is not one of your <a href="/agents">personal agents</a>: those are configured on the Agents page, hold your own scopes and secrets, and stay yours. ' +
-      'Nothing you write here inherits your access.</span>' +
+      '<span class="sk-callout-body">This is an <strong>Agent Template</strong> — a shareable starting point that others build their own ' +
+      '<a href="/agents">agent</a> from. It carries behaviour only: the role, the tone, the instructions. ' +
+      'Whoever uses it picks their own data and access, so nothing you write here inherits yours.</span>' +
     '</div>';
   }
 

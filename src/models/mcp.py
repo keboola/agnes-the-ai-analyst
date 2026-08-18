@@ -97,6 +97,9 @@ class ToolRegistry(Base):
     pii_fields: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     rate_limit_pm: Mapped[int | None] = mapped_column(Integer, nullable=True)
     schedule: Mapped[str | None] = mapped_column(String, nullable=True)
+    # {"id": col, "url": col, "name": col} — which materialized columns the
+    # linked-apps projection reads. NULL falls back to the alias heuristic.
+    projection_map: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, server_default=text("TRUE"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

@@ -52,6 +52,22 @@ class UserRepository:
         result = self.conn.execute("SELECT * FROM users WHERE email = ?", [email]).fetchone()
         return self._row_to_dict(result)
 
+    def get_by_email_ci(self, email: str) -> Optional[Dict[str, Any]]:
+        """Resolve a user by email, case-insensitively.
+
+        ``get_by_email`` is an exact string match (``=`` is case-sensitive on
+        DuckDB and Postgres alike), so one person signing in through two
+        providers that normalize the claim differently — Microsoft lower-cases
+        it, Google passes the raw ``email`` claim through — would otherwise get
+        two accounts. Backs ``app.auth.provisioning.ensure_user``. Historic
+        rows may already differ only in case: the OLDEST wins, so the answer is
+        deterministic and the original account keeps the identity."""
+        result = self.conn.execute(
+            "SELECT * FROM users WHERE lower(email) = lower(?) ORDER BY created_at NULLS LAST LIMIT 1",
+            [email],
+        ).fetchone()
+        return self._row_to_dict(result)
+
     def get_by_email_prefix(self, local_part: str) -> Optional[Dict[str, Any]]:
         """Resolve the single user whose email's local part (before ``@``)
         matches *local_part* exactly, picking the most recently updated when

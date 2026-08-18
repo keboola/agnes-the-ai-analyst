@@ -74,7 +74,7 @@ def test_signed_url_preferred_app_not_called(tmp_path, monkeypatch):
     manifest = _manifest(signed_url="https://bucket.example.com/tbl1.parquet?sig=abc")
     monkeypatch.setattr("cli.lib.pull.api_get", _fake_api_get(manifest), raising=False)
 
-    def _fetch_signed_url(url, target_path, progress_callback=None):
+    def _fetch_signed_url(url, target_path, progress_callback=None, headers_out=None):
         Path(target_path).write_bytes(GOOD_BYTES)
 
     monkeypatch.setattr("cli.lib.pull._fetch_signed_url", _fetch_signed_url, raising=False)
@@ -98,7 +98,7 @@ def test_signed_url_fetch_error_falls_back_to_app(tmp_path, monkeypatch):
     manifest = _manifest(signed_url="https://bucket.example.com/tbl1.parquet?sig=abc")
     monkeypatch.setattr("cli.lib.pull.api_get", _fake_api_get(manifest), raising=False)
 
-    def _fetch_signed_url(url, target_path, progress_callback=None):
+    def _fetch_signed_url(url, target_path, progress_callback=None, headers_out=None):
         raise ConnectionError("boom")
 
     monkeypatch.setattr("cli.lib.pull._fetch_signed_url", _fetch_signed_url, raising=False)
@@ -120,7 +120,7 @@ def test_signed_url_md5_mismatch_falls_back_to_app(tmp_path, monkeypatch):
     manifest = _manifest(signed_url="https://bucket.example.com/tbl1.parquet?sig=abc")
     monkeypatch.setattr("cli.lib.pull.api_get", _fake_api_get(manifest), raising=False)
 
-    def _fetch_signed_url(url, target_path, progress_callback=None):
+    def _fetch_signed_url(url, target_path, progress_callback=None, headers_out=None):
         Path(target_path).write_bytes(BAD_BYTES)
 
     monkeypatch.setattr("cli.lib.pull._fetch_signed_url", _fetch_signed_url, raising=False)
@@ -160,7 +160,7 @@ def test_both_paths_mismatch_reports_failure_not_silent_promote(tmp_path, monkey
     monkeypatch.setattr("cli.lib.pull.api_get", _fake_api_get(manifest), raising=False)
     monkeypatch.setattr("cli.lib.pull._DOWNLOAD_RETRY_BACKOFFS_S", (0.0, 0.0), raising=False)
 
-    def _fetch_signed_url(url, target_path, progress_callback=None):
+    def _fetch_signed_url(url, target_path, progress_callback=None, headers_out=None):
         Path(target_path).write_bytes(BAD_BYTES)
 
     monkeypatch.setattr("cli.lib.pull._fetch_signed_url", _fetch_signed_url, raising=False)
@@ -269,3 +269,126 @@ def test_fetch_signed_url_pins_connection_to_resolved_ip_not_rehostname(tmp_path
 
     assert seen_hosts == ["8.8.8.8"]
     assert target.read_bytes() == GOOD_BYTES
+
+
+# --------------------------------------------------------------------------------
+# issue #1360, fix 2: the signed-URL GET response carries the object store's own
+# stamp (`x-amz-meta-md5`) — read it so a mismatch can be explained, not just
+# detected. Same shape as `cli/client.py::stream_download`'s `headers_out` +
+# `X-Agnes-Content-MD5` for the app-served part route (`tests/test_pull_self_
+# describing_parts.py`), a genuinely different header for a genuinely different
+# transport, read through the same seam.
+# --------------------------------------------------------------------------------
+
+
+def test_fetch_signed_url_populates_headers_out(tmp_path, monkeypatch):
+    """`headers_out`, when given, carries the response headers on a
+    successful fetch — case-insensitive lookup via `httpx.Headers`, same as
+    `cli/client.py::_download_single_stream`'s own `headers_out`."""
+    from cli.lib.pull import _fetch_signed_url
+
+    monkeypatch.setattr(
+        "src.marketplace_asset_mirror.socket.getaddrinfo",
+        lambda *_a, **_k: [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("8.8.8.8", 0))],
+    )
+
+    def fake_super_handle_request(self, request):
+        return httpx.Response(200, content=GOOD_BYTES, headers={"x-amz-meta-md5": GOOD_HASH})
+
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", fake_super_handle_request)
+
+    target = tmp_path / "sidecar.parquet"
+    headers: dict = {}
+    _fetch_signed_url("https://bucket.example.com/tbl1.parquet", str(target), headers_out=headers)
+
+    assert target.read_bytes() == GOOD_BYTES
+    # Case-insensitive lookup: S3 always lowercases response header names.
+    assert httpx.Headers(headers).get("X-Amz-Meta-Md5") == GOOD_HASH
+
+
+def test_fetch_signed_url_headers_out_untouched_on_failure(tmp_path, monkeypatch):
+    """A non-2xx response raises before `headers_out` is touched — there is
+    no response to read headers off, and a stale dict from a prior call
+    must not be misread as this attempt's answer."""
+    from cli.lib.pull import _fetch_signed_url
+
+    monkeypatch.setattr(
+        "src.marketplace_asset_mirror.socket.getaddrinfo",
+        lambda *_a, **_k: [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("8.8.8.8", 0))],
+    )
+
+    def fake_super_handle_request(self, request):
+        return httpx.Response(403, content=b"denied")
+
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", fake_super_handle_request)
+
+    target = tmp_path / "sidecar.parquet"
+    headers: dict = {"stale": "value"}
+    with pytest.raises(ValueError):
+        _fetch_signed_url("https://bucket.example.com/tbl1.parquet", str(target), headers_out=headers)
+
+    assert headers == {"stale": "value"}
+
+
+class TestSignedUrlMismatchReason:
+    """`_signed_url_mismatch_reason` is purely diagnostic (issue #1360) — it
+    never changes the fallback decision `_download_one` already makes, only
+    explains it after the fact."""
+
+    def test_no_header_returns_none(self):
+        from cli.lib.pull import _signed_url_mismatch_reason
+
+        assert _signed_url_mismatch_reason({}, GOOD_HASH) is None
+
+    def test_header_disagreeing_with_the_manifest_reads_as_moved_on(self):
+        from cli.lib.pull import _signed_url_mismatch_reason
+
+        newer_hash = hashlib.md5(b"newer-content-a-fresher-sync-produced").hexdigest()
+
+        reason = _signed_url_mismatch_reason({"x-amz-meta-md5": newer_hash}, GOOD_HASH)
+
+        assert reason is not None and "moved on" in reason
+
+    def test_header_agreeing_with_the_manifest_reads_as_possible_corruption(self):
+        from cli.lib.pull import _signed_url_mismatch_reason
+
+        reason = _signed_url_mismatch_reason({"x-amz-meta-md5": GOOD_HASH}, GOOD_HASH)
+
+        assert reason is not None and "corruption" in reason
+
+    def test_header_lookup_is_case_insensitive(self):
+        """S3 always lowercases response header names, but the helper must
+        not assume every caller-built dict matches that casing exactly."""
+        from cli.lib.pull import _signed_url_mismatch_reason
+
+        newer_hash = hashlib.md5(b"newer-content-a-fresher-sync-produced").hexdigest()
+
+        reason = _signed_url_mismatch_reason({"X-Amz-Meta-Md5": newer_hash}, GOOD_HASH)
+
+        assert reason is not None
+
+
+def test_signed_url_mismatch_with_a_stamp_present_still_falls_back_cleanly(tmp_path, monkeypatch):
+    """End-to-end through `_download_one`: a signed-URL fetch that lands
+    bytes not matching the manifest hash, WITH an `x-amz-meta-md5` header
+    present, must still fall back to the app path and promote successfully
+    — the new diagnostic explains the fallback, it never changes it."""
+    manifest = _manifest(signed_url="https://bucket.example.com/tbl1.parquet?sig=abc")
+    monkeypatch.setattr("cli.lib.pull.api_get", _fake_api_get(manifest), raising=False)
+
+    def _fetch_signed_url(url, target_path, progress_callback=None, headers_out=None):
+        Path(target_path).write_bytes(BAD_BYTES)
+        if headers_out is not None:
+            headers_out.clear()
+            headers_out.update({"x-amz-meta-md5": hashlib.md5(BAD_BYTES).hexdigest()})
+
+    monkeypatch.setattr("cli.lib.pull._fetch_signed_url", _fetch_signed_url, raising=False)
+    monkeypatch.setattr("cli.lib.pull.stream_download", _write_bytes_stream_download(GOOD_BYTES), raising=False)
+
+    result = run_pull(server_url="http://x", token="t", workspace=tmp_path)
+
+    assert result.tables_updated == 1
+    assert result.errors == []
+    assert (tmp_path / "server" / "parquet" / "tbl1.parquet").read_bytes() == GOOD_BYTES
+    assert getattr(result, "tables_via_signed_url", 0) == 0
+    assert getattr(result, "tables_via_app", 0) == 1

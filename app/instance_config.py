@@ -856,6 +856,29 @@ def get_instance_brand() -> str:
     return value or "Agnes"
 
 
+def get_privacy_policy_url() -> str:
+    """The operator's own privacy policy, when they have one.
+
+    Agnes is self-hosted, so the data controller is the organization running
+    the instance — not whoever ships the code. The built-in ``/privacy`` page
+    can therefore only describe what the *software* does with data; it cannot
+    be the controller's policy, and for most operators it should not try.
+
+    Set this and ``/privacy`` redirects there instead of rendering the
+    built-in page, so a single URL (``https://<instance>/privacy``) is a
+    stable, correct answer whichever way an operator has arranged things —
+    which matters because that is the URL handed to a connector directory,
+    and both Anthropic's and OpenAI's submissions reject an unreachable one.
+
+    Resolution: ``AGNES_PRIVACY_POLICY_URL`` env > ``instance.privacy_policy_url``
+    YAML > ``""`` (render the built-in page).
+    """
+    raw = os.environ.get("AGNES_PRIVACY_POLICY_URL")
+    if raw is None:
+        raw = get_value("instance", "privacy_policy_url", default="")
+    return (raw or "").strip()
+
+
 def get_instance_brand_short() -> str:
     """Short form of the product brand for use mid-sentence in body copy
     ("Set up {brand_short} on your machine"), where the full
@@ -1389,6 +1412,8 @@ def get_mcp_connector_ui_enabled() -> bool:
     ``/admin/server-config`` inventory panel.
     """
     return feature_enabled("mcp", "connector_ui_enabled", env_var="AGNES_MCP_CONNECTOR_UI_ENABLED", default=True)
+
+
 def get_mcp_source_url_runtime_enforce() -> bool:
     """Whether the DNS-free url-policy check also runs at the two credentialed
     forward seams, not only when a source is configured (#1216).
