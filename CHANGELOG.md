@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- **Jira `comments` gains a `public_visibility` column, so consumers can separate internal agent notes from customer-facing replies.** The distinction was previously unrecoverable from the dataset. The value is read from `jsdPublic`, the platform API's documented read-only projection of the state JSM stores in the `sd.public.comment` entity property; it rides along on the comments already embedded in `GET /issue/{key}`, so the column adds no `expand` and no extra request per issue. A sweep of the whole project found the flag on 112,859 of 112,859 comments spanning 2022-2026. When it is absent the row is written as **NULL and counted in a WARNING**, never defaulted to `true`: a boolean that is confidently wrong is worse than one that admits the gap, because nothing downstream can tell a defaulted value from an observed one. Rows written before this column existed read as NULL (extract views already use `union_by_name`, so the addition is non-breaking) and are filled in by re-running the batch transform — a pure re-transform of the cached raw JSON with no Jira traffic. `bool` is now a supported dtype in the connector's schema mapping (`get_pyarrow_schema` emitted `pa.string()` for it and `apply_schema` raised on a real boolean).
+
 ## [0.83.30] - 2026-08-17
 
 ### Fixed
