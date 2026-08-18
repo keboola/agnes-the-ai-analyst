@@ -239,7 +239,18 @@ def up(slug: str, payload: dict = Body(...), x_runner_token: str | None = Header
             _resolve_host_path(str(cfg_dir)): {"bind": "/data", "mode": "rw"},
             spec["cache_volume"]: {"bind": "/home/app/.cache", "mode": "rw"},
         },
-        restart_policy={"Name": "unless-stopped"},
+        # Bounded on-failure, NOT unbounded unless-stopped. The upstream
+        # runtime entrypoint is not idempotent — e.g. it `git clone`s into
+        # `/app` unconditionally, so any restart onto a non-empty `/app` dies
+        # with "destination path already exists". Under unless-stopped that is
+        # an infinite crash loop: the app is externally dead (nginx never
+        # listens), it burns CPU forever, and nothing surfaces the failure.
+        # After MaximumRetryCount the daemon gives up, the container settles as
+        # `exited` (→ status() reports "stopped"), and the reap-idle reconcile
+        # scan flips the row to `error`. Trade-off: a healthy container is no
+        # longer auto-restarted across a daemon/VM reboot — acceptable for
+        # wake-on-request data apps, which are rebuilt on the next request.
+        restart_policy={"Name": "on-failure", "MaximumRetryCount": 3},
     )
     return {"status": "started"}
 

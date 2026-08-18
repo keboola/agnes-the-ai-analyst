@@ -403,6 +403,30 @@ def running_idle_app_with_token(api_env):
 
 
 @pytest.fixture
+def running_dead_container_app(api_env):
+    """A `running` row whose container is actually dead. A first-deploy crash
+    loop lands in `running` (not `deploying`), so the stale-deploying scan
+    never sees it. `updated_at` far in the past (past the start grace);
+    `last_request_at` recent so the idle sweep itself would skip it — only the
+    reconcile scan should catch it."""
+    from src.db import get_system_db
+    from src.repositories.data_apps import DataAppsRepository
+
+    conn = get_system_db()
+    try:
+        repo = DataAppsRepository(conn)
+        app_id = repo.create(slug="crash1", name="Crash1", owner_user_id="owner1", idle_timeout_s=300)
+        repo.set_state(app_id, "running")
+        conn.execute(
+            "UPDATE data_apps SET updated_at = now() - INTERVAL 20 MINUTE, last_request_at = now() WHERE id = ?",
+            [app_id],
+        )
+    finally:
+        conn.close()
+    return "crash1"
+
+
+@pytest.fixture
 def stale_deploying_app(api_env):
     """A `deploying` app whose `updated_at` is far in the past — a wake or
     operator-deploy that never finished. Should be recovered (-> `error`)
@@ -1338,6 +1362,49 @@ class TestReap:
         finally:
             conn.close()
         assert row["state"] == "deploying"
+
+    def test_reap_idle_reconciles_running_app_with_dead_container(
+        self, admin_client, fake_runner, running_dead_container_app
+    ):
+        """A `running` row whose container the runner reports as dead
+        (`stopped`/`absent`) — a crash loop that exhausted its restart budget,
+        or a vanished container — is reconciled to `error`. Otherwise it stays
+        `running` with `ready:false` forever and nothing flips it (the
+        stale-deploying scan only sees `deploying` rows, never `running`)."""
+        fake_runner._status = {"container": "stopped", "ready": False}
+        r = admin_client.post("/api/data-apps/reap-idle")
+        assert r.status_code == 200
+        assert r.json()["reconciled"] == ["crash1"]
+
+        from src.db import get_system_db
+        from src.repositories.data_apps import DataAppsRepository
+
+        conn = get_system_db()
+        try:
+            row = DataAppsRepository(conn).get_by_slug("crash1")
+        finally:
+            conn.close()
+        assert row["state"] == "error"
+        assert "running" in row["state_detail"]
+
+    def test_reap_idle_leaves_healthy_running_app_alone(self, admin_client, fake_runner, running_dead_container_app):
+        """Guard against false positives: a `running` row whose container the
+        runner still reports as `running` must NOT be reconciled to error,
+        even once it is past the start grace."""
+        fake_runner._status = {"container": "running", "ready": True}
+        r = admin_client.post("/api/data-apps/reap-idle")
+        assert r.status_code == 200
+        assert r.json()["reconciled"] == []
+
+        from src.db import get_system_db
+        from src.repositories.data_apps import DataAppsRepository
+
+        conn = get_system_db()
+        try:
+            row = DataAppsRepository(conn).get_by_slug("crash1")
+        finally:
+            conn.close()
+        assert row["state"] == "running"
 
 
 class TestGitCredential:

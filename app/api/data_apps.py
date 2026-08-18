@@ -1991,11 +1991,39 @@ async def reap_idle_data_apps(
         logger.warning("reap-idle: %s stuck in deploying past %ds; marked error", row["slug"], _DEPLOY_STALE_TIMEOUT_S)
         timed_out.append(row["slug"])
 
+    # Reconcile `running` rows whose container is actually dead. A first-deploy
+    # crash loop is written to `running` (not `deploying`, see deploy_data_app),
+    # so the stale-deploying scan above never catches it: readiness reports
+    # ready:false forever and nothing flips the row. Bounded by the same start
+    # grace as the deploying scan (`updated_at` older than _DEPLOY_STALE_TIMEOUT_S)
+    # so a container that only just started is never second-guessed — a healthy
+    # running container still reports "running" here regardless of age, so only a
+    # genuinely dead ("stopped"/"absent") container is flipped to error.
+    reconciled: list[str] = []
+    for row in repo.list(state="running", limit=100000):
+        updated_at = row.get("updated_at")
+        if updated_at is None:
+            continue
+        if updated_at.tzinfo is None:
+            updated_at = updated_at.replace(tzinfo=timezone.utc)
+        if (now - updated_at).total_seconds() <= _DEPLOY_STALE_TIMEOUT_S:
+            continue
+        try:
+            status = await run_in_threadpool(_runner().status, row["slug"])
+        except (RunnerUnavailable, RunnerError) as exc:
+            logger.warning("reap-idle: reconcile status check failed for %s: %s", row["slug"], exc)
+            continue
+        container = status.get("container")
+        if container in ("stopped", "absent"):
+            repo.set_state(row["id"], "error", f"container {container} while state=running")
+            logger.warning("reap-idle: %s state=running but container %s; marked error", row["slug"], container)
+            reconciled.append(row["slug"])
+
     _audit(
         conn,
         user["id"],
         "data_app.reap_idle",
         "data_app:*",
-        {"reaped": reaped, "timed_out": timed_out, "recovered": recovered},
+        {"reaped": reaped, "timed_out": timed_out, "recovered": recovered, "reconciled": reconciled},
     )
-    return {"reaped": reaped, "timed_out": timed_out, "recovered": recovered}
+    return {"reaped": reaped, "timed_out": timed_out, "recovered": recovered, "reconciled": reconciled}

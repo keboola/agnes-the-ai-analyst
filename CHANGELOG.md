@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- **A hosted data-app whose container dies on boot no longer crash-loops forever, invisibly.** The runtime container ran under `restart_policy: unless-stopped`, and the upstream entrypoint is not idempotent — it `git clone`s into `/app` unconditionally, so any restart onto a non-empty `/app` dies with "destination path already exists". The result was an infinite restart loop: the app was externally dead (nginx never listened, `readiness` stayed `ready:false`), it burned CPU indefinitely, and nothing surfaced the failure — a first-deploy crash is written to `running` (not `deploying`), so the reap-idle stale-`deploying` scan never saw it. The runner now starts app containers with a bounded `on-failure` restart policy (`MaximumRetryCount: 3`) so the daemon stops retrying a broken boot, and `POST /api/data-apps/reap-idle` now reconciles `running` rows whose container the runner reports dead (`stopped`/`absent`, past the start grace) to `error` (reported under a new `reconciled` key) instead of leaving them wedged. Trade-off: a healthy container is no longer auto-restarted across a daemon/VM reboot — acceptable for wake-on-request data apps, which are rebuilt on the next request.
+
 ## [0.83.47] - 2026-08-18
 
 ### Added
