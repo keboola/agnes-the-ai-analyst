@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- **The embedded engine now runs on the instance's configured instructions, not the shipped default.** The workspace tarball `GET /api/kai/workspace` serves packed the template tree verbatim, so its `CLAUDE.md` was the file that ships with Agnes. The instructions an operator configures as the admin Workspace Prompt are rendered per user and RBAC-filtered, and a native chat sandbox has always had them written over that file during workspace init — so an instance with a customized prompt ran its embedded engine on the default one, invisibly, because a `CLAUDE.md` was present either way. The rendered prompt now replaces that member (and is added when a template ships none), from the same renderer the native sandbox uses (`app/chat/workspace_prompt.py`) rather than a second copy that could drift. Not applied in git-template override mode, where the registered template's `CLAUDE.md` is authoritative verbatim and the admin Workspace Prompt is mutually exclusive with it by design — the same branch `WorkdirManager.run_init` takes. Withheld, too, from the two narrowed session kinds — a co-session, or a session bound to a scope-limited agent — which get the un-filtered bundled text instead, since the rendered document describes the OWNER's reachable tables and skills. The payload stays byte-stable per caller, which the engine's re-fetch on every SDK respawn relies on.
+
 ## [0.83.64] - 2026-08-18
 
 ### Added

@@ -1555,39 +1555,16 @@ async def lifespan(app):
                 _server_url = agnes_server_url()
 
                 def _render_workspace_prompt(user_email: str) -> Optional[str]:
-                    """Render the analyst CLAUDE.md (admin Workspace Prompt
-                    override or shipped default), RBAC-filtered for this user —
-                    the same content `agnes init` writes on a laptop via
-                    GET /api/welcome. Returns None on any failure so workdir
-                    init falls back to the bundled static CLAUDE.md."""
-                    try:
-                        from src.db import get_system_db
-                        from src.claude_md import render_claude_md
-                        from src.repositories import use_pg, users_repo
+                    """Render the analyst CLAUDE.md for the chat sandbox.
 
-                        # User read via the factory so it honors use_pg() — a
-                        # direct UserRepository(conn) read the frozen DuckDB
-                        # system file on Postgres instances (#518). The conn
-                        # below is the DuckDB-mode path handed to
-                        # render_claude_md, which routes its own state reads
-                        # through the factory; on Postgres it is None so the
-                        # system DuckDB is never opened (forbidden invariant).
-                        u = users_repo().get_by_email(user_email)
-                        if not u:
-                            return None
-                        conn = None if use_pg() else get_system_db()
-                        try:
-                            # This is the chat sandbox — its filesystem is
-                            # ephemeral and not the analyst's own machine, so
-                            # the rendered prompt must use the sandbox wording
-                            # (e.g. the Charts section's inline-SVG-only rule).
-                            return render_claude_md(conn, user=u, server_url=_server_url, is_sandbox=True)
-                        finally:
-                            if conn is not None:
-                                conn.close()
-                    except Exception:
-                        logger.exception("render workspace prompt failed for %s", user_email)
-                        return None
+                    Delegates so the embedded `kai-agent` turn engine, which
+                    ships the same prompt inside its workspace tarball
+                    (`app/api/kai.py`), cannot drift from what the native
+                    sandbox seeds. Returns None on any failure so workdir init
+                    falls back to the bundled static CLAUDE.md."""
+                    from app.chat.workspace_prompt import render_sandbox_workspace_prompt
+
+                    return render_sandbox_workspace_prompt(user_email, server_url=_server_url)
 
                 workdir_mgr = WorkdirManager(
                     data_dir=_chat_data_dir,

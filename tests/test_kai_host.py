@@ -219,9 +219,7 @@ def test_mcp_toggle_honours_the_shared_falsey_vocabulary(seeded_app, kai_env, mo
 
     def _mcp_scope_issued() -> bool:
         payload = (
-            seeded_app["client"]
-            .post("/api/kai/tickets", headers={"Authorization": f"Bearer {credential}"})
-            .json()
+            seeded_app["client"].post("/api/kai/tickets", headers={"Authorization": f"Bearer {credential}"}).json()
         )
         return "mcp" in payload
 
@@ -509,9 +507,7 @@ def test_the_tool_ticket_is_confined_to_the_kai_route(seeded_app, kai_env, monke
 
     monkeypatch.setenv("KAI_BROKER_MCP_ENABLED", "1")
     credential = _claims(_mint_session(seeded_app)["token"])["downstream_credential"]
-    tickets = seeded_app["client"].post(
-        "/api/kai/tickets", headers={"Authorization": f"Bearer {credential}"}
-    ).json()
+    tickets = seeded_app["client"].post("/api/kai/tickets", headers={"Authorization": f"Bearer {credential}"}).json()
     tool_ticket = tickets["mcp"]
 
     # 1. What /tickets mints is the narrow scope, not the native relay's.
@@ -535,22 +531,18 @@ def test_the_tool_ticket_is_confined_to_the_kai_route(seeded_app, kai_env, monke
     import httpx
 
     with pytest.raises(httpx.TransportError):
-        seeded_app["client"].post(
-            "/api/kai/mcp", headers={"Authorization": f"Bearer {tool_ticket}"}, content=b"{}"
-        )
+        seeded_app["client"].post("/api/kai/mcp", headers={"Authorization": f"Bearer {tool_ticket}"}, content=b"{}")
 
     # 4. Conversely a NATIVE sandbox's `mcp` ticket can no longer reach the kai
     #    route — the reachability behind the earlier escalation finding.
     native = ticket_repo().mint(_mint_session(seeded_app)["chat_id"], "mcp")
-    refused = seeded_app["client"].post(
-        "/api/kai/mcp", headers={"Authorization": f"Bearer {native}"}, content=b"{}"
-    )
+    refused = seeded_app["client"].post("/api/kai/mcp", headers={"Authorization": f"Bearer {native}"}, content=b"{}")
     assert refused.status_code == 401
     assert refused.json()["detail"] == "ticket_scope_mismatch"
 
 
 def test_llm_egress_ticket_cannot_reach_the_general_api_replay(seeded_app, kai_env):
-    """"LLM egress" must mean only that.
+    """ "LLM egress" must mean only that.
 
     `main` authenticates BOTH `/api/broker/anthropic/*` and
     `/api/broker/agnes-api` — the latter replaying the caller's whole non-admin
@@ -560,9 +552,7 @@ def test_llm_egress_ticket_cannot_reach_the_general_api_replay(seeded_app, kai_e
     `agnes-api` does not. Found by Devin Review.
     """
     credential = _claims(_mint_session(seeded_app)["token"])["downstream_credential"]
-    llm = (
-        seeded_app["client"].post("/api/kai/tickets", headers={"Authorization": f"Bearer {credential}"}).json()["llm"]
-    )
+    llm = seeded_app["client"].post("/api/kai/tickets", headers={"Authorization": f"Bearer {credential}"}).json()["llm"]
 
     resp = seeded_app["client"].post(
         "/api/broker/agnes-api",
@@ -678,10 +668,15 @@ def test_mcp_token_refuses_the_two_narrowed_session_kinds(seeded_app, kai_env, m
 
     def _with(session, agent=None):
         kai_mod._mcp_token_cache.clear()  # never serve a pre-narrowing cache hit
-        monkeypatch.setattr(kai_mod, "chat_session_repo", lambda: type("R", (), {"get_session": staticmethod(lambda _sid: session)})())
+        monkeypatch.setattr(
+            kai_mod, "chat_session_repo", lambda: type("R", (), {"get_session": staticmethod(lambda _sid: session)})()
+        )
         if agent is not None:
             import src.repositories as repos
-            monkeypatch.setattr(repos, "agents_repo", lambda: type("A", (), {"get_by_id": staticmethod(lambda _i: agent)})())
+
+            monkeypatch.setattr(
+                repos, "agents_repo", lambda: type("A", (), {"get_by_id": staticmethod(lambda _i: agent)})()
+            )
         with pytest.raises(HTTPException) as e:
             kai_mod._mint_mcp_access_token(chat_id)
         return e.value
@@ -697,7 +692,6 @@ def test_mcp_token_refuses_the_two_narrowed_session_kinds(seeded_app, kai_env, m
     # 3. deleted agent -> fails CLOSED rather than falling through to the owner
     exc = _with(_Sess(agent_id="ag_2"), agent={"id": "ag_2", "deleted_at": "2026-01-01T00:00:00Z"})
     assert (exc.status_code, exc.detail) == (401, "ticket_agent_not_found")
-
 
 
 def test_mcp_token_is_bound_to_the_mcp_resource_server(seeded_app, kai_env):
@@ -921,3 +915,140 @@ def test_workspace_ignores_a_deregistered_template_clone(seeded_app, kai_env, mo
     # Registered: the same clone is now the caller's workspace.
     monkeypatch.setattr(iw, "is_configured", lambda: True)
     assert kai_mod._workspace_template_root() == clone / "workspace"
+
+
+def _claude_md_from(archive: bytes) -> str:
+    import tarfile as _tarfile
+
+    with _tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
+        member = tar.extractfile("CLAUDE.md")
+        assert member is not None, "the workspace must carry a CLAUDE.md"
+        return member.read().decode("utf-8")
+
+
+def test_the_engine_gets_this_instances_instructions_not_the_shipped_default(seeded_app, kai_env, monkeypatch):
+    """The tarball's CLAUDE.md must be the RENDERED Workspace Prompt.
+
+    Packing the template tree alone was not enough: the template ships a
+    static CLAUDE.md, while the instructions an operator actually configures
+    in /admin are rendered per user and written over that file when a native
+    sandbox is prepared (`app/chat/workdir.py`). Shipping the tree verbatim
+    therefore ran the embedded engine on the shipped default while every other
+    surface honoured the admin's — silently, because the file is present
+    either way. Found by Devin Review on this PR.
+    """
+    import app.chat.workspace_prompt as wp
+    from app.chat.skills_catalog import BUNDLED_TEMPLATE_DIR
+
+    rendered = "# Acme's own instructions\n\nAlways cite the metric definition.\n"
+    monkeypatch.setattr(wp, "render_sandbox_workspace_prompt", lambda *a, **k: rendered)
+
+    credential = _claims(_mint_session(seeded_app)["token"])["downstream_credential"]
+    headers = {"Authorization": f"Bearer {credential}"}
+    archive = seeded_app["client"].get("/api/kai/workspace", headers=headers).content
+
+    shipped = (BUNDLED_TEMPLATE_DIR / "CLAUDE.md").read_text(encoding="utf-8")
+    assert _claude_md_from(archive) == rendered
+    assert rendered != shipped, "the fixture must differ from the default, or this proves nothing"
+
+    # Substitution must not cost the byte-stability the engine's re-fetch
+    # relies on: same caller, same configuration, same bytes.
+    with mock.patch("time.time", return_value=1_700_000_000.0):
+        first = seeded_app["client"].get("/api/kai/workspace", headers=headers).content
+    with mock.patch("time.time", return_value=1_700_000_042.0):
+        second = seeded_app["client"].get("/api/kai/workspace", headers=headers).content
+    assert first == second
+
+
+def test_a_blank_render_leaves_the_templates_own_instructions_alone(seeded_app, kai_env, monkeypatch):
+    """An override that renders to whitespace must not blank the workspace."""
+    import app.chat.workspace_prompt as wp
+    from app.chat.skills_catalog import BUNDLED_TEMPLATE_DIR
+
+    monkeypatch.setattr(wp, "render_sandbox_workspace_prompt", lambda *a, **k: "   \n")
+    credential = _claims(_mint_session(seeded_app)["token"])["downstream_credential"]
+    archive = seeded_app["client"].get("/api/kai/workspace", headers={"Authorization": f"Bearer {credential}"}).content
+
+    assert _claude_md_from(archive) == (BUNDLED_TEMPLATE_DIR / "CLAUDE.md").read_text(encoding="utf-8")
+
+
+def test_the_rendered_prompt_is_withheld_from_the_two_narrowed_session_kinds(monkeypatch):
+    """The rendered document is RBAC-filtered for the session's OWNER.
+
+    A co-session is driven by a guest and a scope-limited agent is deliberately
+    narrower than its owner, so serving either the owner's filtered view is the
+    "over-authorized guests" bug this codebase already refuses elsewhere
+    (`_mint_mcp_access_token`, and `WorkdirManager`'s ephemeral co-drive path,
+    which likewise never calls the renderer). Here it degrades to the bundled
+    text rather than raising, because the route's contract is 200-or-204.
+    """
+    from types import SimpleNamespace
+
+    import app.api.kai as kai_mod
+    import app.chat.workspace_prompt as wp
+
+    monkeypatch.setattr(wp, "render_sandbox_workspace_prompt", lambda *a, **k: "# owner-only\n")
+
+    solo = SimpleNamespace(user_email="owner@example.com", is_co_session=False, agent_id=None)
+    assert kai_mod._workspace_prompt_for(solo) == "# owner-only\n"
+
+    guest = SimpleNamespace(user_email="owner@example.com", is_co_session=True, agent_id=None)
+    assert kai_mod._workspace_prompt_for(guest) is None
+
+    scoped = SimpleNamespace(user_email="owner@example.com", is_co_session=False, agent_id="a1")
+    monkeypatch.setattr(
+        "src.repositories.agents_repo",
+        lambda: SimpleNamespace(get_by_id=lambda _id: {"id": "a1", "deleted_at": None, "scope": "selected"}),
+    )
+    monkeypatch.setattr("src.agent_scope_intersection.agent_is_passthrough", lambda _a: False)
+    assert kai_mod._workspace_prompt_for(scoped) is None
+
+    # Deleted agent falls BACK, never up to the owner's view.
+    monkeypatch.setattr(
+        "src.repositories.agents_repo",
+        lambda: SimpleNamespace(get_by_id=lambda _id: None),
+    )
+    assert kai_mod._workspace_prompt_for(scoped) is None
+
+
+def test_both_sandboxes_render_the_workspace_prompt_through_one_helper():
+    """Drift guard. The native sandbox seeds CLAUDE.md through WorkdirManager
+    and the engine receives it in a tarball; an admin editing the Workspace
+    Prompt expects both to change. Two independent renderings is exactly how
+    the engine came to ship the shipped default in the first place.
+    """
+    from pathlib import Path
+
+    main_src = Path("app/main.py").read_text(encoding="utf-8")
+    kai_src = Path("app/api/kai.py").read_text(encoding="utf-8")
+    assert "render_sandbox_workspace_prompt" in main_src, (
+        "app/main.py must delegate its _render_workspace_prompt to the shared helper"
+    )
+    assert "render_sandbox_workspace_prompt" in kai_src
+    assert "render_claude_md" not in kai_src, "kai must not render the prompt itself — that is the drift this guards"
+
+
+def test_a_git_template_keeps_its_own_instructions_verbatim(seeded_app, kai_env, monkeypatch, tmp_path):
+    """Override mode is the one case the rendered prompt must NOT win.
+
+    `run_init`'s OVERRIDE MODE branch skips the Workspace Prompt write on
+    purpose — a registered git template owns CLAUDE.md verbatim, and the two
+    override mechanisms are mutually exclusive by design
+    (docs/initial-workspace-override.md). Applying the prompt unconditionally
+    would make the embedded engine the only surface that merges them.
+    """
+    import app.chat.workspace_prompt as wp
+    import src.initial_workspace as iw
+
+    monkeypatch.setattr(wp, "render_sandbox_workspace_prompt", lambda *a, **k: "# rendered prompt\n")
+
+    clone = tmp_path / "iwt"
+    (clone / "workspace").mkdir(parents=True)
+    (clone / "workspace" / "CLAUDE.md").write_text("# the git template's own\n", encoding="utf-8")
+    monkeypatch.setattr(iw, "get_initial_workspace_dir", lambda: clone)
+    monkeypatch.setattr(iw, "is_configured", lambda: True)
+
+    credential = _claims(_mint_session(seeded_app)["token"])["downstream_credential"]
+    archive = seeded_app["client"].get("/api/kai/workspace", headers={"Authorization": f"Bearer {credential}"}).content
+
+    assert _claude_md_from(archive) == "# the git template's own\n"

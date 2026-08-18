@@ -380,8 +380,14 @@ def _require_session_credential(request: Request) -> Dict[str, Any]:
     # the credential's 12 h life. Checked here rather than per route so
     # `/tickets` and `/workspace` are both covered by construction. Found by
     # Devin Review on this PR.
-    if chat_session_repo().get_session(row["session_id"]) is None:
+    session = chat_session_repo().get_session(row["session_id"])
+    if session is None:
         raise HTTPException(status_code=401, detail="kai_session_gone")
+    # Carried on the row so `/workspace` renders this caller's prompt without a
+    # second read of the session it just proved exists — and, more to the
+    # point, so the identity a route acts on is the one the credential was
+    # checked against rather than one re-derived later.
+    row["session"] = session
     if row.get("scope") != _CREDENTIAL_SCOPE:
         try:
             audit_repo().log(
@@ -823,12 +829,24 @@ _MAX_WORKSPACE_ARCHIVE_BYTES = 100 * 1024 * 1024
 
 
 def _workspace_template_root() -> "Path":
-    """The tree to pack: an admin-registered Initial Workspace Template when
-    one is synced, else the bundled default.
+    """The tree to pack. See :func:`_workspace_source`."""
+    return _workspace_source()[0]
 
-    Same precedence the analyst-facing template flow uses, so the embedded
-    engine's sandbox and an analyst's local workspace are prepared from one
-    source of truth rather than drifting apart.
+
+def _workspace_source() -> "tuple[Path, bool]":
+    """``(tree to pack, is the admin's git template override in force)``.
+
+    The tree is an admin-registered Initial Workspace Template when one is
+    synced, else the bundled default — the same precedence the analyst-facing
+    template flow uses, so the embedded engine's sandbox and an analyst's local
+    workspace are prepared from one source of truth rather than drifting apart.
+
+    The flag is returned alongside rather than probed again because it decides
+    whether the rendered Workspace Prompt may overwrite ``CLAUDE.md``, and the
+    two answers must come from the same snapshot: a de-registration landing
+    between two probes would otherwise ship a git template with the DB prompt
+    written over it, which is precisely the combination
+    ``docs/initial-workspace-override.md`` rules out.
     """
     from app.chat.skills_catalog import BUNDLED_TEMPLATE_DIR
     from src.initial_workspace import _WORKSPACE_SUBDIR, _iwt_snapshot
@@ -845,26 +863,99 @@ def _workspace_template_root() -> "Path":
         if iwt_root is not None:
             override = iwt_root / _WORKSPACE_SUBDIR
             if override.is_dir():
-                return override
+                return override, True
     except Exception:
         # A broken/unsynced override must not deny the caller a workspace —
         # fall back to the bundled tree, which is always present.
         logger.warning("kai workspace: override template unreadable, using bundled", exc_info=True)
-    return BUNDLED_TEMPLATE_DIR
+    return BUNDLED_TEMPLATE_DIR, False
 
 
-def _build_workspace_archive() -> Optional[bytes]:
-    """Pack the template into the gzipped tar the engine's contract expects,
+#: Where the rendered Workspace Prompt lands in the shipped tree. Same path
+#: `WorkdirManager` writes on a native sandbox (`app/chat/workdir.py`), which
+#: is what the Claude Agent SDK reads as the project's instructions.
+_WORKSPACE_PROMPT_ARCNAME = "CLAUDE.md"
+
+
+def _workspace_prompt_for(session: Any) -> Optional[str]:
+    """This session's rendered Workspace Prompt, or ``None`` to ship the
+    template's static ``CLAUDE.md`` unchanged.
+
+    The rendered document is RBAC-filtered — it names the tables, metrics and
+    skills its subject may reach — so it belongs to the session's OWNER, not
+    to whoever is driving the session. A conversation that became a
+    co-session, or that acquired a scope-limited agent, therefore gets the
+    un-filtered bundled text instead: the same narrowing
+    ``_mint_mcp_access_token`` applies, expressed here as a downgrade rather
+    than a refusal because this route's contract is closed (``200`` or
+    ``204``) and a ``403`` would fail the turn instead of degrading it.
+    """
+    if getattr(session, "is_co_session", False):
+        return None
+    agent_id = getattr(session, "agent_id", None)
+    if agent_id:
+        from src.agent_scope_intersection import agent_is_passthrough
+        from src.repositories import agents_repo
+
+        agent = agents_repo().get_by_id(agent_id)
+        # Deleted agent → fall back, never up: the same fail-closed direction
+        # `_mint_identity_jwt` and `_mint_mcp_access_token` take, so a session
+        # attributed to a deleted agent cannot recover the owner's filtered
+        # view of the catalog.
+        if agent is None or agent.get("deleted_at") is not None:
+            return None
+        if not agent_is_passthrough(agent):
+            return None
+
+    from app.chat.workspace_prompt import render_sandbox_workspace_prompt
+
+    rendered = render_sandbox_workspace_prompt(session.user_email)
+    # Same emptiness guard as `WorkdirManager`: a prompt that renders blank
+    # must not blank out the template's own instructions.
+    return rendered if rendered and rendered.strip() else None
+
+
+def _build_workspace_archive(session: Any = None) -> Optional[bytes]:
+    """Pack this caller's workspace into the gzipped tar the engine expects,
     or ``None`` when there is nothing to ship.
+
+    The rendered Workspace Prompt REPLACES the template's static ``CLAUDE.md``
+    (and is added when the template ships none), exactly as ``WorkdirManager``
+    overwrites that file on a native sandbox. Without it the embedded engine
+    ran on the shipped default instructions while every other surface honoured
+    the admin's configured ones — the template TREE is the same on both sides,
+    but the instructions are per-user and rendered, so packing the tree alone
+    is not enough. Found by Devin Review on this PR.
+
+    ...except in override mode, where the git template's ``CLAUDE.md`` is
+    authoritative verbatim and the admin Workspace Prompt is mutually exclusive
+    with it by design (``run_init``'s OVERRIDE MODE branch in
+    ``app/chat/workdir.py``, and ``docs/initial-workspace-override.md``).
+    Overwriting there would make the engine the only surface that merges two
+    override mechanisms the platform deliberately keeps apart.
 
     Members are relative POSIX paths of regular files only — the engine
     rejects the whole payload on an absolute path, a `..` segment, or any
     non-file member (symlink, device), so those are filtered here rather than
     failing someone's turn. Directories are implicit.
     """
-    root = _workspace_template_root()
+    root, override_active = _workspace_source()
     if not root.is_dir():
         return None
+
+    claude_md = None if override_active or session is None else _workspace_prompt_for(session)
+
+    paths: Dict[str, Path] = {}
+    for path in sorted(root.rglob("*")):
+        if not path.is_file() or path.is_symlink():
+            continue
+        rel = path.relative_to(root)
+        if rel.parts[0] in _WORKSPACE_EXCLUDED_TOPLEVEL or ".git" in rel.parts:
+            continue
+        paths[rel.as_posix()] = path
+
+    prompt = claude_md.encode("utf-8") if claude_md else None
+    names = sorted(paths if prompt is None else {*paths, _WORKSPACE_PROMPT_ARCNAME})
 
     buffer = io.BytesIO()
     members = 0
@@ -879,18 +970,26 @@ def _build_workspace_archive() -> Optional[bytes]:
     # with `mtime=0` and the tar written into it uncompressed (`w|`).
     with gzip.GzipFile(fileobj=buffer, mode="wb", mtime=0) as gz:
         with tarfile.open(fileobj=gz, mode="w|") as tar:
-            for path in sorted(root.rglob("*")):
-                if not path.is_file() or path.is_symlink():
-                    continue
-                rel = path.relative_to(root)
-                if rel.parts[0] in _WORKSPACE_EXCLUDED_TOPLEVEL or ".git" in rel.parts:
-                    continue
-                info = tar.gettarinfo(str(path), arcname=rel.as_posix())
+            for arcname in names:
+                if prompt is not None and arcname == _WORKSPACE_PROMPT_ARCNAME:
+                    # Synthesized rather than read: the rendered prompt has no
+                    # file on disk, and building the header here keeps it under
+                    # the same pinning as every other member.
+                    info = tarfile.TarInfo(name=arcname)
+                    info.size = len(prompt)
+                    info.mode = 0o644
+                    body: Any = io.BytesIO(prompt)
+                else:
+                    path = paths[arcname]
+                    info = tar.gettarinfo(str(path), arcname=arcname)
+                    body = path.open("rb")
                 info.mtime = 0
                 info.uid = info.gid = 0
                 info.uname = info.gname = ""
-                with path.open("rb") as fh:
-                    tar.addfile(info, fh)
+                try:
+                    tar.addfile(info, body)
+                finally:
+                    body.close()
                 members += 1
 
     if members == 0:
@@ -930,8 +1029,16 @@ async def kai_workspace(row: Dict[str, Any] = Depends(_require_session_credentia
     Authenticated by the session credential, not a broker ticket: the engine's
     *server* fetches this once per SDK process spawn, and the sandbox never
     sees it.
+
+    The payload is per-caller, because the ``CLAUDE.md`` inside it is the
+    RBAC-filtered Workspace Prompt. It stays byte-stable for a given caller
+    and configuration, which is what the engine's re-fetch on every SDK
+    respawn relies on.
     """
-    archive = await asyncio.to_thread(_build_workspace_archive)
+
+    # One hop off the event loop for the whole payload: rendering the prompt is
+    # a synchronous DB read and packing is filesystem work.
+    archive = await asyncio.to_thread(_build_workspace_archive, row["session"])
     if archive is None:
         return Response(status_code=204)
     return Response(content=archive, media_type="application/gzip")

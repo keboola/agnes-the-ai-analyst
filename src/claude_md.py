@@ -207,7 +207,11 @@ def _marketplaces_for_user(conn: duckdb.DuckDBPyConnection, user: dict[str, Any]
 
 
 def build_claude_md_context(
-    conn: duckdb.DuckDBPyConnection,
+    # Accepts ``None`` for the same reason ``render_claude_md`` does — and in
+    # fact never reads it: every state read below goes through the repository
+    # factory. Kept in the signature because it is part of this module's
+    # public shape.
+    conn: duckdb.DuckDBPyConnection | None,
     *,
     user: dict[str, Any],
     server_url: str,
@@ -273,7 +277,12 @@ def compute_default_claude_md(
 
 
 def render_claude_md(
-    conn: duckdb.DuckDBPyConnection,
+    # Optional because Postgres instances pass ``None``: the function routes
+    # its own state reads through the repository factory, so on PG there is no
+    # system DuckDB to open (opening it there is a forbidden invariant). Both
+    # sandbox callers have always passed None on PG; the annotation had simply
+    # not caught up.
+    conn: duckdb.DuckDBPyConnection | None,
     *,
     user: dict[str, Any],
     server_url: str,

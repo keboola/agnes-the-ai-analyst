@@ -35123,7 +35123,7 @@
     },
     "/api/kai/workspace": {
       "get": {
-        "description": "Serve this caller's workspace tree as one gzipped tarball.\n\nClosed contract: exactly ``200`` with the archive, or ``204`` for \"this\ncaller has no workspace\". Any other status fails the engine's turn, so\nthere is no partial answer \u2014 an unreadable template falls back to the\nbundled tree rather than erroring.\n\nAuthenticated by the session credential, not a broker ticket: the engine's\n*server* fetches this once per SDK process spawn, and the sandbox never\nsees it.",
+        "description": "Serve this caller's workspace tree as one gzipped tarball.\n\nClosed contract: exactly ``200`` with the archive, or ``204`` for \"this\ncaller has no workspace\". Any other status fails the engine's turn, so\nthere is no partial answer \u2014 an unreadable template falls back to the\nbundled tree rather than erroring.\n\nAuthenticated by the session credential, not a broker ticket: the engine's\n*server* fetches this once per SDK process spawn, and the sandbox never\nsees it.\n\nThe payload is per-caller, because the ``CLAUDE.md`` inside it is the\nRBAC-filtered Workspace Prompt. It stays byte-stable for a given caller\nand configuration, which is what the engine's re-fetch on every SDK\nrespawn relies on.",
         "operationId": "kai_workspace_api_kai_workspace_get",
         "responses": {
           "200": {

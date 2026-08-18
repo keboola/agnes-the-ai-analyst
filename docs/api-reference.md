@@ -1529,6 +1529,21 @@ the engine exposes nothing.
   build assets (`e2b-template/`, `docker-sandbox/`) are excluded — they
   describe how to build a sandbox, not how to work in one.
 
+  `CLAUDE.md` is the **rendered** Workspace Prompt, not the template's static
+  copy — the same document `WorkdirManager` writes over that file when it
+  prepares a native chat sandbox, and the same one `agnes init` fetches from
+  `GET /api/welcome`, RBAC-filtered for the caller. Two exceptions, both
+  inherited from `run_init` rather than specific to the engine: in
+  git-template override mode the registered template's `CLAUDE.md` wins
+  verbatim (the git override and the admin Workspace Prompt are mutually
+  exclusive by design — see
+  [initial-workspace-override.md](initial-workspace-override.md)), and a
+  co-session or a session bound to a scope-limited agent gets the un-filtered
+  bundled text, because the rendered document describes the *owner's*
+  reachable tables and skills. The payload is therefore per-caller, but stays
+  byte-stable for a given caller and configuration, which is what the engine's
+  re-fetch on every SDK respawn relies on.
+
 The LLM upstream needs no new route: the engine's in-sandbox relay speaks plain
 pass-through, which is exactly what `/api/broker/anthropic/{subpath}` already
 is. Point the engine's `HOST_BROKER_LLM_URL` at it and the `llm` ticket
