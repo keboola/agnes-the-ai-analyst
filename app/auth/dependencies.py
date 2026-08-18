@@ -167,7 +167,10 @@ def _get_local_dev_user(conn: Optional[duckdb.DuckDBPyConnection] = None) -> Opt
     """
     from src.repositories import users_repo
 
-    user = users_repo().get_by_email(get_local_dev_email())
+    # Folded: startup seeds this account through normalize_email (lower-cased),
+    # so an exact read misses whenever LOCAL_DEV_USER_EMAIL carries upper case
+    # and dev auto-login silently stops working.
+    user = users_repo().get_by_email_ci(get_local_dev_email())
     if not user:
         logger.error(
             "LOCAL_DEV_MODE is on but dev user %s is not seeded; expected app startup to seed it",

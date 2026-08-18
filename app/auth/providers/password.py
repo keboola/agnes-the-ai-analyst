@@ -305,7 +305,7 @@ async def password_login_web(
             reset_token_created=datetime.now(timezone.utc),
         )
         return RedirectResponse(
-            url=(f"/auth/password/reset?email={quote(email, safe='')}&token={reset_tok}&reason=must_change"),
+            url=(f"/auth/password/reset?email={quote(user['email'], safe='')}&token={reset_tok}&reason=must_change"),
             status_code=303,
         )
 
@@ -422,7 +422,7 @@ async def reset_request(
                 reset_token=hash_token(token),
                 reset_token_created=datetime.now(timezone.utc),
             )
-            send_reset_email(request, email, token)
+            send_reset_email(request, user["email"], token)
     return _render_message(
         request,
         title="Check your email",
@@ -614,7 +614,7 @@ async def setup_request(
                 setup_token=hash_token(token),
                 setup_token_created=datetime.now(timezone.utc),
             )
-            send_setup_email(request, email, token)
+            send_setup_email(request, user["email"], token)
     return _render_message(
         request,
         title="Check your email",

@@ -107,11 +107,15 @@ def _generate_and_deliver_magic_link(email: str, next_path: str = "") -> tuple[d
         reset_token_created=datetime.now(timezone.utc),
     )
 
-    link = _build_magic_link(email, token, next_path)
+    # The link and the delivery address are the RESOLVED account's, not the
+    # spelling that was typed — the link's own verify path folds case either
+    # way, but a mail sent to the typed string is a mail to an unverified
+    # address.
+    link = _build_magic_link(user["email"], token, next_path)
     send_error: str | None = None
     if _has_email_transport():
         try:
-            _send_email(email, token, next_path)
+            _send_email(user["email"], token, next_path)
         except Exception as e:
             send_error = str(e)
             logger.error("Failed to send magic link email to %s: %s", email, e)

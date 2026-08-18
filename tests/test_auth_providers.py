@@ -631,6 +631,36 @@ class TestLocalDevGroupsParser:
         assert get_local_dev_groups() == [{"id": "eng@x.com", "name": "Eng"}]
 
 
+class TestLocalDevUserLookup:
+    """Startup seeds the dev account through ``normalize_email`` (lower-cased),
+    so the request-time read has to fold case too — otherwise a mixed-case
+    ``LOCAL_DEV_USER_EMAIL`` seeds a row the auto-login can never find and dev
+    mode silently stops logging anybody in."""
+
+    def test_dev_user_resolves_when_configured_address_has_capitals(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-32chars-minimum!!!!!")
+        monkeypatch.setenv("LOCAL_DEV_MODE", "1")
+        monkeypatch.setenv("LOCAL_DEV_USER_EMAIL", "Dev@LocalHost")
+
+        from src.db import get_system_db
+        from src.repositories.users import UserRepository
+        from src.user_identity import normalize_email
+
+        conn = get_system_db()
+        try:
+            # Exactly what the startup seed writes.
+            UserRepository(conn).create(id="dev1", email=normalize_email("Dev@LocalHost"), name="Admin")
+        finally:
+            conn.close()
+
+        from app.auth.dependencies import _get_local_dev_user
+
+        user = _get_local_dev_user()
+        assert user is not None, "dev auto-login could not find the account startup seeded"
+        assert user["id"] == "dev1"
+
+
 @pytest.mark.skip(
     reason="v12: session.google_groups + /me/profile group rendering removed; profile now reads user_group_members. Rewrite to assert membership rows instead."
 )

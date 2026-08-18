@@ -561,7 +561,7 @@ async def add_member(
         user["id"],
         "user_group.member_added",
         f"group:{group_id}",
-        {"user_email": payload.email},
+        {"user_email": target["email"]},
     )
     return MemberResponse(
         user_id=target["id"],
