@@ -5,12 +5,14 @@ comma-separated) narrows which login methods this instance offers. Unset =
 every available provider — byte-for-byte the pre-allowlist behavior. An
 explicitly empty (or all-unknown) list is a misconfiguration: rejected at
 the admin API, and treated here as unset with a loud error log so one
-overlay write can never lock every user out of the instance. The same
-fail-open applies at read time when the list names only *unconfigured*
+overlay write can never lock every user out of the instance. A narrower
+rescue applies at read time when the list names only *unconfigured*
 providers (e.g. ``keboola`` with no stack configured): an allowlist that
-would leave zero usable login methods is treated as unset, so the env /
-static-file path — which the admin API's lockout guard never sees — cannot
-lock the instance out either.
+would leave zero usable login methods falls back to password + magic link,
+so the env / static-file path — which the admin API's lockout guard never
+sees — cannot lock the instance out either. Deliberately NOT "treat as
+unset": that would re-offer the self-provisioning OAuth providers, turning
+one typo into a widening of who may sign in.
 """
 
 import importlib
@@ -41,9 +43,35 @@ _AVAILABILITY_PROBES: dict[str, str] = {
     "microsoft": "app.auth.providers.microsoft",
 }
 
+# What an unusable allowlist falls back to. Both require an existing user row
+# to authenticate anybody (password: ``password_hash``; email: the magic link
+# is only minted for a known address), so the fallback can never widen who may
+# sign in — unlike "treat as unset", which re-offers the self-provisioning
+# OAuth providers.
+_RESCUE_PROVIDERS: tuple[str, ...] = ("password", "email")
+
 # One-shot marker so the lockout rescue logs once per distinct configuration,
 # not on every request (same rationale as the parse cache above).
 _LOCKOUT_RESCUE_LOGGED: Optional[tuple] = None
+
+def _probe_availability(name: str) -> tuple[bool, bool]:
+    """``(available, probe_raised)`` for one provider.
+
+    The second element is returned rather than recorded in module state: this
+    runs from a FastAPI dependency on every ``/auth/*`` request, executed
+    concurrently in the threadpool, so a shared marker would let one request's
+    reset erase another's — precisely during the transient fault the signal
+    exists to tolerate. See :func:`_provider_available` for the failure
+    direction and :func:`_rescue_if_unusable` for what reads the flag.
+    """
+    module_path = _AVAILABILITY_PROBES.get(name)
+    if module_path is None:
+        return True, False
+    try:
+        return bool(importlib.import_module(module_path).is_available()), False
+    except Exception:
+        logger.warning("availability probe for provider %r raised; treating as unavailable", name, exc_info=True)
+        return False, True
 
 
 def _provider_available(name: str) -> bool:
@@ -54,20 +82,15 @@ def _provider_available(name: str) -> bool:
     Raise-as-unavailable is a deliberate direction of failure: on a healthy
     instance these probes are in-memory config/env reads that do not raise,
     and if one somehow does, reading it as available would leave the login
-    page offering only a provider that is actively broken — a lockout. The
-    cost is that a transient raise can trip ``_rescue_if_unusable`` and widen
-    the offering to all providers for the fault's duration (Devin Review on
-    PR #1288) — accepted, because the rescue's one-shot error log makes it
-    loud and every offered provider still authenticates on its own merits;
-    availability here gates OFFERING, never identity.
+    page offering only a provider that is actively broken — a lockout.
+    :func:`_probe_availability` reports that it raised, though, so the rescue
+    can tell
+    "probed and found unconfigured" from "could not tell": since the rescue
+    now NARROWS rather than widens, letting a transient fault trigger it would
+    take the operator's intended door offline for the fault's duration on no
+    information at all. Availability here gates OFFERING, never identity.
     """
-    module_path = _AVAILABILITY_PROBES.get(name)
-    if module_path is None:
-        return True
-    try:
-        return bool(importlib.import_module(module_path).is_available())
-    except Exception:
-        return False
+    return _probe_availability(name)[0]
 
 
 def configured_allowlist() -> Optional[list[str]]:
@@ -97,7 +120,7 @@ def configured_allowlist() -> Optional[list[str]]:
 
 
 def _rescue_if_unusable(cache_key: tuple, allowlist: Optional[list[str]]) -> Optional[list[str]]:
-    """Treat an allowlist naming only unconfigured providers as unset.
+    """Fall back to local sign-in when an allowlist names only unconfigured providers.
 
     ``auth.providers: [keboola]`` with no stack configured would render zero
     login buttons and 404 every ``/auth/*`` route — an unrecoverable lockout
@@ -106,20 +129,65 @@ def _rescue_if_unusable(cache_key: tuple, allowlist: Optional[list[str]]) -> Opt
     (NOT folded into the parse cache) because provider configuration can
     change at runtime via the settings overlay; the probes are cheap config
     reads and short-circuit on the first available provider. The error log is
-    once per distinct configuration, like the parse diagnostics."""
-    if allowlist is None or any(_provider_available(name) for name in allowlist):
+    once per distinct configuration, like the parse diagnostics.
+
+    The rescue lands on ``_RESCUE_PROVIDERS`` rather than on "unset", because
+    "unset" means *every* provider and that turns a misconfiguration into a
+    widening: an operator who narrowed to one OAuth provider and then mistyped
+    its configuration would get Google back on the login page, and with
+    ``auth.allowed_domain`` unset any Google account self-provisions. Password
+    and magic link both need an existing user row, so they end the lockout
+    without admitting anyone new."""
+    if allowlist is None:
+        return allowlist
+    # Local, not shared: see `_probe_availability`. Short-circuits on the first
+    # available provider exactly as before.
+    any_raised = False
+    for name in allowlist:
+        available, raised = _probe_availability(name)
+        if available:
+            return allowlist
+        any_raised = any_raised or raised
+    if any_raised:
+        # At least one probe could not answer. "Everything looks unavailable"
+        # is then an artefact of the fault, not a statement about the
+        # configuration — and rescuing would narrow the offering (404 on the
+        # operator's intended door) for its duration. Leave the allowlist
+        # alone; each provider is still gated by its own is_available() at the
+        # route, so nothing broken becomes reachable, and the offering returns
+        # to normal by itself when the fault clears.
         return allowlist
     global _LOCKOUT_RESCUE_LOGGED
     state = (cache_key, tuple(allowlist))
     if _LOCKOUT_RESCUE_LOGGED != state:
         _LOCKOUT_RESCUE_LOGGED = state
-        logger.error(
-            "auth.providers names only unconfigured providers (%s) — no login method "
-            "would be usable; treating as unset (all providers) so the instance stays "
-            "reachable; fix the configuration",
-            ", ".join(allowlist),
-        )
-    return None
+        # Say what the fallback can actually do, rather than asserting
+        # reachability. Both rescue providers authenticate only EXISTING
+        # accounts, and on an instance with no mail transport that leaves
+        # password — which needs a row that already carries a hash. An
+        # OAuth-only instance may therefore have no usable door until the
+        # configuration is fixed, and the operator has to hear that here
+        # rather than discover it on the login page.
+        if _provider_available("email"):
+            logger.error(
+                "auth.providers names only unconfigured providers (%s) — no login method "
+                "would be usable; falling back to %s. Neither can self-provision an "
+                "account, so only EXISTING users can sign in until the configuration "
+                "is fixed.",
+                ", ".join(allowlist),
+                ", ".join(_RESCUE_PROVIDERS),
+            )
+        else:
+            logger.error(
+                "auth.providers names only unconfigured providers (%s) AND no mail "
+                "transport is configured — the fallback is password sign-in alone, "
+                "which works only for accounts that already hold a password. If none "
+                "do, NOBODY can sign in until the configuration is fixed; recover with "
+                "`agnes admin break-glass grant-admin` (operates on the database "
+                "directly, no login) or SEED_ADMIN_EMAIL/SEED_ADMIN_PASSWORD.",
+                ", ".join(allowlist),
+            )
+    return list(_RESCUE_PROVIDERS)
 
 
 def _parse_allowlist(source: Optional[object]) -> Optional[list[str]]:

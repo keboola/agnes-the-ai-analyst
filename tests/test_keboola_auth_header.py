@@ -57,6 +57,16 @@ class TestHeaderAuth:
         resp = client.get("/api/catalog/tables", headers={"X-StorageApi-Token": "tok-1"})
         assert resp.status_code == 200
 
+    def test_maps_to_existing_user_regardless_of_claim_case(self, client, monkeypatch):
+        """The header door has to resolve identity like every other door.
+
+        ``ensure_user`` stores addresses lower-cased, so a Keboola identity
+        whose address carries upper-case characters signs in fine through the
+        OAuth door and used to get ``keboola_user_unknown`` (401) here."""
+        monkeypatch.setattr(kv, "verify_storage_token", lambda tok: _identity("Jane@Example.com"))
+        resp = client.get("/api/catalog/tables", headers={"X-StorageApi-Token": "tok-case"})
+        assert resp.status_code == 200, resp.text
+
     def test_unknown_user_gets_onboarding_hint(self, client, monkeypatch):
         monkeypatch.setattr(kv, "verify_storage_token", lambda tok: _identity("nobody@example.com"))
         resp = client.get("/api/catalog/tables", headers={"X-StorageApi-Token": "tok-2"})
@@ -241,7 +251,7 @@ class TestResolveUnit:
         import src.repositories as repos
 
         class _Boom:
-            def get_by_email(self, email):
+            def get_by_email_ci(self, email):
                 raise RuntimeError("db down")
 
         monkeypatch.setattr(repos, "users_repo", lambda: _Boom())
