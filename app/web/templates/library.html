@@ -2147,6 +2147,18 @@
     <div class="lib-defs__links">
       <a class="lib-defs__link" href="/catalog/semantics#metrics">{{ _dm }} metric{{ '' if _dm == 1 else 's' }} &rarr;</a>
       <a class="lib-defs__link" href="/catalog/semantics#glossary">{{ _dg }} glossary term{{ '' if _dg == 1 else 's' }} &rarr;</a>
+      {# The stored Ossie document itself — datasets, relationships, AI
+         context, constraints — one layer below the flat metric/glossary
+         projection the two links above open. Shown only when the caller can
+         read at least one model (`has_semantic_models`, the router's
+         `_can_read_model` sweep): a caller with visible metrics but no
+         readable document would otherwise land on the browse page's empty
+         state. No count here (unlike the two above): an exact per-type count
+         is a heavier read than the mere existence check the link needs — see
+         docs/superpowers/specs/2026-08-14-semantic-layer-ui-and-agent-parity-design.md. #}
+      {% if definitions_footer.has_semantic_models %}
+      <a class="lib-defs__link" href="/semantic-layer">Browse the semantic layer &rarr;</a>
+      {% endif %}
     </div>
   </aside>
   {% endif %}

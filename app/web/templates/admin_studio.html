@@ -1,6 +1,6 @@
 {% extends "base_ds.html" %}
 
-{% block title %}{{ domain.title }} — Agnes Studio{% endblock %}
+{% block title %}{{ domain.title }} — {{ instance_brand or 'Agnes' }} Studio{% endblock %}
 
 {% block head_extra %}
 <link rel="stylesheet" href="{{ static_url('css/ds_dropdown.css') }}">
@@ -113,7 +113,7 @@
   <div class="st-wrap">
 
     <div class="st-hero">
-      <p class="st-eyebrow">Agnes Studio · AI-assisted</p>
+      <p class="st-eyebrow">{{ instance_brand or 'Agnes' }} Studio · AI-assisted</p>
       <h1>{{ domain.title }}</h1>
       <p>{{ domain.subtitle }} The assistant grounds every suggestion in your live instance — you stay in control of what ships.</p>
       <div class="st-rail">

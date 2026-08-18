@@ -94,7 +94,9 @@ async def google_callback(request: Request):
         # Domain check
         allowed = get_allowed_domains()
         if allowed:
-            domain = email.split("@")[-1]
+            # Both sides folded: the allowlist is lower-cased by
+            # get_allowed_domains(), and the claim is whatever the IdP sent.
+            domain = email.split("@")[-1].lower()
             if domain not in allowed:
                 return RedirectResponse(url="/login?error=domain_not_allowed")
 
