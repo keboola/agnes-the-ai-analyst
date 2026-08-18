@@ -49,6 +49,7 @@ _DEFAULT_TOKEN_ENVS: frozenset[str] = frozenset(
         "GOOGLE_APPLICATION_CREDENTIALS",  # path, not a secret value
         "DATABRICKS_TOKEN",  # workspace PAT for the Unity Catalog ATTACH
         "SNOWFLAKE_PASSWORD",  # Snowflake user password for the snowflake extension ATTACH
+        "SNOWFLAKE_PRIVATE_KEY",  # Snowflake key-pair private key (may contain passphrase JSON)
     }
 )
 
@@ -199,3 +200,25 @@ def escape_sql_string_literal(value: str) -> str:
     path and the orchestrator rebuild path use the same escape.
     """
     return value.replace("'", "''")
+
+
+def resolve_remote_attach_token(token_env: str) -> str:
+    """Resolve a remote-attach token from env, falling back to the vault.
+
+    Environment variables remain authoritative. When the env var is unset,
+    the named secret may have been stored through the admin UI's datasource
+    secrets endpoint, so we fall back to ``app.datasource_secrets`` for
+    allow-listed datasource secret names.
+    """
+    if not token_env:
+        return ""
+    value = os.environ.get(token_env, "")
+    if value:
+        return value
+    try:
+        from app.datasource_secrets import datasource_secret
+
+        return datasource_secret(token_env) or ""
+    except Exception:
+        logger.debug("vault lookup failed for remote-attach token_env %s", token_env, exc_info=True)
+        return ""
