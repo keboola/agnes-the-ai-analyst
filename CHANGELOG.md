@@ -10,11 +10,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
-## [0.83.48] - 2026-08-18
+## [0.83.49] - 2026-08-18
 
 ### Fixed
 
 - **"Skip onboarding" now marks all six onboarding steps complete.** The panel sends the new `agent_created` flag and `PUT /api/chat/journey` accepts it, so the checklist reaches `6/6` and the card retires. "Start over onboarding" also resets the same flag. Previously the sixth step was neither sent by the panel nor accepted by the backend, leaving the checklist stuck at `5/6`.
+
+## [0.83.48] - 2026-08-18
+
+### Fixed
+
+- **One person, one account — the case-insensitive identity fix now applies to the accounts that actually needed it.** `ensure_user` still read `get_by_email` (an exact, case-SENSITIVE match) first and used the case-insensitive read only as a miss-fallback, so wherever two case-variant rows already coexisted the exact hit won and the documented "oldest wins" contract never applied — the fix missed exactly the population it was written for. The case-insensitive read is now the only lookup, and case is folded in SQL alone (the argument is stripped, not lower-cased) rather than composing Python's Unicode table with the engine's, which is not a well-defined equivalence. **Operator note:** where case-variant duplicates already exist and the older row was deactivated while the person kept signing in on the newer one, sign-in now resolves to the deactivated row and is refused. That is the deliberate direction — a wrongly-refused sign-in is visible and fixable, whereas preferring the active row would let a hidden duplicate bypass an offboarding — but such instances want a reconciliation pass (merge or delete the stale variant) before upgrading. A read-only report listing these collisions is queued as a follow-up.
+- **`get_by_email_ci` resolves one identity to one account deterministically.** `created_at` is not unique — rows written together tie — so a bare `ORDER BY created_at` left the winner to whatever order the engine happened to return, which need not agree between DuckDB and Postgres or between two runs on one engine. `id` breaks the tie on both backends. The ordering deliberately ignores the `active` flag: callers gate on the returned row's own flag, so ranking active rows first would let a still-enabled duplicate serve a sign-in the operator had just disabled.
 
 ## [0.83.47] - 2026-08-18
 
@@ -14285,3 +14292,4 @@ PR: [#120](https://github.com/keboola/agnes-the-ai-analyst/pull/120) (ci/deploy-
 [0.11.2]: https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.11.2
 [0.11.1]: https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.11.1
 [0.11.0]: https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.11.0
+
