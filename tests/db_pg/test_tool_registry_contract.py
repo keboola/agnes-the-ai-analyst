@@ -275,7 +275,7 @@ def test_reupsert_without_the_mapping_preserves_it(repo):
 
 
 # ---------------------------------------------------------------------------
-# tool_grants.allow_mutating (v120) — grant flags round-trip identically
+# tool_grants.allow_mutating (v121) — grant flags round-trip identically
 # ---------------------------------------------------------------------------
 
 def _register_tool(repo, tool_id: str) -> None:

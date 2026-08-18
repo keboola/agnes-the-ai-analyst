@@ -233,7 +233,7 @@ class ToolRegistryPgRepository:
         """Insert-or-update a grant, tri-state on ``allow_mutating``:
 
         - ``None`` (default) — leave an existing grant's flag UNCHANGED
-          (``ON CONFLICT DO NOTHING``, the pre-v120 semantics); a brand-new
+          (``ON CONFLICT DO NOTHING``, the pre-v121 semantics); a brand-new
           grant lands read-only. This is what routine re-granting callers
           (Keboola sign-in provisioning, connection rollback) must get, or
           every re-run would silently reset an admin's mutating opt-in.
@@ -281,7 +281,7 @@ class ToolRegistryPgRepository:
 
         ``grants_for_tool`` (bare group ids) stays for existing callers;
         this is the detail view. NULL ``allow_mutating`` (row predating
-        v120) reads as False.
+        v121) reads as False.
         """
         with self._engine.connect() as conn:
             rows = conn.execute(
@@ -295,7 +295,7 @@ class ToolRegistryPgRepository:
 
     def is_mutating_granted_to_groups(self, tool_id: str, group_ids: List[str]) -> bool:
         """True iff any of ``group_ids`` holds a grant on this tool with
-        ``allow_mutating=TRUE`` (the v120 opt-in consumed by
+        ``allow_mutating=TRUE`` (the v121 opt-in consumed by
         ``app.api.mcp_policy.check_mutating``)."""
         if not group_ids:
             return False
