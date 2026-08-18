@@ -152,9 +152,14 @@ def _has_semantic_layer(conn: duckdb.DuckDBPyConnection, *, user: dict[str, Any]
 
     try:
         rows = semantic_model_repo().list_all()
+        # _can_read_model stays INSIDE the guard: it hits resource_grants /
+        # user_group_members / data_package_semantic_models, any of which may be
+        # absent on a half-migrated database — the whole onboarding document
+        # must degrade to "no section", not error (mirrors _metrics_summary;
+        # Devin review on #1398).
+        return any(row.get("status") == "valid" and _can_read_model(user, row, conn) for row in rows)
     except _missing_table_excs():
         return False
-    return any(row.get("status") == "valid" and _can_read_model(user, row, conn) for row in rows)
 
 
 def _marketplaces_for_user(conn: duckdb.DuckDBPyConnection, user: dict[str, Any]) -> list[dict[str, Any]]:

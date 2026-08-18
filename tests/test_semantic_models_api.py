@@ -636,6 +636,25 @@ class TestGetSemanticContext:
         objects = r.json()["results"][0]["objects"]
         assert {o["model"] for o in objects} == {"retail_vq"}
 
+    def test_model_ids_accepts_the_stored_id_not_only_the_slug(self, seeded_app):
+        """Devin #1398: filtering must match the row's stored id
+        (``<source>/<source_ref>/<slug>``), not the document's internal model
+        name — passing a real id returned an empty result before the fix."""
+        _upsert_model_with_constraints(id="manual/_/other", slug="other_model")
+        _upsert_model_with_constraints()  # id=manual/_/retail_vq, slug=retail_vq
+        c = seeded_app["client"]
+        r = c.get(
+            "/api/semantic-models/context",
+            params={
+                "selections": _selections({"semantic_type": "dataset"}),
+                "model_ids": ["manual/_/other"],  # the full stored id, not the slug
+            },
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        objects = r.json()["results"][0]["objects"]
+        assert objects, "filtering by the stored id returned nothing"
+        assert {o["model"] for o in objects} == {"other_model"}
+
     def test_unknown_semantic_type_is_reported(self, seeded_app):
         c = seeded_app["client"]
         r = c.get(

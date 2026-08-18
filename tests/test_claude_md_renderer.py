@@ -492,6 +492,24 @@ class TestSemanticLayerSection:
         ctx = build_claude_md_context(conn, user=_admin_user(conn), server_url="https://example.com")
         assert ctx["semantic_layer"]["has_models"] is False
 
+    def test_degrades_when_the_rbac_lookup_hits_a_missing_table(self, conn, monkeypatch):
+        """A half-migrated DB (semantic_models present, but a resource_grants /
+        data-package table the RBAC gate reads not yet created) degrades the
+        gate to False, not an error — _can_read_model sits inside the same try
+        that tolerates a missing semantic_models table (Devin review #1398)."""
+        import app.api.semantic_models as sm_mod
+
+        _seed_semantic_model(conn)  # a valid row, so list_all() reaches _can_read_model
+        _make_user(conn, user_id="ua", email="alice@example.com")
+        user = {"id": "ua", "email": "alice@example.com", "name": "Alice", "is_admin": False, "groups": []}
+
+        def _boom(_u, _row, _c):
+            raise duckdb.CatalogException("Table with name resource_grants does not exist!")
+
+        monkeypatch.setattr(sm_mod, "_can_read_model", _boom)
+        ctx = build_claude_md_context(conn, user=user, server_url="https://example.com")
+        assert ctx["semantic_layer"]["has_models"] is False
+
     def test_rendered_section_present_with_models(self, conn):
         _seed_semantic_model(conn)
         out = render_claude_md(conn, user=_admin_user(conn), server_url="https://example.com")

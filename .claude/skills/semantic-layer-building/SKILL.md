@@ -10,8 +10,9 @@ per semantic model — not a pile of independently-editable rows. Everything
 in this skill assumes that: you read/write a *document*, then Agnes
 validates and stores it as a unit.
 
-Read `CLAUDE.md § Semantic layer` first for the standing rule this skill
-exists to support: **the semantic layer is the authoritative source of
+The standing rule this skill exists to support — also carried in the
+generated workspace `CLAUDE.md`'s "Semantic layer" section and in
+`docs/semantic-layer.md`: **the semantic layer is the authoritative source of
 business meaning — prefer it over inferring definitions from table/column
 names, and reuse a declared metric's SQL rather than inventing a
 calculation.**
@@ -34,8 +35,9 @@ calculation.**
    agnes semantic-model schema dataset metric relationship
    ```
    This is served straight from the vendored, pinned Apache Ossie JSON
-   Schema (`src/semantic/document_validation.py`) — the exact contract your
-   document will be validated against, not a paraphrase.
+   Schema (`src/semantic/schema/osi-schema.json`, exposed via
+   `src/semantic/document_validation.py::get_schema_defs`) — the exact
+   contract your document will be validated against, not a paraphrase.
 
 3. **Check for a canonical metric before inventing one.** `agnes catalog
    --metrics --show <category>/<name>` reads a metric this layer already

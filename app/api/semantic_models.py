@@ -363,7 +363,9 @@ _NO_MODEL_MESSAGE = (
 )
 
 
-def _accessible_valid_documents(user: dict, conn: duckdb.DuckDBPyConnection) -> list[dict[str, Any]]:
+def _accessible_valid_documents(
+    user: dict, conn: duckdb.DuckDBPyConnection, model_refs: Optional[set[str]] = None
+) -> list[dict[str, Any]]:
     """The individual model dicts (``document_json["semantic_model"]``
     entries) of every ``status='valid'`` semantic-model row ``user`` may
     read.
@@ -385,6 +387,13 @@ def _accessible_valid_documents(user: dict, conn: duckdb.DuckDBPyConnection) -> 
         if row.get("status") != "valid" or not row.get("document_json"):
             continue
         if not _can_read_model(user, row, conn):
+            continue
+        # `model_refs` restricts to specific models by their stored identity —
+        # id (`<source>/<source_ref>/<slug>`) OR slug. Matched on the ROW, not
+        # the document's internal `name`: a document `name` is not the stored
+        # identifier a caller sees in the model list, so filtering on it drops
+        # every row when a real id is passed (Devin review on #1398).
+        if model_refs is not None and row.get("id") not in model_refs and row.get("slug") not in model_refs:
             continue
         models = row["document_json"].get("semantic_model")
         if not isinstance(models, list):
@@ -457,10 +466,7 @@ async def get_semantic_context_endpoint(
     if not isinstance(parsed_selections, list):
         raise HTTPException(status_code=400, detail="selections must be a JSON list of {semantic_type, ids?} objects")
 
-    documents = _accessible_valid_documents(user, conn)
-    if model_ids:
-        wanted_models = set(model_ids)
-        documents = [d for d in documents if d.get("name") in wanted_models]
+    documents = _accessible_valid_documents(user, conn, model_refs=set(model_ids) if model_ids else None)
     return _get_semantic_context(documents, parsed_selections)
 
 
