@@ -81,7 +81,12 @@ consents by writing the binding; the admin consents by allowlisting the
 channel for the Slack surface at all. Owners should bind only channels where
 "anyone here may drive my agent" is intended, and narrow the agent's scope
 accordingly. A per-binding `shared` flag / mentioner-allowlist is deferred
-until a second consumer needs it.
+until a second consumer needs it. A binding additionally requires a
+non-passthrough agent (at least one `'selected'` mode, enforced at scope-PUT
+and again when widening modes, plus a routing-time defense): an all-`'all'`
+agent's turns would ride the owner's PLAIN identity via the broker's
+passthrough optimization — admin short-circuit included — rather than the
+enforced AgentPrincipal.
 
 The identity is whole, not split: a routed session is created AS THE OWNER
 (session row, sandbox workspace, rails, personal `CLAUDE.local.md`, and

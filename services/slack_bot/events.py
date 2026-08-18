@@ -390,8 +390,23 @@ async def _handle_mention(app, event: dict) -> None:
         # agent would present different rails per invoker and pick up an
         # arbitrary channel member's personal CLAUDE.local.md as standing
         # instructions (Devin Review on this PR).
-        owner_row = users_repo().get_by_id(str(bound_agent["owner_user_id"]))
-        if owner_row is None or not owner_row.get("email"):
+        from src.agent_scope_intersection import agent_is_passthrough
+
+        if agent_is_passthrough(bound_agent):
+            # Defense in depth for rows predating the API-side guard: an
+            # all-'all' agent's routed turns would ride the owner's PLAIN
+            # identity via the broker's passthrough optimization — never
+            # route to one.
+            logger.warning(
+                "slack_channel binding for %s skipped: agent %s has every scope mode 'all'",
+                channel,
+                bound_agent.get("id"),
+            )
+            bound_agent = None
+        owner_row = None if bound_agent is None else users_repo().get_by_id(str(bound_agent["owner_user_id"]))
+        if bound_agent is None:
+            pass
+        elif owner_row is None or not owner_row.get("email"):
             logger.warning(
                 "slack_channel binding for %s points at agent %s with no resolvable owner — continuing unrouted",
                 channel,
