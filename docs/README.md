@@ -43,6 +43,7 @@ Deploying, configuring, and running an Agnes instance.
 - [`auth-groups.md`](auth-groups.md) — Google Workspace group sync
 - [`admin/query-modes.md`](admin/query-modes.md) — table registration query modes, and `server_only` for queryable-but-never-distributed tables
 - [`admin/collections-vs-data-packages.md`](admin/collections-vs-data-packages.md) — uploading files vs. registering a live source
+- [`agent-recipes/announcement-drafting-agent.md`](agent-recipes/announcement-drafting-agent.md) — recipe: a Slack-routed, CMS-drafting autonomous agent from Agnes primitives
 - [`agent-setup-prompt.md`](agent-setup-prompt.md) — customize the `/setup` page banner
 - [`agent-workspace-prompt.md`](agent-workspace-prompt.md) — customize the generated analyst `CLAUDE.md`
 - [`initial-workspace-override.md`](initial-workspace-override.md) — per-instance analyst-workspace skeleton override

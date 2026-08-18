@@ -272,3 +272,57 @@ def test_reupsert_without_the_mapping_preserves_it(repo):
     row = repo.get("t-keep")
     assert row["schedule"] == "daily 06:00"
     assert row["projection_map"] == {"id": "data_app_id", "url": "deployment_url"}
+
+
+# ---------------------------------------------------------------------------
+# tool_grants.allow_mutating (v120) — grant flags round-trip identically
+# ---------------------------------------------------------------------------
+
+def _register_tool(repo, tool_id: str) -> None:
+    from src.repositories.tool_registry import PASSTHROUGH
+
+    repo.upsert(
+        tool_id=tool_id, source_id="src1",
+        original_name=f"orig_{tool_id}", exposed_name=f"exposed_{tool_id}",
+        mode=PASSTHROUGH, mutating=True,
+    )
+
+
+def test_add_grant_defaults_to_read_only(repo):
+    _register_tool(repo, "t-g1")
+    repo.add_grant("t-g1", "grp-a")
+    assert repo.grants_for_tool("t-g1") == ["grp-a"]
+    assert repo.grant_rows_for_tool("t-g1") == [{"group_id": "grp-a", "allow_mutating": False}]
+    assert repo.is_mutating_granted_to_groups("t-g1", ["grp-a"]) is False
+
+
+def test_add_grant_with_allow_mutating_roundtrips(repo):
+    _register_tool(repo, "t-g2")
+    repo.add_grant("t-g2", "grp-a", allow_mutating=True)
+    assert repo.grant_rows_for_tool("t-g2") == [{"group_id": "grp-a", "allow_mutating": True}]
+    assert repo.is_mutating_granted_to_groups("t-g2", ["grp-a"]) is True
+    # non-member group sees nothing
+    assert repo.is_mutating_granted_to_groups("t-g2", ["grp-b"]) is False
+    # empty group list fails closed
+    assert repo.is_mutating_granted_to_groups("t-g2", []) is False
+
+
+def test_regrant_updates_the_flag_in_place(repo):
+    """Re-granting is the edit path: the (tool, group) row is unique, the
+    flag flips without duplicating the row — in both directions."""
+    _register_tool(repo, "t-g3")
+    repo.add_grant("t-g3", "grp-a")
+    repo.add_grant("t-g3", "grp-a", allow_mutating=True)
+    assert repo.grant_rows_for_tool("t-g3") == [{"group_id": "grp-a", "allow_mutating": True}]
+    repo.add_grant("t-g3", "grp-a", allow_mutating=False)
+    assert repo.grant_rows_for_tool("t-g3") == [{"group_id": "grp-a", "allow_mutating": False}]
+    assert repo.grants_for_tool("t-g3") == ["grp-a"]
+
+
+def test_mutating_check_any_of_several_groups(repo):
+    _register_tool(repo, "t-g4")
+    repo.add_grant("t-g4", "grp-a")                       # read-only grant
+    repo.add_grant("t-g4", "grp-b", allow_mutating=True)  # opt-in grant
+    assert repo.is_mutating_granted_to_groups("t-g4", ["grp-a"]) is False
+    assert repo.is_mutating_granted_to_groups("t-g4", ["grp-a", "grp-b"]) is True
+    assert repo.is_granted_to_groups("t-g4", ["grp-a"]) is True
