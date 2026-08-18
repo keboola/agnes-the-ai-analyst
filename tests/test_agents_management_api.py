@@ -480,6 +480,19 @@ def test_scope_put_success(mgmt_client):
     assert {"item_type": "table", "item_id": "t1"} in stored
 
 
+def test_agent_detail_includes_scope_items(mgmt_client):
+    """GET detail carries the scope list so callers (the CLI replace-not-merge
+    warning) can see what a scope PUT would drop."""
+    created = mgmt_client.post("/api/v1/agents", json={"name": "S", "slug": "detail-scope"}).json()
+    mgmt_client.put(
+        f"/api/v1/agents/{created['id']}/scope",
+        json={"items": [{"item_type": "slack_channel", "item_id": "C42"}, {"item_type": "plugin", "item_id": "p9"}]},
+    )
+    detail = mgmt_client.get(f"/api/v1/agents/{created['id']}").json()
+    assert {"item_type": "slack_channel", "item_id": "C42"} in detail["scope"]
+    assert {"item_type": "plugin", "item_id": "p9"} in detail["scope"]
+
+
 def test_scope_put_accepts_slack_channel_binding(mgmt_client):
     from src.repositories import agents_repo
 
