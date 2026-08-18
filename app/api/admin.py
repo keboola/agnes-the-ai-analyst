@@ -29,6 +29,7 @@ from src.identifier_validation import (
 from src.repositories import (
     audit_repo,
     knowledge_repo,
+    profile_repo,
     store_entities_repo,
     store_submissions_repo,
     sync_state_repo,
@@ -4926,6 +4927,128 @@ _POLICY_PREVIEW_KNOWN_VARIABLES = frozenset({"user_email", "user_id", "user_grou
 _POLICY_PREVIEW_SAMPLE_LIMIT = 20
 
 
+def _policy_preview_sample_is_redirectable(policy_sql: str, table_name: str) -> bool:
+    """True when a ``WITH "<table_name>" AS (<bounded sample>)`` prelude
+    provably redirects EVERY read the policy makes of its own table.
+
+    The before/after preview is only honest if both lists cover the same
+    source rows (see ``_policy_preview_samples``), and the prelude is how
+    that is arranged -- but a CTE only shadows a BARE identifier. Two
+    shapes escape it, and both are refused here rather than silently
+    diffed against unrelated rows:
+
+    * a qualified reference (``main.t``, ``db.main.t``) binds to the real
+      table, not the CTE -- the policy validator matches on the last name
+      part only, so this passes validation today;
+    * a policy-defined CTE of the same name shadows OUR prelude, so the
+      policy reads that instead.
+
+    A body we cannot parse is refused too (conservative by construction).
+    Note what this never does: rewrite, substitute, or otherwise edit the
+    policy SQL. The body is handed to DuckDB verbatim either way.
+    """
+    import sqlglot
+    from sqlglot import exp
+
+    try:
+        statement = sqlglot.parse_one(policy_sql, read="duckdb")
+    except Exception:
+        return False
+    if statement is None:
+        return False
+
+    lname = table_name.lower()
+    for cte in statement.find_all(exp.CTE):
+        if (cte.alias_or_name or "").lower() == lname:
+            return False
+
+    saw_bare_reference = False
+    for table in statement.find_all(exp.Table):
+        if not isinstance(table.this, exp.Identifier):
+            continue
+        if table.name.lower() != lname:
+            continue
+        if table.args.get("db") or table.args.get("catalog"):
+            return False
+        saw_bare_reference = True
+    return saw_bare_reference
+
+
+def _policy_preview_samples(analytics_conn, table_name: str, policy_sql: str, params: dict):
+    """Both halves of the before/after preview over the SAME bounded rows.
+
+    Returns ``(policied_sample, base_sample, comparable)``.
+
+    The naive shape -- an unbounded ``SELECT * FROM (policy) LIMIT n``
+    beside an independent ``SELECT * FROM t LIMIT n`` -- reads two
+    different, unordered windows: whenever the rows a persona can see sit
+    past the raw sample's window, the policied list carries rows the raw
+    list never contains, and the UI pairs unrelated rows into false
+    "dropped" rows and false masked-cell diffs.
+
+    So the raw window is materialized ONCE into a per-request temp table
+    (one bounded read, replacing the previous two -- strictly cheaper than
+    before, which matters on a remote/BQ-backed table) and the policy is
+    then run against a CTE that reads it back. Nothing rewrites the policy
+    body; DuckDB's own name resolution prefers the CTE over the base
+    table, which is exactly why ``_policy_preview_sample_is_redirectable``
+    has to certify that every reference is shadowable first.
+
+    When it is not, both samples fall back to independent bounded reads
+    and ``comparable`` is True only when the raw sample is provably the
+    WHOLE table (fewer rows came back than the limit) -- in which case the
+    policied sample is the whole policied output and the two are exactly
+    comparable anyway. Otherwise the caller is told not to diff them.
+    """
+    import uuid
+
+    from src.sql_ident import quote_ident
+
+    limit = _POLICY_PREVIEW_SAMPLE_LIMIT
+    quoted_table = quote_ident(table_name)
+
+    def _rows(cursor):
+        names = [d[0] for d in cursor.description]
+        return [dict(zip(names, r)) for r in cursor.fetchall()]
+
+    if _policy_preview_sample_is_redirectable(policy_sql, table_name):
+        # Unique per request: a temp table is connection-scoped, but the
+        # DuckLake backend hands out cursors off one long-lived connection,
+        # so a fixed name could collide between concurrent previews.
+        tmp = quote_ident(f"__agnes_policy_base_{uuid.uuid4().hex}")
+        created = False
+        try:
+            analytics_conn.execute(f"CREATE TEMP TABLE {tmp} AS SELECT * FROM {quoted_table} LIMIT {limit}")
+            created = True
+        except Exception:
+            created = False
+        if created:
+            try:
+                base_sample = _rows(analytics_conn.execute(f"SELECT * FROM {tmp}"))
+                policied_sample = _rows(
+                    analytics_conn.execute(
+                        f"WITH {quoted_table} AS (SELECT * FROM {tmp}) "
+                        f"SELECT * FROM ({policy_sql}) AS __agnes_policy_preview__ LIMIT {limit}",
+                        params,
+                    )
+                )
+                return policied_sample, base_sample, True
+            finally:
+                try:
+                    analytics_conn.execute(f"DROP TABLE IF EXISTS {tmp}")
+                except Exception:
+                    pass
+
+    policied_sample = _rows(
+        analytics_conn.execute(
+            f"SELECT * FROM ({policy_sql}) AS __agnes_policy_preview__ LIMIT {limit}",
+            params,
+        )
+    )
+    base_sample = _rows(analytics_conn.execute(f"SELECT * FROM {quoted_table} LIMIT {limit}"))
+    return policied_sample, base_sample, len(base_sample) < limit
+
+
 def _sanitize_for_json(obj):
     """Recursively replace NaN / ±inf floats with None so a preview's sample
     rows survive JSON serialization -- FastAPI's default encoder rejects
@@ -5131,18 +5254,24 @@ async def preview_table_policy(
                 f"SELECT COUNT(*) FROM ({policy_sql}) AS __agnes_policy_preview__",
                 params,
             ).fetchone()[0]
-            sample_cursor = analytics_conn.execute(
-                f"SELECT * FROM ({policy_sql}) AS __agnes_policy_preview__ LIMIT {_POLICY_PREVIEW_SAMPLE_LIMIT}",
-                params,
+            # Slice 2 (§13.1 before/after): the policied slice AND the RAW
+            # sample the authoring admin (god-mode) may see, so the UI can
+            # diff them — struck-through dropped rows, real->masked cells.
+            # Both must cover the SAME bounded rows or the diff pairs
+            # unrelated rows; `_policy_preview_samples` arranges that (and
+            # says so via `comparable`) on ONE bounded read, so it never adds
+            # to the two full COUNT(*) scans above, which are the pre-existing
+            # per-call cost on a remote/BQ-backed table.
+            sample_rows, base_sample_rows, base_sample_comparable = _policy_preview_samples(
+                analytics_conn, row["name"], policy_sql, params
             )
-            sample_col_names = [d[0] for d in sample_cursor.description]
-            sample_rows = [dict(zip(sample_col_names, r)) for r in sample_cursor.fetchall()]
         except Exception as exc:
             raise HTTPException(status_code=422, detail=f"policy_preview_failed: {exc}") from exc
     finally:
         analytics_conn.close()
 
     sample_rows = _sanitize_for_json(sample_rows)
+    base_sample_rows = _sanitize_for_json(base_sample_rows)
 
     audit_repo().log(
         user_id=user.get("id"),
@@ -5162,9 +5291,184 @@ async def preview_table_policy(
     return {
         "columns": columns,
         "sample_rows": sample_rows,
+        "base_sample_rows": base_sample_rows,
+        # False = the two samples are NOT guaranteed to cover the same rows,
+        # so the UI must render the policied slice on its own rather than a
+        # row-by-row before/after diff.
+        "base_sample_comparable": bool(base_sample_comparable),
         "rows_visible": int(rows_visible),
         "rows_total": int(rows_total),
     }
+
+
+def _policy_builder_describe(name: str) -> list:
+    """``DESCRIBE {name}`` on the read-only analytics connection -- the
+    same query ``preview_table_policy`` already runs (line ~5054),
+    factored out here because both new builder endpoints below need it:
+    Task 2's columns list wants types too, Task 3's compile just wants the
+    names. Never trusts a caller-supplied name -- every caller resolves
+    ``name`` from the registry row first, never from the URL/body.
+    """
+    from src.db import get_analytics_db_readonly
+    from src.sql_ident import quote_ident
+
+    analytics_conn = get_analytics_db_readonly()
+    try:
+        try:
+            return analytics_conn.execute(f"DESCRIBE {quote_ident(name)}").fetchall()
+        except Exception:
+            return []
+    finally:
+        analytics_conn.close()
+
+
+# Best-effort name hints for the builder's `pii` flag (plan Task 2) -- never
+# authoritative, just a nudge toward masking a column an admin might not
+# think to check.
+_POLICY_BUILDER_PII_NAME_HINTS = (
+    "email",
+    "phone",
+    "ssn",
+    "national_id",
+    "passport",
+    "address",
+    "birth",
+    "dob",
+    "credit_card",
+    "iban",
+    "ip_address",
+    "first_name",
+    "last_name",
+    "full_name",
+    "tax_id",
+)
+
+
+def _policy_builder_looks_like_pii(col_name: str, profile_col: dict) -> bool:
+    """A name-substring match against common PII field names, OR the
+    profiler's own ``"unique"`` alert on a non-numeric column (uniquely
+    identifies every row -- a plausible identifier even when the name
+    itself gives no hint)."""
+    lname = col_name.lower()
+    if any(hint in lname for hint in _POLICY_BUILDER_PII_NAME_HINTS):
+        return True
+    return (
+        bool(profile_col)
+        and "unique" in (profile_col.get("alerts") or [])
+        and profile_col.get("type_category") != "NUMERIC"
+    )
+
+
+@router.get("/registry/{table_id}/policy/columns")
+async def policy_builder_columns(
+    table_id: str,
+    user: dict = Depends(require_admin),
+):
+    """Real schema + sample values for the no-SQL policy builder (plan
+    Task 2, access-policy-builder-ux) -- the column list a
+    ``policy/compile`` spec (Task 3) is built from, so the builder UI
+    never has to know a table's structure up front.
+
+    Read-only and never gated on ``access_policies.enabled``: like
+    ``preview_table_policy`` right above, this is an admin-authoring
+    read/compute surface, not the ATTACH action that flag actually gates
+    (``PUT /registry/{id}`` writing a non-null ``access_policy_sql``, per
+    that flag's own hint text in ``_flag_default("access_policies", ...)``
+    above).
+    """
+    row = table_registry_repo().get(table_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Table not found")
+
+    name = row.get("name") or table_id
+    eligible = row.get("query_mode") == "remote" or bool(row.get("server_only"))
+
+    base_rows = _policy_builder_describe(name)
+
+    # A profile may be keyed by the registry id or the table name depending
+    # on when/how it was saved (mirrors `catalog.py::get_table_profile`'s own
+    # `repo.get(table_name)` lookup -- profiles are keyed by whichever the
+    # caller passed at save time, historically the name).
+    profile = profile_repo().get(table_id) or profile_repo().get(name)
+    profile_by_col = {c["name"]: c for c in (profile or {}).get("columns", []) if isinstance(c, dict)}
+
+    columns = []
+    for col_row in base_rows:
+        col_name, col_type = col_row[0], col_row[1]
+        prof_col = profile_by_col.get(col_name, {})
+        columns.append(
+            {
+                "name": col_name,
+                "type": col_type,
+                "samples": [str(v) for v in (prof_col.get("sample_values") or [])],
+                "distinct": prof_col.get("unique_count"),
+                "pii": _policy_builder_looks_like_pii(col_name, prof_col),
+            }
+        )
+
+    mapping_tables = [r["name"] for r in table_registry_repo().list_all() if r.get("policy_mapping") and r.get("name")]
+
+    return {"columns": columns, "mapping_tables": mapping_tables, "eligible": eligible}
+
+
+class PolicyCompileRequest(BaseModel):
+    """Body for ``POST /registry/{table_id}/policy/compile`` (plan Task 3)
+    -- the structured spec the builder UI assembles from Task 2's column
+    list plus its own mask/row-rule pickers. Deliberately has NO ``table``
+    field: the compiled SQL always names the REGISTRY row's own ``name``,
+    resolved server-side, so a stale or tampered client can never smuggle
+    a different table into the generated SQL.
+    """
+
+    row_rules: List[Dict[str, Any]] = Field(default_factory=list)
+    row_combine: str = "and"
+    column_masks: Dict[str, Any] = Field(default_factory=dict)
+
+
+@router.post("/registry/{table_id}/policy/compile")
+async def policy_builder_compile(
+    table_id: str,
+    request: PolicyCompileRequest,
+    user: dict = Depends(require_admin),
+):
+    """Turn a structured builder spec into the canonical policy SQL (plan
+    Task 3) via ``src.access_policy_compile.compile_policy`` -- the ONLY
+    place that generator's anti-leak EXCLUDE-before-derive invariant is
+    exercised over HTTP. Returns SQL only; nothing is persisted here -- an
+    admin who likes the result still saves it through the existing ``PUT
+    /registry/{id}`` (``access_policy_sql``), unchanged, so the stored
+    artifact stays SQL, never a structured spec.
+
+    Read-only and, like ``policy_builder_columns`` above, deliberately not
+    gated on ``access_policies.enabled``: it neither reads nor writes a
+    stored policy. The flag gates ATTACHING one (``PUT /registry/{id}``
+    with a non-null ``access_policy_sql``).
+    """
+    row = table_registry_repo().get(table_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Table not found")
+
+    name = row.get("name") or table_id
+    columns = [c[0] for c in _policy_builder_describe(name)]
+
+    from src.access_policy_compile import compile_policy
+
+    spec = {
+        "table": name,
+        "row_rules": request.row_rules,
+        "row_combine": request.row_combine,
+        "column_masks": request.column_masks,
+    }
+    try:
+        compiled = compile_policy(spec, columns)
+    except ValueError as e:
+        # `compile_policy` raises a bare ValueError for a spec it cannot
+        # understand -- an unknown row `op`, an unknown mask `choice`. That
+        # is a malformed CLIENT payload (a stale builder, a hand-rolled
+        # caller), not a server fault: surface it as a 4xx the builder can
+        # render inline rather than letting it escape as a 500.
+        raise HTTPException(status_code=422, detail=f"policy_compile_invalid_spec: {e}") from e
+    return {"sql": compiled.sql, "warnings": compiled.warnings}
 
 
 class _GotchaItem(BaseModel):

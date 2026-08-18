@@ -185,6 +185,33 @@ def test_access_policy_history_reads_the_existing_activity_endpoint(seeded_app):
     assert "action_prefix=update_table" in body
 
 
+def test_builder_scaffold_renders_when_flag_on(seeded_app):
+    """Task 4 (access-policy-builder-ux plan): the modal's default tab is a
+    no-SQL Builder — a column-list mount fed by ``GET .../policy/columns``
+    — with today's textarea demoted to an "Advanced SQL" tab. Both tabs
+    ship in the same static HTML; JS toggles which panel is visible."""
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = c.get("/admin/tables", headers=_auth(token))
+    body = r.text
+    assert 'id="apBuilder"' in body
+    assert 'id="apColList"' in body
+    assert 'data-ap-tab="builder"' in body and 'data-ap-tab="sql"' in body
+
+
+def test_inline_eligibility_and_mapping_controls_render(seeded_app):
+    """Task 5: the interlock warning's former dead-end sentence ("set
+    server_only first") becomes an inline fix-it action, and a separate
+    switch lets an admin mark a table policy_mapping=true (referenceable
+    from other policies' SQL) without dropping to the CLI."""
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = c.get("/admin/tables", headers=_auth(token))
+    body = r.text
+    assert 'id="apMakeServerOnly"' in body
+    assert 'id="apMappingToggle"' in body
+
+
 def test_registered_table_row_wires_the_access_chip_to_the_modal(seeded_app):
     """A registered table's row calls ``openAccessPolicyModal(t)`` with the
     full registry row as payload, so the modal can prefill from
@@ -204,3 +231,129 @@ def test_registered_table_row_wires_the_access_chip_to_the_modal(seeded_app):
     )
     r = c.get("/admin/tables", headers=_auth(token))
     assert "openAccessPolicyModal(" in r.text
+
+
+def test_row_rule_builder_scaffold_renders_above_the_column_list(seeded_app):
+    """access-policy-builder-ux Slice 2, Task A: a "Who sees which rows"
+    section — the row-rule repeater — sits above ``#apColList`` inside the
+    Builder tab, with an add-rule control and an AND/OR combine toggle."""
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = c.get("/admin/tables", headers=_auth(token))
+    body = r.text
+    assert 'id="apBuilder"' in body
+    assert 'id="apRowRules"' in body
+    assert 'id="apRowCombine"' in body
+    assert "Who sees which rows" in body
+    assert "_apAddRowRule()" in body
+    # The row-rule section is ABOVE the column list in document order.
+    assert body.index('id="apRowRules"') < body.index('id="apColList"')
+
+
+def test_row_rule_builder_ops_cover_the_compiler_vocabulary(seeded_app):
+    """Every ``row_rules`` op the compiler
+    (``src/access_policy_compile.py``) understands must be reachable from
+    the builder — a caller-group check, self-owned-row checks, and literal
+    eq/in — so the no-SQL path never needs to fall back to Advanced SQL for
+    the common row-scoping cases."""
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = c.get("/admin/tables", headers=_auth(token))
+    body = r.text
+    for op in ("in_caller_groups", "eq_caller_email", "eq_caller_id", "'eq'", "'in'"):
+        assert op in body, f"missing row-rule op wiring: {op}"
+
+
+def test_row_rule_builder_feeds_the_existing_compile_call(seeded_app):
+    """The row-rule state feeds the SAME ``_apCompileNow()`` POST Slice 1
+    already wires up — the compiler stays the only SQL generator, and the
+    hard-coded ``row_rules: []`` placeholder from Slice 1 is gone."""
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = c.get("/admin/tables", headers=_auth(token))
+    body = r.text
+    assert "async function _apCompileNow" in body
+    assert "row_rules: []" not in body
+    assert "_apAssembleRowRules()" in body
+    assert "function _apRenderRowRules" in body
+
+
+def test_row_rule_controls_respect_the_eligibility_interlock(seeded_app):
+    """A distributed table's row-rule controls must be disabled the same
+    way its mask selects already are (``_apIsEligible``) — a row filter is
+    just as pointless as a mask on a table `agnes pull` can route around."""
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = c.get("/admin/tables", headers=_auth(token))
+    body = r.text
+    assert "_apIsEligible(_apTable)" in body
+    # The row-rule renderer computes its own disabled flag the same way
+    # _apRenderColList does.
+    assert body.count("!_apIsEligible(_apTable)") >= 2
+
+
+def test_preview_shows_before_after_on_the_raw_sample(seeded_app):
+    """access-policy-builder-ux Slice 2, Task B: the preview renders every
+    ``base_sample_rows`` row — struck-through when the policy drops it,
+    diffed cell-by-cell when a visible column's value changed, and struck
+    in the header with an em-dash body for a hidden column."""
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = c.get("/admin/tables", headers=_auth(token))
+    body = r.text
+    assert "base_sample_rows" in body
+    assert "function _apMatchPreviewRows" in body
+    assert "ap-preview-row--dropped" in body
+    assert "ap-preview-diff-raw" in body
+    assert "ap-preview-hidden-cell" in body
+    # The transient result grid still uses the product's ONE table class.
+    assert 'class="data-table"' in body
+
+
+def test_make_server_only_button_recovers_from_a_failed_attempt(seeded_app):
+    """``apMakeServerOnly()`` disables its own button and relabels it
+    "Setting…" before the PUT. Only the SUCCESS path re-renders the
+    warning (which recreates the button), so both failure paths — a
+    rejected PUT and a network error — must put the button back the way
+    ``apSavePolicy()``/``apClearPolicy()`` do in their ``finally``, or the
+    admin is left staring at a permanently disabled control with no way to
+    retry."""
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = c.get("/admin/tables", headers=_auth(token))
+    body = r.text
+    fn = body[body.index("async function apMakeServerOnly") : body.index("async function apToggleMapping")]
+    assert "} finally {" in fn
+    assert "btn.disabled = false" in fn
+
+
+def test_builder_surfaces_compile_warnings(seeded_app):
+    """``policy/compile`` returns ``warnings`` (unknown column dropped, and
+    the "this policy filters nothing" no-op warning). Discarding them lets
+    an admin save a policy that quietly does nothing — so the builder
+    renders them, and renders them as text (never innerHTML with server
+    strings)."""
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = c.get("/admin/tables", headers=_auth(token))
+    body = r.text
+    assert 'id="apCompileWarnings"' in body
+    assert "function _apRenderCompileWarnings" in body
+    assert "body.warnings" in body
+    fn = body[body.index("function _apRenderCompileWarnings") : body.index("function _apShowSaveError")]
+    assert "textContent" in fn
+    assert "innerHTML" not in fn
+
+
+def test_preview_only_diffs_samples_the_server_says_are_comparable(seeded_app):
+    """The before/after diff pairs raw rows against policied rows, which is
+    only meaningful when both samples cover the same source rows. The
+    preview response carries ``base_sample_comparable``; when it is false
+    the renderer must fall back to the policied-only view with a note
+    rather than inventing dropped rows."""
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = c.get("/admin/tables", headers=_auth(token))
+    body = r.text
+    assert "base_sample_comparable" in body
+    assert "ap-preview-note" in body

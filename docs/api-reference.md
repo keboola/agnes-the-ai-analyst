@@ -78,6 +78,8 @@ are the unit of curation and user-facing discovery.
 | `PATCH` | `/api/admin/registry/{table_id}/docs` | see §3.5 | Update **extended LLM-facing docs** (grain, gotchas, …) |
 | `DELETE` | `/api/admin/registry/{table_id}` | — | Unregister |
 | `POST` | `/api/admin/registry/{table_id}/policy/preview` | see §3.7 | Preview a stored or candidate access policy as a chosen persona |
+| `GET` | `/api/admin/registry/{table_id}/policy/columns` | — | No-SQL policy builder: real column schema + sample values (see §3.8) |
+| `POST` | `/api/admin/registry/{table_id}/policy/compile` | see §3.8 | No-SQL policy builder: structured spec → validated SQL (never persisted) |
 | `GET` | `/api/admin/metadata/{table_id}` | — | Get per-column metadata (see §3.6) |
 | `POST` | `/api/admin/metadata/{table_id}` | see §3.6 | Save per-column metadata |
 | `POST` | `/api/admin/metadata/{table_id}/push` | — | Push saved column metadata downstream (no body) |
@@ -272,6 +274,68 @@ curl -s -X POST \
 `columns` marks every base column `hidden: true` if the policy's `EXCLUDE`/rewrite drops
 it for that persona; `rows_visible` is the count through the policy, `rows_total` the
 unfiltered count (admin bypass).
+
+`base_sample_rows` is the same bounded window of RAW rows, for a before/after view, and
+`base_sample_comparable` says whether the two samples are guaranteed to cover the same
+source rows. It is `false` when the policy's reads of its own table could not be bounded
+to the raw sample's window (e.g. it names the table with a schema qualifier) and the raw
+sample is not provably the whole table — in that case the two lists must **not** be
+diffed row-by-row, only read on their own.
+
+### 3.8 No-SQL policy builder — `GET .../policy/columns`, `POST .../policy/compile`
+
+Lets an admin author a policy by picking columns and masks instead of writing SQL by
+hand. `GET /api/admin/registry/{table_id}/policy/columns` returns the table's real
+schema plus sample values (from the stored profile, if one exists) so the builder UI
+never has to know the table's structure up front:
+
+```bash
+curl -s "https://{your-instance}/api/admin/registry/orders_daily/policy/columns" \
+  -H "Authorization: Bearer $PAT"
+# {"columns": [{"name": "email", "type": "VARCHAR", "samples": ["a@x.com"], "distinct": 42, "pii": true}, ...],
+#  "mapping_tables": ["cost_centers"], "eligible": true}
+```
+
+`eligible` mirrors the distribution interlock (§3.7's PUT gate): a policy can only be
+attached to a `query_mode='remote'` or `server_only=true` table — the builder shows
+this so the UI can nudge toward `server_only` first rather than fail silently later.
+
+`POST /api/admin/registry/{table_id}/policy/compile` turns a structured spec into the
+same canonical SQL the resolver runs — the anti-leak invariant (a masked column is
+always `EXCLUDE`d before it is re-derived) is enforced in `src/access_policy_compile.py`,
+not duplicated here:
+
+| Field | Type | Notes |
+|---|---|---|
+| `row_rules` | array, optional | `[{"column", "op", "value"}]` — `op` is one of `in_caller_groups`, `eq_caller_email`, `eq_caller_id`, `eq`, `in` |
+| `row_combine` | string, optional | `"and"` (default) or `"or"` |
+| `column_masks` | object, optional | `{column: "show"\|"hide"\|"nullify"\|"hash"\|"unmask"}` — `"unmask"` takes `{"choice": "unmask", "group": "..."}` |
+
+```bash
+curl -s -X POST \
+  "https://{your-instance}/api/admin/registry/orders_daily/policy/compile" \
+  -H "Authorization: Bearer $PAT" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "row_rules": [{"column": "cost_center", "op": "in_caller_groups"}],
+    "column_masks": {"email": "hash", "national_id": "hide"}
+  }'
+# {"sql": "SELECT * EXCLUDE (\"national_id\", \"email\"), md5(\"email\") AS \"email\" FROM \"orders_daily\" WHERE list_contains($user_groups, \"cost_center\")",
+#  "warnings": []}
+```
+
+`warnings` carries what the compiler had to say about the spec — a column it did not
+recognize and dropped, or a spec that filters and masks nothing at all. A spec it cannot
+understand (an unknown `op` or mask) returns `422 policy_compile_invalid_spec`.
+
+This endpoint never persists anything — it only returns SQL text. Save it the same way
+as any hand-written policy: `PUT /api/admin/registry/{table_id}` with the returned `sql`
+as `access_policy_sql` (plus the mandatory `access_policy_note`).
+
+Both builder routes are admin-only and, like `.../policy/preview`, available regardless
+of `access_policies.enabled`: they neither read nor write a stored policy. That flag
+gates attaching one (`PUT` with a non-null `access_policy_sql`) and applying one on a
+read.
 
 ---
 
@@ -638,6 +702,8 @@ checks against.
 - /api/admin/registry/{table_id}
 - /api/admin/registry/{table_id}/docs
 - /api/admin/registry/{table_id}/policy/preview
+- /api/admin/registry/{table_id}/policy/columns
+- /api/admin/registry/{table_id}/policy/compile
 
 ### `/api/admin/register-table` — Table registration
 

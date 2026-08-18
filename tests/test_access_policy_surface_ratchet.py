@@ -269,6 +269,24 @@ EXEMPT: frozenset[str] = frozenset(
         # identity/groups directly and reads through `probe_policy` +
         # `get_analytics_db_readonly()` instead.
         "app/api/admin.py::preview_table_policy",
+        # access-policy-builder-ux plan, Tasks 2/3 -- GET .../policy/columns
+        # and its shared `_policy_builder_describe` DESCRIBE helper. Same
+        # admin-authoring posture as `preview_table_policy` right above:
+        # require_admin-gated, reads the table's OWN schema/profile so an
+        # admin can pick columns to mask BEFORE any policy exists, never a
+        # caller-facing content read. `policy_builder_compile` (the
+        # POST .../policy/compile handler) calls this same helper but is not
+        # itself a scanned node -- it never calls a target primitive
+        # directly, only through this already-classified helper.
+        "app/api/admin.py::_policy_builder_describe",
+        # Same builder endpoint -- its own body also calls `profile_repo()`
+        # directly (sample values for the columns list). The profile shown
+        # here is the table's OWN stored profile, read by the admin who is
+        # about to attach a policy TO this exact table -- not the
+        # caller-facing `catalog.py::get_table_profile` this ratchet's Task
+        # 13 entry already covers (which suppresses profile stats for a
+        # non-admin caller once a policy IS attached).
+        "app/api/admin.py::policy_builder_columns",
         # POST /api/query/hybrid -- spec §8 names this one explicitly: "out
         # of scope by §12's admin bypass, not by omission".
         "app/api/query_hybrid.py::hybrid_query",
