@@ -287,6 +287,27 @@ def _dispatch_if_due(row: Dict[str, Any], now: datetime) -> bool:
         return False
 
     repo = agent_schedules_repo()
+    # Backlog guard: if this schedule's previous run is still sitting queued
+    # (no worker has claimed it — e.g. a process topology where nothing
+    # registers the agent_response kind, or a saturated LIGHT lane), don't
+    # stack another job on top of it every cadence hit. The pile-up is
+    # bounded to ONE queued job per schedule; the row's tick is still
+    # consumed via the claim below so the next check is a cadence away
+    # (Devin Review on #1404).
+    prev_job_id = row.get("last_job_id")
+    if prev_job_id:
+        prev = jobs_repo().get(prev_job_id)
+        if prev is not None and prev.get("status") == "queued":
+            if not repo.claim_for_run(row["id"], last_run_at, now):
+                return False
+            logger.warning(
+                "agent_schedule %s: previous run %s is still queued — recording backlogged instead of enqueuing another",
+                row["id"],
+                prev_job_id,
+            )
+            repo.record_dispatch_result(row["id"], "backlogged", job_id=prev_job_id)
+            return True
+
     if not repo.claim_for_run(row["id"], last_run_at, now):
         # Lost the race to a concurrent sweep tick — not an error.
         return False
