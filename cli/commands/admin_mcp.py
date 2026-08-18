@@ -425,11 +425,12 @@ def source_grant(
 def tool_grant(
     tool_id: str = typer.Argument(..., help="Tool id from `agnes admin mcp tool list`"),
     group: str = typer.Option(..., "--group", help="User group id to grant (or revoke with --revoke)"),
-    allow_mutating: bool = typer.Option(
-        False,
-        "--allow-mutating",
-        help="Opt the group into this tool's MUTATING surface (v120). "
-        "Re-running without the flag downgrades the grant back to read-only.",
+    allow_mutating: Optional[bool] = typer.Option(
+        None,
+        "--allow-mutating/--no-allow-mutating",
+        help="Opt the group into (or out of) this tool's MUTATING surface (v120). "
+        "Omit both flags to leave an existing grant's setting unchanged "
+        "(a brand-new grant lands read-only).",
     ),
     revoke: bool = typer.Option(False, "--revoke", help="Revoke instead of grant"),
 ):
@@ -439,8 +440,9 @@ def tool_grant(
     can be opted into a mutating tool: a plain grant is read-only; with
     `--allow-mutating` members (and agent profiles owned by them, still
     narrowed by the agent's connection scope) may invoke the tool even
-    though its registry row is marked mutating. Re-running with a different
-    flag value updates the existing grant in place.
+    though its registry row is marked mutating. Re-running with an explicit
+    `--allow-mutating`/`--no-allow-mutating` updates the existing grant in
+    place; omitting both leaves it unchanged.
     """
     if revoke:
         resp = api_delete(f"/api/admin/mcp-tools/{tool_id}/grants/{group}")
@@ -454,7 +456,12 @@ def tool_grant(
     )
     if resp.status_code not in (200, 201):
         _fail(resp)
-    typer.echo(f"Granted tool {tool_id} to {group}" + (" (mutating allowed)" if allow_mutating else " (read-only)"))
+    if allow_mutating is None:
+        typer.echo(f"Granted tool {tool_id} to {group} (mutating setting unchanged; new grants are read-only)")
+    else:
+        typer.echo(
+            f"Granted tool {tool_id} to {group}" + (" (mutating allowed)" if allow_mutating else " (read-only)")
+        )
 
 
 @source_app.command("set-secret")

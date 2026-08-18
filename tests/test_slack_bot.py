@@ -988,6 +988,45 @@ def test_mention_routed_existing_thread_no_header_but_still_acks(monkeypatch):
     assert reactions == [("C_OK", "9.7", "eyes")]
 
 
+def test_mention_routed_but_foreign_thread_rejected_without_ack(monkeypatch):
+    """An ack on a mention we then refuse promises an answer that never
+    comes: the ownership gate runs BEFORE the 👀 reaction, so a non-owner
+    mentioning the bot in someone else's thread gets the ephemeral rejection
+    and no acknowledgement mark (Devin Review on this PR)."""
+    import asyncio
+    import services.slack_bot.events as ev
+
+    posts = []
+
+    async def _fake_ep(ch, u, txt):
+        posts.append(txt)
+
+    monkeypatch.setattr(ev, "send_ephemeral_to_user", _fake_ep)
+    reactions = []
+
+    async def _fake_react(channel, ts, emoji):
+        reactions.append((channel, ts, emoji))
+
+    monkeypatch.setattr(ev, "add_reaction", _fake_react)
+    conn = get_system_db()
+    _ensure_schema(conn)
+    uid = _seed_bound_chat_user(conn, email="owner2@x", slack_id="U_OWNER2")
+    _seed_bound_chat_user(conn, email="other2@x", slack_id="U_OTHER2")
+    _allow_channel(conn)
+    _seed_channel_bound_agent(conn, owner=uid, slug="router-3")
+    conn.execute(
+        "INSERT INTO chat_sessions(id, user_email, surface, slack_channel_id, "
+        "slack_thread_ts, title, started_at) VALUES "
+        "('s_foreign', 'owner2@x', 'slack_thread', 'C_OK', '9.8', NULL, current_timestamp)"
+    )
+    mgr = _FakeMgr()
+    app = _FakeApp(conn=conn, mgr=mgr)
+    asyncio.run(ev._handle_mention(app, {"channel": "C_OK", "ts": "9.8", "user": "U_OTHER2", "text": "<@U07BOT> hi"}))
+    assert posts and "belongs to" in posts[0]
+    assert reactions == []
+    assert mgr.created == []
+
+
 def test_mention_attach_not_awaited_returns_under_budget(monkeypatch):
     """Smoke test: the handler never blocks on a hanging attach().
 
