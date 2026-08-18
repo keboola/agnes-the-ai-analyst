@@ -3425,18 +3425,29 @@ async def library_page(
                         seen.setdefault(w, None)
             return " ".join(seen)
 
-        # Instance-level existence check for the "Browse the semantic layer"
-        # link below — NOT RBAC-filtered (unlike `_visible_metrics` above):
-        # it answers "is a semantic layer configured at all", the same
-        # question the two counts above answer for the flat projection, and
-        # the browse page itself 404s/omits whatever the caller can't reach.
-        # A freshly-imported document with no metrics/glossary projected yet
-        # (or a purely native, browse-only model) must still surface this
-        # link — gating it on the flat projection's counts would hide the
-        # one thing this UI exists to browse.
-        _semantic_model_count = len(semantic_model_repo().list_all())
+        # Whether to offer the "Browse the semantic layer" link below — a
+        # readable-model check scoped to what THIS caller can reach, the same
+        # `_can_read_model` gate the /semantic-layer browse pages apply. It
+        # answers "does this caller have a semantic model to browse at all", so
+        # a caller who can read nothing gets neither the link nor a
+        # "0 metrics · 0 terms" footer pointing at an empty page. A model with
+        # no metrics/glossary projected yet (or a purely native, browse-only
+        # model) still counts — gating on the flat projection's counts would
+        # hide the one thing this UI exists to browse. Read in its own guard so
+        # a semantic_models failure leaves the metric/glossary footer already
+        # computed above intact instead of suppressing it.
+        _has_readable_model = False
+        try:
+            from app.api.semantic_models import _can_read_model
 
-        if _visible_metrics or _glossary_terms or _semantic_model_count:
+            for _sm_row in semantic_model_repo().list_all():
+                if _can_read_model(user, _sm_row, conn):
+                    _has_readable_model = True
+                    break
+        except Exception as e:  # noqa: BLE001 - footer link is best-effort
+            logger.warning("/library: semantic-model existence check failed: %s", e)
+
+        if _visible_metrics or _glossary_terms or _has_readable_model:
             definitions_footer = {
                 "metric_count": len(_visible_metrics),
                 "glossary_count": len(_glossary_terms),
@@ -4050,12 +4061,23 @@ async def semantic_layer_detail(
                 or needle in str(_metric_agnes_payload(m).get("dataset") or "").lower()
             ]
         elif active_tab == "constraints":
-            constraints = [c for c in constraints if needle in " ".join(c.get("metrics") or []).lower()]
+            # Match the constraint's own name (the first, linked column) as well
+            # as the metrics it applies to. `metrics` rides the opaque Agnes
+            # custom_extensions payload the Ossie schema does not validate, so a
+            # non-string element must be coerced, not `" ".join`ed into a 500.
+            constraints = [
+                c
+                for c in constraints
+                if needle in str(c.get("name") or "").lower()
+                or needle in " ".join(str(m) for m in (c.get("metrics") or [])).lower()
+            ]
         elif active_tab == "relationships":
             relationships = [
                 r
                 for r in relationships
-                if needle in str(r.get("from") or "").lower() or needle in str(r.get("to") or "").lower()
+                if needle in str(r.get("name") or "").lower()
+                or needle in str(r.get("from") or "").lower()
+                or needle in str(r.get("to") or "").lower()
             ]
         elif active_tab == "glossary":
             glossary = [g for g in glossary if needle in str(g.get("term") or "").lower()]

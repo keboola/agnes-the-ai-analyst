@@ -257,6 +257,28 @@ class TestModelDetail:
         assert "customers" in r.text
         assert ">orders<" not in r.text
 
+    def test_constraints_filter_matches_the_constraints_own_name(self, seeded_app):
+        """Devin #1398: the constraint's own name (the linked first column) must
+        be searchable, not only the metric names it applies to."""
+        _seed_model()
+        c = seeded_app["client"]
+        # `region` appears in the constraint name (region_filter_required) but
+        # not in its metrics (["revenue"]); before the fix this returned nothing.
+        r = c.get(f"/semantic-layer/{_SLUG}?tab=constraints&q=region", headers=_auth(seeded_app["admin_token"]))
+        assert r.status_code == 200
+        assert "region_filter_required" in r.text
+
+    def test_relationships_filter_matches_the_relationships_own_name(self, seeded_app):
+        """Devin #1398: the relationship's own name must be searchable too."""
+        _seed_model()
+        c = seeded_app["client"]
+        r = c.get(
+            f"/semantic-layer/{_SLUG}?tab=relationships&q=orders_to_customers",
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        assert r.status_code == 200
+        assert "orders_to_customers" in r.text
+
 
 class TestObjectDetail:
     def test_dataset_object_renders_fields_table_and_all_five_ai_groups(self, seeded_app):
@@ -375,14 +397,26 @@ class TestLibraryEntryPoint:
     fixed rows; a new content surface reaches the caller through an existing
     destination) — the Library page's "Definitions" footer, which already
     opens `/catalog/semantics`, is where it hangs, for both admin and
-    non-admin (this is a read-tier page, not admin-only)."""
+    non-admin (this is a read-tier page, not admin-only) — but only when the
+    caller can actually read a model, so the link never dead-ends on the
+    "No semantic model available" empty state (Devin #1398)."""
 
-    def test_semantic_layer_linked_from_library_for_non_admin(self, seeded_app):
-        _seed_model()
+    def test_semantic_layer_linked_from_library_for_non_admin_with_a_grant(self, seeded_app):
+        row = _seed_model()
+        _grant_model(row["id"])
         c = seeded_app["client"]
         r = c.get("/library", headers=_auth(seeded_app["analyst_token"]))
         assert r.status_code == 200
         assert 'href="/semantic-layer"' in r.text
+
+    def test_no_link_for_a_non_admin_who_can_read_no_model(self, seeded_app):
+        """Devin #1398: the footer link is gated on readability, so a caller
+        with no grant is not sent to an empty browse page."""
+        _seed_model()  # instance has a model, but this analyst has no grant
+        c = seeded_app["client"]
+        r = c.get("/library", headers=_auth(seeded_app["analyst_token"]))
+        assert r.status_code == 200
+        assert 'href="/semantic-layer"' not in r.text
 
     def test_semantic_layer_linked_from_library_for_admin(self, seeded_app):
         _seed_model()

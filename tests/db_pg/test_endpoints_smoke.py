@@ -2140,6 +2140,13 @@ KNOWN_UNTESTED = {
     "GET /profile/sessions",
     "GET /profile/sessions/{filename}",
     "GET /redoc",
+    # Read-only semantic-layer browse UI (wave 4.2) — the three HTML pages are
+    # rendering-covered by tests/test_web_semantic_layer_browse.py, which lives
+    # outside the two db_pg modules the coverage aggregator scans, so they are
+    # declared here (mirroring GET /catalog/semantics and GET /library).
+    "GET /semantic-layer",
+    "GET /semantic-layer/{slug}",
+    "GET /semantic-layer/{slug}/{object_id}",
     "GET /setup",
     "GET /setup-advanced",
     "GET /slack/bind",
