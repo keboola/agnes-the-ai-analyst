@@ -75,6 +75,37 @@ class TestContext:
         assert result.exit_code == 0
         assert m.call_args.kwargs["params"]["model_ids"] == ["retail", "finance"]
 
+    def test_limit_caps_the_printed_objects_and_states_the_truncation(self):
+        """Devin #1398 r3 / command-UX: --limit slices client-side and the
+        partial scope is stated out loud, never silent."""
+        body = {
+            "results": [
+                {
+                    "semantic_type": "dataset",
+                    "mode": "compact",
+                    "objects": [{"name": f"d{i}", "summary": "s", "model": "m"} for i in range(3)],
+                }
+            ],
+            "unknown_types": [],
+        }
+        with patch("cli.commands.semantic_model.api_get", return_value=_resp(200, body)):
+            result = runner.invoke(app, ["semantic-model", "context", "dataset", "--limit", "2"])
+        assert result.exit_code == 0
+        assert "2 of 3 object(s)" in result.output
+        assert "1 more" in result.output
+        assert "d0" in result.output and "d1" in result.output and "d2" not in result.output
+
+    def test_unmatched_id_hints_the_compact_listing(self):
+        """Command-UX: a 'not found' path points at the next step."""
+        body = {
+            "results": [{"semantic_type": "metric", "mode": "full", "objects": []}],
+            "unknown_types": [],
+        }
+        with patch("cli.commands.semantic_model.api_get", return_value=_resp(200, body)):
+            result = runner.invoke(app, ["semantic-model", "context", "metric", "--id", "nope"])
+        assert result.exit_code == 0
+        assert "omit --id" in result.output
+
     def test_json_flag_emits_raw_json(self):
         body = {"results": [{"semantic_type": "dataset", "mode": "compact", "objects": []}], "unknown_types": []}
         with patch("cli.commands.semantic_model.api_get", return_value=_resp(200, body)):

@@ -677,6 +677,52 @@ class TestGetSemanticContext:
         assert objects, "the model name shown in output did not round-trip into model_ids"
         assert {o["model"] for o in objects} == {"Retail Model"}
 
+    def test_model_ids_name_match_narrows_to_that_model_in_a_multi_model_row(self, seeded_app):
+        """Devin #1398 r3: a stored row with >1 model, filtered by ONE model
+        name, must return only that model's objects — never the sibling's."""
+        from src.repositories import semantic_model_repo
+
+        semantic_model_repo().upsert(
+            id="manual/_/multi",
+            slug="multi",
+            name="multi",
+            description=None,
+            document="# native fixture",
+            document_json={
+                "semantic_model": [
+                    {"name": "alpha", "datasets": [{"name": "a_orders", "source": "db.a.orders", "fields": []}]},
+                    {"name": "beta", "datasets": [{"name": "b_orders", "source": "db.b.orders", "fields": []}]},
+                ]
+            },
+            spec_version="0.2.0.dev0",
+            content_hash="hash-multi",
+            source="manual",
+            source_ref=None,
+            status="valid",
+            validation_errors=None,
+            validated_at=None,
+        )
+        c = seeded_app["client"]
+        r = c.get(
+            "/api/semantic-models/context",
+            params={"selections": _selections({"semantic_type": "dataset"}), "model_ids": ["alpha"]},
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        objects = r.json()["results"][0]["objects"]
+        assert {o["model"] for o in objects} == {"alpha"}, "a single-model filter leaked the sibling model"
+        assert {o["name"] for o in objects} == {"a_orders"}
+
+    def test_model_ids_matching_is_case_insensitive(self, seeded_app):
+        """Devin #1398 r3: `--model` matches case-insensitively, like `--id`."""
+        _upsert_model_with_constraints()  # slug=retail_vq
+        c = seeded_app["client"]
+        r = c.get(
+            "/api/semantic-models/context",
+            params={"selections": _selections({"semantic_type": "dataset"}), "model_ids": ["RETAIL_VQ"]},
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        assert {o["model"] for o in r.json()["results"][0]["objects"]} == {"retail_vq"}
+
     def test_unknown_semantic_type_is_reported(self, seeded_app):
         c = seeded_app["client"]
         r = c.get(

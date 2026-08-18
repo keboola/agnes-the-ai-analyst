@@ -391,19 +391,24 @@ def _accessible_valid_documents(
         models = row["document_json"].get("semantic_model")
         if not isinstance(models, list):
             continue
-        # `model_refs` restricts to specific models. Matched on the ROW's
-        # stored identity — id (`<source>/<source_ref>/<slug>`) or slug —
-        # because those are what the model list shows and filtering on the
-        # document's internal `name` alone drops every row when a real id is
-        # passed. The document model name(s) are accepted TOO, so the `model`
-        # label each returned object carries (the document name) round-trips
-        # back into `--model`/`model_ids` even when it differs from the slug
-        # (Devin review on #1398).
-        if model_refs is not None:
-            row_names = {m.get("name") for m in models if isinstance(m, dict)}
-            if not ({row.get("id"), row.get("slug")} & model_refs) and not (row_names & model_refs):
-                continue
-        documents.extend(m for m in models if isinstance(m, dict))
+        model_dicts = [m for m in models if isinstance(m, dict)]
+        if model_refs is None:
+            documents.extend(model_dicts)
+            continue
+        # `model_refs` restricts to specific models, case-insensitively (like
+        # object-id matching, so `--model Retail` works as `--id ORDERS` does).
+        # An id (`<source>/<source_ref>/<slug>`) or slug match selects the WHOLE
+        # row; a match on a document model NAME narrows to THAT model entry only
+        # — a multi-model row must not leak the models the caller didn't ask
+        # for, and the `model` label each object carries is that name. Accepting
+        # the name at all is what lets that returned label round-trip back into
+        # `model_ids` (Devin review on #1398).
+        refs_cf = {str(r).casefold() for r in model_refs}
+        if (str(row.get("id") or "")).casefold() in refs_cf or (str(row.get("slug") or "")).casefold() in refs_cf:
+            documents.extend(model_dicts)
+            continue
+        matched = [m for m in model_dicts if str(m.get("name") or "").casefold() in refs_cf]
+        documents.extend(matched)
     return documents
 
 

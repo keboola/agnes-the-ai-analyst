@@ -122,6 +122,7 @@ def context(
     model: Optional[List[str]] = typer.Option(
         None, "--model", help="Restrict to this model id/slug — repeatable. Omit for every accessible model."
     ),
+    limit: int = typer.Option(0, "--limit", help="Cap objects shown per type (0 = no cap)."),
     as_json: bool = typer.Option(False, "--json", help="Emit raw JSON"),
 ):
     """Look up datasets/metrics/relationships from your accessible semantic models.
@@ -141,6 +142,17 @@ def context(
         _fail(resp)
 
     body = resp.json()
+
+    # `--limit` is a client-side slice, per type, and the truncation is stated
+    # out loud (the command-UX standard forbids a silent partial result).
+    truncated: dict = {}
+    if limit and limit > 0:
+        for entry in body.get("results", []):
+            objs = entry.get("objects", [])
+            if len(objs) > limit:
+                truncated[entry.get("semantic_type")] = len(objs)
+                entry["objects"] = objs[:limit]
+
     if as_json:
         typer.echo(json.dumps(body, indent=2, default=str))
         return
@@ -150,7 +162,12 @@ def context(
 
     for entry in body.get("results", []):
         objects = entry.get("objects", [])
-        typer.echo(f"{entry.get('semantic_type')} ({entry.get('mode')}): {len(objects)} object(s)")
+        stype = entry.get("semantic_type")
+        total = truncated.get(stype)
+        count = f"{len(objects)} of {total}" if total else f"{len(objects)}"
+        typer.echo(f"{stype} ({entry.get('mode')}): {count} object(s)")
+        if not objects and id:
+            typer.echo(f"  no match for --id {', '.join(id)} — omit --id to list every {stype} compactly", err=True)
         for obj in objects:
             if entry.get("mode") == "compact":
                 typer.echo(f"  {obj.get('name')} [{obj.get('model')}] — {obj.get('summary') or '(no summary)'}")
@@ -159,6 +176,8 @@ def context(
                 typer.echo(
                     f"    {json.dumps({k: v for k, v in obj.items() if k not in ('name', 'model')}, default=str)}"
                 )
+        if total:
+            typer.echo(f"  … {total - len(objects)} more — raise --limit or narrow with --id/--model")
 
 
 @semantic_model_app.command("schema")

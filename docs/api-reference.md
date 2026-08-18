@@ -1196,7 +1196,10 @@ validate-query "<SQL>" [--expect JSON] [--target-engine duckdb] [--json]`
 document, not a query). MCP: `validate_semantic_query`.
 
 `GET /api/semantic-models/context` and `GET /api/semantic-models/schema` are
-the agent read-parity tools (same RBAC tier as search/export/validate-query).
+the agent read-parity tools. `context` uses the same RBAC tier as
+search/export/validate-query (a Data Package or direct model grant, not
+admin-only); `schema` is authentication-only — it reflects no model-specific
+data, so any authenticated user may read it.
 `context` takes a JSON-encoded `selections` query param — a list of
 `{"semantic_type": "dataset"|"metric"|"relationship", "ids": [...]?}` objects
 — plus an optional repeatable `model_ids` to restrict which accessible
