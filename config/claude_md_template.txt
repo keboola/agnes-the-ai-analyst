@@ -9,6 +9,8 @@
      data_source.type             — keboola | bigquery | local
      tables                       — list of {name, description, query_mode}
      metrics.count, metrics.categories
+     semantic_layer.has_models    — True iff the calling user can read >=1
+                                     valid semantic model
      marketplaces                 — list of {slug, name, plugins:[{name}]}
      user.id, user.email, user.name, user.is_admin, user.groups
      now, today                   — datetime / date string
@@ -35,6 +37,36 @@ This workspace is connected to {{ server.url }}.
 2. `agnes catalog --metrics --show <category>/<name>` — read the canonical SQL + business rules
 3. Read the `Notes:` section if present — it carries caveats and flags pre-built breakdowns (e.g. a `by_company` variant). When a note references one, run `agnes catalog --metrics --show <category>/<name> --json` to get that variant's full SQL from the `sql_variants` field
 4. Adapt the canonical SQL; never invent metric calculations
+{% if semantic_layer.has_models %}
+A registered metric here is a *projection* of this instance's semantic layer — see "## Semantic layer" below for the fuller model (datasets, relationships, constraints) it was generated from.
+{% endif %}
+
+{% if semantic_layer.has_models %}
+## Semantic layer
+
+This instance has at least one semantic model you can read — a structured
+document of datasets, metrics, relationships, and constraints that is the
+**authoritative source of business meaning** here, not just the metrics
+list above. Prefer its definitions over inferring meaning from table or
+column names, and reuse a declared metric's SQL rather than inventing a
+calculation.
+
+```
+agnes semantic-model context dataset                       # every dataset, compact (name + summary)
+agnes semantic-model context metric --id <name>             # one metric, full detail
+agnes semantic-model schema dataset metric relationship     # the object schema, straight from the source
+agnes semantic-model validate-query "<SQL>"                 # check a query against it before running it
+```
+
+`agnes semantic-model context <type>` without `--id` returns every object of
+that type compactly; pass one or more `--id` to get full attributes
+(expression, fields, ai_context, constraints) for just the ones you need.
+Always validate a query you built against this layer before running it —
+`agnes semantic-model validate-query` checks constraint violations and
+whether the metrics you used are executable on the engine you're about to
+run against, and flags a dialect mismatch that would otherwise fail silently
+or return the wrong number.
+{% endif %}
 
 ## Say where every number came from
 
