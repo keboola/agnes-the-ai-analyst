@@ -7,6 +7,8 @@ and must keep the original column type for allowed ``unmask`` callers while
 returning a safe fallback for everyone else.
 """
 
+import pytest
+
 from src.access_policy_compile import compile_policy
 
 COLS = [
@@ -207,3 +209,64 @@ def test_backwards_compatible_string_columns_default_to_text():
     out = compile_policy(spec, ["invoice_id", "cost_center", "email", "amount_eur"])
     # Without a known type we fall back to treating the column as text-like.
     assert "ELSE '*****'" in out.sql
+
+
+def test_show_columns_are_not_duplicated():
+    """Explicit 'show' choices must not produce duplicate output columns."""
+    spec = {
+        "table": "invoices",
+        "row_rules": [],
+        "row_combine": "and",
+        "column_masks": {
+            "email": "show",
+            "national_id": "hide",
+            "amount_eur": {"choice": "unmask", "groups": ["Finance"]},
+        },
+    }
+    out = compile_policy(spec, COLS)
+    # Each output column appears exactly once and in the original table order.
+    assert out.sql.count('AS "email"') == 0  # show columns need no alias
+    assert out.sql.count('AS "amount_eur"') == 1
+    proj = _projected(out.sql)
+    expected = (
+        '"invoice_id", "cost_center", "email", '
+        "CASE WHEN list_contains($user_groups, 'Finance') THEN \"amount_eur\" "
+        'ELSE CAST(NULL AS DOUBLE) END AS "amount_eur"'
+    )
+    assert proj == expected
+    assert '"national_id"' not in out.sql
+
+
+def test_hiding_all_columns_fails_closed():
+    """A policy that would project no columns must not fall back to SELECT *."""
+    spec = {
+        "table": "invoices",
+        "row_rules": [],
+        "row_combine": "and",
+        "column_masks": {c["name"]: "hide" for c in COLS},
+    }
+    with pytest.raises(ValueError, match="select no columns"):
+        compile_policy(spec, COLS)
+
+
+def test_masked_columns_preserve_input_order():
+    """The projection order matches the table's column order, not the mask spec order."""
+    spec = {
+        "table": "invoices",
+        "row_rules": [],
+        "row_combine": "and",
+        # Spec dict order is email, invoice_id, amount_eur.
+        "column_masks": {
+            "email": {"choice": "unmask", "groups": ["Legal"]},
+            "invoice_id": "hash",
+            "amount_eur": "nullify",
+        },
+    }
+    out = compile_policy(spec, COLS)
+    proj = _projected(out.sql)
+    expected = (
+        'md5("invoice_id") AS "invoice_id", "cost_center", '
+        "CASE WHEN list_contains($user_groups, 'Legal') THEN \"email\" ELSE '*****' END AS \"email\", "
+        '"national_id", CAST(NULL AS DOUBLE) AS "amount_eur"'
+    )
+    assert proj == expected

@@ -171,6 +171,10 @@ def compile_policy(spec: dict, columns: Sequence[Any]) -> CompiledPolicy:
     derived: list[str] = []
     projections: list[str] = []
 
+    # Build an expression for each masked column, then assemble the final
+    # projection in the table's native column order. This preserves the output
+    # schema order, avoids duplicate projections, and never falls back to `*`.
+    masked_exprs: dict[str, str] = {}
     for col, raw in (spec.get("column_masks") or {}).items():
         if col not in known:
             warnings.append(f"unknown column ignored: {col}")
@@ -179,7 +183,6 @@ def compile_policy(spec: dict, columns: Sequence[Any]) -> CompiledPolicy:
         q = quote_ident(col)
         col_type = col_type_by_name.get(col, "VARCHAR") or "VARCHAR"
         if choice == "show":
-            projections.append(q)
             continue
         excluded.append(col)
         if choice == "hide":
@@ -188,28 +191,29 @@ def compile_policy(spec: dict, columns: Sequence[Any]) -> CompiledPolicy:
         if choice == "nullify":
             # Cast keeps the column type unchanged for the caller.
             expr = f"CAST(NULL AS {col_type}) AS {q}"
-            projections.append(expr)
             derived.append(col)
         elif choice == "hash":
             expr = f"md5({q}) AS {q}"
-            projections.append(expr)
             derived.append(col)
         elif choice == "unmask":
             groups = _unmask_groups(raw)
             fallback = _masked_fallback(col_type)
             expr = f"CASE WHEN {_unmask_condition(groups)} THEN {q} ELSE {fallback} END AS {q}"
-            projections.append(expr)
             derived.append(col)
         else:
             raise ValueError(f"unknown mask: {choice!r}")
+        masked_exprs[col] = expr
 
-    # Any columns not explicitly masked are projected as-is. This guarantees
-    # the output is a fixed, explicit column list -- no `*` that could silently
-    # admit a newly-added source column.
-    masked = set(excluded) | set(derived)
+    projections: list[str] = []
     for name, _ in col_info:
-        if name not in masked:
+        if name in masked_exprs:
+            projections.append(masked_exprs[name])
+        elif name not in excluded:
             projections.append(quote_ident(name))
+
+    if not projections:
+        # Fail closed: a policy that would project nothing cannot become `SELECT *`.
+        raise ValueError("policy would select no columns; leave at least one column visible")
 
     rules = [r for r in (spec.get("row_rules") or []) if r.get("column") in known]
     dropped_rules = [r for r in (spec.get("row_rules") or []) if r.get("column") not in known]
@@ -220,10 +224,6 @@ def compile_policy(spec: dict, columns: Sequence[Any]) -> CompiledPolicy:
     if rules:
         joiner = " OR " if spec.get("row_combine") == "or" else " AND "
         where = " WHERE " + joiner.join(_predicate(r) for r in rules)
-
-    if not projections:
-        # Every base column was unknown or hidden with no show column left.
-        projections.append("*")
 
     sql = f"SELECT {', '.join(projections)} FROM {quote_ident(spec['table'])}{where}"
     if not rules and not excluded and not derived:
