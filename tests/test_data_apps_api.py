@@ -913,6 +913,26 @@ class TestStop:
         assert row["service_token_id"] == ""
         assert token_row["revoked_at"] is not None
 
+    def test_stop_removes_config_dir(self, client_as_user, fake_runner, seeded_repo_with_commit, api_env):
+        """Same hygiene as `test_delete_removes_config_dir`: `stop` always
+        fully removes the container (mode is hardcoded to "recreate"), so
+        the leftover `config.json` — carrying the now-revoked JWT in
+        plaintext — is nothing but exposure on a host-mount VM. Only an
+        explicit stop cleans this up; reap-idle's sleep transition
+        deliberately leaves both the token and (therefore) the file live so
+        the app can wake on its own."""
+        client_as_user.post("/api/data-apps/sapp/deploy", json={})
+        # `fake_runner` never touches disk (unlike the real apps-runner
+        # sidecar) — stand in for the config.json it would have written.
+        config_dir = api_env["data_dir"] / "apps" / "sapp"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        (config_dir / "config.json").write_text("{}")
+
+        r = client_as_user.post("/api/data-apps/sapp/stop")
+        assert r.status_code == 200
+
+        assert not config_dir.exists()
+
 
 class TestOpLeaseSerialization:
     """`dataapp:op:{slug}` — the lease shared by `deploy_data_app`,

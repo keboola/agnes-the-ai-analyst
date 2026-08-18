@@ -1341,6 +1341,8 @@ _DATA_APPS_ENV_DEFAULTS = {
     "default_mem_limit": "1g",
     "default_cpus": 1.0,
     "max_apps_per_user": 3,
+    "container_read_only": True,
+    "container_pids_limit": 512,
 }
 
 

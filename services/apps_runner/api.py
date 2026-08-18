@@ -213,7 +213,20 @@ def up(slug: str, payload: dict = Body(...), x_runner_token: str | None = Header
         raise HTTPException(status_code=400, detail="image_not_allowed")
     cfg_dir = Path(spec["config_dir"])
     cfg_dir.mkdir(parents=True, exist_ok=True)
-    (cfg_dir / "config.json").write_text(json.dumps(config_json, indent=2))
+    # Deterministic, not umask-dependent (a permissive process umask would
+    # otherwise leave this world-*writable*). Cannot go tighter than
+    # world-readable: this directory is bind-mounted into the data-app
+    # container as `/data`, and the upstream runtime image's entrypoint
+    # reads `/data/config.json` as its own fixed non-root user — uid 1000
+    # (see `_CACHE_VOLUME_OWNER` above) — a different, unrelated uid from
+    # this process's own (uid 999, see the Dockerfile's `useradd`), with no
+    # shared group. 0600 would make the container's own config unreadable
+    # to it and crash-loop every hosted app; locking this down further needs
+    # a shared gid baked into both images, which is out of scope here.
+    cfg_dir.chmod(0o755)
+    cfg_path = cfg_dir / "config.json"
+    cfg_path.write_text(json.dumps(config_json, indent=2))
+    cfg_path.chmod(0o644)
     client = _docker()
     # Exact name only: Docker's `name` filter is a SUBSTRING match, so asking
     # for `agnes-apps` also matches `agnes-apps-internal` and the network the
@@ -234,6 +247,17 @@ def up(slug: str, payload: dict = Body(...), x_runner_token: str | None = Header
         environment=spec["env"],
         mem_limit=spec["mem_limit"],
         nano_cpus=int(float(spec["cpus"]) * 1e9),
+        # Defense-in-depth (`src/data_apps/spec.py::build_container_spec`):
+        # no Linux capabilities, no privilege escalation, a fork-bomb ceiling,
+        # and a read-only rootfs with the minimal tmpfs scratch the upstream
+        # entrypoint needs — never applied to the chat-sandbox path
+        # (`services/apps_runner/sandbox_api.py`'s `sandbox_up`), which
+        # legitimately needs broader write access for agent-authored code.
+        cap_drop=spec["cap_drop"],
+        security_opt=spec["security_opt"],
+        pids_limit=spec["pids_limit"],
+        read_only=spec["read_only"],
+        tmpfs=spec["tmpfs"],
         ports=spec.get("ports"),
         volumes={
             _resolve_host_path(str(cfg_dir)): {"bind": "/data", "mode": "rw"},

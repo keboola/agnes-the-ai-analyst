@@ -55,7 +55,9 @@ def test_config_json_draft_uses_pinned_branch():
     from src.data_apps.spec import build_config_json
 
     row = {"repo_mode": "internal", "is_draft": True, "draft_branch": "init", "slug": "d--init"}
-    cfg = build_config_json(row, secrets={}, clone_url="http://app:8000/data-apps.git/d", clone_token="PAT", service_token="SERVICE")
+    cfg = build_config_json(
+        row, secrets={}, clone_url="http://app:8000/data-apps.git/d", clone_token="PAT", service_token="SERVICE"
+    )
     assert cfg["dataApp"]["git"]["branch"] == "init"
     assert cfg["dataApp"]["git"]["repository"].endswith("/data-apps.git/d")
     assert cfg["dataApp"]["git"]["#password"] == "PAT"
@@ -65,7 +67,9 @@ def test_config_json_prod_still_agnes_live():
     from src.data_apps.spec import build_config_json
 
     row = {"repo_mode": "internal", "slug": "d"}
-    cfg = build_config_json(row, secrets={}, clone_url="http://x/data-apps.git/d", clone_token="PAT", service_token="SERVICE")
+    cfg = build_config_json(
+        row, secrets={}, clone_url="http://x/data-apps.git/d", clone_token="PAT", service_token="SERVICE"
+    )
     assert cfg["dataApp"]["git"]["branch"] == "agnes-live"
 
 
@@ -86,6 +90,32 @@ def test_container_spec_defaults_and_overrides():
     # Production specs must never set it — apps are reached exclusively
     # through the proxy.
     assert "ports" not in spec
+
+
+class TestContainerHardening:
+    """Defense-in-depth for an internet-facing web server (never applied to
+    the chat-sandbox path — see `services/apps_runner/sandbox_api.py`, which
+    legitimately needs write access for agent-authored code)."""
+
+    def test_defaults_are_hardened(self):
+        spec = build_container_spec(APP, defaults=DEFAULTS, data_dir="/data")
+        assert spec["cap_drop"] == ["ALL"]
+        assert spec["security_opt"] == ["no-new-privileges:true"]
+        assert spec["pids_limit"] == 512
+        assert spec["read_only"] is True
+        # Minimal writable scratch on the read-only rootfs: /tmp for general
+        # scratch, /app because the entrypoint clones the repo + installs
+        # deps there on every boot.
+        assert spec["tmpfs"] == {"/tmp": "", "/app": ""}
+
+    def test_operator_can_override_read_only_and_pids_limit(self):
+        defaults = {**DEFAULTS, "container_read_only": False, "container_pids_limit": 128}
+        spec = build_container_spec(APP, defaults=defaults, data_dir="/data")
+        assert spec["read_only"] is False
+        assert spec["pids_limit"] == 128
+        # Hardening that is NOT operator-configurable stays on regardless.
+        assert spec["cap_drop"] == ["ALL"]
+        assert spec["security_opt"] == ["no-new-privileges:true"]
 
 
 def test_config_json_external_repo():
@@ -136,7 +166,9 @@ def test_config_json_embeds_percent_encoded_token():
     from src.data_apps.spec import build_config_json
 
     row = {"repo_mode": "internal", "slug": "s"}
-    cfg = build_config_json(row, secrets={}, clone_url="http://app:8000/data-apps.git/s", clone_token="a/b@c:d", service_token="SERVICE")
+    cfg = build_config_json(
+        row, secrets={}, clone_url="http://app:8000/data-apps.git/s", clone_token="a/b@c:d", service_token="SERVICE"
+    )
     assert cfg["dataApp"]["git"]["repository"] == "http://agnes:a%2Fb%40c%3Ad@app:8000/data-apps.git/s"
     assert cfg["dataApp"]["git"]["#password"] == "a/b@c:d"  # raw token still in the field
 

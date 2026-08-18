@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Security
+
+- **Hosted data-app containers are now hardened for internet-facing exposure.** Every container gets `cap_drop: ALL`, `no-new-privileges`, a `pids_limit` (default 512, `data_apps.container_pids_limit`), and — by default — a read-only root filesystem (`data_apps.container_read_only`) with a minimal `/tmp` + `/app` tmpfs for the upstream runtime's own clone-and-install step. Never applied to the chat-sandbox path, which needs broader write access for agent-authored code. The runtime `config.json` (carrying the app's service JWT) gets deterministic, non-writable file permissions instead of an umask-dependent mode, and is now cleaned up on an explicit `stop` (previously only on delete/draft-teardown), narrowing how long a plaintext copy sits on disk after the app stops running. On GCP, the customer-instance Terraform module's startup script now blocks the `agnes-apps` docker bridge from reaching the GCE metadata server (`169.254.169.254`) at the host firewall level, so a compromised data app cannot steal the VM's service-account token — scoped to that bridge only, so BigQuery auth from the other containers is unaffected.
+
 ## [0.83.51] - 2026-08-18
 
 ### Fixed

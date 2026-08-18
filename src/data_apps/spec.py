@@ -24,6 +24,14 @@ LIVE_BRANCH = "agnes-live"
 NETWORK = "agnes-apps"
 AGNES_INTERNAL_URL = "http://app:8000"
 
+#: Anti-fork-bomb ceiling applied to every data-app container unless an
+#: operator overrides ``data_apps.container_pids_limit`` in instance.yaml.
+#: The runtime image's own process tree (nginx + supervisord + the app
+#: process + its dependency installer) is a handful of processes; 512 is
+#: generous headroom without leaving a compromised app free to fork-bomb
+#: the host.
+_DEFAULT_PIDS_LIMIT = 512
+
 
 def _embed_credentials(url: str, username: str, password: str) -> str:
     """Insert percent-encoded basic-auth credentials after the scheme.
@@ -122,4 +130,26 @@ def build_container_spec(app_row: dict, *, defaults: dict, data_dir: str) -> dic
         "mem_limit": app_row.get("mem_limit") or defaults["default_mem_limit"],
         "cpus": cpus,
         "env": env,
+        # Defense-in-depth for an internet-facing web server, mirroring the
+        # posture `services/apps_runner/sandbox_api.py` already applies to
+        # chat sandboxes (cap_drop/no-new-privileges/pids_limit): a data app
+        # needs none of the Linux capabilities Docker grants by default,
+        # gains none via a setuid binary, and a compromised one must not be
+        # able to fork-bomb the host. Never applied to the chat-sandbox path
+        # — the agent CLI legitimately needs broader privileges there.
+        "cap_drop": ["ALL"],
+        "security_opt": ["no-new-privileges:true"],
+        "pids_limit": int(defaults.get("container_pids_limit") or _DEFAULT_PIDS_LIMIT),
+        # Read-only root filesystem, on by default. `container_read_only`
+        # lets an operator opt out if a future runtime-image update needs a
+        # rootfs write this doesn't anticipate — see
+        # `docs/superpowers/specs/2026-07-21-data-apps-design.md` §10. `/data`
+        # (config.json) and `/home/app/.cache` stay writable through their
+        # own bind/named-volume mounts either way; `/tmp` and `/app` get a
+        # tmpfs because the upstream entrypoint clones the app's repo into
+        # `/app` and installs its dependencies there on every boot (§2) —
+        # nothing under either path needs to survive a restart, the
+        # entrypoint re-clones from scratch every time.
+        "read_only": bool(defaults.get("container_read_only", True)),
+        "tmpfs": {"/tmp": "", "/app": ""},
     }

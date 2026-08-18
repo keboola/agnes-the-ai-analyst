@@ -606,6 +606,17 @@ client, via an owner-scoped token injected as `AGNES_TOKEN` — never through a
 mounted parquet. See spec §8 for the full rationale and the owner-inherited
 access model this implies for sharing.
 
+**Container hardening** (spec §10): every data-app container runs
+`cap_drop: ALL`, `no-new-privileges`, a `pids_limit`, and (by default) a
+read-only root filesystem with a minimal `/tmp` + `/app` tmpfs — never
+applied to the chat-sandbox path, which needs broader write access for
+agent-authored code. On GCP, the customer-instance Terraform module's
+startup script additionally blocks the `agnes-apps` docker bridge from
+reaching the GCE metadata server (`169.254.169.254`) at the host firewall
+level, so a compromised app cannot steal the VM's service-account token —
+scoped to that one bridge so BigQuery auth (which legitimately uses the
+metadata server) keeps working from every other container.
+
 ---
 
 ## Background Jobs

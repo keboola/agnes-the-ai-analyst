@@ -139,6 +139,11 @@ _CONFIG_DEFAULTS = {
     "default_mem_limit": "1g",
     "default_cpus": 1.0,
     "max_apps_per_user": 3,
+    # Container-hardening posture — instance-wide, never per-app-overridable
+    # (an app author choosing their own sandbox escape hatch would defeat
+    # the point). See `src/data_apps/spec.py::build_container_spec`.
+    "container_read_only": True,
+    "container_pids_limit": 512,
 }
 
 # `POST /api/data-apps` quota-check-then-create serialization. Short TTL —
@@ -1611,6 +1616,14 @@ async def stop_data_app(
         # the app isn't coming back on its own; the credential goes with it.
         _revoke_service_token(row)
         repo.update(row["id"], service_token_id="")
+        # Same hygiene as `delete_data_app`/`_teardown_draft`: the container
+        # this `stop` just removed leaves behind `${DATA_DIR}/apps/<slug>/
+        # config.json`, carrying the now-revoked service JWT in plaintext.
+        # `stop` (unlike reap-idle's sleep) always fully removes the
+        # container ("recreate" above is hardcoded), so nothing is reading
+        # this file anymore; a later `deploy`/wake writes a fresh one before
+        # any container starts again.
+        _rmtree_config_dir(slug)
         _audit(conn, user["id"], "data_app.stop", f"data_app:{slug}")
         return {"state": "stopped"}
     finally:

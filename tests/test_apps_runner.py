@@ -117,6 +117,11 @@ SPEC = lambda tmp: {
     "mem_limit": "1g",
     "cpus": 1.0,
     "env": {"A": "1"},
+    "cap_drop": ["ALL"],
+    "security_opt": ["no-new-privileges:true"],
+    "pids_limit": 512,
+    "read_only": True,
+    "tmpfs": {"/tmp": "", "/app": ""},
 }
 
 
@@ -138,6 +143,53 @@ def test_up_writes_config_and_runs(client):
     assert kw["name"] == "agnes-dataapp-s"
     assert kw["detach"] is True
     assert fake.volumes.names == {"agnes-dataapp-cache-s"}
+
+
+class TestContainerHardening:
+    """Defense-in-depth options threaded from the spec into the real
+    docker-py `containers.run` call — never applied to the chat-sandbox path
+    (`/sandboxes/*`, see `tests/test_apps_runner_sandboxes.py`), which
+    legitimately needs broader write access for agent-authored code."""
+
+    def test_up_applies_cap_drop_and_no_new_privileges(self, client):
+        c, fake, tmp = client
+        c.post(
+            "/apps/s/up", headers={"X-Runner-Token": "tok"}, json={"spec": SPEC(tmp), "config_json": {"dataApp": {}}}
+        )
+        _, kw = fake.run_calls[-1]
+        assert kw["cap_drop"] == ["ALL"]
+        assert kw["security_opt"] == ["no-new-privileges:true"]
+
+    def test_up_applies_pids_limit_and_read_only_with_tmpfs(self, client):
+        c, fake, tmp = client
+        c.post(
+            "/apps/s/up", headers={"X-Runner-Token": "tok"}, json={"spec": SPEC(tmp), "config_json": {"dataApp": {}}}
+        )
+        _, kw = fake.run_calls[-1]
+        assert kw["pids_limit"] == 512
+        assert kw["read_only"] is True
+        assert kw["tmpfs"] == {"/tmp": "", "/app": ""}
+
+    def test_up_respects_a_disabled_read_only_toggle(self, client):
+        c, fake, tmp = client
+        spec = SPEC(tmp) | {"read_only": False}
+        c.post("/apps/s/up", headers={"X-Runner-Token": "tok"}, json={"spec": spec, "config_json": {"dataApp": {}}})
+        _, kw = fake.run_calls[-1]
+        assert kw["read_only"] is False
+
+    def test_up_writes_config_json_with_deterministic_non_writable_perms(self, client):
+        """0644, never 0600: the writer (this sidecar, uid 999) and the
+        reader (the runtime image's fixed non-root uid 1000) share no group,
+        so 0600 would make every hosted app unable to read its own config
+        and crash-loop. 0644 is deterministic — not dependent on whatever
+        umask this process happens to run under, which could otherwise leave
+        the file world-*writable*."""
+        c, _, tmp = client
+        c.post(
+            "/apps/s/up", headers={"X-Runner-Token": "tok"}, json={"spec": SPEC(tmp), "config_json": {"dataApp": {}}}
+        )
+        cfg_path = tmp / "apps" / "s" / "config.json"
+        assert oct(cfg_path.stat().st_mode)[-3:] == "644"
 
 
 def test_up_rejects_foreign_image(client):

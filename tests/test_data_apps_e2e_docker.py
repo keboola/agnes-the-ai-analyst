@@ -188,6 +188,16 @@ def test_flask_fixture_app_boots_and_wakes(tmp_path, monkeypatch, docker_availab
         "env": {},
         # test-only escape hatch — see up()'s docstring in services/apps_runner/api.py
         "ports": {"8888/tcp": MAPPED_PORT},
+        # Same hardening `src/data_apps/spec.py::build_container_spec` sets
+        # in production — this is the one place with a real Docker daemon
+        # and the real runtime image, so it is also the live proof that a
+        # read-only rootfs + minimal /tmp + /app tmpfs still boots the
+        # upstream entrypoint's clone-and-install sequence.
+        "cap_drop": ["ALL"],
+        "security_opt": ["no-new-privileges:true"],
+        "pids_limit": 512,
+        "read_only": True,
+        "tmpfs": {"/tmp": "", "/app": ""},
     }
     config_json = {"dataApp": {"git": {"repository": "file:///data/repo.git", "branch": "main"}, "secrets": {}}}
 

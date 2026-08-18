@@ -851,6 +851,54 @@ if [ "$COMPOSE_UP_OK" != "1" ]; then
     exit 1
 fi
 
+# --- 5b. Host firewall: block the GCE metadata server from data-app containers ---
+# A data app (`docker-compose.yml`'s `agnes-apps` bridge) is untrusted,
+# internet-facing code (data-apps design spec §10); on GCP the instance's own
+# service-account credentials are one unauthenticated GET away at
+# 169.254.169.254. The `app`/`scheduler` containers legitimately reach that
+# same address for BigQuery auth, so this rule is scoped to the `agnes-apps`
+# bridge specifically, never the whole host.
+#
+# Installed as a standalone, re-runnable script rather than inlined: the
+# bridge interface name is Docker's own convention (`br-` + the first 12 hex
+# chars of the network's ID) and changes if `agnes-apps` is ever recreated
+# without a host reboot (e.g. an operator running `docker compose down` then
+# `up` by hand) — see the script's own header for that documented fallback.
+cat > /usr/local/bin/agnes-block-dataapp-metadata.sh <<'EOSCRIPT'
+#!/bin/bash
+# Idempotently DROP traffic from the `agnes-apps` docker bridge to the GCE
+# metadata server (169.254.169.254). Installed + run by the VM startup
+# script on every boot; re-run manually after anything that recreates the
+# `agnes-apps` network WITHOUT a reboot (its bridge interface name is
+# derived from the network's ID, which changes on recreate):
+#
+#     sudo /usr/local/bin/agnes-block-dataapp-metadata.sh
+#
+# Best-effort by design: a rule left behind by a prior, since-deleted bridge
+# is inert (it can never match traffic again) and does not need cleanup
+# before this adds the rule for the current one.
+set -euo pipefail
+iptables -N DOCKER-USER 2>/dev/null || true
+NET_ID=$(docker network inspect -f '{{.Id}}' agnes-apps 2>/dev/null || true)
+if [ -z "$NET_ID" ]; then
+    echo "agnes-apps docker network not present yet — metadata-server block skipped"
+    exit 0
+fi
+BRIDGE="br-$${NET_ID:0:12}"
+if ! ip link show "$BRIDGE" >/dev/null 2>&1; then
+    echo "WARN: agnes-apps network exists (id=$NET_ID) but bridge $BRIDGE was not found — metadata-server block NOT applied; re-run this script once the bridge is up"
+    exit 1
+fi
+if ! iptables -C DOCKER-USER -i "$BRIDGE" -d 169.254.169.254/32 -j DROP 2>/dev/null; then
+    iptables -I DOCKER-USER -i "$BRIDGE" -d 169.254.169.254/32 -j DROP
+    echo "Blocked GCE metadata server (169.254.169.254) from $BRIDGE (agnes-apps network $NET_ID)"
+else
+    echo "GCE metadata server already blocked for $BRIDGE (agnes-apps network $NET_ID)"
+fi
+EOSCRIPT
+chmod 0755 /usr/local/bin/agnes-block-dataapp-metadata.sh
+/usr/local/bin/agnes-block-dataapp-metadata.sh || echo "WARN: agnes-block-dataapp-metadata.sh failed (continuing boot — see docs/architecture.md's Hosted Data Apps section for the manual fallback)"
+
 # --- 6. Auto-upgrade via cron (pulls new image digest on $UPGRADE_SCHEDULE) ---
 if [ "$UPGRADE_MODE" = "auto" ]; then
     # agnes-auto-upgrade.sh was already extracted to /usr/local/bin/ in

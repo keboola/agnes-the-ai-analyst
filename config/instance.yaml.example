@@ -972,6 +972,13 @@ data_apps:
   default_mem_limit: 1g
   default_cpus: 1.0
   max_apps_per_user: 3
+  # Container-hardening posture, instance-wide (not per-app overridable):
+  # cap_drop=ALL / no-new-privileges / a read-only rootfs (with a minimal
+  # tmpfs for /tmp + /app, the upstream entrypoint's clone target) are
+  # always applied and are not configurable. Only these two have knobs:
+  container_read_only: true     # set false only if a runtime-image update
+                                 # needs a rootfs write this doesn't expect
+  container_pids_limit: 512     # anti fork-bomb ceiling
 
 
 # Authoring Studio (chat-assisted builders at /admin/studio for skills,

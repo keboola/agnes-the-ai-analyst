@@ -462,10 +462,27 @@ invariants (CONTRIBUTING.md sync-map rows):
 - **Resource limits:** per-app `mem_limit`/`cpus` with instance defaults
   (`data_apps.default_mem_limit`, default `1g` / `1.0`), plus a per-user app
   quota (`data_apps.max_apps_per_user`, default 3; Admin exempt) enforced at
-  create.
+  create, plus a fork-bomb `pids_limit` (`data_apps.container_pids_limit`,
+  default 512).
+- **Container hardening:** every data-app container runs `cap_drop: ALL`,
+  `no-new-privileges`, and (by default, `data_apps.container_read_only`) a
+  read-only root filesystem with a minimal `/tmp` + `/app` tmpfs for the
+  entrypoint's own clone-and-install step. Mirrors the posture
+  `services/apps_runner/sandbox_api.py` already applies to chat sandboxes —
+  never applied to that path, which needs broader write access for
+  agent-authored code. A compromised app therefore cannot escalate
+  privileges, gains no capabilities Docker doesn't already withhold by
+  default, and cannot fork-bomb the host.
 - **Tokens:** the app service token is a normal PAT — revocable in the
   existing token UI, `sha256`-stored, rotated per deploy, audited. Broker
-  tickets are TTL-bound and scope-checked per request.
+  tickets are TTL-bound and scope-checked per request. The runtime
+  `config.json` holding it on disk (`${DATA_DIR}/apps/<slug>/config.json`)
+  gets deterministic `0644`/`0755` permissions (not world-writable via a
+  stray umask) and is removed on `stop`/delete/draft-teardown, not just
+  delete — narrowing how long a plaintext copy sits on a host-mount VM after
+  the app stops running. It cannot go tighter than world-*readable*: the
+  writer (`apps-runner`, uid 999) and the reader (the runtime image's fixed
+  non-root `app` user, uid 1000) share no group.
 - **Container-name spoofing on the shared bridge:** the proxy connects by
   container name (`agnes-dataapp-<slug>`); the runner enforces that name and
   the `agnes.data-app` label at create so only registry-driven containers can
