@@ -40,8 +40,8 @@ Full step-by-step (local dev, Docker, TLS) lives in [`docs/QUICKSTART.md`](docs/
 ├── cli/                    # CLI tool (`agnes pull`, `agnes query`, `agnes admin`)
 ├── app/auth/               # Authentication (FastAPI-based providers)
 ├── services/               # Standalone services (scheduler, telegram_bot, apps_runner sidecar, etc.)
-├── server/                 # Legacy deployment infrastructure
-├── scripts/                # Utility + migration scripts
+├── infra/                  # Terraform: reusable `modules/customer-instance` (VM, startup script, systemd units)
+├── scripts/                # Utility + migration scripts (`ops/` = VM-side host scripts)
 ├── config/                 # Configuration templates (instance.yaml.example)
 ├── docs/                   # Documentation + metric YAML definitions
 └── tests/                  # Test suite
