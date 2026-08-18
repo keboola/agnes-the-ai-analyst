@@ -24,7 +24,7 @@ from app.instance_config import get_value
 
 logger = logging.getLogger(__name__)
 
-KNOWN_PROVIDERS: tuple[str, ...] = ("google", "email", "password", "keboola")
+KNOWN_PROVIDERS: tuple[str, ...] = ("google", "email", "password", "keboola", "microsoft")
 
 # Single-slot cache for the parsed allowlist, keyed by the raw configured value.
 # See configured_allowlist() for why parsing + misconfig logging must not re-run
@@ -38,6 +38,7 @@ _AVAILABILITY_PROBES: dict[str, str] = {
     "google": "app.auth.providers.google",
     "email": "app.auth.providers.email",
     "keboola": "app.auth.providers.keboola",
+    "microsoft": "app.auth.providers.microsoft",
 }
 
 # One-shot marker so the lockout rescue logs once per distinct configuration,

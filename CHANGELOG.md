@@ -10,7 +10,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
-## [0.83.35] - 2026-08-17
+## [0.83.37] - 2026-08-18
 
 - **`agnes snapshot create` works on a remote Databricks row** — both the `table_id` form (`--select` / `--where` / `--limit` / `--order-by`) and `--from-query`. `/api/v2/scan` and `/api/v2/scan/estimate` gained a Databricks branch instead of refusing with `scan_engine_unsupported`, which had left an analyst no way to pull a filtered subset of a large Databricks table short of asking an admin for a materialized row. Predicates are written in Databricks SQL — the flavor `agnes schema` already advertises for the row — and size is bounded by `api.scan.max_result_bytes` with its own longer statement timeout (`data_source.databricks.scan_timeout_seconds`, default 900), because a snapshot is a materialize rather than an answer someone is waiting on.
 
@@ -69,6 +69,30 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Internal
 
 - **The schema TTL cache is reset between tests.** Keyed on `table_id` with a 1 h TTL and process-global, so two suites registering the same id with different columns handed each other the wrong schema — a failure that depended only on file ordering. Added to the existing `_reset_module_caches` autouse fixture alongside the catalog and quota caches.
+
+## [0.83.36] - 2026-08-17
+
+### Added
+
+- Microsoft Entra ID (Azure AD) single-tenant OAuth login provider (`MICROSOFT_TENANT_ID`/`MICROSOFT_CLIENT_ID`/`MICROSOFT_CLIENT_SECRET`). Authentication only; users land in the Everyone group (IdP group sync not yet wired).
+- `docs/auth-microsoft-oauth.md` — Entra app registration, the three env vars, the redirect URI, every `/login?error=…` code the provider emits, and the guest-account trust model. Microsoft now also appears in the provider inventories (`docs/architecture.md`, `docs/CONFIGURATION.md`, `docs/README.md`), which is where an operator looks first.
+
+### Fixed
+
+- **The Microsoft provider's single-tenant promise is now structural rather than documentary.** `MICROSOFT_TENANT_ID` went verbatim into the OIDC discovery URL, so setting it to `common`, `organizations` or `consumers` — three values that endpoint accepts — silently produced exactly the multi-tenant configuration the module said it never uses: with `auth.allowed_domain` unset, any Microsoft account anywhere could sign in and self-provision an account. The tenant is now validated as a directory GUID or a verified domain, the three reserved names are refused *by name*, and a tenant that fails leaves the provider unavailable with a boot error explaining why — an instance must not come up multi-tenant quietly.
+- **A Microsoft sign-in can no longer take over an account through an unverified UPN.** Identity fell back to `preferred_username` whenever the `email` claim was absent, and `ensure_user` matches accounts by that string alone. The fallback now rejects Entra B2B guest UPNs (`user_othercorp.com#EXT#@tenant…`), which are not mailboxes. The broader property this narrows — a single tenant is the *authentication* boundary, not the identity one, because invited guests carry their external address in the `email` claim — is documented next to the env vars and warned about at boot when `auth.allowed_domain` is unset.
+- **One person, one account, across providers.** `ensure_user` matched on an exact email string (`=` is case-sensitive on DuckDB and Postgres alike) while providers disagreed on normalization — Microsoft lower-cases the resolved claim, Google passes the raw `email` claim through — so the same person arriving through two providers got two accounts. Provisioning now matches case-insensitively (new `users` repo method `get_by_email_ci`, both backends) and stores the address normalized; pre-existing mixed-case rows are matched, never duplicated.
+- **A refused Microsoft-only sign-in list now names Microsoft.** The 422 from `/api/admin/server-config` suggested "add the Google or Keboola OAuth credentials" and mentioned neither Microsoft nor its env vars, even though the availability probe reads them from the process environment at start — the same confusion that earned Google an explicit note. The detail now names `MICROSOFT_TENANT_ID` / `MICROSOFT_CLIENT_ID` / `MICROSOFT_CLIENT_SECRET`, and says an invalid tenant reads as unavailable too.
+
+- **A Microsoft-only sign-in configuration can be saved from the admin page.** `microsoft` reached `KNOWN_PROVIDERS` and the runtime availability probes, but the admin write path keeps a *second*, independent probe (`_provider_available_after_save`) that knew only password/google/email/keboola and fell through to `False` for anything else — so narrowing `auth.providers` to Microsoft was refused with "would leave no usable sign-in method" even with all three env vars set. The env path (`AGNES_AUTH_PROVIDERS`) never saw that validator, so the same instance could be configured one way and not the other.
+
+- **A failed Microsoft sign-in now says so, and says it about Microsoft.** The provider redirected to `/login?error=microsoft_not_configured`, a code the login page had no message for, so the user landed on a blank page with no explanation; its other two failures reused `oauth_failed` and `no_email`, both worded as Google problems. All three are now provider-scoped, following the precedent Keboola set.
+
+## [0.83.35] - 2026-08-17
+
+### Changed
+
+- **Web chat: the AskUserQuestion card now reads as a first-class conversational element.** The card drops the monospace tool-block header (and its red ❓) and the washed-out info tint for a plain surface panel with the brand accent: options render as an equal-height grid of selectable cards with a corner check on the selected state, the "Other…" free-text answer is a peer cell of the same grid instead of a floating input, Submit is a filled primary button whose disabled state is visibly parked rather than half-faded, and a resolved card echoes each answer as a chip beside the outcome badge.
 
 ## [0.83.34] - 2026-08-17
 
