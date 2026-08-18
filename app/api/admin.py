@@ -21,7 +21,11 @@ import duckdb
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
 from app.switches import SWITCHES
-from connectors.snowflake.settings import SF_TOKEN_ENV
+from connectors.snowflake.settings import (
+    SF_PRIVATE_KEY_ENV,
+    SF_PRIVATE_KEY_PASSPHRASE_ENV,
+    SF_TOKEN_ENV,
+)
 from src.identifier_validation import (
     is_safe_identifier as _is_safe_identifier,
     is_safe_quoted_identifier as _is_safe_quoted_identifier,
@@ -1017,8 +1021,9 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
             "hint": (
                 "Snowflake connection (query_mode='remote' rows resolved locally by the "
                 "DuckDB snowflake extension + query_mode='materialized' rows written to "
-                "parquet on the scheduler tick). The password comes from the env var named "
-                "by token_env / the vault secret of the same name, never from YAML."
+                "parquet on the scheduler tick). Use auth_type 'password' (default) with "
+                "token_env / SNOWFLAKE_PASSWORD, or 'key_pair' with private_key_env / "
+                "SNOWFLAKE_PRIVATE_KEY. Credential values are env/vault-backed, never from YAML."
             ),
             "fields": {
                 "account": {
@@ -1057,14 +1062,44 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
                     "kind": "string",
                     "hint": ("Optional Snowflake role to assume. Empty = the user's default role."),
                 },
+                "auth_type": {
+                    "kind": "select",
+                    "options": ["password", "key_pair"],
+                    "default": "password",
+                    "hint": (
+                        "Authentication method: 'password' or 'key_pair'. With key_pair, "
+                        "set private_key_env / private_key_passphrase_env instead of token_env."
+                    ),
+                },
                 "token_env": {
                     "kind": "string",
                     "default": SF_TOKEN_ENV,
                     "hint": (
                         "Name of the environment variable holding the Snowflake password "
-                        "(the name, never the password itself). Falls back to the vault "
-                        "secret of the same name when the env var is unset. Default "
-                        "SNOWFLAKE_PASSWORD."
+                        "(the name, never the password itself). Used when auth_type is "
+                        "'password'. Falls back to the vault secret of the same name when "
+                        "the env var is unset. Default SNOWFLAKE_PASSWORD."
+                    ),
+                },
+                "private_key_env": {
+                    "kind": "string",
+                    "default": SF_PRIVATE_KEY_ENV,
+                    "hint": (
+                        "Name of the environment variable holding the Snowflake private key "
+                        "for key-pair auth (the name, never the key itself). The value may "
+                        "be a PEM string or JSON with {private_key, passphrase?}. Used when "
+                        "auth_type is 'key_pair'. Falls back to the vault secret of the same "
+                        "name. Default SNOWFLAKE_PRIVATE_KEY."
+                    ),
+                },
+                "private_key_passphrase_env": {
+                    "kind": "string",
+                    "default": SF_PRIVATE_KEY_PASSPHRASE_ENV,
+                    "hint": (
+                        "Name of the environment variable holding the optional passphrase "
+                        "for the Snowflake private key. Used when auth_type is 'key_pair' "
+                        "and the private key is encrypted. Falls back to the vault secret "
+                        "of the same name. Default SNOWFLAKE_PRIVATE_KEY_PASSPHRASE."
                     ),
                 },
                 "max_bytes_per_materialize": {
@@ -3245,7 +3280,8 @@ def _validate_snowflake_register_payload(req: "RegisterTableRequest") -> None:
             status_code=400,
             detail=(
                 "snowflake: data_source.snowflake.* is not configured; "
-                "set account, user, database, warehouse and the SNOWFLAKE_PASSWORD env / vault secret "
+                "set account, user, database, warehouse and either the SNOWFLAKE_PASSWORD env / vault secret "
+                "(password auth) or the SNOWFLAKE_PRIVATE_KEY env / vault secret (key-pair auth) "
                 "via instance.yaml or /admin/server-config first"
             ),
         )
