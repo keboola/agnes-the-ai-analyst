@@ -10,6 +10,23 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Changed
+
+- **The analyst CLI wheel no longer bundles server-only dependencies** — the web framework, BigQuery/gRPC SDKs, the chat runner's agent SDK, Postgres drivers, and roughly two dozen other packages that only `app/`/`services/`/`connectors/` code imports moved from `[project.dependencies]` into the `server` extra. `uv tool install`ing the wheel now pulls ~17 core packages instead of ~49, shrinking a first-time install. Server deployments are unaffected — the Docker image installs `.[server]`, which still carries every one of them.
+- **`agnes init` skips materialized-mode tables on its first pull by default.** A single multi-GB scheduled-query parquet could otherwise stall an otherwise-instant first-time workspace bootstrap for tens of minutes; lighter tables still sync immediately. Fetch materialized tables on demand with a later `agnes pull`, or force the full first pull with `agnes init --materialize`. The pre-existing `--skip-materialize` flag still works (it's now the default, so passing it is a no-op).
+
+### Fixed
+
+- **The machine setup prompt's CLI install step no longer 404s when the server upgrades mid-session.** It downloaded via a version-pinned `/cli/wheel/<filename>` URL captured when the prompt was *rendered*; if the server's wheel changed before the user actually ran the command, that URL 404d. It now downloads via the unversioned `/cli/download` endpoint (`curl -OJ`, which honours `Content-Disposition` to save the real filename) and installs from the local file — the same pattern `/cli/install.sh` already used. The `/install` page's manual-install section and `docs/HEADLESS_USAGE.md`'s CI example were reconciled to the same shape; the docs example was additionally fixed since it referenced the removed `agnes.whl` bareword alias, which always 404d.
+
+### Removed
+
+- **`pytz` is no longer a package dependency** — pandas 2.x doesn't require it, and nothing else in the codebase imports it directly.
+
+### Internal
+
+- **A packaging guard now asserts server-only dependencies (`claude-agent-sdk`, `fastapi`, `sqlalchemy`, `psycopg`, `google-cloud-bigquery`, …) stay out of the CLI wheel**, and that the CI `cli-wheel-clean-install` job's clean-room install also can't import `claude_agent_sdk`/`fastapi` — mirroring the existing `kbcstorage` regression guard.
+
 ## [0.83.51] - 2026-08-18
 
 ### Fixed

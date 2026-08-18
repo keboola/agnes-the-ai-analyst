@@ -2029,16 +2029,18 @@ def create_app() -> FastAPI:
             response.headers["X-Agnes-Min-Version"] = MIN_COMPAT_CLI_VERSION
             response.headers["X-Agnes-Accepts"] = SERVER_CAPABILITIES
         # Server-rendered HTML must not be heuristically cached by the browser.
-        # The setup hero (/home, /setup, /install) bakes build-pinned values
-        # into the markup at render time — most importantly the current wheel
-        # filename, served from the version-pinned `/cli/wheel/{name}` endpoint
-        # that 404s for any name but the wheel currently on disk. Without an
-        # explicit directive a browser reuses the cached document, so after a
-        # redeploy a user is handed a stale page whose baked wheel URL now 404s
-        # (the new build replaced the wheel). `no-store` forces a fresh render
-        # on every load. Scoped to text/html so JSON APIs and the
-        # immutable-cached static / marketplace-image assets are untouched; an
-        # explicit Cache-Control set by a route still wins.
+        # The setup hero (/home, /setup, /install) bakes render-time values
+        # into the markup — RBAC-filtered plugin grants, the live connector
+        # manifest, the operator's instance brand/host. (The install prompt's
+        # CLI step used to also bake a version-pinned `/cli/wheel/{name}` URL
+        # that 404s the moment the server upgrades between render and
+        # execution; it now downloads via the unversioned `/cli/download`
+        # endpoint instead, which is immune to that race — but the page as a
+        # whole still isn't safe to cache.) Without an explicit directive a
+        # browser reuses a stale cached document across a redeploy. `no-store`
+        # forces a fresh render on every load. Scoped to text/html so JSON
+        # APIs and the immutable-cached static / marketplace-image assets are
+        # untouched; an explicit Cache-Control set by a route still wins.
         ctype = response.headers.get("content-type", "")
         if ctype.startswith("text/html") and "cache-control" not in response.headers:
             response.headers["Cache-Control"] = "no-store"
