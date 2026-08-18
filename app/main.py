@@ -1295,7 +1295,33 @@ async def lifespan(app):
                         added_by="app.main:seed_admin",
                     )
             except Exception as e:
-                logger.warning(f"Could not seed admin: {e}")
+                # Loud on purpose (issue: 26h burned on a customer deploy
+                # diagnosing a silent seed failure). "Bootstrap the admin
+                # user" is step 6/9 in docs/ONBOARDING.md — a failed seed
+                # means the fresh instance has NO working way in, and that
+                # used to be visible only by reading container logs on the
+                # VM. ERROR + exc_info puts the traceback in the boot log;
+                # the audit_log row makes it durable and queryable from
+                # /admin/activity (action=startup.seed_admin_failed) even
+                # by an operator who only found the instance later. Still
+                # Exception (never BaseException) — a hard crash here would
+                # take down an instance that may still be reachable by other
+                # means (existing OAuth users, an already-provisioned admin).
+                logger.error("Seed admin failed for %s: %s", seed_email, e, exc_info=True)
+                try:
+                    from src.repositories import audit_repo
+
+                    audit_repo().log(
+                        user_id=None,
+                        action="startup.seed_admin_failed",
+                        resource=seed_email,
+                        result="error",
+                        params={"error": str(e)},
+                    )
+                except Exception:
+                    # A second failure here must never mask the ERROR
+                    # already logged above, nor crash startup.
+                    logger.debug("Could not record seed-admin failure to audit_log", exc_info=True)
 
     # Seed the synthetic scheduler user when SCHEDULER_API_TOKEN is configured,
     # so the very first cron tick after a fresh deploy already has a valid
