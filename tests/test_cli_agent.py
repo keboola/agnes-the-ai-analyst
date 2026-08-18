@@ -874,6 +874,203 @@ class TestMemory:
         assert "memory_not_found" in result.output
 
 
+class TestSchedule:
+    """`agnes agent schedule list|add|remove|enable|disable` — CLI surface
+    for `/api/v1/agents/{slug}/schedules[/{schedule_id}]` (agent-schedules
+    design). Slug-keyed like webhooks; `remove`/`enable`/`disable` resolve a
+    schedule name to id via one `list` round trip first."""
+
+    _SCHEDULE_ROW = {
+        "id": "sched_1",
+        "agent_id": "ag_1",
+        "name": "morning-briefing",
+        "schedule": "cron 0 7 * * 1-5",
+        "prompt": "invoke the briefing skill",
+        "enabled": True,
+        "last_run_at": None,
+        "last_status": None,
+        "last_job_id": None,
+        "created_at": "2026-08-17",
+        "updated_at": "2026-08-17",
+    }
+
+    def test_schedule_list_text(self):
+        with patch(
+            "cli.commands.agent.api_get",
+            return_value=_resp(200, {"data": [self._SCHEDULE_ROW], "has_more": False, "next_cursor": None}),
+        ) as m:
+            result = runner.invoke(app, ["agent", "schedule", "list", "research"])
+        assert result.exit_code == 0
+        assert m.call_args.args[0] == "/api/v1/agents/research/schedules"
+        assert "morning-briefing" in result.output
+        assert "cron 0 7 * * 1-5" in result.output
+
+    def test_schedule_list_json(self):
+        with patch(
+            "cli.commands.agent.api_get",
+            return_value=_resp(200, {"data": [self._SCHEDULE_ROW], "has_more": False, "next_cursor": None}),
+        ):
+            result = runner.invoke(app, ["agent", "schedule", "list", "research", "--json"])
+        data = json.loads(result.output)
+        assert data[0]["id"] == "sched_1"
+
+    def test_schedule_list_empty_hints_add(self):
+        with patch(
+            "cli.commands.agent.api_get",
+            return_value=_resp(200, {"data": [], "has_more": False, "next_cursor": None}),
+        ):
+            result = runner.invoke(app, ["agent", "schedule", "list", "research"])
+        assert result.exit_code == 0
+        assert "agnes agent schedule add" in result.output
+
+    def test_schedule_add_sends_payload(self):
+        with patch("cli.commands.agent.api_post", return_value=_resp(201, dict(self._SCHEDULE_ROW))) as m:
+            result = runner.invoke(
+                app,
+                [
+                    "agent",
+                    "schedule",
+                    "add",
+                    "research",
+                    "--name",
+                    "morning-briefing",
+                    "--schedule",
+                    "cron 0 7 * * 1-5",
+                    "--prompt",
+                    "invoke the briefing skill",
+                ],
+            )
+        assert result.exit_code == 0
+        assert m.call_args.args[0] == "/api/v1/agents/research/schedules"
+        assert m.call_args.kwargs["json"] == {
+            "name": "morning-briefing",
+            "schedule": "cron 0 7 * * 1-5",
+            "prompt": "invoke the briefing skill",
+            "enabled": True,
+        }
+        assert "sched_1" in result.output
+
+    def test_schedule_add_disabled_flag(self):
+        with patch("cli.commands.agent.api_post", return_value=_resp(201, dict(self._SCHEDULE_ROW))) as m:
+            result = runner.invoke(
+                app,
+                [
+                    "agent",
+                    "schedule",
+                    "add",
+                    "research",
+                    "--name",
+                    "morning-briefing",
+                    "--schedule",
+                    "cron 0 7 * * 1-5",
+                    "--prompt",
+                    "p",
+                    "--disabled",
+                ],
+            )
+        assert result.exit_code == 0
+        assert m.call_args.kwargs["json"]["enabled"] is False
+
+    def test_schedule_add_invalid_schedule_renders_detail_code(self):
+        with patch(
+            "cli.commands.agent.api_post",
+            return_value=_resp(
+                400,
+                {"detail": {"code": "invalid_schedule", "message": "schedule must be ... note the literal 'cron '"}},
+            ),
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "agent",
+                    "schedule",
+                    "add",
+                    "research",
+                    "--name",
+                    "x",
+                    "--schedule",
+                    "weekly",
+                    "--prompt",
+                    "p",
+                ],
+            )
+        assert result.exit_code == 1
+        assert "invalid_schedule" in result.output
+
+    def test_schedule_remove_requires_confirm_without_yes(self):
+        with (
+            patch(
+                "cli.commands.agent.api_get",
+                return_value=_resp(200, {"data": [self._SCHEDULE_ROW], "has_more": False, "next_cursor": None}),
+            ),
+            patch("cli.commands.agent.api_delete") as m,
+        ):
+            result = runner.invoke(app, ["agent", "schedule", "remove", "research", "morning-briefing"], input="n\n")
+        m.assert_not_called()
+        assert result.exit_code != 0
+
+    def test_schedule_remove_with_yes_calls_delete(self):
+        with (
+            patch(
+                "cli.commands.agent.api_get",
+                return_value=_resp(200, {"data": [self._SCHEDULE_ROW], "has_more": False, "next_cursor": None}),
+            ),
+            patch("cli.commands.agent.api_delete", return_value=_resp(204)) as m,
+        ):
+            result = runner.invoke(app, ["agent", "schedule", "remove", "research", "morning-briefing", "--yes"])
+        assert result.exit_code == 0
+        assert m.call_args.args[0] == "/api/v1/agents/research/schedules/sched_1"
+
+    def test_schedule_remove_not_found_hints_list(self):
+        with patch(
+            "cli.commands.agent.api_get",
+            return_value=_resp(200, {"data": [], "has_more": False, "next_cursor": None}),
+        ):
+            result = runner.invoke(app, ["agent", "schedule", "remove", "research", "nope", "--yes"])
+        assert result.exit_code == 1
+        assert "agnes agent schedule list research" in result.output
+
+    def test_schedule_enable_sends_patch(self):
+        with (
+            patch(
+                "cli.commands.agent.api_get",
+                return_value=_resp(
+                    200,
+                    {
+                        "data": [{**self._SCHEDULE_ROW, "enabled": False}],
+                        "has_more": False,
+                        "next_cursor": None,
+                    },
+                ),
+            ),
+            patch(
+                "cli.commands.agent.api_patch",
+                return_value=_resp(200, {**self._SCHEDULE_ROW, "enabled": True}),
+            ) as m,
+        ):
+            result = runner.invoke(app, ["agent", "schedule", "enable", "research", "morning-briefing"])
+        assert result.exit_code == 0
+        assert m.call_args.args[0] == "/api/v1/agents/research/schedules/sched_1"
+        assert m.call_args.kwargs["json"] == {"enabled": True}
+        assert "enabled" in result.output
+
+    def test_schedule_disable_sends_patch(self):
+        with (
+            patch(
+                "cli.commands.agent.api_get",
+                return_value=_resp(200, {"data": [self._SCHEDULE_ROW], "has_more": False, "next_cursor": None}),
+            ),
+            patch(
+                "cli.commands.agent.api_patch",
+                return_value=_resp(200, {**self._SCHEDULE_ROW, "enabled": False}),
+            ) as m,
+        ):
+            result = runner.invoke(app, ["agent", "schedule", "disable", "research", "morning-briefing"])
+        assert result.exit_code == 0
+        assert m.call_args.kwargs["json"] == {"enabled": False}
+        assert "disabled" in result.output
+
+
 class TestTimeoutDriftGuard:
     def test_cli_ask_timeout_constants_match_server_defaults(self):
         """The CLI's `_DEFAULT_ASK_TIMEOUT_S`/`_MAX_ASK_TIMEOUT_S` are kept in

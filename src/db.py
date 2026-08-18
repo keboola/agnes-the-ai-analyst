@@ -65,8 +65,9 @@ _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 # 119 adds tool_registry.projection_map — the admin's choice of which
 # materialized columns carry a linked app's id / url / name, replacing a
 # hardcoded alias list that only knew one upstream's column names (see
-# `_v118_to_v119`).
-SCHEMA_VERSION = 119
+# `_v118_to_v119`), 120 adds agent_schedules — scheduled runs for agent
+# profiles (see `_v119_to_v120`).
+SCHEMA_VERSION = 120
 
 # v96: data_apps registry (hosted user web apps). Extracted as a shared
 # module-level constant so the fresh-install DDL (appended to
@@ -1900,6 +1901,25 @@ CREATE TABLE IF NOT EXISTS agent_memories (
     created_at        TIMESTAMP DEFAULT current_timestamp,
     activated_at      TIMESTAMP,
     archived_at       TIMESTAMP
+);
+
+-- v119: agent_schedules — scheduled runs for agent profiles (design doc
+-- docs/superpowers/specs/2026-08-17-agent-schedules-design.md). Schedules
+-- die with the agent (repo `delete_for_agent`, called from the agent-delete
+-- cascade). No secondary indexes (ART-index incident — see _v94_to_v95).
+CREATE TABLE IF NOT EXISTS agent_schedules (
+    id          VARCHAR PRIMARY KEY,
+    agent_id    VARCHAR NOT NULL,
+    name        VARCHAR NOT NULL,
+    schedule    VARCHAR NOT NULL,
+    prompt      TEXT NOT NULL,
+    enabled     BOOLEAN NOT NULL DEFAULT TRUE,
+    last_run_at TIMESTAMP,
+    last_status VARCHAR,
+    last_job_id VARCHAR,
+    created_at  TIMESTAMP DEFAULT current_timestamp,
+    updated_at  TIMESTAMP DEFAULT current_timestamp,
+    UNIQUE (agent_id, name)
 );
 
 -- v109: outbound MCP OAuth sources (spec
@@ -7558,6 +7578,30 @@ def _v118_to_v119(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("UPDATE schema_version SET version = 119")
 
 
+def _v119_to_v120(conn: duckdb.DuckDBPyConnection) -> None:
+    """v119→v120: ``agent_schedules`` — scheduled runs for agent profiles
+    (design doc docs/superpowers/specs/2026-08-17-agent-schedules-design.md).
+
+    No secondary indexes (ART-index incident — see _v94_to_v95)."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS agent_schedules (
+            id          VARCHAR PRIMARY KEY,
+            agent_id    VARCHAR NOT NULL,
+            name        VARCHAR NOT NULL,
+            schedule    VARCHAR NOT NULL,
+            prompt      TEXT NOT NULL,
+            enabled     BOOLEAN NOT NULL DEFAULT TRUE,
+            last_run_at TIMESTAMP,
+            last_status VARCHAR,
+            last_job_id VARCHAR,
+            created_at  TIMESTAMP DEFAULT current_timestamp,
+            updated_at  TIMESTAMP DEFAULT current_timestamp,
+            UNIQUE (agent_id, name)
+        )
+    """)
+    conn.execute("UPDATE schema_version SET version = 120")
+
+
 def _add_store_entity_trust_columns(conn: duckdb.DuckDBPyConnection) -> None:
     """The v111 column DDL on its own, with no version stamp.
 
@@ -8596,6 +8640,9 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # v118→v119: tool_registry.projection_map. No-op on fresh
             # installs — _SYSTEM_SCHEMA already declares the column.
             _v118_to_v119(conn)
+            # v119→v120: agent_schedules (scheduled agent runs). No-op on
+            # fresh installs — _SYSTEM_SCHEMA already declares the table.
+            _v119_to_v120(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -8887,6 +8934,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v117_to_v118(conn)
             if current < 119:
                 _v118_to_v119(conn)
+            if current < 120:
+                _v119_to_v120(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

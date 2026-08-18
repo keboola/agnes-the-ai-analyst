@@ -13,7 +13,7 @@
    `instance.privacy_policy_url` — the route then redirects there instead of
    rendering this. #}
 
-{% block title %}Privacy — {{ config.INSTANCE_NAME or 'Agnes' }}{% endblock %}
+{% block title %}Privacy — {{ config.INSTANCE_NAME or (instance_brand or 'Agnes') }}{% endblock %}
 
 {% block content %}
 <main class="pv-page">
