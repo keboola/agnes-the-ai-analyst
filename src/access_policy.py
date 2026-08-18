@@ -195,7 +195,7 @@ def policied_relation(table_id: str, principal, *, dialect: str = "duckdb") -> P
 
     Never executes ``relation_sql`` — that is each enforcement surface's job.
     """
-    if dialect not in ("duckdb", "bigquery"):
+    if dialect not in ("duckdb", "bigquery", "databricks"):
         raise ValueError(f"unknown dialect: {dialect!r}")
 
     row = _resolve_table_row(table_id)
@@ -224,9 +224,12 @@ def policied_relation(table_id: str, principal, *, dialect: str = "duckdb") -> P
                 raise PolicyError(resolved_id)
         params["user_groups"] = groups
 
-    relation_sql = (
-        _transpile_policy_to_bigquery(policy_sql, table_id=resolved_id) if dialect == "bigquery" else policy_sql
-    )
+    if dialect == "bigquery":
+        relation_sql = _transpile_policy_to_bigquery(policy_sql, table_id=resolved_id)
+    elif dialect == "databricks":
+        relation_sql = _transpile_policy_to_databricks(policy_sql, table_id=resolved_id)
+    else:
+        relation_sql = policy_sql
 
     return PoliciedRelation(relation_sql=relation_sql, params=params, policied=True, table_id=resolved_id)
 
@@ -259,6 +262,40 @@ def _transpile_policy_to_bigquery(policy_sql: str, *, table_id: str) -> str:
     """
     try:
         statements = sqlglot.transpile(policy_sql, read="duckdb", write="bigquery")
+    except Exception as exc:
+        raise PolicyError(table_id) from exc
+    if not statements:
+        raise PolicyError(table_id)
+    return statements[0]
+
+
+def _transpile_policy_to_databricks(policy_sql: str, *, table_id: str) -> str:
+    """Transpile an admin-authored, DuckDB-dialect policy body to Databricks
+    SQL — the third dialect, and the one where the binding guarantee (§6.2)
+    survives for a reason worth stating.
+
+    sqlglot renders every ``$name`` placeholder as ``:name``, which is exactly
+    the named-parameter marker the Databricks Statement Execution API binds
+    through its ``parameters`` request field. So the same authored policy body
+    keeps its values *out of the SQL text* on all three engines: DuckDB binds
+    ``$name`` natively, BigQuery gets ``@name``, Databricks gets ``:name``.
+    ``list_contains($user_groups, col)`` lands as
+    ``ARRAY_CONTAINS(:user_groups, col)``.
+
+    One asymmetry the enforcement site has to finish: the Statement Execution
+    API binds *scalar* parameters only, so the array-valued ``$user_groups``
+    marker cannot be bound as-is. ``connectors.databricks.policy_params``
+    rewrites that one marker into an ``ARRAY(...)`` of scalar markers before
+    execution. This resolver stays engine-shaped, not transport-shaped, and
+    does not do that here — its contract is still "what should a caller read".
+
+    A transpile failure is a ``PolicyError`` for the same reason as the
+    BigQuery arm: the admin never authors Databricks SQL directly, so a
+    failure here means the body uses a construct sqlglot cannot carry across
+    dialects, and §16 forbids leaking the engine's own message.
+    """
+    try:
+        statements = sqlglot.transpile(policy_sql, read="duckdb", write="databricks")
     except Exception as exc:
         raise PolicyError(table_id) from exc
     if not statements:
@@ -433,6 +470,7 @@ def rewrite_sql(
     principal,
     *,
     resolve=policied_relation,
+    dialect: str = "duckdb",
 ) -> tuple[str, dict, list[str]]:
     """Substitute every policied table reference in ``sql`` with its resolved
     relation (§5.2) -- the AST-rewrite half of the resolver's two consumers
@@ -472,9 +510,21 @@ def rewrite_sql(
     same reason code ``policied_relation`` itself uses for "failed to
     resolve", per §16's four-reason table (there is no fifth "unparseable"
     reason). Callers map both to an HTTP 400 naming the table (Task 7).
+
+    ``dialect`` is the flavor the CALLER's statement is parsed and re-rendered
+    in; it does not touch the policy body, which is spliced as literal text.
+    ``"duckdb"`` (the default) keeps every pre-existing caller -- the local
+    SQL surfaces and the BigQuery remote path -- byte-identical. The
+    Databricks remote path passes ``"databricks"`` because it must: a
+    Databricks statement round-tripped through the DuckDB dialect comes out
+    *wrong* rather than merely different (``RLIKE`` is rewritten to
+    ``REGEXP_MATCHES``, a DuckDB function the warehouse does not have), and
+    ``MEASURE(`Total Revenue`)`` -- the metric-view idiom that is the whole
+    point of the remote mode -- does not parse as DuckDB at all, so a policied
+    table in such a query would deny instead of filtering.
     """
     try:
-        statement = sqlglot.parse_one(sql, read="duckdb")
+        statement = sqlglot.parse_one(sql, read=dialect)
     except Exception:
         # Rule 3: unparseable SQL is rejected outright when it touches a
         # policied table (the fail-closed property a TEMP VIEW would have
@@ -554,7 +604,7 @@ def rewrite_sql(
             seen_ids.add(relation.table_id)
             policied_table_ids.append(relation.table_id)
 
-    rewritten_sql = statement.sql(dialect="duckdb")
+    rewritten_sql = statement.sql(dialect=dialect)
     for sentinel, relation_sql in sentinel_relation_sql.items():
         rewritten_sql = rewritten_sql.replace(sentinel, relation_sql)
 

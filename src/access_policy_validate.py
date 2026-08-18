@@ -395,14 +395,22 @@ def _is_pattern_position(node: exp.Placeholder) -> bool:
 
 
 def _reject_untranspilable(sql: str) -> None:
-    """Rule 6, part 1: a remote-table policy must transpile to BigQuery
-    without error (§7.2) -- the admin authors DuckDB SQL once, and sqlglot
-    produces the BigQuery form actually run against the source.
+    """Rule 6, part 1: a remote-table policy must transpile to every remote
+    engine's SQL without error (§7.2) -- the admin authors DuckDB SQL once,
+    and sqlglot produces the form actually run against the source.
+
+    Checked for BOTH remote engines at save time, not just the one this
+    particular table happens to sit on. A policy that transpiles to BigQuery
+    but not to Databricks would save clean and then fail at read time on a
+    Databricks table -- and a policy read that fails, correctly, denies (§17),
+    so the admin would have shipped an outage instead of an access rule. The
+    save-time check is the only moment where the feedback is cheap.
     """
-    try:
-        sqlglot.transpile(sql, read="duckdb", write="bigquery")
-    except Exception as exc:
-        raise PolicyValidationError("policy_untranspilable", f"could not transpile to BigQuery SQL: {exc}") from exc
+    for engine in ("bigquery", "databricks"):
+        try:
+            sqlglot.transpile(sql, read="duckdb", write=engine)
+        except Exception as exc:
+            raise PolicyValidationError("policy_untranspilable", f"could not transpile to {engine} SQL: {exc}") from exc
 
 
 def _warn_group_membership_idiom(statement: exp.Select, *, table_id: str) -> None:
