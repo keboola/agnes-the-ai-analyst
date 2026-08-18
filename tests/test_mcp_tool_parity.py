@@ -58,6 +58,14 @@ def test_validate_semantic_query_is_a_foundation_tool():
     assert "validate_semantic_query" in FOUNDATION_TOOL_NAMES
 
 
+def test_semantic_context_and_schema_tools_are_foundation_tools():
+    """Agent read-parity tools (wave 4)."""
+    from app.api.mcp.foundation_tools import FOUNDATION_TOOL_NAMES
+
+    for name in ("get_semantic_context", "get_semantic_schema"):
+        assert name in FOUNDATION_TOOL_NAMES
+
+
 def test_data_apps_tools_are_foundation_tools():
     from app.api.mcp.foundation_tools import FOUNDATION_TOOL_NAMES
 
