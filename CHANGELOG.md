@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- **A crash-looping data-app container stops burning CPU forever.** The runtime container ran under `restart_policy: unless-stopped`, and the upstream entrypoint is not idempotent — it `git clone`s into `/app` unconditionally, so any restart onto a non-empty `/app` dies with "destination path already exists". The result was an infinite restart loop against a boot that could never succeed. App containers now start with a bounded `on-failure` policy (`MaximumRetryCount: 3`), so the daemon gives up and the container settles as `exited` — which `POST /api/data-apps/reap-idle` already reconciles to `error`. **Operator note:** Docker does not bring `on-failure` containers back after a daemon or host restart, so after a reboot every previously-live app settles as `exited`, is reconciled to `error`, and needs an explicit redeploy — the ingress proxy wakes only `sleeping` rows and renders `error` without re-checking. That is not an availability regression (under `unless-stopped` a reboot restarted the container straight into the non-idempotent clone, so the app came back crash-looping rather than serving), but it does mean a reboot needs a redeploy pass instead of healing itself. Restoring wake-on-request self-healing needs the reconcile scan to tell "host rebooted" from "retry budget exhausted" — Docker's `RestartCount`/`ExitCode`, i.e. a runner status-contract change — which is deliberately left to a follow-up rather than decided here.
+
 ## [0.83.50] - 2026-08-18
 
 ### Fixed
