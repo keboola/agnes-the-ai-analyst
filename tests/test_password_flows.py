@@ -612,3 +612,150 @@ class TestInviteEmailDelivery:
         assert "invite-transport-note" in body
         # And the JS that populates it for the no-SMTP case
         assert "Email transport" in body
+
+
+def _age_row(user_id: str, minutes: int) -> None:
+    """Push a row's `created_at` back, so the two variants have a definite
+    oldest — which is what `get_by_email_ci` tie-breaks on."""
+    from src.db import get_system_db
+
+    conn = get_system_db()
+    try:
+        conn.execute(
+            f"UPDATE users SET created_at = now() - INTERVAL {int(minutes)} MINUTE WHERE id = ?",
+            [user_id],
+        )
+    finally:
+        conn.close()
+
+
+class TestCredentialFollowsTheRowNotTheTieBreak:
+    """`get_by_email_ci` answers "which account is this address" — oldest wins.
+    That is right for provisioning and wrong for a credential check: on the
+    instances the case-insensitive work exists for, two variants coexist and the
+    credential may sit on the NEWER row. Checking only the oldest turned a
+    working sign-in into `401`, and a valid invitation into "Invalid or expired
+    setup link".
+    """
+
+    @staticmethod
+    def _two_variants_password_on_newer(password: str = "correct-horse-battery"):
+        """Older row: no hash. Newer row: the real password. Same address, two
+        spellings — the shape that exists on instances predating normalization."""
+        from argon2 import PasswordHasher
+
+        old_id = _seed_user("ada@example.com")
+        _age_row(old_id, 60)
+        new_id = _seed_user("Ada@example.com", password_hash=PasswordHasher().hash(password))
+        return old_id, new_id
+
+    def test_json_login_finds_the_password_on_the_newer_variant(self, app_client, fresh_db):
+        self._two_variants_password_on_newer()
+        r = app_client.post(
+            "/auth/password/login",
+            json={"email": "ada@example.com", "password": "correct-horse-battery"},
+        )
+        assert r.status_code == 200, r.text
+
+    def test_token_endpoint_finds_the_password_on_the_newer_variant(self, app_client, fresh_db):
+        self._two_variants_password_on_newer()
+        r = app_client.post(
+            "/auth/token",
+            json={"email": "ADA@example.com", "password": "correct-horse-battery"},
+        )
+        assert r.status_code == 200, r.text
+
+    def test_web_form_login_finds_the_password_on_the_newer_variant(self, app_client, fresh_db):
+        self._two_variants_password_on_newer()
+        r = app_client.post(
+            "/auth/password/login/web",
+            data={"email": "ada@example.com", "password": "correct-horse-battery"},
+            follow_redirects=False,
+        )
+        assert r.status_code == 302
+        assert "error=" not in (r.headers.get("location") or ""), r.headers.get("location")
+
+    def test_a_wrong_password_is_still_refused_across_variants(self, app_client, fresh_db):
+        """The scan must not become a way in — no row's hash matches, so the
+        answer is the same generic 401 as before."""
+        self._two_variants_password_on_newer()
+        r = app_client.post(
+            "/auth/password/login",
+            json={"email": "ada@example.com", "password": "wrong-password"},
+        )
+        assert r.status_code == 401
+        assert r.json()["detail"] == "Invalid email or password"
+
+    def test_a_deactivated_row_holding_the_password_is_still_refused(self, app_client, fresh_db):
+        """Resolving by credential must not become an offboarding bypass: when
+        the row that proves the password is the deactivated one, the answer is
+        `Account deactivated`, not a session."""
+        from argon2 import PasswordHasher
+
+        from src.db import get_system_db
+
+        old_id = _seed_user("bob@example.com")
+        _age_row(old_id, 60)
+        new_id = _seed_user("Bob@example.com", password_hash=PasswordHasher().hash("s3cret-pass-phrase"))
+        conn = get_system_db()
+        try:
+            conn.execute("UPDATE users SET active = FALSE WHERE id = ?", [new_id])
+        finally:
+            conn.close()
+
+        r = app_client.post(
+            "/auth/password/login",
+            json={"email": "bob@example.com", "password": "s3cret-pass-phrase"},
+        )
+        assert r.status_code == 401
+        assert r.json()["detail"] == "Account deactivated"
+
+    def test_setup_confirm_accepts_a_token_on_the_newer_variant(self, app_client, fresh_db):
+        """An invitation is minted by user id, so it can land on the variant the
+        oldest-wins lookup never returns."""
+        old_id = _seed_user("cleo@example.com")
+        _age_row(old_id, 60)
+        _seed_user(
+            "Cleo@example.com",
+            setup_token="setup-tok-newer",
+            setup_token_created=datetime.now(timezone.utc),
+        )
+        r = app_client.post(
+            "/auth/password/setup/confirm",
+            data={
+                "email": "cleo@example.com",
+                "token": "setup-tok-newer",
+                "password": "brand-new-password",
+                "confirm_password": "brand-new-password",
+                "name": "Cleo",
+            },
+            follow_redirects=False,
+        )
+        assert r.status_code in (302, 303), r.text
+
+    def test_setup_json_accepts_a_token_on_the_newer_variant(self, app_client, fresh_db):
+        old_id = _seed_user("dan@example.com")
+        _age_row(old_id, 60)
+        _seed_user(
+            "Dan@example.com",
+            setup_token="setup-tok-json",
+            setup_token_created=datetime.now(timezone.utc),
+        )
+        r = app_client.post(
+            "/auth/password/setup",
+            json={
+                "email": "dan@example.com",
+                "token": "setup-tok-json",
+                "password": "brand-new-password",
+            },
+        )
+        assert r.status_code == 200, r.text
+
+    def test_unknown_address_still_404s_on_setup(self, app_client, fresh_db):
+        """The token scan must not turn "no such account" into "bad token" —
+        the two are reported differently on this endpoint."""
+        r = app_client.post(
+            "/auth/password/setup",
+            json={"email": "nobody@example.com", "token": "x", "password": "brand-new-password"},
+        )
+        assert r.status_code == 404

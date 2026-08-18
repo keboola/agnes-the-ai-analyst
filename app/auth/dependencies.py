@@ -167,10 +167,15 @@ def _get_local_dev_user(conn: Optional[duckdb.DuckDBPyConnection] = None) -> Opt
     """
     from src.repositories import users_repo
 
-    # Folded: startup seeds this account through normalize_email (lower-cased),
-    # so an exact read misses whenever LOCAL_DEV_USER_EMAIL carries upper case
-    # and dev auto-login silently stops working.
-    user = users_repo().get_by_email_ci(get_local_dev_email())
+    # Folded AND stripped: startup seeds this account through normalize_email,
+    # which does both, while `get_by_email_ci` folds case in SQL but does not
+    # trim. A configured address carrying a stray leading/trailing space would
+    # therefore be seeded as `dev@local` and read as `" dev@local "`, and dev
+    # auto-login would silently stop working. Same trim-before-the-read fix as
+    # `agnes admin break-glass grant-admin`.
+    from src.user_identity import normalize_email
+
+    user = users_repo().get_by_email_ci(normalize_email(get_local_dev_email()))
     if not user:
         logger.error(
             "LOCAL_DEV_MODE is on but dev user %s is not seeded; expected app startup to seed it",

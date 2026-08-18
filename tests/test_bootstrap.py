@@ -117,6 +117,17 @@ class TestBootstrap:
         assert data["role"] == "admin"
         assert "access_token" in data
 
+    def test_bootstrap_refuses_a_body_with_no_resolvable_address(self, fresh_client):
+        """`normalize_email` collapses whitespace-only input to "", and this is
+        the most privileged write in the app — without a shape check it would
+        mint an ADMIN account whose identity no auth provider can ever resolve,
+        and a second such call would collide on UNIQUE(email). `POST /api/users`
+        already refuses this; bootstrap must too."""
+        for bad in ("   ", "", "not-an-address", "@example.com", "local@"):
+            resp = fresh_client.post("/auth/bootstrap", json={"email": bad, "name": "X"})
+            assert resp.status_code == 422, f"{bad!r} was accepted: {resp.status_code} {resp.text}"
+            assert resp.json()["detail"] == "A valid email address is required"
+
     def test_bootstrap_with_password(self, fresh_client):
         """Bootstrap with password sets password hash."""
         resp = fresh_client.post(

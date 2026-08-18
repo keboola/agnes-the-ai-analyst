@@ -4,6 +4,7 @@ import logging
 import os
 import secrets
 from datetime import datetime, timedelta, timezone
+from typing import Optional
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
@@ -117,6 +118,55 @@ def build_reset_url(request: Request, email: str, token: str) -> str:
 
 def build_setup_url(request: Request, email: str, token: str) -> str:
     return f"{_base_url(request)}/auth/password/setup?email={quote(email, safe='')}&token={token}"
+
+
+def _row_verifying_password(repo, email: str, password: str) -> tuple[Optional[dict], bool]:
+    """Resolve a sign-in by the CREDENTIAL, not by the address tie-break.
+
+    ``get_by_email_ci`` answers "which account is this address" — deterministic
+    oldest-first. That is the right answer for provisioning, and the wrong one
+    for a credential check: where two case variants of one address coexist (the
+    population the case-insensitive work exists for), the password hash may sit
+    on the newer row, and checking only the oldest turns a working sign-in into
+    ``401 Invalid email or password``.
+
+    So every row carrying a hash is tried and the one whose hash verifies is
+    returned. Inactive rows are tried too, deliberately: skipping them would
+    answer "invalid password" for a deactivated account, and the caller who
+    proved the credential is owed the honest ``Account deactivated`` instead —
+    the caller gates on the returned row's own ``active`` flag.
+
+    Returns ``(row, any_hash_present)``. ``any_hash_present`` separates "no such
+    account / external auth only" from "wrong password" for callers that report
+    them differently, without leaking which it was to the client.
+
+    Same shape as ``reset_confirm``'s ``list_by_email_ci`` scan.
+    """
+    rows = repo.list_by_email_ci(email)
+    candidates = [u for u in rows if u.get("password_hash")]
+    if not candidates:
+        return None, False
+    ph = PasswordHasher()
+    for u in candidates:
+        try:
+            ph.verify(u["password_hash"], password)
+            return u, True
+        except VerifyMismatchError:
+            continue
+    return None, True
+
+
+def _row_holding_setup_token(repo, email: str, token: str) -> Optional[dict]:
+    """The row whose ``setup_token`` matches — again the credential, not the
+    tie-break. An invitation is minted by user id, so it can sit on a case
+    variant ``get_by_email_ci`` does not return, and a valid link would then
+    read "Invalid or expired setup link".
+
+    Freshness and ``active`` are left to the caller so each surface keeps its
+    own copy and status code; only the row identity is resolved here.
+    """
+    hashed = hash_token(token)
+    return next((u for u in repo.list_by_email_ci(email) if u.get("setup_token") == hashed), None)
 
 
 def _token_is_fresh(created, ttl: timedelta) -> bool:
@@ -237,21 +287,21 @@ async def password_login(
 ):
     """Login with email + password."""
     repo = users_repo()
-    # Strip only — case is folded by the lookup (SQL).
-    user = repo.get_by_email_ci((body.email or "").strip())
-    if not user or not user.get("password_hash"):
-        raise HTTPException(status_code=401, detail="Invalid email or password")
-    if not bool(user.get("active", True)):
-        raise HTTPException(status_code=401, detail="Account deactivated")
-
+    # Strip only — case is folded by the lookup (SQL). Resolved by the
+    # credential rather than the oldest-row tie-break: see
+    # `_row_verifying_password`.
     try:
-        ph = PasswordHasher()
-        ph.verify(user["password_hash"], body.password)
-    except VerifyMismatchError:
-        raise HTTPException(status_code=401, detail="Invalid email or password")
+        user, any_hash = _row_verifying_password(repo, (body.email or "").strip(), body.password)
     except Exception:
         logger.exception("Unexpected error during password verification")
         raise HTTPException(status_code=500, detail="Internal server error")
+    if user is None:
+        # Same 401 whether the address is unknown, carries no hash at all
+        # (external auth), or the password simply did not match — `any_hash`
+        # exists for the audit trail, not for the caller.
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    if not bool(user.get("active", True)):
+        raise HTTPException(status_code=401, detail="Account deactivated")
 
     # Forced rotation: the password was set by someone else (seeded admin /
     # admin-set) and emailed/shared in plaintext. The password is verified
@@ -277,22 +327,24 @@ async def password_login_web(
     """Web form login — sets cookie and redirects to `next` (or /dashboard)."""
     email = (email or "").strip()
     repo = users_repo()
-    user = repo.get_by_email_ci(email)
-    if not user or not user.get("password_hash"):
-        return RedirectResponse(url="/login/password?error=invalid", status_code=302)
-    if not bool(user.get("active", True)):
-        return RedirectResponse(url="/login/password?error=deactivated", status_code=302)
-
+    # Resolved by the credential, not the oldest-row tie-break — see
+    # `_row_verifying_password`.
     try:
-        ph = PasswordHasher()
-        ph.verify(user["password_hash"], password)
-    except VerifyMismatchError:
-        # M9: audit failed form-login attempts (mirrors /auth/token endpoint)
-        _audit(user["id"], "login_failed", result="invalid_password")
-        return RedirectResponse(url="/login/password?error=invalid", status_code=302)
+        user, any_hash = _row_verifying_password(repo, email, password)
     except Exception:
         logger.exception("Unexpected error during web password verification for %s", email)
         return RedirectResponse(url="/login/password?err=auth_internal", status_code=302)
+    if user is None:
+        if any_hash:
+            # M9: audit failed form-login attempts (mirrors /auth/token
+            # endpoint). Attributed to the address's canonical row, since no
+            # single row proved the credential.
+            canonical = repo.get_by_email_ci(email)
+            if canonical:
+                _audit(canonical["id"], "login_failed", result="invalid_password")
+        return RedirectResponse(url="/login/password?error=invalid", status_code=302)
+    if not bool(user.get("active", True)):
+        return RedirectResponse(url="/login/password?error=deactivated", status_code=302)
 
     if user.get("must_change_password"):
         # Password set by someone else (seeded / admin-set): refuse a full
@@ -338,11 +390,13 @@ async def password_setup(
     switches to this JSON path and resumes at unbounded RPS.
     """
     repo = users_repo()
-    user = repo.get_by_email_ci((request_body.email or "").strip())
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    if user.get("setup_token") != hash_token(request_body.token):
+    email = (request_body.email or "").strip()
+    # The invitation is minted by user id, so it can sit on a case variant the
+    # oldest-wins lookup does not return — resolve by the token it carries.
+    user = _row_holding_setup_token(repo, email, request_body.token)
+    if user is None:
+        if not repo.get_by_email_ci(email):
+            raise HTTPException(status_code=404, detail="User not found")
         raise HTTPException(status_code=400, detail="Invalid setup token")
     if not _token_is_fresh(user.get("setup_token_created"), SETUP_TOKEN_TTL):
         raise HTTPException(status_code=400, detail="Setup token has expired")
@@ -665,8 +719,10 @@ async def setup_confirm(
         )
 
     repo = users_repo()
-    user = repo.get_by_email_ci(email)
-    if not user or user.get("setup_token") != hash_token(token):
+    # Resolved by the token, not the oldest-row tie-break — see
+    # `_row_holding_setup_token`.
+    user = _row_holding_setup_token(repo, email, token)
+    if user is None:
         return _render_setup_form(request, email=email, token=token, name=name, error="Invalid or expired setup link.")
     if not _token_is_fresh(user.get("setup_token_created"), SETUP_TOKEN_TTL):
         return _render_setup_form(

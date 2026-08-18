@@ -8,7 +8,6 @@ from pydantic import BaseModel
 
 import duckdb
 from argon2 import PasswordHasher
-from argon2.exceptions import VerifyMismatchError
 
 from app.auth.jwt import create_access_token
 from app.auth.access import is_user_admin
@@ -93,32 +92,46 @@ async def create_token(
     repo = users_repo()
     # Strip only — case is folded by the lookup (SQL). A pasted address
     # carries whitespace and must not be a hard auth failure.
-    user = repo.get_by_email_ci((body.email or "").strip())
-    if not user:
+    email = (body.email or "").strip()
+    canonical = repo.get_by_email_ci(email)
+    if not canonical:
         raise HTTPException(status_code=401, detail="User not found")
+
+    # `canonical` answers "which account is this address" (oldest wins), which
+    # is the wrong resolution for a credential: where two case variants of one
+    # address coexist, the password hash may sit on the newer row. So the
+    # password selects the row — see `_row_verifying_password` in the password
+    # provider, whose contract this mirrors — and only then is `active` judged,
+    # on the row that actually proved the credential.
+    from app.auth.providers.password import _row_verifying_password
+
+    if not body.password:
+        # Distinguishing "no password set" from "password required" needs no
+        # per-row resolution: an address whose every row lacks a hash is an
+        # external-auth account either way.
+        if not any(u.get("password_hash") for u in repo.list_by_email_ci(email)):
+            raise HTTPException(
+                status_code=401,
+                detail="This account uses external authentication. Please log in via your configured provider.",
+            )
+        raise HTTPException(status_code=401, detail="Password required")
+
+    try:
+        user, any_hash = _row_verifying_password(repo, email, body.password)
+    except Exception:
+        logger.exception("Unexpected error during password verification")
+        raise HTTPException(status_code=500, detail="Internal server error")
+    if user is None:
+        if not any_hash:
+            raise HTTPException(
+                status_code=401,
+                detail="This account uses external authentication. Please log in via your configured provider.",
+            )
+        _audit(canonical["id"], "login_failed", result="invalid_password")
+        raise HTTPException(status_code=401, detail="Invalid password")
     if not bool(user.get("active", True)):
         _audit(user["id"], "login_failed", result="deactivated")
         raise HTTPException(status_code=401, detail="Account deactivated")
-
-    # If user has password_hash, require and verify it
-    if user.get("password_hash"):
-        if not body.password:
-            raise HTTPException(status_code=401, detail="Password required")
-        try:
-            ph = PasswordHasher()
-            ph.verify(user["password_hash"], body.password)
-        except VerifyMismatchError:
-            _audit(user["id"], "login_failed", result="invalid_password")
-            raise HTTPException(status_code=401, detail="Invalid password")
-        except Exception:
-            logger.exception("Unexpected error during password verification")
-            raise HTTPException(status_code=500, detail="Internal server error")
-    else:
-        # No password set — must use their auth provider (Google OAuth, magic link)
-        raise HTTPException(
-            status_code=401,
-            detail="This account uses external authentication. Please log in via your configured provider.",
-        )
 
     role_label = "admin" if is_user_admin(user["id"], conn) else "user"
     token = create_access_token(
@@ -223,7 +236,17 @@ async def bootstrap(
     # a row no sign-in path ever resolves to. (`existing` is still the read
     # behind the lockout check above.)
     normalized_email = normalize_email(body.email)
-    existing_user = repo.get_by_email_ci(normalized_email) if normalized_email else None
+    # Shape check after normalization — the same one `POST /api/users` gained,
+    # applied here because this is the MORE privileged write: whitespace-only or
+    # missing input collapses to "", and the create branch below would then mint
+    # an ADMIN account whose identity no auth provider can ever resolve (and a
+    # second such call would collide on UNIQUE(email)). Deliberately minimal:
+    # an `@` with something either side, not RFC 5322, so an internal or dev
+    # address still works.
+    _local, _, _domain = normalized_email.partition("@")
+    if not _local or not _domain:
+        raise HTTPException(status_code=422, detail="A valid email address is required")
+    existing_user = repo.get_by_email_ci(normalized_email)
     if existing_user:
         user_id = existing_user["id"]
         repo.update(id=user_id, password_hash=password_hash)
