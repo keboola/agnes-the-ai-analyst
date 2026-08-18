@@ -22,7 +22,7 @@ from src.sql_ident import quote_ident
 
 logger = logging.getLogger(__name__)
 
-_AttachFn = Callable[[duckdb.DuckDBPyConnection, str, str], None]
+_AttachFn = Callable[[duckdb.DuckDBPyConnection, str, str, Optional[str]], None]
 
 
 def _ensure_meta_table(conn: duckdb.DuckDBPyConnection) -> None:
@@ -75,10 +75,16 @@ def _remote_view_sql(name: str, schema: str, table: str) -> str:
     )
 
 
-def _default_attach_fn(conn: duckdb.DuckDBPyConnection, *, url: str, token: str) -> None:
+def _default_attach_fn(
+    conn: duckdb.DuckDBPyConnection,
+    *,
+    url: str,
+    token: str,
+    passphrase: str | None = None,
+) -> None:
     conn.execute(f"INSTALL {SF_EXTENSION} FROM community")
     conn.execute(f"LOAD {SF_EXTENSION}")
-    attach_snowflake(conn, alias=SF_ALIAS, url=url, token=token)
+    attach_snowflake(conn, alias=SF_ALIAS, url=url, token=token, passphrase=passphrase)
 
 
 def init_extract(
@@ -92,6 +98,7 @@ def init_extract(
     *,
     token: str = "",
     token_env: str = SF_TOKEN_ENV,
+    passphrase: str | None = None,
     attach_fn: Optional[_AttachFn] = None,
 ) -> dict[str, Any]:
     """Create ``extract.duckdb`` containing ``_meta``, ``_remote_attach`` and one view per remote table."""
@@ -114,7 +121,7 @@ def init_extract(
                 "refusing to send credential during extract build"
             )
         try:
-            attach(conn, url=url, token=token)
+            attach(conn, url=url, token=token, passphrase=passphrase)
         except Exception as exc:
             logger.error("snowflake extract: ATTACH failed: %s", exc)
             for tc in table_configs:
@@ -188,6 +195,11 @@ def rebuild_from_registry(output_dir: str | None = None) -> dict[str, Any]:
     if output_dir is None:
         output_dir = str(Path(os.environ.get("DATA_DIR", "./data")) / "extracts" / "snowflake")
 
+    token = settings.get("password") or settings.get("private_key") or ""
+    token_env = settings.get("token_env") or (
+        settings.get("private_key_env") if settings.get("auth_type") == "key_pair" else SF_TOKEN_ENV
+    ) or SF_TOKEN_ENV
+
     result = init_extract(
         output_dir,
         settings["account"],
@@ -196,8 +208,9 @@ def rebuild_from_registry(output_dir: str | None = None) -> dict[str, Any]:
         settings["user"],
         settings.get("role") or "",
         rows,
-        token=settings["password"],
-        token_env=settings.get("token_env") or SF_TOKEN_ENV,
+        token=token,
+        token_env=token_env,
+        passphrase=settings.get("private_key_passphrase") or None,
     )
     result["skipped"] = False
     return result

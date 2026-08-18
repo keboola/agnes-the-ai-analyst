@@ -425,7 +425,10 @@ def test_snowflake_connector_declares_its_settings():
         "database",
         "warehouse",
         "role",
+        "auth_type",
         "token_env",
+        "private_key_env",
+        "private_key_passphrase_env",
         "max_bytes_per_materialize",
     }, sorted(fields)
 
@@ -441,7 +444,11 @@ def test_snowflake_connector_declares_its_settings():
 
     # The password itself is never a config field — only the name of the env
     # var holding it, mirroring how databricks keeps DATABRICKS_TOKEN out of
-    # the registry.
+    # the registry. Key-pair auth stores the private key and optional
+    # passphrase in separate env variables.
     assert "password" not in fields
+    assert fields["auth_type"]["kind"] == "select"
+    assert fields["auth_type"].get("default") == "password"
     assert fields["token_env"]["kind"] == "string"
     assert fields["token_env"].get("default") == "SNOWFLAKE_PASSWORD"
+    assert fields["private_key_env"].get("default") == "SNOWFLAKE_PRIVATE_KEY"
