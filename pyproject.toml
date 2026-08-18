@@ -12,6 +12,13 @@ dependencies = [
     # tables referenced by other tables — broke the test_db migration
     # ladder replay on 1.5.1. CI runs 1.5.2; local devs need it too.
     "duckdb>=1.5.2",
+    # DuckDB RUNTIME dependency, not a first-party import: duckdb's Python
+    # timezone path (ICU casts, `ducklake_snapshots()`, tz-aware timestamp
+    # ops) imports `pytz` by NAME at query time, so no static grep of our
+    # code finds it. Dropping it broke duckdb-backed queries on both server
+    # and CLI (CI: test_connector_kit_poc, test_ducklake_maintenance), so it
+    # stays core alongside duckdb — the CLI runs duckdb locally too.
+    "pytz>=2024.1",
     # Authentication — token inspection. PyJWT decodes the PAT's `exp` claim
     # client-side, unverified (cli/token_status.py, cli/commands/auth.py) for
     # the CLI's renewal nudge and `agnes auth whoami`. The server-side session
@@ -294,6 +301,12 @@ dev = [
     # Balanced by the committed `.test_durations` file.
     "pytest-split>=0.9.0",
     "faker>=24.0.0",
+    # Pillow — test-only: tests/test_ingest_vision.py synthesizes a throwaway
+    # image (`PIL.Image.new(...)`) to exercise the vision ingest path; the
+    # `src/ingest/vision.py` runtime never imports PIL. It used to arrive
+    # transitively via matplotlib (a core dep); matplotlib moved to the
+    # `telegram` extra, so declare pillow here for the `[dev]` test run.
+    "pillow>=10.0.0",
     # jsonschema is a core dependency now (see [project].dependencies —
     # app/chat/structured_output.py needs it in production), so no separate
     # dev-extra entry here. It also covers the corporate-memory
