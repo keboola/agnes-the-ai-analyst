@@ -433,7 +433,10 @@ def extract_option_list(field: Any) -> list[str]:
     """Extract values from Jira multi-select field."""
     if not field or not isinstance(field, list):
         return []
-    return [extract_option_value(item) for item in field if item]
+    values = (extract_option_value(item) for item in field if item)
+    # An option dict carrying neither `value` nor `name` resolves to None; skip
+    # it rather than landing a JSON `null` inside the serialized array.
+    return [value for value in values if value is not None]
 
 
 def extract_organization_ids(field: Any) -> list[str]:
@@ -1067,7 +1070,9 @@ def transform_all(
             # path (incremental_transform.py) is what genuinely preserves
             # existing rows; batch mode is full-rebuild and not the hot path.
 
-        except Exception as e:
+        # Blind on purpose: per-file fault isolation — one malformed JSON must
+        # not sink the whole rebuild, and every skip is logged with its filename.
+        except Exception as e:  # noqa: BLE001
             logger.error(f"Error processing {json_file}: {e}")
 
     if deleted_by_month:
