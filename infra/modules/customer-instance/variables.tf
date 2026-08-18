@@ -133,11 +133,14 @@ variable "prod_instance" {
     #   brand_short -> instance.brand_short (short form used mid-sentence)
     #   subtitle    -> instance.subtitle   (tagline shown under the instance name)
     #   copyright   -> instance.copyright  (footer credit, rendered "Deployed by <this>")
+    #   favicon     -> instance.favicon    (favicon href — static path, data: URI, or
+    #                                       absolute URL; see get_instance_favicon())
     logo_svg    = optional(string, "")
     brand       = optional(string, "")
     brand_short = optional(string, "")
     subtitle    = optional(string, "")
     copyright   = optional(string, "")
+    favicon     = optional(string, "")
 
     # theme_colors -> the top-level `theme:` block in instance.yaml. Known color
     # keys recolor the design-system --ds-* tokens (primary -> --ds-primary,
@@ -284,6 +287,7 @@ variable "dev_instances" {
     brand_short = optional(string, "")
     subtitle    = optional(string, "")
     copyright   = optional(string, "")
+    favicon     = optional(string, "")
     theme_colors = optional(object({
       primary        = optional(string)
       primary_dark   = optional(string)

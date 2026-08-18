@@ -13,8 +13,10 @@
     {% for s in custom_scripts | default([]) if s.placement == 'head_start' %}
     {{ s.html | safe }}
     {% endfor %}
-    {# Orb favicon — the rail chrome is always on (topnav retired, Wave 0 2026-08). #}
-    <link rel="icon" type="image/png" href="{{ static_url('img/agnes-orb.png') }}">
+    {# Favicon (default: the agnes-orb asset) — see base_ds.html's comment;
+       `instance_favicon` is already a ready-to-use href
+       (get_instance_favicon()). #}
+    <link rel="icon" type="image/png" href="{{ instance_favicon | default(static_url('img/agnes-orb.png'), true) }}">
     <title>{% block title %}Data Analyst Portal{% endblock %}</title>
     <link rel="stylesheet" href="{{ static_url('style-custom.css') }}">
     {# Design-system tokens (`--ds-*`) — required so `.btn-primary`

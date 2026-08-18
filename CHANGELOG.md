@@ -10,6 +10,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- **Configurable favicon (`instance.favicon` / `AGNES_INSTANCE_FAVICON`).** Resolves to a value templates render directly in `<link rel="icon">`: a `data:` URI or absolute URL (`"://"`) is used verbatim, anything else is resolved as a static asset the same way every other CSS/JS asset is (`static_url()`'s `?v=<mtime>` cache-buster). Unset renders the built-in `agnes-orb.png` icon, byte-identical to before. Threaded through `_chrome_ctx`/`_build_context` into `base_ds.html`, `base_login.html`, and `base.html`. The `infra/modules/customer-instance` Terraform module gains a matching `favicon` branding variable (`prod_instance` and `dev_instances[*]`), seeded into a fresh instance's `instance.yaml` on first boot alongside `logo_svg`/`brand`/`brand_short`/`subtitle`/`copyright`.
+
+### Changed
+
+- **The product name now honors `instance.brand` across the web UI, not just the chat hero.** Roughly forty templates hardcoded the literal "Agnes" in visible prose — page titles, headings, button labels, input placeholders, tooltips — instead of the existing `instance_brand`/`instance_brand_short` template variables, so a rebranded instance still showed "Agnes" in dozens of places outside the pages that already used the brand variable. CLI command examples (`agnes catalog`, `agnes init`, …), MCP tool identifiers, asset paths (`agnes-orb.png`), and CSS custom properties are untouched — those are technical identifiers, not the product name.
+
 ## [0.83.47] - 2026-08-18
 
 ### Added
