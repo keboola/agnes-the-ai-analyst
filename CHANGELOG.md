@@ -10,6 +10,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.83.39] - 2026-08-18
+
+### Added
+
+- **Admin / Tables: Databricks tables can now be registered from the UI.** The `+ Register new table` dropdown on `/admin/tables` includes a Databricks option that opens a registration drawer for both live (remote SQL warehouse) and synced (materialized parquet) modes, supporting whole-table auto `SELECT *` or custom SQL.
+
+### Fixed
+
+- **Admin / Tables: the Databricks shortcut no longer hides every other register option.** On an instance whose data source is Databricks with no other connection in the registry, `+ Register new table` opened the Databricks drawer straight away — and that shortcut was the button's only behaviour, so the dropdown was unreachable and with it the Jira docs link and the BigQuery / Keboola register items; registering any of them meant dropping to the API or the CLI. The primary is now a split button: the label keeps the shortcut, and the caret beside it always opens the full source list.
+
+- **Admin / Tables: the primary `+ Register new table` button opens the Databricks register modal directly only when Databricks is the sole connected source.** When additional sources are connected, the dropdown remains reachable so the other source options can still be selected.
+
 ## [0.83.38] - 2026-08-18
 
 ### Added
