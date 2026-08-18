@@ -509,3 +509,26 @@ def test_agent_delete_cascades_schedules(env, owner_client):
 
     assert agent_schedules_repo().list_for_agent(env["agent_id"]) == []
     assert agent_schedules_repo().get(created["id"]) is None
+
+
+def test_run_due_does_not_stack_jobs_while_previous_run_is_queued(env, admin_client, owner_client):
+    """On a topology where no worker claims agent_response jobs, the sweep
+    must not enqueue a fresh job every cadence hit — one queued job per
+    schedule is the ceiling; further due ticks record 'backlogged'."""
+    from src.repositories import jobs_repo
+
+    created = owner_client.post("/api/v1/agents/briefing-bot/schedules", json=_VALID_PAYLOAD).json()
+    _backdate(created["id"])
+
+    assert admin_client.post("/api/v1/agents/run-due").json()["dispatched"] == [created["id"]]
+    row = owner_client.get("/api/v1/agents/briefing-bot/schedules").json()["data"][0]
+    first_job_id = row["last_job_id"]
+    assert jobs_repo().get(first_job_id)["status"] == "queued"  # no worker in tests
+
+    # Due again, previous job still queued → backlogged, no second job.
+    _backdate(created["id"])
+    resp = admin_client.post("/api/v1/agents/run-due")
+    assert resp.json()["dispatched"] == [created["id"]]  # tick consumed
+    row = owner_client.get("/api/v1/agents/briefing-bot/schedules").json()["data"][0]
+    assert row["last_status"] == "backlogged"
+    assert row["last_job_id"] == first_job_id
