@@ -88,8 +88,9 @@ belongs in a constraint rather than a `description`/`ai_context` note:
    documentation wearing a constraint's shape; put it in `ai_context.hints`
    instead.
 
-Constraints ride `custom_extensions` under `vendor_name: agnes` as a JSON
-string — see `references/payloads.md` for the exact shape. Only
+Constraints ride `custom_extensions` under `vendor_name: AGNES` (upper-case —
+the canonical tag that projects) as a JSON string — see
+`references/payloads.md` for the exact shape. Only
 `constraint_type: required_filter` is statically checkable today
 (`src/semantic_validation.py::_STATICALLY_CHECKABLE_CONSTRAINT_TYPES`);
 anything else (a value-range rule, a row-count expectation) is legitimate to

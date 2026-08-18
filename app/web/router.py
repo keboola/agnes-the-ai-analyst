@@ -4031,6 +4031,7 @@ async def semantic_layer_detail(
     """
     from app.api.semantic_models import _can_read_model
     from app.web.semantic_layer_view import (
+        agnes_extension_payload,
         is_imported,
         model_constraints,
         model_glossary,
@@ -4057,14 +4058,20 @@ async def semantic_layer_detail(
         if active_tab == "datasets":
             datasets = [d for d in datasets if needle in str(d.get("name") or "").lower()]
         elif active_tab == "metrics":
-            from src.semantic.projection import _agnes_payload as _metric_agnes_payload
-
             # A metric's Agnes payload binds it to a dataset by that dataset's
             # source id, not its friendly name (the Keboola metastore adapter
             # stores the raw tableId there — connectors/keboola/semantic_ossie.py).
             # The per-dataset cross-link and the search box both pass the
             # friendly `name`, so resolve name → source: a needle that names a
             # dataset also matches every metric bound to that dataset's source.
+            # Read the binding through the view's `agnes_extension_payload`,
+            # which casefolds the vendor tag like the query validator and the
+            # rest of this browse module — NOT the projector's case-sensitive
+            # `_agnes_payload`, which would miss a document authored with the
+            # lower-case `agnes` tag the skill docs prescribe (Devin #1398).
+            def _metric_dataset(m: dict) -> str:
+                return str(agnes_extension_payload(m).get("dataset") or "").lower()
+
             _needle_dataset_sources = {
                 str(d.get("source") or "").lower()
                 for d in datasets
@@ -4075,8 +4082,8 @@ async def semantic_layer_detail(
                 m
                 for m in metrics
                 if needle in str(m.get("name") or "").lower()
-                or needle in str(_metric_agnes_payload(m).get("dataset") or "").lower()
-                or str(_metric_agnes_payload(m).get("dataset") or "").lower() in _needle_dataset_sources
+                or needle in _metric_dataset(m)
+                or _metric_dataset(m) in _needle_dataset_sources
             ]
         elif active_tab == "constraints":
             # Match the constraint's own name (the first, linked column) as well

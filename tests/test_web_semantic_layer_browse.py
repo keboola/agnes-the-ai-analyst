@@ -320,7 +320,10 @@ class TestModelDetail:
         """Devin #1398: an imported model binds a metric to a dataset by that
         dataset's source id, not its friendly name. The per-dataset cross-link
         (`?tab=metrics&q=<dataset name>`) must resolve name → source so the
-        metric still shows."""
+        metric still shows — and the vendor tag is read case-insensitively, so
+        BOTH the canonical `AGNES` and the lower-case `agnes` the skill docs
+        show resolve (the filter reads via the casefolding
+        `agnes_extension_payload`, not the projector's case-sensitive helper)."""
         doc = {
             "semantic_model": [
                 {
@@ -330,14 +333,19 @@ class TestModelDetail:
                         {
                             "name": "gross_revenue",
                             "expression": {"dialects": [{"dialect": "duckdb", "expression": "SUM(amount)"}]},
-                            # bound to the dataset's SOURCE id, not its friendly
-                            # name. Vendor is "AGNES" — the exact tag the Keboola
-                            # metastore adapter emits and the projector's
-                            # `_agnes_payload` binds on (src/semantic/projection.py).
+                            # canonical upper-case tag the Keboola adapter emits
                             "custom_extensions": [
                                 {"vendor_name": "AGNES", "data": json.dumps({"dataset": "in.c-main.orders"})}
                             ],
-                        }
+                        },
+                        {
+                            "name": "net_revenue",
+                            "expression": {"dialects": [{"dialect": "duckdb", "expression": "SUM(net)"}]},
+                            # lower-case tag, exactly as the skill docs show it
+                            "custom_extensions": [
+                                {"vendor_name": "agnes", "data": json.dumps({"dataset": "in.c-main.orders"})}
+                            ],
+                        },
                     ],
                 }
             ]
@@ -346,7 +354,8 @@ class TestModelDetail:
         c = seeded_app["client"]
         r = c.get("/semantic-layer/imported?tab=metrics&q=Orders", headers=_auth(seeded_app["admin_token"]))
         assert r.status_code == 200
-        assert "gross_revenue" in r.text
+        assert "gross_revenue" in r.text  # AGNES-tagged binding resolves
+        assert "net_revenue" in r.text  # agnes-tagged binding resolves too
 
     def test_multi_model_document_shows_every_models_objects(self, seeded_app):
         """Devin #1398: a row declaring more than one semantic_model must show
