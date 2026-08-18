@@ -7,7 +7,22 @@
 {% set overrides = config.theme_overrides() %}
 {% if overrides %}
 <style>
-    :root {
+    /* Operator `theme:` colour override (instance.yaml). Must reliably win
+       over every built-in `:root[data-theme="…"]` block in
+       design-tokens.css, in every theme — including the one COMPOUND
+       block declared there today,
+       `:root[data-theme="dark"][data-theme-variant="blue"]` (specificity
+       0,3,0) — so this selector list matches or ties the specificity of
+       every level actually used there:
+         :root                                  — 0,1,0 (the base block)
+         :root[data-theme]                      — 0,2,0 (a single-value block)
+         :root[data-theme][data-theme-variant]  — 0,3,0 (the compound block)
+       This include always renders after design-tokens.css's <link> (see
+       base.html / base_ds.html), so any tie resolves by source order in
+       our favour. */
+    :root,
+    :root[data-theme],
+    :root[data-theme][data-theme-variant] {
         {% for var, val in overrides.items() %}
         {{ var }}: {{ val }};
         {% endfor %}

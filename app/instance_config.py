@@ -1265,6 +1265,62 @@ def get_theme() -> dict:
     return get_value("theme", default={})
 
 
+# Operator `theme:` colour/style keys (see `config/instance.yaml.example`)
+# → the CSS custom properties each one drives. Every key gets its legacy
+# `--*` variable (the pre-redesign palette in `style-custom.css`); where a
+# clean design-system equivalent exists, it also gets the matching `--ds-*`
+# token, so a `theme:` override recolors the "paper"/"navy"/"dark" surfaces
+# too, not just the legacy chrome. `radius` and `font_primary` have no
+# single `--ds-*` counterpart (the design system splits radius into
+# `--ds-radius-btn`/`--ds-radius-pill`, and the font stack is more than a
+# swap-in-one-value change) so they stay legacy-only. `font_url` isn't a
+# CSS variable at all — it drives a `<link rel="stylesheet">` tag — and is
+# intentionally absent here.
+#
+# The design system's status vocabulary is named "warn"/"danger", not
+# "warning"/"error" — same colours the operator keys describe, different
+# token family names.
+THEME_CSS_VAR_MAP: dict[str, tuple[str, ...]] = {
+    "primary": ("--primary", "--ds-primary"),
+    "primary_dark": ("--primary-dark", "--ds-primary-dark"),
+    "primary_light": ("--primary-light", "--ds-primary-light"),
+    "background": ("--background", "--ds-bg"),
+    "surface": ("--surface", "--ds-surface"),
+    "border": ("--border", "--ds-border"),
+    "text_primary": ("--text-primary", "--ds-text-primary"),
+    "text_secondary": ("--text-secondary", "--ds-text-secondary"),
+    "success": ("--success", "--ds-accent-success-ink"),
+    "warning": ("--warning", "--ds-accent-warn-ink"),
+    "error": ("--error", "--ds-accent-danger-ink"),
+    "font_primary": ("--font-primary",),
+    "radius": ("--radius",),
+}
+
+
+def get_theme_css_overrides() -> dict[str, str]:
+    """CSS custom-property overrides for the operator `theme:` block.
+
+    Returns ``{css_var_name: value}`` for every key the operator actually
+    set (never an empty value) — both the legacy `--*` family and, per
+    :data:`THEME_CSS_VAR_MAP`, the matching `--ds-*` design-system token.
+    Rendered by ``_theme.html`` into one inline `<style>` block whose
+    selector is deliberately at least as specific as every
+    `:root[data-theme="…"]` block in ``design-tokens.css``, so the
+    override reliably wins regardless of which theme palette is active —
+    see that template for the selector rationale.
+    """
+    theme = get_theme()
+    if not isinstance(theme, dict):
+        return {}
+    overrides: dict[str, str] = {}
+    for key, value in theme.items():
+        if not value or key == "font_url":
+            continue
+        for css_var in THEME_CSS_VAR_MAP.get(key, ()):
+            overrides[css_var] = value
+    return overrides
+
+
 def get_auth_config() -> dict:
     return get_value("auth", default={})
 

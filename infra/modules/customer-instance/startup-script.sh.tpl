@@ -111,6 +111,20 @@ if [ ! -f "$INSTANCE_YAML" ]; then
 database:
   backend: duckdb
 YAML
+    # Vendor-neutral per-instance branding (logo_svg / brand / subtitle /
+    # copyright / theme colours / custom_scripts) from the Terraform variables,
+    # pre-rendered to a base64'd top-level `instance:` + `theme:` YAML fragment.
+    # Appended ONLY here, inside the "file absent" branch, so it seeds a fresh
+    # instance without ever clobbering an operator's later edits or a migrated
+    # database.backend. The app reads these keys back from this same file (see
+    # app/instance_config.py; theme colours recolor the design-system --ds-*
+    # tokens). Empty when the caller set no branding -> the block is skipped
+    # entirely and instance.yaml is byte-for-byte the database-only file above.
+    # base64 carries the multi-line SVG / script HTML across the metadata
+    # boundary without any heredoc-delimiter or shell-expansion hazard.
+%{ if instance_branding_b64 != "" ~}
+    echo "${instance_branding_b64}" | base64 -d >> "$INSTANCE_YAML"
+%{ endif ~}
     chown 999:999 "$INSTANCE_YAML"
 fi
 # The 0600 tightening lives further down, right after the state-applier user
