@@ -4683,6 +4683,17 @@
       "JourneyUpdateBody": {
         "description": "Partial update \u2014 every field optional; only the ones present change.",
         "properties": {
+          "agent_created": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Created"
+          },
           "catalog_discovered": {
             "anyOf": [
               {
@@ -10948,7 +10959,7 @@
   "info": {
     "description": "Self-hosted AI harness: governed data access, skills marketplace, corporate memory, and agent workspaces",
     "title": "AI Harness",
-    "version": "0.83.23"
+    "version": "0.83.47"
   },
   "openapi": "3.1.0",
   "paths": {
