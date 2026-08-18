@@ -10,7 +10,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
-## [0.83.39] - 2026-08-18
+## [0.83.41] - 2026-08-18
 
 - **`agnes snapshot create` works on a remote Databricks row** — both the `table_id` form (`--select` / `--where` / `--limit` / `--order-by`) and `--from-query`. `/api/v2/scan` and `/api/v2/scan/estimate` gained a Databricks branch instead of refusing with `scan_engine_unsupported`, which had left an analyst no way to pull a filtered subset of a large Databricks table short of asking an admin for a materialized row. Predicates are written in Databricks SQL — the flavor `agnes schema` already advertises for the row — and size is bounded by `api.scan.max_result_bytes` with its own longer statement timeout (`data_source.databricks.scan_timeout_seconds`, default 900), because a snapshot is a materialize rather than an answer someone is waiting on.
 
@@ -69,6 +69,34 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Internal
 
 - **The schema TTL cache is reset between tests.** Keyed on `table_id` with a 1 h TTL and process-global, so two suites registering the same id with different columns handed each other the wrong schema — a failure that depended only on file ordering. Added to the existing `_reset_module_caches` autouse fixture alongside the catalog and quota caches.
+
+## [0.83.40] - 2026-08-18
+
+### Added
+
+- **No-SQL access-policy builder, backend groundwork.** Two new admin-only endpoints under `/api/admin/registry/{table_id}/policy/`: `GET .../policy/columns` returns a table's real column schema plus sample values (from the stored profile, if any) and which tables are `policy_mapping`-eligible for a join; `POST .../policy/compile` turns a structured `{row_rules, row_combine, column_masks}` spec into the same canonical SQL the resolver runs, via `src.access_policy_compile.compile_policy` — a masked column is always `EXCLUDE`d before it is re-derived, so the two-column plaintext leak (`SELECT *, md5(col) AS col`) is structurally impossible. Neither endpoint persists anything; saving still goes through the existing `PUT /api/admin/registry/{table_id}` (`access_policy_sql`). No UI wiring yet — see `docs/superpowers/plans/2026-08-17-access-policy-builder-ux.md`.
+- **No-SQL access-policy builder, UI.** The `/admin/tables` policy editor now opens on a **Builder** tab: each of a table's real columns (name, type, sample values, distinct count) gets a mask picker — Show, Hide, Nullify, Pseudonymize, or Unmask for a chosen group — and every change re-compiles the spec server-side and drops the resulting SQL into the same textarea, now demoted to an "Advanced SQL" tab; preview and save are unchanged.
+- **Access-policy editor: inline eligibility fix + mapping toggle.** The interlock warning shown for a still-distributed table used to end in a dead-end sentence ("set server_only first, then come back"); it now carries a "Set server_only=true" button that fixes it in place and unlocks the builder immediately. A new switch lets an admin mark a table `policy_mapping=true` (referenceable from another table's policy SQL, not a grant) without the CLI.
+- **Access-policy builder: row rules + before/after preview.** The Builder tab's "Who sees which rows" section adds repeatable `[column] [operator] [value]` rules (caller-group / caller-email / caller-id / equals / one-of, combined with AND or OR) above the column list, feeding the same `policy/compile` call the mask pickers already drive — the row-level `WHERE` no longer needs the Advanced SQL tab. The preview now renders a before/after: every raw sample row, struck through when the candidate policy drops it, with a masked visible column showing the raw value struck next to its masked replacement and a hidden column struck in the header with an em-dash body — a best-effort match against the policied sample, since a table with no declared primary key has no guaranteed row identity to join on.
+
+### Fixed
+
+- **The access-policy before/after preview no longer diffs unrelated rows.** The raw sample and the policied sample were two independent `LIMIT 20` reads, so on any table where the rows a persona can see sit past the first 20, the "after" list contained rows the "before" list never showed — and the UI paired them anyway, striking through rows the policy never dropped and reporting masked-cell changes that never happened. The raw window is now materialized once and the policy runs against it, so both lists cover exactly the same rows (one bounded read instead of two — cheaper, not costlier, on a remote table). When a policy's reads of its own table cannot be bounded that way, the response says so and the preview shows the persona's slice on its own with a note, instead of inventing a diff.
+- **The access-policy builder now shows what the compiler said about a spec.** `policy/compile` has always returned warnings — a column it did not recognize and dropped, or a spec that filters and masks nothing at all ("this policy returns the full table to every caller") — and the builder discarded them, so an admin could save a policy that quietly does nothing. They render under the column list as the spec is edited.
+- **A failed "Set server_only=true" attempt no longer strands the button.** The inline interlock fix disabled its own button and relabelled it "Setting…" before the request; only the success path put it back, so a rejected or network-failed attempt left a permanently dead control and no way to retry.
+- **A malformed policy builder spec returns 422, not 500.** An unknown row operator or mask choice reached the compiler as a bare `ValueError` and escaped the handler; it is now `422 policy_compile_invalid_spec` with the offending value.
+
+## [0.83.39] - 2026-08-18
+
+### Added
+
+- **Admin / Tables: Databricks tables can now be registered from the UI.** The `+ Register new table` dropdown on `/admin/tables` includes a Databricks option that opens a registration drawer for both live (remote SQL warehouse) and synced (materialized parquet) modes, supporting whole-table auto `SELECT *` or custom SQL.
+
+### Fixed
+
+- **Admin / Tables: the Databricks shortcut no longer hides every other register option.** On an instance whose data source is Databricks with no other connection in the registry, `+ Register new table` opened the Databricks drawer straight away — and that shortcut was the button's only behaviour, so the dropdown was unreachable and with it the Jira docs link and the BigQuery / Keboola register items; registering any of them meant dropping to the API or the CLI. The primary is now a split button: the label keeps the shortcut, and the caret beside it always opens the full source list.
+
+- **Admin / Tables: the primary `+ Register new table` button opens the Databricks register modal directly only when Databricks is the sole connected source.** When additional sources are connected, the dropdown remains reachable so the other source options can still be selected.
 
 ## [0.83.38] - 2026-08-18
 

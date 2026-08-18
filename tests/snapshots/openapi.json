@@ -6497,6 +6497,31 @@
         "title": "PluginResponse",
         "type": "object"
       },
+      "PolicyCompileRequest": {
+        "description": "Body for ``POST /registry/{table_id}/policy/compile`` (plan Task 3)\n-- the structured spec the builder UI assembles from Task 2's column\nlist plus its own mask/row-rule pickers. Deliberately has NO ``table``\nfield: the compiled SQL always names the REGISTRY row's own ``name``,\nresolved server-side, so a stale or tampered client can never smuggle\na different table into the generated SQL.",
+        "properties": {
+          "column_masks": {
+            "additionalProperties": true,
+            "title": "Column Masks",
+            "type": "object"
+          },
+          "row_combine": {
+            "default": "and",
+            "title": "Row Combine",
+            "type": "string"
+          },
+          "row_rules": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Row Rules",
+            "type": "array"
+          }
+        },
+        "title": "PolicyCompileRequest",
+        "type": "object"
+      },
       "PolicyPreviewRequest": {
         "description": "Body for ``POST /registry/{table_id}/policy/preview`` (design doc\n\u00a713.1). ``sql`` is optional \u2014 omitted previews the table's currently\nstored ``access_policy_sql``; given, it previews a CANDIDATE body\nbefore it is ever saved. Exactly one of ``as_user`` / ``as_groups``\nselects the persona to run the policy as: ``as_user`` binds a real,\nexisting user's identity (id/email) AND their LIVE group membership;\n``as_groups`` is an ad-hoc group set with no real user behind it \u2014 the\nshape Task 15's persona matrix repeatedly calls this endpoint with, one\ndistinct group-set at a time, per \u00a713.1's \"enumerates the distinct\ngroup-sets\" (an ad-hoc set never needs a real account to exist).",
         "properties": {
@@ -23611,6 +23636,142 @@
           }
         },
         "summary": "Update Table Docs",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/admin/registry/{table_id}/policy/columns": {
+      "get": {
+        "description": "Real schema + sample values for the no-SQL policy builder (plan\nTask 2, access-policy-builder-ux) -- the column list a\n``policy/compile`` spec (Task 3) is built from, so the builder UI\nnever has to know a table's structure up front.\n\nRead-only and never gated on ``access_policies.enabled``: like\n``preview_table_policy`` right above, this is an admin-authoring\nread/compute surface, not the ATTACH action that flag actually gates\n(``PUT /registry/{id}`` writing a non-null ``access_policy_sql``, per\nthat flag's own hint text in ``_flag_default(\"access_policies\", ...)``\nabove).",
+        "operationId": "policy_builder_columns_api_admin_registry__table_id__policy_columns_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "table_id",
+            "required": true,
+            "schema": {
+              "title": "Table Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Policy Builder Columns",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/admin/registry/{table_id}/policy/compile": {
+      "post": {
+        "description": "Turn a structured builder spec into the canonical policy SQL (plan\nTask 3) via ``src.access_policy_compile.compile_policy`` -- the ONLY\nplace that generator's anti-leak EXCLUDE-before-derive invariant is\nexercised over HTTP. Returns SQL only; nothing is persisted here -- an\nadmin who likes the result still saves it through the existing ``PUT\n/registry/{id}`` (``access_policy_sql``), unchanged, so the stored\nartifact stays SQL, never a structured spec.\n\nRead-only and, like ``policy_builder_columns`` above, deliberately not\ngated on ``access_policies.enabled``: it neither reads nor writes a\nstored policy. The flag gates ATTACHING one (``PUT /registry/{id}``\nwith a non-null ``access_policy_sql``).",
+        "operationId": "policy_builder_compile_api_admin_registry__table_id__policy_compile_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "table_id",
+            "required": true,
+            "schema": {
+              "title": "Table Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PolicyCompileRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Policy Builder Compile",
         "tags": [
           "admin"
         ]
