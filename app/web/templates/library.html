@@ -2147,6 +2147,15 @@
     <div class="lib-defs__links">
       <a class="lib-defs__link" href="/catalog/semantics#metrics">{{ _dm }} metric{{ '' if _dm == 1 else 's' }} &rarr;</a>
       <a class="lib-defs__link" href="/catalog/semantics#glossary">{{ _dg }} glossary term{{ '' if _dg == 1 else 's' }} &rarr;</a>
+      {# The stored Ossie document itself — datasets, relationships, AI
+         context, constraints — one layer below the flat metric/glossary
+         projection the two links above open. No count here (unlike the two
+         above): that would need a per-caller RBAC-filtered model read, and
+         /library deliberately takes no raw DB connection (see the router's
+         comment on `definitions_footer`) to stay backend-split-safe on
+         Postgres — see docs/superpowers/specs/2026-08-14-semantic-layer-
+         ui-and-agent-parity-design.md. #}
+      <a class="lib-defs__link" href="/semantic-layer">Browse the semantic layer &rarr;</a>
     </div>
   </aside>
   {% endif %}

@@ -62,6 +62,7 @@ from src.repositories import (
     profile_repo,
     recipes_repo,
     resource_grants_repo,
+    semantic_model_repo,
     store_entities_repo,
     store_lint_repo,
     store_submissions_repo,
@@ -3424,7 +3425,18 @@ async def library_page(
                         seen.setdefault(w, None)
             return " ".join(seen)
 
-        if _visible_metrics or _glossary_terms:
+        # Instance-level existence check for the "Browse the semantic layer"
+        # link below — NOT RBAC-filtered (unlike `_visible_metrics` above):
+        # it answers "is a semantic layer configured at all", the same
+        # question the two counts above answer for the flat projection, and
+        # the browse page itself 404s/omits whatever the caller can't reach.
+        # A freshly-imported document with no metrics/glossary projected yet
+        # (or a purely native, browse-only model) must still surface this
+        # link — gating it on the flat projection's counts would hide the
+        # one thing this UI exists to browse.
+        _semantic_model_count = len(semantic_model_repo().list_all())
+
+        if _visible_metrics or _glossary_terms or _semantic_model_count:
             definitions_footer = {
                 "metric_count": len(_visible_metrics),
                 "glossary_count": len(_glossary_terms),
@@ -3916,6 +3928,243 @@ async def catalog_semantics(
         glossary_count=glossary_count,
     )
     return templates.TemplateResponse(request, "catalog_semantics.html", ctx)
+
+
+# ---------------------------------------------------------------------------
+# Semantic layer browse UI (wave 4.2 of the 2026-08-14 UI/agent-parity
+# design) — read-only rendering of the stored Ossie document itself, three
+# levels: model list, model detail (one tab per object type), object detail.
+# Deliberately separate from /catalog/semantics (the flat metric_definitions
+# projection) and /admin/semantic-layer (the sync-ops view) — neither is
+# touched by this feature. RBAC tier matches the rest of the read surface in
+# app/api/semantic_models.py: any authenticated user, filtered through
+# `_can_read_model` (a Data Package grant or a direct `semantic_model` grant
+# — never admin-only). Editing is a later increment; nothing on any of the
+# three pages below offers a write affordance.
+# ---------------------------------------------------------------------------
+
+_SEMANTIC_LAYER_TABS = ("datasets", "metrics", "constraints", "relationships", "glossary")
+
+
+def _semantic_layer_tab_label(tab: str) -> str:
+    return {
+        "datasets": "Datasets",
+        "metrics": "Metrics",
+        "constraints": "Constraints",
+        "relationships": "Relationships",
+        "glossary": "Glossary",
+    }[tab]
+
+
+@router.get("/semantic-layer", response_class=HTMLResponse)
+async def semantic_layer_list(
+    request: Request,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Level 1 — every semantic model the caller can read, with its object
+    counts, SQL dialect(s) and validation status.
+
+    A ``status='invalid'`` row still lists (an invalid import must be
+    visible, not silent) and renders its stored ``validation_errors``
+    instead of object counts, since an invalid document's ``document_json``
+    may be stale or absent.
+    """
+    from app.api.semantic_models import _can_read_model
+    from app.web.semantic_layer_view import model_dialects, model_of, object_counts, source_label
+
+    models = []
+    for row in semantic_model_repo().list_all():
+        if not _can_read_model(user, row, conn):
+            continue
+        model = model_of(row)
+        models.append(
+            {
+                "slug": row["slug"],
+                "name": row.get("name") or model.get("name") or row["slug"],
+                "description": row.get("description") or model.get("description"),
+                "dialects": model_dialects(model),
+                "source": row.get("source"),
+                "source_label": source_label(row.get("source")),
+                "status": row.get("status"),
+                "validation_errors": row.get("validation_errors") or [],
+                "counts": object_counts(model),
+            }
+        )
+
+    ctx = _build_context(request, user=user, models=models)
+    return templates.TemplateResponse(request, "semantic_layer_list.html", ctx)
+
+
+@router.get("/semantic-layer/{slug}", response_class=HTMLResponse)
+async def semantic_layer_detail(
+    slug: str,
+    request: Request,
+    tab: str = Query("datasets"),
+    q: str = Query(""),
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Level 2 — one model, one tab per object type (datasets default).
+
+    ``q`` is the cross-link prefilter carried from another tab (a metric
+    row links to its constraints with ``?tab=constraints&q=<metric name>``,
+    a dataset row links to its metrics with ``?tab=metrics&q=<dataset
+    name>``) — a plain case-insensitive substring match scoped to whichever
+    tab is active, not a new search endpoint.
+    """
+    from app.api.semantic_models import _can_read_model
+    from app.web.semantic_layer_view import (
+        is_imported,
+        model_constraints,
+        model_glossary,
+        model_of,
+        object_counts,
+        source_label,
+    )
+
+    row = semantic_model_repo().get_by_slug(slug)
+    if row is None or not _can_read_model(user, row, conn):
+        raise HTTPException(status_code=404, detail=f"Semantic model '{slug}' not found")
+
+    active_tab = tab if tab in _SEMANTIC_LAYER_TABS else "datasets"
+    model = model_of(row)
+
+    datasets = [d for d in model.get("datasets") or [] if isinstance(d, dict)]
+    metrics = [m for m in model.get("metrics") or [] if isinstance(m, dict)]
+    constraints = model_constraints(model)
+    relationships = [r for r in model.get("relationships") or [] if isinstance(r, dict)]
+    glossary = model_glossary(model)
+
+    needle = q.strip().lower()
+    if needle:
+        if active_tab == "datasets":
+            datasets = [d for d in datasets if needle in str(d.get("name") or "").lower()]
+        elif active_tab == "metrics":
+            from src.semantic.projection import _agnes_payload as _metric_agnes_payload
+
+            metrics = [
+                m
+                for m in metrics
+                if needle in str(m.get("name") or "").lower()
+                or needle in str(_metric_agnes_payload(m).get("dataset") or "").lower()
+            ]
+        elif active_tab == "constraints":
+            constraints = [c for c in constraints if needle in " ".join(c.get("metrics") or []).lower()]
+        elif active_tab == "relationships":
+            relationships = [
+                r
+                for r in relationships
+                if needle in str(r.get("from") or "").lower() or needle in str(r.get("to") or "").lower()
+            ]
+        elif active_tab == "glossary":
+            glossary = [g for g in glossary if needle in str(g.get("term") or "").lower()]
+
+    tabs = [
+        {
+            "key": t,
+            "label": _semantic_layer_tab_label(t),
+            "href": f"/semantic-layer/{slug}?tab={t}",
+            "active": t == active_tab,
+        }
+        for t in _SEMANTIC_LAYER_TABS
+    ]
+
+    ctx = _build_context(
+        request,
+        user=user,
+        slug=slug,
+        model_name=row.get("name") or model.get("name") or slug,
+        model_description=row.get("description") or model.get("description"),
+        source=row.get("source"),
+        source_label=source_label(row.get("source")),
+        is_imported=is_imported(row.get("source")),
+        status=row.get("status"),
+        validation_errors=row.get("validation_errors") or [],
+        active_tab=active_tab,
+        tabs=tabs,
+        q=q,
+        datasets=datasets,
+        metrics=metrics,
+        constraints=constraints,
+        relationships=relationships,
+        glossary=glossary,
+        counts=object_counts(model),
+    )
+    return templates.TemplateResponse(request, "semantic_layer_detail.html", ctx)
+
+
+@router.get("/semantic-layer/{slug}/{object_id}", response_class=HTMLResponse)
+async def semantic_layer_object(
+    slug: str,
+    object_id: str,
+    request: Request,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Level 3 — one object, rendering everything the flat projection drops:
+    a dataset's ``fields[]`` as a Name/Type/Role/Description table, the
+    ``ai_context`` block in five groups (keywords, synonyms, anti_keywords,
+    hints, warnings), a metric's SQL fragment(s) with their dialect, a
+    relationship with both sides linked.
+
+    ``object_id`` is ``"<type>:<name>"`` (one path segment, per the design
+    spec's URL) — ``type`` one of dataset/metric/relationship/constraint/
+    glossary, ``name`` the object's ``name`` (``term`` for glossary),
+    case-insensitively matched.
+    """
+    from app.api.semantic_models import _can_read_model
+    from app.web.semantic_layer_view import (
+        OBJECT_TYPE_LABELS,
+        OBJECT_TYPE_TAB,
+        ai_groups,
+        ai_instructions_and_examples,
+        dataset_field_rows,
+        find_object,
+        is_imported,
+        metric_expressions,
+        model_of,
+        source_label,
+    )
+
+    row = semantic_model_repo().get_by_slug(slug)
+    if row is None or not _can_read_model(user, row, conn):
+        raise HTTPException(status_code=404, detail=f"Semantic model '{slug}' not found")
+
+    object_type, _, object_name = object_id.partition(":")
+    if object_type not in OBJECT_TYPE_LABELS or not object_name:
+        raise HTTPException(status_code=404, detail=f"Unknown semantic object '{object_id}'")
+
+    model = model_of(row)
+    obj = find_object(model, object_type, object_name)
+    if obj is None:
+        raise HTTPException(status_code=404, detail=f"{object_type} '{object_name}' not found in '{slug}'")
+
+    instructions, examples = ai_instructions_and_examples(obj) if object_type in ("dataset", "metric") else (None, [])
+
+    datasets_by_name = {d.get("name"): d for d in model.get("datasets") or [] if isinstance(d, dict) and d.get("name")}
+
+    ctx = _build_context(
+        request,
+        user=user,
+        slug=slug,
+        model_name=row.get("name") or model.get("name") or slug,
+        is_imported=is_imported(row.get("source")),
+        source_label=source_label(row.get("source")),
+        object_type=object_type,
+        object_type_label=OBJECT_TYPE_LABELS[object_type],
+        back_tab=OBJECT_TYPE_TAB[object_type],
+        obj=obj,
+        object_name=obj.get("name") or obj.get("term") or object_name,
+        fields=dataset_field_rows(obj) if object_type == "dataset" else None,
+        ai=ai_groups(obj) if object_type in ("dataset", "metric", "relationship") else None,
+        ai_instructions=instructions,
+        ai_examples=examples,
+        expressions=metric_expressions(obj) if object_type == "metric" else None,
+        from_dataset=datasets_by_name.get(obj.get("from")) if object_type == "relationship" else None,
+        to_dataset=datasets_by_name.get(obj.get("to")) if object_type == "relationship" else None,
+    )
+    return templates.TemplateResponse(request, "semantic_layer_object.html", ctx)
 
 
 @router.get("/catalog/p/{slug}", response_class=HTMLResponse)

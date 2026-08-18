@@ -1,0 +1,120 @@
+{% extends "base_page.html" %}
+
+{% block title %}Semantic layer — {{ config.INSTANCE_NAME }}{% endblock %}
+
+{% set page_hero_eyebrow = "Semantic layer" %}
+{% set page_hero_title = "Semantic layer" %}
+{% set page_hero_subtitle = "Browse your organization's datasets, metrics, relationships and glossary — the stored document itself, not just the flat metric list." %}
+
+{% block head_extra %}
+<style>
+/* ── Model cards ─────────────────────────────────────────────────────── */
+.slb-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: var(--space-4);
+    margin: var(--space-5) 0 var(--space-9);
+}
+.slb-card {
+    display: block;
+    padding: var(--space-4) var(--space-5);
+    border: 1px solid var(--ds-border);
+    border-radius: var(--radius-lg);
+    background: var(--ds-surface);
+    text-decoration: none;
+    color: inherit;
+    transition: border-color 0.12s, box-shadow 0.12s;
+}
+.slb-card:hover {
+    border-color: var(--ds-primary);
+    box-shadow: 0 2px 10px color-mix(in srgb, var(--ds-primary) 10%, transparent);
+}
+.slb-card--invalid { border-color: var(--ds-accent-danger-line); }
+.slb-card__head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--space-3);
+    margin-bottom: 4px;
+}
+.slb-card__name { font-size: 15px; font-weight: 700; color: var(--ds-text-primary); }
+.slb-card__desc {
+    font-size: 12.5px;
+    color: var(--ds-text-secondary);
+    margin: 4px 0 var(--space-3);
+    min-height: 1em;
+}
+.slb-card__dialects {
+    font-size: 11px;
+    color: var(--ds-text-muted);
+    margin-bottom: var(--space-3);
+}
+.slb-counts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+.slb-count {
+    font-size: 11px;
+    color: var(--ds-text-muted);
+    background: var(--ds-surface-dim);
+    border: 1px solid var(--ds-border);
+    border-radius: var(--radius-full);
+    padding: 2px 8px;
+}
+.slb-errors {
+    margin: var(--space-3) 0 0;
+    padding: 0 0 0 18px;
+    font-size: 12px;
+    color: var(--ds-accent-danger-ink);
+}
+.slb-errors li { margin-bottom: 2px; }
+</style>
+{% endblock %}
+
+{% block page %}
+{% if models %}
+<div class="slb-grid">
+    {% for m in models %}
+    <a class="slb-card{% if m.status == 'invalid' %} slb-card--invalid{% endif %}" href="/semantic-layer/{{ m.slug }}">
+        <div class="slb-card__head">
+            <span class="slb-card__name">{{ m.name }}</span>
+            {% if m.source != 'manual' %}
+            <span class="badge">Imported from {{ m.source_label }}</span>
+            {% endif %}
+        </div>
+        <p class="slb-card__desc">{{ m.description or "" }}</p>
+        {% if m.dialects %}
+        <div class="slb-card__dialects">SQL dialect{{ '' if m.dialects | length == 1 else 's' }}: {{ m.dialects | join(', ') }}</div>
+        {% endif %}
+        {% if m.status == 'invalid' %}
+        <span class="badge badge--danger">Invalid</span>
+        {% if m.validation_errors %}
+        <ul class="slb-errors">
+            {% for err in m.validation_errors %}
+            <li>{{ err }}</li>
+            {% endfor %}
+        </ul>
+        {% endif %}
+        {% else %}
+        <div class="slb-counts">
+            <span class="slb-count">{{ m.counts.datasets }} dataset{{ '' if m.counts.datasets == 1 else 's' }}</span>
+            <span class="slb-count">{{ m.counts.metrics }} metric{{ '' if m.counts.metrics == 1 else 's' }}</span>
+            <span class="slb-count">{{ m.counts.constraints }} constraint{{ '' if m.counts.constraints == 1 else 's' }}</span>
+            <span class="slb-count">{{ m.counts.relationships }} relationship{{ '' if m.counts.relationships == 1 else 's' }}</span>
+            <span class="slb-count">{{ m.counts.glossary }} glossary term{{ '' if m.counts.glossary == 1 else 's' }}</span>
+        </div>
+        {% endif %}
+    </a>
+    {% endfor %}
+</div>
+{% else %}
+<div class="empty-state">
+    <h3 class="empty-state__title">No semantic model available</h3>
+    <p class="empty-state__description">
+        Ask an admin to import or author one, or to grant you access to an existing one
+        (<a href="/catalog/semantics">the metric &amp; glossary catalog</a> is a related, separate view).
+    </p>
+</div>
+{% endif %}
+{% endblock %}

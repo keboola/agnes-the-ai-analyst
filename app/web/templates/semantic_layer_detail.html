@@ -1,0 +1,217 @@
+{% extends "base_page.html" %}
+
+{% block title %}{{ model_name }} — Semantic layer — {{ config.INSTANCE_NAME }}{% endblock %}
+
+{% block head_extra %}
+<style>
+.slb-back {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: var(--space-6) 0 0;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--ds-text-secondary);
+    text-decoration: none;
+}
+.slb-back:hover { color: var(--ds-text-primary); }
+
+.slb-meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-3);
+    margin: 0 0 var(--space-5);
+}
+
+.slb-filter {
+    margin: 0 0 var(--space-4);
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+.slb-filter input {
+    max-width: 280px;
+    border: 1px solid var(--ds-border);
+    border-radius: var(--radius-md);
+    background: var(--ds-surface);
+    color: var(--ds-text-primary);
+    font: 13px/1.4 inherit;
+    padding: 6px 10px;
+}
+.slb-filter .btn { flex-shrink: 0; }
+
+.slb-cross-link {
+    font-size: 11.5px;
+    color: var(--ds-primary);
+    text-decoration: none;
+}
+.slb-cross-link:hover { text-decoration: underline; }
+
+.slb-rule-code {
+    font-family: var(--ds-font-mono, monospace);
+    font-size: 12px;
+    background: var(--ds-surface-dim);
+    border: 1px solid var(--ds-border);
+    border-radius: var(--radius-sm);
+    padding: 2px 6px;
+}
+</style>
+{% endblock %}
+
+{% block page_prehead %}
+<a class="slb-back" href="/semantic-layer">&larr; Semantic layer</a>
+{% endblock %}
+
+{% set page_hero_eyebrow = "Semantic layer" %}
+{% set page_hero_title = model_name %}
+{% set page_hero_subtitle = model_description %}
+
+{% block toolbar %}
+<div class="slb-meta">
+    {% if is_imported %}
+    <span class="badge">Imported from {{ source_label }}</span>
+    {% else %}
+    <span class="badge">Native</span>
+    {% endif %}
+    {% if status == 'invalid' %}
+    <span class="badge badge--danger">Invalid</span>
+    {% endif %}
+</div>
+{{ ds.tabs(items=tabs, aria_label='Semantic model object types') }}
+{% endblock %}
+
+{% block page %}
+{% if status == 'invalid' and validation_errors %}
+<div class="flash flash-error">
+    <strong>This document failed validation.</strong> The tabs below may be incomplete or stale.
+    <ul>
+        {% for err in validation_errors %}
+        <li>{{ err }}</li>
+        {% endfor %}
+    </ul>
+</div>
+{% endif %}
+
+<form class="slb-filter" method="get" action="/semantic-layer/{{ slug }}">
+    <input type="hidden" name="tab" value="{{ active_tab }}">
+    <input type="search" name="q" value="{{ q }}" placeholder="Filter {{ active_tab }}&hellip;" aria-label="Filter {{ active_tab }}">
+    <button type="submit" class="btn btn-secondary btn-sm">Filter</button>
+    {% if q %}<a class="btn btn-ghost btn-sm" href="/semantic-layer/{{ slug }}?tab={{ active_tab }}">Clear</a>{% endif %}
+</form>
+
+{% if active_tab == 'datasets' %}
+    {% if datasets %}
+    <table class="data-table">
+        <thead>
+            <tr><th>Name</th><th>Source</th><th>Fields</th><th>Description</th><th></th></tr>
+        </thead>
+        <tbody>
+            {% for d in datasets %}
+            <tr>
+                <td><a href="/semantic-layer/{{ slug }}/dataset:{{ d.name | urlencode }}">{{ d.name }}</a></td>
+                <td>{{ d.source or "—" }}</td>
+                <td>{{ (d.fields or []) | length }}</td>
+                <td>{{ d.description or "" }}</td>
+                <td><a class="slb-cross-link" href="/semantic-layer/{{ slug }}?tab=metrics&amp;q={{ d.name | urlencode }}">metrics on this dataset &rarr;</a></td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <div class="empty-state"><p class="empty-state__description">No datasets{% if q %} match &ldquo;{{ q }}&rdquo;{% endif %}.</p></div>
+    {% endif %}
+
+{% elif active_tab == 'metrics' %}
+    {% if metrics %}
+    <table class="data-table">
+        <thead>
+            <tr><th>Name</th><th>Description</th><th>Dialects</th><th></th></tr>
+        </thead>
+        <tbody>
+            {% for m in metrics %}
+            <tr>
+                <td><a href="/semantic-layer/{{ slug }}/metric:{{ m.name | urlencode }}">{{ m.name }}</a></td>
+                <td>{{ m.description or "" }}</td>
+                <td>
+                    {% for de in (m.expression.dialects if m.expression else []) %}
+                    <span class="badge">{{ de.dialect }}</span>
+                    {% endfor %}
+                </td>
+                <td><a class="slb-cross-link" href="/semantic-layer/{{ slug }}?tab=constraints&amp;q={{ m.name | urlencode }}">constraints on this metric &rarr;</a></td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <div class="empty-state"><p class="empty-state__description">No metrics{% if q %} match &ldquo;{{ q }}&rdquo;{% endif %}.</p></div>
+    {% endif %}
+
+{% elif active_tab == 'constraints' %}
+    {% if constraints %}
+    <table class="data-table">
+        <thead>
+            <tr><th>Name</th><th>Type</th><th>Rule</th><th>Severity</th><th>Metrics</th></tr>
+        </thead>
+        <tbody>
+            {% for c in constraints %}
+            <tr>
+                <td><a href="/semantic-layer/{{ slug }}/constraint:{{ c.name | urlencode }}">{{ c.name }}</a></td>
+                <td>{{ c.constraint_type or "—" }}</td>
+                <td><code class="slb-rule-code">{{ c.rule or "" }}</code></td>
+                <td>
+                    <span class="badge{% if (c.severity or '') | lower == 'error' %} badge--danger{% else %} badge--warn{% endif %}">
+                        {{ c.severity or "warning" }}
+                    </span>
+                </td>
+                <td>{{ (c.metrics or []) | join(', ') }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <div class="empty-state"><p class="empty-state__description">No constraints{% if q %} match &ldquo;{{ q }}&rdquo;{% endif %}.</p></div>
+    {% endif %}
+
+{% elif active_tab == 'relationships' %}
+    {% if relationships %}
+    <table class="data-table">
+        <thead>
+            <tr><th>Name</th><th>From</th><th>To</th><th></th></tr>
+        </thead>
+        <tbody>
+            {% for r in relationships %}
+            <tr>
+                <td><a href="/semantic-layer/{{ slug }}/relationship:{{ r.name | urlencode }}">{{ r.name }}</a></td>
+                <td><a href="/semantic-layer/{{ slug }}/dataset:{{ r.from | urlencode }}">{{ r.from }}</a></td>
+                <td><a href="/semantic-layer/{{ slug }}/dataset:{{ r.to | urlencode }}">{{ r.to }}</a></td>
+                <td>{{ (r.from_columns or []) | join(', ') }} = {{ (r.to_columns or []) | join(', ') }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <div class="empty-state"><p class="empty-state__description">No relationships{% if q %} match &ldquo;{{ q }}&rdquo;{% endif %}.</p></div>
+    {% endif %}
+
+{% elif active_tab == 'glossary' %}
+    {% if glossary %}
+    <table class="data-table">
+        <thead>
+            <tr><th>Term</th><th>Definition</th><th>See also</th></tr>
+        </thead>
+        <tbody>
+            {% for g in glossary %}
+            <tr>
+                <td><a href="/semantic-layer/{{ slug }}/glossary:{{ g.term | urlencode }}">{{ g.term }}</a></td>
+                <td>{{ g.definition or "" }}</td>
+                <td>{{ (g.see_also or []) | join(', ') }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <div class="empty-state"><p class="empty-state__description">No glossary terms{% if q %} match &ldquo;{{ q }}&rdquo;{% endif %}.</p></div>
+    {% endif %}
+{% endif %}
+{% endblock %}

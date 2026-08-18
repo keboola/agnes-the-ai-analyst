@@ -383,6 +383,9 @@ def _accessible_valid_documents(
     the validator, which unions its detection across all of them.
     """
     documents: list[dict[str, Any]] = []
+    # Case-folded once, not per row (the match below is case-insensitive like
+    # object-id matching).
+    refs_cf = {str(r).casefold() for r in model_refs} if model_refs is not None else None
     for row in semantic_model_repo().list_all():
         if row.get("status") != "valid" or not row.get("document_json"):
             continue
@@ -392,7 +395,7 @@ def _accessible_valid_documents(
         if not isinstance(models, list):
             continue
         model_dicts = [m for m in models if isinstance(m, dict)]
-        if model_refs is None:
+        if refs_cf is None:
             documents.extend(model_dicts)
             continue
         # `model_refs` restricts to specific models, case-insensitively (like
@@ -403,7 +406,6 @@ def _accessible_valid_documents(
         # for, and the `model` label each object carries is that name. Accepting
         # the name at all is what lets that returned label round-trip back into
         # `model_ids` (Devin review on #1398).
-        refs_cf = {str(r).casefold() for r in model_refs}
         if (str(row.get("id") or "")).casefold() in refs_cf or (str(row.get("slug") or "")).casefold() in refs_cf:
             documents.extend(model_dicts)
             continue

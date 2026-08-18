@@ -125,7 +125,7 @@ def context(
         help="Restrict to this model id, slug, or name (the `[model]` label shown in output) — "
         "repeatable, case-insensitive. Omit for every accessible model.",
     ),
-    limit: int = typer.Option(0, "--limit", help="Cap objects shown per type (0 = no cap)."),
+    limit: int = typer.Option(0, "--limit", min=0, help="Cap objects shown per type (0 = no cap)."),
     as_json: bool = typer.Option(False, "--json", help="Emit raw JSON"),
 ):
     """Look up datasets/metrics/relationships from your accessible semantic models.

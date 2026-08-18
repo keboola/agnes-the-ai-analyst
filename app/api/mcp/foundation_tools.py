@@ -540,8 +540,9 @@ def register_foundation_tools(
             semantic_type: ``dataset``, ``metric``, or ``relationship``.
             ids: Specific object names to fetch in full. Omit (or pass an
                 empty list) for every object of this type, compactly.
-            model_ids: Restrict to these model ids/slugs. Omit for every
-                model you can access.
+            model_ids: Restrict to these models by id, slug, or model name
+                (the ``model`` label each returned object carries; matched
+                case-insensitively). Omit for every model you can access.
 
         Returns ``{"results": [{"semantic_type", "mode", "objects": [...]}],
         "unknown_types": [...]}``. Each object carries ``"model"`` (which
