@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- **Sliced exports from an AWS-staged Keboola project now download instead of failing outright.** A sliced export's manifest lists one URL per slice in whatever scheme the project's backend stages on, and the two sliced download paths rewrote `gs://` (GCS REST + OAuth bearer) and `azure://` (HTTPS + SAS) while assuming AWS had already handed back a presigned HTTPS URL. Projects whose files are staged on S3 list raw `s3://` URIs instead, which `requests` cannot fetch at all — every sliced export on such a project died with `No connection adapters were found for 's3://…'`, and since parquet exports are sliced whenever the table is large enough, that is most real tables. `s3://` is now rewritten to the bucket's HTTPS endpoint and signed with the STS credentials the file detail already carries (SigV4 in the request headers, never presigned into the query string, so the signature stays out of proxy and access logs). A slice naming a bucket other than the export's own is refused rather than signed — the manifest is fetched from the Storage API, but its contents should not be able to aim the export's credentials somewhere the export does not cover. Both sliced entry points (`download_file`'s CSV concat path and `download_file_slices`, which parquet uses) now share one rewrite helper, so a backend fixed for one is fixed for the other.
+
 ## [0.83.56] - 2026-08-18
 
 ### Added
