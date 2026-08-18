@@ -28,11 +28,24 @@ def ensure_user(email: str, name: str, *, source: str) -> dict:
 
     Raises :class:`UserDeactivatedError` for a deactivated account —
     callers translate that to their surface's 401/redirect.
+
+    Identity is matched case-insensitively and stored normalized (stripped,
+    lower-cased). Providers disagree on normalization — Microsoft lower-cases
+    the resolved claim, Google passes the raw ``email`` claim through — and
+    ``get_by_email`` is an exact string match on both backends, so without this
+    the same person arriving through two providers (or through one IdP that
+    changed a claim's casing) would end up on two accounts. Normalizing here
+    rather than per provider is what makes every provider agree; the
+    case-insensitive read still matches accounts created before this landed.
     """
     repo = users_repo()
+    normalized = (email or "").strip().lower()
     user = repo.get_by_email(email)
+    if not user and normalized:
+        user = repo.get_by_email_ci(normalized)
     if not user:
         user_id = str(uuid.uuid4())
+        email = normalized or email
         repo.create(id=user_id, email=email, name=name)
         # Issue #748: auto-grant Everyone at creation (source='system_seed')
         # unless AGNES_GROUP_EVERYONE_EMAIL maps Everyone to a Workspace

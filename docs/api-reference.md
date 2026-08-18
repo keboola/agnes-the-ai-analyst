@@ -829,8 +829,17 @@ section for the full operator flow. CLI: `agnes admin analytics migrate
 - /api/admin/mcp-tools/{tool_id}
 - /api/admin/mcp-tools/{tool_id}/grants
 - /api/admin/mcp-tools/{tool_id}/grants/{group_id}
+- /api/admin/mcp-tools/{tool_id}/projection-map
 - /api/admin/mcp-sources/{source_id}/grants
 - /api/admin/mcp-sources/{source_id}/grants/{group_id}
+
+`PUT …/mcp-tools/{tool_id}/projection-map` records which of a lister tool's
+columns carry an app's id, URL and name; an empty body clears it and restores
+the built-in guesses. It is separate from `PUT …/mcp-tools/{tool_id}` because
+the choice is only makeable *after* a fetch has shown what the tool emits, and
+because clearing has to be expressible. A named column is authoritative even
+when its value is empty — falling back to a guess would make the mapping look
+applied while a different column supplied the value.
 
 `POST …/mcp-sources/{source_id}/grants` grants a group **every** tool registered
 under one source, and `DELETE …/grants/{group_id}` revokes the set. Per-tool

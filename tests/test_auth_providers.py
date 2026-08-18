@@ -233,6 +233,119 @@ class TestGoogleOAuth:
         assert "error" in resp.headers.get("location", "")
 
 
+class TestMicrosoftOAuth:
+    def test_microsoft_login_not_configured(self, client):
+        """Without MICROSOFT_CLIENT_ID/SECRET/TENANT_ID, should redirect to login with error."""
+        resp = client.get("/auth/microsoft/login", follow_redirects=False)
+        assert resp.status_code == 302 or resp.status_code == 307
+        assert "error" in resp.headers.get("location", "")
+
+
+class TestMicrosoftTenantValidation:
+    """The single-tenant promise is structural, not documentary.
+
+    ``MICROSOFT_TENANT_ID`` is interpolated into the OIDC discovery URL, so
+    the three reserved Microsoft values (``common`` / ``organizations`` /
+    ``consumers``) silently turn the provider into the multi-tenant
+    configuration the module says it never uses — with ``auth.allowed_domain``
+    unset that lets any Microsoft account anywhere sign in and self-provision.
+    """
+
+    @pytest.mark.parametrize("reserved", ["common", "organizations", "consumers", "COMMON", " organizations "])
+    def test_reserved_multi_tenant_values_are_refused(self, reserved):
+        from app.auth.providers import microsoft as ms
+
+        problem = ms.tenant_id_error(reserved)
+        assert problem, f"{reserved!r} must be refused"
+        assert "multi-tenant" in problem
+        assert "MICROSOFT_TENANT_ID" in problem
+
+    def test_directory_guid_is_accepted(self):
+        from app.auth.providers import microsoft as ms
+
+        assert ms.tenant_id_error("72f988bf-86f1-41af-91ab-2d7cd011db47") is None
+
+    def test_verified_domain_is_accepted(self):
+        from app.auth.providers import microsoft as ms
+
+        assert ms.tenant_id_error("example.onmicrosoft.com") is None
+        assert ms.tenant_id_error("example.com") is None
+
+    @pytest.mark.parametrize("bad", ["", "   ", "not a tenant", "example", "../common", "tenant/../common"])
+    def test_junk_is_refused(self, bad):
+        from app.auth.providers import microsoft as ms
+
+        assert ms.tenant_id_error(bad) is not None
+
+    @pytest.mark.parametrize("reserved", ["common", "organizations", "consumers"])
+    def test_reserved_value_makes_the_provider_unavailable(self, monkeypatch, reserved):
+        """Refusal surfaces as "provider not available": the login button is
+        hidden and /auth/microsoft/login reports microsoft_not_configured. An
+        instance must never silently come up multi-tenant."""
+        from app.auth.providers import microsoft as ms
+
+        monkeypatch.setattr(ms, "MICROSOFT_CLIENT_ID", "cid")
+        monkeypatch.setattr(ms, "MICROSOFT_CLIENT_SECRET", "secret")
+        monkeypatch.setattr(ms, "MICROSOFT_TENANT_ID", reserved)
+        assert ms.is_available() is False
+        assert any("multi-tenant" in w for w in ms.startup_warnings())
+
+    def test_guid_tenant_is_available(self, monkeypatch):
+        from app.auth.providers import microsoft as ms
+
+        monkeypatch.setattr(ms, "MICROSOFT_CLIENT_ID", "cid")
+        monkeypatch.setattr(ms, "MICROSOFT_CLIENT_SECRET", "secret")
+        monkeypatch.setattr(ms, "MICROSOFT_TENANT_ID", "72f988bf-86f1-41af-91ab-2d7cd011db47")
+        assert ms.is_available() is True
+
+
+class TestMicrosoftIdentityResolution:
+    """Which claim becomes the Agnes account identity.
+
+    ``ensure_user`` matches accounts by the email STRING alone (no provider
+    column, no IdP subject binding), so whatever this returns can take over an
+    account created by Google or password auth.
+    """
+
+    def test_email_claim_wins(self):
+        from app.auth.providers import microsoft as ms
+
+        assert ms.resolve_identity({"email": "a@example.com", "preferred_username": "b@example.com"}) == "a@example.com"
+
+    def test_upn_fallback_when_email_claim_absent(self):
+        from app.auth.providers import microsoft as ms
+
+        assert ms.resolve_identity({"preferred_username": "  A.User@Example.com "}) == "a.user@example.com"
+
+    def test_guest_ext_upn_is_not_an_identity(self):
+        """A B2B guest's tenant UPN (``user_othercorp.com#EXT#@tenant...``) is
+        not a mailbox; provisioning an Agnes account under it is meaningless
+        and `#` is not valid in an address. Rejected → microsoft_no_email."""
+        from app.auth.providers import microsoft as ms
+
+        assert ms.resolve_identity({"preferred_username": "user_othercorp.com#EXT#@tenant.onmicrosoft.com"}) == ""
+
+    def test_no_claims_at_all(self):
+        from app.auth.providers import microsoft as ms
+
+        assert ms.resolve_identity({}) == ""
+
+    def test_unpinned_allowed_domain_warns_about_guests(self, monkeypatch):
+        """Single tenant is not by itself an identity boundary — B2B guests
+        carry EXTERNAL addresses in the `email` claim. Say so at boot."""
+        from app.auth.providers import microsoft as ms
+
+        monkeypatch.setattr(ms, "MICROSOFT_CLIENT_ID", "cid")
+        monkeypatch.setattr(ms, "MICROSOFT_CLIENT_SECRET", "secret")
+        monkeypatch.setattr(ms, "MICROSOFT_TENANT_ID", "72f988bf-86f1-41af-91ab-2d7cd011db47")
+        monkeypatch.setattr(ms, "get_allowed_domains", lambda: [])
+        warnings = ms.startup_warnings()
+        assert any("allowed_domain" in w and "guest" in w.lower() for w in warnings)
+
+        monkeypatch.setattr(ms, "get_allowed_domains", lambda: ["example.com"])
+        assert ms.startup_warnings() == []
+
+
 @pytest.mark.skip(
     reason="v12: _fetch_google_groups removed; group sync now uses ADC via app.auth.group_sync.fetch_user_groups. Rewrite for the new module."
 )

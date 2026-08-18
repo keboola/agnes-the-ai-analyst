@@ -1,6 +1,6 @@
 [project]
 name = "agnes-the-ai-analyst"
-version = "0.83.30"
+version = "0.83.40"
 description = "Agnes — self-hosted AI harness for organizations: governed data access, agents as an API, skills marketplace, corporate memory, hosted data apps, and agent surfaces (web chat, Slack, MCP, CLI)"
 requires-python = ">=3.11,<3.14"
 license = {file = "LICENSE"}
@@ -188,6 +188,12 @@ dependencies = [
     # imports both at module scope, so a missing jsonschema fails app boot,
     # not just a code path. Pure-Python, no compiled extensions.
     "jsonschema>=4.0.0",
+    # RS256 backend for PyJWT (services/teams_bot/sigverify.py verifies Bot
+    # Framework Connector Activity POSTs, which are RS256-signed). Already
+    # present transitively via authlib, but a security-critical verification
+    # path shouldn't rely on another package's transitive pin — declared
+    # directly here.
+    "cryptography>=42.0.0",
 ]
 
 [project.optional-dependencies]

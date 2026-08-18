@@ -223,6 +223,145 @@ class TestDistributionMirrorHandler:
         _run_distribution_mirror({})  # must not raise, must not touch boto3
 
 
+class TestDistributionMirrorHashVerification:
+    """Issue #1360: the mirror used to stamp every uploaded object with
+    ``sync_state.hash`` — a label read from the DB — without ever hashing
+    the bytes ``put_file`` actually sent. ``head_md5`` then only ever
+    compared that stamp against another label, so a parquet that changed
+    under the mirror between the ``sync_state`` read and the upload
+    produced a permanently mislabeled object: undetectable by construction,
+    because every later run's "already current" check is also label vs
+    label.
+
+    These two cases reproduce the original bug report (inverted to assert
+    the FIXED behavior — pre-fix, both passed as-is because they observed
+    the defect) plus a pin on the untouched fast path's I/O cost.
+    """
+
+    def test_a_race_after_the_db_read_is_skipped_not_mislabeled(self, mirror_env, monkeypatch):
+        """A concurrent sync rewrites `orders.parquet` in the window
+        between `head_md5`'s network round trip and the upload — the exact
+        TOCTOU window the issue names, since no lock spans it. Before the
+        fix this published v2's bytes stamped with v1's hash. Now the
+        pre-upload hash disagrees with `sync_state.hash`, so the table is
+        skipped this run rather than published mislabeled, and the other
+        (unraced) table is unaffected."""
+        parquet = mirror_env["data_dir"] / "extracts" / "keboola" / "data" / "orders.parquet"
+        v1, v2 = b"orders-parquet-v1", b"orders-parquet-v2-NEWER"
+        assert parquet.read_bytes() == v1
+
+        fake = FakeObjectStore()
+        real_head = fake.head_md5
+
+        def head_md5_then_sync_lands(key):
+            result = real_head(key)
+            if key == "orders.parquet":
+                parquet.write_bytes(v2)
+            return result
+
+        fake.head_md5 = head_md5_then_sync_lands
+        monkeypatch.setattr("src.object_store.object_store", lambda: fake)
+
+        from app.worker.kinds import _run_distribution_mirror
+
+        _run_distribution_mirror({})
+
+        assert "orders.parquet" not in fake.objects, "raced content must never be published"
+        assert "orders.parquet" not in fake.metadata, "nothing was uploaded, so nothing was stamped"
+        uploaded_keys = {key for _, key, _ in fake.put_file_calls}
+        assert "orders.parquet" not in uploaded_keys
+        assert "sales_report.parquet" in uploaded_keys, "one table racing must not stall the others"
+
+        from src.distribution import MIRROR_INDEX_KEY
+
+        index = json.loads(fake.objects[MIRROR_INDEX_KEY])
+        assert "orders" not in index["tables"], "a raced table must not be advertised as current"
+        assert index["tables"]["sales_report"] == mirror_env["sales_md5"]
+
+    def test_a_stale_stamp_does_not_license_publishing_whatever_is_on_disk(self, mirror_env, monkeypatch):
+        """`head_md5` disagreeing with `sync_state.hash` means "this object
+        needs a refresh" — it must not be read as "so trust the disk and
+        publish it". Here the store already holds a genuinely stale object
+        (due for a refresh with or without any race) and the file ALSO
+        races between `head_md5` and the upload, same window as above. The
+        old, self-consistent object is left exactly as it was rather than
+        replaced with a second, differently-wrong pairing — this is the
+        direct fix for the original repro's point that `head_md5` can never
+        tell "already current" from "mislabeled", since both compare label
+        to label: it no longer has to, because the content is checked
+        before anything is published."""
+        parquet = mirror_env["data_dir"] / "extracts" / "keboola" / "data" / "orders.parquet"
+        v1, v2 = b"orders-parquet-v1", b"orders-parquet-v2-NEWER"
+        assert parquet.read_bytes() == v1
+
+        fake = FakeObjectStore()
+        stale_md5 = _md5(b"orders-parquet-v0-OLDER")
+        fake.metadata["orders.parquet"] = {"md5": stale_md5}
+        fake.objects["orders.parquet"] = b"orders-parquet-v0-OLDER"
+        real_head = fake.head_md5
+
+        def head_md5_then_sync_lands_again(key):
+            result = real_head(key)
+            if key == "orders.parquet":
+                parquet.write_bytes(v2)
+            return result
+
+        fake.head_md5 = head_md5_then_sync_lands_again
+        monkeypatch.setattr("src.object_store.object_store", lambda: fake)
+
+        from app.worker.kinds import _run_distribution_mirror
+
+        _run_distribution_mirror({})
+
+        uploaded_keys = {key for _, key, _ in fake.put_file_calls}
+        assert "orders.parquet" not in uploaded_keys, "must not publish v2 stamped as v1"
+        assert fake.objects["orders.parquet"] == b"orders-parquet-v0-OLDER", "old object left untouched"
+        assert fake.metadata["orders.parquet"]["md5"] == stale_md5
+
+        from src.distribution import MIRROR_INDEX_KEY
+
+        index = json.loads(fake.objects[MIRROR_INDEX_KEY])
+        assert "orders" not in index["tables"], "a raced table must not be advertised as current"
+
+    def test_an_unchanged_table_is_skipped_without_rehashing_the_file(self, mirror_env, monkeypatch):
+        """The pre-upload hash only runs on the path that is about to
+        publish something. An already-current table (label matches label —
+        the pre-#1360 fast path) still costs exactly one `head_md5` round
+        trip and zero local reads, same as before: `distribution-mirror`
+        runs on every successful `data-refresh`, so re-hashing every
+        unchanged multi-GB parquet on every run would be real, avoidable
+        I/O, not a one-off cost."""
+        fake = FakeObjectStore()
+        fake.metadata["orders.parquet"] = {"md5": mirror_env["orders_md5"]}
+        monkeypatch.setattr("src.object_store.object_store", lambda: fake)
+
+        hashed_paths: list = []
+        real_hash_file_md5 = None
+
+        def counting_hash_file_md5(path, *args, **kwargs):
+            hashed_paths.append(str(path))
+            return real_hash_file_md5(path, *args, **kwargs)
+
+        import src.object_store as object_store_module
+
+        real_hash_file_md5 = object_store_module.hash_file_md5
+        monkeypatch.setattr("src.object_store.hash_file_md5", counting_hash_file_md5)
+
+        from app.worker.kinds import _run_distribution_mirror
+
+        _run_distribution_mirror({})
+
+        assert not any(p.endswith("orders.parquet") for p in hashed_paths), (
+            "an already-current table must not be re-hashed"
+        )
+        assert any(p.endswith("sales_report.parquet") for p in hashed_paths), (
+            "the table actually being uploaded IS hashed before publishing"
+        )
+        uploaded_keys = {key for _, key, _ in fake.put_file_calls}
+        assert "orders.parquet" not in uploaded_keys
+        assert "sales_report.parquet" in uploaded_keys
+
+
 class TestPartitionedTablesAreNotMirrored:
     """A partitioned table stores its data as a DIRECTORY of per-period parquets,
     while the mirror addresses exactly one ``<table_id>.parquet`` object per

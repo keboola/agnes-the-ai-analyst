@@ -92,7 +92,7 @@ If you previously had `LOCAL_DEV_GROUPS` set, then unset it and made a request, 
 `LOCAL_DEV_MODE` is intentionally narrow. These still need real configuration if you exercise them:
 
 - **Cloud Identity API.** No real call ever fires in dev. `LOCAL_DEV_GROUPS` populates `session.google_groups` directly without going through `_fetch_google_groups`. To debug the actual API call, use `scripts/debug/probe_google_groups.py` against a real OAuth token.
-- **Real OAuth round-trip.** Google login button is hidden / no-op in dev mode. To test the full OAuth flow, follow `docs/auth-google-oauth.md` and unset `LOCAL_DEV_MODE`.
+- **Real OAuth round-trip.** Google login button is hidden / no-op in dev mode. To test the full OAuth flow, follow `docs/auth-google-oauth.md` (or `docs/auth-microsoft-oauth.md` for Entra ID) and unset `LOCAL_DEV_MODE`.
 - **Admin Workspace permissions.** The mocked groups are not authoritative — they live only in your browser session. They don't grant any real access to anything outside Agnes; they let you exercise group-aware code paths inside the app.
 - **PAT (Personal Access Token) flow.** PATs work normally in dev mode; the dev bypass only short-circuits cookie/session auth. Token-bearer requests still hit the JWT validation path.
 
@@ -111,5 +111,6 @@ If you ever see the dev banner in a real deployment's logs, treat it as a P0 inc
 
 - [`docs/auth-groups.md`](auth-groups.md) — production Google Workspace groups: GCP setup checklist, the `security` label gotcha, debugging the real Cloud Identity call.
 - [`docs/auth-google-oauth.md`](auth-google-oauth.md) — full Google OAuth setup for non-dev environments (client ID, scopes, redirect URIs).
+- [`docs/auth-microsoft-oauth.md`](auth-microsoft-oauth.md) — Microsoft Entra ID OAuth setup, single-tenant enforcement, and the guest-account trust model.
 - [`docs/QUICKSTART.md`](QUICKSTART.md) — first-time setup for a real (non-dev) instance.
 - [`CLAUDE.md`](../CLAUDE.md) — repo-wide engineering conventions (changelog discipline, vendor-agnostic OSS rules, project structure).

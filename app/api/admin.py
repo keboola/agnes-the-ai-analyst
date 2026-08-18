@@ -6,6 +6,7 @@ callers via the same ``_user_group_ids`` lookup.
 """
 
 import json
+import glob
 import logging
 import math
 import os
@@ -372,6 +373,21 @@ def _validate_auth_providers_in_patch(sections: Dict[str, Dict[str, Any]]) -> No
                 "GOOGLE_CLIENT_SECRET environment variables at process start — a Google "
                 "OAuth client configured only in instance.yaml is not detected."
             )
+        if "microsoft" in known:
+            # Same env-capture property as Google, and the base detail names
+            # neither Microsoft nor its variables — so a Microsoft-only save
+            # refused for missing env would otherwise read as a message about
+            # some other provider. The tenant clause is not padding: an
+            # invalid/multi-tenant MICROSOFT_TENANT_ID makes the provider
+            # unavailable too (see app/auth/providers/microsoft.py), which is
+            # indistinguishable from "unset" without saying so.
+            detail += (
+                " Note: Microsoft availability is read from the MICROSOFT_TENANT_ID / "
+                "MICROSOFT_CLIENT_ID / MICROSOFT_CLIENT_SECRET environment variables at process "
+                "start — Microsoft sign-in cannot be configured from instance.yaml. It also reads "
+                "unavailable when MICROSOFT_TENANT_ID is not a single tenant (a directory GUID or a "
+                "verified domain); the boot log says which."
+            )
         raise HTTPException(status_code=422, detail=detail)
 
 
@@ -411,6 +427,15 @@ def _provider_available_after_save(name: str, auth_patch: Dict[str, Any], sectio
         }
         stack = merged.get("stack_url") or ds_merged.get("stack_url")
         return bool(merged.get("client_id") and merged.get("client_secret") and merged.get("project_id") and stack)
+    if name == "microsoft":
+        # Env-only, like google: the patch cannot make it available or
+        # unavailable, so the current runtime answer is the answer after save.
+        # Without this branch the name is known (KNOWN_PROVIDERS) but never
+        # available, so narrowing an instance to Microsoft-only is refused as
+        # "no usable sign-in method" even with all three env vars set.
+        from app.auth.providers.microsoft import is_available as microsoft_available
+
+        return microsoft_available()
     return False
 
 
@@ -5598,10 +5623,19 @@ async def unregister_table(
         try:
             data_dir = Path(os.environ.get("DATA_DIR", "./data"))
             base = data_dir / "extracts" / source_type / "data"
-            for candidate in (
+            # The publish temp is per-process since #1359
+            # (`<name>.parquet.<pid>.tmp`, see src/parquet_publish.py), so a
+            # single fixed `.parquet.tmp` no longer names anything a writer
+            # produces. Both spellings are swept: the glob for temps this
+            # build leaves behind, and the legacy fixed name for ones already
+            # sitting on deployed volumes from before that change. Escaped
+            # because the glob is built from a registry-supplied name.
+            candidates = [
                 base / f"{name}.parquet",
                 base / f"{name}.parquet.tmp",
-            ):
+                *sorted(base.glob(f"{glob.escape(name)}.parquet.*.tmp")),
+            ]
+            for candidate in candidates:
                 if candidate.exists():
                     candidate.unlink()
                     logger.info(
