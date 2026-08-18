@@ -1325,6 +1325,70 @@ def test_mention_passthrough_agent_binding_is_never_routed(monkeypatch):
     assert reactions == []
 
 
+def test_mention_sender_limit_gets_ephemeral_not_silence(monkeypatch):
+    """A sender-limit refusal (daily budget / session tokens / rate — keyed
+    on the AGENT OWNER for routed threads) answers the mentioner with an
+    ephemeral instead of vanishing into the background-task log (Devin
+    Review on this PR)."""
+    import asyncio
+    import services.slack_bot.events as ev
+
+    posts = []
+
+    async def _fake_ep(ch, u, txt):
+        posts.append(txt)
+
+    monkeypatch.setattr(ev, "send_ephemeral_to_user", _fake_ep)
+
+    async def _fake_react(channel, ts, emoji):
+        return None
+
+    monkeypatch.setattr(ev, "add_reaction", _fake_react)
+    conn = get_system_db()
+    _ensure_schema(conn)
+    uid = _seed_bound_chat_user(conn)
+    _allow_channel(conn)
+    _seed_channel_bound_agent(conn, owner=uid, slug="router-limit")
+
+    class _LimitMgr(_FakeMgr):
+        async def send_user_message(self, chat_id, text, **kw):
+            raise RuntimeError("daily_budget_exhausted")
+
+    mgr = _LimitMgr()
+    app = _FakeApp(conn=conn, mgr=mgr)
+    asyncio.run(ev._handle_mention(app, {"channel": "C_OK", "ts": "9.17", "user": "U_OK", "text": "<@U07BOT> hi"}))
+    assert posts and "daily spend cap" in posts[-1]
+
+
+def test_mention_unknown_runtime_error_still_raises(monkeypatch):
+    """Only KNOWN limit reasons are translated — anything else propagates to
+    _run_logged so real faults keep their stack trace."""
+    import asyncio
+    import pytest
+    import services.slack_bot.events as ev
+
+    monkeypatch.setattr(ev, "send_ephemeral_to_user", lambda *a, **k: None)
+
+    async def _fake_react(channel, ts, emoji):
+        return None
+
+    monkeypatch.setattr(ev, "add_reaction", _fake_react)
+    conn = get_system_db()
+    _ensure_schema(conn)
+    uid = _seed_bound_chat_user(conn)
+    _allow_channel(conn)
+    _seed_channel_bound_agent(conn, owner=uid, slug="router-boom")
+
+    class _BoomMgr(_FakeMgr):
+        async def send_user_message(self, chat_id, text, **kw):
+            raise RuntimeError("something_else_entirely")
+
+    mgr = _BoomMgr()
+    app = _FakeApp(conn=conn, mgr=mgr)
+    with pytest.raises(RuntimeError, match="something_else_entirely"):
+        asyncio.run(ev._handle_mention(app, {"channel": "C_OK", "ts": "9.18", "user": "U_OK", "text": "<@U07BOT> hi"}))
+
+
 def test_mention_attach_not_awaited_returns_under_budget(monkeypatch):
     """Smoke test: the handler never blocks on a hanging attach().
 
