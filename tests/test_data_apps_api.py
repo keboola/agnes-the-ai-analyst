@@ -1406,6 +1406,61 @@ class TestReap:
             conn.close()
         assert row["state"] == "running"
 
+    def test_reap_idle_reconcile_takes_no_lease_for_a_healthy_app(
+        self, admin_client, fake_runner, monkeypatch, running_dead_container_app
+    ):
+        """`updated_at` is only bumped by `set_state`/`record_deploy`, never by
+        `touch_last_request`, so "stale `updated_at` while running" describes
+        essentially every healthy long-lived app. Acquiring the per-slug op
+        lease for each of them would contend with a concurrent deploy/stop on a
+        healthy app — `require_op_lease` gives up after a few 100 ms retries
+        with 409 `operation_in_progress`. A live container must therefore be
+        judged without the lease ever being taken."""
+        import app.api.data_apps as data_apps_api
+
+        real = data_apps_api.try_acquire_op_lease
+        taken: list[str] = []
+
+        def spy(slug):
+            taken.append(slug)
+            return real(slug)
+
+        monkeypatch.setattr(data_apps_api, "try_acquire_op_lease", spy)
+        fake_runner._status = {"container": "running", "ready": True}
+        r = admin_client.post("/api/data-apps/reap-idle")
+        assert r.status_code == 200
+        assert r.json()["reconciled"] == []
+        assert taken == [], f"lease acquired for a healthy app: {taken}"
+
+    def test_reap_idle_reconcile_reprobes_under_the_lease(self, admin_client, fake_runner, running_dead_container_app):
+        """A deploy that finishes between the lease-free probe and the lease
+        acquisition released the lease, so the container is up again even
+        though the row never left `running`. The second probe — paid only for
+        an app that already looked dead — must catch that and leave it alone."""
+        calls = {"n": 0}
+
+        def status_recovering(slug):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return {"container": "absent", "ready": False}
+            return {"container": "running", "ready": True}
+
+        fake_runner.status = status_recovering
+        r = admin_client.post("/api/data-apps/reap-idle")
+        assert r.status_code == 200
+        assert r.json()["reconciled"] == []
+        assert calls["n"] == 2, "the lease-free probe and the under-lease re-probe must both run"
+
+        from src.db import get_system_db
+        from src.repositories.data_apps import DataAppsRepository
+
+        conn = get_system_db()
+        try:
+            row = DataAppsRepository(conn).get_by_slug("crash1")
+        finally:
+            conn.close()
+        assert row["state"] == "running"
+
     def test_reap_idle_reconcile_skips_app_with_op_lease_held_elsewhere(
         self, admin_client, fake_runner, running_dead_container_app
     ):
