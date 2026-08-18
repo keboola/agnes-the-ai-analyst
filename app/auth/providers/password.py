@@ -590,16 +590,24 @@ async def reset_confirm(
     # it can sit on a case variant that get_by_email_ci (oldest wins) does not
     # return — and a valid link would then render "Invalid or expired".
     hashed = hash_token(token)
+    colliding = repo.list_by_email_ci(email)
     user = next(
         (
             u
-            for u in repo.list_by_email_ci(email)
+            for u in colliding
             if bool(u.get("active", True))
             and u.get("reset_token") == hashed
             and _token_is_fresh(u.get("reset_token_created"), RESET_TOKEN_TTL)
         ),
         None,
     )
+    # The same shadow the password doors apply: a proven token on an active
+    # sibling must not outrank a deactivated resolved identity, or one instance
+    # answers "deactivated" at the login form and hands out a session cookie on
+    # a reset link for the same pair of rows. Judged after the token proved
+    # itself, so this leaks nothing a holder did not already know.
+    if user is not None and colliding and not bool(colliding[0].get("active", True)):
+        user = None
     token_valid = user is not None
     if not token_valid:
         # Generic copy regardless of whether the account exists or is

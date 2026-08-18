@@ -264,6 +264,16 @@ def _consume_token(email: str, token: str) -> dict:
     user = repo.get_by_id(consumed_id)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid link")
+    # The CAS carries its own `active = TRUE` predicate, so the stamped row is
+    # live — but "live" is not the same as "this address may sign in". The
+    # password doors refuse when the row `get_by_email_ci` resolves to is
+    # deactivated, however good the credential on a sibling case variant is
+    # (`_shadowed_by_deactivated_identity` in the password provider), and a
+    # magic link that ignored that would let the same instance answer
+    # "deactivated" at the login form while minting a session here.
+    colliding = repo.list_by_email_ci(user.get("email") or email)
+    if colliding and not bool(colliding[0].get("active", True)):
+        raise HTTPException(status_code=403, detail="Account deactivated")
     return user
 
 

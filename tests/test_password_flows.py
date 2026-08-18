@@ -851,3 +851,36 @@ class TestADeactivatedIdentityShadowsEveryVariant:
         )
         assert r.status_code == 403, r.text
         assert "deactivated" in r.text.lower(), r.text
+
+    def test_a_reset_link_on_a_variant_is_refused_when_the_identity_is_deactivated(self, app_client, fresh_db):
+        """One instance must not answer "deactivated" at the login form and hand
+        out a session cookie on a reset link for the same pair of rows. The
+        shadow applies on every door, judged after the token proved itself."""
+        from datetime import datetime, timezone
+
+        from src.db import get_system_db
+
+        old_id = _seed_user("gina@example.com")
+        _age_row(old_id, 60)
+        _seed_user(
+            "Gina@example.com",
+            reset_token="reset-tok-shadowed",
+            reset_token_created=datetime.now(timezone.utc),
+        )
+        conn = get_system_db()
+        try:
+            conn.execute("UPDATE users SET active = FALSE WHERE id = ?", [old_id])
+        finally:
+            conn.close()
+        r = app_client.post(
+            "/auth/password/reset/confirm",
+            data={
+                "email": "gina@example.com",
+                "token": "reset-tok-shadowed",
+                "password": "brand-new-password",
+                "confirm_password": "brand-new-password",
+            },
+            follow_redirects=False,
+        )
+        assert r.status_code == 200, r.text
+        assert "Invalid or expired reset link" in r.text, r.text[:400]
