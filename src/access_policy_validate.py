@@ -115,6 +115,9 @@ _PERMITTED_NODE_TYPES: tuple[type[exp.Expression], ...] = (
     # STRUCT(...) type definitions contain ColumnDef nodes (column name + type);
     # they only appear inside DataType and are not a separate statement.
     exp.ColumnDef,
+    # Parameterized types -- DECIMAL(18,2), TIMESTAMP(3), etc. -- carry their
+    # precision/scale as DataTypeParam nodes inside DataType.
+    exp.DataTypeParam,
     # operators that are NOT exp.Func subclasses
     exp.Not,
     exp.Neg,
