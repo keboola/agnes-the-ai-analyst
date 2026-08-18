@@ -229,11 +229,29 @@ class ToolRegistryPgRepository:
                 {"sid": source_id},
             )
 
-    def add_grant(self, tool_id: str, group_id: str, allow_mutating: bool = False) -> None:
-        """Insert-or-update a grant. Re-granting an existing (tool, group)
-        pair updates ``allow_mutating`` in place — the flag is part of the
-        grant, not a separate row, so a re-POST is the edit path."""
+    def add_grant(self, tool_id: str, group_id: str, allow_mutating: Optional[bool] = None) -> None:
+        """Insert-or-update a grant, tri-state on ``allow_mutating``:
+
+        - ``None`` (default) — leave an existing grant's flag UNCHANGED
+          (``ON CONFLICT DO NOTHING``, the pre-v120 semantics); a brand-new
+          grant lands read-only. This is what routine re-granting callers
+          (Keboola sign-in provisioning, connection rollback) must get, or
+          every re-run would silently reset an admin's mutating opt-in.
+        - explicit ``True``/``False`` — set the flag, updating an existing
+          row in place: the flag is part of the grant, so an explicit
+          re-grant is the edit path.
+        """
         with self._engine.begin() as conn:
+            if allow_mutating is None:
+                conn.execute(
+                    sa.text(
+                        "INSERT INTO tool_grants (tool_id, group_id, allow_mutating) "
+                        "VALUES (:tool_id, :group_id, FALSE) "
+                        "ON CONFLICT (tool_id, group_id) DO NOTHING"
+                    ),
+                    {"tool_id": tool_id, "group_id": group_id},
+                )
+                return
             conn.execute(
                 sa.text(
                     "INSERT INTO tool_grants (tool_id, group_id, allow_mutating) "

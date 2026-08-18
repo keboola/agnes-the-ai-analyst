@@ -277,13 +277,14 @@ class UpdateToolRequest(BaseModel):
 
 class AddGrantRequest(BaseModel):
     group_id: str
-    # v120: opt this group into the tool's MUTATING surface. Default False —
-    # a plain grant stays read-only; re-POSTing an existing grant with a
-    # different value is the edit path (the repo upserts the flag).
-    # Consumed by the per-tool endpoint only; the source-wide bulk grant is
-    # deliberately read-only (opting a group into every write tool of an
-    # upstream in one action is too coarse an act to be one flag away).
-    allow_mutating: bool = False
+    # v120: opt this group into the tool's MUTATING surface. Tri-state:
+    # omitted (None) leaves an existing grant's flag unchanged (a new grant
+    # lands read-only); an explicit true/false sets it — re-POSTing with a
+    # value is the edit path. Consumed by the per-tool endpoint only; the
+    # source-wide bulk grant is deliberately read-only (opting a group into
+    # every write tool of an upstream in one action is too coarse an act to
+    # be one flag away).
+    allow_mutating: Optional[bool] = None
 
 
 # ---------------------------------------------------------------------------
@@ -2208,8 +2209,9 @@ async def add_mcp_tool_grant(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Grant a user group access to the tool. Idempotent; re-POSTing an
-    existing grant updates its ``allow_mutating`` flag in place (the flag is
-    part of the grant, so the re-POST is the edit path)."""
+    existing grant with an explicit ``allow_mutating`` updates the flag in
+    place (the flag is part of the grant, so the re-POST is the edit path),
+    while omitting it leaves an existing grant's flag untouched."""
     repo = tool_registry_repo()
     if not repo.get(tool_id):
         raise HTTPException(status_code=404, detail="mcp_tool_not_found")
@@ -2226,18 +2228,24 @@ async def add_mcp_tool_grant(
         repo.add_grant(tool_id, group_id, allow_mutating=payload.allow_mutating)
     except duckdb.ConstraintException as exc:
         raise HTTPException(status_code=409, detail=str(exc))
+    # Report the STORED flag, not the request's: with allow_mutating omitted
+    # (None) an existing grant keeps whatever it had.
+    stored = next(
+        (g["allow_mutating"] for g in repo.grant_rows_for_tool(tool_id) if g["group_id"] == group_id),
+        False,
+    )
     _audit(
         conn,
         user["id"],
         "mcp_tool.grant.add",
         f"mcp_tool:{tool_id}",
-        {"group_id": group_id, "allow_mutating": payload.allow_mutating},
+        {"group_id": group_id, "allow_mutating": stored},
     )
     return {
         "granted": True,
         "tool_id": tool_id,
         "group_id": group_id,
-        "allow_mutating": payload.allow_mutating,
+        "allow_mutating": stored,
     }
 
 

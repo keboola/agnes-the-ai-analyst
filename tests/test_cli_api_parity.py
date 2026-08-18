@@ -1923,7 +1923,9 @@ class TestMcpToolGrantParity:
                 )
                 assert r.status_code == 200, r.text
             else:
-                parity_env["run_cli"](["admin", "mcp", "tool", "grant", "tg.parity2", "--group", gid])
+                parity_env["run_cli"](
+                    ["admin", "mcp", "tool", "grant", "tg.parity2", "--group", gid, "--no-allow-mutating"]
+                )
             conn = get_system_db()
             snap = self._grants_snapshot(conn, "tg.parity2")
             conn.close()
