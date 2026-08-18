@@ -637,3 +637,108 @@ def test_update_display_name_overwrite_existing(users_repo):
     row = repo.get_by_id("user-1")
     assert row is not None
     assert row["name"] == "Newest"
+
+
+# ---------------------------------------------------------------------------
+# list_case_variant_duplicates — the reconciliation report
+#
+# `users` is UNIQUE on `email`, so two rows colliding case-insensitively are
+# invisible to every constraint and to every list view sorted by address.
+# `get_by_email_ci` silently resolves one of them; this names all of them.
+# ---------------------------------------------------------------------------
+
+
+def test_list_case_variant_duplicates_is_empty_without_collisions(users_repo):
+    repo, _, _ = users_repo
+    _make_user(repo, id="user-a", email="a@example.com")
+    _make_user(repo, id="user-b", email="b@example.com")
+    assert repo.list_case_variant_duplicates() == []
+
+
+def test_list_case_variant_duplicates_groups_the_colliding_rows(users_repo):
+    repo, _, backend = users_repo
+    _make_user(repo, id="user-old", email="Dup@Example.com")
+    _make_user(repo, id="user-new", email="dup@example.com")
+    _make_user(repo, id="user-solo", email="solo@example.com")
+    _set_created_at(repo, backend, "user-old", datetime(2025, 1, 1, tzinfo=timezone.utc))
+    _set_created_at(repo, backend, "user-new", datetime(2026, 6, 1, tzinfo=timezone.utc))
+
+    groups = repo.list_case_variant_duplicates()
+
+    assert len(groups) == 1, "the non-colliding row must not appear"
+    g = groups[0]
+    assert g["email"] == "dup@example.com", "the address is reported folded"
+    assert g["count"] == 2
+    assert [u["id"] for u in g["users"]] == ["user-old", "user-new"]
+    # Both spellings survive in the rows — the operator needs to see which is which.
+    assert [u["email"] for u in g["users"]] == ["Dup@Example.com", "dup@example.com"]
+
+
+def test_list_case_variant_duplicates_names_the_row_sign_in_resolves_to(users_repo):
+    """The whole point of the report: `resolved_id` is the account a sign-in
+    actually lands on, so an operator can see that deactivating the OTHER row
+    would not have disabled the identity."""
+    repo, _, backend = users_repo
+    _make_user(repo, id="user-old", email="dup@example.com")
+    _make_user(repo, id="user-new", email="DUP@EXAMPLE.COM")
+    _set_created_at(repo, backend, "user-old", datetime(2025, 1, 1, tzinfo=timezone.utc))
+    _set_created_at(repo, backend, "user-new", datetime(2026, 6, 1, tzinfo=timezone.utc))
+
+    g = repo.list_case_variant_duplicates()[0]
+    assert g["resolved_id"] == repo.get_by_email_ci("dup@example.com")["id"]
+    assert g["resolved_id"] == g["users"][0]["id"], "users[0] is the resolved row"
+
+
+def test_list_case_variant_duplicates_tiebreaks_like_get_by_email_ci(users_repo):
+    """`created_at` is not unique. If the report ordered a tie differently from
+    `get_by_email_ci`, `resolved_id` would name a row that sign-in never
+    reaches — the report would be actively misleading on exactly the instances
+    it exists for."""
+    repo, _, backend = users_repo
+    same = datetime(2025, 3, 1, tzinfo=timezone.utc)
+    _make_user(repo, id="user-b", email="Tie@example.com")
+    _make_user(repo, id="user-a", email="tie@example.com")
+    _make_user(repo, id="user-c", email="TIE@EXAMPLE.COM")
+    for uid in ("user-a", "user-b", "user-c"):
+        _set_created_at(repo, backend, uid, same)
+
+    g = repo.list_case_variant_duplicates()[0]
+    assert [u["id"] for u in g["users"]] == ["user-a", "user-b", "user-c"]
+    assert g["resolved_id"] == repo.get_by_email_ci("tie@example.com")["id"] == "user-a"
+
+
+def test_list_case_variant_duplicates_orders_groups_by_folded_address(users_repo):
+    """Two backends and two runs must agree on group order, or diffing one
+    report against the next shows churn that isn't there."""
+    repo, _, _ = users_repo
+    _make_user(repo, id="u-z1", email="zeta@example.com")
+    _make_user(repo, id="u-z2", email="Zeta@example.com")
+    _make_user(repo, id="u-a1", email="alpha@example.com")
+    _make_user(repo, id="u-a2", email="Alpha@example.com")
+
+    assert [g["email"] for g in repo.list_case_variant_duplicates()] == [
+        "alpha@example.com",
+        "zeta@example.com",
+    ]
+
+
+def test_list_case_variant_duplicates_reports_deactivation_state_per_row(users_repo):
+    """The failure this report exists to catch: an operator disables the
+    account they can see while sign-in resolves to a still-active variant."""
+    repo, _, backend = users_repo
+    _make_user(repo, id="user-old", email="dup@example.com")
+    _make_user(repo, id="user-new", email="Dup@Example.com")
+    _set_created_at(repo, backend, "user-old", datetime(2025, 1, 1, tzinfo=timezone.utc))
+    _set_created_at(repo, backend, "user-new", datetime(2026, 6, 1, tzinfo=timezone.utc))
+    repo.update(
+        "user-new",
+        active=False,
+        deactivated_at=datetime.now(timezone.utc),
+        deactivated_by="admin@example.com",
+    )
+
+    g = repo.list_case_variant_duplicates()[0]
+    by_id = {u["id"]: u for u in g["users"]}
+    assert by_id["user-new"]["active"] is False
+    assert by_id["user-old"]["active"] is True
+    assert g["resolved_id"] == "user-old", "the still-active row is the one sign-in reaches"

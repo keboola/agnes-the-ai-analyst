@@ -6,6 +6,26 @@ from typing import Any, Optional, List, Dict
 import duckdb
 
 
+def _group_case_variants(rows) -> List[Dict[str, Any]]:
+    """Fold an email-ordered row stream into duplicate groups.
+
+    Shared by the DuckDB and Postgres repositories: both run the same SQL and
+    both must return byte-identical structure, so the grouping lives in one
+    place rather than being reimplemented twice and drifting. Expects rows
+    pre-sorted by ``lower(email)`` then the get_by_email_ci tie-break."""
+    groups: List[Dict[str, Any]] = []
+    for row in rows:
+        folded = (row.get("email") or "").lower()
+        if groups and groups[-1]["email"] == folded:
+            groups[-1]["users"].append(row)
+        else:
+            groups.append({"email": folded, "users": [row]})
+    for g in groups:
+        g["count"] = len(g["users"])
+        g["resolved_id"] = g["users"][0]["id"]
+    return groups
+
+
 class UserRepository:
     def __init__(self, conn: duckdb.DuckDBPyConnection):
         self.conn = conn
@@ -94,6 +114,41 @@ class UserRepository:
             [email],
         ).fetchall()
         return [d for d in (self._row_to_dict(r) for r in rows) if d is not None]
+
+    def list_case_variant_duplicates(self) -> List[Dict[str, Any]]:
+        """Every address held by more than one account, grouped.
+
+        The reconciliation report queued by :meth:`get_by_email_ci`. That
+        method has to pick ONE row when case variants coexist, and it picks the
+        oldest — deterministic, but it means a person can own a second account
+        that no sign-in will ever resolve to, and an operator who deactivates
+        the row they can see may not have disabled the identity at all. Nothing
+        surfaces that today; ``users`` is UNIQUE on ``email``, so the collision
+        is invisible to every constraint and every list view sorted by address.
+
+        Returns one entry per colliding address::
+
+            {"email": <folded address>, "count": N, "resolved_id": <id>,
+             "users": [<full row>, ...]}
+
+        ``users`` is ordered exactly as :meth:`get_by_email_ci` orders, so
+        ``users[0]`` is the row that sign-in resolves to and ``resolved_id``
+        names it without the caller re-deriving the tie-break. Groups come back
+        ordered by folded address so two runs — and two backends — agree.
+
+        Read-only by design: which row to keep is a judgement call (group
+        memberships, PATs and sessions hang off the id), so this reports and
+        the operator merges."""
+        rows = self.conn.execute(
+            """
+            SELECT * FROM users
+            WHERE lower(email) IN (
+                SELECT lower(email) FROM users GROUP BY lower(email) HAVING COUNT(*) > 1
+            )
+            ORDER BY lower(email), created_at NULLS LAST, id
+            """
+        ).fetchall()
+        return _group_case_variants(d for d in (self._row_to_dict(r) for r in rows) if d is not None)
 
     def get_by_email_prefix(self, local_part: str) -> Optional[Dict[str, Any]]:
         """Resolve the single user whose email's local part (before ``@``)

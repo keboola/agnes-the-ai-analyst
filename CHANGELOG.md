@@ -10,6 +10,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.83.66] - 2026-08-18
+
+### Added
+
+- **`agnes admin duplicate-accounts` — the reconciliation report for accounts whose emails differ only in case.** `users` is UNIQUE on `email`, so `Ann@corp.example` and `ann@corp.example` are two perfectly legal rows: no constraint objects, and an address-sorted list view never puts them next to each other. Sign-in resolves the collision through `get_by_email_ci`, which deliberately picks the OLDEST row — deterministic, but it means a person can own an account nothing will ever sign them in to, and an operator who deactivates the row they happened to find may not have disabled the identity at all. The queued follow-up named in that method's docstring now exists: the command lists every colliding address with each row's spelling, active state and full id, and marks which row sign-in actually reaches. Read-only by design — which row to keep is a judgement call, since group memberships, PATs, sessions and audit history hang off the id — so it reports and the operator merges. `--json` for the whole report, `--limit` to cap the listing (the true total is still reported, so a capped run cannot read as "that's all of them"). The printed next step addresses rows **by id**, because `agnes admin deactivate <email>` matches one exact spelling and would walk the operator straight back into the ambiguity. Backed by `list_case_variant_duplicates()` on both the DuckDB and Postgres repositories, sharing one grouping helper and covered by cross-engine contract tests that pin the group ordering to `get_by_email_ci`'s tie-break — a report whose `resolved_id` named a row sign-in never reaches would be actively misleading on exactly the instances it exists for. CLI-only, reading the active backend through the repository factory like `break-glass`: an operator diagnostic for whoever runs the reconciliation, who already has database access.
+
 ## [0.83.56] - 2026-08-18
 
 ### Added

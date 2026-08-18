@@ -1662,3 +1662,82 @@ def break_glass_grant_admin(
                 conn.close()
             except Exception:
                 pass
+
+
+@admin_app.command("duplicate-accounts")
+def duplicate_accounts(
+    limit: int = typer.Option(0, "--limit", help="Show at most N colliding addresses (0 = all)"),
+    as_json: bool = typer.Option(False, "--json", help="Emit the full report as JSON"),
+) -> None:
+    """Report accounts whose emails differ only in case.
+
+    `users` is UNIQUE on `email`, so `Ann@corp.com` and `ann@corp.com` are two
+    perfectly legal rows that no constraint objects to and no address-sorted
+    list view puts side by side. Sign-in resolves such a collision through
+    `get_by_email_ci`, which picks the OLDEST row — deterministic, but it means
+    a person can own an account nothing will ever sign them in to, and an
+    operator who deactivates the row they happened to find may not have
+    disabled the identity at all. This names every collision and marks which
+    row sign-in actually reaches.
+
+    Read-only. Which row to keep is a judgement call — group memberships,
+    PATs, sessions and audit history hang off the id — so this reports and the
+    operator merges.
+
+    Reads the active state backend directly through the repository factory
+    rather than an API endpoint, like `break-glass`: it is an operator
+    diagnostic for whoever is about to run the reconciliation, and that person
+    already has database access.
+    """
+    from src.db import get_system_db
+    from src.repositories import use_pg
+
+    conn = None if use_pg() else get_system_db()
+    try:
+        groups = users_repo().list_case_variant_duplicates()
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    shown = groups[:limit] if limit > 0 else groups
+
+    if as_json:
+        typer.echo(
+            json.dumps(
+                {"total_addresses": len(groups), "shown": len(shown), "duplicates": shown},
+                indent=2,
+                default=str,
+            )
+        )
+        return
+
+    if not groups:
+        typer.echo("No case-variant duplicate accounts found.")
+        return
+
+    typer.echo(f"{len(groups)} address(es) held by more than one account:\n")
+    for g in shown:
+        typer.echo(f"  {g['email']}  ({g['count']} accounts)")
+        for u in g["users"]:
+            resolves = "← sign-in resolves here" if u["id"] == g["resolved_id"] else ""
+            state = "active" if u.get("active", True) else "DEACTIVATED"
+            # Full id, not the 8-char prefix `list-users` shows: this report
+            # exists to be acted on, and the reconciliation below addresses
+            # rows BY ID precisely because the address is ambiguous here.
+            typer.echo(f"      {u['email']:34s} {state:12s} {u['id']}  {resolves}")
+        typer.echo("")
+
+    if limit > 0 and len(groups) > len(shown):
+        typer.echo(f"… {len(groups) - len(shown)} more (raise --limit or use --json for all).\n")
+
+    typer.echo(
+        "To reconcile: pick the row to keep (usually the one sign-in resolves to),\n"
+        "move any group memberships with `agnes admin group add-member`, then\n"
+        "deactivate the other with `agnes admin deactivate <id>` — BY ID, not by\n"
+        "address: `deactivate <email>` matches one exact spelling, which is the\n"
+        "ambiguity this report is about. Deactivating the row sign-in does NOT\n"
+        "resolve to leaves the identity reachable."
+    )
