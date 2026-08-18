@@ -17,8 +17,6 @@ DB layer because the strip behavior is independent of plugin resolution.
 
 from __future__ import annotations
 
-import io
-import zipfile
 from pathlib import Path
 
 from src.marketplace_filter import is_agnes_only_path
@@ -32,23 +30,27 @@ def _build_plugin_dir(tmp_path: Path) -> Path:
     # Standard Claude Code files
     (plugin / ".claude-plugin").mkdir()
     (plugin / ".claude-plugin" / "plugin.json").write_text(
-        '{"name":"demo","version":"1.0"}', encoding="utf-8",
+        '{"name":"demo","version":"1.0"}',
+        encoding="utf-8",
     )
     (plugin / "skills").mkdir()
     (plugin / "skills" / "foo").mkdir()
     (plugin / "skills" / "foo" / "SKILL.md").write_text(
-        "---\nname: foo\n---\nbody", encoding="utf-8",
+        "---\nname: foo\n---\nbody",
+        encoding="utf-8",
     )
 
     # Agnes-only files that MUST be stripped
     (plugin / ".claude-plugin" / "marketplace-metadata.json").write_text(
-        '{"version":1}', encoding="utf-8",
+        '{"version":1}',
+        encoding="utf-8",
     )
     (plugin / ".agnes").mkdir()
     (plugin / ".agnes" / "cover.png").write_bytes(b"\x89PNG\r\n\x1a\nfake")
     (plugin / ".agnes" / "docs").mkdir()
     (plugin / ".agnes" / "docs" / "internal.md").write_text(
-        "# internal", encoding="utf-8",
+        "# internal",
+        encoding="utf-8",
     )
 
     return plugin
@@ -115,7 +117,7 @@ def test_zip_strips_agnes_only_files(tmp_path, monkeypatch):
     plugins = [_fake_plugin_record(plugin_dir)]
     members = packager._collect_members(plugins, etag="testetag")
 
-    arcnames = {arc for arc, _ in members}
+    arcnames = {arc for arc, _data, _x in members}
     # Sanity: the regular files DID survive
     assert any(a.endswith(".claude-plugin/plugin.json") for a in arcnames)
     assert any(a.endswith("skills/foo/SKILL.md") for a in arcnames)
@@ -136,6 +138,7 @@ def test_zip_etag_independent_of_agnes_files(tmp_path):
 
     # Drop the `.agnes/` content and re-compute. ETag must match.
     import shutil
+
     shutil.rmtree(plugin_dir / ".agnes")
     (plugin_dir / ".claude-plugin" / "marketplace-metadata.json").unlink()
     etag_without_agnes = marketplace_filter.compute_etag(plugins)

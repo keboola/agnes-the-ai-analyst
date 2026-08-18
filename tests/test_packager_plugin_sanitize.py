@@ -146,7 +146,7 @@ def _curated_plugin(tmp_path, declared_name: str) -> dict:
 def _zip_files(plugins):
     from app.marketplace_server import packager
 
-    return {arc: data for arc, data in packager._collect_members(plugins, etag="e")}
+    return {arc: data for arc, data, _executable in packager._collect_members(plugins, etag="e")}
 
 
 def _git_files(plugins, monkeypatch):
@@ -154,7 +154,8 @@ def _git_files(plugins, monkeypatch):
 
     monkeypatch.setattr(git_backend.marketplace_filter, "resolve_user_marketplace", lambda *a, **k: plugins)
     monkeypatch.setattr(git_backend.marketplace_filter, "compute_etag", lambda *a, **k: "e")
-    return git_backend.file_set_for_user(None, {"id": "u", "email": "u@example.com"})
+    files, _executables = git_backend.file_set_for_user(None, {"id": "u", "email": "u@example.com"})
+    return files
 
 
 def _cowork_files(plugin):
