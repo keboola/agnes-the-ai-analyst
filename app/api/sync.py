@@ -252,6 +252,7 @@ def _run_materialized_pass(
     bq_output_dir = str(Path(_get_data_dir()) / "extracts" / "bigquery")
     kb_output_dir = Path(_get_data_dir()) / "extracts" / "keboola" / "data"
     dbx_output_dir = str(Path(_get_data_dir()) / "extracts" / "databricks")
+    sf_output_dir = str(Path(_get_data_dir()) / "extracts" / "snowflake")
 
     # Sentinel: max_bytes <= 0 (or None) disables the guardrail. `get_value()`
     # treats YAML `null` as "missing" → returns the default; operators must use
@@ -339,12 +340,34 @@ def _run_materialized_pass(
         t = 900.0
     dbx_statement_timeout_s = t if t > 0 else None
 
+    # Snowflake guardrails (result-size cap, not a dry-run scan cap).
+    raw_sf_max = get_value(
+        "data_source",
+        "snowflake",
+        "max_bytes_per_materialize",
+        default=10 * 2**30,
+    )
+    try:
+        n = int(raw_sf_max) if raw_sf_max is not None else 0
+    except (TypeError, ValueError):
+        logger.warning(
+            "data_source.snowflake.max_bytes_per_materialize is not numeric "
+            "(%r); cost guardrail disabled. Set an integer or 0 to disable.",
+            raw_sf_max,
+        )
+        n = 0
+    sf_max_bytes = n if n > 0 else None
+
     # Lazily-built Databricks client — one per pass, first databricks row
     # constructs it; a misconfigured instance yields per-row errors instead
     # of failing the whole pass (mirrors the Keboola client cache below).
     databricks_client = None
     databricks_client_error: Optional[str] = None
     databricks_catalog = ""
+
+    # Lazily-resolved Snowflake settings — first snowflake row resolves once.
+    sf_settings: Optional[dict] = None
+    sf_settings_error: Optional[str] = None
 
     registry = table_registry_repo()
     state = sync_state_repo()
@@ -564,6 +587,31 @@ def _run_materialized_pass(
                     max_bytes=dbx_max_bytes,
                     statement_timeout_s=dbx_statement_timeout_s,
                 )
+            elif row_source_type == "snowflake":
+                if sf_settings is None and sf_settings_error is None:
+                    from connectors.snowflake.settings import resolve_snowflake_settings
+
+                    sf_settings = resolve_snowflake_settings()
+                    if sf_settings is None:
+                        sf_settings_error = (
+                            "Snowflake not configured for materialized path "
+                            "(data_source.snowflake.* + SNOWFLAKE_PASSWORD env/vault secret)"
+                        )
+                if sf_settings is None:
+                    summary["errors"].append({"table": ref_name, "error": sf_settings_error})
+                    continue
+                from connectors.snowflake.extractor import materialize_query as sf_materialize_query
+
+                stats = sf_materialize_query(
+                    table_id=ref_name,
+                    output_dir=sf_output_dir,
+                    source_query=row.get("source_query"),
+                    database=sf_settings.get("database"),
+                    bucket=row.get("bucket"),
+                    source_table=row.get("source_table"),
+                    settings=sf_settings,
+                    max_bytes=sf_max_bytes,
+                )
             else:
                 summary["errors"].append(
                     {
@@ -624,12 +672,29 @@ def _run_materialized_pass(
         # reason the stats dict didn't carry it (defensive).
         parquet_hash = stats.get("hash")
         if not parquet_hash:
-            if row_source_type == "bigquery":
-                output_dir_for_hash = bq_output_dir
-            elif row_source_type == "databricks":
-                output_dir_for_hash = dbx_output_dir
-            else:
-                output_dir_for_hash = str(kb_output_dir.parent)
+            # Keyed by source_type rather than an if/elif chain with a
+            # Keboola `else`: a connector added later would otherwise
+            # silently inherit the Keboola directory and hash a path that
+            # does not exist (which is exactly what Snowflake rows did).
+            # An unknown source_type is surfaced as a per-row error instead
+            # of being hashed against a guessed directory.
+            output_dir_for_hash = {
+                "bigquery": bq_output_dir,
+                "databricks": dbx_output_dir,
+                "snowflake": sf_output_dir,
+                "keboola": str(kb_output_dir.parent),
+            }.get(row_source_type)
+            if output_dir_for_hash is None:
+                summary["errors"].append(
+                    {
+                        "table": ref_name,
+                        "error": (
+                            "materialize returned no hash and no extract directory is "
+                            f"mapped for source_type={row_source_type!r}"
+                        ),
+                    }
+                )
+                continue
             parquet_path = Path(output_dir_for_hash) / "data" / f"{ref_name}.parquet"
             parquet_hash = _file_hash(parquet_path)
         # `update_sync` resets `status='ok'` / `error=NULL` on the upsert
