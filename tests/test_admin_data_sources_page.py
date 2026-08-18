@@ -799,6 +799,27 @@ class TestSnowflakeWizardCredentialNames:
         for legal in ("SNOWFLAKE_PASSWORD", "SNOWFLAKE_PRIVATE_KEY", "_x9"):
             assert pattern.match(legal), f"{legal!r} must pass as an env-var name"
 
+    def test_an_unreadable_env_name_is_reported_not_silently_defaulted(self):
+        """Falling back to the default name when the config value is redacted is
+        right for the common case, but the redaction hides whether the operator
+        set a custom name — and a custom name is env-only at every layer
+        (`PUT /api/admin/datasource-secrets/{name}` refuses anything outside
+        `DATA_SOURCE_SECRET_NAMES`, and `datasource_secret()` raises for the
+        same set, so the vault never holds it). Defaulting silently would
+        report "vault" for a credential the backend never reads, so the
+        discarded-name case has to reach the admin."""
+        src = self._template()
+        assert "_sfEnvNamesRedacted = true;" in src, "a discarded name is not recorded"
+        assert "_ENV_NAME_UNREADABLE_NOTE" in src
+        # The note must be rendered on the credential badge, both branches —
+        # a name is discarded independently of whether a credential is stored.
+        render = src.index("function _renderSfCredStatus")
+        end = src.index("async function _saveSnowflakeAndContinue")
+        body = src[render:end]
+        assert body.count("${warn}") == 2, "the note is missing from a badge branch"
+        # Reset per wizard open, so it cannot leak onto another source.
+        assert "_sfEnvNamesRedacted = false;" in src[src.index("function openWizard") :]
+
     def test_a_server_config_save_surfaces_restart_required(self):
         """`POST /api/admin/server-config` answers `restart_required: true` and
         resets only the in-process config cache. This wizard is the first

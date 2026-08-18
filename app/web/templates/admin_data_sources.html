@@ -2508,8 +2508,26 @@ function _defaultSfEnvNames() {
    accepted if it has the shape of one; anything else falls back. */
 const _ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
+/* Set when the config carried a credential variable name we had to discard as
+   unreadable. Falling back to the default is right for the overwhelmingly
+   common case (the operator never changed it), but we cannot TELL the default
+   from a custom name through the redaction — and a custom name is env-only by
+   design at every layer: `PUT /api/admin/datasource-secrets/{name}` refuses
+   anything outside `DATA_SOURCE_SECRET_NAMES`, and `datasource_secret()`
+   raises for the same set, so the vault never holds it. Storing under the
+   default there would report "vault" for a credential the backend never reads.
+   So say so rather than guess silently. */
+let _sfEnvNamesRedacted = false;
+
+const _ENV_NAME_UNREADABLE_NOTE =
+  "This instance has a Snowflake credential variable name configured that this page cannot read — "
+  + "the server redacts it. If it is not the default (SNOWFLAKE_PASSWORD / SNOWFLAKE_PRIVATE_KEY), "
+  + "set the credential in the environment instead: only the default names can be stored here.";
+
 function _sfEnvNameOr(fromConfig, fallback) {
-  return _ENV_NAME_RE.test(fromConfig || "") ? fromConfig : fallback;
+  if (_ENV_NAME_RE.test(fromConfig || "")) return fromConfig;
+  if (fromConfig) _sfEnvNamesRedacted = true;
+  return fallback;
 }
 
 async function _loadSfConfigAndStatus() {
@@ -2565,13 +2583,16 @@ function _renderSfCredStatus(host, kind) {
   const status = (_sfCredStatus && _sfCredStatus[kind]) || { source: "unset", has_value: false };
   const hasInput = document.getElementById(inputId).value.trim().length > 0;
   const label = kind === "password" ? "password" : "key-pair";
+  const warn = _sfEnvNamesRedacted
+    ? `<span style="font-size:12px; color:var(--ds-accent-warn-ink);">${_esc(_ENV_NAME_UNREADABLE_NOTE)}</span>`
+    : "";
   if (status.has_value || hasInput) {
     const source = hasInput ? "ready to save" : status.source;
     const cls = hasInput ? "badge-vault" : (status.source === "env" ? "badge-env" : "badge-vault");
-    host.innerHTML = `<span class="ds-badge ${cls}">${label} · ${_esc(source)}</span>`;
+    host.innerHTML = `<span class="ds-badge ${cls}">${label} · ${_esc(source)}</span>${warn}`;
   } else {
     host.innerHTML = `<span class="ds-badge badge-unset">not set</span>
-       <span style="font-size:12px; color:var(--ds-accent-warn-ink);">Save a ${label} credential here first — registering works, but nothing can query until it's stored.</span>`;
+       <span style="font-size:12px; color:var(--ds-accent-warn-ink);">Save a ${label} credential here first — registering works, but nothing can query until it's stored.</span>${warn}`;
   }
 }
 
@@ -2676,6 +2697,7 @@ function openWizard(connector) {
   _bqCredStatus = null;
   _sfCredStatus = null;
   _sfRestartRequired = false;
+  _sfEnvNamesRedacted = false;
   _sfEnvNames = _defaultSfEnvNames();
   _sfConfigLoaded = false;
   _wizardMaxStep = 1;

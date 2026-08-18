@@ -2966,6 +2966,24 @@ def _reattach_remote_extensions(conn: duckdb.DuckDBPyConnection, extracts_dir: P
                         )
                     attach_unity_catalog(conn, alias=alias, url=url, token=token)
                 elif extension == SF_EXTENSION:
+                    if token_env and not token:
+                        # Mirror the rebuild path (src/orchestrator.py), which
+                        # skips an unresolvable token_env with this warning. This
+                        # branch is reached BEFORE the `elif token:` guard below,
+                        # so without it an ATTACH goes out with `PASSWORD ''` and
+                        # fails at Snowflake — the operator sees an
+                        # authentication error instead of the real cause, a name
+                        # nothing resolves. Reachable in normal operation: an
+                        # `auth_type` flip in /admin/server-config changes which
+                        # env name the credential lives under, while the extract's
+                        # `_remote_attach.token_env` keeps the old one until
+                        # something rebuilds it.
+                        logger.warning(
+                            "Re-attach %s: token_env %s not resolvable, skipping",
+                            alias,
+                            token_env,
+                        )
+                        continue
                     if not is_attach_host_allowed(url):
                         logger.error(
                             "Re-attach %s: url host %r not in AGNES_REMOTE_ATTACH_HOST_ALLOWLIST; "
