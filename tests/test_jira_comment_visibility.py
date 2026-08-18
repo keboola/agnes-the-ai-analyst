@@ -11,7 +11,9 @@ would be unreachable by construction.
 The column is three-valued on purpose. A missing flag is written as NULL and
 counted, never defaulted: a boolean that is confidently wrong is worse than one
 that admits the gap, because nothing downstream can distinguish a defaulted
-``true`` from an observed one.
+``true`` from an observed one. The same strictness applies to typing: only a
+JSON boolean is trusted — ``bool("false")`` is ``True``, so a mistyped flag
+resolves to NULL rather than risking an inverted value.
 """
 
 import logging
@@ -62,16 +64,46 @@ class TestPublicVisibilityExtraction:
     def test_absent_flag_is_null_never_defaulted(self):
         assert _visibility(_comment()) is None
 
+    def test_explicit_null_flag_is_null(self):
+        assert _visibility(_comment(jsdPublic=None)) is None
+
+    def test_string_false_is_null_never_inverted(self):
+        """``bool("false")`` is ``True`` — the exact miscoercion the sibling
+        dataset shipped for ``value.internal``. A mistyped flag must resolve to
+        NULL, never to an inverted boolean."""
+        assert _visibility(_comment(jsdPublic="false")) is None
+
+    def test_string_true_is_null_not_trusted(self):
+        assert _visibility(_comment(jsdPublic="true")) is None
+
+    def test_numeric_flag_is_null_not_trusted(self):
+        assert _visibility(_comment(jsdPublic=1)) is None
+        assert _visibility(_comment(jsdPublic=0)) is None
+
     def test_unresolved_comments_are_counted_in_a_warning(self, caplog):
         issue = _issue(_comment("1", jsdPublic=True), _comment("2"), _comment("3"))
         with caplog.at_level(logging.WARNING, logger="connectors.jira.transform"):
             transform_comments(issue, preserve_on_incomplete=False)
         assert "2 of 3 comments" in caplog.text
-        assert "public_visibility written as NULL" in caplog.text
+        assert "public_visibility resolved as NULL" in caplog.text
+
+    def test_mistyped_flags_are_counted_in_the_warning(self, caplog):
+        issue = _issue(_comment("1", jsdPublic=True), _comment("2", jsdPublic="false"))
+        with caplog.at_level(logging.WARNING, logger="connectors.jira.transform"):
+            transform_comments(issue, preserve_on_incomplete=False)
+        assert "1 of 2 comments" in caplog.text
 
     def test_no_warning_when_every_comment_resolves(self, caplog):
         with caplog.at_level(logging.WARNING, logger="connectors.jira.transform"):
             transform_comments(_issue(_comment("1", jsdPublic=True)), preserve_on_incomplete=False)
+        assert "public_visibility" not in caplog.text
+
+    def test_warning_suppressed_on_throwaway_passes(self, caplog):
+        """``transform_issues``' grouping pass discards its payloads and rebuilds
+        them under the month lock; it passes ``warn_unresolved=False`` so the
+        same gap is not logged twice per issue per cycle."""
+        with caplog.at_level(logging.WARNING, logger="connectors.jira.transform"):
+            transform_comments(_issue(_comment("1")), preserve_on_incomplete=False, warn_unresolved=False)
         assert "public_visibility" not in caplog.text
 
 

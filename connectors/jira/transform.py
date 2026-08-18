@@ -567,8 +567,13 @@ def transform_issue(raw_issue: dict) -> dict:
 # documented read-only projection of it, and the only signal worth reading
 # here — it rides along on the comments embedded in a plain `GET /issue/{key}`
 # (no `expand`, no second request), so this transform stays pure and the fetch
-# layer is untouched. Audited across the whole project: present on 112,859 of
-# 112,859 comments spanning 2022-2026.
+# layer is untouched. Audited live: present as a JSON boolean on every comment
+# observed — a project-wide sweep of each issue's newest-20 comment window
+# (112,859 comments, 2022-2026; that is what `search/jql?fields=comment`
+# actually embeds) plus full page-throughs of the longest threads covering the
+# older tails the sweep cannot see (697/697, including every comment past the
+# 100-comment embed and 2022-era thread heads). Zero string-typed and zero
+# explicit-null values anywhere.
 #
 # The entity property is deliberately NOT consulted. Reading it would need
 # `expand=properties`, and any payload carrying the property carries
@@ -580,25 +585,38 @@ def transform_issue(raw_issue: dict) -> dict:
 # and would silently flip a public comment to internal.
 #
 # Reports of `jsdPublic` being wrong (JSDCLOUD-7997, -8275, -6050) concern
-# WEBHOOK payloads and WRITE attempts; this connector only reads GET responses.
+# WEBHOOK payloads and WRITE attempts. This connector reads GET refetches on
+# every path but one: `process_webhook_event`'s fetch-failure fallback
+# (service.py) can transform the webhook body's own comments when the refetch
+# fails AND the embedded thread self-reports complete — narrow and healed by
+# the next successful refetch, but it means "only reads GET responses" would
+# overstate the guarantee.
 
 
 def _comment_public_visibility(comment: dict) -> bool | None:
-    """Is this comment customer-facing? ``None`` when the flag is absent.
+    """Is this comment customer-facing? ``None`` unless the flag is a real boolean.
 
-    Deliberately never defaults. A missing flag is genuinely unknown, and a
-    boolean column that is confidently wrong is strictly worse than one that
-    admits the gap — nothing downstream can distinguish a defaulted ``true``
-    from an observed one. A sibling ingest of this same field defaulted
-    instead: it holds zero NULLs across 120k rows, and spot-checking it against
-    live Jira finds 25-30% of every pre-2025 month wrong, every error in the
-    same direction (stored public, actually internal).
+    Deliberately never defaults, and deliberately trusts nothing but a JSON
+    boolean. ``bool()`` reads any non-empty string as truthy — ``bool("false")``
+    is ``True``, the exact miscoercion documented above for ``value.internal``,
+    which this same instance demonstrably stores as the string ``"false"`` — so
+    a mistyped flag resolves to NULL (and is counted in the caller's WARNING)
+    instead of landing as a confidently wrong ``true``. A missing flag is
+    genuinely unknown, and a boolean column that is confidently wrong is
+    strictly worse than one that admits the gap — nothing downstream can
+    distinguish a defaulted ``true`` from an observed one. A sibling ingest of
+    this same field defaulted instead: it holds zero NULLs across 120k rows,
+    and spot-checking it against live Jira finds 25-30% of every pre-2025 month
+    wrong, every error in the same direction (stored public, actually
+    internal).
     """
     jsd_public = comment.get("jsdPublic")
-    return None if jsd_public is None else bool(jsd_public)
+    return jsd_public if isinstance(jsd_public, bool) else None
 
 
-def transform_comments(raw_issue: dict, *, preserve_on_incomplete: bool = True) -> list[dict] | None:
+def transform_comments(
+    raw_issue: dict, *, preserve_on_incomplete: bool = True, warn_unresolved: bool = True
+) -> list[dict] | None:
     """Extract and transform comments from an issue.
 
     Args:
@@ -607,6 +625,11 @@ def transform_comments(raw_issue: dict, *, preserve_on_incomplete: bool = True) 
             should suppress the (known-truncated) embedded list. Defaults to
             True, which is the correct behaviour for the INCREMENTAL path
             only. Full-rebuild callers pass False — see below.
+        warn_unresolved: whether comments lacking a boolean ``jsdPublic``
+            are logged. Callers running this transform on a throwaway pass
+            (the batch grouping pass in ``incremental_transform.transform_issues``,
+            which rebuilds the same payloads under the month lock right after)
+            pass False so the same gap is not logged twice per issue per cycle.
 
     Returns:
       - list[dict]: transformed comment records. May be empty — the issue
@@ -661,11 +684,15 @@ def transform_comments(raw_issue: dict, *, preserve_on_incomplete: bool = True) 
             }
         )
 
-    if unresolved:
+    if unresolved and warn_unresolved:
         # Counted, not defaulted — the operator needs to see the size of the gap
-        # rather than have it disappear into a plausible-looking `true`.
+        # rather than have it disappear into a plausible-looking `true`. Worded
+        # as "resolved", not "written": whether these records land in parquet is
+        # the caller's decision (the incremental path may preserve instead), and
+        # "no boolean jsdPublic" covers all three unresolved shapes — absent,
+        # explicit null, and mistyped.
         logger.warning(
-            "Jira issue %s: %d of %d comments carry no jsdPublic flag — public_visibility written as NULL",
+            "Jira issue %s: %d of %d comments carry no boolean jsdPublic — public_visibility resolved as NULL",
             issue_key,
             unresolved,
             len(comments),

@@ -497,15 +497,19 @@ Separates customer-facing replies from internal agent notes:
 |---|---|
 | `true` | Visible to the customer — an agent reply, or the customer's own portal/email reply |
 | `false` | Internal note, visible only to agents |
-| `NULL` | **Unknown.** Neither visibility signal was present on the comment payload, or the row was written before this column existed and has not been re-transformed. |
+| `NULL` | **Unknown.** The payload carried no JSON-boolean `jsdPublic` (absent, explicit null, or mistyped), or the row was written before this column existed and has not been re-transformed. |
 
 The value comes from **`jsdPublic`**, the Jira platform API's documented
 read-only projection of the state JSM stores in the `sd.public.comment` entity
 property. `jsdPublic` rides along on the comments embedded in a plain
 `GET /issue/{key}` — no `expand`, no extra request per issue — so the column
-costs no additional Jira traffic. It is present on every comment in practice:
-a sweep of the whole project found it on 112,859 of 112,859 comments spanning
-2022-2026.
+costs no additional Jira traffic. It is present as a JSON boolean on every
+comment observed live: a project-wide sweep of each issue's newest-20 comment
+window (112,859 comments, 2022-2026 — that window is what
+`search/jql?fields=comment` actually embeds per issue) plus full page-throughs
+of the longest threads covering the older tails the sweep cannot see (697/697,
+including 2022-era thread heads), with zero string-typed and zero
+explicit-null values anywhere.
 
 The entity property is deliberately not read. Doing so would require
 `expand=properties`, and any payload carrying the property carries `jsdPublic`
@@ -513,7 +517,10 @@ too, so a property fallback would be unreachable rather than merely unused.
 Anyone adding `expand=properties` later should note that `value.internal` is
 not consistently typed — the same instance stores both a JSON boolean and the
 string `"false"` — so it must be coerced by content; a plain `bool()` reads any
-non-empty string as truthy and would flip a public comment to internal.
+non-empty string as truthy and would flip a public comment to internal. The
+same strictness already applies to `jsdPublic` itself: only a JSON boolean is
+trusted — any other type resolves to `NULL` and is counted, never
+`bool()`-coerced.
 
 **`NULL` is never coerced to `true`.** A missing flag is counted and logged as a
 WARNING naming the issue key, not defaulted. This is deliberate: a boolean that
@@ -535,7 +542,11 @@ Rows written before this column existed read as `NULL` (the extract views use
 re-run the batch transform (4b above) — the flag is already present in the
 cached raw JSON, so this is a pure re-transform with no Jira traffic. Verify the
 result by charting the internal share per month: a cliff at any date means the
-backfill defaulted rows rather than reading them.
+backfill defaulted rows rather than reading them. Do not run the backfill until
+the release carrying this column has survived the post-merge smoke gate: a
+rollback to pre-column code silently strips `public_visibility` from any month
+partition its webhook/poll writes rewrite (the old schema projection drops
+unknown columns), which would quietly undo the backfill month by month.
 
 ## Historical Backfill
 
