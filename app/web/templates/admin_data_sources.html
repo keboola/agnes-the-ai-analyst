@@ -1290,7 +1290,6 @@ const CONNECTOR = {
   keboola:   { abbr: "KB", cls: "keboola",   wizard: "keboola" },
   bigquery:  { abbr: "BQ", cls: "bigquery",  wizard: "bigquery" },
   snowflake: { abbr: "SF", cls: "snowflake", wizard: "snowflake" },
-  databricks:{ abbr: "DB", cls: "databricks",wizard: "databricks" },
   jira:      { abbr: "JR", cls: "jira",      wizard: "jira" },
   local:     { abbr: "FS", cls: "local",     wizard: "csv" },
 };
@@ -2475,6 +2474,20 @@ function _updateSfAuthUI() {
   document.getElementById("ds-sf-auth-key").hidden = authType !== "key_pair";
 }
 
+let _sfEnvNames = {
+  token_env: "SNOWFLAKE_PASSWORD",
+  private_key_env: "SNOWFLAKE_PRIVATE_KEY",
+  private_key_passphrase_env: "SNOWFLAKE_PRIVATE_KEY_PASSPHRASE",
+};
+
+function _defaultSfEnvNames() {
+  return {
+    token_env: "SNOWFLAKE_PASSWORD",
+    private_key_env: "SNOWFLAKE_PRIVATE_KEY",
+    private_key_passphrase_env: "SNOWFLAKE_PRIVATE_KEY_PASSPHRASE",
+  };
+}
+
 async function _loadSfConfigAndStatus() {
   const hostPassword = document.getElementById("ds-sfcred-password");
   const hostKey = document.getElementById("ds-sfcred-key");
@@ -2490,6 +2503,11 @@ async function _loadSfConfigAndStatus() {
       document.getElementById("ds-sf-role").value = sf.role || "";
       const authType = sf.auth_type || "password";
       document.getElementById("ds-sf-auth-type").value = authType;
+      _sfEnvNames = {
+        token_env: sf.token_env || _sfEnvNames.token_env,
+        private_key_env: sf.private_key_env || _sfEnvNames.private_key_env,
+        private_key_passphrase_env: sf.private_key_passphrase_env || _sfEnvNames.private_key_passphrase_env,
+      };
       _updateSfAuthUI();
       _sfConfigLoaded = true;
     } catch (e) {
@@ -2502,8 +2520,8 @@ async function _loadSfConfigAndStatus() {
       const data = r.ok ? await r.json() : { secrets: [] };
       const secrets = data.secrets || [];
       _sfCredStatus = {
-        password: secrets.find((s) => s.name === "SNOWFLAKE_PASSWORD") || { source: "unset", has_value: false },
-        key: secrets.find((s) => s.name === "SNOWFLAKE_PRIVATE_KEY") || { source: "unset", has_value: false },
+        password: secrets.find((s) => s.name === _sfEnvNames.token_env) || { source: "unset", has_value: false },
+        key: secrets.find((s) => s.name === _sfEnvNames.private_key_env) || { source: "unset", has_value: false },
       };
     } catch (e) {
       _sfCredStatus = {
@@ -2551,18 +2569,24 @@ async function _saveSnowflakeAndContinue() {
   }
   if (authType === "password") {
     if ((!_sfCredStatus || !_sfCredStatus.password || !_sfCredStatus.password.has_value) && !password) {
-      err.textContent = "Snowflake password is required. Paste it below or set SNOWFLAKE_PASSWORD in Instance secrets.";
+      err.textContent = `Snowflake password is required. Paste it below or set ${_sfEnvNames.token_env} in Instance secrets.`;
       err.style.display = "block";
       return;
     }
   } else {
     if ((!_sfCredStatus || !_sfCredStatus.key || !_sfCredStatus.key.has_value) && !privateKey) {
-      err.textContent = "Snowflake private key is required. Paste it below or set SNOWFLAKE_PRIVATE_KEY in Instance secrets.";
+      err.textContent = `Snowflake private key is required. Paste it below or set ${_sfEnvNames.private_key_env} in Instance secrets.`;
       err.style.display = "block";
       return;
     }
   }
   const sf = { account, user, database, warehouse, role, auth_type: authType };
+  if (authType === "password") {
+    sf.token_env = _sfEnvNames.token_env;
+  } else {
+    sf.private_key_env = _sfEnvNames.private_key_env;
+    sf.private_key_passphrase_env = _sfEnvNames.private_key_passphrase_env;
+  }
   try {
     const r = await fetch(API_SERVER_CONFIG, {
       method: "POST", credentials: "include",
@@ -2570,8 +2594,9 @@ async function _saveSnowflakeAndContinue() {
       body: JSON.stringify({ sections: { data_source: { snowflake: sf } } }),
     });
     if (!r.ok) throw new Error("server-config save failed");
+    if (!_sfCredStatus) _sfCredStatus = { password: { source: "unset", has_value: false }, key: { source: "unset", has_value: false } };
     if (authType === "password" && password) {
-      const rp = await fetch("/api/admin/datasource-secrets/SNOWFLAKE_PASSWORD", {
+      const rp = await fetch(`/api/admin/datasource-secrets/${encodeURIComponent(_sfEnvNames.token_env)}`, {
         method: "PUT", credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ value: password }),
@@ -2582,7 +2607,7 @@ async function _saveSnowflakeAndContinue() {
       document.getElementById("ds-sf-password").value = "";
     }
     if (authType === "key_pair" && privateKey) {
-      const rk = await fetch("/api/admin/datasource-secrets/SNOWFLAKE_PRIVATE_KEY", {
+      const rk = await fetch(`/api/admin/datasource-secrets/${encodeURIComponent(_sfEnvNames.private_key_env)}`, {
         method: "PUT", credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ value: privateKey }),
@@ -2591,15 +2616,15 @@ async function _saveSnowflakeAndContinue() {
       _sfCredStatus.key = { source: "vault", has_value: true };
       _renderSfCredStatus(null, "key");
       document.getElementById("ds-sf-private-key").value = "";
-      if (passphrase) {
-        const rp = await fetch("/api/admin/datasource-secrets/SNOWFLAKE_PRIVATE_KEY_PASSPHRASE", {
-          method: "PUT", credentials: "include",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ value: passphrase }),
-        });
-        if (!rp.ok) throw new Error("passphrase secret save failed");
-        document.getElementById("ds-sf-key-passphrase").value = "";
-      }
+    }
+    if (authType === "key_pair" && passphrase) {
+      const rpp = await fetch(`/api/admin/datasource-secrets/${encodeURIComponent(_sfEnvNames.private_key_passphrase_env)}`, {
+        method: "PUT", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: passphrase }),
+      });
+      if (!rpp.ok) throw new Error("passphrase secret save failed");
+      document.getElementById("ds-sf-key-passphrase").value = "";
     }
     _sfConfigLoaded = true;
     _setWizStep(2);
@@ -2621,6 +2646,7 @@ function openWizard(connector) {
   _wizardShares = null;
   _bqCredStatus = null;
   _sfCredStatus = null;
+  _sfEnvNames = _defaultSfEnvNames();
   _sfConfigLoaded = false;
   _wizardMaxStep = 1;
   _wizardDone = false;

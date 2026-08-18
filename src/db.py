@@ -2984,9 +2984,9 @@ def _reattach_remote_extensions(conn: duckdb.DuckDBPyConnection, extracts_dir: P
                             token_env,
                             url,
                         )
-                    passphrase = None
-                    if token_env == "SNOWFLAKE_PRIVATE_KEY":
-                        passphrase = resolve_remote_attach_token("SNOWFLAKE_PRIVATE_KEY_PASSPHRASE") or None
+                    from connectors.snowflake.settings import resolve_snowflake_passphrase_for_token
+
+                    passphrase = resolve_snowflake_passphrase_for_token(token_env)
                     attach_snowflake(conn, alias=alias, url=url, token=token, passphrase=passphrase)
                 elif token:
                     # #F11 — never ship a real credential to a connector-chosen

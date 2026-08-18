@@ -83,3 +83,23 @@ def resolve_snowflake_settings() -> Optional[dict[str, Any]]:
         "auth_type": auth_type,
         "token_env": token_env,
     }
+
+
+def resolve_snowflake_passphrase_for_token(token_env: str) -> Optional[str]:
+    """Return the passphrase that unlocks the private key named by ``token_env``.
+
+    Honors operator-configured ``private_key_env`` / ``private_key_passphrase_env``.
+    Falls back to the default ``SNOWFLAKE_PRIVATE_KEY_PASSPHRASE`` env/vault lookup
+    when the settings cannot be resolved or the token env does not match the
+    configured private key env.
+    """
+    if not token_env:
+        return None
+    settings = resolve_snowflake_settings()
+    if settings and settings.get("auth_type") == "key_pair":
+        if token_env == settings.get("private_key_env", SF_PRIVATE_KEY_ENV):
+            passphrase_env = settings.get("private_key_passphrase_env", SF_PRIVATE_KEY_PASSPHRASE_ENV)
+            return _resolve_secret(passphrase_env) or None
+    if token_env == SF_PRIVATE_KEY_ENV:
+        return _resolve_secret(SF_PRIVATE_KEY_PASSPHRASE_ENV) or None
+    return None
