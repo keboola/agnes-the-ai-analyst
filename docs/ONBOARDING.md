@@ -152,13 +152,33 @@ Then create a DNS A-record pointing `agnes.<customer>.com` → `prod_ip`. Caddy 
 
 ## 8. Smoke test
 
+Run the deploy gate **on the VM** — it checks the public API (health, schema,
+CLI wheel), calls the new-instance doctor (`POST /api/admin/doctor/new-instance`:
+a usable login door exists, email really sends, chat is granted to a group,
+agent scopes intersect owner grants, branding reaches the login page), and
+verifies host-side consistency (`COMPOSE_FILE` ↔ `instance.yaml` database
+backend, TLS predicate agreement). Each doctor check exists because that exact
+thing silently failed on a real deployment.
+
+```bash
+gcloud compute ssh agnes-prod --zone=<zone> --project=<project> --command \
+    'sudo DOCTOR_EMAIL_TO=you@example.com bash /opt/agnes/post-deploy-smoke-test.sh'
+```
+
+The script ships in the image (extracted to `/opt/agnes/` on boot); on a VM
+deployed from an older image, fetch it raw from the repo first. On the VM no
+token is needed — it falls back to `SCHEDULER_API_TOKEN` from
+`/opt/agnes/.env`; run against a remote URL by passing
+`https://agnes.<customer>.com` and an admin PAT as arguments (host-side
+checks are then skipped). Set `DOCTOR_EMAIL_TO` to receive a real test email
+(an HTTP 200 from the send path does NOT prove delivery). The same
+server-side checks are also available as
+`agnes admin doctor --new-instance [--email-to you@example.com]`.
+
+Then trigger the first sync (populates data from Keboola / other source):
+
 ```bash
 PROD_IP=$(cd terraform && terraform output -raw prod_ip)
-
-# Health
-curl "http://$PROD_IP:8000/api/health" | jq '.status'  # "healthy" or "degraded"
-
-# First sync (populates data from Keboola / other source)
 curl -X POST "http://$PROD_IP:8000/api/sync/trigger" \
      -H "Authorization: Bearer $ADMIN_JWT"
 ```

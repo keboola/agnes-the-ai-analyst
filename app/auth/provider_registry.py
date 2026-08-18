@@ -54,6 +54,7 @@ _RESCUE_PROVIDERS: tuple[str, ...] = ("password", "email")
 # not on every request (same rationale as the parse cache above).
 _LOCKOUT_RESCUE_LOGGED: Optional[tuple] = None
 
+
 def _probe_availability(name: str) -> tuple[bool, bool]:
     """``(available, probe_raised)`` for one provider.
 
@@ -226,6 +227,27 @@ def _parse_allowlist(source: Optional[object]) -> Optional[list[str]]:
 def provider_allowed(name: str) -> bool:
     allowlist = configured_allowlist()
     return allowlist is None or name in allowlist
+
+
+def probe_providers() -> list[dict]:
+    """``[{name, allowed, available}]`` for every known provider.
+
+    The offering the login page computes inline (five try/except blocks in
+    ``app.web.router.login_page``), exposed as data so diagnostic surfaces
+    (the new-instance doctor) can answer "which login doors are open" without
+    growing another copy of the enumeration. A provider is *offered* when it
+    is both allowed (post-rescue allowlist, same as the login page sees) and
+    available (config-completeness probe; a raising probe reads as
+    unavailable, matching :func:`_provider_available`).
+    """
+    return [
+        {
+            "name": name,
+            "allowed": provider_allowed(name),
+            "available": _probe_availability(name)[0],
+        }
+        for name in KNOWN_PROVIDERS
+    ]
 
 
 def require_provider(name: str) -> Callable[[], None]:

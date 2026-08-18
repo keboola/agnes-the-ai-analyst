@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- **New-instance deployment doctor + a real deploy gate in the post-deploy smoke test.** `POST /api/admin/doctor/new-instance` (admin-only; CLI `agnes admin doctor --new-instance [--email-to …] [--json]`) runs five checks, each of which has silently failed on a real deployment: a usable **login door** exists (a non-service user actually holds a password, an OAuth provider probes available, or magic-link email has a transport — independent of the seed-admin path, whose failures end in a single startup log line); **email delivery** is genuinely possible (flags `SENDGRID_API_KEY` set without the `sendgrid` package installed, and the default `noreply@example.com` sender that relays silently drop; with `email_to` it sends a real test message through the same send path the login flows use); **chat visibility** (`chat.enabled` without a `(group, chat, chat)` grant hides chat from everyone including admins); **agent scope** (every table-scoped agent profile has a non-empty owner-grants ∩ scope — an empty one answers every data question with 403 "not in your stack"); and **branding** (`instance.brand` set but the rendered login page still titled with a default, because the title reads `instance.name`). `scripts/ops/post-deploy-smoke-test.sh` (docs/ONBOARDING.md step 8) now calls the doctor — falling back to `SCHEDULER_API_TOKEN` from `/opt/agnes/.env` when no PAT is given — plus two host-side consistency checks the API cannot see (`COMPOSE_FILE` in `.env` must carry the postgres overlay when `instance.yaml` says `database.backend: side_car`, or the next auto-upgrade tick silently drops Postgres; the three TLS predicates must agree, in particular a `certs/` directory existing without both PEM files makes the state-applier close the app's ports without ever starting caddy) and a `/cli/download` probe (a 404 breaks every analyst install from the onboarding guide). The script now ships in the image (`/opt/agnes/post-deploy-smoke-test.sh` on the VM).
+
 ## [0.83.56] - 2026-08-18
 
 ### Added
