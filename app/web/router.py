@@ -4145,6 +4145,25 @@ async def semantic_layer_detail(
         elif active_tab == "glossary":
             glossary = [g for g in glossary if needle in str(g.get("term") or "").lower()]
 
+    # A relationship's from/to name a dataset, but the Ossie schema validates
+    # only that they are strings — and `model_of` may aggregate models whose
+    # relationships reference a dataset declared in a sibling. So resolve each
+    # side against the document's dataset names (case-insensitively, matching
+    # find_object) and let the template link only the resolvable ones; an
+    # undeclared side renders as plain text instead of a link that 404s, the
+    # same guard the object-detail page already applies (Devin #1398).
+    _dataset_names_cf = {
+        str(d.get("name") or "").casefold() for d in (model.get("datasets") or []) if isinstance(d, dict)
+    }
+    relationships = [
+        {
+            **r,
+            "from_linkable": str(r.get("from") or "").casefold() in _dataset_names_cf,
+            "to_linkable": str(r.get("to") or "").casefold() in _dataset_names_cf,
+        }
+        for r in relationships
+    ]
+
     tabs = [
         {
             "key": t,
@@ -4235,7 +4254,12 @@ async def semantic_layer_object(
         ai_instructions_and_examples(obj) if object_type in ("dataset", "metric", "relationship") else (None, [])
     )
 
-    datasets_by_name = {d.get("name"): d for d in model.get("datasets") or [] if isinstance(d, dict) and d.get("name")}
+    # Keyed case-insensitively to match find_object's resolution — otherwise a
+    # relationship spelling a dataset with different casing renders as unlinked
+    # text even though its target page resolves fine (Devin #1398).
+    datasets_by_name = {
+        str(d.get("name")).casefold(): d for d in model.get("datasets") or [] if isinstance(d, dict) and d.get("name")
+    }
 
     ctx = _build_context(
         request,
@@ -4254,8 +4278,10 @@ async def semantic_layer_object(
         ai_instructions=instructions,
         ai_examples=examples,
         expressions=metric_expressions(obj) if object_type == "metric" else None,
-        from_dataset=datasets_by_name.get(obj.get("from")) if object_type == "relationship" else None,
-        to_dataset=datasets_by_name.get(obj.get("to")) if object_type == "relationship" else None,
+        from_dataset=datasets_by_name.get(str(obj.get("from") or "").casefold())
+        if object_type == "relationship"
+        else None,
+        to_dataset=datasets_by_name.get(str(obj.get("to") or "").casefold()) if object_type == "relationship" else None,
     )
     return templates.TemplateResponse(request, "semantic_layer_object.html", ctx)
 

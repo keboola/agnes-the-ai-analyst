@@ -183,8 +183,8 @@
             {% for r in relationships %}
             <tr>
                 <td><a href="/semantic-layer/{{ slug }}/relationship:{{ r.name | urlencode }}">{{ r.name }}</a></td>
-                <td><a href="/semantic-layer/{{ slug }}/dataset:{{ r.from | urlencode }}">{{ r.from }}</a></td>
-                <td><a href="/semantic-layer/{{ slug }}/dataset:{{ r.to | urlencode }}">{{ r.to }}</a></td>
+                <td>{% if r.from_linkable %}<a href="/semantic-layer/{{ slug }}/dataset:{{ r.from | urlencode }}">{{ r.from }}</a>{% else %}{{ r.from }}{% endif %}</td>
+                <td>{% if r.to_linkable %}<a href="/semantic-layer/{{ slug }}/dataset:{{ r.to | urlencode }}">{{ r.to }}</a>{% else %}{{ r.to }}{% endif %}</td>
                 <td>{{ (r.from_columns or []) | join(', ') }} = {{ (r.to_columns or []) | join(', ') }}</td>
             </tr>
             {% endfor %}

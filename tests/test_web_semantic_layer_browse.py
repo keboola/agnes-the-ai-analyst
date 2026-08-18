@@ -333,6 +333,31 @@ class TestModelDetail:
         assert r.status_code == 200
         assert "orders_to_customers" in r.text
 
+    def test_relationship_tab_does_not_link_an_undeclared_dataset(self, seeded_app):
+        """Devin #1398: a relationship side naming a dataset not declared in the
+        document renders as plain text, not a link that 404s — the same guard
+        the object-detail page already applies."""
+        doc = {
+            "semantic_model": [
+                {
+                    "name": "rel",
+                    "datasets": [{"name": "orders", "fields": []}],  # 'ghost' is NOT declared
+                    "relationships": [
+                        {"name": "o2g", "from": "orders", "to": "ghost", "from_columns": ["id"], "to_columns": ["id"]}
+                    ],
+                }
+            ]
+        }
+        _seed_document("rel", doc)
+        c = seeded_app["client"]
+        r = c.get("/semantic-layer/rel?tab=relationships", headers=_auth(seeded_app["admin_token"]))
+        assert r.status_code == 200
+        assert "/semantic-layer/rel/dataset:orders" in r.text  # declared side links
+        assert "dataset:ghost" not in r.text  # undeclared side is plain text, not a link
+        assert "ghost" in r.text  # but is still shown
+        # the dangling target would 404 if it had been linked and clicked
+        assert c.get("/semantic-layer/rel/dataset:ghost", headers=_auth(seeded_app["admin_token"])).status_code == 404
+
     def test_metrics_cross_link_resolves_dataset_name_to_its_source_id(self, seeded_app):
         """Devin #1398: an imported model binds a metric to a dataset by that
         dataset's source id, not its friendly name. The per-dataset cross-link
