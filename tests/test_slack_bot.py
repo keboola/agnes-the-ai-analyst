@@ -676,6 +676,9 @@ class _FakeMgr:
         from app.chat.types import ChatSession
         from datetime import datetime
 
+        self.create_kwargs = getattr(self, "create_kwargs", [])
+        self.create_kwargs.append(kw)
+
         sess = ChatSession(
             id="sess_new",
             user_email=kw["user_email"],
@@ -889,6 +892,100 @@ def test_mention_same_thread_reuses_session(monkeypatch):
     app = _FakeApp(conn=conn, mgr=mgr)
     asyncio.run(ev._handle_mention(app, {"channel": "C_OK", "ts": "9.3", "user": "U_OK", "text": "<@U07BOT> again"}))
     assert mgr.sent and mgr.sent[0][1] == "again"
+
+
+def _seed_channel_bound_agent(conn, channel="C_OK", *, owner="uid_U_OK", slug="router"):
+    """An agent profile holding ('slack_channel', <channel>) — the mention
+    router's lookup target. Uses the repo factory like the handler does."""
+    from src.repositories import agents_repo
+
+    agent_id = f"ag_{slug}"
+    agents_repo().create(id=agent_id, owner_user_id=owner, name="Router", slug=slug)
+    agents_repo().set_scope(agent_id, [("slack_channel", channel)])
+    return agent_id
+
+
+def test_mention_routed_channel_gets_agent_header_and_reaction(monkeypatch):
+    """A channel bound to an agent profile routes the session to that agent:
+    create_session carries agent_id, the FIRST turn is prefixed with the
+    [slack context: ...] header, and the mention gets an :eyes: ack."""
+    import asyncio
+    import services.slack_bot.events as ev
+
+    monkeypatch.setattr(ev, "send_ephemeral_to_user", lambda *a, **k: None)
+    reactions = []
+
+    async def _fake_react(channel, ts, emoji):
+        reactions.append((channel, ts, emoji))
+
+    monkeypatch.setattr(ev, "add_reaction", _fake_react)
+    conn = get_system_db()
+    _ensure_schema(conn)
+    uid = _seed_bound_chat_user(conn)
+    _allow_channel(conn)
+    agent_id = _seed_channel_bound_agent(conn, owner=uid)
+    mgr = _FakeMgr()
+    app = _FakeApp(conn=conn, mgr=mgr)
+    asyncio.run(ev._handle_mention(app, {"channel": "C_OK", "ts": "9.5", "user": "U_OK", "text": "<@U07BOT> draft this"}))
+    assert mgr.created and mgr.create_kwargs[0].get("agent_id") == agent_id
+    assert mgr.sent
+    sent_text = mgr.sent[0][1]
+    assert sent_text.startswith("[slack context: channel=C_OK thread_ts=9.5 message_ts=9.5 sender=<@U_OK>]")
+    assert sent_text.endswith("draft this")
+    assert reactions == [("C_OK", "9.5", "eyes")]
+
+
+def test_mention_unbound_channel_stays_unrouted_and_unprefixed(monkeypatch):
+    import asyncio
+    import services.slack_bot.events as ev
+
+    monkeypatch.setattr(ev, "send_ephemeral_to_user", lambda *a, **k: None)
+    reactions = []
+
+    async def _fake_react(channel, ts, emoji):
+        reactions.append((channel, ts, emoji))
+
+    monkeypatch.setattr(ev, "add_reaction", _fake_react)
+    conn = get_system_db()
+    _ensure_schema(conn)
+    _seed_bound_chat_user(conn)
+    _allow_channel(conn)
+    mgr = _FakeMgr()
+    app = _FakeApp(conn=conn, mgr=mgr)
+    asyncio.run(ev._handle_mention(app, {"channel": "C_OK", "ts": "9.6", "user": "U_OK", "text": "<@U07BOT> hello"}))
+    assert mgr.created and mgr.create_kwargs[0].get("agent_id") is None
+    assert mgr.sent and mgr.sent[0][1] == "hello"
+    assert reactions == []
+
+
+def test_mention_routed_existing_thread_no_header_but_still_acks(monkeypatch):
+    """Dedupe wins over the binding: an existing thread session keeps its
+    agent and gets no second context header — but every mention still acks."""
+    import asyncio
+    import services.slack_bot.events as ev
+
+    monkeypatch.setattr(ev, "send_ephemeral_to_user", lambda *a, **k: None)
+    reactions = []
+
+    async def _fake_react(channel, ts, emoji):
+        reactions.append((channel, ts, emoji))
+
+    monkeypatch.setattr(ev, "add_reaction", _fake_react)
+    conn = get_system_db()
+    _ensure_schema(conn)
+    uid = _seed_bound_chat_user(conn)
+    _allow_channel(conn)
+    _seed_channel_bound_agent(conn, owner=uid, slug="router-2")
+    conn.execute(
+        "INSERT INTO chat_sessions(id, user_email, surface, slack_channel_id, "
+        "slack_thread_ts, title, started_at) VALUES "
+        "('s_bound', 'u@x', 'slack_thread', 'C_OK', '9.7', NULL, current_timestamp)"
+    )
+    mgr = _FakeMgr()
+    app = _FakeApp(conn=conn, mgr=mgr)
+    asyncio.run(ev._handle_mention(app, {"channel": "C_OK", "ts": "9.7", "user": "U_OK", "text": "<@U07BOT> follow-up"}))
+    assert mgr.sent and mgr.sent[0][1] == "follow-up"
+    assert reactions == [("C_OK", "9.7", "eyes")]
 
 
 def test_mention_attach_not_awaited_returns_under_budget(monkeypatch):

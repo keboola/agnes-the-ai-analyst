@@ -4143,6 +4143,7 @@ def resolve_or_create_slack_session(
     surface: Surface,
     slack_channel_id: Optional[str],
     slack_thread_ts: Optional[str] = None,
+    agent_id: Optional[str] = None,
 ) -> ChatSession:
     """Producer-side counterpart of ``ChatManager.create_session`` for the
     Slack surfaces, for processes with NO ChatManager (api role).
@@ -4178,6 +4179,7 @@ def resolve_or_create_slack_session(
         slack_channel_id=slack_channel_id,
         slack_thread_ts=slack_thread_ts,
         title=None,
+        agent_id=agent_id,
     )
 
 
