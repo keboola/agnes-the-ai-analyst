@@ -4140,7 +4140,7 @@ async def semantic_layer_detail(
     return templates.TemplateResponse(request, "semantic_layer_detail.html", ctx)
 
 
-@router.get("/semantic-layer/{slug}/{object_id}", response_class=HTMLResponse)
+@router.get("/semantic-layer/{slug}/{object_id:path}", response_class=HTMLResponse)
 async def semantic_layer_object(
     slug: str,
     object_id: str,
@@ -4154,9 +4154,12 @@ async def semantic_layer_object(
     hints, warnings), a metric's SQL fragment(s) with their dialect, a
     relationship with both sides linked.
 
-    ``object_id`` is ``"<type>:<name>"`` (one path segment, per the design
-    spec's URL) — ``type`` one of dataset/metric/relationship/constraint/
-    glossary, ``name`` the object's ``name`` (``term`` for glossary),
+    ``object_id`` is ``"<type>:<name>"`` — a ``:path`` parameter, not a single
+    segment, so a ``name``/``term`` carrying a ``/`` (a glossary phrase like
+    "ARR/MRR") is captured whole instead of 404ing; ``partition(":")`` splits
+    on the FIRST colon, so a colon in the name survives too. ``type`` one of
+    dataset/metric/relationship/constraint/ glossary, ``name`` the object's
+    ``name`` (``term`` for glossary),
     case-insensitively matched.
     """
     from app.api.semantic_models import _can_read_model

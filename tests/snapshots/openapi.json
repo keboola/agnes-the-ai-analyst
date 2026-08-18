@@ -53297,7 +53297,7 @@
     },
     "/semantic-layer/{slug}/{object_id}": {
       "get": {
-        "description": "Level 3 \u2014 one object, rendering everything the flat projection drops:\na dataset's ``fields[]`` as a Name/Type/Role/Description table, the\n``ai_context`` block in five groups (keywords, synonyms, anti_keywords,\nhints, warnings), a metric's SQL fragment(s) with their dialect, a\nrelationship with both sides linked.\n\n``object_id`` is ``\"<type>:<name>\"`` (one path segment, per the design\nspec's URL) \u2014 ``type`` one of dataset/metric/relationship/constraint/\nglossary, ``name`` the object's ``name`` (``term`` for glossary),\ncase-insensitively matched.",
+        "description": "Level 3 \u2014 one object, rendering everything the flat projection drops:\na dataset's ``fields[]`` as a Name/Type/Role/Description table, the\n``ai_context`` block in five groups (keywords, synonyms, anti_keywords,\nhints, warnings), a metric's SQL fragment(s) with their dialect, a\nrelationship with both sides linked.\n\n``object_id`` is ``\"<type>:<name>\"`` \u2014 a ``:path`` parameter, not a single\nsegment, so a ``name``/``term`` carrying a ``/`` (a glossary phrase like\n\"ARR/MRR\") is captured whole instead of 404ing; ``partition(\":\")`` splits\non the FIRST colon, so a colon in the name survives too. ``type`` one of\ndataset/metric/relationship/constraint/ glossary, ``name`` the object's\n``name`` (``term`` for glossary),\ncase-insensitively matched.",
         "operationId": "semantic_layer_object_semantic_layer__slug___object_id__get",
         "parameters": [
           {

@@ -498,6 +498,36 @@ class TestObjectDetail:
         assert "never on email" in r.text
         assert "orders.customer_id = customers.customer_id" in r.text
 
+    def test_object_name_with_a_slash_is_reachable(self, seeded_app):
+        """Devin #1398: an object name/term carrying a `/` (a glossary phrase
+        like "ARR/MRR") must open its detail page — the object_id is a `:path`
+        parameter split on the first colon, so the slash no longer 404s."""
+        doc = {
+            "semantic_model": [
+                {
+                    "name": "gl",
+                    "datasets": [{"name": "orders", "fields": []}],
+                    "custom_extensions": [
+                        {
+                            "vendor_name": "AGNES",
+                            "data": json.dumps(
+                                {
+                                    "glossary": [
+                                        {"term": "ARR/MRR", "definition": "Recurring revenue, annual or monthly."}
+                                    ]
+                                }
+                            ),
+                        }
+                    ],
+                }
+            ]
+        }
+        _seed_document("gl", doc)
+        c = seeded_app["client"]
+        r = c.get("/semantic-layer/gl/glossary:ARR/MRR", headers=_auth(seeded_app["admin_token"]))
+        assert r.status_code == 200
+        assert "Recurring revenue, annual or monthly." in r.text
+
     def test_imported_source_shows_readonly_badge_and_no_edit_controls(self, seeded_app):
         _seed_model(id="manual/_/kb2", slug="kb_retail2", source="keboola_metastore")
         c = seeded_app["client"]
