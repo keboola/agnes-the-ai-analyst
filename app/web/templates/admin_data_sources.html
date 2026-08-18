@@ -2474,6 +2474,14 @@ function _updateSfAuthUI() {
   document.getElementById("ds-sf-auth-key").hidden = authType !== "key_pair";
 }
 
+/* POST /api/admin/server-config answers `restart_required: true` and resets
+   only the IN-PROCESS instance-config cache. This wizard is the first
+   server-config writer outside /admin/server-config (which has its own restart
+   banner), so without surfacing it a role-split deployment (api/gateway/worker
+   as separate processes) would register tables against a config the scheduler
+   has not read yet, with nothing telling the operator to bounce it. */
+let _sfRestartRequired = false;
+
 let _sfEnvNames = {
   token_env: "SNOWFLAKE_PASSWORD",
   private_key_env: "SNOWFLAKE_PRIVATE_KEY",
@@ -2486,6 +2494,22 @@ function _defaultSfEnvNames() {
     private_key_env: "SNOWFLAKE_PRIVATE_KEY",
     private_key_passphrase_env: "SNOWFLAKE_PRIVATE_KEY_PASSPHRASE",
   };
+}
+
+/* GET /api/admin/server-config redacts every key whose name matches
+   `_is_secret_key` — which includes `token_env`, `private_key_env` and
+   `private_key_passphrase_env`, because the KEY signals it points at a
+   credential (app/api/admin.py::_redact). Those fields hold env-var NAMES,
+   not values, but the read cannot tell us which: once the wizard has
+   persisted them, they come back as the `***` sentinel. Taking the value
+   straight through made the next save PUT the password to
+   /api/admin/datasource-secrets/*** — rejected, so a second pass through
+   the wizard could never store or rotate a credential. A name is only
+   accepted if it has the shape of one; anything else falls back. */
+const _ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+function _sfEnvNameOr(fromConfig, fallback) {
+  return _ENV_NAME_RE.test(fromConfig || "") ? fromConfig : fallback;
 }
 
 async function _loadSfConfigAndStatus() {
@@ -2504,9 +2528,9 @@ async function _loadSfConfigAndStatus() {
       const authType = sf.auth_type || "password";
       document.getElementById("ds-sf-auth-type").value = authType;
       _sfEnvNames = {
-        token_env: sf.token_env || _sfEnvNames.token_env,
-        private_key_env: sf.private_key_env || _sfEnvNames.private_key_env,
-        private_key_passphrase_env: sf.private_key_passphrase_env || _sfEnvNames.private_key_passphrase_env,
+        token_env: _sfEnvNameOr(sf.token_env, _sfEnvNames.token_env),
+        private_key_env: _sfEnvNameOr(sf.private_key_env, _sfEnvNames.private_key_env),
+        private_key_passphrase_env: _sfEnvNameOr(sf.private_key_passphrase_env, _sfEnvNames.private_key_passphrase_env),
       };
       _updateSfAuthUI();
       _sfConfigLoaded = true;
@@ -2594,6 +2618,8 @@ async function _saveSnowflakeAndContinue() {
       body: JSON.stringify({ sections: { data_source: { snowflake: sf } } }),
     });
     if (!r.ok) throw new Error("server-config save failed");
+    const savedCfg = await r.json().catch(() => ({}));
+    _sfRestartRequired = !!savedCfg.restart_required;
     if (!_sfCredStatus) _sfCredStatus = { password: { source: "unset", has_value: false }, key: { source: "unset", has_value: false } };
     if (authType === "password" && password) {
       const rp = await fetch(`/api/admin/datasource-secrets/${encodeURIComponent(_sfEnvNames.token_env)}`, {
@@ -2603,8 +2629,11 @@ async function _saveSnowflakeAndContinue() {
       });
       if (!rp.ok) throw new Error("password secret save failed");
       _sfCredStatus.password = { source: "vault", has_value: true };
-      _renderSfCredStatus(null, "password");
+      // Clear before redrawing: the badge reads "ready to save" off a
+      // non-empty input, so rendering first shows a stored credential as
+      // still pending.
       document.getElementById("ds-sf-password").value = "";
+      _renderSfCredStatus(null, "password");
     }
     if (authType === "key_pair" && privateKey) {
       const rk = await fetch(`/api/admin/datasource-secrets/${encodeURIComponent(_sfEnvNames.private_key_env)}`, {
@@ -2614,8 +2643,8 @@ async function _saveSnowflakeAndContinue() {
       });
       if (!rk.ok) throw new Error("private key secret save failed");
       _sfCredStatus.key = { source: "vault", has_value: true };
-      _renderSfCredStatus(null, "key");
       document.getElementById("ds-sf-private-key").value = "";
+      _renderSfCredStatus(null, "key");
     }
     if (authType === "key_pair" && passphrase) {
       const rpp = await fetch(`/api/admin/datasource-secrets/${encodeURIComponent(_sfEnvNames.private_key_passphrase_env)}`, {
@@ -2646,6 +2675,7 @@ function openWizard(connector) {
   _wizardShares = null;
   _bqCredStatus = null;
   _sfCredStatus = null;
+  _sfRestartRequired = false;
   _sfEnvNames = _defaultSfEnvNames();
   _sfConfigLoaded = false;
   _wizardMaxStep = 1;
@@ -3016,7 +3046,12 @@ async function _registerBqRows() {
 function _renderSfRowsEditor() {
   const body = document.getElementById("ds-wizard-tables-body");
   document.getElementById("ds-wizard-connected-banner").innerHTML =
-    "Name the Snowflake tables to register — schema and table, one per row.";
+    "Name the Snowflake tables to register — schema and table, one per row."
+    + (_sfRestartRequired
+      ? ` <span style="display:block; margin-top:6px; color:var(--ds-accent-warn-ink);">`
+        + `Connection settings are saved, but only this process has re-read them.`
+        + ` Restart the instance so the scheduler and workers pick them up.</span>`
+      : "");
   body.innerHTML = `
     <div id="ds-sfrows">
       ${_sfRowHtml()}${_sfRowHtml()}${_sfRowHtml()}
