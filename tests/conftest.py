@@ -421,6 +421,18 @@ def _reset_module_caches():
         _vc._table_rows_cache.clear()
     except (ImportError, AttributeError):
         pass
+    # Schema TTL cache — keyed on table_id (plus the policy identity for a
+    # policied table) with a 1h TTL, so two suites registering the SAME id
+    # with different columns hand each other the wrong schema. Surfaced when
+    # the Databricks scan tests registered `dbx.sales.orders_raw` with two
+    # columns and the remote-query suite's one-column assertion began failing
+    # on file ordering alone.
+    try:
+        from app.api import v2_schema as _vs
+
+        _vs._schema_cache.clear()
+    except (ImportError, AttributeError):
+        pass
     try:
         import app.api.cache_warmup as _cw
 
@@ -443,6 +455,18 @@ def _reset_module_caches():
         from app.api import v2_catalog as _vc
 
         _vc._table_rows_cache.clear()
+    except (ImportError, AttributeError):
+        pass
+    # Schema TTL cache — keyed on table_id (plus the policy identity for a
+    # policied table) with a 1h TTL, so two suites registering the SAME id
+    # with different columns hand each other the wrong schema. Surfaced when
+    # the Databricks scan tests registered `dbx.sales.orders_raw` with two
+    # columns and the remote-query suite's one-column assertion began failing
+    # on file ordering alone.
+    try:
+        from app.api import v2_schema as _vs
+
+        _vs._schema_cache.clear()
     except (ImportError, AttributeError):
         pass
     try:

@@ -688,7 +688,12 @@ def _disable_enforcement(monkeypatch):
             table_id=row["id"],
         )
 
-    def _passthrough_rewrite_sql(sql, principal, *, resolve=None):
+    def _passthrough_rewrite_sql(sql, principal, **_kwargs):
+        # `**_kwargs` rather than a spelled-out signature: this stub only has
+        # to swallow whatever the real `rewrite_sql` accepts, and pinning the
+        # keyword list here means every new one (`dialect`, added for the
+        # Databricks policy path) breaks this guard with an unrelated
+        # TypeError instead of testing what it exists to test.
         return sql, {}, []
 
     monkeypatch.setattr("app.api.query.rewrite_sql", _passthrough_rewrite_sql)
