@@ -9,6 +9,7 @@ allowlist before creating the SECRET and ATTACHing the catalog.
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import os
@@ -17,6 +18,8 @@ import shutil
 import sys
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlsplit
+
+from cryptography.hazmat.primitives import serialization
 
 from src.orchestrator_security import escape_sql_string_literal, is_attach_host_allowed
 
@@ -35,6 +38,85 @@ _SAFE_ACCOUNT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 # Database/warehouse/user/role are Snowflake identifiers; keep the regex
 # linear-time and conservative.
 _SAFE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+_PEM_BLOCK_RE = re.compile(
+    r"(-----BEGIN [A-Z0-9 _]+-----)\s*(.*?)\s*(-----END [A-Z0-9 _]+-----)",
+    re.DOTALL,
+)
+
+
+def _normalize_key_text(text: str) -> str:
+    """Unescape literal newlines and normalize CRLF/CR to LF."""
+    s = text.replace("\\r\\n", "\n").replace("\\r", "\n").replace("\\n", "\n")
+    s = s.replace("\r\n", "\n").replace("\r", "\n")
+    return s.strip()
+
+
+def _load_private_key(data: bytes, passphrase: str | None = None):
+    """Load a PEM or DER private key, optionally decrypting it."""
+    password = passphrase.encode("utf-8") if passphrase else None
+
+    if b"-----BEGIN" in data:
+        try:
+            return serialization.load_pem_private_key(data, password=password)
+        except TypeError as exc:
+            msg = str(exc)
+            if "Password was given but private key is not encrypted" in msg:
+                return serialization.load_pem_private_key(data, password=None)
+            raise ValueError(msg) from exc
+        except Exception as exc:
+            raise ValueError(f"could not parse PEM private key: {exc}") from exc
+
+    try:
+        return serialization.load_der_private_key(data, password=password)
+    except TypeError as exc:
+        msg = str(exc)
+        if "Password was given but private key is not encrypted" in msg:
+            return serialization.load_der_private_key(data, password=None)
+        raise ValueError(msg) from exc
+    except Exception as exc:
+        raise ValueError(f"could not parse DER private key: {exc}") from exc
+
+
+def _serialize_unencrypted_pkcs8_pem(key) -> str:
+    """Return a PKCS#8 unencrypted PEM for the loaded key."""
+    return key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    ).decode("ascii")
+
+
+def _try_decode_base64_key(text: str) -> bytes:
+    """Decode a base64-only key string, tolerating whitespace and URL-safe alphabet."""
+    cleaned = re.sub(r"\s+", "", text)
+    if not cleaned:
+        raise ValueError("empty base64 key")
+    for candidate in (cleaned, cleaned.replace("-", "+").replace("_", "/")):
+        try:
+            return base64.b64decode(candidate, validate=True)
+        except Exception:
+            continue
+    raise ValueError("not a valid base64 key")
+
+
+def _reformat_pem_body(s: str) -> str:
+    """Rewrap a single-line base64 PEM body to 64-char lines.
+
+    Encrypted PKCS#1 blocks that carry header lines (``Proc-Type:``) are left
+    untouched so the header formatting is not corrupted.
+    """
+
+    def repl(m: re.Match[str]) -> str:
+        begin, body, end = m.group(1), m.group(2), m.group(3)
+        if ":" in body:
+            return m.group(0)
+        cleaned = re.sub(r"\s+", "", body)
+        if not re.fullmatch(r"[A-Za-z0-9+/=]+", cleaned):
+            return m.group(0)
+        wrapped = "\n".join(cleaned[i : i + 64] for i in range(0, len(cleaned), 64))
+        return f"{begin}\n{wrapped}\n{end}"
+
+    return _PEM_BLOCK_RE.sub(repl, s)
 
 
 def _duckdb_extension_dir() -> Path:
@@ -221,7 +303,7 @@ def parse_remote_attach_url(url: str) -> dict[str, str]:
 
 
 def _looks_like_key_pair(token: str) -> bool:
-    """Return True when ``token`` is a PEM key or a JSON key envelope."""
+    """Return True when ``token`` is a PEM, JSON-wrapped PEM, or base64 DER key."""
     t = (token or "").strip()
     if "-----BEGIN" in t and "-----END" in t:
         return True
@@ -231,15 +313,27 @@ def _looks_like_key_pair(token: str) -> bool:
         except json.JSONDecodeError:
             return False
         return isinstance(data, dict) and "private_key" in data
+    # Heuristic for a pasted base64-only DER key (Snowflake keys are long RSA
+    # keys; a short base64 password is left to the password path).
+    cleaned = re.sub(r"\s+", "", t)
+    if len(cleaned) >= 256:
+        for candidate in (cleaned, cleaned.replace("-", "+").replace("_", "/")):
+            try:
+                decoded = base64.b64decode(candidate, validate=True)
+                return decoded and decoded[0] == 0x30
+            except Exception:
+                continue
     return False
 
 
 def _private_key_pem_and_passphrase(token: str, passphrase: str | None = None) -> tuple[str, str | None]:
-    """Extract a PEM or JSON-wrapped PEM and the matching passphrase.
+    """Extract and normalize a private key into an unencrypted PKCS#8 PEM.
 
-    DuckDB's Snowflake extension accepts either an unencrypted PKCS#8 PEM or an
-    encrypted PEM plus ``PRIVATE_KEY_PASSPHRASE``; it decrypts the key itself,
-    so we never need to unwrap it locally.
+    The DuckDB Snowflake ADBC driver only accepts unencrypted PKCS#8 inline
+    keys. This function tolerates pasted PEMs with escaped ``\\n``/``\\r\\n``,
+    Windows line endings, PKCS#1 ``RSA PRIVATE KEY`` blocks, encrypted keys,
+    and base64-only DER blobs. The optional passphrase is used to decrypt the
+    key and is not forwarded to the generated SQL.
     """
     raw = (token or "").strip()
     if not raw:
@@ -258,22 +352,37 @@ def _private_key_pem_and_passphrase(token: str, passphrase: str | None = None) -
         if not passphrase:
             passphrase = data.get("passphrase") or None
 
-    if "-----BEGIN" not in raw or "-----END" not in raw:
-        raise ValueError("snowflake private key is not a PEM block")
+    if not raw.strip():
+        raise ValueError("empty snowflake private key")
 
     # The PEM goes into the CREATE SECRET statement inside `$PK$ … $PK$`
-    # dollar-quoting (a PEM carries newlines, so it is not written as a plain
-    # quoted literal). That was safe while this function REBUILT the key via
-    # `private_key.private_bytes(...)` — generated output cannot contain the
-    # tag. Now that the operator's bytes are forwarded verbatim so DuckDB can
-    # decrypt them itself, the tag has to be refused explicitly: a key whose
-    # text contains `$PK$` would close the literal early and inject the rest of
-    # itself as SQL into a statement that carries a credential. A real PEM is
-    # base64 plus `-----BEGIN/END-----` armour and never contains `$`.
+    # dollar-quoting. A key whose text contains that tag would close the literal
+    # early and inject the rest of itself as SQL into a statement that carries
+    # a credential. A real key never contains `$`.
     if _DOLLAR_TAG in raw:
         raise ValueError("snowflake private key contains the SQL dollar-quote tag; refusing to build a secret")
 
-    return raw, passphrase
+    text = _normalize_key_text(raw)
+
+    if "-----BEGIN" in text and "-----END" in text:
+        pem_text = _reformat_pem_body(text)
+        try:
+            key = _load_private_key(pem_text.encode("utf-8"), passphrase)
+        except ValueError as exc:
+            raise ValueError(f"snowflake private key is not a valid PEM/DER key: {exc}") from exc
+        return _serialize_unencrypted_pkcs8_pem(key), None
+
+    try:
+        der = _try_decode_base64_key(text)
+    except ValueError as exc:
+        raise ValueError("snowflake private key is not a PEM block or valid base64 key") from exc
+
+    try:
+        key = _load_private_key(der, passphrase)
+    except ValueError as exc:
+        raise ValueError(f"snowflake private key is not a valid PEM/DER key: {exc}") from exc
+
+    return _serialize_unencrypted_pkcs8_pem(key), None
 
 
 def _create_snowflake_secret_sql(

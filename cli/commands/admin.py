@@ -1624,6 +1624,7 @@ def break_glass_grant_admin(
 
     from src.db import SYSTEM_ADMIN_GROUP, get_system_db
     from src.repositories import use_pg
+    from src.user_identity import normalize_email
 
     if not yes:
         confirm = typer.confirm(
@@ -1651,13 +1652,18 @@ def break_glass_grant_admin(
             )
             raise typer.Exit(2)
 
-        existing = users.get_by_email(email)
+        # Normalize BEFORE the read: get_by_email_ci folds case in SQL but does
+        # NOT trim, so a padded argument would miss the existing row and then
+        # fail the UNIQUE(email) constraint on insert — the last-resort admin
+        # recovery dying on a stray space.
+        normalized = normalize_email(email)
+        existing = users.get_by_email_ci(normalized)
         if existing is None:
             user_id = _uuid.uuid4().hex
             users.create(
                 id=user_id,
-                email=email,
-                name=email.split("@", 1)[0],
+                email=normalized,
+                name=normalized.split("@", 1)[0],
             )
             typer.echo(f"Created user {email} (id={user_id[:8]}…)")
         else:

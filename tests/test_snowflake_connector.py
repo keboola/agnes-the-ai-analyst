@@ -1,10 +1,13 @@
 """Tests for the Snowflake connector: attach, extract, settings, admin registration, sync dispatch, and query guardrail."""
 
+import base64
 import os
 from unittest.mock import MagicMock
 
 import duckdb
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 
 from connectors.bigquery.extractor import MaterializeBudgetError
 from connectors.snowflake.attach import (
@@ -66,6 +69,39 @@ def snowflake_instance(monkeypatch):
 @pytest.fixture
 def snowflake_settings():
     return SF_SETTINGS.copy()
+
+
+@pytest.fixture
+def sample_rsa_key():
+    """Return a generated RSA private key object."""
+    return rsa.generate_private_key(public_exponent=65537, key_size=2048)
+
+
+@pytest.fixture
+def pkcs8_pem(sample_rsa_key):
+    return sample_rsa_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    ).decode()
+
+
+@pytest.fixture
+def pkcs1_pem(sample_rsa_key):
+    return sample_rsa_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.TraditionalOpenSSL,
+        encryption_algorithm=serialization.NoEncryption(),
+    ).decode()
+
+
+@pytest.fixture
+def encrypted_pkcs8_pem(sample_rsa_key):
+    return sample_rsa_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.BestAvailableEncryption(b"it's secret"),
+    ).decode()
 
 
 # --- attach.py -----------------------------------------------------------------
@@ -964,11 +1000,9 @@ def test_admin_register_snowflake_custom_sql_allows_ctes(seeded_app, snowflake_i
 
 def test_attach_snowflake_refuses_a_key_carrying_the_dollar_quote_tag(monkeypatch):
     """The PEM is written into CREATE SECRET inside `$PK$ … $PK$` dollar-quoting,
-    because a PEM carries newlines. That was safe while the key was REBUILT via
-    `private_key.private_bytes(...)` — generated output cannot contain the tag.
-    Now that the operator's bytes are forwarded verbatim (so DuckDB decrypts the
-    key itself), a key whose text contains `$PK$` would close the literal early
-    and inject the remainder as SQL into a statement that carries a credential.
+    because a PEM carries newlines. The key is normalized before SQL is built,
+    but the tag guard runs on the raw input first: a key whose text contains
+    `$PK$` would close the literal early and inject the remainder as SQL.
     """
     monkeypatch.setenv("AGNES_REMOTE_ATTACH_HOST_ALLOWLIST", SF_HOST)
     conn = MagicMock()
@@ -984,9 +1018,9 @@ def test_attach_snowflake_refuses_a_key_carrying_the_dollar_quote_tag(monkeypatc
     assert not any("DROP TABLE" in str(c) for c in conn.execute.call_args_list)
 
 
-def test_attach_snowflake_key_pair_forwards_the_passphrase(monkeypatch):
-    """A key-pair secret carries the PEM verbatim plus PRIVATE_KEY_PASSPHRASE,
-    and the passphrase is escaped as a normal quoted literal."""
+def test_attach_snowflake_key_pair_decrypts_and_normalizes_to_pkcs8(monkeypatch, encrypted_pkcs8_pem):
+    """An encrypted PEM plus passphrase is decrypted and re-emitted as an
+    unencrypted PKCS#8 PEM; the passphrase is consumed and not forwarded."""
     monkeypatch.setenv("AGNES_REMOTE_ATTACH_HOST_ALLOWLIST", SF_HOST)
     conn = MagicMock()
     url = build_remote_attach_url(
@@ -995,9 +1029,45 @@ def test_attach_snowflake_key_pair_forwards_the_passphrase(monkeypatch):
         SF_SETTINGS["warehouse"],
         SF_SETTINGS["user"],
     )
-    pem = "-----BEGIN ENCRYPTED PRIVATE KEY-----\nQUJD\n-----END ENCRYPTED PRIVATE KEY-----"
-    attach_snowflake(conn, alias=SF_ALIAS, url=url, token=pem, passphrase="it's secret")
+    attach_snowflake(conn, alias=SF_ALIAS, url=url, token=encrypted_pkcs8_pem, passphrase="it's secret")
     secret_call = next(c[0][0] for c in conn.execute.call_args_list if "CREATE OR REPLACE SECRET" in str(c[0][0]))
     assert "AUTH_TYPE 'key_pair'" in secret_call
-    assert pem in secret_call
-    assert "PRIVATE_KEY_PASSPHRASE 'it''s secret'" in secret_call
+    assert "-----BEGIN PRIVATE KEY-----" in secret_call
+    assert "-----END PRIVATE KEY-----" in secret_call
+    assert encrypted_pkcs8_pem not in secret_call
+    assert "PRIVATE_KEY_PASSPHRASE" not in secret_call
+
+
+def test_attach_snowflake_key_pair_normalizes_pasted_keys(monkeypatch, pkcs8_pem, pkcs1_pem, sample_rsa_key):
+    """PEMs with escaped newlines, Windows line endings, PKCS#1 form, and
+    base64-only DER all resolve to a PKCS#8 unencrypted PEM."""
+    monkeypatch.setenv("AGNES_REMOTE_ATTACH_HOST_ALLOWLIST", SF_HOST)
+
+    der_b64 = base64.b64encode(
+        sample_rsa_key.private_bytes(
+            encoding=serialization.Encoding.DER,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+    ).decode()
+
+    for label, token in (
+        ("pkcs8", pkcs8_pem),
+        ("escaped_newlines", pkcs8_pem.replace("\n", "\\n")),
+        ("windows_line_endings", pkcs8_pem.replace("\n", "\r\n")),
+        ("pkcs1", pkcs1_pem),
+        ("base64_only", der_b64),
+    ):
+        conn = MagicMock()
+        url = build_remote_attach_url(
+            SF_SETTINGS["account"],
+            SF_SETTINGS["database"],
+            SF_SETTINGS["warehouse"],
+            SF_SETTINGS["user"],
+        )
+        attach_snowflake(conn, alias=SF_ALIAS, url=url, token=token)
+        secret_call = next(c[0][0] for c in conn.execute.call_args_list if "CREATE OR REPLACE SECRET" in str(c[0][0]))
+        assert "AUTH_TYPE 'key_pair'" in secret_call, label
+        assert "-----BEGIN PRIVATE KEY-----" in secret_call, label
+        assert "-----END PRIVATE KEY-----" in secret_call, label
+        assert "PRIVATE_KEY_PASSPHRASE" not in secret_call, label

@@ -1497,6 +1497,59 @@ class TestStoreBundle:
         assert r2.json()["name"] == "rt-skill"
         assert (tmp_path / "store" / eid / "plugin" / "skills" / "rt-skill-by-src-owner" / "SKILL.md").is_file()
 
+    def test_import_bundle_reuses_a_case_variant_owner_instead_of_stubbing(self, web_client, tmp_path):
+        """The owner lookup is an account-resolving read like any other.
+
+        It lower-cases the incoming address and then matched it exactly, so an
+        owner whose row carries upper-case characters looked "unknown" and got
+        a second, deactivated stub account — the very "two accounts for one
+        person" outcome the normalization exists to stop. Worse, the next OAuth
+        sign-in resolves the OLDER real row, leaving the imported entity owned
+        by the stub.
+        """
+        from argon2 import PasswordHasher
+        from src.db import get_system_db
+        from src.repositories.users import UserRepository
+        from tests.helpers.auth import grant_admin
+
+        _, owner_cookies = _create_user(web_client, "mixed@x.com")
+        r = self._upload_skill(web_client, owner_cookies, name="mixedcase-skill")
+        eid = r.json()["id"]
+        bundle_bytes = web_client.get("/api/store/bundle.zip", cookies=owner_cookies).content
+
+        conn = get_system_db()
+        conn.execute("DELETE FROM store_entities WHERE id = ?", [eid])
+        # Same person, stored with capitals — the bundle carries the lower-case
+        # spelling, so only a case-insensitive read finds them.
+        conn.execute("UPDATE users SET email = 'Mixed@X.com' WHERE email = 'mixed@x.com'")
+        owner_id = conn.execute("SELECT id FROM users WHERE email = 'Mixed@X.com'").fetchone()[0]
+        import shutil as _shutil
+
+        _shutil.rmtree(tmp_path / "store" / eid, ignore_errors=True)
+
+        ph = PasswordHasher()
+        UserRepository(conn).create(
+            id="adm-mixed", email="adm-mixed@x.com", name="adm", password_hash=ph.hash("AdminPass1!")
+        )
+        grant_admin(conn, "adm-mixed")
+        admin_token = web_client.post(
+            "/auth/token", json={"email": "adm-mixed@x.com", "password": "AdminPass1!"}
+        ).json()["access_token"]
+
+        imp = web_client.post(
+            "/api/store/import-bundle",
+            files={"file": ("b.zip", bundle_bytes, "application/zip")},
+            data={"mode": "merge"},
+            cookies={"access_token": admin_token},
+        )
+        assert imp.status_code == 200, imp.text
+        assert imp.json()["imported"] == 1
+        assert imp.json()["stub_users_created"] == 0, "a second account was minted for an existing person"
+
+        assert conn.execute("SELECT COUNT(*) FROM users WHERE lower(email) = 'mixed@x.com'").fetchone()[0] == 1
+        owned_by = conn.execute("SELECT owner_user_id FROM store_entities WHERE id = ?", [eid]).fetchone()
+        assert owned_by is not None and owned_by[0] == owner_id
+
     def test_import_bundle_creates_stub_for_unknown_owner(self, web_client, tmp_path):
         """When the bundle's owner_email is not in users table, server
         creates a disabled stub so the entity row has a valid owner_user_id.
