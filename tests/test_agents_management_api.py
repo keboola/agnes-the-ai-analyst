@@ -506,6 +506,38 @@ def test_scope_put_accepts_slack_channel_binding(mgmt_client):
     assert hit is not None and hit["id"] == created["id"]
 
 
+def test_scope_put_slack_channel_refused_on_all_all_agent(mgmt_client, default_agent_id):
+    """An all-'all' (passthrough) agent cannot hold a binding — its routed
+    turns would ride the owner's plain identity via the broker's
+    passthrough optimization."""
+    r = mgmt_client.put(
+        f"/api/v1/agents/{default_agent_id}/scope",
+        json={"items": [{"item_type": "slack_channel", "item_id": "C_ALLALL"}]},
+    )
+    assert r.status_code == 400
+    assert r.json()["detail"]["code"] == "binding_requires_selected_scope"
+
+
+def test_widening_bound_agent_to_all_all_is_refused(mgmt_client):
+    """The after-the-fact widen must be caught too: binding first, then
+    setting every mode to 'all', would land channel turns on the owner's
+    plain identity."""
+    created = mgmt_client.post("/api/v1/agents", json={"name": "W", "slug": "widen-bound"}).json()
+    assert mgmt_client.put(
+        f"/api/v1/agents/{created['id']}/scope",
+        json={"items": [{"item_type": "slack_channel", "item_id": "C_WIDEN"}]},
+    ).status_code == 200
+    r = mgmt_client.put(
+        f"/api/v1/agents/{created['id']}",
+        json={"plugins_mode": "all", "connections_mode": "all", "tables_mode": "all", "memory_mode": "all"},
+    )
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "agent_has_slack_binding"
+    # Widening only SOME modes stays allowed.
+    r2 = mgmt_client.put(f"/api/v1/agents/{created['id']}", json={"plugins_mode": "all"})
+    assert r2.status_code == 200
+
+
 def test_scope_put_slack_channel_conflict_409(mgmt_client):
     """One agent per channel: binding a channel already held by another
     non-deleted agent is refused with a pointer at the holder."""

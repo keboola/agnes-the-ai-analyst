@@ -905,7 +905,14 @@ def _seed_channel_bound_agent(conn, channel="C_OK", *, owner="uid_U_OK", slug="r
     from src.repositories import agents_repo
 
     agent_id = f"ag_{slug}"
-    agents_repo().create(id=agent_id, owner_user_id=owner, name="Router", slug=slug)
+    # Bound agents must be non-passthrough (at least one 'selected' mode) —
+    # an all-'all' agent would ride the owner's plain identity and is
+    # refused by both the API guard and the routing-time defense.
+    agents_repo().create(
+        id=agent_id, owner_user_id=owner, name="Router", slug=slug,
+        plugins_mode="selected", connections_mode="selected",
+        tables_mode="selected", memory_mode="selected",
+    )
     agents_repo().set_scope(agent_id, [("slack_channel", channel)])
     return agent_id
 
@@ -1285,6 +1292,35 @@ def test_mention_binding_skipped_when_owner_lost_chat_grant(monkeypatch):
     # Unrouted: mentioner-owned session, no agent, no ack, plain text.
     assert mgr.create_kwargs[0]["user_email"] == "u@x"
     assert mgr.create_kwargs[0]["agent_id"] is None
+    assert mgr.sent and mgr.sent[0][1] == "hi"
+    assert reactions == []
+
+
+def test_mention_passthrough_agent_binding_is_never_routed(monkeypatch):
+    """Defense in depth: a legacy binding pointing at an all-'all' agent is
+    skipped — its routed turns would ride the owner's PLAIN identity (admin
+    short-circuit included) via the broker's passthrough optimization."""
+    import asyncio
+    import services.slack_bot.events as ev
+    from src.repositories import agents_repo
+
+    monkeypatch.setattr(ev, "send_ephemeral_to_user", lambda *a, **k: None)
+    reactions = []
+
+    async def _fake_react(channel, ts, emoji):
+        reactions.append(1)
+
+    monkeypatch.setattr(ev, "add_reaction", _fake_react)
+    conn = get_system_db()
+    _ensure_schema(conn)
+    uid = _seed_bound_chat_user(conn)
+    _allow_channel(conn)
+    agents_repo().create(id="ag_allall", owner_user_id=uid, name="AllAll", slug="router-allall")
+    agents_repo().set_scope("ag_allall", [("slack_channel", "C_OK")])
+    mgr = _FakeMgr()
+    app = _FakeApp(conn=conn, mgr=mgr)
+    asyncio.run(ev._handle_mention(app, {"channel": "C_OK", "ts": "9.16", "user": "U_OK", "text": "<@U07BOT> hi"}))
+    assert mgr.create_kwargs[0].get("agent_id") is None
     assert mgr.sent and mgr.sent[0][1] == "hi"
     assert reactions == []
 

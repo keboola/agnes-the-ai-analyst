@@ -347,6 +347,24 @@ async def update_agent(
             "agent_has_live_tokens",
             "revoke agent tokens before widening scope to 'all'",
         )
+    if widened_to_all:
+        # Same after-the-fact widening hazard as the PAT rule above, for
+        # Slack bindings: a binding is refused on an all-'all' agent at
+        # scope-PUT time, but widening every mode AFTER binding would land
+        # in the same place — channel turns riding the owner's plain
+        # identity. Re-check here.
+        current = agents_repo().get_by_id(agent_id) or {}
+        effective = {f: updates.get(f, current.get(f)) for f in _SELECTED_MODE_FIELDS}
+        if all(v == "all" for v in effective.values()) and any(
+            i.get("item_type") == "slack_channel" for i in agents_repo().get_scope(agent_id)
+        ):
+            raise _err(
+                409,
+                "agent_has_slack_binding",
+                "remove the agent's slack_channel binding(s) before widening every "
+                "scope mode to 'all' — a bound channel must never run turns under "
+                "the owner's plain identity",
+            )
 
     if updates:
         agents_repo().update(agent_id, **updates)
@@ -453,6 +471,27 @@ async def set_agent_scope(
             continue
         seen.add(key)
         items.append(key)
+
+    has_binding = any(item_type == "slack_channel" for item_type, _ in items)
+    if has_binding:
+        from src.agent_scope_intersection import agent_is_passthrough
+
+        agent_row = agents_repo().get_by_id(agent_id)
+        if agent_row is not None and agent_is_passthrough(agent_row):
+            # A routed session runs AS the owner; for an all-'all' agent the
+            # broker's passthrough optimization would mint the owner's PLAIN
+            # identity (admin short-circuit included) — binding one would
+            # lend every gated channel member the owner's full authority.
+            # Require at least one 'selected' mode so routed turns always
+            # carry the enforced AgentPrincipal.
+            raise _err(
+                400,
+                "binding_requires_selected_scope",
+                "an agent with every scope mode set to 'all' cannot hold a slack_channel "
+                "binding — set at least one of plugins/connections/tables/memory to "
+                "'selected' first, so channel turns run under the enforced agent scope "
+                "instead of the owner's plain identity",
+            )
 
     for item_type, item_id in items:
         if item_type != "slack_channel":
