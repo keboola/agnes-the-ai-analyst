@@ -3,6 +3,11 @@
     "schemas": {
       "AddGrantRequest": {
         "properties": {
+          "allow_mutating": {
+            "default": false,
+            "title": "Allow Mutating",
+            "type": "boolean"
+          },
           "group_id": {
             "title": "Group Id",
             "type": "string"
@@ -10948,7 +10953,7 @@
   "info": {
     "description": "Self-hosted AI harness: governed data access, skills marketplace, corporate memory, and agent workspaces",
     "title": "AI Harness",
-    "version": "0.83.23"
+    "version": "0.83.32"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -19892,7 +19897,7 @@
     },
     "/api/admin/mcp-tools/{tool_id}/grants": {
       "post": {
-        "description": "Grant a user group access to the tool. Idempotent (ON CONFLICT DO NOTHING).",
+        "description": "Grant a user group access to the tool. Idempotent; re-POSTing an\nexisting grant updates its ``allow_mutating`` flag in place (the flag is\npart of the grant, so the re-POST is the edit path).",
         "operationId": "add_mcp_tool_grant_api_admin_mcp_tools__tool_id__grants_post",
         "parameters": [
           {

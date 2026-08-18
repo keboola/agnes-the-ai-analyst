@@ -10,6 +10,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- **A Slack channel can now be bound to an agent profile.** A new `agent_scope` item type, `('slack_channel', <channel_id>)` — written through the existing `PUT /api/v1/agents/{id}/scope` or `agnes agent scope set --slack-channel <id>` — routes the channel's @mentions to that agent: the thread session runs with the agent's persona, live-enforced scope, and budget attribution (Slack sessions were previously always agent-less), the first turn is prefixed with a `[slack context: channel=… thread_ts=… message_ts=… sender=…]` header so an agent granted Slack tools can operate on the right thread, and the mention gets an instant 👀 acknowledgement reaction (the bot manifest gains the `reactions:write` scope — see `docs/slack-manifest-*.md`). One agent per channel, enforced at scope-write time (`409 slack_channel_taken`); a channel with no binding behaves exactly as before. Bindings are routing only — they grant the agent no plugin/table/connection reach.
+- **Mutating MCP passthrough tools are now grantable instead of admin-only.** `tool_grants` gains `allow_mutating` (schema v120, default FALSE): a group whose grant carries the flag may invoke that specific `mutating=TRUE` tool — `POST /api/admin/mcp-tools/{tool_id}/grants` accepts `allow_mutating` (re-POSTing an existing grant updates the flag in place), and a new CLI mirror `agnes admin mcp tool grant <tool_id> --group <g> [--allow-mutating]` covers the per-tool grant endpoint that previously had none. Agent profiles ride their owner's groups with the admin short-circuit still stripped, so a scoped agent can finally hold a write-capable tool (create a CMS draft, post a message) bounded to exactly the tools its owner's groups were opted into and the MCP sources in its connection scope. Every existing grant stays read-only until an admin opts it in; the source-wide bulk grant remains deliberately read-only. Worked end-to-end example: `docs/agent-recipes/announcement-drafting-agent.md`.
+
 ## [0.83.48] - 2026-08-18
 
 ### Fixed
