@@ -83,6 +83,17 @@ channel for the Slack surface at all. Owners should bind only channels where
 accordingly. A per-binding `shared` flag / mentioner-allowlist is deferred
 until a second consumer needs it.
 
+The identity is whole, not split: a routed session is created AS THE OWNER
+(session row, sandbox workspace, rails, personal `CLAUDE.local.md`, and
+brokered authority all resolve from the owner), identical to the agent's
+API/scheduled runs. The mentioner's identity gates participation (channel
+allowlist + Slack binding + CHAT grant) and rides along as sender
+attribution — the first turn's `[slack context: … sender=…]` header, a
+`[slack sender=…]` prefix on follow-ups — but never shapes the workspace.
+Any gated channel member may continue a routed thread (the
+reviewer-asks-for-a-revision flow); agent-less threads still belong to
+whoever started them.
+
 ### 2. Grant-based mutating MCP tools (`tool_grants.allow_mutating`)
 
 `tool_grants` gains `allow_mutating BOOLEAN NOT NULL DEFAULT FALSE`
