@@ -2601,6 +2601,16 @@ KNOWN_UNTESTED = {
     "GET /api/v1/agents/{slug}/webhooks",
     "POST /api/v1/agents/{slug}/webhooks",
     "DELETE /api/v1/agents/{slug}/webhooks/{webhook_id}",
+    # Agent schedules (v119) — owner-scoped CRUD for per-agent scheduled runs
+    # plus the admin/scheduler-driven run-due sweep. Auth matrix (cross-owner
+    # 404, agent-PAT reject), validation, cap, due/claim/dispatch semantics
+    # covered by tests/test_agent_schedules_api.py; not duplicated in this PG
+    # smoke sweep.
+    "GET /api/v1/agents/{slug}/schedules",
+    "POST /api/v1/agents/{slug}/schedules",
+    "PATCH /api/v1/agents/{slug}/schedules/{schedule_id}",
+    "DELETE /api/v1/agents/{slug}/schedules/{schedule_id}",
+    "POST /api/v1/agents/run-due",
     # Agent memory admin (V1b) — owner-scoped list/approve-or-edit/reject of
     # an agent's candidate memories. Behaviour covered by
     # tests/test_agent_memory_admin_api.py; not duplicated in this PG smoke
