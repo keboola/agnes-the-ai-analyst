@@ -676,8 +676,11 @@ class KeboolaClient:
                         slice_response = requests.get(slice_url, headers=slice_headers)
                         slice_response.raise_for_status()
 
-                        # Check if slice is gzipped
-                        if slice_url.endswith(".gz"):
+                        # Check if slice is gzipped — on the URL PATH only:
+                        # a presigned URL carries a `?X-Amz-…` query string,
+                        # so endswith() on the full URL would stop matching
+                        # and raw gzip bytes would land in the output.
+                        if slice_url.split("?", 1)[0].endswith(".gz"):
                             import gzip
                             import io
 
@@ -694,13 +697,23 @@ class KeboolaClient:
                             outfile.write(b"\n")
             else:
                 # Single file download
+                if download_url.startswith("s3://"):
+                    # Defensive: observed AWS stacks return presigned HTTPS
+                    # for the non-sliced url, but the raw-s3 shape the sliced
+                    # manifests exhibit must not crash here either.
+                    download_url = _s3_to_https(
+                        download_url,
+                        file_data.get("credentials") or {},
+                        file_data.get("region"),
+                    )
                 logger.debug(f"Downloading from: {download_url}")
                 download_response = requests.get(download_url, stream=True)
                 download_response.raise_for_status()
 
-                # Check if gzipped
+                # Check if gzipped — name check on the URL PATH only (a
+                # presigned query string would defeat endswith on the full URL)
                 content_encoding = download_response.headers.get("Content-Encoding", "")
-                is_gzip = "gzip" in content_encoding.lower() or download_url.endswith(".gz")
+                is_gzip = "gzip" in content_encoding.lower() or download_url.split("?", 1)[0].endswith(".gz")
 
                 if is_gzip:
                     import gzip
