@@ -117,9 +117,20 @@ _CREDENTIAL_SCOPE = "kai_session"
 #: scope, NOT to `main`: `main` authenticates `/api/broker/agnes-api` as well
 #: as the LLM proxy, so minting the engine's LLM ticket as `main` handed the
 #: sandbox the caller's whole non-admin `/api/*` replay surface — reachable
-#: even with the tool switch off, which is not what "LLM egress" means. Found
-#: by Devin Review on this PR.
-_EGRESS_SCOPES: Dict[str, str] = {"llm": "llm", "mcp": "mcp"}
+#: even with the tool switch off, which is not what "LLM egress" means.
+#:
+#: `mcp` needed the identical treatment and at first did not get it, which left
+#: the confinement half-done: `/api/broker/agnes-mcp` is gated on the native
+#: relay's `mcp` scope and hands off to the same `_replay`, whose own gate
+#: "only blocks admin-mutation routes" (`app/api/broker.py`) — so a ticket
+#: minted as plain `mcp` opened the very general `/api/*` surface the `llm`
+#: split was made to withhold. The engine's tool ticket is therefore minted as
+#: `kai_mcp`, a scope only `/api/kai/mcp` accepts. Two consequences beyond the
+#: confinement: the engine's ticket can no longer reach `agnes-mcp`, and a
+#: NATIVE chat sandbox's `mcp` ticket can no longer reach `/api/kai/mcp` —
+#: which is what made that route reachable from sessions it was never designed
+#: for in the first place. Both halves found by Devin Review on this PR.
+_EGRESS_SCOPES: Dict[str, str] = {"llm": "llm", "mcp": "kai_mcp"}
 
 
 def _secret() -> str:
@@ -733,7 +744,7 @@ async def kai_mcp(
     # `_require_session_credential`, so it asserts for itself.
     # Availability (kill switch + tool switch) is decided by
     # `_require_mcp_surface`, declared ahead of the ticket dependency.
-    _require_scope(row, "mcp")
+    _require_scope(row, "kai_mcp")
     token = await asyncio.to_thread(_mint_mcp_access_token, row["session_id"])
 
     body = await request.body()

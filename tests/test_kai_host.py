@@ -491,6 +491,64 @@ def test_mcp_availability_is_decided_before_the_credential(seeded_app, kai_env, 
     assert resp.json()["detail"] == "kai_integration_not_configured"
 
 
+def test_the_tool_ticket_is_confined_to_the_kai_route(seeded_app, kai_env, monkeypatch):
+    """The engine's tool ticket must open `/api/kai/mcp` and NOTHING else.
+
+    `/api/broker/agnes-mcp` is gated on the native relay's `mcp` scope and hands
+    off to the same `_replay`, whose own gate "only blocks admin-mutation
+    routes" — so a ticket minted as plain `mcp` opened the general `/api/*`
+    surface that splitting `llm` off `main` existed to withhold, leaving the
+    confinement half-done. The tool ticket is now `kai_mcp`. Found by Devin
+    Review on this PR.
+
+    Also closes a coverage gap: nothing drove `/api/kai/mcp` with a ticket that
+    `/api/kai/tickets` actually minted, so a mismatch between what is minted and
+    what the route requires would have gone unnoticed by every test here.
+    """
+    from src.repositories import ticket_repo
+
+    monkeypatch.setenv("KAI_BROKER_MCP_ENABLED", "1")
+    credential = _claims(_mint_session(seeded_app)["token"])["downstream_credential"]
+    tickets = seeded_app["client"].post(
+        "/api/kai/tickets", headers={"Authorization": f"Bearer {credential}"}
+    ).json()
+    tool_ticket = tickets["mcp"]
+
+    # 1. What /tickets mints is the narrow scope, not the native relay's.
+    assert ticket_repo().resolve(tool_ticket)["scope"] == "kai_mcp"
+
+    # 2. It does NOT open the general replay route.
+    denied = seeded_app["client"].post(
+        "/api/broker/agnes-mcp",
+        headers={"Authorization": f"Bearer {tool_ticket}"},
+        json={"method": "GET", "path": "/api/catalog"},
+    )
+    assert denied.status_code == 401, f"tool ticket must not open agnes-mcp, got {denied.status_code}"
+    assert denied.json()["detail"] == "ticket_scope_mismatch"
+
+    # 3. And it DOES get past /api/kai/mcp's own gates — the mint/require
+    #    agreement. There is no MCP server to talk to in this environment, so
+    #    the proof is that the handler reaches the upstream CONNECTION at all:
+    #    that is downstream of the availability gate, the scope check and the
+    #    access-token mint. A scope rejection would have returned a 401 response
+    #    instead of attempting any network call.
+    import httpx
+
+    with pytest.raises(httpx.TransportError):
+        seeded_app["client"].post(
+            "/api/kai/mcp", headers={"Authorization": f"Bearer {tool_ticket}"}, content=b"{}"
+        )
+
+    # 4. Conversely a NATIVE sandbox's `mcp` ticket can no longer reach the kai
+    #    route — the reachability behind the earlier escalation finding.
+    native = ticket_repo().mint(_mint_session(seeded_app)["chat_id"], "mcp")
+    refused = seeded_app["client"].post(
+        "/api/kai/mcp", headers={"Authorization": f"Bearer {native}"}, content=b"{}"
+    )
+    assert refused.status_code == 401
+    assert refused.json()["detail"] == "ticket_scope_mismatch"
+
+
 def test_llm_egress_ticket_cannot_reach_the_general_api_replay(seeded_app, kai_env):
     """"LLM egress" must mean only that.
 
