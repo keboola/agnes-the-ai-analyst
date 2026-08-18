@@ -10,6 +10,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.83.72] - 2026-08-19
+
+### Fixed
+
+- **Keboola: sliced exports from AWS-backed stacks download instead of crashing on raw `s3://` URIs.** Some AWS stacks list unsigned `s3://<bucket>/<key>` entries in the sliced-export manifest (rather than presigned HTTPS), which the downloader passed straight to `requests` — every sync of a sliced table died with `InvalidSchema: No connection adapters were found for 's3://…'`. Both download paths (the direct Storage API client's CSV-concat and per-slice-parquet routes, and the legacy SDK client still used by incremental and partitioned syncs) now presign those URIs locally — SigV4 query auth built from the temporary federation credentials the `?federationToken=1` file detail already ships, stdlib only, no boto3 — mirroring how `gs://` (OAuth bearer) and `azure://` (SAS) manifests were already handled. A defensively covered non-sliced `s3://` URL presigns the same way, gzip-by-name detection checks the URL path so the presigned query string cannot defeat it, gs:// and azure:// behavior is unchanged, a manifest entry aiming at a bucket other than the export's own (`s3Path.bucket`) is refused rather than signed, and a manifest with s3:// entries but no usable credentials fails with an actionable error instead of the schema crash.
+
 ## [0.83.71] - 2026-08-18
 
 ### Changed
@@ -30,7 +36,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **The skipped-materialized count now matches what `--materialize` would actually fetch.** It was incremented before the stack filter and before the `server_only` check, so a materialized row outside the analyst's stack, or one the server never distributes, still counted — and the summary then pointed them at a re-run that would not fetch it either. Counted after both filters now.
 - **The setup prompt's install step fails loudly when the wheel download fails.** Both branches took `WHEEL=$(ls …)` from a listing that can legitimately come back empty and ran `uv tool install "$WHEEL"` with no check, so a 404 from `/cli/download` surfaced as a confusing install error instead of the real cause. They now carry the same guard `/cli/install.sh` already had — the prompt is pasted into a shell that is not necessarily running under `set -e`, and the `curl` sits in a subshell whose status nothing inspects.
 - **`README.md`'s contributor setup installs `.[dev,server]` like the other three docs.** It was the one surface missed when the web framework moved into the `server` extra, so anyone following the README hit an import failure on the very next line (`uvicorn app.main:app --reload`).
-
 ## [0.83.70] - 2026-08-18
 
 ### Internal
@@ -64,9 +69,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **An unreadable table schema is explained instead of reported as an empty table.** `GET /registry/{id}/policy/columns` answered 200 with an empty column list both for a table with no columns and for one whose `DESCRIBE` failed — the ordinary outcome for a `query_mode='remote'` row, whose external catalog is not re-ATTACHed on the read-only analytics connection that read uses. "No columns found" sent the admin looking for a data problem while the real reason surfaced only once a compile was attempted and 422'd. The response carries `schema_available` and the builder says what happened, pointing at the Advanced SQL tab.
 - **A pending or in-flight builder compile is cancelled before it can overwrite hand-written SQL.** The debounced compile could still fire after the admin switched to the Advanced SQL tab or started typing, replacing the SQL box with stale output and re-raising a compile error that had already been dismissed. Editing the box cancels the queued timer and aborts any in-flight `fetch`; each compile request also carries a generation sequence, and responses from superseded requests are ignored. Opening the tab **runs** a queued compile rather than cancelling it — cancelling dropped any builder change made inside the 250 ms debounce window, so the box kept older text, no compile error was set to block the save, and the admin stored a policy that silently omitted their last edit.
 - **The one-click "Use table as base" button clears the compile block, like typing does.** It assigns `#apSql.value` programmatically, and a programmatic assignment does not fire `input`, so the textarea's `oninput` hook never ran: a block set by an earlier failure outlived starter SQL the admin had just asked for, and the save stayed refused until they typed an extra character. For the deterministic failures the escape hatch exists for, no builder interaction could clear it at all.
-### Fixed
-
-- **Keboola: sliced exports from AWS-backed stacks download instead of crashing on raw `s3://` URIs.** Some AWS stacks list unsigned `s3://<bucket>/<key>` entries in the sliced-export manifest (rather than presigned HTTPS), which the downloader passed straight to `requests` — every sync of a sliced table died with `InvalidSchema: No connection adapters were found for 's3://…'`. Both download paths (the direct Storage API client's CSV-concat and per-slice-parquet routes, and the legacy SDK client still used by incremental and partitioned syncs) now presign those URIs locally — SigV4 query auth built from the temporary federation credentials the `?federationToken=1` file detail already ships, stdlib only, no boto3 — mirroring how `gs://` (OAuth bearer) and `azure://` (SAS) manifests were already handled. A defensively covered non-sliced `s3://` URL presigns the same way, gzip-by-name detection checks the URL path so the presigned query string cannot defeat it, gs:// and azure:// behavior is unchanged, and a manifest with s3:// entries but no usable credentials fails with an actionable error instead of the schema crash.
 
 ## [0.83.57] - 2026-08-18
 
