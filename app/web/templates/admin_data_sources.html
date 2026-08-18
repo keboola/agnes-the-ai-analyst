@@ -513,7 +513,7 @@
   .ds-wguide p:last-child { margin-bottom: 0; }
   .ds-wguide a { color: var(--ds-primary); }
 
-  .ds-bqcred { display: flex; align-items: center; gap: 8px; min-height: 26px; }
+  .ds-bqcred, .ds-sfcred { display: flex; align-items: center; gap: 8px; min-height: 26px; }
 
   /* ── Step 2 (BigQuery): manual rows editor ── */
   .ds-bqrow, .ds-sfrow { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
@@ -1339,8 +1339,9 @@ function _pipelineStripHtml(row) {
     if (s.errors) { syncTone = "is-err"; syncText = `${s.errors} failing`; }
     else if (s.last_sync) { syncTone = "is-ok"; syncText = `✓ ${_relAge(s.age_minutes)}`; }
     else { syncTone = "is-warn"; syncText = never; }
+    const syncTitle = s.title ? `title="${_esc(s.title)}"` : "";
     cells.push(`
-      <a class="ds-pipe__cell" href="/admin/sync">
+      <a class="ds-pipe__cell" href="/admin/sync" ${syncTitle}>
         <span class="ds-pipe__k">${label}</span>
         <span class="ds-pipe__v ${syncTone}">${syncText}</span>
       </a>`);
@@ -2492,11 +2493,13 @@ async function _saveSnowflakeAndContinue() {
     err.style.display = "block";
     return;
   }
+  const sf = { account, user, database, warehouse };
+  if (role) sf.role = role;
   try {
     const r = await fetch(API_SERVER_CONFIG, {
       method: "POST", credentials: "include",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sections: { data_source: { snowflake: { account, user, database, warehouse, role } } } }),
+      body: JSON.stringify({ sections: { data_source: { snowflake: sf } } }),
     });
     if (!r.ok) throw new Error("server-config save failed");
     if (password) {
@@ -2508,6 +2511,7 @@ async function _saveSnowflakeAndContinue() {
       if (!rp.ok) throw new Error("password secret save failed");
       _sfCredStatus = { source: "vault", has_value: true };
       _renderSfCredStatus();
+      document.getElementById("ds-sf-password").value = "";
     }
     _sfConfigLoaded = true;
     _setWizStep(2);
@@ -2942,7 +2946,7 @@ async function _registerSfRows() {
     }
     r.statusEl.textContent = "registering…";
     r.statusEl.className = "ds-table-status";
-    let name = r.table.toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "");
+    let name = (r.schema + "_" + r.table).toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "");
     if (!name) name = "sf_" + Math.random().toString(36).slice(2, 7);
     if (/^\d/.test(name)) name = "_" + name;
     try {
@@ -3428,6 +3432,9 @@ document.getElementById("ds-wizard-connect-btn").addEventListener("click", () =>
   }
   connectAndValidate();
 });
+
+// Update the Snowflake password status badge as the admin types.
+document.getElementById("ds-sf-password").addEventListener("input", () => _renderSfCredStatus());
 
 /* The steps strip as a back button. Nothing is re-fetched and nothing is
    re-rendered: every screen's state lives where it was left — the connect
