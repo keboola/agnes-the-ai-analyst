@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.83.51] - 2026-08-18
+
 ### Added
 
 - **A Slack channel can now be bound to an agent profile.** A new `agent_scope` item type, `('slack_channel', <channel_id>)` — written through the existing `PUT /api/v1/agents/{id}/scope` or `agnes agent scope set --slack-channel <id>` — routes the channel's @mentions to that agent: the routed session is created AS THE AGENT'S OWNER end to end — persona, sandbox workspace and rails, live-enforced scope, and budget attribution all resolve from the owner, exactly like the agent's API runs, never from the mentioning user (Slack sessions were previously always agent-less); any gated channel member can continue a routed thread, each turn carries the mentioner as sender attribution, the first turn is prefixed with a `[slack context: channel=… thread_ts=… message_ts=… sender=…]` header so an agent granted Slack tools can operate on the right thread, and the mention gets an instant 👀 acknowledgement reaction (the bot manifest gains the `reactions:write` scope — see `docs/slack-manifest-*.md`). One agent per channel, enforced at scope-write time (`409 slack_channel_taken`); a channel with no binding behaves exactly as before. Bindings are routing only — they grant the agent no plugin/table/connection reach.
