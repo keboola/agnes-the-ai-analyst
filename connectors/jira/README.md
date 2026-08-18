@@ -489,6 +489,54 @@ DuckDB and the check resumes.
 
 The Jira tables and their columns are described in [`docs/DATA_SOURCES.md`](../../docs/DATA_SOURCES.md). At runtime, inspect the live schema with `agnes schema <table>` and `agnes describe <table>`.
 
+### `comments.public_visibility` (BOOLEAN, nullable)
+
+Separates customer-facing replies from internal agent notes:
+
+| Value | Meaning |
+|---|---|
+| `true` | Visible to the customer — an agent reply, or the customer's own portal/email reply |
+| `false` | Internal note, visible only to agents |
+| `NULL` | **Unknown.** Neither visibility signal was present on the comment payload, or the row was written before this column existed and has not been re-transformed. |
+
+The value comes from **`jsdPublic`**, the Jira platform API's documented
+read-only projection of the state JSM stores in the `sd.public.comment` entity
+property. `jsdPublic` rides along on the comments embedded in a plain
+`GET /issue/{key}` — no `expand`, no extra request per issue — so the column
+costs no additional Jira traffic. It is present on every comment in practice:
+a sweep of the whole project found it on 112,859 of 112,859 comments spanning
+2022-2026.
+
+The entity property is deliberately not read. Doing so would require
+`expand=properties`, and any payload carrying the property carries `jsdPublic`
+too, so a property fallback would be unreachable rather than merely unused.
+Anyone adding `expand=properties` later should note that `value.internal` is
+not consistently typed — the same instance stores both a JSON boolean and the
+string `"false"` — so it must be coerced by content; a plain `bool()` reads any
+non-empty string as truthy and would flip a public comment to internal.
+
+**`NULL` is never coerced to `true`.** A missing flag is counted and logged as a
+WARNING naming the issue key, not defaulted. This is deliberate: a boolean that
+is confidently wrong is worse than one that admits the gap, because nothing
+downstream can distinguish a defaulted value from an observed one. Queries that
+need a hard split should say which side they want the unknowns on:
+
+```sql
+-- internal notes only, unknowns excluded
+SELECT count(*) FROM comments WHERE public_visibility IS FALSE;
+
+-- audit the gap
+SELECT strftime(created_at, '%Y-%m') AS month, count(*) AS unknown
+FROM comments WHERE public_visibility IS NULL GROUP BY 1 ORDER BY 1;
+```
+
+Rows written before this column existed read as `NULL` (the extract views use
+`union_by_name=true`, so adding the column is non-breaking). To fill them in,
+re-run the batch transform (4b above) — the flag is already present in the
+cached raw JSON, so this is a pure re-transform with no Jira traffic. Verify the
+result by charting the internal share per month: a cliff at any date means the
+backfill defaulted rows rather than reading them.
+
 ## Historical Backfill
 
 For initial setup or recovery, use the backfill script to download all historical issues.
