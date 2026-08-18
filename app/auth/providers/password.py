@@ -237,7 +237,8 @@ async def password_login(
 ):
     """Login with email + password."""
     repo = users_repo()
-    user = repo.get_by_email(body.email)
+    # Strip only — case is folded by the lookup (SQL).
+    user = repo.get_by_email_ci((body.email or "").strip())
     if not user or not user.get("password_hash"):
         raise HTTPException(status_code=401, detail="Invalid email or password")
     if not bool(user.get("active", True)):
@@ -274,8 +275,9 @@ async def password_login_web(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Web form login — sets cookie and redirects to `next` (or /dashboard)."""
+    email = (email or "").strip()
     repo = users_repo()
-    user = repo.get_by_email(email)
+    user = repo.get_by_email_ci(email)
     if not user or not user.get("password_hash"):
         return RedirectResponse(url="/login/password?error=invalid", status_code=302)
     if not bool(user.get("active", True)):
@@ -303,7 +305,7 @@ async def password_login_web(
             reset_token_created=datetime.now(timezone.utc),
         )
         return RedirectResponse(
-            url=(f"/auth/password/reset?email={quote(email, safe='')}&token={reset_tok}&reason=must_change"),
+            url=(f"/auth/password/reset?email={quote(user['email'], safe='')}&token={reset_tok}&reason=must_change"),
             status_code=303,
         )
 
@@ -336,7 +338,7 @@ async def password_setup(
     switches to this JSON path and resumes at unbounded RPS.
     """
     repo = users_repo()
-    user = repo.get_by_email(request_body.email)
+    user = repo.get_by_email_ci((request_body.email or "").strip())
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
@@ -406,13 +408,13 @@ async def reset_request(
     addresses, anti-enumeration response shape masks which addresses
     landed, attacker burns SMTP / SendGrid quota + spams real users).
     """
-    # Match the rest of the codebase's case-sensitive lookup (password_login,
-    # email magic-link, admin create). Lowercasing here would silently fail
-    # for mixed-case emails the admin stored as-is.
+    # Strip only — case is folded by the lookup itself (get_by_email_ci), so a
+    # mixed-case row an admin stored as-is is still found when the person types
+    # their address in lower case.
     email = (email or "").strip()
     if email:
         repo = users_repo()
-        user = repo.get_by_email(email)
+        user = repo.get_by_email_ci(email)
         if user and bool(user.get("active", True)):
             token = secrets.token_urlsafe(32)
             repo.update(
@@ -420,7 +422,7 @@ async def reset_request(
                 reset_token=hash_token(token),
                 reset_token_created=datetime.now(timezone.utc),
             )
-            send_reset_email(request, email, token)
+            send_reset_email(request, user["email"], token)
     return _render_message(
         request,
         title="Check your email",
@@ -464,6 +466,7 @@ async def reset_confirm(
     referer leaks have surfaced partial tokens before, and there's no
     reason to allow unbounded attempts.
     """
+    email = (email or "").strip()
     repo = users_repo()
 
     # Anti-enumeration: validate the token BEFORE deriving any
@@ -483,13 +486,22 @@ async def reset_confirm(
     # re-rendered form, so validating the token here must not burn it.
     # The single-use atomic consumption still happens exactly once,
     # further down, only after the passwords pass validation.
-    user = repo.get_by_email(email)
-    token_valid = (
-        bool(user)
-        and bool(user.get("active", True))
-        and user.get("reset_token") == hash_token(token)
-        and _token_is_fresh(user.get("reset_token_created"), RESET_TOKEN_TTL)
+    # Peek across every row colliding on this address, not just "the account
+    # for this address": an admin-issued reset mints the token by user id, so
+    # it can sit on a case variant that get_by_email_ci (oldest wins) does not
+    # return — and a valid link would then render "Invalid or expired".
+    hashed = hash_token(token)
+    user = next(
+        (
+            u
+            for u in repo.list_by_email_ci(email)
+            if bool(u.get("active", True))
+            and u.get("reset_token") == hashed
+            and _token_is_fresh(u.get("reset_token_created"), RESET_TOKEN_TTL)
+        ),
+        None,
     )
+    token_valid = user is not None
     if not token_valid:
         # Generic copy regardless of whether the account exists or is
         # flagged for forced rotation — the caller hasn't proven they
@@ -528,6 +540,7 @@ async def reset_confirm(
     # but the CAS read DuckDB, so every reset / forced-rotation login 'expired'.)
     try:
         won = repo.consume_reset_token(email=email, token=hash_token(token), cutoff=cutoff, consume_id=consume_id)
+        # `won` is the id of the stamped row — the account the token belongs to.
     except Exception as exc:
         err = str(exc).lower()
         if "conflict" in err or "transaction" in err:
@@ -542,8 +555,10 @@ async def reset_confirm(
             request, email=email, token=token, error="Invalid or expired reset link.", reason=reason
         )
 
-    # Won the race — fetch the user and apply the password change.
-    user = repo.get_by_email(email)
+    # Won the race — fetch the row the CAS stamped (not a second address
+    # lookup, which could resolve a different case variant) and apply the
+    # password change.
+    user = repo.get_by_id(won)
     if not user:
         return _render_reset_form(
             request, email=email, token=token, error="Invalid or expired reset link.", reason=reason
@@ -596,13 +611,13 @@ async def setup_request(
     — same email-bombing surface (anti-enumeration response, sends mail
     on each request).
     """
-    # Match the rest of the codebase's case-sensitive lookup (password_login,
-    # email magic-link, admin create). Lowercasing here would silently fail
-    # for mixed-case emails the admin stored as-is.
+    # Strip only — case is folded by the lookup itself (get_by_email_ci), so a
+    # mixed-case row an admin stored as-is is still found when the person types
+    # their address in lower case.
     email = (email or "").strip()
     if email:
         repo = users_repo()
-        user = repo.get_by_email(email)
+        user = repo.get_by_email_ci(email)
         # Only issue setup token if user exists, has no password yet, and is active.
         if user and not user.get("password_hash") and bool(user.get("active", True)):
             token = secrets.token_urlsafe(32)
@@ -611,7 +626,7 @@ async def setup_request(
                 setup_token=hash_token(token),
                 setup_token_created=datetime.now(timezone.utc),
             )
-            send_setup_email(request, email, token)
+            send_setup_email(request, user["email"], token)
     return _render_message(
         request,
         title="Check your email",
@@ -637,6 +652,7 @@ async def setup_confirm(
     high-entropy ``setup_token`` should still not be brute-forceable at
     unbounded RPS in case a partial token leaks via logs / referer.
     """
+    email = (email or "").strip()
     if password != confirm_password:
         return _render_setup_form(request, email=email, token=token, name=name, error="Passwords do not match.")
     if len(password) < MIN_PASSWORD_LEN:
@@ -649,7 +665,7 @@ async def setup_confirm(
         )
 
     repo = users_repo()
-    user = repo.get_by_email(email)
+    user = repo.get_by_email_ci(email)
     if not user or user.get("setup_token") != hash_token(token):
         return _render_setup_form(request, email=email, token=token, name=name, error="Invalid or expired setup link.")
     if not _token_is_fresh(user.get("setup_token_created"), SETUP_TOKEN_TTL):

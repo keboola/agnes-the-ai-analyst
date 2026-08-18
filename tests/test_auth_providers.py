@@ -225,6 +225,157 @@ class TestEmailAuth:
         assert failures == 1, f"Expected exactly 1 failure, got {failures} (results: {results})"
 
 
+class TestEmailCaseInsensitiveSignIn:
+    """One identity, one account — on the way IN as well as at provisioning.
+
+    Rows created before normalization landed (or by an admin who typed the
+    address as the person writes it) store mixed case. ``get_by_email`` is an
+    exact match on both backends, so those users could sign in through OAuth —
+    which resolves case-insensitively — and be told "invalid email or password"
+    by the very same instance when they typed the address themselves.
+    """
+
+    def test_password_login_matches_stored_row_regardless_of_case(self, client):
+        r = client.post("/auth/password/login", json={"email": "PW@Test.com", "password": "testpass123"})
+        assert r.status_code == 200, r.text
+        assert "access_token" in r.json()
+
+    def test_token_endpoint_matches_stored_row_regardless_of_case(self, client):
+        r = client.post("/auth/token", json={"email": "PW@TEST.COM", "password": "testpass123"})
+        assert r.status_code == 200, r.text
+
+    def test_magic_link_is_issued_for_a_case_variant_address(self, client):
+        """The anti-enumeration response is identical either way, so assert on
+        the side effect: a token is minted on the stored row."""
+        from src.db import get_system_db
+
+        r = client.post("/auth/email/send-link", json={"email": "ML@Test.com"})
+        assert r.status_code == 200, r.text
+        conn = get_system_db()
+        try:
+            row = conn.execute("SELECT reset_token FROM users WHERE id = 'ml1'").fetchone()
+        finally:
+            conn.close()
+        assert row is not None and row[0], "no magic-link token minted for the case-variant address"
+
+    def test_magic_link_verifies_with_a_case_variant_address(self, client):
+        """End to end: the CAS that consumes the token has to fold case too,
+        or the link mints fine and then refuses to open."""
+        from datetime import datetime, timezone
+
+        from src.db import get_system_db
+
+        conn = get_system_db()
+        try:
+            conn.execute(
+                "UPDATE users SET reset_token = ?, reset_token_created = ? WHERE id = 'ml1'",
+                [hash_token("magic-abc"), datetime.now(timezone.utc)],
+            )
+        finally:
+            conn.close()
+        r = client.post("/auth/email/verify", json={"email": "ML@Test.com", "token": "magic-abc"})
+        assert r.status_code == 200, r.text
+
+
+class TestSignInIgnoresSurroundingWhitespace:
+    """A pasted address carries whitespace, and every entry point has to
+    tolerate it identically.
+
+    ``ensure_user`` strips, and so did the web magic-link form — but the JSON
+    ``/send-link``, ``/auth/token`` and the password handlers passed the raw
+    field straight to the lookup, so the same address succeeded or failed
+    depending on which door it came through. Stripping (not lower-casing —
+    case is SQL's job) at each entry point is what makes them agree.
+    """
+
+    def test_token_endpoint_tolerates_padding(self, client):
+        r = client.post("/auth/token", json={"email": "  pw@test.com  ", "password": "testpass123"})
+        assert r.status_code == 200, r.text
+
+    def test_password_login_tolerates_padding(self, client):
+        r = client.post("/auth/password/login", json={"email": "  pw@test.com ", "password": "testpass123"})
+        assert r.status_code == 200, r.text
+
+    def test_json_magic_link_tolerates_padding(self, client):
+        from src.db import get_system_db
+
+        r = client.post("/auth/email/send-link", json={"email": "  ml@test.com  "})
+        assert r.status_code == 200, r.text
+        conn = get_system_db()
+        try:
+            row = conn.execute("SELECT reset_token FROM users WHERE id = 'ml1'").fetchone()
+        finally:
+            conn.close()
+        assert row is not None and row[0], "padded address minted no magic-link token"
+
+
+class TestTokenOwnershipDecidesIdentity:
+    """A one-time link belongs to the row that HOLDS the token.
+
+    The compare-and-swap matches ``lower(email) = ? AND reset_token = ?``, so it
+    finds whichever case variant actually holds the token, while
+    ``get_by_email_ci`` deterministically returns the OLDEST. An admin-issued
+    reset mints the token by user id, so it can live on a newer variant — and
+    resolving the account by address after the CAS would then mint a session
+    for an account the token was never issued for, carrying that account's
+    group memberships.
+    """
+
+    @pytest.fixture
+    def variants(self, client):
+        """Two case-variant rows; the magic-link token sits on the NEWER one."""
+        from datetime import datetime, timezone
+
+        from src.db import get_system_db
+        from src.repositories.users import UserRepository
+
+        conn = get_system_db()
+        try:
+            repo = UserRepository(conn)
+            repo.create(id="dup-old", email="dup@test.com", name="Old")
+            repo.create(id="dup-new", email="Dup@Test.com", name="New")
+            conn.execute("UPDATE users SET created_at = ? WHERE id = ?", ["2025-01-01 00:00:00", "dup-old"])
+            conn.execute("UPDATE users SET created_at = ? WHERE id = ?", ["2026-06-01 00:00:00", "dup-new"])
+            repo.update(id="dup-new", reset_token=hash_token("tok-abc"), reset_token_created=datetime.now(timezone.utc))
+        finally:
+            conn.close()
+        return client
+
+    def test_magic_link_signs_in_the_account_the_token_belongs_to(self, variants):
+        import jwt as pyjwt
+
+        r = variants.post("/auth/email/verify", json={"email": "dup@test.com", "token": "tok-abc"})
+        assert r.status_code == 200, r.text
+        claims = pyjwt.decode(r.json()["access_token"], options={"verify_signature": False})
+        assert claims.get("sub") == "dup-new", "session minted for the wrong account"
+
+    def test_reset_form_accepts_a_link_whose_token_is_on_a_case_variant(self, variants):
+        """The pre-check peeked with ``get_by_email_ci`` (oldest wins), so a
+        genuinely valid admin-issued link rendered "Invalid or expired"."""
+        r = variants.post(
+            "/auth/password/reset/confirm",
+            data={
+                "email": "dup@test.com",
+                "token": "tok-abc",
+                "password": "brand-new-password-1",
+                "confirm_password": "brand-new-password-1",
+            },
+        )
+        assert r.status_code == 200, r.text
+        assert "Invalid or expired reset link" not in r.text
+
+        # And the password landed on the row that held the token.
+        from src.db import get_system_db
+
+        conn = get_system_db()
+        try:
+            rows = dict(conn.execute("SELECT id, password_hash FROM users WHERE id IN ('dup-old','dup-new')").fetchall())
+        finally:
+            conn.close()
+        assert rows["dup-new"], "password was not set on the token's own account"
+        assert not rows["dup-old"], "password landed on the wrong account"
+
+
 class TestGoogleOAuth:
     def test_google_login_not_configured(self, client):
         """Without GOOGLE_CLIENT_ID, should redirect to login with error."""
@@ -289,6 +440,25 @@ class TestMicrosoftTenantValidation:
         monkeypatch.setattr(ms, "MICROSOFT_TENANT_ID", reserved)
         assert ms.is_available() is False
         assert any("multi-tenant" in w for w in ms.startup_warnings())
+
+    @pytest.mark.parametrize(
+        "guid",
+        [
+            "9188040d-6c67-4c5b-b112-36a304b66dad",  # "personal Microsoft accounts"
+            "9188040D-6C67-4C5B-B112-36A304B66DAD",  # same, uppercase
+            "f8cdef31-a31e-4b4a-93e4-5f571e91255a",  # the other well-known consumer tenant
+        ],
+    )
+    def test_well_known_consumer_tenant_guids_are_refused(self, guid):
+        """Refusing the reserved *names* is not enough. Microsoft publishes
+        GUIDs for the consumer tenants, and a discovery URL built from one is
+        functionally ``consumers`` — the exact configuration the name check
+        exists to prevent, reached by spelling it differently."""
+        from app.auth.providers import microsoft as ms
+
+        problem = ms.tenant_id_error(guid)
+        assert problem, f"{guid!r} must be refused"
+        assert "multi-tenant" in problem
 
     def test_guid_tenant_is_available(self, monkeypatch):
         from app.auth.providers import microsoft as ms
@@ -526,6 +696,36 @@ class TestLocalDevGroupsParser:
             '[{"name":"no-id"},{"id":"eng@x.com","name":"Eng"},"string-not-object"]',
         )
         assert get_local_dev_groups() == [{"id": "eng@x.com", "name": "Eng"}]
+
+
+class TestLocalDevUserLookup:
+    """Startup seeds the dev account through ``normalize_email`` (lower-cased),
+    so the request-time read has to fold case too — otherwise a mixed-case
+    ``LOCAL_DEV_USER_EMAIL`` seeds a row the auto-login can never find and dev
+    mode silently stops logging anybody in."""
+
+    def test_dev_user_resolves_when_configured_address_has_capitals(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-32chars-minimum!!!!!")
+        monkeypatch.setenv("LOCAL_DEV_MODE", "1")
+        monkeypatch.setenv("LOCAL_DEV_USER_EMAIL", "Dev@LocalHost")
+
+        from src.db import get_system_db
+        from src.repositories.users import UserRepository
+        from src.user_identity import normalize_email
+
+        conn = get_system_db()
+        try:
+            # Exactly what the startup seed writes.
+            UserRepository(conn).create(id="dev1", email=normalize_email("Dev@LocalHost"), name="Admin")
+        finally:
+            conn.close()
+
+        from app.auth.dependencies import _get_local_dev_user
+
+        user = _get_local_dev_user()
+        assert user is not None, "dev auto-login could not find the account startup seeded"
+        assert user["id"] == "dev1"
 
 
 @pytest.mark.skip(

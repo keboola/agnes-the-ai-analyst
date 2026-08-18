@@ -493,9 +493,16 @@ class TestJsonSetupHardening:
         assert resp.status_code == 403
 
 
-class TestCaseSensitiveEmailLookup:
-    """Reset/setup requests must match the codebase's case-sensitive email
-    lookup — lowercasing here would silently fail for mixed-case accounts."""
+class TestCaseInsensitiveEmailLookup:
+    """Reset/setup requests resolve the account case-insensitively.
+
+    They used to be an exact string match, which meant the person whose row an
+    admin stored as ``User.Mixed@Example.com`` silently got no reset mail when
+    they typed their address in lower case — indistinguishable, thanks to the
+    anti-enumeration response, from "this address is not registered". Identity
+    is one thing across the instance now: OAuth provisioning, password login
+    and these flows all fold case (``get_by_email_ci``).
+    """
 
     def test_reset_request_preserves_email_case(self, app_client, fresh_db):
         # User stored as-is with mixed-case local-part
@@ -506,10 +513,21 @@ class TestCaseSensitiveEmailLookup:
         u = _get_user("User.Mixed@Example.com")
         assert u["reset_token"]
 
-    def test_reset_request_case_mismatch_still_anti_enumerates(self, app_client, fresh_db):
+    def test_reset_request_matches_a_case_variant_address(self, app_client, fresh_db):
         _seed_user("User.Mixed@Example.com", password_hash="x")
-        # Wrong case: response is the same (anti-enumeration) and no token is issued
+        # Different case, same person: the token lands on the stored row. The
+        # response is the anti-enumeration page either way.
         resp = app_client.post("/auth/password/reset", data={"email": "user.mixed@example.com"})
+        assert resp.status_code == 200
+        assert "Check your email" in resp.text
+        u = _get_user("User.Mixed@Example.com")
+        assert u["reset_token"]
+
+    def test_reset_request_for_an_unknown_address_issues_nothing(self, app_client, fresh_db):
+        """Case folding must not turn into a looser match — anti-enumeration
+        still has to be backed by actually doing nothing."""
+        _seed_user("User.Mixed@Example.com", password_hash="x")
+        resp = app_client.post("/auth/password/reset", data={"email": "someone.else@example.com"})
         assert resp.status_code == 200
         assert "Check your email" in resp.text
         u = _get_user("User.Mixed@Example.com")

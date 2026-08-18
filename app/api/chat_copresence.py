@@ -105,23 +105,31 @@ async def invite(
     s0 = repo.get_session(session_id)
     if s0 is None or s0.user_email != user["email"]:
         raise HTTPException(403, "only the owner can invite")
-    inv_row = users_repo().get_by_email(body.invitee_email)
+    inv_row = users_repo().get_by_email_ci((body.invitee_email or "").strip())
     if inv_row is None:
         raise HTTPException(403, "invitee not found or lacks chat access")
     inv_user_id = inv_row["id"]
+    # Everything persisted downstream must be the RESOLVED account's address,
+    # never the spelling the inviter typed. Participation is checked with plain
+    # string equality (co_session_messages / join_ticket / leave here, the WS
+    # join re-verification in app/api/chat.py and app/chat/manager.py) and
+    # compute_grant_intersection resolves participants exactly and fails
+    # closed — so a case-variant invite would look like it worked and then 403
+    # the invitee on every single operation.
+    invitee_email = inv_row["email"]
     if not can_access(inv_user_id, ResourceType.CHAT.value, "chat", conn):
         raise HTTPException(403, "invitee lacks chat access")
 
     # SR-8: seed with a summary, never a raw clone.
     from app.chat.copresence_summary import build_intersection_summary
 
-    seed = build_intersection_summary(session_id, [user["email"], body.invitee_email])
+    seed = build_intersection_summary(session_id, [user["email"], invitee_email])
 
     s1 = repo.fork_session_as_co_session(
         source_id=session_id,
         owner_email=user["email"],
         owner_user_id=user["id"],
-        invitee_email=body.invitee_email,
+        invitee_email=invitee_email,
         invitee_user_id=inv_user_id,
         seed_summary=seed,
     )
@@ -131,7 +139,7 @@ async def invite(
     write_audit(
         user_email=user["email"],
         action="co_session_fork",
-        details={"source": session_id, "co_session": s1.id, "invitee": body.invitee_email},
+        details={"source": session_id, "co_session": s1.id, "invitee": invitee_email},
     )
     return {"session_id": s1.id, "is_co_session": True}
 

@@ -1251,9 +1251,17 @@ def get_sync_interval() -> str:
 
 
 def get_allowed_domains() -> list:
+    """Sign-in domain allowlist, lower-cased.
+
+    Domains are case-insensitive (DNS), but the OAuth providers compare this
+    list against an address claim with ``in`` — and Microsoft lower-cases the
+    resolved claim before doing so. Folding here means ``allowed_domain:
+    "Acme.com"`` doesn't refuse every Microsoft sign-in while leaving Google
+    working; the callers fold the claim's domain to match.
+    """
     domain = get_value("auth", "allowed_domain", default="")
     if domain:
-        return [d.strip() for d in domain.split(",") if d.strip()]
+        return [d.strip().lower() for d in domain.split(",") if d.strip()]
     return []
 
 

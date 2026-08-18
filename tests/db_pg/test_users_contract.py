@@ -328,9 +328,27 @@ def test_consume_reset_token_valid_wins_and_stamps(users_repo):
         cutoff=now - timedelta(hours=24),
         consume_id="CONSUMED:abc",
     )
-    assert won is True
+    assert won == "user-1", "the CAS must report WHICH row it stamped"
     # token is replaced by the consume marker (single-use)
     assert repo.get_by_id("user-1")["reset_token"] == "CONSUMED:abc"
+
+
+def test_consume_reset_token_matches_the_address_case_insensitively(users_repo):
+    """The sign-in paths resolve identity with ``get_by_email_ci``, so the token
+    is minted on whichever case variant is the account. A case-SENSITIVE CAS
+    would mint a working link and then refuse to open it."""
+    repo, _, _ = users_repo
+    now = datetime.now(timezone.utc)
+    _make_user(repo, id="user-mixed", email="Mixed.Case@Example.com")
+    repo.update("user-mixed", reset_token="rtok", reset_token_created=now)
+    won = repo.consume_reset_token(
+        email="mixed.case@example.com",
+        token="rtok",
+        cutoff=now - timedelta(hours=24),
+        consume_id="CONSUMED:abc",
+    )
+    assert won == "user-mixed"
+    assert repo.get_by_id("user-mixed")["reset_token"] == "CONSUMED:abc"
 
 
 def test_consume_reset_token_wrong_token_loses(users_repo):
@@ -343,7 +361,7 @@ def test_consume_reset_token_wrong_token_loses(users_repo):
         cutoff=now - timedelta(hours=24),
         consume_id="CONSUMED:abc",
     )
-    assert won is False
+    assert won is None
     assert repo.get_by_id("user-1")["reset_token"] == "rtok"  # untouched
 
 
@@ -357,7 +375,7 @@ def test_consume_reset_token_expired_loses(users_repo):
         cutoff=now - timedelta(hours=24),
         consume_id="CONSUMED:abc",
     )
-    assert won is False
+    assert won is None
 
 
 def test_consume_reset_token_single_use(users_repo):
@@ -365,10 +383,10 @@ def test_consume_reset_token_single_use(users_repo):
     now = datetime.now(timezone.utc)
     _seed_reset_token(repo, created=now)
     cutoff = now - timedelta(hours=24)
-    assert repo.consume_reset_token(email="u@example.com", token="rtok", cutoff=cutoff, consume_id="CONSUMED:1") is True
+    assert repo.consume_reset_token(email="u@example.com", token="rtok", cutoff=cutoff, consume_id="CONSUMED:1")
     # second attempt with the same original token loses (already consumed)
     assert (
-        repo.consume_reset_token(email="u@example.com", token="rtok", cutoff=cutoff, consume_id="CONSUMED:2") is False
+        repo.consume_reset_token(email="u@example.com", token="rtok", cutoff=cutoff, consume_id="CONSUMED:2") is None
     )
 
 
@@ -476,6 +494,40 @@ def test_get_by_email_ci_tiebreaks_deterministically_on_identical_created_at(use
     row = repo.get_by_email_ci("tie@example.com")
     assert row is not None
     assert row["id"] == "user-a"
+
+
+def test_consume_reset_token_reports_the_variant_that_held_the_token(users_repo):
+    """The CAS finds whichever case variant actually holds the token, while
+    ``get_by_email_ci`` returns the OLDEST. A token minted by user id (an
+    admin-issued reset) can sit on a newer variant, so the caller must learn
+    the row from the CAS — resolving by address afterwards would hand it a
+    different account."""
+    repo, _, backend = users_repo
+    now = datetime.now(timezone.utc)
+    _make_user(repo, id="user-old", email="dup@example.com")
+    _make_user(repo, id="user-new", email="Dup@Example.com")
+    _set_created_at(repo, backend, "user-old", datetime(2025, 1, 1, tzinfo=timezone.utc))
+    _set_created_at(repo, backend, "user-new", datetime(2026, 6, 1, tzinfo=timezone.utc))
+    # The token lives on the NEWER row.
+    repo.update("user-new", reset_token="rtok", reset_token_created=now)
+
+    assert repo.get_by_email_ci("dup@example.com")["id"] == "user-old"
+    won = repo.consume_reset_token(
+        email="dup@example.com", token="rtok", cutoff=now - timedelta(hours=24), consume_id="CONSUMED:xyz"
+    )
+    assert won == "user-new"
+
+
+def test_list_by_email_ci_returns_every_colliding_row_oldest_first(users_repo):
+    repo, _, backend = users_repo
+    _make_user(repo, id="user-new", email="Dup@Example.com")
+    _make_user(repo, id="user-old", email="dup@example.com")
+    _make_user(repo, id="user-other", email="someone@example.com")
+    _set_created_at(repo, backend, "user-old", datetime(2025, 1, 1, tzinfo=timezone.utc))
+    _set_created_at(repo, backend, "user-new", datetime(2026, 6, 1, tzinfo=timezone.utc))
+    rows = repo.list_by_email_ci("DUP@example.COM")
+    assert [r["id"] for r in rows] == ["user-old", "user-new"]
+    assert repo.list_by_email_ci("nobody@example.com") == []
 
 
 # ---------------------------------------------------------------------------
