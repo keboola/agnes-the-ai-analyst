@@ -14,10 +14,14 @@ This module talks to Storage API directly and downloads via signed URLs:
 - GET  /v2/storage/files/{id}?federationToken=1
 - GET  <signed_url>  (single file or manifest + per-slice URLs for sliced)
 
-No `os.chdir`, no boto3/azure-blob/google-cloud-storage SDK dependencies —
-the federation-token detail response includes a signed URL that works for
-all three cloud backends. Thread-safe: each call uses an independent
-download path under a per-call temp directory.
+No `os.chdir`, no azure-blob/google-cloud-storage SDK dependencies. The
+federation-token detail response includes a signed URL for the single-file
+case on all three cloud backends; for *sliced* exports each backend hands
+back its own scheme (`gs://`, `azure://`, or — on AWS stacks that stage
+exports on S3 — raw `s3://`), rewritten below. The S3 case signs with
+botocore's SigV4 signer (already a dependency via boto3) because raw
+`s3://` carries no signature of its own. Thread-safe: each call uses an
+independent download path under a per-call temp directory.
 
 Storage API reference:
 - https://keboola.docs.apiary.io/#reference/tables/asynchronous-table-export
@@ -40,6 +44,15 @@ from pathlib import Path
 from typing import Any, List, Optional
 
 import requests
+
+try:  # pragma: no cover - import guard mirrors src/object_store.py
+    from botocore.auth import S3SigV4Auth
+    from botocore.awsrequest import AWSRequest
+    from botocore.credentials import Credentials
+except ImportError:  # pragma: no cover - boto3 is a declared dependency
+    S3SigV4Auth = None  # type: ignore[assignment]
+    AWSRequest = None  # type: ignore[assignment]
+    Credentials = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -644,6 +657,7 @@ class KeboolaStorageClient:
                 dest_path,
                 gcs_token=gcs_token,
                 abs_credentials=abs_credentials,
+                s3_context=self._s3_context(file_info),
             )
         else:
             self._download_single(url, dest_path, gunzip_on_read=is_gzipped)
@@ -775,6 +789,119 @@ class KeboolaStorageClient:
 
         return https_url
 
+    @staticmethod
+    def _s3_to_https(s3_url: str, region: str) -> tuple[str, str, str]:
+        """Rewrite ``s3://<bucket>/<key>`` to a virtual-hosted-style HTTPS URL.
+
+        Returns ``(https_url, bucket, key)`` so the caller can check the
+        bucket against the export's own before handing over credentials.
+        AWS stacks that stage exports on S3 list raw ``s3://`` URIs in the
+        sliced manifest — unlike the single-file case, which is presigned —
+        and ``requests`` has no adapter for that scheme at all.
+        """
+        if not s3_url.startswith("s3://"):
+            raise ValueError(f"_s3_to_https expects s3://; got {s3_url!r}")
+        from urllib.parse import quote
+
+        path = s3_url[len("s3://") :]
+        bucket, _, key = path.partition("/")
+        if not bucket or not key:
+            raise ValueError(f"malformed s3:// URL: {s3_url!r}")
+        if not region:
+            raise StorageApiError(
+                f"slice URL is s3:// but the file detail carries no 'region'; "
+                f"cannot address the bucket endpoint for {bucket!r}"
+            )
+        return (
+            f"https://{bucket}.s3.{region}.amazonaws.com/{quote(key, safe='/')}",
+            bucket,
+            key,
+        )
+
+    @staticmethod
+    def _s3_auth_headers(https_url: str, region: str, credentials: dict) -> dict:
+        """SigV4-sign a GET for ``https_url`` and return the auth headers.
+
+        Signing into headers rather than presigning into the query string
+        keeps the signature out of URLs (and therefore out of proxy and
+        access logs) — the same reason the rest of this codebase refuses
+        secrets in query strings.
+        """
+        if S3SigV4Auth is None:  # pragma: no cover - boto3 is a dependency
+            raise StorageApiError(
+                "slice URL is s3:// but botocore is unavailable; install the "
+                "'boto3' dependency to download AWS-staged sliced exports"
+            )
+        missing = [k for k in ("AccessKeyId", "SecretAccessKey") if not credentials.get(k)]
+        if missing:
+            raise StorageApiError(
+                f"slice URL is s3:// but file detail credentials are missing {missing}; "
+                f"the file detail must be fetched with federationToken=1"
+            )
+        request = AWSRequest(method="GET", url=https_url)
+        S3SigV4Auth(
+            Credentials(
+                credentials["AccessKeyId"],
+                credentials["SecretAccessKey"],
+                credentials.get("SessionToken"),
+            ),
+            "s3",
+            region,
+        ).add_auth(request)
+        return dict(request.headers)
+
+    def _prepare_slice_request(
+        self,
+        slice_url: str,
+        index: int,
+        *,
+        gcs_token: Optional[str],
+        abs_credentials: dict,
+        s3_context: dict,
+    ) -> tuple[str, Optional[dict]]:
+        """Map one manifest entry onto ``(url, extra_headers)`` to fetch.
+
+        Backend-specific rewriting, shared by both sliced entry points so a
+        backend fixed in one is fixed in the other:
+        - GCP: ``gs://`` → GCS REST + OAuth bearer from ``gcsCredentials``
+        - Azure: ``azure://`` → HTTPS + SAS token from ``absCredentials``
+        - AWS: ``s3://`` → virtual-hosted HTTPS + SigV4 headers from
+          ``credentials``; already-signed HTTPS passes through untouched.
+        """
+        if slice_url.startswith("gs://"):
+            if not gcs_token:
+                raise StorageApiError(
+                    f"slice {index} URL is gs:// but no gcs_token provided in file_detail.gcsCredentials"
+                )
+            return self._gs_to_https(slice_url), {"Authorization": f"Bearer {gcs_token}"}
+        if slice_url.startswith("azure://"):
+            return self._azure_to_https(slice_url, abs_credentials), None
+        if slice_url.startswith("s3://"):
+            region = s3_context.get("region") or ""
+            https_url, bucket, _key = self._s3_to_https(slice_url, region)
+            expected = (s3_context.get("s3Path") or {}).get("bucket")
+            # The manifest is fetched from Keboola, but its contents are not
+            # ours to trust blindly: a slice pointing at some other bucket
+            # would aim the export's credentials at a target the export does
+            # not cover. Refuse rather than sign.
+            if expected and bucket != expected:
+                raise StorageApiError(
+                    f"slice {index} names bucket {bucket!r} but the export lives in "
+                    f"{expected!r}; refusing to sign a request outside the export"
+                )
+            headers = self._s3_auth_headers(https_url, region, s3_context.get("credentials") or {})
+            return https_url, headers
+        return slice_url, None
+
+    @staticmethod
+    def _s3_context(file_info: dict) -> dict:
+        """Pull the non-secret + credential bits the s3:// branch needs."""
+        return {
+            "region": file_info.get("region") or "",
+            "s3Path": file_info.get("s3Path") or {},
+            "credentials": file_info.get("credentials") or {},
+        }
+
     def _download_sliced(
         self,
         manifest_url: str,
@@ -782,6 +909,7 @@ class KeboolaStorageClient:
         *,
         gcs_token: Optional[str] = None,
         abs_credentials: Optional[dict] = None,
+        s3_context: Optional[dict] = None,
     ) -> None:
         """Sliced exports: the file detail's `url` points at a JSON manifest
         whose `entries[].url` lists per-slice locations. Download each slice
@@ -830,22 +958,13 @@ class KeboolaStorageClient:
                         body=entry,
                     )
                 sp = Path(tmpdir) / f"slice-{i:05d}"
-                # Backend-specific URL rewriting:
-                # - GCP: gs:// → GCS REST + OAuth bearer from gcsCredentials
-                # - Azure: azure:// → HTTPS + SAS token from absCredentials
-                # - AWS: signed HTTPS already — no rewrite needed
-                if surl.startswith("gs://"):
-                    if not gcs_token:
-                        raise StorageApiError(
-                            f"slice {i} URL is gs:// but no gcs_token provided in file_detail.gcsCredentials"
-                        )
-                    surl = self._gs_to_https(surl)
-                    extra_headers = {"Authorization": f"Bearer {gcs_token}"}
-                elif surl.startswith("azure://"):
-                    surl = self._azure_to_https(surl, abs_credentials)
-                    extra_headers = None
-                else:
-                    extra_headers = None
+                surl, extra_headers = self._prepare_slice_request(
+                    surl,
+                    i,
+                    gcs_token=gcs_token,
+                    abs_credentials=abs_credentials or {},
+                    s3_context=s3_context or {},
+                )
                 # Slices may individually be gzipped — same heuristic as
                 # single-file: if the slice URL's path ends in `.gz`, gunzip
                 # after download.
@@ -954,22 +1073,13 @@ class KeboolaStorageClient:
                     f"slice {i} missing 'url': {str(entry)[:200]}",
                     body=entry,
                 )
-            # Backend-specific URL rewriting:
-            # - GCP: gs:// → GCS REST + OAuth bearer from gcsCredentials
-            # - Azure: azure:// → HTTPS + SAS token from absCredentials
-            # - AWS: signed HTTPS already — no rewrite needed
-            if surl.startswith("gs://"):
-                if not gcs_token:
-                    raise StorageApiError(
-                        f"slice {i} URL is gs:// but no gcs_token provided in file_detail.gcsCredentials"
-                    )
-                surl = self._gs_to_https(surl)
-                extra_headers = {"Authorization": f"Bearer {gcs_token}"}
-            elif surl.startswith("azure://"):
-                surl = self._azure_to_https(surl, abs_credentials)
-                extra_headers = None
-            else:
-                extra_headers = None
+            surl, extra_headers = self._prepare_slice_request(
+                surl,
+                i,
+                gcs_token=gcs_token,
+                abs_credentials=abs_credentials,
+                s3_context=self._s3_context(file_info),
+            )
             gz = ".gz" in surl.split("?")[0].rsplit("/", 1)[-1]
             sp = dest_dir / f"slice-{i:05d}"
             self._download_single(
