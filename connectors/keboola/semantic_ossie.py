@@ -261,7 +261,19 @@ def _compose_relationship(item: Dict[str, Any], dataset_name_by_table_id: Dict[s
         "to": dataset_name_by_table_id.get(to_id, to_id),
         "from_columns": from_columns,
         "to_columns": to_columns,
-        "custom_extensions": [_custom_extension({"on": on, "type": attrs.get("type"), **_identity(item)})],
+        # Carry the RAW tableIds (not just the dataset names used for from/to
+        # above) plus the on-clause and type, losslessly. This is what lets the
+        # flat-table projector rebuild the exact `relationship_lookup` the
+        # legacy JOIN composer used — keyed by tableId, resolving the on-clause
+        # against the registry — without having to reverse the name mapping or
+        # re-parse anything. Composed here because the adapter is the only
+        # place that still has the tableIds; consumed at projection time, where
+        # the registry and column metadata needed to finish the JOIN live.
+        "custom_extensions": [
+            _custom_extension(
+                {"on": on, "type": attrs.get("type"), "from_table": from_id, "to_table": to_id, **_identity(item)}
+            )
+        ],
     }
 
 

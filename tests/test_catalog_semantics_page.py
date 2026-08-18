@@ -173,13 +173,18 @@ class TestCatalogSemanticsContent:
         _make_metric(id="a/3", name="a3", category="a", source="openmetadata")
         _make_metric(id="a/4", name="a4", category="a", source="keboola_semantic_layer")
         _make_metric(id="a/5", name="a5", category="a", source="some_future_source")
+        # The post-flat-table-cutover Keboola writer source must badge exactly
+        # like the retired one (src.semantic.keboola_sources).
+        _make_metric(id="a/6", name="a6", category="a", source="keboola_metastore")
         c = seeded_app["client"]
         token = seeded_app["analyst_token"]
         resp = c.get("/catalog/semantics", headers=_auth(token))
         body = resp.text
-        # 4-slot vocabulary: keboola_semantic_layer -> success, yaml_import ->
-        # info, openmetadata -> warn, manual + unknown -> neutral (no accent).
-        assert "badge--success" in body
+        # 4-slot vocabulary: keboola_semantic_layer/keboola_metastore ->
+        # success, yaml_import -> info, openmetadata -> warn, manual + unknown
+        # -> neutral (no accent). One extra "badge--success" occurrence comes
+        # from the client-side `sourceBadge()` JS literal, not a rendered row.
+        assert body.count("badge--success") == 3
         assert "badge--info" in body
         assert "badge--warn" in body
 

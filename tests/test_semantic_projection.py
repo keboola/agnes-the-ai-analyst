@@ -275,20 +275,27 @@ class TestTableBinding:
         row = _only_metric()
         assert row["sql"] == "SUM(amount)"
         assert row["table_name"] is None
+        # No binding to compose against — `expression` equals the fragment too.
+        assert row["expression"] == "SUM(amount)"
 
-    def test_a_binding_to_an_unregistered_table_keeps_the_fragment(self, system_db):
-        """The steady state: a semantic layer describes more tables than the
-        instance registers. The metric must still land — dropping it would make
-        the projector quietly lose rows the legacy path kept."""
+    def test_a_binding_to_an_unregistered_table_is_skipped(self, system_db):
+        """A metric that DECLARES a table binding it cannot honor is dropped,
+        matching the legacy Keboola composer (which skips `unresolved_table`).
+        The steady state — a semantic layer describing more tables than the
+        instance registers — is exactly when this fires, and keeping the metric
+        as a bare fragment would make the flat-table cutover start surfacing
+        unrunnable metrics on tables nobody registered. Contrast
+        `test_an_unbound_metric_keeps_its_fragment`: a metric that declares NO
+        binding keeps its fragment, because it never claimed a table."""
+        from src.repositories import metric_repo
+
         project_document(
             _doc(metric_ext={"dataset": "in.c-nowhere.ghosts"}),
             source="keboola_metastore",
             source_ref="conn-1",
         )
 
-        row = _only_metric()
-        assert row["sql"] == "SUM(amount)"
-        assert row["table_name"] is None
+        assert [m for m in metric_repo().list() if m.get("source") == "keboola_metastore"] == []
 
 
 class TestConstraints:
@@ -363,3 +370,363 @@ class TestDatasetGrain:
         row = _only_metric()
         assert row["grain"] is None
         assert not [n for n in (row["notes"] or []) if "grain" in n]
+
+
+class TestColumnBinding:
+    """The column leg keys `column_metadata` on the RAW dataset id
+    (`dataset.source` or `dataset.name`), never resolved through the table
+    binder to the Agnes `table_registry` view name — unlike the metric leg.
+    `column_metadata` is keyed `(table_id, column_name)` with a single
+    `source` column (no source dimension), so a naive bind under the view
+    name collides with rows the profiler / import_proposal / admin already
+    own there and clobbers them on every sync. (A view-name bind was tried
+    and reverted — see the regression test below.) Surfacing Keboola
+    per-column descriptions under the view name is deferred pending an
+    ownership-aware design for that key."""
+
+    def test_keboola_field_descriptions_land_under_the_raw_id_registered_or_not(self, system_db):
+        _register_keboola_table("in.c-shop", "orders", "shop_orders")
+
+        doc = {
+            "semantic_model": [
+                {
+                    "name": "retail",
+                    "datasets": [
+                        {
+                            "name": "orders",
+                            "source": "in.c-shop.orders",
+                            "fields": [
+                                {"name": "amount", "datatype": "Decimal", "description": "Order amount, in cents."}
+                            ],
+                        }
+                    ],
+                }
+            ]
+        }
+        report = project_document(doc, source="keboola_metastore", source_ref="conn-1")
+        assert report.columns_written == 1
+
+        from src.repositories import column_metadata_repo
+
+        repo = column_metadata_repo()
+        under_raw_id = repo.list_for_table("in.c-shop.orders")
+        assert [c["column_name"] for c in under_raw_id] == ["amount"]
+        assert under_raw_id[0]["description"] == "Order amount, in cents."
+        # Nothing lands under the resolved view name — even though the table
+        # IS registered — because the column leg no longer binds through it.
+        assert repo.list_for_table("shop_orders") == []
+
+    def test_prune_stays_scoped_to_the_raw_id(self, system_db):
+        _register_keboola_table("in.c-shop", "orders", "shop_orders")
+
+        def _doc_with_fields(field_names):
+            return {
+                "semantic_model": [
+                    {
+                        "name": "retail",
+                        "datasets": [
+                            {
+                                "name": "orders",
+                                "source": "in.c-shop.orders",
+                                "fields": [{"name": n} for n in field_names],
+                            }
+                        ],
+                    }
+                ]
+            }
+
+        project_document(_doc_with_fields(["amount", "region"]), source="keboola_metastore", source_ref="conn-1")
+        project_document(_doc_with_fields(["amount"]), source="keboola_metastore", source_ref="conn-1")
+
+        from src.repositories import column_metadata_repo
+
+        remaining = {c["column_name"] for c in column_metadata_repo().list_for_table("in.c-shop.orders")}
+        assert remaining == {"amount"}, "the dropped field must be pruned under the raw id"
+
+    def test_profiler_authored_description_survives_keboola_projection(self, system_db):
+        """Regression guard for the reverted column-binding change: a
+        profiler/admin-authored `column_metadata` row for a Keboola-registered
+        table (keyed under the VIEW name) must not be clobbered by a semantic
+        layer sync for that table, because the projector now writes under the
+        raw dataset id — a different key entirely, so no collision, no
+        overwrite, no prune."""
+        _register_keboola_table("in.c-shop", "orders", "shop_orders")
+
+        from src.repositories import column_metadata_repo
+
+        repo = column_metadata_repo()
+        repo.save(
+            table_id="shop_orders",
+            column_name="amount",
+            basetype="DECIMAL",
+            description="Authored by the profiler.",
+            source="profiler",
+        )
+
+        doc = {
+            "semantic_model": [
+                {
+                    "name": "retail",
+                    "datasets": [
+                        {
+                            "name": "orders",
+                            "source": "in.c-shop.orders",
+                            # Keboola fields frequently have no description —
+                            # the case that used to blank the profiler's row.
+                            "fields": [{"name": "amount", "datatype": "Decimal", "description": None}],
+                        }
+                    ],
+                }
+            ]
+        }
+        project_document(doc, source="keboola_metastore", source_ref="conn-1")
+
+        row = repo.get("shop_orders", "amount")
+        assert row["description"] == "Authored by the profiler."
+        assert row["source"] == "profiler"
+
+
+class TestDuplicateModelName:
+    """A document with NO stable model identifier falls back to the model
+    name as the id key, so two same-named models genuinely collide — the
+    second must be skipped and reported, never silently overwrite the first.
+    (A document that DOES carry one — every Keboola-composed document —
+    cannot collide at all; see ``TestStableModelKey``.)"""
+
+    def test_second_model_with_a_duplicate_name_is_reported_not_merged(self, system_db):
+        doc = {
+            "semantic_model": [
+                {
+                    "name": "core",
+                    "datasets": [_stub_dataset("first")],
+                    "metrics": [
+                        {
+                            "name": "metric_a",
+                            "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "SUM(a)"}]},
+                        }
+                    ],
+                },
+                {
+                    "name": "core",
+                    "datasets": [_stub_dataset("second")],
+                    "metrics": [
+                        {
+                            "name": "metric_b",
+                            "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "SUM(b)"}]},
+                        }
+                    ],
+                },
+            ]
+        }
+        report = project_document(doc, source="git", source_ref="repo-a")
+
+        assert report.metrics_written == 1
+        assert {"kind": "model", "name": "core", "reason": "duplicate_model_key"} in report.skipped
+
+        from src.repositories import metric_repo
+
+        names = {m["name"] for m in metric_repo().list()}
+        assert "metric_a" in names
+        assert "metric_b" not in names
+
+
+class TestGlossarySlugCollision:
+    """`_scoped_id` keys a glossary row on `_slugify(term)`; two distinct
+    terms that slugify identically must not collide and overwrite each
+    other (the deleted `assign_glossary_id`'s numeric-suffix dedup)."""
+
+    def test_two_same_slugging_terms_are_both_written_under_distinct_ids(self, system_db):
+        doc = {
+            "semantic_model": [
+                {
+                    "name": "retail",
+                    "datasets": [_stub_dataset()],
+                    "custom_extensions": [
+                        {
+                            "vendor_name": "AGNES",
+                            "data": json.dumps(
+                                {
+                                    "glossary": [
+                                        {"term": "Revenue (net)", "definition": "First definition."},
+                                        {"term": "Revenue net", "definition": "Second definition."},
+                                    ]
+                                }
+                            ),
+                        }
+                    ],
+                }
+            ]
+        }
+        report = project_document(doc, source="git", source_ref="repo-a")
+        assert report.glossary_written == 2
+
+        from src.repositories import glossary_repo
+
+        rows = glossary_repo().list(limit=1000)
+        base = "git/repo-a/retail/revenue_net"
+        colliding = {r["id"]: r["term"] for r in rows if r["id"] == base or r["id"].startswith(f"{base}-")}
+        assert len(colliding) == 2
+        assert set(colliding.values()) == {"Revenue (net)", "Revenue net"}
+
+
+# ---------------------------------------------------------------------------
+# Model identity: projected ids key on a STABLE identifier, not a display name
+# ---------------------------------------------------------------------------
+
+
+def _model_with_metric(name: str, metric: str, *, metastore_id: str | None = None) -> dict:
+    model: dict = {
+        "name": name,
+        "datasets": [{"name": "orders", "source": "db.public.orders"}],
+        "metrics": [
+            {
+                "name": metric,
+                "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": f"SUM({metric})"}]},
+            }
+        ],
+    }
+    if metastore_id is not None:
+        model["custom_extensions"] = [{"vendor_name": "AGNES", "data": json.dumps({"metastore_id": metastore_id})}]
+    return model
+
+
+class TestStableModelKey:
+    """A model's ``name`` is a display name — neither unique nor stable.
+    Keyed on it, two models named ``core`` produce identical metric ids;
+    ``metric_repo().create`` upserts on id, so the later silently overwrites
+    the earlier while ``metrics_written`` still counts both. Projected ids key
+    on the model's stable upstream identifier (the ``metastore_id`` the
+    Keboola adapter carries) so the collision cannot arise in the first
+    place."""
+
+    def test_like_named_models_with_stable_ids_do_not_overwrite_each_other(self, system_db):
+        from src.repositories import metric_repo
+
+        document = {
+            "semantic_model": [
+                _model_with_metric("core", "revenue", metastore_id="uuid-a"),
+                _model_with_metric("core", "orders_count", metastore_id="uuid-b"),
+            ]
+        }
+        report = project_document(document, source="keboola_metastore", source_ref="conn-a")
+
+        assert report.metrics_written == 2
+        assert report.skipped == []
+        assert metric_repo().get("keboola_metastore/conn-a/uuid-a/revenue") is not None
+        assert metric_repo().get("keboola_metastore/conn-a/uuid-b/orders_count") is not None
+        # Neither was mistaken for the other's stale row.
+        assert report.metrics_pruned == 0
+
+    def test_the_display_name_still_rides_along_as_the_category(self, system_db):
+        from src.repositories import metric_repo
+
+        document = {"semantic_model": [_model_with_metric("core", "revenue", metastore_id="uuid-a")]}
+        project_document(document, source="keboola_metastore", source_ref="conn-a")
+
+        assert metric_repo().get("keboola_metastore/conn-a/uuid-a/revenue")["category"] == "core"
+
+
+class TestPartialProjection:
+    """``partial`` says the input is an incomplete picture of this (source,
+    source_ref) — a model that belongs to it was dropped before the call (its
+    composed document failed validation). Pruning at full scope then deletes
+    that model's previously-written rows on the strength of a partial read;
+    narrowing the prune to the models actually carried keeps reconciliation
+    working for the models that ARE here."""
+
+    def test_partial_projection_spares_a_model_absent_from_this_call(self, system_db):
+        from src.repositories import metric_repo
+
+        complete = {
+            "semantic_model": [
+                _model_with_metric("core", "revenue", metastore_id="uuid-a"),
+                _model_with_metric("other", "orders_count", metastore_id="uuid-b"),
+            ]
+        }
+        project_document(complete, source="keboola_metastore", source_ref="conn-a")
+        assert metric_repo().get("keboola_metastore/conn-a/uuid-b/orders_count") is not None
+
+        partial = {"semantic_model": [_model_with_metric("core", "revenue", metastore_id="uuid-a")]}
+        report = project_document(partial, source="keboola_metastore", source_ref="conn-a", partial=True)
+
+        assert report.metrics_pruned == 0
+        assert metric_repo().get("keboola_metastore/conn-a/uuid-b/orders_count") is not None
+
+    def test_a_surviving_model_is_still_reconciled_in_a_partial_pass(self, system_db):
+        """Narrowing, not skipping: a model present in this call that really
+        did lose a metric upstream is still pruned."""
+        from src.repositories import metric_repo
+
+        two_metrics = {
+            "semantic_model": [
+                {
+                    **_model_with_metric("core", "revenue", metastore_id="uuid-a"),
+                    "metrics": [
+                        {
+                            "name": "revenue",
+                            "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "SUM(revenue)"}]},
+                        },
+                        {
+                            "name": "refunds",
+                            "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "SUM(refunds)"}]},
+                        },
+                    ],
+                },
+                _model_with_metric("other", "orders_count", metastore_id="uuid-b"),
+            ]
+        }
+        project_document(two_metrics, source="keboola_metastore", source_ref="conn-a")
+
+        partial = {"semantic_model": [_model_with_metric("core", "revenue", metastore_id="uuid-a")]}
+        report = project_document(partial, source="keboola_metastore", source_ref="conn-a", partial=True)
+
+        assert report.metrics_pruned == 1
+        assert metric_repo().get("keboola_metastore/conn-a/uuid-a/refunds") is None
+        assert metric_repo().get("keboola_metastore/conn-a/uuid-b/orders_count") is not None
+
+    def test_a_complete_projection_still_reclaims_a_model_deleted_upstream(self, system_db):
+        """The narrowing is opt-in for exactly this reason: the default full
+        scope is what removes a model upstream really did delete."""
+        from src.repositories import metric_repo
+
+        complete = {
+            "semantic_model": [
+                _model_with_metric("core", "revenue", metastore_id="uuid-a"),
+                _model_with_metric("other", "orders_count", metastore_id="uuid-b"),
+            ]
+        }
+        project_document(complete, source="keboola_metastore", source_ref="conn-a")
+
+        shrunk = {"semantic_model": [_model_with_metric("core", "revenue", metastore_id="uuid-a")]}
+        report = project_document(shrunk, source="keboola_metastore", source_ref="conn-a")
+
+        assert report.metrics_pruned == 1
+        assert metric_repo().get("keboola_metastore/conn-a/uuid-b/orders_count") is None
+
+    def test_partial_projection_spares_a_models_glossary_terms_too(self, system_db):
+        from src.repositories import glossary_repo
+
+        def _with_glossary(name: str, term: str, metastore_id: str) -> dict:
+            model = _model_with_metric(name, "revenue", metastore_id=metastore_id)
+            model["custom_extensions"] = [
+                {
+                    "vendor_name": "AGNES",
+                    "data": json.dumps({"metastore_id": metastore_id, "glossary": [{"term": term, "definition": "d"}]}),
+                }
+            ]
+            return model
+
+        complete = {
+            "semantic_model": [
+                _with_glossary("core", "MRR", "uuid-a"),
+                _with_glossary("other", "Churn", "uuid-b"),
+            ]
+        }
+        project_document(complete, source="keboola_metastore", source_ref="conn-a")
+        assert glossary_repo().get("keboola_metastore/conn-a/uuid-b/churn") is not None
+
+        partial = {"semantic_model": [_with_glossary("core", "MRR", "uuid-a")]}
+        report = project_document(partial, source="keboola_metastore", source_ref="conn-a", partial=True)
+
+        assert report.glossary_pruned == 0
+        assert glossary_repo().get("keboola_metastore/conn-a/uuid-b/churn") is not None

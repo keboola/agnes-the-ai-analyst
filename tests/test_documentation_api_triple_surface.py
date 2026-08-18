@@ -85,6 +85,11 @@ _COHORT: dict[str, tuple[str, str]] = {
     # this same endpoint (wraps its raw YAML text into a dict); `agnes admin
     # semantic-model export` is the CLI counterpart.
     "/api/semantic-models/{slug}.yaml": ("admin semantic-model export", "semantic_model_get"),
+    # Query-validation engine wiring (wave 3): validate SQL against the
+    # caller's accessible semantic models before running it. CLI is the
+    # non-admin `semantic-model` group (distinct from `admin semantic-model
+    # validate`, which schema-checks a document, not a query).
+    "/api/semantic-models/validate-query": ("semantic-model validate-query", "validate_semantic_query"),
     # Contributed-skill triple-surface (GET list + DELETE; POST contribute is _EXEMPT below).
     "/api/admin/contributed-skills": ("admin skill list", "list_contributed_skills"),
     "/api/admin/contributed-skills/{name}": ("admin skill delete", "delete_contributed_skill"),

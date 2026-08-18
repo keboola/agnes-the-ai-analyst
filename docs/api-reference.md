@@ -1155,6 +1155,7 @@ so comments and key order survive.
 - /api/admin/semantic-sources/{source_id}/sync
 - /api/semantic-models/search
 - /api/semantic-models/{slug}.yaml
+- /api/semantic-models/validate-query
 
 `POST /api/admin/semantic-models` validates the pasted document against the
 vendored Ossie schema (422 with the schema errors on failure) and stores it
@@ -1178,6 +1179,19 @@ CLI: `agnes admin semantic-model list/show/import/export/validate` (the
 last runs entirely offline — no server, no token) and `agnes admin
 semantic-source add/list/sync`. MCP: `semantic_model_search`,
 `semantic_model_get`.
+
+`POST /api/semantic-models/validate-query` validates a SQL statement against
+the caller's accessible `status='valid'` models (same RBAC tier as
+search/export) via the pure `src.semantic_validation.validate_query` engine:
+an `error`-severity constraint violation sets `valid: false`; a rule that
+cannot be checked statically degrades to `post_execution_checks`, never a
+guessed violation; a used metric whose only expressions target another
+engine sets `locally_executable: false`. With zero accessible valid models
+the response is `{"available": false, "error": "no_semantic_model", ...}`
+rather than a misleading all-clear. CLI: `agnes semantic-model
+validate-query "<SQL>" [--expect JSON] [--target-engine duckdb] [--json]`
+(distinct from `agnes admin semantic-model validate`, which schema-checks a
+document, not a query). MCP: `validate_semantic_query`.
 
 ### `/api/admin/run-*` — Background job triggers
 

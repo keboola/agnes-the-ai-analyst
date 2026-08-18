@@ -108,14 +108,14 @@ def _fixture_document() -> dict:
                 [
                     {
                         "name": "revenue_requires_date_filter",
-                        "type": "required_filter",
+                        "constraint_type": "required_filter",
                         "rule": "order_date",
                         "severity": "error",
                         "metrics": ["revenue"],
                     },
                     {
                         "name": "revenue_non_negative",
-                        "type": "value_range",
+                        "constraint_type": "value_range",
                         "rule": "value >= 0",
                         "severity": "warning",
                         "metrics": ["revenue"],
@@ -502,7 +502,7 @@ class TestValidateQuery:
                 [
                     {
                         "name": "prefer_date_filter",
-                        "type": "required_filter",
+                        "constraint_type": "required_filter",
                         "rule": "order_date",
                         "severity": "warning",
                         "metrics": ["revenue"],
@@ -527,14 +527,14 @@ class TestValidateQuery:
                 [
                     {
                         "name": "eu_only",
-                        "type": "required_filter",
+                        "constraint_type": "required_filter",
                         "rule": "region = 'EU'",
                         "severity": "error",
                         "metrics": ["revenue"],
                     },
                     {
                         "name": "prefer_date_filter",
-                        "type": "required_filter",
+                        "constraint_type": "required_filter",
                         "rule": "order_date",
                         "severity": "warning",
                         "metrics": ["revenue"],
@@ -636,7 +636,7 @@ class TestCrossModelConstraintScoping:
                             "constraints": [
                                 {
                                     "name": "must_filter_region",
-                                    "type": "required_filter",
+                                    "constraint_type": "required_filter",
                                     "rule": "region = 'EU'",
                                     "severity": "error",
                                     "metrics": ["revenue"],
@@ -707,7 +707,7 @@ class TestCaseInsensitiveNameJoins:
         constraints = [
             {
                 "name": "must_filter",
-                "type": "required_filter",
+                "constraint_type": "required_filter",
                 "rule": "region = 'EU'",
                 "severity": "error",
                 "metrics": ["Revenue"],
@@ -767,7 +767,7 @@ class TestRequiredFilterTolerantMatch:
         return [
             {
                 "name": "eu_only",
-                "type": "required_filter",
+                "constraint_type": "required_filter",
                 "rule": rule,
                 "severity": "error",
                 "metrics": ["revenue"],
@@ -837,7 +837,9 @@ class TestConstraintCaseNormalization:
     def test_cased_vendor_name_still_yields_constraints(self):
         # Devin Review on PR #1319 (round 7): a model tagged "Agnes"/"AGNES"
         # must not silently drop every constraint (fail-open).
-        ext = _agnes_extension([{"name": "c1", "type": "required_filter", "rule": "x", "metrics": ["revenue"]}])
+        ext = _agnes_extension(
+            [{"name": "c1", "constraint_type": "required_filter", "rule": "x", "metrics": ["revenue"]}]
+        )
         for vendor in ("Agnes", "AGNES"):
             document = {"custom_extensions": [{**ext, "vendor_name": vendor}]}
             assert [c["name"] for c in extract_constraints(document)] == ["c1"], vendor
@@ -850,7 +852,7 @@ class TestConstraintCaseNormalization:
         constraints = [
             {
                 "name": "date_floor",
-                "type": "required_filter",
+                "constraint_type": "required_filter",
                 "rule": {"column": "order_date", "op": ">="},
                 "severity": "error",
                 "metrics": ["revenue"],
@@ -869,7 +871,7 @@ class TestConstraintCaseNormalization:
                 [
                     {
                         "name": "revenue_requires_date_filter",
-                        "type": "required_filter",
+                        "constraint_type": "required_filter",
                         "rule": "order_date",
                         "severity": "ERROR",
                         "metrics": ["revenue"],
@@ -881,14 +883,45 @@ class TestConstraintCaseNormalization:
         assert [v["severity"] for v in result["violations"]] == ["error"]
         assert result["valid"] is False
 
+    def test_keboola_shaped_constraint_type_key_drives_valid_false(self):
+        """`connectors/keboola/semantic_ossie.py::_compose_constraint` writes
+        the constraint's type under `constraint_type`, not this module's own
+        `type` key -- without accepting that key, every constraint composed
+        from a real Keboola project degrades to `post_execution_checks` and
+        `validate_query` can never return `valid=False` for it (wave-3 finding).
+        Shaped exactly like the adapter's own composed dict."""
+        document = _fixture_document()
+        document["custom_extensions"] = [
+            _agnes_extension(
+                [
+                    {
+                        "name": "revenue_requires_date_filter",
+                        "constraint_type": "required_filter",
+                        "rule": "order_date",
+                        "severity": "error",
+                        "metrics": ["revenue"],
+                    }
+                ]
+            )
+        ]
+        constraints = extract_constraints(document)
+        assert constraints[0]["constraint_type"] == "required_filter"
+
+        result = validate_query("SELECT SUM(amount) AS revenue FROM orders", [document])
+        assert result["post_execution_checks"] == []
+        assert [v["severity"] for v in result["violations"]] == ["error"]
+        assert result["valid"] is False
+
     def test_type_case_variant_stored_normalized(self):
         document = {
             "custom_extensions": [
-                _agnes_extension([{"name": "c1", "type": "Required_Filter", "rule": "x", "metrics": ["revenue"]}])
+                _agnes_extension(
+                    [{"name": "c1", "constraint_type": "Required_Filter", "rule": "x", "metrics": ["revenue"]}]
+                )
             ]
         }
         constraints = extract_constraints(document)
-        assert constraints[0]["type"] == "required_filter"
+        assert constraints[0]["constraint_type"] == "required_filter"
 
     def test_type_case_variant_is_statically_checked(self):
         # Hand-built constraint (not via extract_constraints): the
@@ -896,7 +929,7 @@ class TestConstraintCaseNormalization:
         constraints = [
             {
                 "name": "eu_only",
-                "type": "Required_Filter",
+                "constraint_type": "Required_Filter",
                 "rule": "region = 'EU'",
                 "severity": "error",
                 "metrics": ["revenue"],
@@ -913,7 +946,7 @@ class TestConstraintCaseNormalization:
         constraints = [
             {
                 "name": "eu_only",
-                "type": "required_filter",
+                "constraint_type": "required_filter",
                 "rule": "region = 'EU'",
                 "severity": "ERROR",
                 "metrics": ["revenue"],
@@ -926,7 +959,7 @@ class TestConstraintCaseNormalization:
         constraints = [
             {
                 "name": "eu_only",
-                "type": "required_filter",
+                "constraint_type": "required_filter",
                 "rule": "region = 'EU'",
                 "severity": "critical",
                 "metrics": ["revenue"],
@@ -1068,3 +1101,86 @@ class TestUnusableDialectEntriesAreNotSilence:
         document = self._metric_document({"name": "revenue", "expression": {"dialects": []}})
         result = check_dialects(document, ["revenue"], target_engine="duckdb")
         assert result["locally_executable"] is True
+
+
+# --------------------------------------------------------------------------- #
+# The constraint payload key, exercised through the only importer that writes one
+# --------------------------------------------------------------------------- #
+
+
+class TestKeboolaComposedConstraints:
+    """The hand-built fixtures above pin the key; this pins that the key is
+    the one the real adapter emits. Constraints have no home in the Ossie
+    schema — they ride Agnes's own ``custom_extensions`` payload, so its shape
+    is Agnes's to fix, and the name is ``constraint_type`` across the whole
+    chain (adapter → document → ``metric_definitions.validation.rules[]`` →
+    ``agnes catalog --metrics --show``). Reading anything else here made every
+    imported constraint degrade to ``post_execution_checks``."""
+
+    def _document(self, *, rule: str = "order_date", constraint_type: str = "required_filter") -> dict:
+        import yaml
+
+        from connectors.keboola.semantic_ossie import compose_document
+
+        model_item = {"type": "semantic-model", "id": "model-1", "attributes": {"name": "core"}}
+        model_items = {
+            "semantic-dataset": [
+                {
+                    "type": "semantic-dataset",
+                    "id": "ds-1",
+                    "attributes": {"name": "orders", "tableId": "in.c-shop.orders", "modelUUID": "model-1"},
+                }
+            ],
+            "semantic-metric": [
+                {
+                    "type": "semantic-metric",
+                    "id": "m-1",
+                    "attributes": {
+                        "name": "revenue",
+                        "sql": 'SUM("amount")',
+                        "dataset": "in.c-shop.orders",
+                        "modelUUID": "model-1",
+                    },
+                }
+            ],
+            "semantic-constraint": [
+                {
+                    "type": "semantic-constraint",
+                    "id": "c-1",
+                    "attributes": {
+                        "name": "revenue_requires_date_filter",
+                        "constraintType": constraint_type,
+                        "rule": rule,
+                        "metrics": ["revenue"],
+                        "severity": "error",
+                    },
+                }
+            ],
+            "semantic-relationship": [],
+            "semantic-glossary": [],
+        }
+        text = compose_document(model_item, model_items)
+        assert text is not None
+        return yaml.safe_load(text)["semantic_model"][0]
+
+    def test_composed_constraint_reaches_extract_constraints(self):
+        constraints = extract_constraints(self._document(constraint_type="requiredFilter"))
+        assert [c["name"] for c in constraints] == ["revenue_requires_date_filter"]
+        # Keboola's own camelCase value normalizes to the checkable key.
+        assert constraints[0]["constraint_type"] == "requiredfilter"
+
+    def test_composed_required_filter_is_statically_checked(self):
+        result = validate_query("SELECT revenue FROM orders", [self._document()])
+        assert [v["name"] for v in result["violations"]] == ["revenue_requires_date_filter"]
+        assert result["valid"] is False
+
+    def test_composed_required_filter_is_satisfied_when_present(self):
+        result = validate_query("SELECT revenue FROM orders WHERE order_date >= '2026-01-01'", [self._document()])
+        assert result["violations"] == []
+        assert result["valid"] is True
+
+    def test_an_uncheckable_composed_constraint_still_degrades(self):
+        document = self._document(constraint_type="value_range", rule="value >= 0")
+        result = validate_query("SELECT revenue FROM orders", [document])
+        assert result["violations"] == []
+        assert [c["name"] for c in result["post_execution_checks"]] == ["revenue_requires_date_filter"]

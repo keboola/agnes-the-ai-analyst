@@ -9,15 +9,10 @@ import pytest
 
 from connectors.keboola.semantic_layer import (
     MasterTokenRequiredError,
-    assign_glossary_id,
-    build_glossary_row,
-    build_metric_row,
     compose_join_sql,
     compose_sql,
-    dataset_lookup_by_table_id,
     extract_foreign_aliases,
     has_embedded_sql_comment,
-    merge_constraints,
     parse_on_clause,
     references_foreign_alias,
     relationship_lookup_by_dataset,
@@ -25,7 +20,6 @@ from connectors.keboola.semantic_layer import (
     resolve_join_aliases,
     resolve_relationship,
     resolve_table_name,
-    slugify_term,
     table_lookup_from_registry,
     try_join_composition,
 )
@@ -133,31 +127,6 @@ class TestResolveTableName:
         assert resolve_table_name("no_dot_here", {}) is None
 
 
-class TestDatasetLookupByTableId:
-    def test_builds_table_id_to_attributes_map(self):
-        items = [
-            {
-                "type": "semantic-dataset",
-                "id": "d1",
-                "attributes": {
-                    "tableId": "in.c-example_source.orders",
-                    "grain": "One row per order",
-                },
-            },
-        ]
-        lookup = dataset_lookup_by_table_id(items)
-        assert lookup == {
-            "in.c-example_source.orders": {
-                "tableId": "in.c-example_source.orders",
-                "grain": "One row per order",
-            }
-        }
-
-    def test_skips_items_missing_table_id(self):
-        items = [{"type": "semantic-dataset", "id": "d1", "attributes": {"name": "no tableId"}}]
-        assert dataset_lookup_by_table_id(items) == {}
-
-
 class TestReferencesForeignAlias:
     def test_bare_column_reference_is_not_foreign(self):
         assert references_foreign_alias('SUM("cost_value")') is False
@@ -195,79 +164,6 @@ class TestComposeSql:
         assert compose_sql('SUM("amount")', "orders") == 'SELECT SUM("amount") FROM "orders" AS t'
 
 
-class TestMergeConstraints:
-    def test_returns_none_when_no_constraint_references_metric(self):
-        constraints = [
-            {
-                "type": "semantic-constraint",
-                "id": "c1",
-                "attributes": {
-                    "name": "positive",
-                    "constraintType": "inequality",
-                    "rule": "value >= 0",
-                    "metrics": ["other_metric"],
-                    "severity": "warning",
-                },
-            },
-        ]
-        assert merge_constraints("revenue", constraints) is None
-
-    def test_merges_single_matching_constraint(self):
-        constraints = [
-            {
-                "type": "semantic-constraint",
-                "id": "c1",
-                "attributes": {
-                    "name": "revenue_non_negative",
-                    "constraintType": "inequality",
-                    "rule": "value >= 0",
-                    "metrics": ["revenue"],
-                    "severity": "warning",
-                },
-            },
-        ]
-        result = merge_constraints("revenue", constraints)
-        assert result == {
-            "rules": [
-                {
-                    "name": "revenue_non_negative",
-                    "constraint_type": "inequality",
-                    "rule": "value >= 0",
-                    "severity": "warning",
-                },
-            ]
-        }
-
-    def test_merges_multiple_matching_constraints(self):
-        constraints = [
-            {
-                "type": "semantic-constraint",
-                "id": "c1",
-                "attributes": {
-                    "name": "revenue_non_negative",
-                    "constraintType": "inequality",
-                    "rule": "value >= 0",
-                    "metrics": ["revenue"],
-                    "severity": "warning",
-                },
-            },
-            {
-                "type": "semantic-constraint",
-                "id": "c2",
-                "attributes": {
-                    "name": "revenue_not_null",
-                    "constraintType": "equality",
-                    "rule": "value IS NOT NULL",
-                    "metrics": ["revenue", "other"],
-                    "severity": "critical",
-                },
-            },
-        ]
-        result = merge_constraints("revenue", constraints)
-        assert len(result["rules"]) == 2
-        assert result["rules"][1]["name"] == "revenue_not_null"
-
-
 def _metric_item(name, sql, dataset, description="", model_uuid="model-1"):
     return {
         "type": "semantic-metric",
@@ -280,100 +176,6 @@ def _metric_item(name, sql, dataset, description="", model_uuid="model-1"):
             "modelUUID": model_uuid,
         },
     }
-
-
-class TestBuildMetricRow:
-    def test_builds_row_for_simple_metric(self):
-        table_lookup = {("in.c-example_source", "orders"): "crm_orders"}
-        dataset_lookup = {}
-        metric = _metric_item(
-            "total_revenue", 'SUM("amount")', "in.c-example_source.orders", description="Total revenue"
-        )
-
-        row, skip_reason = build_metric_row(metric, table_lookup, dataset_lookup, [], "model-1")
-
-        assert skip_reason is None
-        assert row["id"] == "keboola/model-1/total_revenue"
-        assert row["name"] == "total_revenue"
-        assert row["table_name"] == "crm_orders"
-        assert row["expression"] == 'SUM("amount")'
-        assert row["sql"] == 'SELECT SUM("amount") FROM "crm_orders" AS t'
-        assert row["description"] == "Total revenue"
-        assert row["source"] == "keboola_semantic_layer"
-        assert "validation" not in row
-
-    def test_skips_unresolved_table(self):
-        metric = _metric_item("m", 'SUM("x")', "in.c-unknown.table")
-
-        row, skip_reason = build_metric_row(metric, {}, {}, [], "model-1")
-
-        assert row is None
-        assert skip_reason == "unresolved_table"
-
-    def test_skips_foreign_alias_expression(self):
-        table_lookup = {("in.c-example_source", "orders"): "crm_orders"}
-        metric = _metric_item("m", 'SUM(o."amount")', "in.c-example_source.orders")
-
-        row, skip_reason = build_metric_row(metric, table_lookup, {}, [], "model-1")
-
-        assert row is None
-        assert skip_reason == "foreign_alias_reference"
-
-    def test_skips_metric_with_missing_name(self):
-        # A missing/empty name would stringify to "keboola/model-1/None" and
-        # write name=None into metric_repo — guard skips it instead.
-        metric = _metric_item(None, 'SUM("x")', "in.c-example_source.orders")
-
-        row, skip_reason = build_metric_row(metric, {}, {}, [], "model-1")
-
-        assert row is None
-        assert skip_reason == "missing_name"
-
-    def test_enriches_from_dataset_grain_and_ai_block(self):
-        table_lookup = {("in.c-example_source", "orders"): "crm_orders"}
-        dataset_lookup = {
-            "in.c-example_source.orders": {
-                "tableId": "in.c-example_source.orders",
-                "grain": "One row per order",
-                "primaryKey": ["order_id"],
-                "ai": {
-                    "synonyms": ["sales"],
-                    "hints": ["Join via customer_id"],
-                    "warnings": ["Excludes refunds"],
-                },
-            }
-        }
-        metric = _metric_item("m", 'SUM("amount")', "in.c-example_source.orders")
-
-        row, skip_reason = build_metric_row(metric, table_lookup, dataset_lookup, [], "model-1")
-
-        assert skip_reason is None
-        assert row["grain"] == "One row per order"
-        assert row["dimensions"] == ["order_id"]
-        assert row["synonyms"] == ["sales"]
-        assert row["notes"] == ["Join via customer_id", "Excludes refunds"]
-
-    def test_includes_validation_when_constraint_matches(self):
-        table_lookup = {("in.c-example_source", "orders"): "crm_orders"}
-        constraints = [
-            {
-                "type": "semantic-constraint",
-                "id": "c1",
-                "attributes": {
-                    "name": "m_non_negative",
-                    "constraintType": "inequality",
-                    "rule": "value >= 0",
-                    "metrics": ["m"],
-                    "severity": "warning",
-                },
-            },
-        ]
-        metric = _metric_item("m", 'SUM("amount")', "in.c-example_source.orders")
-
-        row, skip_reason = build_metric_row(metric, table_lookup, {}, constraints, "model-1")
-
-        assert skip_reason is None
-        assert row["validation"]["rules"][0]["name"] == "m_non_negative"
 
 
 class TestHasEmbeddedSqlComment:
@@ -408,31 +210,6 @@ class TestHasEmbeddedSqlComment:
         assert has_embedded_sql_comment("SUM(\"col'name\", 'value--here')") is False
 
 
-class TestBuildMetricRowSkipsEmbeddedComment:
-    def test_skips_metric_with_embedded_comment(self):
-        table_lookup = {("in.c-example_source", "orders"): "crm_orders"}
-        metric = _metric_item(
-            "m", 'ROUND("value" * 100, 2) -- FROM other_table (table not in this project)', "in.c-example_source.orders"
-        )
-
-        row, skip_reason = build_metric_row(metric, table_lookup, {}, [], "model-1")
-
-        assert row is None
-        assert skip_reason == "embedded_sql_comment"
-
-    def test_embedded_comment_checked_even_when_table_would_resolve(self):
-        # Table resolution succeeding must not short-circuit the comment
-        # check — a metric with both issues must still be skipped for the
-        # comment, not silently composed just because its table is known.
-        table_lookup = {("in.c-example_source", "orders"): "crm_orders"}
-        metric = _metric_item("m", 'SUM("amount") -- note to self', "in.c-example_source.orders")
-
-        row, skip_reason = build_metric_row(metric, table_lookup, {}, [], "model-1")
-
-        assert row is None
-        assert skip_reason == "embedded_sql_comment"
-
-
 def _relationship_item(name, from_id, to_id, on, rel_type="left", model_uuid="model-1"):
     return {
         "type": "semantic-relationship",
@@ -446,36 +223,6 @@ def _relationship_item(name, from_id, to_id, on, rel_type="left", model_uuid="mo
             "modelUUID": model_uuid,
         },
     }
-
-
-class TestSlugifyTerm:
-    def test_lowercases_and_replaces_spaces(self):
-        assert slugify_term("Monthly Recurring Revenue") == "monthly_recurring_revenue"
-
-    def test_strips_punctuation(self):
-        assert slugify_term("Q4 (Actuals)!") == "q4_actuals"
-
-    def test_collapses_repeated_separators(self):
-        assert slugify_term("A -- B") == "a_b"
-
-    def test_strips_leading_trailing_separators(self):
-        assert slugify_term("  MRR  ") == "mrr"
-
-
-class TestAssignGlossaryId:
-    def test_builds_id_from_model_and_slug(self):
-        used: set[str] = set()
-        assert assign_glossary_id("MRR", "model-1", used) == "keboola/model-1/mrr"
-        assert used == {"keboola/model-1/mrr"}
-
-    def test_appends_numeric_suffix_on_collision(self):
-        used = {"keboola/model-1/mrr"}
-        assert assign_glossary_id("MRR", "model-1", used) == "keboola/model-1/mrr-2"
-        assert "keboola/model-1/mrr-2" in used
-
-    def test_appends_third_suffix_on_second_collision(self):
-        used = {"keboola/model-1/mrr", "keboola/model-1/mrr-2"}
-        assert assign_glossary_id("MRR", "model-1", used) == "keboola/model-1/mrr-3"
 
 
 def _glossary_item(term, definition, see_also=None, model_uuid="model-1"):
@@ -791,121 +538,3 @@ def _relationship_metric_item(name, sql, dataset, model_uuid="model-1"):
         "id": f"id-{name}",
         "attributes": {"name": name, "sql": sql, "dataset": dataset, "modelUUID": model_uuid},
     }
-
-
-class TestBuildMetricRowWithRelationships:
-    def test_resolves_join_metric_when_relationship_available(self):
-        table_lookup = {
-            ("in.c-a", "activities"): "crm_activities",
-            ("in.c-a", "opportunities"): "crm_opportunities",
-        }
-        relationship_lookup = {
-            "in.c-a.activities": [
-                {
-                    "from": "in.c-a.opportunities",
-                    "to": "in.c-a.activities",
-                    "on": 'o."id" = a."opportunity_id"',
-                    "type": "left",
-                }
-            ],
-        }
-        column_lookup = {
-            "crm_activities": {"opportunity_id"},
-            "crm_opportunities": {"id", "amount"},
-        }
-        metric = _relationship_metric_item("linked_amount", 'SUM(o."amount")', "in.c-a.activities")
-
-        row, skip_reason = build_metric_row(
-            metric,
-            table_lookup,
-            {},
-            [],
-            "model-1",
-            relationship_lookup=relationship_lookup,
-            column_lookup=column_lookup,
-        )
-
-        assert skip_reason is None
-        assert row["table_name"] == "crm_activities"
-        assert row["tables"] == ["crm_activities", "crm_opportunities"]
-
-    def test_falls_through_to_foreign_alias_reference_without_lookups(self):
-        table_lookup = {("in.c-a", "activities"): "crm_activities"}
-        metric = _relationship_metric_item("linked_amount", 'SUM(o."amount")', "in.c-a.activities")
-
-        row, skip_reason = build_metric_row(metric, table_lookup, {}, [], "model-1")
-
-        assert row is None
-        assert skip_reason == "foreign_alias_reference"
-
-    def test_single_table_metric_unaffected_by_new_params(self):
-        table_lookup = {("in.c-a", "orders"): "crm_orders"}
-        metric = _relationship_metric_item("total", 'SUM("amount")', "in.c-a.orders")
-
-        row, skip_reason = build_metric_row(
-            metric,
-            table_lookup,
-            {},
-            [],
-            "model-1",
-            relationship_lookup={},
-            column_lookup={},
-        )
-
-        assert skip_reason is None
-        assert row["sql"] == 'SELECT SUM("amount") FROM "crm_orders" AS t'
-        assert "tables" not in row
-
-
-class TestBuildGlossaryRow:
-    def test_builds_row_for_simple_term(self):
-        used: set[str] = set()
-        item = _glossary_item("Monthly Recurring Revenue", "Revenue normalized monthly.")
-
-        row, skip_reason = build_glossary_row(item, "model-1", used)
-
-        assert skip_reason is None
-        assert row["id"] == "keboola/model-1/monthly_recurring_revenue"
-        assert row["term"] == "Monthly Recurring Revenue"
-        assert row["definition"] == "Revenue normalized monthly."
-        assert row["see_also"] == []
-        assert row["model_uuid"] == "model-1"
-        assert row["source"] == "keboola_semantic_layer"
-
-    def test_carries_see_also_list(self):
-        used: set[str] = set()
-        item = _glossary_item("MRR", "def", see_also=["arr", "churn"])
-
-        row, skip_reason = build_glossary_row(item, "model-1", used)
-
-        assert skip_reason is None
-        assert row["see_also"] == ["arr", "churn"]
-
-    def test_skips_missing_term(self):
-        used: set[str] = set()
-        item = _glossary_item(None, "def")
-
-        row, skip_reason = build_glossary_row(item, "model-1", used)
-
-        assert row is None
-        assert skip_reason == "missing_term"
-
-    def test_skips_missing_definition(self):
-        used: set[str] = set()
-        item = _glossary_item("MRR", None)
-
-        row, skip_reason = build_glossary_row(item, "model-1", used)
-
-        assert row is None
-        assert skip_reason == "missing_definition"
-
-    def test_second_call_with_colliding_slug_gets_suffix(self):
-        used: set[str] = set()
-        item_a = _glossary_item("MRR", "first def")
-        item_b = _glossary_item("MRR", "second def, different casing collides on slug")
-
-        row_a, _ = build_glossary_row(item_a, "model-1", used)
-        row_b, _ = build_glossary_row(item_b, "model-1", used)
-
-        assert row_a["id"] == "keboola/model-1/mrr"
-        assert row_b["id"] == "keboola/model-1/mrr-2"

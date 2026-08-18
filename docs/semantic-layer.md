@@ -149,6 +149,51 @@ GET /api/semantic-models/retail.yaml
 
 The bytes you get back are the bytes that were stored.
 
+## Query validation
+
+Before running a SQL statement, check it against the semantic layer: does it
+trip a constraint, does it hit a metric declared only in another SQL dialect,
+does it reference what you expect it to. `src/semantic_validation.py` is a
+pure function over the document(s) — best-effort, case-insensitive text
+matching against declared names, not SQL parsing — wrapped identically on
+three surfaces:
+
+```bash
+POST /api/semantic-models/validate-query
+agnes semantic-model validate-query "<SQL>" [--expect '[{"type":"metric","name":"mrr"}]'] [--target-engine duckdb] [--json]
+validate_semantic_query   # MCP foundation tool
+```
+
+RBAC matches export/search — a Data Package grant or a direct grant on the
+model, not admin-only — and every accessible `status='valid'` model is
+consulted (a query may span more than one). An `error`-severity constraint
+violation sets `valid: false`; a rule this module cannot check statically
+(anything besides a `required_filter` presence check) degrades to
+`post_execution_checks` rather than a guessed violation; a used metric whose
+only declared expressions target another engine sets
+`locally_executable: false` with a `mixed_dialect_warning`. With zero
+accessible valid models the response is `{"available": false, "error":
+"no_semantic_model", ...}` instead of the pure function's own empty-input
+all-clear — do not read a missing `available` (or `available: true`) as
+"no semantic layer configured".
+
+Constraints have no slot in core Ossie, so they ride `custom_extensions`
+under the Agnes vendor name, and the key naming the rule kind is
+`constraint_type` — the same key the Keboola adapter composes, the projector
+copies into `metric_definitions.validation.rules[]`, and
+`agnes catalog --metrics --show` renders:
+
+```yaml
+custom_extensions:
+  - vendor_name: AGNES
+    data: >-
+      {"constraints": [{"name": "eu_only", "constraint_type": "required_filter",
+       "rule": "region = 'EU'", "severity": "error", "metrics": ["revenue"]}]}
+```
+
+Not to be confused with `agnes admin semantic-model validate <file>` below,
+which schema-checks a *document*, offline, before it is ever stored.
+
 ## Commands
 
 ```bash
@@ -159,6 +204,8 @@ agnes admin semantic-model export <slug>
 agnes admin semantic-model validate <file>   # offline: no server, no token
 
 agnes admin semantic-source add ... | list | sync <id>
+
+agnes semantic-model validate-query "<SQL>"  # see "Query validation" above
 ```
 
 `validate` deliberately needs neither a server nor a token — someone fixing a

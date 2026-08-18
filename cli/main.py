@@ -48,6 +48,7 @@ from cli.commands.explore import explore_app
 from cli.commands.catalog import catalog_app
 from cli.commands.global_scope import global_app
 from cli.commands.glossary import glossary_app
+from cli.commands.semantic_model import semantic_model_app
 from cli.commands.schema import schema_app
 from cli.commands.describe import describe
 from cli.commands.sample import sample
@@ -319,6 +320,7 @@ app.add_typer(server_app, name="server")
 app.add_typer(explore_app, name="explore")
 app.add_typer(catalog_app, name="catalog")
 app.add_typer(glossary_app, name="glossary")
+app.add_typer(semantic_model_app, name="semantic-model")
 app.add_typer(schema_app, name="schema")
 app.command("describe")(describe)
 # `agnes sample <table>` — shorthand for `agnes describe <table> -n 5`.
