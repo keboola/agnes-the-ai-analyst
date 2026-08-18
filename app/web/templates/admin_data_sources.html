@@ -89,11 +89,13 @@
     display: inline-flex; align-items: center; justify-content: center;
     font-size: 12px; font-weight: 800; letter-spacing: 0.02em;
   }
-  .ds-src__logo--keboola   { background: var(--ds-kind-data-soft); color: var(--ds-kind-data); }
-  .ds-src__logo--bigquery  { background: var(--ds-accent-info-bg); color: var(--ds-accent-info-ink); }
-  .ds-src__logo--snowflake { background: var(--ds-accent-info-bg); color: var(--ds-accent-info-ink); }
-  .ds-src__logo--jira      { background: var(--ds-kind-plugin-soft); color: var(--ds-kind-plugin); }
-  .ds-src__logo--local     { background: var(--ds-kind-file-soft); color: var(--ds-kind-file); }
+  .ds-src__logo--keboola    { background: var(--ds-kind-data-soft); color: var(--ds-kind-data); }
+  .ds-src__logo--bigquery    { background: var(--ds-accent-info-bg); color: var(--ds-accent-info-ink); }
+  .ds-src__logo--snowflake   { background: var(--ds-accent-info-bg); color: var(--ds-accent-info-ink); }
+  .ds-src__logo--databricks  { background: var(--ds-accent-info-bg); color: var(--ds-accent-info-ink); }
+  .ds-src__logo--jira        { background: var(--ds-kind-plugin-soft); color: var(--ds-kind-plugin); }
+  .ds-src__logo--local       { background: var(--ds-kind-file-soft); color: var(--ds-kind-file); }
+  .connector-logo { width: 60%; height: 60%; display: block; }
 
   .ds-src__id { min-width: 0; flex: 1 1 auto; }
   .ds-src__name {
@@ -913,12 +915,12 @@
             <span class="so-sub">Buckets &amp; tables, synced copies</span>
           </button>
           <button type="button" class="ds-srcopt" data-wsrc="bigquery">
-            <span class="so-logo so-logo--bq">BQ</span>
+            <span class="so-logo so-logo--bq"><svg class="connector-logo" viewBox="0 0 24 24" fill="currentColor" role="img" aria-label="BigQuery"><rect x="3" y="3" width="8" height="8" rx="2"/><rect x="13" y="3" width="8" height="8" rx="2"/><rect x="3" y="13" width="8" height="8" rx="2"/><rect x="13" y="13" width="8" height="8" rx="2"/></svg></span>
             <span class="so-name">BigQuery</span>
             <span class="so-sub">Live queries, no copy</span>
           </button>
           <button type="button" class="ds-srcopt" data-wsrc="snowflake">
-            <span class="so-logo so-logo--sf">SF</span>
+            <span class="so-logo so-logo--sf"><svg class="connector-logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="Snowflake"><path d="M12 3v18M4.5 6l15 12M4.5 18l15-12"/></svg></span>
             <span class="so-name">Snowflake</span>
             <span class="so-sub">Live or materialized, SQL warehouse</span>
           </button>
@@ -1017,7 +1019,7 @@
           </div>
         </div>
 
-        {# Snowflake — real: coordinates live in server-config, password in
+        {# Snowflake — real: coordinates live in server-config, password/key-pair in
            datasource-secrets; tables register as remote or materialized. #}
         <div data-wsrcform="snowflake" hidden>
           <div class="ds-field">
@@ -1030,10 +1032,33 @@
             <input type="text" id="ds-sf-user" placeholder="service user name" autocomplete="off" spellcheck="false">
           </div>
           <div class="ds-field">
-            <label for="ds-sf-password">Password <span style="color:var(--ds-accent-danger-ink)">*</span></label>
-            <input type="password" id="ds-sf-password" placeholder="paste password" autocomplete="off">
-            <div class="ds-sfcred" id="ds-sfcred"><span class="ds-loading" style="padding:4px 0;">Checking credential…</span></div>
-            <div class="field-hint">Stored write-only in the server vault as <code>SNOWFLAKE_PASSWORD</code>.</div>
+            <label for="ds-sf-auth-type">Authentication <span style="color:var(--ds-accent-danger-ink)">*</span></label>
+            <select id="ds-sf-auth-type">
+              <option value="password" selected>Password</option>
+              <option value="key_pair">Key-pair</option>
+            </select>
+            <div class="field-hint">Choose how the wizard stores the Snowflake credential.</div>
+          </div>
+          <div id="ds-sf-auth-password">
+            <div class="ds-field">
+              <label for="ds-sf-password">Password <span style="color:var(--ds-accent-danger-ink)">*</span></label>
+              <input type="password" id="ds-sf-password" placeholder="paste password" autocomplete="off">
+              <div class="ds-sfcred" id="ds-sfcred-password"><span class="ds-loading" style="padding:4px 0;">Checking credential…</span></div>
+              <div class="field-hint">Stored write-only in the server vault as <code>SNOWFLAKE_PASSWORD</code>.</div>
+            </div>
+          </div>
+          <div id="ds-sf-auth-key" hidden>
+            <div class="ds-field">
+              <label for="ds-sf-private-key">Private key (PEM) <span style="color:var(--ds-accent-danger-ink)">*</span></label>
+              <textarea id="ds-sf-private-key" rows="5" placeholder="-----BEGIN PRIVATE KEY-----..." autocomplete="off" spellcheck="false"></textarea>
+              <div class="ds-sfcred" id="ds-sfcred-key"><span class="ds-loading" style="padding:4px 0;">Checking credential…</span></div>
+              <div class="field-hint">Stored write-only in the server vault as <code>SNOWFLAKE_PRIVATE_KEY</code>.</div>
+            </div>
+            <div class="ds-field">
+              <label for="ds-sf-key-passphrase">Key passphrase <span class="optional">(optional)</span></label>
+              <input type="password" id="ds-sf-key-passphrase" placeholder="passphrase for encrypted key" autocomplete="off">
+              <div class="field-hint">Stored separately as <code>SNOWFLAKE_PRIVATE_KEY_PASSPHRASE</code> when provided.</div>
+            </div>
           </div>
           <div class="ds-field">
             <label for="ds-sf-database">Database <span style="color:var(--ds-accent-danger-ink)">*</span></label>
@@ -1254,15 +1279,26 @@ const DERIVED_SOURCES = {{ derived_sources | tojson }};
    always the registry's `source_type`: files register as `local` but the
    picker calls that pane `csv`. Naming the translation here keeps it out of
    the callers, where a mismatch silently hides every form in step 1. */
+const _SVG_LOGO = {
+  bigquery: `<svg class="connector-logo" viewBox="0 0 24 24" fill="currentColor" role="img" aria-label="BigQuery"><rect x="3" y="3" width="8" height="8" rx="2"/><rect x="13" y="3" width="8" height="8" rx="2"/><rect x="3" y="13" width="8" height="8" rx="2"/><rect x="13" y="13" width="8" height="8" rx="2"/></svg>`,
+  snowflake: `<svg class="connector-logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="Snowflake"><path d="M12 3v18M4.5 6l15 12M4.5 18l15-12"/></svg>`,
+  databricks: `<svg class="connector-logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" role="img" aria-label="Databricks"><path d="M12 2l8.7 5v10L12 22l-8.7-5V7L12 2z"/></svg>`,
+  local: `<svg class="connector-logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="Files"><path d="M12 16v-4M8 12l4-4 4 4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>`,
+};
+
 const CONNECTOR = {
   keboola:   { abbr: "KB", cls: "keboola",   wizard: "keboola" },
   bigquery:  { abbr: "BQ", cls: "bigquery",  wizard: "bigquery" },
   snowflake: { abbr: "SF", cls: "snowflake", wizard: "snowflake" },
+  databricks:{ abbr: "DB", cls: "databricks",wizard: "databricks" },
   jira:      { abbr: "JR", cls: "jira",      wizard: "jira" },
   local:     { abbr: "FS", cls: "local",     wizard: "csv" },
 };
 function _connector(type) {
   return CONNECTOR[type] || { abbr: (type || "?").slice(0, 2).toUpperCase(), cls: "local", wizard: "keboola" };
+}
+function _connectorLogo(type) {
+  return _SVG_LOGO[type] || "";
 }
 
 function _relAge(minutes) {
@@ -1481,7 +1517,7 @@ function _connectionCardHtml(row) {
   return `
 <article class="ds-src" id="ds-conn-${id}" data-id="${id}">
   <div class="ds-src__head" data-src-head="${id}">
-    <span class="ds-src__logo ds-src__logo--${c.cls}" aria-hidden="true">${c.abbr}</span>
+    <span class="ds-src__logo ds-src__logo--${c.cls}" aria-hidden="true">${_connectorLogo(row.source_type) || _esc(c.abbr)}</span>
     <div class="ds-src__id">
       <div class="ds-src__name">
         <span>${name}</span>
@@ -2330,7 +2366,7 @@ let _wizardMaxStep = 1;       // furthest step reached — what the strip lets y
 let _wizardDone = false;      // the receipt is up; the flow is no longer navigable
 let _wizardSource = "keboola"; // 'keboola' | 'bigquery' | 'snowflake' | 'csv' | 'jira'
 let _bqCredStatus = null;      // cached /api/admin/datasource-secrets read
-let _sfCredStatus = null;      // cached Snowflake password secret status
+let _sfCredStatus = null;      // cached Snowflake credential status {password, key}
 let _sfConfigLoaded = false;   // cached Snowflake config read for this wizard open
 let _wizardTables = [];       // [{id, name, bucket}] registered in step 2
 let _wizardBoard = null;      // {trays: [{id, name, tables: [table]}], out: [table]}
@@ -2407,6 +2443,7 @@ function _setWizSource(src) {
     connectBtn.style.display = _wizardStep === 1 ? "" : "none";
     connectBtn.textContent = "Save & continue";
     _loadSfConfigAndStatus();
+    _updateSfAuthUI();
   } else {
     // csv / jira are guidance, not forms — nothing to submit.
     connectBtn.style.display = "none";
@@ -2432,8 +2469,15 @@ async function _loadBqCredStatus() {
        <a href="/admin/datasource-credentials">Instance secrets</a> first — registering works, but nothing can query until it's there.</span>`;
 }
 
+function _updateSfAuthUI() {
+  const authType = document.getElementById("ds-sf-auth-type").value;
+  document.getElementById("ds-sf-auth-password").hidden = authType !== "password";
+  document.getElementById("ds-sf-auth-key").hidden = authType !== "key_pair";
+}
+
 async function _loadSfConfigAndStatus() {
-  const host = document.getElementById("ds-sfcred");
+  const hostPassword = document.getElementById("ds-sfcred-password");
+  const hostKey = document.getElementById("ds-sfcred-key");
   if (!_sfConfigLoaded) {
     try {
       const r = await fetch(API_SERVER_CONFIG, { credentials: "include" });
@@ -2444,6 +2488,9 @@ async function _loadSfConfigAndStatus() {
       document.getElementById("ds-sf-database").value = sf.database || "";
       document.getElementById("ds-sf-warehouse").value = sf.warehouse || "";
       document.getElementById("ds-sf-role").value = sf.role || "";
+      const authType = sf.auth_type || "password";
+      document.getElementById("ds-sf-auth-type").value = authType;
+      _updateSfAuthUI();
       _sfConfigLoaded = true;
     } catch (e) {
       // leave inputs empty and let the admin fill them in
@@ -2453,25 +2500,36 @@ async function _loadSfConfigAndStatus() {
     try {
       const r = await fetch("/api/admin/datasource-secrets", { credentials: "include" });
       const data = r.ok ? await r.json() : { secrets: [] };
-      const row = (data.secrets || []).find((s) => s.name === "SNOWFLAKE_PASSWORD");
-      _sfCredStatus = row || { source: "unset", has_value: false };
+      const secrets = data.secrets || [];
+      _sfCredStatus = {
+        password: secrets.find((s) => s.name === "SNOWFLAKE_PASSWORD") || { source: "unset", has_value: false },
+        key: secrets.find((s) => s.name === "SNOWFLAKE_PRIVATE_KEY") || { source: "unset", has_value: false },
+      };
     } catch (e) {
-      _sfCredStatus = { source: "unset", has_value: false };
+      _sfCredStatus = {
+        password: { source: "unset", has_value: false },
+        key: { source: "unset", has_value: false },
+      };
     }
   }
-  _renderSfCredStatus(host);
+  _renderSfCredStatus(hostPassword, "password");
+  _renderSfCredStatus(hostKey, "key");
 }
 
-function _renderSfCredStatus(host) {
-  if (!host) host = document.getElementById("ds-sfcred");
-  const hasInput = document.getElementById("ds-sf-password").value.trim().length > 0;
-  if (_sfCredStatus.has_value || hasInput) {
-    const source = hasInput ? "ready to save" : _sfCredStatus.source;
-    const cls = hasInput ? "badge-vault" : (_sfCredStatus.source === "env" ? "badge-env" : "badge-vault");
-    host.innerHTML = `<span class="ds-badge ${cls}">password · ${_esc(source)}</span>`;
+function _renderSfCredStatus(host, kind) {
+  if (kind === undefined) kind = "password";
+  const inputId = kind === "password" ? "ds-sf-password" : "ds-sf-private-key";
+  if (!host) host = document.getElementById(kind === "password" ? "ds-sfcred-password" : "ds-sfcred-key");
+  const status = (_sfCredStatus && _sfCredStatus[kind]) || { source: "unset", has_value: false };
+  const hasInput = document.getElementById(inputId).value.trim().length > 0;
+  const label = kind === "password" ? "password" : "key-pair";
+  if (status.has_value || hasInput) {
+    const source = hasInput ? "ready to save" : status.source;
+    const cls = hasInput ? "badge-vault" : (status.source === "env" ? "badge-env" : "badge-vault");
+    host.innerHTML = `<span class="ds-badge ${cls}">${label} · ${_esc(source)}</span>`;
   } else {
     host.innerHTML = `<span class="ds-badge badge-unset">not set</span>
-       <span style="font-size:12px; color:var(--ds-accent-warn-ink);">Save a password here first — registering works, but nothing can query until it's stored.</span>`;
+       <span style="font-size:12px; color:var(--ds-accent-warn-ink);">Save a ${label} credential here first — registering works, but nothing can query until it's stored.</span>`;
   }
 }
 
@@ -2482,19 +2540,29 @@ async function _saveSnowflakeAndContinue() {
   const database = document.getElementById("ds-sf-database").value.trim();
   const warehouse = document.getElementById("ds-sf-warehouse").value.trim();
   const role = document.getElementById("ds-sf-role").value.trim();
+  const authType = document.getElementById("ds-sf-auth-type").value;
   const password = document.getElementById("ds-sf-password").value;
+  const privateKey = document.getElementById("ds-sf-private-key").value.trim();
+  const passphrase = document.getElementById("ds-sf-key-passphrase").value;
   if (!account || !user || !database || !warehouse) {
     err.textContent = "Account, user, database and warehouse are required.";
     err.style.display = "block";
     return;
   }
-  if ((!_sfCredStatus || !_sfCredStatus.has_value) && !password) {
-    err.textContent = "Snowflake password is required. Paste it below or set SNOWFLAKE_PASSWORD in Instance secrets.";
-    err.style.display = "block";
-    return;
+  if (authType === "password") {
+    if ((!_sfCredStatus || !_sfCredStatus.password || !_sfCredStatus.password.has_value) && !password) {
+      err.textContent = "Snowflake password is required. Paste it below or set SNOWFLAKE_PASSWORD in Instance secrets.";
+      err.style.display = "block";
+      return;
+    }
+  } else {
+    if ((!_sfCredStatus || !_sfCredStatus.key || !_sfCredStatus.key.has_value) && !privateKey) {
+      err.textContent = "Snowflake private key is required. Paste it below or set SNOWFLAKE_PRIVATE_KEY in Instance secrets.";
+      err.style.display = "block";
+      return;
+    }
   }
-  const sf = { account, user, database, warehouse };
-  if (role) sf.role = role;
+  const sf = { account, user, database, warehouse, role, auth_type: authType };
   try {
     const r = await fetch(API_SERVER_CONFIG, {
       method: "POST", credentials: "include",
@@ -2502,16 +2570,36 @@ async function _saveSnowflakeAndContinue() {
       body: JSON.stringify({ sections: { data_source: { snowflake: sf } } }),
     });
     if (!r.ok) throw new Error("server-config save failed");
-    if (password) {
+    if (authType === "password" && password) {
       const rp = await fetch("/api/admin/datasource-secrets/SNOWFLAKE_PASSWORD", {
         method: "PUT", credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ value: password }),
       });
       if (!rp.ok) throw new Error("password secret save failed");
-      _sfCredStatus = { source: "vault", has_value: true };
-      _renderSfCredStatus();
+      _sfCredStatus.password = { source: "vault", has_value: true };
+      _renderSfCredStatus(null, "password");
       document.getElementById("ds-sf-password").value = "";
+    }
+    if (authType === "key_pair" && privateKey) {
+      const rk = await fetch("/api/admin/datasource-secrets/SNOWFLAKE_PRIVATE_KEY", {
+        method: "PUT", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: privateKey }),
+      });
+      if (!rk.ok) throw new Error("private key secret save failed");
+      _sfCredStatus.key = { source: "vault", has_value: true };
+      _renderSfCredStatus(null, "key");
+      document.getElementById("ds-sf-private-key").value = "";
+      if (passphrase) {
+        const rp = await fetch("/api/admin/datasource-secrets/SNOWFLAKE_PRIVATE_KEY_PASSPHRASE", {
+          method: "PUT", credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ value: passphrase }),
+        });
+        if (!rp.ok) throw new Error("passphrase secret save failed");
+        document.getElementById("ds-sf-key-passphrase").value = "";
+      }
     }
     _sfConfigLoaded = true;
     _setWizStep(2);
@@ -2543,7 +2631,11 @@ function openWizard(connector) {
   document.getElementById("ds-new-master").value = "";
   document.getElementById("ds-sf-account").value = "";
   document.getElementById("ds-sf-user").value = "";
+  document.getElementById("ds-sf-auth-type").value = "password";
+  _updateSfAuthUI();
   document.getElementById("ds-sf-password").value = "";
+  document.getElementById("ds-sf-private-key").value = "";
+  document.getElementById("ds-sf-key-passphrase").value = "";
   document.getElementById("ds-sf-database").value = "";
   document.getElementById("ds-sf-warehouse").value = "";
   document.getElementById("ds-sf-role").value = "";
@@ -2791,6 +2883,10 @@ async function _loadWizardTables(connId) {
 
 function finishWizard() {
   closeWizard();
+  if (_wizardSource === "snowflake") {
+    window.location.reload();
+    return;
+  }
   loadConnections();
 }
 
@@ -3433,8 +3529,10 @@ document.getElementById("ds-wizard-connect-btn").addEventListener("click", () =>
   connectAndValidate();
 });
 
-// Update the Snowflake password status badge as the admin types.
-document.getElementById("ds-sf-password").addEventListener("input", () => _renderSfCredStatus());
+// Update the Snowflake credential status badges as the admin types.
+document.getElementById("ds-sf-auth-type").addEventListener("change", () => { _updateSfAuthUI(); _renderSfCredStatus(null, "password"); _renderSfCredStatus(null, "key"); });
+document.getElementById("ds-sf-password").addEventListener("input", () => _renderSfCredStatus(null, "password"));
+document.getElementById("ds-sf-private-key").addEventListener("input", () => _renderSfCredStatus(null, "key"));
 
 /* The steps strip as a back button. Nothing is re-fetched and nothing is
    re-rendered: every screen's state lives where it was left — the connect

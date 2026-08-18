@@ -2853,6 +2853,7 @@ def _reattach_remote_extensions(conn: duckdb.DuckDBPyConnection, extracts_dir: P
             is_attach_host_allowed,
             is_extension_allowed,
             is_token_env_allowed,
+            resolve_remote_attach_token,
         )
 
         for alias, extension, url, token_env in rows:
@@ -2910,7 +2911,7 @@ def _reattach_remote_extensions(conn: duckdb.DuckDBPyConnection, extracts_dir: P
                 # missing remote views and the operator will trigger a
                 # rebuild).
                 conn.execute(f"LOAD {extension};")
-                token = os.environ.get(token_env, "") if token_env else ""
+                token = resolve_remote_attach_token(token_env)
                 safe_url = escape_sql_string_literal(url)
 
                 # BQ-specific: refresh token from GCE metadata, create session-scoped
@@ -2983,7 +2984,10 @@ def _reattach_remote_extensions(conn: duckdb.DuckDBPyConnection, extracts_dir: P
                             token_env,
                             url,
                         )
-                    attach_snowflake(conn, alias=alias, url=url, token=token)
+                    passphrase = None
+                    if token_env == "SNOWFLAKE_PRIVATE_KEY":
+                        passphrase = resolve_remote_attach_token("SNOWFLAKE_PRIVATE_KEY_PASSPHRASE") or None
+                    attach_snowflake(conn, alias=alias, url=url, token=token, passphrase=passphrase)
                 elif token:
                     # #F11 — never ship a real credential to a connector-chosen
                     # host the operator has not approved (mirrors the rebuild

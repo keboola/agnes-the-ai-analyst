@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- **Snowflake `/admin/data-sources` wizard supports password and key-pair authentication, inline system logos, and vault-backed remote-attach tokens.** The form now switches between password and PEM key-pair auth, saves `SNOWFLAKE_PRIVATE_KEY` and an optional `SNOWFLAKE_PRIVATE_KEY_PASSPHRASE`, and the orchestrator + query path resolve remote-attach tokens from datasource secrets (env or vault) so key-pair credentials work for live queries. Small inline SVG logos appear on the connector picker and source cards for BigQuery, Snowflake, and Databricks.
+
 ## [0.83.48] - 2026-08-18
 
 ### Added

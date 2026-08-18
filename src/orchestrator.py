@@ -46,6 +46,7 @@ from src.orchestrator_security import (
     is_builtin_extension,
     is_extension_allowed,
     is_token_env_allowed,
+    resolve_remote_attach_token,
 )
 from src.sql_ident import quote_ident
 
@@ -1363,9 +1364,9 @@ class SyncOrchestrator:
                 )
                 continue
 
-            token = os.environ.get(token_env, "") if token_env else ""
+            token = resolve_remote_attach_token(token_env)
             if token_env and not token:
-                logger.warning("Remote attach %s: env var %s not set, skipping", alias, token_env)
+                logger.warning("Remote attach %s: token_env %s not resolvable, skipping", alias, token_env)
                 continue
 
             try:
@@ -1450,7 +1451,10 @@ class SyncOrchestrator:
                             token_env,
                             url,
                         )
-                    attach_snowflake(conn, alias=alias, url=url, token=token)
+                    passphrase = None
+                    if token_env == "SNOWFLAKE_PRIVATE_KEY":
+                        passphrase = resolve_remote_attach_token("SNOWFLAKE_PRIVATE_KEY_PASSPHRASE") or None
+                    attach_snowflake(conn, alias=alias, url=url, token=token, passphrase=passphrase)
                 elif token:
                     # #F10 — never ship a real credential to a connector-chosen
                     # host that the operator has not approved.
