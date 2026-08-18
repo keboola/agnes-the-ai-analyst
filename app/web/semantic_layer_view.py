@@ -115,22 +115,40 @@ def agnes_extension_payload(obj: dict) -> dict:
 
 
 def model_of(row: dict) -> dict:
-    """The single ``semantic_model`` entry a stored row's ``document_json``
-    carries — ``{}`` when the row has no parsed document.
+    """The stored row's ``document_json`` unwrapped into one browsable model —
+    ``{}`` when the row has no parsed document.
 
-    Mirrors the unwrap ``app/api/semantic_models.py::_accessible_valid_
-    documents`` does for the same reason: a stored row's ``document_json`` is
-    ``{"semantic_model": [...]}`` (the Ossie top level), never the model dict
-    itself. A document can in principle declare more than one model; this UI
-    (like the validator) renders the first.
+    A stored row's ``document_json`` is ``{"semantic_model": [...]}`` (the
+    Ossie top level), never a model dict itself. A document can declare more
+    than one model; this AGGREGATES every entry into one view — datasets,
+    metrics, relationships and ``custom_extensions`` (constraints/glossary)
+    concatenated in document order — so a multi-model row shows all of its
+    objects, matching what ``app/api/semantic_models.py::_accessible_valid_
+    documents`` (and therefore the REST/CLI/MCP read tools) flatten for the
+    same row. ``name``/``description`` come from the first model for display;
+    the browse UI keys rows by the stored row's own ``slug``/``name`` anyway.
     """
     doc = row.get("document_json") or {}
     if not isinstance(doc, dict):
         return {}
-    models = doc.get("semantic_model")
-    if isinstance(models, list) and models and isinstance(models[0], dict):
+    models = [m for m in (doc.get("semantic_model") or []) if isinstance(m, dict)]
+    if not models:
+        return {}
+    if len(models) == 1:
         return models[0]
-    return {}
+
+    merged: dict = {}
+    # First-model scalars for display (name/description/etc.); later models'
+    # object lists are concatenated onto them below.
+    merged.update(models[0])
+    for key in ("datasets", "metrics", "relationships", "custom_extensions"):
+        combined: list = []
+        for m in models:
+            values = m.get(key)
+            if isinstance(values, list):
+                combined.extend(values)
+        merged[key] = combined
+    return merged
 
 
 def model_dialects(model: dict) -> list[str]:
@@ -158,11 +176,35 @@ def model_dialects(model: dict) -> list[str]:
 def model_constraints(model: dict) -> list[dict]:
     """Constraints riding the model's AGNES ``custom_extensions`` — the core
     Ossie schema has no constraint slot (see
-    ``src/semantic_validation.py::extract_constraints``, the same read)."""
-    constraints = agnes_extension_payload(model).get("constraints")
-    if not isinstance(constraints, list):
-        return []
-    return [c for c in constraints if isinstance(c, dict) and c.get("name")]
+    ``src/semantic_validation.py::extract_constraints``, the same read).
+
+    Iterates the extension entries and EXTENDS (like :func:`model_glossary`)
+    rather than reading the merged payload, so a model carrying more than one
+    AGNES extension — which :func:`model_of` produces when it aggregates a
+    multi-model document — contributes every extension's constraints instead
+    of only the last one a dict ``update`` would keep.
+    """
+    out: list[dict] = []
+    for ext in model.get("custom_extensions") or []:
+        if not isinstance(ext, dict):
+            continue
+        vendor = ext.get("vendor_name")
+        if not isinstance(vendor, str) or vendor.casefold() != _AGNES_VENDOR:
+            continue
+        raw = ext.get("data")
+        if isinstance(raw, str):
+            try:
+                data = json.loads(raw) if raw else None
+            except ValueError:
+                continue
+        elif isinstance(raw, dict):
+            data = raw
+        else:
+            continue
+        constraints = data.get("constraints") if isinstance(data, dict) else None
+        if isinstance(constraints, list):
+            out.extend(c for c in constraints if isinstance(c, dict) and c.get("name"))
+    return out
 
 
 def model_glossary(model: dict) -> list[dict]:

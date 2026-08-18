@@ -3451,6 +3451,11 @@ async def library_page(
             definitions_footer = {
                 "metric_count": len(_visible_metrics),
                 "glossary_count": len(_glossary_terms),
+                # Only THIS gates the "Browse the semantic layer" link: the
+                # metric/glossary links ride the flat projection above, but the
+                # browse page needs a readable document, so a caller with
+                # visible metrics yet no readable model must not be sent there.
+                "has_semantic_models": _has_readable_model,
                 "search": _index_words(
                     [m.get("display_name") for m in _visible_metrics]
                     + [m.get("name") for m in _visible_metrics]
@@ -4054,11 +4059,24 @@ async def semantic_layer_detail(
         elif active_tab == "metrics":
             from src.semantic.projection import _agnes_payload as _metric_agnes_payload
 
+            # A metric's Agnes payload binds it to a dataset by that dataset's
+            # source id, not its friendly name (the Keboola metastore adapter
+            # stores the raw tableId there — connectors/keboola/semantic_ossie.py).
+            # The per-dataset cross-link and the search box both pass the
+            # friendly `name`, so resolve name → source: a needle that names a
+            # dataset also matches every metric bound to that dataset's source.
+            _needle_dataset_sources = {
+                str(d.get("source") or "").lower()
+                for d in datasets
+                if needle in str(d.get("name") or "").lower() or needle in str(d.get("source") or "").lower()
+            }
+            _needle_dataset_sources.discard("")
             metrics = [
                 m
                 for m in metrics
                 if needle in str(m.get("name") or "").lower()
                 or needle in str(_metric_agnes_payload(m).get("dataset") or "").lower()
+                or str(_metric_agnes_payload(m).get("dataset") or "").lower() in _needle_dataset_sources
             ]
         elif active_tab == "constraints":
             # Match the constraint's own name (the first, linked column) as well

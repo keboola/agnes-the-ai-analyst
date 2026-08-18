@@ -154,6 +154,43 @@ def _grant_model(model_id: str, group_name: str = "Semantic Model Readers") -> N
     )
 
 
+def _seed_metric(name: str = "arr", *, table_name=None) -> None:
+    """A flat metric visible to everyone (no table gate when ``table_name`` is
+    None) — enough to make the /library Definitions footer render."""
+    from src.repositories import metric_repo
+
+    metric_repo().create(
+        id=name,
+        name=name,
+        display_name=name.upper(),
+        category="revenue",
+        sql="SELECT 1",
+        table_name=table_name,
+    )
+
+
+def _seed_document(slug: str, doc: dict, *, source: str = "manual") -> dict:
+    """Seed a stored row carrying an arbitrary ``document_json`` (for the
+    multi-model / imported-binding cases the shared fixture doesn't cover)."""
+    from src.repositories import semantic_model_repo
+
+    return semantic_model_repo().upsert(
+        id=f"{source}/_/{slug}",
+        slug=slug,
+        name=slug,
+        description="",
+        document="# fixture, not schema-authored",
+        document_json=doc,
+        spec_version="0.2.0.dev0",
+        content_hash=f"hash-{slug}",
+        source=source,
+        source_ref=None,
+        status="valid",
+        validation_errors=None,
+        validated_at=None,
+    )
+
+
 class TestModelList:
     def test_list_shows_counts_and_source_badge(self, seeded_app):
         _seed_model(source="manual")
@@ -278,6 +315,77 @@ class TestModelDetail:
         )
         assert r.status_code == 200
         assert "orders_to_customers" in r.text
+
+    def test_metrics_cross_link_resolves_dataset_name_to_its_source_id(self, seeded_app):
+        """Devin #1398: an imported model binds a metric to a dataset by that
+        dataset's source id, not its friendly name. The per-dataset cross-link
+        (`?tab=metrics&q=<dataset name>`) must resolve name → source so the
+        metric still shows."""
+        doc = {
+            "semantic_model": [
+                {
+                    "name": "imported",
+                    "datasets": [{"name": "Orders", "source": "in.c-main.orders", "fields": []}],
+                    "metrics": [
+                        {
+                            "name": "gross_revenue",
+                            "expression": {"dialects": [{"dialect": "duckdb", "expression": "SUM(amount)"}]},
+                            # bound to the dataset's SOURCE id, not its friendly
+                            # name. Vendor is "AGNES" — the exact tag the Keboola
+                            # metastore adapter emits and the projector's
+                            # `_agnes_payload` binds on (src/semantic/projection.py).
+                            "custom_extensions": [
+                                {"vendor_name": "AGNES", "data": json.dumps({"dataset": "in.c-main.orders"})}
+                            ],
+                        }
+                    ],
+                }
+            ]
+        }
+        _seed_document("imported", doc, source="keboola_metastore")
+        c = seeded_app["client"]
+        r = c.get("/semantic-layer/imported?tab=metrics&q=Orders", headers=_auth(seeded_app["admin_token"]))
+        assert r.status_code == 200
+        assert "gross_revenue" in r.text
+
+    def test_multi_model_document_shows_every_models_objects(self, seeded_app):
+        """Devin #1398: a row declaring more than one semantic_model must show
+        all of their objects (like the read tools flatten), not only the first
+        — including constraints riding a later model's custom_extensions."""
+        doc = {
+            "semantic_model": [
+                {
+                    "name": "a",
+                    "datasets": [{"name": "alpha", "fields": []}],
+                    "metrics": [
+                        {"name": "m_alpha", "expression": {"dialects": [{"dialect": "duckdb", "expression": "1"}]}}
+                    ],
+                },
+                {
+                    "name": "b",
+                    "datasets": [{"name": "beta", "fields": []}],
+                    "metrics": [
+                        {"name": "m_beta", "expression": {"dialects": [{"dialect": "duckdb", "expression": "1"}]}}
+                    ],
+                    "custom_extensions": [
+                        {
+                            "vendor_name": "AGNES",
+                            "data": json.dumps({"constraints": [{"name": "c_beta", "metrics": ["m_beta"]}]}),
+                        }
+                    ],
+                },
+            ]
+        }
+        _seed_document("multi", doc)
+        c = seeded_app["client"]
+        ds = c.get("/semantic-layer/multi?tab=datasets", headers=_auth(seeded_app["admin_token"]))
+        assert "alpha" in ds.text and "beta" in ds.text
+        mx = c.get("/semantic-layer/multi?tab=metrics", headers=_auth(seeded_app["admin_token"]))
+        assert "m_alpha" in mx.text and "m_beta" in mx.text
+        # The constraint rides the SECOND model's custom_extensions — proves
+        # model_constraints aggregates across every model, not just the first.
+        cx = c.get("/semantic-layer/multi?tab=constraints", headers=_auth(seeded_app["admin_token"]))
+        assert "c_beta" in cx.text
 
 
 class TestObjectDetail:
@@ -417,6 +525,20 @@ class TestLibraryEntryPoint:
         r = c.get("/library", headers=_auth(seeded_app["analyst_token"]))
         assert r.status_code == 200
         assert 'href="/semantic-layer"' not in r.text
+
+    def test_browse_link_gated_independently_of_the_footer_rendering(self, seeded_app):
+        """Devin #1398 (template): the browse link is gated on
+        `has_semantic_models` alone, not on whether the footer renders. A
+        caller with visible metrics but no readable model gets the footer (the
+        metric link) WITHOUT the /semantic-layer link — the earlier negative
+        test passed only because the seeded instance had zero metrics."""
+        _seed_metric()  # a visible metric forces the footer to render
+        _seed_model()  # a model exists, but this analyst has no grant on it
+        c = seeded_app["client"]
+        r = c.get("/library", headers=_auth(seeded_app["analyst_token"]))
+        assert r.status_code == 200
+        assert "/catalog/semantics#metrics" in r.text  # the footer did render
+        assert 'href="/semantic-layer"' not in r.text  # but not the browse link
 
     def test_semantic_layer_linked_from_library_for_admin(self, seeded_app):
         _seed_model()
