@@ -98,6 +98,7 @@ locals {
         brand_short = try(inst.brand_short, "")
         subtitle    = try(inst.subtitle, "")
         copyright   = try(inst.copyright, "")
+        favicon     = try(inst.favicon, "")
       } : k => v if v != null && v != ""
     }
   }

@@ -261,7 +261,7 @@
           <span class="dsec-ico">{{ ico.icon('users', 14) }}</span>
           <div class="dsec-grow">
             <h3>Groups</h3>
-            <div class="dsec-sub">Everything you can reach in Agnes is granted to a group you belong to.</div>
+            <div class="dsec-sub">Everything you can reach in {{ instance_brand or 'Agnes' }} is granted to a group you belong to.</div>
           </div>
           <span class="dsec-sum">{{ memberships | length }} {{ 'group' if (memberships | length) == 1 else 'groups' }}</span>
           <span class="dsec-chev">{{ ico.icon('chevron', 16) }}</span>
@@ -349,7 +349,7 @@
           <span class="dsec-ico">{{ ico.icon('chat', 14) }}</span>
           <div class="dsec-grow">
             <h3>Notifications</h3>
-            <div class="dsec-sub">Where Agnes reaches you when a long-running analysis finishes or needs input.</div>
+            <div class="dsec-sub">Where {{ instance_brand or 'Agnes' }} reaches you when a long-running analysis finishes or needs input.</div>
           </div>
           <span class="dsec-sum">{% if telegram_status.linked or desktop_status.linked %}Connected{% else %}Not set up{% endif %}</span>
           <span class="dsec-chev">{{ ico.icon('chevron', 16) }}</span>
@@ -418,7 +418,7 @@
            this panel has no actionable row at all — say why rather than
            leaving a heading over two inert lines. #}
         {% if not config.TELEGRAM_BOT_USERNAME and not telegram_status.linked %}
-        <p class="pf-notif-note">Telegram isn't configured on this instance yet — ask your admin to enable it if you'd like Agnes to reach you there.</p>
+        <p class="pf-notif-note">Telegram isn't configured on this instance yet — ask your admin to enable it if you'd like {{ instance_brand or 'Agnes' }} to reach you there.</p>
         {% endif %}
       </div>
     </details>
@@ -526,7 +526,7 @@
          StackResolver.browse() rows. #}
       <ul class="pf-links" role="list">
         <li><a class="pf-link" href="/me/activity">{{ ico.icon('rows', 15) }}<span>Your activity &amp; sessions</span>{{ ico.icon('chevron-right', 15, 'pf-link-go') }}</a></li>
-        <li><a class="pf-link" href="/library?stack=in_stack">{{ ico.icon('package', 15) }}<span>What Agnes is using</span>{{ ico.icon('chevron-right', 15, 'pf-link-go') }}</a></li>
+        <li><a class="pf-link" href="/library?stack=in_stack">{{ ico.icon('package', 15) }}<span>What {{ instance_brand or 'Agnes' }} is using</span>{{ ico.icon('chevron-right', 15, 'pf-link-go') }}</a></li>
         <li><a class="pf-link" href="/library">{{ ico.icon('folder', 15) }}<span>Library</span>{{ ico.icon('chevron-right', 15, 'pf-link-go') }}</a></li>
       </ul>
     </div>

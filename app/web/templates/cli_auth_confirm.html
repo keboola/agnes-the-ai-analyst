@@ -5,7 +5,7 @@
 {% block content %}
 <div class="login-container">
     <div class="login-card">
-        <h2>Authorize the Agnes CLI</h2>
+        <h2>Authorize the {{ instance_brand or 'Agnes' }} CLI</h2>
         <p class="login-description">
             A command-line login on this computer is requesting access to
             <strong>{{ config.INSTANCE_NAME }}</strong> as
