@@ -122,7 +122,7 @@ class ToolGrant(Base):
 
     tool_id: Mapped[str] = mapped_column(String, nullable=False)
     group_id: Mapped[str] = mapped_column(String, nullable=False)
-    # v120: per-group opt-in for mutating passthrough tools — see
+    # v121: per-group opt-in for mutating passthrough tools — see
     # app/api/mcp_policy.check_mutating. Default FALSE = read-only grant.
     allow_mutating: Mapped[bool] = mapped_column(Boolean, server_default=text("FALSE"), nullable=False)
 
