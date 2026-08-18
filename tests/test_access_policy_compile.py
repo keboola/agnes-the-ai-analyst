@@ -166,6 +166,15 @@ def test_self_owned_rows_bind_the_identity_placeholder():
 def test_compiled_sql_passes_the_real_validator():
     from src.access_policy_validate import validate_policy_sql
 
+    cols = [
+        {"name": "invoice_id", "type": "BIGINT"},
+        {"name": "cost_center", "type": "VARCHAR"},
+        {"name": "email", "type": "VARCHAR"},
+        {"name": "national_id", "type": "VARCHAR"},
+        {"name": "amount_eur", "type": "DOUBLE"},
+        {"name": "tags", "type": "VARCHAR[]"},
+        {"name": "nested", "type": "STRUCT(v VARCHAR, i BIGINT)"},
+    ]
     spec = {
         "table": "invoices",
         "row_rules": [{"column": "cost_center", "op": "in_caller_groups"}],
@@ -174,9 +183,11 @@ def test_compiled_sql_passes_the_real_validator():
             "email": {"choice": "unmask", "groups": ["Finance", "Legal"]},
             "national_id": "hide",
             "amount_eur": "nullify",
+            "tags": {"choice": "unmask", "groups": ["Finance"]},
+            "nested": {"choice": "unmask", "groups": ["Finance"]},
         },
     }
-    out = compile_policy(spec, COLS)
+    out = compile_policy(spec, cols)
     # The builder's own output must never be rejected by the gate every save runs,
     # including the remote transpile path.
     validate_policy_sql(

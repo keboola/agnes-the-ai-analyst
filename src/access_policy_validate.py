@@ -112,6 +112,11 @@ _PERMITTED_NODE_TYPES: tuple[type[exp.Expression], ...] = (
     exp.Paren,
     exp.Tuple,
     exp.DataType,
+    # NOTE: exp.ColumnDef is deliberately NOT listed here. A STRUCT type's field
+    # list does parse into ColumnDef nodes, but a flat entry would permit one
+    # anywhere in the body on the strength of an assumption about where it can
+    # appear. `_reject_disallowed_constructs` checks the position instead: under
+    # a DataType, permitted; anywhere else, refused.
     # operators that are NOT exp.Func subclasses
     exp.Not,
     exp.Neg,

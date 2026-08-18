@@ -914,6 +914,45 @@ def get_instance_logo_svg() -> str:
     return (raw or "").strip()
 
 
+def get_instance_favicon() -> str:
+    """Favicon href for ``<link rel="icon">`` — resolved to a value templates
+    can drop in directly, unlike :func:`get_instance_logo_svg` (raw markup)
+    or the CSS/JS asset helpers (which take a bare relative path and expect
+    the *template* to call ``static_url()`` on it).
+
+    Contract:
+      - A value containing ``"://"`` or starting with ``"data:"`` (an
+        absolute URL or a data-URI) is returned AS-IS — the operator is
+        pointing at an externally-hosted icon or embedding one inline.
+      - Any other non-empty value is treated as a path under
+        ``app/web/static/`` and resolved through the same
+        ``app.web.router._static_url`` helper the templates already use for
+        every other static asset (adds the ``?v=<mtime>`` cache-buster).
+      - Unset (env AND YAML both empty) resolves the built-in
+        ``img/agnes-orb.png`` asset through that same helper — byte-identical
+        to the ``<link>`` this replaces.
+
+    Resolution: ``AGNES_INSTANCE_FAVICON`` env > ``instance.favicon`` YAML >
+    the built-in ``img/agnes-orb.png`` asset. Mirrors :func:`get_instance_logo_svg`.
+
+    Lazy-imports ``_static_url`` from ``app.web.router`` — a module-level
+    import would be circular (``app.web.router`` imports this module at load
+    time); by the time a request reaches this resolver, the app has already
+    finished importing. Same pattern as ``src.welcome_template``'s import of
+    ``app.web.router._read_agnes_ca_pem``.
+    """
+    raw = os.environ.get("AGNES_INSTANCE_FAVICON")
+    if raw is None:
+        raw = get_value("instance", "favicon", default="")
+    value = (raw or "").strip()
+    if value.startswith("data:") or "://" in value:
+        return value
+
+    from app.web.router import _static_url
+
+    return _static_url(value or "img/agnes-orb.png")
+
+
 def get_instance_overview() -> str:
     """Operator-authored Overview body rendered on ``/home``. Markdown is
     NOT auto-converted — operators paste HTML (matches the existing

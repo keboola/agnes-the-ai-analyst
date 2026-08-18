@@ -6845,6 +6845,13 @@
         document.querySelectorAll('[data-ap-panel]').forEach(function(panel) {
             panel.style.display = (panel.getAttribute('data-ap-panel') === tab) ? '' : 'none';
         });
+        /* Deliberately NOT clearing the compile block here. Opening the tab is
+           not the same as taking over the SQL: after a failed compile the box
+           still holds the PREVIOUS compile's output (or the saved policy), and
+           saving that unchanged is precisely what the block exists to prevent —
+           a stored policy that silently disagrees with what the builder shows.
+           Typing in the box clears it (`apSqlEdited`), which is the point at
+           which the contents become the admin's rather than stale output. */
     }
 
     var _AP_MASK_LABELS = { show: 'Show', hide: 'Hide', nullify: 'Nullify', hash: 'Pseudonymize', unmask: 'Unmask for groups' };
@@ -7112,8 +7119,8 @@
             _apRenderCompileWarnings(body.warnings);
             _apHideSaveError();
         } catch (err) {
-            // Network hiccup — leave #apSql unchanged; the Advanced SQL tab
-            // still works standalone.
+            // Network hiccup — leave #apSql unchanged. The admin can still
+            // switch to Advanced SQL and save hand-written SQL.
             _apCompileError = 'Network error: ' + err.message;
             _apShowSaveError(_apCompileError);
             _apRenderCompileWarnings([]);
