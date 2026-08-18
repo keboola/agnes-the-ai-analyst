@@ -354,6 +354,76 @@ def test_mcp_rejects_an_unknown_ticket(seeded_app, kai_env):
     assert resp.status_code == 401
 
 
+def test_mcp_token_refuses_the_two_narrowed_session_kinds(seeded_app, kai_env, monkeypatch):
+    """A co-session guest and a scope-limited agent must NOT get owner authority.
+
+    `/api/kai/mcp` accepts any `mcp`-scoped broker ticket, and the native chat
+    runner mints one for every chat sandbox — so without this the two session
+    kinds `_mint_identity_jwt` deliberately narrows (live participant
+    intersection; owner-grants ∩ agent-scope) could borrow the stored owner's
+    whole tool surface through this route. This token is a registered bearer
+    with a baked subject and cannot carry either intersection, so it refuses,
+    the same call `_ticket_owner_for_git` makes. Found by Devin Review.
+    """
+    from app.api import kai as kai_mod
+    from fastapi import HTTPException
+
+    body = _mint_session(seeded_app)
+    chat_id = body["chat_id"]
+    real = kai_mod.chat_session_repo().get_session(chat_id)
+
+    # Baseline FIRST, unpatched: a plain solo session still mints, so a failure
+    # below is the narrowing and not a broken fixture. (`monkeypatch.undo()`
+    # cannot serve here — it would also undo the fixtures' own patches.)
+    assert isinstance(kai_mod._mint_mcp_access_token(chat_id), str)
+
+    class _Sess:
+        def __init__(self, **kw):
+            self.user_email = real.user_email
+            self.is_co_session = False
+            self.agent_id = None
+            self.__dict__.update(kw)
+
+    def _with(session, agent=None):
+        kai_mod._mcp_token_cache.clear()  # never serve a pre-narrowing cache hit
+        monkeypatch.setattr(kai_mod, "chat_session_repo", lambda: type("R", (), {"get_session": staticmethod(lambda _sid: session)})())
+        if agent is not None:
+            import src.repositories as repos
+            monkeypatch.setattr(repos, "agents_repo", lambda: type("A", (), {"get_by_id": staticmethod(lambda _i: agent)})())
+        with pytest.raises(HTTPException) as e:
+            kai_mod._mint_mcp_access_token(chat_id)
+        return e.value
+
+    # 1. shared conversation -> refused, not resolved to its stored owner
+    exc = _with(_Sess(is_co_session=True))
+    assert (exc.status_code, exc.detail) == (403, "mcp_not_available_to_co_session")
+
+    # 2. scope-limited agent -> refused
+    exc = _with(_Sess(agent_id="ag_1"), agent={"id": "ag_1", "deleted_at": None, "scope_mode": "selected"})
+    assert (exc.status_code, exc.detail) == (403, "mcp_not_available_to_scoped_agent")
+
+    # 3. deleted agent -> fails CLOSED rather than falling through to the owner
+    exc = _with(_Sess(agent_id="ag_2"), agent={"id": "ag_2", "deleted_at": "2026-01-01T00:00:00Z"})
+    assert (exc.status_code, exc.detail) == (401, "ticket_agent_not_found")
+
+
+
+def test_mcp_token_is_bound_to_the_mcp_resource_server(seeded_app, kai_env):
+    """Parity with the genuine OAuth code exchange, which stores the requested
+    `resource`. A stored `None` authenticates today, so this is about not
+    breaking later: an SDK that begins enforcing RFC 8707 audience binding
+    would 401 brokered engine traffic while real connectors kept working.
+    Found by Devin Review."""
+    from app.api.kai import _mint_mcp_access_token
+    from app.auth.public_url import mcp_issuer_url
+    from src.repositories import oauth_clients_repo
+
+    token = _mint_mcp_access_token(_mint_session(seeded_app)["chat_id"])
+    row = oauth_clients_repo().get_access_token(token)
+    assert row is not None
+    assert row["resource"] == mcp_issuer_url()
+
+
 def test_mcp_mints_a_registered_access_token_for_the_ticket_identity(seeded_app, kai_env):
     """The mounted MCP app resolves a bearer against `oauth_access_tokens`, so
     a bare session JWT would not authenticate — the token has to be minted AND

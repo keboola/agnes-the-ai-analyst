@@ -314,10 +314,21 @@ def _require_session_credential(request: Request) -> Dict[str, Any]:
 
 
 def _rotate_egress_tickets(session_id: str, scopes: Dict[str, str]) -> Dict[str, str]:
-    """The synchronous DB half of ticket minting. One offload hop for the whole
-    revoke-then-mint sequence, which must also stay contiguous: interleaving
-    another turn's mint between them would hand out a ticket and immediately
-    retire it."""
+    """The synchronous DB half of ticket minting — one offload hop for the
+    whole revoke-then-mint sequence.
+
+    One hop keeps the two statements adjacent *within this call*; it does NOT
+    serialize concurrent calls, and an earlier version of this docstring
+    claimed otherwise. ``asyncio.to_thread`` hands the body to a worker
+    thread, so two rotations for the same chat can still interleave as
+    revoke(A) → mint(A) → revoke(B) → mint(B), leaving A holding a ticket that
+    was retired a moment after it was issued. Not reachable through the engine
+    as it stands — its host contract is one rotation per turn per chat, and a
+    turn's tickets are minted before the turn starts — so this is a documented
+    limit rather than a live bug. If parallel turns per chat ever become
+    possible the fix is a per-session lock, or folding revoke+mint into one
+    statement that retires only rows older than the new mint; a second offload
+    hop would not help. Found by Devin Review on this PR."""
     # Scope-limited on purpose. `revoke_session` would also delete the
     # long-lived session credential the request authenticated with, and the
     # engine has no way to be handed a replacement: its ticket-response schema
@@ -485,12 +496,28 @@ def _mint_mcp_access_token(session_id: str) -> str:
     data-read surface, which is the correct posture for an agent surface —
     the engine follows its user's stack rather than inheriting an admin's
     catalog god-mode.
+
+    **The two narrowed session kinds are refused, not resolved to the owner.**
+    ``_mint_identity_jwt`` (the native replay path) answers a co-session with a
+    live participant grant-intersection and a scope-limited agent session with
+    owner-grants ∩ agent-scope, and it documents the fall-through to the stored
+    owner as the bug that "over-authorized guests". This token cannot express
+    either: it is a registered bearer with a baked subject, so there is nothing
+    to recompute per request. Refusing is therefore the only honest answer, and
+    it is the same call ``_ticket_owner_for_git`` makes for the same reason —
+    a write with "no notion of a partial identity" fails closed rather than
+    silently widening to the owner. Reachable because ANY ``mcp``-scoped ticket
+    satisfies this route and the native chat runner mints one for every chat
+    sandbox (``app/chat/manager.py``), so without this a co-session guest or a
+    scoped agent could borrow its owner's whole tool surface. Found by Devin
+    Review on this PR.
     """
     import time as _time
     import uuid as _uuid
     from datetime import timedelta
 
     from app.auth.jwt import create_access_token
+    from app.auth.public_url import mcp_issuer_url
     from src.repositories import oauth_clients_repo, users_repo
 
     now = int(_time.time())
@@ -502,6 +529,21 @@ def _mint_mcp_access_token(session_id: str) -> str:
     session = chat_session_repo().get_session(session_id)
     if session is None:
         raise HTTPException(status_code=401, detail="ticket_session_not_found")
+    if getattr(session, "is_co_session", False):
+        raise HTTPException(status_code=403, detail="mcp_not_available_to_co_session")
+    agent_id = getattr(session, "agent_id", None)
+    if agent_id:
+        from src.agent_scope_intersection import agent_is_passthrough
+        from src.repositories import agents_repo
+
+        agent = agents_repo().get_by_id(agent_id)
+        if agent is None or agent.get("deleted_at") is not None:
+            # Fail CLOSED, exactly as `_mint_identity_jwt` does: a session
+            # attributed to a deleted agent must not regain the owner's full
+            # authority through the fall-through below.
+            raise HTTPException(status_code=401, detail="ticket_agent_not_found")
+        if not agent_is_passthrough(agent):
+            raise HTTPException(status_code=403, detail="mcp_not_available_to_scoped_agent")
     user = users_repo().get_by_email(session.user_email)
     if user is None:
         raise HTTPException(status_code=401, detail="ticket_user_not_found")
@@ -521,6 +563,14 @@ def _mint_mcp_access_token(session_id: str) -> str:
         scopes=list(_MCP_SCOPES),
         expires_at=expires_at,
         subject=user["id"],
+        # Parity with the genuine code exchange, which passes the client's
+        # requested `resource` (`app/auth/mcp_oauth.py`). `load_access_token`
+        # copies the stored value through without validating, so a `None` is
+        # accepted today — but this IS the resource server the token is for,
+        # and pinning it now means an SDK that starts enforcing RFC 8707
+        # audience binding does not 401 brokered engine traffic while real
+        # connectors keep working. Found by Devin Review on this PR.
+        resource=mcp_issuer_url(),
     )
     _mcp_token_cache[session_id] = (token, expires_at)
     return token
