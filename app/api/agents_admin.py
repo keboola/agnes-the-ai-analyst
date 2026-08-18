@@ -299,7 +299,12 @@ async def get_agent(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     row = _load_agent(agent_id, user, conn, require_owner=False)
-    return _serialize(row)
+    out = _serialize(row)
+    # Detail view carries the scope items so callers (the CLI's replace-not-
+    # merge warning, the wiring runbooks) can see what a scope PUT would drop
+    # without a second bespoke endpoint. List view stays lean.
+    out["scope"] = agents_repo().get_scope(agent_id)
+    return out
 
 
 @router.put("/{agent_id}")
