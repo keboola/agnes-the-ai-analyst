@@ -140,7 +140,7 @@ def test_render_safe_strips_event_handler_attribute():
     an executable attribute. markdown-it with `html=False` already escapes
     the literal `<img ...>` to `&lt;img ...&gt;` text; verify no live
     `<img>` tag (with or without onerror) reaches output."""
-    out = render_safe('<img src=x onerror=alert(1)>')
+    out = render_safe("<img src=x onerror=alert(1)>")
     # No live <img> tag — the raw HTML was escaped to text, the substring
     # "onerror" may appear inside escaped text but cannot fire.
     assert "<img" not in out  # raw open-tag would mean live attribute
@@ -170,7 +170,7 @@ def test_render_safe_strips_javascript_link_mixed_case():
     text in the output; the invariant is that no live `<a href=...>`
     anchor was emitted."""
     out = render_safe("[click](JaVaScRiPt:alert(1))")
-    assert 'href=' not in out  # link entirely stripped
+    assert "href=" not in out  # link entirely stripped
 
 
 def test_render_safe_strips_data_url_link():
@@ -367,9 +367,7 @@ def test_html_source_keeps_div_structure_in_the_rendered_output():
     "sales.Excludes refunds". Structural containers are kept on this path."""
     from app.markdown_render import render_safe
 
-    out = render_safe(
-        "<div>Share of qualified sales.</div><div>Excludes refunds.</div>", html_source=True
-    )
+    out = render_safe("<div>Share of qualified sales.</div><div>Excludes refunds.</div>", html_source=True)
     assert out == "<div>Share of qualified sales.</div><div>Excludes refunds.</div>"
 
 
@@ -487,3 +485,36 @@ def test_layout_tags_are_matched_regardless_of_case():
     assert render_plain("<Div>A</Div><Div>B</Div>", html_source=True) == "A B"
     assert render_plain("<H1>A</H1><H1>B</H1>", html_source=True) == "A B"
     assert render_plain("a<BR>b", html_source=True) == "a b"
+
+
+# --- stores_html: keyed on the writer, both pre- and post-cutover Keboola ---
+
+
+def test_stores_html_recognizes_both_keboola_writer_sources():
+    """The flat-table cutover changed the Keboola sync's written `source`
+    from `keboola_semantic_layer` to `keboola_metastore`
+    (`src/semantic/keboola_sources.py`). A row from EITHER writer carries the
+    same un-normalized upstream HTML and must render the same way — a reader
+    still matching only the retired literal would silently start treating a
+    Keboola HTML description as markdown and mangle its tags."""
+    from app.markdown_render import stores_html
+
+    assert stores_html({"source": "keboola_semantic_layer"}) is True
+    assert stores_html({"source": "keboola_metastore"}) is True
+    assert stores_html({"source": "manual"}) is False
+    assert stores_html({"source": "yaml_import"}) is False
+
+
+def test_keboola_metastore_row_renders_html_description_like_the_legacy_source():
+    from app.markdown_render import render_plain, stores_html
+
+    row = {"source": "keboola_metastore", "description": "Counts orders <shipped> per day."}
+    legacy_row = {**row, "source": "keboola_semantic_layer"}
+
+    rendered = render_plain(row["description"], html_source=stores_html(row))
+    legacy_rendered = render_plain(legacy_row["description"], html_source=stores_html(legacy_row))
+
+    # `<shipped>` is read as an HTML tag (unknown, stripped) — the same
+    # HTML-dialect behavior `test_html_source_eats_angle_bracketed_words_and_the_default_does_not`
+    # pins for the legacy source.
+    assert rendered == legacy_rendered == "Counts orders per day."

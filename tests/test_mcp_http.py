@@ -275,6 +275,10 @@ class TestToolRegistration:
             # + `agnes admin semantic-model list/export`.
             "semantic_model_search",
             "semantic_model_get",
+            # Query-validation engine wiring (wave 3). Triple-surface with
+            # POST /api/semantic-models/validate-query + `agnes semantic-model
+            # validate-query`.
+            "validate_semantic_query",
             # Re-run ingestion for one stuck file (needs_review/rejected) —
             # status-honesty follow-up (spec 2026-07-08). Triple-surface with
             # POST /api/collections/{cid}/files/{fid}/reingest +
@@ -621,6 +625,57 @@ class TestStorePublishMarkdownTool:
         assert result == data
         posted = mock_post.call_args[1]["json"]
         assert posted == {"type": "agent", "name": "my-agent", "skill_md": "# My Agent\n\nBody text."}
+
+
+class TestValidateSemanticQueryTool:
+    """Query-validation engine wiring (wave 3) — same request/response shape
+    as ``POST /api/semantic-models/validate-query`` and
+    ``agnes semantic-model validate-query``."""
+
+    def test_posts_sql_and_returns_result(self):
+        mod = _import_mod()
+        data = {"available": True, "valid": True, "used_datasets": ["orders"], "violations": []}
+
+        with patch("app.api.mcp_http._current_token") as tv, patch("httpx.AsyncClient") as MC:
+            tv.get.return_value = "tok"
+            mock_post = AsyncMock(return_value=_mock_resp(data))
+            MC.return_value.__aenter__.return_value.post = mock_post
+            result = _run(mod.validate_semantic_query("SELECT SUM(revenue) FROM orders"))
+
+        assert result == data
+        called_url = mock_post.call_args[0][0]
+        assert "/api/semantic-models/validate-query" in called_url
+        posted = mock_post.call_args[1]["json"]
+        assert posted == {"sql": "SELECT SUM(revenue) FROM orders", "target_engine": "duckdb"}
+
+    def test_expected_and_target_engine_are_forwarded(self):
+        mod = _import_mod()
+        data = {"available": True, "valid": True}
+        expected = [{"type": "metric", "name": "revenue"}]
+
+        with patch("app.api.mcp_http._current_token") as tv, patch("httpx.AsyncClient") as MC:
+            tv.get.return_value = "tok"
+            mock_post = AsyncMock(return_value=_mock_resp(data))
+            MC.return_value.__aenter__.return_value.post = mock_post
+            _run(mod.validate_semantic_query("SELECT 1", expected=expected, target_engine="bigquery"))
+
+        posted = mock_post.call_args[1]["json"]
+        assert posted == {"sql": "SELECT 1", "target_engine": "bigquery", "expected": expected}
+
+    def test_no_semantic_model_returns_unavailable_shape(self):
+        """Fail-closed gating: the tool surfaces the server's `available:
+        false` payload as-is, never a misleading all-clear."""
+        mod = _import_mod()
+        data = {"available": False, "error": "no_semantic_model", "message": "No semantic model is available."}
+
+        with patch("app.api.mcp_http._current_token") as tv, patch("httpx.AsyncClient") as MC:
+            tv.get.return_value = "tok"
+            mock_post = AsyncMock(return_value=_mock_resp(data))
+            MC.return_value.__aenter__.return_value.post = mock_post
+            result = _run(mod.validate_semantic_query("SELECT 1"))
+
+        assert result["available"] is False
+        assert "valid" not in result
 
 
 # ── marketplace lifecycle tools (agent-management triple-surface parity) ────────

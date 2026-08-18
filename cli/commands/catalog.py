@@ -110,6 +110,17 @@ def _show_one_metric(metric_id: str, as_json: bool) -> None:
     resp = api_get(f"/api/metrics/{metric_id}")
     if resp.status_code == 404:
         typer.echo(f"Metric not found: {metric_id}", err=True)
+        # The semantic-layer cutover changed Keboola metric ids from
+        # `keboola/<model-uuid>/<name>` to
+        # `keboola_metastore/<connection>/<model>/<name>`. A stale old-shape id
+        # (from memory or a saved note) 404s — point at a name lookup instead.
+        if metric_id.startswith("keboola/"):
+            name = metric_id.rsplit("/", 1)[-1]
+            typer.echo(
+                f"  Keboola metric ids changed in the semantic-layer cutover. Try: "
+                f"agnes catalog --metrics | grep {name}",
+                err=True,
+            )
         raise typer.Exit(1)
     if resp.status_code != 200:
         typer.echo(f"Failed: {resp.json().get('detail', resp.text)}", err=True)

@@ -7701,6 +7701,39 @@
         "title": "SemanticModelUpdate",
         "type": "object"
       },
+      "SemanticQueryValidate": {
+        "properties": {
+          "expected": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected"
+          },
+          "sql": {
+            "title": "Sql",
+            "type": "string"
+          },
+          "target_engine": {
+            "default": "duckdb",
+            "title": "Target Engine",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sql"
+        ],
+        "title": "SemanticQueryValidate",
+        "type": "object"
+      },
       "SemanticSourceCreate": {
         "properties": {
           "adapter": {
@@ -41908,6 +41941,70 @@
           }
         },
         "summary": "Search Semantic Models",
+        "tags": [
+          "semantic-models"
+        ]
+      }
+    },
+    "/api/semantic-models/validate-query": {
+      "post": {
+        "description": "Validate a SQL statement against the caller's accessible semantic\nmodels: constraint violations, dialect fit, and (optionally) which\nexpected datasets/metrics/relationships it hits.\n\nWraps the pure ``src.semantic_validation.validate_query`` \u2014 best-effort\ntext matching against declared document content, not SQL parsing; see\nthat module's own LIMITATIONS. Gated fail-closed: when the caller has no\naccessible ``status='valid'`` model, this returns ``{\"available\": False,\n...}`` rather than the engine's all-clear default for an empty document\nlist, which would otherwise read as a false \"valid: true\".",
+        "operationId": "validate_semantic_query_api_semantic_models_validate_query_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SemanticQueryValidate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Validate Semantic Query",
         "tags": [
           "semantic-models"
         ]

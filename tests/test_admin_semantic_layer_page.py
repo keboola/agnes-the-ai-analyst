@@ -146,6 +146,49 @@ class TestSemanticLayerPageSources:
         assert '<td class="num">3' in body
         assert '<td class="num">1' in body
 
+    def test_post_cutover_source_counts_alongside_the_legacy_one(self, seeded_app, vault_key):
+        """The flat-table cutover changed the Keboola sync's written `source`
+        from `keboola_semantic_layer` to `keboola_metastore`
+        (`src/semantic/keboola_sources.py`). A post-cutover row must count
+        into the connection's total exactly like a pre-cutover one — a page
+        still matching only the retired literal would silently show 0 for an
+        upgraded instance's freshly-synced metrics/terms."""
+        from src.repositories import glossary_repo, metric_repo
+
+        _make_master_connection(
+            "conn-a",
+            name="Production Project",
+            stack_url="https://connection.keboola.com",
+            token="master-tok",
+            is_default=True,
+        )
+
+        metric_repo().create(
+            id="keboola_metastore/conn-a/core/mrr",
+            name="mrr",
+            display_name="MRR",
+            category="core",
+            sql="SELECT 1",
+            source="keboola_metastore",
+            source_ref="conn-a",
+        )
+        glossary_repo().create(
+            id="keboola_metastore/conn-a/core/mrr",
+            term="MRR",
+            definition="…",
+            source="keboola_metastore",
+            source_ref="conn-a",
+        )
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.get("/admin/semantic-layer", headers=_auth(token))
+        assert resp.status_code == 200
+        body = resp.text
+
+        assert "Production Project" in body
+        assert '<td class="num">1' in body
+
     def test_semantic_layer_page_renders_skipped_source_neutrally(self, seeded_app, vault_key):
         """A source whose last-sync entry has status='skipped' (the
         duplicate-project dedupe short-circuit in
@@ -273,7 +316,7 @@ class TestSemanticLayerPageSources:
         assert "Forgotten Project" in body
 
     def test_a_tokened_connection_without_a_stack_url_says_so(self, seeded_app, vault_key):
-        """"No master token" is only one of three reasons a connection is
+        """ "No master token" is only one of three reasons a connection is
         skipped. Telling an admin to add a token they already added — while
         the real cause is a missing stack URL — sends them to fix the wrong
         thing. Devin Review on #1242."""
@@ -536,9 +579,9 @@ class TestTheUnresolvedTableListSaysWhenItIsASubset:
         """The payload must carry the count even though the list is cut."""
         import pathlib
 
-        src = (
-            pathlib.Path(__file__).resolve().parents[1] / "connectors" / "keboola" / "semantic_layer.py"
-        ).read_text(encoding="utf-8")
+        src = (pathlib.Path(__file__).resolve().parents[1] / "connectors" / "keboola" / "semantic_layer.py").read_text(
+            encoding="utf-8"
+        )
         assert '"unresolved_tables_total": len(unresolved_tables),' in src
         cut = src.index('"unresolved_tables": unresolved_tables[:_MAX_REPORTED_UNRESOLVED_TABLES]')
         tot = src.index('"unresolved_tables_total"')
@@ -561,10 +604,20 @@ class TestTheUnresolvedTableListSaysWhenItIsASubset:
         endpoint_module._refresh_state["last_result"] = {
             "status": "ok",
             "sources": [
-                {"connection_id": "conn-a", "status": "ok", "skipped_unresolved_table": 1,
-                 "unresolved_tables": shared, "unresolved_tables_total": 1},
-                {"connection_id": "conn-b", "status": "ok", "skipped_unresolved_table": 1,
-                 "unresolved_tables": shared, "unresolved_tables_total": 1},
+                {
+                    "connection_id": "conn-a",
+                    "status": "ok",
+                    "skipped_unresolved_table": 1,
+                    "unresolved_tables": shared,
+                    "unresolved_tables_total": 1,
+                },
+                {
+                    "connection_id": "conn-b",
+                    "status": "ok",
+                    "skipped_unresolved_table": 1,
+                    "unresolved_tables": shared,
+                    "unresolved_tables_total": 1,
+                },
             ],
         }
 
@@ -575,11 +628,7 @@ class TestTheUnresolvedTableListSaysWhenItIsASubset:
         import pathlib
 
         src = (
-            pathlib.Path(__file__).resolve().parents[1]
-            / "app"
-            / "web"
-            / "templates"
-            / "admin_semantic_layer.html"
+            pathlib.Path(__file__).resolve().parents[1] / "app" / "web" / "templates" / "admin_semantic_layer.html"
         ).read_text(encoding="utf-8")
         assert "unresolved_tables_truncated" in src
         assert ".sl-note {" in src, "the note class must be styled, not bare"
@@ -636,11 +685,7 @@ class TestAnOrphanedRowNamesItsRealCause:
         import pathlib
 
         src = (
-            pathlib.Path(__file__).resolve().parents[1]
-            / "app"
-            / "web"
-            / "templates"
-            / "admin_semantic_layer.html"
+            pathlib.Path(__file__).resolve().parents[1] / "app" / "web" / "templates" / "admin_semantic_layer.html"
         ).read_text(encoding="utf-8")
         assert "{{ o.reason }}" in src
         assert "master token missing — add it at <a" not in src, "the hard-coded cause is back"

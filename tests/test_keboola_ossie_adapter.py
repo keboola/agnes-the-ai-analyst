@@ -140,6 +140,13 @@ class TestKeboolaMetastoreAdapter:
         # importer's unverified_relationship_direction skip). None of these
         # would compose a JOIN metric today; the adapter keeps all three.
         assert types == {"left", "inner"}
+        # Each relationship carries its raw tableIds (not just the dataset names
+        # used for from/to), so the flat-table projector can rebuild the exact
+        # tableId-keyed relationship_lookup the legacy JOIN composer used.
+        for rel in relationships:
+            ext = _custom_extensions(rel)["AGNES"]
+            assert ext.get("from_table")
+            assert ext.get("to_table")
 
     def test_constraints_ride_model_custom_extensions(self, docs):
         ext = _custom_extensions(_model(docs, 0))["AGNES"]
