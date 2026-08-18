@@ -10,6 +10,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.83.57] - 2026-08-18
+
+### Fixed
+
+- **Registering a secondary data source no longer 422s on a `csv`/`local` instance or when the source is configured only through the named-connections registry.** `POST /api/admin/register-table`'s "source_type not configured" guard consulted only the legacy `instance.yaml` (`data_source.type` + `data_source.<type>` block), so a keboola/bigquery table whose connection was added via `/admin/data-sources` (the `source_connections` registry — the source of truth per the 2026-06-12 named-connections design) was still rejected with a message telling the operator to edit `instance.yaml`. The guard now accepts any `source_type` that has a `source_connections` row, and treats the documented `csv` alias for `local` as the same bootstrap-permissive primary — a `csv` primary previously rejected every secondary-source registration that a `local` primary accepts. A `source_type` with no connection, no `data_source.<type>` block, and a non-local/csv primary still 422s.
+
 ## [0.83.56] - 2026-08-18
 
 ### Added
@@ -46,9 +52,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **The well-known consumer-tenant GUIDs are refused like the reserved names.** `MICROSOFT_TENANT_ID` rejected `common` / `organizations` / `consumers`, but Microsoft also publishes directory GUIDs for the consumer tenants — they pass the GUID shape check and produce a discovery URL functionally equivalent to `consumers`, i.e. the exact multi-tenant configuration the name check exists to prevent, reached by spelling it differently.
 - **Documentation correction: the Entra guest-UPN refusal is not a guard against B2B guests.** `docs/auth-microsoft-oauth.md` and the provider docstring presented the `#EXT#` UPN refusal as one of two narrower guards in place beyond `auth.allowed_domain`. It is only consulted when the `email` claim is absent, and Entra emits `email` for guest accounts by default — so a guest is resolved from that claim and the refusal never fires for the population it is named for. `auth.allowed_domain` is the only control on guests, and the docs now say so plainly. No behaviour change; the claim was the problem.
 - **The Microsoft OAuth callback no longer writes attacker-controlled text into the log verbatim.** authlib raises `OAuthError` built from the `error` / `error_description` query parameters *before* any state validation, so an unauthenticated `GET /auth/microsoft/callback?error_description=…` could inject CRLF-forged lines into the application log, or flood it. Logged with `%r` and length-capped now. Nothing leaked outward either way — the response is a constant error code.
-### Fixed
-
-- **Registering a secondary data source no longer 422s on a `csv`/`local` instance or when the source is configured only through the named-connections registry.** `POST /api/admin/register-table`'s "source_type not configured" guard consulted only the legacy `instance.yaml` (`data_source.type` + `data_source.<type>` block), so a keboola/bigquery table whose connection was added via `/admin/data-sources` (the `source_connections` registry — the source of truth per the 2026-06-12 named-connections design) was still rejected with a message telling the operator to edit `instance.yaml`. The guard now accepts any `source_type` that has a `source_connections` row, and treats the documented `csv` alias for `local` as the same bootstrap-permissive primary — a `csv` primary previously rejected every secondary-source registration that a `local` primary accepts. A `source_type` with no connection, no `data_source.<type>` block, and a non-local/csv primary still 422s.
 
 ## [0.83.52] - 2026-08-18
 
