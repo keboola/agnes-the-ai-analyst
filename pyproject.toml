@@ -143,7 +143,13 @@ dependencies = [
     # the subprocess has full network access so tools like catalog/query can
     # reach the Agnes server even though the Bash tool sandbox cannot.
     # mcp>=1.0 ships FastMCP (mcp.server.fastmcp) — no separate fastmcp dep.
-    "mcp>=1.28.1",
+    # Capped below 2.0: the 2.x SDK removed `mcp.server.fastmcp` (imported by
+    # five modules, incl. `app/api/mcp/foundation_tools.py`) and replaced the
+    # streamable-HTTP entry point with a differently-shaped one. CI installs
+    # from this range and not from uv.lock, so an unbounded `>=` resolved 2.x
+    # and every shard went red on import. Lifting the cap is a migration, not
+    # a version bump — do it with the callsites, not ahead of them.
+    "mcp>=1.28.1,<2",
     # Transitive dependency hardened directly to dodge 5 dependabot advisories
     # (4 high, 1 medium) flagged on urllib3<2.7.0: cross-origin sensitive
     # header leak on proxied low-level redirects, decompression-bomb bypass
