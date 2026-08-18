@@ -559,7 +559,10 @@ a.cowork-plugin-row:hover { border-color: var(--ds-primary); background: var(--d
         {# Two entries, one section: #connect is the section, #cli its second
            tab. Kept as separate ticks because both anchors are inbound-link
            contracts and because a tab nobody can see from the TOC is a tab
-           half the readers never find. #}
+           half the readers never find. The section itself always renders —
+           the CLI tab has nothing to do with cloud-side MCP reachability —
+           so both rows are unconditional; `can_mcp_connector_ui` only gates
+           the MCP tab inside the section below. #}
         <li><a href="#connect" title="Set up your tools"><span class="hiw-toc-label">Set up your tools</span><span class="hiw-toc-tick" aria-hidden="true"></span></a></li>
         <li><a href="#cli" title="Terminal &amp; data"><span class="hiw-toc-label">Terminal &amp; data</span><span class="hiw-toc-tick" aria-hidden="true"></span></a></li>
         <li><a href="#first-run" title="Your first session"><span class="hiw-toc-label">Your first session</span><span class="hiw-toc-tick" aria-hidden="true"></span></a></li>
@@ -747,7 +750,15 @@ a.cowork-plugin-row:hover { border-color: var(--ds-primary); background: var(--d
        read both — so they are two tabs of one section rather than two
        stacked sections, which read as "connector, then the CLI you also
        owe us". `#cli` remains a real anchor on the CLI panel and the
-       script opens that tab for any deep link into it. #}
+       script opens that tab for any deep link into it.
+
+       `can_mcp_connector_ui` (#1024, `mcp.connector_ui_enabled`): a
+       VPN/intranet-only instance that turned this off cannot reach the MCP
+       connector from a cloud-based AI client, so only the MCP tab below
+       drops out — the CLI tab is unaffected (it needs no external
+       reachability) and the section itself always renders. The #surfaces
+       card linking to #connect and the /api/mcp/http endpoint itself are
+       deliberately untouched (see get_mcp_connector_ui_enabled docstring). #}
     <section class="hiw-sec" id="connect">
       {# The one fold every inbound CTA points at (#connect / #cli), so the
          script opens it on arrival — see `syncFoldToHash`. #}

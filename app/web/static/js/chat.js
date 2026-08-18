@@ -2469,9 +2469,9 @@ function renderQuestionRequest(frame) {
   const head = document.createElement("div");
   head.className = "cloud-chat-tool-head";
   const icon = document.createElement("span");
-  icon.className = "cloud-chat-tool-icon";
+  icon.className = "cloud-chat-tool-icon cloud-chat-question-icon";
   icon.setAttribute("aria-hidden", "true");
-  icon.textContent = "❓";
+  icon.textContent = "?";
   head.appendChild(icon);
   const name = document.createElement("span");
   name.className = "cloud-chat-tool-name";
@@ -2514,6 +2514,12 @@ function renderQuestionRequest(frame) {
     qtext.className = "cloud-chat-question-text";
     qtext.textContent = String(qq.question || "");
     qline.appendChild(qtext);
+    if (qq.multiSelect) {
+      const hint = document.createElement("span");
+      hint.className = "cloud-chat-question-hint";
+      hint.textContent = "Select all that apply";
+      qline.appendChild(hint);
+    }
     body.appendChild(qline);
 
     const opts = document.createElement("div");
@@ -2547,6 +2553,7 @@ function renderQuestionRequest(frame) {
           state[i].selected.clear();
           state[i].other = "";
           otherInput.value = "";
+          otherWrap.classList.remove("is-filled");
           if (!wasSelected) state[i].selected.add(label);
         }
         optButtons.forEach((btn) =>
@@ -2558,13 +2565,25 @@ function renderQuestionRequest(frame) {
       opts.appendChild(b);
     });
 
+    // "Other" renders as a peer cell in the option grid — a <label>
+    // wrapper (click anywhere in the cell focuses the input) around a
+    // bare text input.
+    const otherWrap = document.createElement("label");
+    otherWrap.className = "cloud-chat-question-otherwrap";
+    const otherLabel = document.createElement("span");
+    otherLabel.className = "cloud-chat-question-opt-label";
+    otherLabel.textContent = "Other";
+    otherWrap.appendChild(otherLabel);
     const otherInput = document.createElement("input");
     otherInput.type = "text";
     otherInput.className = "cloud-chat-question-other";
-    otherInput.placeholder = "Other…";
+    otherInput.placeholder = "Type your own answer…";
     otherInput.maxLength = 2000;
     otherInput.oninput = () => {
       state[i].other = otherInput.value;
+      // "is-filled" mirrors answerOf's trimmed test, so the picked tint
+      // never shows on whitespace the card would not accept.
+      otherWrap.classList.toggle("is-filled", otherInput.value.trim() !== "");
       if (!qq.multiSelect && otherInput.value.trim()) {
         // Free text replaces a picked option on single-select questions.
         state[i].selected.clear();
@@ -2572,7 +2591,8 @@ function renderQuestionRequest(frame) {
       }
       updateSubmit();
     };
-    opts.appendChild(otherInput);
+    otherWrap.appendChild(otherInput);
+    opts.appendChild(otherWrap);
     body.appendChild(opts);
     wrap.appendChild(body);
   });
@@ -2648,10 +2668,16 @@ function resolveQuestionCard(frame) {
     if (answered && frame.answers && typeof frame.answers === "object") {
       // Echo what was chosen so the card reads as transcript after the
       // buttons are gone (an answer given on another device shows up too).
-      const summary = document.createElement("span");
-      summary.className = "cloud-chat-question-answer-summary";
-      summary.textContent = Object.values(frame.answers).join(" · ");
-      actions.appendChild(summary);
+      // One chip per question; the answers map is keyed by question text,
+      // which rides along as the chip's tooltip so a multi-question card
+      // keeps each answer tied to what it answered.
+      Object.entries(frame.answers).forEach(([question, val]) => {
+        const chip = document.createElement("span");
+        chip.className = "cloud-chat-question-answer-summary";
+        chip.textContent = String(val);
+        chip.title = String(question);
+        actions.appendChild(chip);
+      });
     }
   }
 }

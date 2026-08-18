@@ -1412,6 +1412,8 @@ def get_mcp_connector_ui_enabled() -> bool:
     ``/admin/server-config`` inventory panel.
     """
     return feature_enabled("mcp", "connector_ui_enabled", env_var="AGNES_MCP_CONNECTOR_UI_ENABLED", default=True)
+
+
 def get_mcp_source_url_runtime_enforce() -> bool:
     """Whether the DNS-free url-policy check also runs at the two credentialed
     forward seams, not only when a source is configured (#1216).

@@ -10,15 +10,83 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.83.41] - 2026-08-18
+
 ### Added
 
 - **A public `/privacy` page, and an operator setting that overrides it.** The same four guarantees already sat at `/how-it-works#privacy`, but that route is behind sign-in — so the URL answered a signed-out fetch with a login redirect, which is exactly how a connector directory reads it, and both the Anthropic and the OpenAI submissions treat an unreachable privacy policy as an automatic rejection. `/privacy` answers unauthenticated. It also says what a vendor page honestly can: Agnes is self-hosted, so the data controller is the organization running the instance, and this describes what the *software* does, not their policy. An operator who has their own sets `instance.privacy_policy_url` (env: `AGNES_PRIVACY_POLICY_URL`) and the route redirects there — so `https://<instance>/privacy` is the right URL to register either way.
+
+- **Architecture figures: the whole platform on one page.** `ARCHITECTURE.md` now opens with a layered diagram of the nine planes — surfaces, the authorization boundary, the `api`/`gateway`/`worker` application plane, the agent + LLM path, knowledge & governance, dual-backend app state, the analytics data plane, connectors, external systems — plus two companion figures for the cycles a layered view flattens: the analyst loop (manifest → `agnes pull` → laptop → Claude Code → `agnes push` → corporate memory → the next session's stack) and query routing (which engine actually executes a statement, and the cost guardrail on each remote one). The SVGs live in `docs/diagrams/` and are produced by `scripts/dev/gen_architecture_diagrams.py`, which measures every drawn line against its box and exits non-zero rather than shipping clipped text — the failure mode a hand-edited SVG hides. Also corrects the stale schema version in `docs/architecture.md` (109 → 118, the actual `SCHEMA_VERSION`).
 
 ### Changed
 
 - **Agents can be used, not just configured.** Every agent card carries a **Chat** button that opens a session running *as* that agent — its role, its instructions, its scope. The runtime was never the missing part: `ChatManager.create_session(agent_id=…)` is surface-agnostic and is what the agent API already called; web chat was simply never wired to it, so a browser session always ran as your default agent no matter which one you had built. `POST /api/chat/sessions` now accepts `agent_slug`, resolved against your own agents only — someone else's slug 404s rather than 403s, so the endpoint does not confirm that another user's agent exists. Scope is not re-implemented: the id goes through the same broker seam as the agent API, so a `'selected'`-scoped agent is restricted identically whichever door the session came in through. The "Work in progress — actually running them is the next step" notice is gone, because that step is this one. Switching persona mid-conversation stays out of scope; a new session per agent is the model.
 - **A new agent can start from an Agent Template.** `POST /api/agents` takes `template_entity_id`, and `/agents` offers "Start from a template" as the leading path once you have one installed — with "Start blank" beside it, and as the whole flow for anyone with none. Until now the relationship between the two entities was invisible from the creation flow: the only way to act on it was to open a template, copy its prompt and paste it into an empty agent. A template fills the fields you left blank, so anything you passed still wins. It carries **behaviour only** — role and instructions, never knowledge, tables or connections — because a template is portable between users and instances, where a data-package id means something else or nothing at all. The template brings the role; you bring your own data.
 - **The Library's shareable "Agent" is now an "Agent Template".** Two different things were both called an Agent: the personal, runnable agent you configure on `/agents`, and the Library resource that is a system prompt other people install. Issue #865 saw the collision coming and asked the newer concept to take its own name; it did not, so the copy spent three separate places insisting the two were different — a callout on the Builder whose middle sentence existed only to say what the thing is *not*. The name now does that work, and the callout explains the template instead. Renamed in the Builder's type picker, the Library "new" menu, the `/agents` capability picker (which rendered the bare word `agent` on a row, inside the very page where the reader is building an agent), the `/admin/access` grant headings, the installed-bundle description and the tour copy. **Display only** — `type='agent'` is unchanged on the wire, in the DB, in the API and in the CLI, so nothing a client stores or filters on moves.
+
+## [0.83.40] - 2026-08-18
+
+### Added
+
+- **No-SQL access-policy builder, backend groundwork.** Two new admin-only endpoints under `/api/admin/registry/{table_id}/policy/`: `GET .../policy/columns` returns a table's real column schema plus sample values (from the stored profile, if any) and which tables are `policy_mapping`-eligible for a join; `POST .../policy/compile` turns a structured `{row_rules, row_combine, column_masks}` spec into the same canonical SQL the resolver runs, via `src.access_policy_compile.compile_policy` — a masked column is always `EXCLUDE`d before it is re-derived, so the two-column plaintext leak (`SELECT *, md5(col) AS col`) is structurally impossible. Neither endpoint persists anything; saving still goes through the existing `PUT /api/admin/registry/{table_id}` (`access_policy_sql`). No UI wiring yet — see `docs/superpowers/plans/2026-08-17-access-policy-builder-ux.md`.
+- **No-SQL access-policy builder, UI.** The `/admin/tables` policy editor now opens on a **Builder** tab: each of a table's real columns (name, type, sample values, distinct count) gets a mask picker — Show, Hide, Nullify, Pseudonymize, or Unmask for a chosen group — and every change re-compiles the spec server-side and drops the resulting SQL into the same textarea, now demoted to an "Advanced SQL" tab; preview and save are unchanged.
+- **Access-policy editor: inline eligibility fix + mapping toggle.** The interlock warning shown for a still-distributed table used to end in a dead-end sentence ("set server_only first, then come back"); it now carries a "Set server_only=true" button that fixes it in place and unlocks the builder immediately. A new switch lets an admin mark a table `policy_mapping=true` (referenceable from another table's policy SQL, not a grant) without the CLI.
+- **Access-policy builder: row rules + before/after preview.** The Builder tab's "Who sees which rows" section adds repeatable `[column] [operator] [value]` rules (caller-group / caller-email / caller-id / equals / one-of, combined with AND or OR) above the column list, feeding the same `policy/compile` call the mask pickers already drive — the row-level `WHERE` no longer needs the Advanced SQL tab. The preview now renders a before/after: every raw sample row, struck through when the candidate policy drops it, with a masked visible column showing the raw value struck next to its masked replacement and a hidden column struck in the header with an em-dash body — a best-effort match against the policied sample, since a table with no declared primary key has no guaranteed row identity to join on.
+
+### Fixed
+
+- **The access-policy before/after preview no longer diffs unrelated rows.** The raw sample and the policied sample were two independent `LIMIT 20` reads, so on any table where the rows a persona can see sit past the first 20, the "after" list contained rows the "before" list never showed — and the UI paired them anyway, striking through rows the policy never dropped and reporting masked-cell changes that never happened. The raw window is now materialized once and the policy runs against it, so both lists cover exactly the same rows (one bounded read instead of two — cheaper, not costlier, on a remote table). When a policy's reads of its own table cannot be bounded that way, the response says so and the preview shows the persona's slice on its own with a note, instead of inventing a diff.
+- **The access-policy builder now shows what the compiler said about a spec.** `policy/compile` has always returned warnings — a column it did not recognize and dropped, or a spec that filters and masks nothing at all ("this policy returns the full table to every caller") — and the builder discarded them, so an admin could save a policy that quietly does nothing. They render under the column list as the spec is edited.
+- **A failed "Set server_only=true" attempt no longer strands the button.** The inline interlock fix disabled its own button and relabelled it "Setting…" before the request; only the success path put it back, so a rejected or network-failed attempt left a permanently dead control and no way to retry.
+- **A malformed policy builder spec returns 422, not 500.** An unknown row operator or mask choice reached the compiler as a bare `ValueError` and escaped the handler; it is now `422 policy_compile_invalid_spec` with the offending value.
+
+## [0.83.39] - 2026-08-18
+
+### Added
+
+- **Admin / Tables: Databricks tables can now be registered from the UI.** The `+ Register new table` dropdown on `/admin/tables` includes a Databricks option that opens a registration drawer for both live (remote SQL warehouse) and synced (materialized parquet) modes, supporting whole-table auto `SELECT *` or custom SQL.
+
+### Fixed
+
+- **Admin / Tables: the Databricks shortcut no longer hides every other register option.** On an instance whose data source is Databricks with no other connection in the registry, `+ Register new table` opened the Databricks drawer straight away — and that shortcut was the button's only behaviour, so the dropdown was unreachable and with it the Jira docs link and the BigQuery / Keboola register items; registering any of them meant dropping to the API or the CLI. The primary is now a split button: the label keeps the shortcut, and the caret beside it always opens the full source list.
+
+- **Admin / Tables: the primary `+ Register new table` button opens the Databricks register modal directly only when Databricks is the sole connected source.** When additional sources are connected, the dropdown remains reachable so the other source options can still be selected.
+
+## [0.83.38] - 2026-08-18
+
+### Added
+
+- **Tunnel recipe for exposing agents (or the full connector) from a VPN/intranet-only instance (#1024).** A VPN-only Agnes instance can't be reached by cloud-based AI clients (Claude.ai, ChatGPT). `docs/DEPLOYMENT.md` now documents two operator-run outbound-tunnel patterns (Cloudflare Tunnel or Tailscale Funnel, templates under `infra/examples/vpn-agent-tunnel/`): an agent-only tunnel exposing just the Bearer-PAT-authenticated, owner-scoped agent-as-API runtime surface (recommended for VPN-only instances that still want external automation), or the existing full OAuth MCP connector for operators who want the whole "Claude as my assistant" experience despite being VPN-only. Operators who'd rather not tunnel at all already have `mcp.connector_ui_enabled` (#1291) to hide the misleading connector instructions instead.
+
+## [0.83.37] - 2026-08-17
+
+### Internal
+
+- **Groundwork for a Microsoft Teams chat surface.** `Surface.TEAMS_DM` and a Bot Framework Connector JWT/JWKS verifier (`services/teams_bot/sigverify.py`) land ahead of the webhook route and router registration that will actually reach them. Teams' auth model is a bearer JWT verified against Microsoft's rotating JWKS rather than Slack's symmetric HMAC signing secret, so verification needed its own module rather than reusing `services/slack_bot/sigverify.py`. Nothing is wired to an endpoint yet — first increment of the Teams bot MVP.
+
+## [0.83.36] - 2026-08-17
+
+### Added
+
+- Microsoft Entra ID (Azure AD) single-tenant OAuth login provider (`MICROSOFT_TENANT_ID`/`MICROSOFT_CLIENT_ID`/`MICROSOFT_CLIENT_SECRET`). Authentication only; users land in the Everyone group (IdP group sync not yet wired).
+- `docs/auth-microsoft-oauth.md` — Entra app registration, the three env vars, the redirect URI, every `/login?error=…` code the provider emits, and the guest-account trust model. Microsoft now also appears in the provider inventories (`docs/architecture.md`, `docs/CONFIGURATION.md`, `docs/README.md`), which is where an operator looks first.
+
+### Fixed
+
+- **The Microsoft provider's single-tenant promise is now structural rather than documentary.** `MICROSOFT_TENANT_ID` went verbatim into the OIDC discovery URL, so setting it to `common`, `organizations` or `consumers` — three values that endpoint accepts — silently produced exactly the multi-tenant configuration the module said it never uses: with `auth.allowed_domain` unset, any Microsoft account anywhere could sign in and self-provision an account. The tenant is now validated as a directory GUID or a verified domain, the three reserved names are refused *by name*, and a tenant that fails leaves the provider unavailable with a boot error explaining why — an instance must not come up multi-tenant quietly.
+- **A Microsoft sign-in can no longer take over an account through an unverified UPN.** Identity fell back to `preferred_username` whenever the `email` claim was absent, and `ensure_user` matches accounts by that string alone. The fallback now rejects Entra B2B guest UPNs (`user_othercorp.com#EXT#@tenant…`), which are not mailboxes. The broader property this narrows — a single tenant is the *authentication* boundary, not the identity one, because invited guests carry their external address in the `email` claim — is documented next to the env vars and warned about at boot when `auth.allowed_domain` is unset.
+- **One person, one account, across providers.** `ensure_user` matched on an exact email string (`=` is case-sensitive on DuckDB and Postgres alike) while providers disagreed on normalization — Microsoft lower-cases the resolved claim, Google passes the raw `email` claim through — so the same person arriving through two providers got two accounts. Provisioning now matches case-insensitively (new `users` repo method `get_by_email_ci`, both backends) and stores the address normalized; pre-existing mixed-case rows are matched, never duplicated.
+- **A refused Microsoft-only sign-in list now names Microsoft.** The 422 from `/api/admin/server-config` suggested "add the Google or Keboola OAuth credentials" and mentioned neither Microsoft nor its env vars, even though the availability probe reads them from the process environment at start — the same confusion that earned Google an explicit note. The detail now names `MICROSOFT_TENANT_ID` / `MICROSOFT_CLIENT_ID` / `MICROSOFT_CLIENT_SECRET`, and says an invalid tenant reads as unavailable too.
+
+- **A Microsoft-only sign-in configuration can be saved from the admin page.** `microsoft` reached `KNOWN_PROVIDERS` and the runtime availability probes, but the admin write path keeps a *second*, independent probe (`_provider_available_after_save`) that knew only password/google/email/keboola and fell through to `False` for anything else — so narrowing `auth.providers` to Microsoft was refused with "would leave no usable sign-in method" even with all three env vars set. The env path (`AGNES_AUTH_PROVIDERS`) never saw that validator, so the same instance could be configured one way and not the other.
+
+- **A failed Microsoft sign-in now says so, and says it about Microsoft.** The provider redirected to `/login?error=microsoft_not_configured`, a code the login page had no message for, so the user landed on a blank page with no explanation; its other two failures reused `oauth_failed` and `no_email`, both worded as Google problems. All three are now provider-scoped, following the precedent Keboola set.
+
+## [0.83.35] - 2026-08-17
+
+### Changed
+
+- **Web chat: the AskUserQuestion card now reads as a first-class conversational element.** The card drops the monospace tool-block header (and its red ❓) and the washed-out info tint for a plain surface panel with the brand accent: options render as an equal-height grid of selectable cards with a corner check on the selected state, the "Other…" free-text answer is a peer cell of the same grid instead of a floating input, Submit is a filled primary button whose disabled state is visibly parked rather than half-faded, and a resolved card echoes each answer as a chip beside the outcome badge.
 
 ## [0.83.34] - 2026-08-17
 
