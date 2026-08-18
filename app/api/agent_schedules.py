@@ -212,6 +212,12 @@ async def update_schedule(
         raise _err(404, "schedule_not_found", "Schedule not found")
 
     updates = payload.model_dump(exclude_unset=True)
+    # An explicitly-sent `"enabled": null` survives exclude_unset and would
+    # trip the column's NOT NULL constraint — which the except below maps to
+    # a misleading 409 schedule_name_taken (Devin Review on #1404). Reject it
+    # as the validation error it is.
+    if "enabled" in updates and updates["enabled"] is None:
+        raise _err(400, "invalid_enabled", "enabled must be true or false, not null")
     if "name" in updates:
         updates["name"] = _validate_name(updates["name"])
         existing = repo.get_by_name(agent["id"], updates["name"])

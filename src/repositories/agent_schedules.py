@@ -48,12 +48,17 @@ class AgentSchedulesRepository:
         prompt: str,
         enabled: bool = True,
     ) -> None:
+        # last_run_at is stamped at creation so the cadence anchors here: a
+        # brand-new row is NOT immediately due (is_table_due treats "never
+        # run" as always-due, and an unattended agent run spends tokens — the
+        # catch-up-on-create surprise a data sync tolerates is wrong for
+        # agents; Devin Review on #1404). First fire = next cadence tick.
         now = datetime.now(timezone.utc)
         self.conn.execute(
             """INSERT INTO agent_schedules
-            (id, agent_id, name, schedule, prompt, enabled, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            [id, agent_id, name, schedule, prompt, enabled, now, now],
+            (id, agent_id, name, schedule, prompt, enabled, last_run_at, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            [id, agent_id, name, schedule, prompt, enabled, now, now, now],
         )
 
     def get(self, id: str) -> Optional[Dict[str, Any]]:

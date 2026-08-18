@@ -31,15 +31,18 @@ class AgentSchedulesPgRepository:
         prompt: str,
         enabled: bool = True,
     ) -> None:
+        # last_run_at stamped at creation — cadence anchors here, no
+        # immediate catch-up fire for a brand-new row. Mirrors the DuckDB
+        # sibling; see its create() comment for the rationale.
         now = datetime.now(timezone.utc)
         with self._engine.begin() as conn:
             conn.execute(
                 sa.text(
                     """
                     INSERT INTO agent_schedules
-                      (id, agent_id, name, schedule, prompt, enabled, created_at, updated_at)
+                      (id, agent_id, name, schedule, prompt, enabled, last_run_at, created_at, updated_at)
                     VALUES
-                      (:id, :agent_id, :name, :schedule, :prompt, :enabled, :created_at, :updated_at)
+                      (:id, :agent_id, :name, :schedule, :prompt, :enabled, :last_run_at, :created_at, :updated_at)
                     """
                 ),
                 {
@@ -49,6 +52,7 @@ class AgentSchedulesPgRepository:
                     "schedule": schedule,
                     "prompt": prompt,
                     "enabled": enabled,
+                    "last_run_at": now,
                     "created_at": now,
                     "updated_at": now,
                 },

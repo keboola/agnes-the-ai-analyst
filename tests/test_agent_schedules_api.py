@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -98,6 +98,19 @@ def admin_client(env):
 _VALID_PAYLOAD = {"name": "morning-briefing", "schedule": "cron 0 7 * * 1-5", "prompt": "invoke the briefing skill"}
 
 
+def _backdate(schedule_id: str, days: int = 3) -> None:
+    """Creation anchors the cadence (last_run_at is stamped at insert), so a
+    brand-new row is never immediately due. Tests that need a DUE row push
+    its anchor into the past through the public claim primitive."""
+    from src.repositories import agent_schedules_repo
+
+    repo = agent_schedules_repo()
+    row = repo.get(schedule_id)
+    assert row is not None
+    past = datetime.now(timezone.utc) - timedelta(days=days)
+    assert repo.claim_for_run(schedule_id, row["last_run_at"], past) is True
+
+
 # ---------------------------------------------------------------------------
 # POST — create
 # ---------------------------------------------------------------------------
@@ -112,7 +125,8 @@ def test_create_schedule_returns_the_row(owner_client):
     assert body["schedule"] == "cron 0 7 * * 1-5"
     assert body["prompt"] == "invoke the briefing skill"
     assert body["enabled"] is True
-    assert body["last_run_at"] is None
+    # Cadence anchors at creation — a new schedule is NOT immediately due.
+    assert body["last_run_at"] is not None
     assert body["last_status"] is None
     assert body["last_job_id"] is None
 
@@ -260,6 +274,19 @@ def test_patch_schedule_updates_fields(owner_client):
     assert body["name"] == "morning-briefing"  # untouched
 
 
+def test_patch_schedule_rejects_explicit_null_enabled(owner_client):
+    """An explicitly-sent `"enabled": null` survives exclude_unset; before the
+    guard it hit the column's NOT NULL constraint, which the race backstop
+    mapped to a misleading 409 schedule_name_taken (Devin Review on #1404)."""
+    created = owner_client.post("/api/v1/agents/briefing-bot/schedules", json=_VALID_PAYLOAD).json()
+    resp = owner_client.patch(
+        f"/api/v1/agents/briefing-bot/schedules/{created['id']}",
+        json={"enabled": None},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["detail"]["code"] == "invalid_enabled"
+
+
 def test_patch_schedule_rejects_invalid_schedule(owner_client):
     created = owner_client.post("/api/v1/agents/briefing-bot/schedules", json=_VALID_PAYLOAD).json()
     resp = owner_client.patch(
@@ -355,6 +382,7 @@ def test_run_due_dispatches_a_due_schedule(env, admin_client, owner_client):
     from src.repositories import jobs_repo
 
     created = owner_client.post("/api/v1/agents/briefing-bot/schedules", json=_VALID_PAYLOAD).json()
+    _backdate(created["id"])
 
     resp = admin_client.post("/api/v1/agents/run-due")
 
@@ -381,7 +409,10 @@ def test_run_due_dispatches_a_due_schedule(env, admin_client, owner_client):
 
 
 def test_run_due_skips_disabled_schedule(admin_client, owner_client):
-    owner_client.post("/api/v1/agents/briefing-bot/schedules", json={**_VALID_PAYLOAD, "enabled": False})
+    created = owner_client.post(
+        "/api/v1/agents/briefing-bot/schedules", json={**_VALID_PAYLOAD, "enabled": False}
+    ).json()
+    _backdate(created["id"])  # due-but-disabled — the skip must be the flag
 
     resp = admin_client.post("/api/v1/agents/run-due")
 
@@ -395,9 +426,9 @@ def test_run_due_skips_not_yet_due_schedule(admin_client, owner_client):
     created = owner_client.post(
         "/api/v1/agents/briefing-bot/schedules", json={**_VALID_PAYLOAD, "schedule": "every 1h"}
     ).json()
-    # Simulate "just ran" so an hourly schedule isn't due again immediately.
-    now = datetime.now(timezone.utc)
-    assert agent_schedules_repo().claim_for_run(created["id"], None, now) is True
+    # Creation stamps last_run_at, so a just-created hourly row is
+    # inherently "just ran" — not due again for another hour.
+    assert agent_schedules_repo().get(created["id"])["last_run_at"] is not None
 
     resp = admin_client.post("/api/v1/agents/run-due")
 
@@ -409,6 +440,7 @@ def test_run_due_skips_schedule_for_soft_deleted_agent(env, admin_client, owner_
     from src.repositories import agents_repo
 
     created = owner_client.post("/api/v1/agents/briefing-bot/schedules", json=_VALID_PAYLOAD).json()
+    _backdate(created["id"])  # due — the skip must be the soft-deleted agent
     agents_repo().soft_delete(env["agent_id"])
 
     resp = admin_client.post("/api/v1/agents/run-due")
@@ -425,6 +457,7 @@ def test_run_due_atomic_claim_under_a_concurrent_sweep(env, owner_client):
     from src.repositories import agent_schedules_repo
 
     created = owner_client.post("/api/v1/agents/briefing-bot/schedules", json=_VALID_PAYLOAD).json()
+    _backdate(created["id"])
     row = agent_schedules_repo().get(created["id"])
     now = datetime.now(timezone.utc)
 
@@ -441,6 +474,7 @@ def test_run_due_one_bad_row_does_not_abort_the_sweep(env, admin_client, owner_c
     from src.repositories import agents_repo
 
     created = owner_client.post("/api/v1/agents/briefing-bot/schedules", json=_VALID_PAYLOAD).json()
+    _backdate(created["id"])
 
     real_get_by_id = agents_repo().__class__.get_by_id
     calls = {"n": 0}

@@ -60,7 +60,8 @@ def test_create_and_get(repo):
     assert row["schedule"] == "daily 07:00"
     assert row["prompt"] == "do the thing"
     assert bool(row["enabled"]) is True
-    assert row["last_run_at"] is None
+    # Cadence anchors at creation — a brand-new row is never immediately due.
+    assert row["last_run_at"] is not None
     assert row["last_status"] is None
     assert row["last_job_id"] is None
 
@@ -151,10 +152,11 @@ def test_delete_for_agent_with_no_rows_is_a_noop(repo):
     repo.delete_for_agent("no-such-agent")
 
 
-def test_claim_for_run_never_run_before(repo):
+def test_claim_for_run_with_the_read_value_wins(repo):
     repo.create(id="s1", agent_id="a1", name="morning", schedule="daily 07:00", prompt="p")
+    expected = repo.get("s1")["last_run_at"]
     now = datetime.now(timezone.utc)
-    assert repo.claim_for_run("s1", None, now) is True
+    assert repo.claim_for_run("s1", expected, now) is True
     row = repo.get("s1")
     # Round-trip through either backend may drop sub-second precision or
     # normalize tzinfo — compare via isoformat prefix rather than equality.
@@ -166,11 +168,12 @@ def test_claim_for_run_is_atomic_against_a_concurrent_sweep(repo):
     stale value a concurrent sweep tick would have read) must lose the
     race once the first claim has landed."""
     repo.create(id="s1", agent_id="a1", name="morning", schedule="daily 07:00", prompt="p")
+    stale = repo.get("s1")["last_run_at"]
     now = datetime.now(timezone.utc)
-    assert repo.claim_for_run("s1", None, now) is True
+    assert repo.claim_for_run("s1", stale, now) is True
     # A second sweep that read the row before the first claim still holds
-    # expected_last_run_at=None — it must now lose.
-    assert repo.claim_for_run("s1", None, now) is False
+    # the stale anchor — it must now lose.
+    assert repo.claim_for_run("s1", stale, now) is False
 
 
 def test_claim_for_run_missing_row_returns_false(repo):
