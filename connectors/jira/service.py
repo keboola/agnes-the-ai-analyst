@@ -477,10 +477,12 @@ def complete_issue_comments(
     to one embed's worth of already-embedded comments that dedup then drops.
     Against an endpoint that honours ``startAt`` over a stable list it cannot
     stop early with an unfetched gap; a comment DELETED mid-walk shifts
-    offsets and can slip one live comment past any offset-paginated walk (the
-    shortfall WARNING below surfaces that), and an endpoint that keeps
-    serving pages without ever growing the union is cut off once ``startAt``
-    passes ``total`` — marked incomplete — rather than looping forever.
+    offsets and can slip one live comment past any offset-paginated walk
+    (surfaced by the shortfall WARNING below and marked incomplete, so the
+    stored rows are preserved and the sidecar schedules a heal), and an
+    endpoint that keeps serving pages without ever growing the union is cut
+    off once ``startAt`` passes ``total`` — marked incomplete — rather than
+    looping forever.
 
     This is the single fetch-layer seam shared by both ingestion paths that
     call it right after their issue GET: ``JiraService.fetch_issue`` (webhook
@@ -522,10 +524,14 @@ def complete_issue_comments(
     instead of a truncated list so the incremental caller preserves the
     existing rows (the batch/full rebuild, which preserves nothing, opts out
     with ``preserve_on_incomplete=False`` and keeps the partial list).
-    An empty page (200, ``comments: []``) is NOT a failure — it means the
-    paged endpoint has no more comments, so the fetched set is complete
-    relative to the endpoint even if ``total`` was stale (e.g. comments
-    deleted between the two requests).
+    An empty page (200, ``comments: []``) is not a page FAILURE — it just
+    ends the walk (nothing exists at offsets >= ``startAt``). Completeness is
+    judged afterwards by the stored-vs-total check: any shortfall marks the
+    issue incomplete, because an empty page cannot prove no live comment was
+    skipped below ``startAt`` after a mid-walk deletion shifted offsets. When
+    ``total`` was merely stale (comments deleted between the two requests),
+    that marking costs one extra cycle: the sidecar-scheduled refetch sees a
+    consistent snapshot, completes cleanly, and the deletion propagates then.
     """
     issue_key = issue_data.get("key")
     fields = issue_data.get("fields") or {}
@@ -616,9 +622,6 @@ def complete_issue_comments(
             fields["comment"] = comment_field
             issue_data["fields"] = fields
 
-    if incomplete:
-        issue_data["_comments_incomplete"] = True
-
     stored = len(comment_field.get("comments", embedded))
     if stored < total:
         if incomplete:
@@ -634,6 +637,21 @@ def complete_issue_comments(
             total,
             cause,
         )
+        # Any shortfall marks the issue incomplete, not just a page failure:
+        # a stored set shorter than the snapshot's total cannot be proven
+        # complete — a comment deleted mid-walk shifts offsets and can hide a
+        # LIVE comment from every page (the empty-page break proves only that
+        # nothing exists at offsets >= startAt, not that nothing was skipped
+        # below it). The marker makes the incremental transform preserve the
+        # stored rows and the .incomplete sidecar schedules a refetch, whose
+        # fresh snapshot has a consistent total: a real deletion then
+        # propagates on that next clean refetch, one cycle late, instead of a
+        # skipped live comment silently vanishing from the parquet now
+        # (Devin Review on #1396).
+        incomplete = True
+
+    if incomplete:
+        issue_data["_comments_incomplete"] = True
 
 
 class JiraService:

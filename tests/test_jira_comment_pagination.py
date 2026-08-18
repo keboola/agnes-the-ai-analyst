@@ -184,6 +184,7 @@ class TestCompleteIssueComments:
 
         shortfall = [r.message for r in caplog.records if "comment.total" in r.message]
         assert shortfall and "deleted mid-fetch" in shortfall[0]
+        assert issue_data.get("_comments_incomplete") is True
 
     def test_shortfall_with_no_issue_key_is_attributed_to_skipped_pagination(self, caplog):
         """A payload without a key never paginates — the WARNING must not
@@ -256,10 +257,13 @@ class TestPaginationFailureMarksIncomplete:
 
         assert "_comments_incomplete" not in issue_data
 
-    def test_stale_total_empty_page_sets_no_marker(self):
-        """An empty page means the endpoint has no more comments — the fetched
-        set IS complete relative to the endpoint; ``total`` was stale (e.g.
-        comments deleted between the two requests). That is not a failure."""
+    def test_any_shortfall_marks_incomplete_even_without_a_page_failure(self):
+        """An empty page ends the walk without being a page failure, but it
+        cannot prove completeness: a mid-walk deletion shifts offsets and can
+        hide a LIVE comment below startAt. Any stored < total therefore marks
+        the issue incomplete — the incremental transform preserves the stored
+        rows and the sidecar schedules a refetch whose consistent snapshot
+        either recovers the skipped comment or propagates the real deletion."""
         issue_data = _issue_with_comments(total=124, embedded=100)
         empty_response = MagicMock()
         empty_response.status_code = 200
@@ -269,7 +273,26 @@ class TestPaginationFailureMarksIncomplete:
 
         complete_issue_comments(issue_data, BASE_URL, AUTH, client)
 
-        assert "_comments_incomplete" not in issue_data
+        assert issue_data.get("_comments_incomplete") is True
+
+    def test_mid_walk_deletion_that_skips_a_live_comment_marks_incomplete(self):
+        """The concrete race: total=250, embed carries c150..c249; page 0
+        returns c0..c99, then 50 old comments are deleted so the page at
+        startAt=100 serves c150..c249 — live comments c100..c149 are never
+        fetched, startAt=200 comes back empty. The short merged list must NOT
+        be publishable as complete."""
+        issue_data = _issue_with_comments(total=250, embedded=100)
+        # page 0 (pre-deletion), page at startAt=100 (post-deletion, offsets
+        # shifted: serves what is now items 100..199 = c150..c249), then empty.
+        client = _mock_client([_comment_page(0, 100), _comment_page(150, 250), []])
+
+        complete_issue_comments(issue_data, BASE_URL, AUTH, client)
+
+        assert issue_data.get("_comments_incomplete") is True, (
+            "a union stuck below total after an empty page means comments may "
+            "have been skipped by offset shift — publishing the short list "
+            "would silently drop live rows via the delete-then-insert"
+        )
 
 
 class TestPaginationDeduplicatesByCommentId:
