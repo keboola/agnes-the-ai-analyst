@@ -228,3 +228,41 @@ class TestGetInfraRepoUrl:
         with patch.dict("os.environ", {"AGNES_INFRA_REPO_URL": "  https://git.example.com/infra  "}):
             result = get_infra_repo_url()
         assert result == "https://git.example.com/infra"
+
+
+class TestFaviconKnob:
+    """The favicon is an operator-facing branding knob like brand/logo_svg, so
+    it has to appear in the introspection catalogue — and it is the first knob
+    whose resolver runs a static asset through `static_url()`, which adds a
+    `?v=<mtime>` cache-buster no declared default can match."""
+
+    def test_favicon_knob_present(self, seeded_app):
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        data = c.get("/api/admin/config-surface", headers=_auth(token)).json()
+        resolvers = {k["resolver"] for k in data["knobs"]}
+        assert "get_instance_favicon" in resolvers, (
+            "favicon is documented in CONFIGURATION.md but missing from the catalogue"
+        )
+
+    def test_unconfigured_favicon_does_not_report_as_yaml(self, seeded_app):
+        """`_source_for` infers `yaml` from `current != default`, and the
+        resolved favicon always carries `?v=<mtime>`. Without stripping that,
+        an instance which configured nothing would be told its favicon was set
+        deliberately — the same trap `instance_theme` documents."""
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        data = c.get("/api/admin/config-surface", headers=_auth(token)).json()
+        knob = next(k for k in data["knobs"] if k["resolver"] == "get_instance_favicon")
+        assert knob["source"] == "default", f"clean instance reports source={knob['source']!r}"
+        assert knob["current_value"].split("?v=")[0] == "/static/img/agnes-orb.png"
+        assert knob["default"] == "/static/img/agnes-orb.png", (
+            "the declared default must be the SERVED url the resolver returns, not the bare asset path"
+        )
+
+    def test_cache_buster_stripping_is_opt_in(self):
+        """Only knobs that declare `cache_busted` get the looser comparison, so
+        a genuine `?v=` in some other knob's value still reads as configured."""
+        from app.api.config_surface import _source_for
+
+        assert _source_for(None, "r", "img/x.png?v=9", "img/x.png") == "yaml"
+        assert _source_for(None, "r", "img/x.png?v=9", "img/x.png", cache_busted=True) == "default"
+        assert _source_for(None, "r", "img/other.png?v=9", "img/x.png", cache_busted=True) == "yaml"

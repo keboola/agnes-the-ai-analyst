@@ -57,10 +57,19 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     {% endif %}
-    {# Orb favicon + tagline title — the rail chrome (always on since the
-       topnav retirement, Wave 0 2026-08) ships both unconditionally now. #}
-    <link rel="icon" type="image/png" href="{{ static_url('img/agnes-orb.png') }}">
-    <title>{% block title %}{{ config.INSTANCE_NAME or 'Agnes — ask and reuse' }}{% endblock %}</title>
+    {# Favicon (default: the agnes-orb asset) + tagline title — the rail
+       chrome (always on since the topnav retirement, Wave 0 2026-08) ships
+       both unconditionally now. `instance_favicon` is already a ready-to-use
+       href — see get_instance_favicon(); `default(...)` covers a render
+       path that skips _chrome_ctx (none should, but see instance_theme's
+       own `| default('blue')` right above for the precedent). #}
+    {# No `type` attribute: the href is operator-configurable (a .png, .svg, .ico
+       or a data: URI all being valid), so any literal type would be a lie for
+       some of them. Per the HTML spec `type` is only a hint a UA MAY use to
+       skip a resource it cannot render, and there is exactly one icon link
+       here — nothing to choose between — so it buys nothing. #}
+    <link rel="icon" href="{{ instance_favicon | default(static_url('img/agnes-orb.png'), true) }}">
+    <title>{% block title %}{{ config.INSTANCE_NAME or ((instance_brand or 'Agnes') ~ ' — ask and reuse') }}{% endblock %}</title>
 
     {# CSS load order matters: style-custom.css carries the legacy
        palette + canonical component CSS; design-tokens.css declares

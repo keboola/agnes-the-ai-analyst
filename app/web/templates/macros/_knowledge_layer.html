@@ -26,8 +26,10 @@
 
 {# The trust caption — product name + lock glyph. Split out so the rail chat
    dashboard can render it on its own line beneath the hero (show_title=False
-   drops the "Agnes Knowledge Layer" title, leaving just the caption). #}
-{% macro knowledge_hub_label(title='Agnes Knowledge Layer',
+   drops the "{brand} Knowledge Layer" title, leaving just the caption).
+   Default `title` reads `instance_brand` off the caller's context — the
+   only importer (chat.html) uses `with context`. #}
+{% macro knowledge_hub_label(title=(instance_brand or 'Agnes') ~ ' Knowledge Layer',
                              caption='Secure. Private. Always in sync.',
                              show_title=True) %}
 {% if show_title %}<div class="klb-hub-title">{{ title }}</div>{% endif %}
@@ -38,12 +40,12 @@
 {% endmacro %}
 
 {% macro knowledge_layer_banner(pill_label='Work everywhere with the same knowledge',
-                                headline_1='Agnes is your knowledge layer.',
+                                headline_1=(instance_brand or 'Agnes') ~ ' is your knowledge layer.',
                                 headline_2='Use it here or connect your tools.',
                                 subcopy='Connect your favorite AI tools and work with the same company knowledge—without switching.',
                                 primary_label='Connect your tools',
                                 primary_href='/how-it-works#connect',
-                                orient_label='See how Agnes works',
+                                orient_label='See how ' ~ (instance_brand_short or 'Agnes') ~ ' works',
                                 orient_href='/how-it-works',
                                 tools=None) %}
 <section class="klb" aria-label="{{ headline_1 }} {{ headline_2 }}">
