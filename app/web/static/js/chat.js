@@ -1148,10 +1148,31 @@ function _sidebarRows() {
   return rows;
 }
 
-async function newChat() {
+/** `?agent=<slug>` on /chat — arriving from the Chat button on an agent card.
+ *
+ * Read once and consumed: the slug picks the agent this session RUNS AS, and
+ * `chat_sessions.agent_id` is only written at INSERT, so it applies to the
+ * session being created and not to every later "New chat" in the same tab.
+ * (Switching persona mid-conversation is a separate, larger feature.) */
+function _takeAgentSlugFromUrl() {
+  try {
+    const url = new URL(window.location.href);
+    const slug = url.searchParams.get("agent");
+    if (!slug) return null;
+    url.searchParams.delete("agent");
+    window.history.replaceState({}, "", url.toString());
+    return slug;
+  } catch (_) {
+    return null;
+  }
+}
+
+async function newChat(agentSlug) {
+  const body = { surface: "web" };
+  if (agentSlug) body.agent_slug = agentSlug;
   const created = await api("/api/chat/sessions", {
     method: "POST",
-    body: JSON.stringify({ surface: "web" }),
+    body: JSON.stringify(body),
   });
   // Reset the thread title — a brand-new session has no real title
   // yet, so the empty-state should show the capability panel and not
@@ -4666,8 +4687,26 @@ function renderCoPresence(host, participants) {
   }
   updateDashboardSuggestions(_sidebarOk ? _sessionsCache : null);
   // Sidebar cache (_sessionsCache) is now populated so openSession can
-  // resolve the title; fire the one-shot deep-link open.
+  // resolve the title; fire the one-shot deep-link open. Captured BEFORE the
+  // call: `_maybeOpenInitialSession` consumes `_initialSessionId` (nulls it)
+  // synchronously but defers the actual `openSession` into a
+  // `requestAnimationFrame` callback, so `currentChatId` below is not yet set
+  // even when a session deep-link is about to open.
+  const _hadInitialSession = !!_initialSessionId;
   _maybeOpenInitialSession();
+  // `/chat?agent=<slug>` — the Chat button on an agent card. Spawns a session
+  // running AS that agent. Skipped when a session deep-link already claimed
+  // the page, since that names a specific existing conversation.
+  const _agentSlug = _takeAgentSlugFromUrl();
+  if (_agentSlug && !currentChatId && !_hadInitialSession) {
+    hideCapabilities();
+    newChat(_agentSlug).catch((err) => {
+      console.error("chat: could not start a session as agent", err);
+      if (window.appToast) {
+        window.appToast({ kind: "error", msg: "Could not start a chat with that agent." });
+      }
+    });
+  }
   // Chat-driven onboarding — render the journey panel and prime the greeting/
   // gap-resolver hooks. Best-effort: a failure here never blocks the chat.
   initChatOnboarding({
