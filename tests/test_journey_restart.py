@@ -25,13 +25,29 @@ def test_complete_state_renders_a_restart_button():
     js = _js()
     assert 'complete ? "data-journey-restart" : "data-journey-finish-all"' in js
     # The incomplete-state label reads "Skip onboarding" now: the action always
-    # ticked all five flags without doing any of them, and "Finish" on the
+    # ticks all six flags without doing any of them, and "Finish" on the
     # panel's only button-shaped control invited exactly that click. The
     # complete-state half — the reason this test exists — is unchanged.
     assert '${complete ? "Start over" : "Skip onboarding"}' in js
 
 
-def test_restart_button_resets_all_five_flags_to_false():
+def test_skip_button_ticks_all_six_flags_to_true():
+    js = _js()
+    handler = js.split('const finishAllBtn = el.querySelector("[data-journey-finish-all]");', 1)[1].split(
+        "});\n  }", 1
+    )[0]
+    for field in (
+        "first_asked",
+        "stack_setup_done",
+        "explored_stack",
+        "catalog_discovered",
+        "use_anywhere",
+        "agent_created",
+    ):
+        assert f"{field}: true" in handler
+
+
+def test_restart_button_resets_all_six_flags_to_false():
     js = _js()
     handler = js.split('el.querySelector("[data-journey-restart]")', 1)[1].split("});\n  }", 1)[0]
     for field in (
@@ -40,6 +56,7 @@ def test_restart_button_resets_all_five_flags_to_false():
         "explored_stack",
         "catalog_discovered",
         "use_anywhere",
+        "agent_created",
     ):
         assert f"{field}: false" in handler
 
