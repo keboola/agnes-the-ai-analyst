@@ -248,8 +248,17 @@ def up(slug: str, payload: dict = Body(...), x_runner_token: str | None = Header
         # After MaximumRetryCount the daemon gives up, the container settles as
         # `exited` (→ status() reports "stopped"), and the reap-idle reconcile
         # scan flips the row to `error`. Trade-off: a healthy container is no
-        # longer auto-restarted across a daemon/VM reboot — acceptable for
-        # wake-on-request data apps, which are rebuilt on the next request.
+        # longer auto-restarted across a daemon/VM reboot. Such a container
+        # survives the reboot as `exited`, so the reconcile scan marks its row
+        # `error` and the app needs an explicit redeploy — it is NOT rebuilt by
+        # the next request, because the ingress proxy only wakes `sleeping` rows
+        # and renders `error` without re-checking. Under `unless-stopped` a
+        # reboot was no better: the daemon restarted the container straight into
+        # the non-idempotent clone above, so the app came back crash-looping
+        # rather than serving. Reconciling a dead container to `sleeping`
+        # instead would restore wake-on-request self-healing, but it would also
+        # hide a genuine crash loop behind a silent wake-retry cycle; surfacing
+        # the failure is the deliberate choice here.
         restart_policy={"Name": "on-failure", "MaximumRetryCount": 3},
     )
     return {"status": "started"}

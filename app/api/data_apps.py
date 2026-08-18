@@ -1949,21 +1949,29 @@ async def reap_idle_data_apps(
         if not acquired:
             logger.info("reap-idle: skipping %s — another operation is in flight", row["slug"])
             continue
+        stopped = False
         try:
             await run_in_threadpool(_runner().stop, row["slug"], row.get("sleep_mode") or "recreate")
+            stopped = True
         except (RunnerUnavailable, RunnerError) as exc:
             detail = getattr(exc, "detail", None) or str(exc)
             repo.set_state(row["id"], "error", f"reap-idle stop failed: {detail}")
             logger.warning("reap-idle: runner stop failed for %s: %s", row["slug"], detail)
-            continue
         finally:
             # The state write must happen while still holding the lease —
             # releasing first (as a bare `finally: release_op_lease(...)`
             # would) opens a window where a concurrent deploy/wake grabs the
             # freed lease, starts a container, and then this sweep's
             # "sleeping" write lands after it and clobbers that state.
-            repo.set_state(row["id"], "sleeping")
-            reaped.append(row["slug"])
+            #
+            # Guarded on `stopped`, because `finally` also runs on the way out
+            # of the `except` arm: writing "sleeping" unconditionally there
+            # overwrote the `error` just recorded for a stop that FAILED, and
+            # reported the slug as reaped while its container was still live —
+            # the opposite of what this endpoint's docstring promises.
+            if stopped:
+                repo.set_state(row["id"], "sleeping")
+                reaped.append(row["slug"])
             release_op_lease(row["slug"], holder)
 
     recovered: list[str] = []
@@ -2008,16 +2016,41 @@ async def reap_idle_data_apps(
             updated_at = updated_at.replace(tzinfo=timezone.utc)
         if (now - updated_at).total_seconds() <= _DEPLOY_STALE_TIMEOUT_S:
             continue
-        try:
-            status = await run_in_threadpool(_runner().status, row["slug"])
-        except (RunnerUnavailable, RunnerError) as exc:
-            logger.warning("reap-idle: reconcile status check failed for %s: %s", row["slug"], exc)
+        # Same non-blocking op lease the idle loop above takes, for a sharper
+        # reason: `deploy_data_app` holds it for the whole deploy while leaving
+        # the row in `running` with an `updated_at` that can be arbitrarily old
+        # (it only writes "running" again once `redeploy_current` returns, up to
+        # `up_timeout()` = 600 s on a cold image pull), and the runner's `up()`
+        # removes the old container BEFORE creating the new one. A mid-deploy
+        # app therefore reports `absent`/`stopped` entirely legitimately, and
+        # judging it here would flip a healthy app to `error` — which the
+        # ingress proxy latches (`state == "error"` is never re-checked), so
+        # only a manual redeploy would clear it.
+        acquired, holder = try_acquire_op_lease(row["slug"])
+        if not acquired:
+            logger.info("reap-idle: skipping reconcile of %s — another operation is in flight", row["slug"])
             continue
-        container = status.get("container")
-        if container in ("stopped", "absent"):
-            repo.set_state(row["id"], "error", f"container {container} while state=running")
-            logger.warning("reap-idle: %s state=running but container %s; marked error", row["slug"], container)
-            reconciled.append(row["slug"])
+        try:
+            try:
+                status = await run_in_threadpool(_runner().status, row["slug"])
+            except (RunnerUnavailable, RunnerError) as exc:
+                logger.warning("reap-idle: reconcile status check failed for %s: %s", row["slug"], exc)
+                continue
+            container = status.get("container")
+            if container in ("stopped", "absent"):
+                # Re-read before judging: the row was selected before the lease
+                # was taken, and the `status` call above is awaited, so a stop
+                # that finished in between leaves this loop's copy stale — and
+                # `absent` is the correct container state for the `sleeping`
+                # row such a stop produces, not an error to record.
+                fresh = repo.get(row["id"])
+                if fresh is None or fresh["state"] != "running":
+                    continue
+                repo.set_state(row["id"], "error", f"container {container} while state=running")
+                logger.warning("reap-idle: %s state=running but container %s; marked error", row["slug"], container)
+                reconciled.append(row["slug"])
+        finally:
+            release_op_lease(row["slug"], holder)
 
     _audit(
         conn,

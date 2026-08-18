@@ -1406,6 +1406,98 @@ class TestReap:
             conn.close()
         assert row["state"] == "running"
 
+    def test_reap_idle_reconcile_skips_app_with_op_lease_held_elsewhere(
+        self, admin_client, fake_runner, running_dead_container_app
+    ):
+        """The reconcile scan must respect the same per-slug op lease the idle
+        loop above it does. `deploy_data_app` holds that lease for the whole
+        deploy while leaving the row in `running` with a stale `updated_at`,
+        and `apps_runner.up()` removes the old container BEFORE creating the
+        new one — so a mid-deploy app legitimately reports `absent` and would
+        otherwise be flipped to `error`, which the ingress proxy latches
+        (only a manual redeploy clears it)."""
+        from app.api.data_apps import release_op_lease, try_acquire_op_lease
+
+        fake_runner._status = {"container": "absent", "ready": False}
+        acquired, holder = try_acquire_op_lease("crash1")
+        assert acquired
+        try:
+            r = admin_client.post("/api/data-apps/reap-idle")
+            assert r.status_code == 200
+            assert r.json()["reconciled"] == []
+        finally:
+            release_op_lease("crash1", holder)
+
+        from src.db import get_system_db
+        from src.repositories.data_apps import DataAppsRepository
+
+        conn = get_system_db()
+        try:
+            row = DataAppsRepository(conn).get_by_slug("crash1")
+        finally:
+            conn.close()
+        assert row["state"] == "running"
+
+    def test_reap_idle_reconcile_rereads_state_under_the_lease(
+        self, admin_client, fake_runner, running_dead_container_app
+    ):
+        """The row is selected before the lease is taken, so its state can be
+        stale by the time the lease is held. Here a concurrent stop lands
+        between the scan and the lease acquisition (simulated by mutating the
+        row from inside the runner's `status` call): the row is `sleeping`, an
+        `absent` container is exactly right for it, and the reconcile must not
+        write `error` over a legitimately sleeping app."""
+        from src.db import get_system_db
+        from src.repositories.data_apps import DataAppsRepository
+
+        def status_with_concurrent_stop(slug):
+            conn = get_system_db()
+            try:
+                repo = DataAppsRepository(conn)
+                repo.set_state(repo.get_by_slug(slug)["id"], "sleeping")
+            finally:
+                conn.close()
+            return {"container": "absent", "ready": False}
+
+        fake_runner.status = status_with_concurrent_stop
+        r = admin_client.post("/api/data-apps/reap-idle")
+        assert r.status_code == 200
+        assert r.json()["reconciled"] == []
+
+        conn = get_system_db()
+        try:
+            row = DataAppsRepository(conn).get_by_slug("crash1")
+        finally:
+            conn.close()
+        assert row["state"] == "sleeping"
+
+    def test_reap_idle_stop_failure_keeps_the_error_it_recorded(self, admin_client, fake_runner, running_idle_app):
+        """A runner failure while stopping an idle app must leave the row in
+        `error` with the runner's message, as the endpoint's docstring
+        promises — and must NOT report the slug as reaped. The `finally` that
+        writes `sleeping` runs even on the `except` path's `continue`, so
+        without a guard it clobbers the error it had just recorded and the app
+        is reported reaped while its container is still live."""
+
+        def failing_stop(slug, mode="recreate"):
+            raise RunnerError(500, "daemon busy")
+
+        fake_runner.stop = failing_stop
+        r = admin_client.post("/api/data-apps/reap-idle")
+        assert r.status_code == 200
+        assert r.json()["reaped"] == []
+
+        from src.db import get_system_db
+        from src.repositories.data_apps import DataAppsRepository
+
+        conn = get_system_db()
+        try:
+            row = DataAppsRepository(conn).get_by_slug("sapp")
+        finally:
+            conn.close()
+        assert row["state"] == "error"
+        assert "daemon busy" in row["state_detail"]
+
 
 class TestGitCredential:
     def test_mint_git_credential(self, client_as_user, seeded_repo_with_commit):
