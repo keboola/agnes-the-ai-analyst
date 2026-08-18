@@ -54,6 +54,11 @@ _RESCUE_PROVIDERS: tuple[str, ...] = ("password", "email")
 # not on every request (same rationale as the parse cache above).
 _LOCKOUT_RESCUE_LOGGED: Optional[tuple] = None
 
+# Providers whose availability probe RAISED rather than answering. Populated by
+# `_provider_available` and read by the rescue, which must not fire on a
+# transient fault — see `_rescue_if_unusable`.
+_probe_raised: set[str] = set()
+
 
 def _provider_available(name: str) -> bool:
     """Config-completeness of one provider (``password``: nothing to
@@ -63,12 +68,12 @@ def _provider_available(name: str) -> bool:
     Raise-as-unavailable is a deliberate direction of failure: on a healthy
     instance these probes are in-memory config/env reads that do not raise,
     and if one somehow does, reading it as available would leave the login
-    page offering only a provider that is actively broken — a lockout. The
-    cost is that a transient raise can trip ``_rescue_if_unusable`` and widen
-    the offering to all providers for the fault's duration (Devin Review on
-    PR #1288) — accepted, because the rescue's one-shot error log makes it
-    loud and every offered provider still authenticates on its own merits;
-    availability here gates OFFERING, never identity.
+    page offering only a provider that is actively broken — a lockout.
+    ``_probe_raised`` records that it raised, though, so the rescue can tell
+    "probed and found unconfigured" from "could not tell": since the rescue
+    now NARROWS rather than widens, letting a transient fault trigger it would
+    take the operator's intended door offline for the fault's duration on no
+    information at all. Availability here gates OFFERING, never identity.
     """
     module_path = _AVAILABILITY_PROBES.get(name)
     if module_path is None:
@@ -76,6 +81,8 @@ def _provider_available(name: str) -> bool:
     try:
         return bool(importlib.import_module(module_path).is_available())
     except Exception:
+        logger.warning("availability probe for provider %r raised; treating as unavailable", name, exc_info=True)
+        _probe_raised.add(name)
         return False
 
 
@@ -124,7 +131,19 @@ def _rescue_if_unusable(cache_key: tuple, allowlist: Optional[list[str]]) -> Opt
     ``auth.allowed_domain`` unset any Google account self-provisions. Password
     and magic link both need an existing user row, so they end the lockout
     without admitting anyone new."""
-    if allowlist is None or any(_provider_available(name) for name in allowlist):
+    if allowlist is None:
+        return allowlist
+    _probe_raised.clear()
+    if any(_provider_available(name) for name in allowlist):
+        return allowlist
+    if _probe_raised:
+        # At least one probe could not answer. "Everything looks unavailable"
+        # is then an artefact of the fault, not a statement about the
+        # configuration — and rescuing would narrow the offering (404 on the
+        # operator's intended door) for its duration. Leave the allowlist
+        # alone; each provider is still gated by its own is_available() at the
+        # route, so nothing broken becomes reachable, and the offering returns
+        # to normal by itself when the fault clears.
         return allowlist
     global _LOCKOUT_RESCUE_LOGGED
     state = (cache_key, tuple(allowlist))

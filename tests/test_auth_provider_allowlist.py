@@ -124,6 +124,32 @@ class TestLockoutRescue:
         assert "break-glass" in text, text
         assert "stays reachable" not in text, text
 
+    def test_a_raising_probe_does_not_trigger_the_rescue(self, monkeypatch):
+        """A probe that RAISED is not the same as one that answered "no".
+
+        The probes are in-memory config reads, but they are wrapped in a
+        try/except that reads a raise as unavailable. While the rescue WIDENED
+        that was harmless; now that it NARROWS, letting a transient fault fire
+        it would 404 the operator's intended login door for the fault's
+        duration on no information at all. Each provider is still gated by its
+        own is_available() at the route, so leaving the allowlist alone cannot
+        make anything broken reachable.
+        """
+        monkeypatch.setenv("AGNES_AUTH_PROVIDERS", "microsoft")
+        from app.auth import provider_registry
+        from app.auth.provider_registry import configured_allowlist
+
+        def boom(_name):
+            raise RuntimeError("transient")
+
+        monkeypatch.setattr(provider_registry, "_AVAILABILITY_PROBES", {"microsoft": "app.auth.providers.microsoft"})
+        monkeypatch.setattr(
+            provider_registry.importlib,
+            "import_module",
+            lambda path: boom(path),
+        )
+        assert configured_allowlist() == ["microsoft"]
+
     def test_web_lockout_config_still_offers_usable_logins(self, make_client):
         # End-to-end: keboola named alone with no stack configured — exactly
         # the lockout scenario. Login page must still offer usable methods and

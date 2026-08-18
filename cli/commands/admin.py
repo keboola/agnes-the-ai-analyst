@@ -1628,13 +1628,14 @@ def break_glass_grant_admin(
             )
             raise typer.Exit(2)
 
-        # Case-insensitive read + normalized write: an operator typing the
-        # address the way a person writes it must reach the account an OAuth
-        # claim created, not mint a second one.
-        existing = users.get_by_email_ci(email)
+        # Normalize BEFORE the read: get_by_email_ci folds case in SQL but does
+        # NOT trim, so a padded argument would miss the existing row and then
+        # fail the UNIQUE(email) constraint on insert — the last-resort admin
+        # recovery dying on a stray space.
+        normalized = normalize_email(email)
+        existing = users.get_by_email_ci(normalized)
         if existing is None:
             user_id = _uuid.uuid4().hex
-            normalized = normalize_email(email)
             users.create(
                 id=user_id,
                 email=normalized,

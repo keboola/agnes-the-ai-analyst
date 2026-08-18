@@ -544,7 +544,7 @@ async def add_member(
     _guard_google_managed(g)
     # Case-insensitive: an operator typing the address the way a person
     # writes it must reach the account an OAuth claim created.
-    target = users_repo().get_by_email_ci(payload.email)
+    target = users_repo().get_by_email_ci((payload.email or "").strip())
     if not target:
         raise HTTPException(status_code=404, detail=f"User {payload.email!r} not found")
     members = user_group_members_repo()

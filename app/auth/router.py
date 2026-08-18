@@ -216,10 +216,14 @@ async def bootstrap(
     password_hash = PasswordHasher().hash(body.password) if body.password else None
 
     # If a matching user already exists (e.g. seed), update it; else create fresh.
-    # Matched case-insensitively, and stored normalized, so bootstrap can never
-    # be the write that creates a second account for a seeded address.
+    # Resolved through the SHARED resolver, not by scanning `existing` — that
+    # list is ordered by email, so picking the first case-insensitive match
+    # tie-breaks alphabetically while every sign-in door tie-breaks on oldest.
+    # With two case variants present, bootstrap would then set the password on
+    # a row no sign-in path ever resolves to. (`existing` is still the read
+    # behind the lockout check above.)
     normalized_email = normalize_email(body.email)
-    existing_user = next((u for u in existing if normalize_email(u.get("email")) == normalized_email), None)
+    existing_user = repo.get_by_email_ci(normalized_email) if normalized_email else None
     if existing_user:
         user_id = existing_user["id"]
         repo.update(id=user_id, password_hash=password_hash)
@@ -277,11 +281,13 @@ async def bootstrap(
             body.email,
         )
 
-    token = create_access_token(user_id=user_id, email=body.email)
+    # The account's own address, not the spelling that was typed.
+    account_email = (existing_user or {}).get("email") or normalized_email
+    token = create_access_token(user_id=user_id, email=account_email)
     return TokenResponse(
         access_token=token,
         user_id=user_id,
-        email=body.email,
+        email=account_email,
         role="admin",
     )
 
