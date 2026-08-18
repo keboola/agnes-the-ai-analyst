@@ -204,7 +204,7 @@ def compile_policy(spec: dict, columns: Sequence[Any]) -> CompiledPolicy:
             raise ValueError(f"unknown mask: {choice!r}")
         masked_exprs[col] = expr
 
-    projections: list[str] = []
+    projections = []
     for name, _ in col_info:
         if name in masked_exprs:
             projections.append(masked_exprs[name])

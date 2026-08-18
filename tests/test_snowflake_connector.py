@@ -31,6 +31,7 @@ SF_SETTINGS = {
     "database": "analytics",
     "warehouse": "compute_wh",
     "role": "analyst",
+    "auth_type": "password",
     "token_env": "SNOWFLAKE_PASSWORD",
 }
 
@@ -259,7 +260,7 @@ def test_init_extract_creates_meta_and_views(tmp_path, monkeypatch):
     out = tmp_path / "extracts" / "snowflake"
     attach_calls = []
 
-    def fake_attach(conn, *, url, token):
+    def fake_attach(conn, *, url, token, passphrase=None):
         attach_calls.append((url, token))
         conn.execute("ATTACH ':memory:' AS sf")
         conn.execute("CREATE SCHEMA sf.public")
@@ -759,7 +760,7 @@ def test_init_extract_persists_custom_token_env(tmp_path, monkeypatch):
         [{"name": "orders", "bucket": "public", "source_table": "orders"}],
         token="secret",
         token_env="SF_SECRET_PASSWORD",
-        attach_fn=lambda conn, *, url, token: None,
+        attach_fn=lambda conn, *, url, token, passphrase=None: None,
     )
 
     conn = duckdb.connect(str(out / "extract.duckdb"))
@@ -785,7 +786,7 @@ def test_init_extract_default_token_env_is_the_module_default(tmp_path, monkeypa
         SF_SETTINGS["role"],
         [{"name": "orders", "bucket": "public", "source_table": "orders"}],
         token="secret",
-        attach_fn=lambda conn, *, url, token: None,
+        attach_fn=lambda conn, *, url, token, passphrase=None: None,
     )
     conn = duckdb.connect(str(out / "extract.duckdb"))
     try:
@@ -819,7 +820,7 @@ def test_init_extract_warns_when_token_env_not_allowlisted(tmp_path, monkeypatch
             [{"name": "orders", "bucket": "public", "source_table": "orders"}],
             token="secret",
             token_env="SF_SECRET_PASSWORD",
-            attach_fn=lambda conn, *, url, token: None,
+            attach_fn=lambda conn, *, url, token, passphrase=None: None,
         )
     assert "AGNES_REMOTE_ATTACH_TOKEN_ENVS" in caplog.text
 
@@ -959,3 +960,44 @@ def test_admin_register_snowflake_custom_sql_allows_ctes(seeded_app, snowflake_i
         headers=_auth(seeded_app["admin_token"]),
     )
     assert resp.status_code == 201, resp.text
+
+
+def test_attach_snowflake_refuses_a_key_carrying_the_dollar_quote_tag(monkeypatch):
+    """The PEM is written into CREATE SECRET inside `$PK$ … $PK$` dollar-quoting,
+    because a PEM carries newlines. That was safe while the key was REBUILT via
+    `private_key.private_bytes(...)` — generated output cannot contain the tag.
+    Now that the operator's bytes are forwarded verbatim (so DuckDB decrypts the
+    key itself), a key whose text contains `$PK$` would close the literal early
+    and inject the remainder as SQL into a statement that carries a credential.
+    """
+    monkeypatch.setenv("AGNES_REMOTE_ATTACH_HOST_ALLOWLIST", SF_HOST)
+    conn = MagicMock()
+    url = build_remote_attach_url(
+        SF_SETTINGS["account"],
+        SF_SETTINGS["database"],
+        SF_SETTINGS["warehouse"],
+        SF_SETTINGS["user"],
+    )
+    hostile = "-----BEGIN PRIVATE KEY-----\nQUJD$PK$, WAREHOUSE 'x'); DROP TABLE t; --\n-----END PRIVATE KEY-----"
+    with pytest.raises(ValueError, match="dollar-quote tag"):
+        attach_snowflake(conn, alias=SF_ALIAS, url=url, token=hostile)
+    assert not any("DROP TABLE" in str(c) for c in conn.execute.call_args_list)
+
+
+def test_attach_snowflake_key_pair_forwards_the_passphrase(monkeypatch):
+    """A key-pair secret carries the PEM verbatim plus PRIVATE_KEY_PASSPHRASE,
+    and the passphrase is escaped as a normal quoted literal."""
+    monkeypatch.setenv("AGNES_REMOTE_ATTACH_HOST_ALLOWLIST", SF_HOST)
+    conn = MagicMock()
+    url = build_remote_attach_url(
+        SF_SETTINGS["account"],
+        SF_SETTINGS["database"],
+        SF_SETTINGS["warehouse"],
+        SF_SETTINGS["user"],
+    )
+    pem = "-----BEGIN ENCRYPTED PRIVATE KEY-----\nQUJD\n-----END ENCRYPTED PRIVATE KEY-----"
+    attach_snowflake(conn, alias=SF_ALIAS, url=url, token=pem, passphrase="it's secret")
+    secret_call = next(c[0][0] for c in conn.execute.call_args_list if "CREATE OR REPLACE SECRET" in str(c[0][0]))
+    assert "AUTH_TYPE 'key_pair'" in secret_call
+    assert pem in secret_call
+    assert "PRIVATE_KEY_PASSPHRASE 'it''s secret'" in secret_call

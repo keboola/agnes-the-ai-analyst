@@ -49,6 +49,8 @@ webhooks_app = typer.Typer(help="Manage an agent's outbound job-completion webho
 agent_app.add_typer(webhooks_app, name="webhooks")
 memory_app = typer.Typer(help="Manage an agent's private memory notebook (owner-facing)")
 agent_app.add_typer(memory_app, name="memory")
+schedule_app = typer.Typer(help="Manage an agent's scheduled runs")
+agent_app.add_typer(schedule_app, name="schedule")
 
 # Valid `?status=` filter values for `GET /api/v1/agents/{id}/memories` —
 # mirrors `app/api/agents_admin.py`'s memory-row `status` column (the server
@@ -674,3 +676,134 @@ def memory_delete(
     if resp.status_code != 204:
         _fail(resp)
     typer.echo(f"Deleted memory {memory_id}")
+
+
+# ---------------------------------------------------------------------------
+# schedule — scheduled runs (agent-schedules design,
+# docs/superpowers/specs/2026-08-17-agent-schedules-design.md). Slug-keyed,
+# same as webhooks — `app/api/agent_schedules.py`'s CRUD has no get-by-name
+# route (only list + PATCH/DELETE by id), so `remove`/`enable`/`disable`
+# resolve a schedule name via one `list` round trip, same pattern
+# `_resolve_agent` uses for slug -> id.
+# ---------------------------------------------------------------------------
+
+
+def _print_schedule(row: dict) -> None:
+    typer.echo(f"id:          {row.get('id')}")
+    typer.echo(f"name:        {row.get('name')}")
+    typer.echo(f"schedule:    {row.get('schedule')}")
+    typer.echo(f"prompt:      {row.get('prompt')}")
+    typer.echo(f"enabled:     {row.get('enabled')}")
+    typer.echo(f"last_run_at: {row.get('last_run_at') or '(never)'}")
+    typer.echo(f"last_status: {row.get('last_status') or '-'}")
+    typer.echo(f"last_job_id: {row.get('last_job_id') or '-'}")
+
+
+def _resolve_schedule(slug: str, name: str) -> dict:
+    resp = api_get(f"/api/v1/agents/{slug}/schedules")
+    if resp.status_code != 200:
+        _fail(resp)
+    rows = resp.json().get("data", [])
+    for row in rows:
+        if row.get("name") == name:
+            return row
+    typer.echo(
+        f"Schedule not found: {name}. List this agent's schedules with: agnes agent schedule list {slug}",
+        err=True,
+    )
+    raise typer.Exit(1)
+
+
+@schedule_app.command("list")
+def schedule_list(
+    slug: str = typer.Argument(..., help="Agent slug"),
+    as_json: bool = typer.Option(False, "--json"),
+):
+    """List an agent's scheduled runs."""
+    resp = api_get(f"/api/v1/agents/{slug}/schedules")
+    if resp.status_code != 200:
+        _fail(resp)
+    rows = resp.json().get("data", [])
+    if as_json:
+        typer.echo(json.dumps(rows, indent=2))
+        return
+    typer.echo(f"Schedules: {len(rows)}")
+    if not rows:
+        typer.echo(
+            f"No schedules yet. Add one with: agnes agent schedule add {slug} "
+            f'--name <name> --schedule "cron 0 7 * * 1-5" --prompt <prompt>'
+        )
+        return
+    for i, row in enumerate(rows):
+        if i:
+            typer.echo("")
+        _print_schedule(row)
+
+
+@schedule_app.command("add")
+def schedule_add(
+    slug: str = typer.Argument(..., help="Agent slug"),
+    name: str = typer.Option(..., "--name", help="Run-type label, unique per agent (e.g. morning-briefing)"),
+    schedule: str = typer.Option(
+        ...,
+        "--schedule",
+        help="'every Nm'/'every Nh', 'daily HH:MM[,HH:MM]' (UTC), or 'cron <5-field expr>' (UTC)",
+    ),
+    prompt: str = typer.Option(..., "--prompt", help="Prompt sent to the agent on each fire"),
+    disabled: bool = typer.Option(False, "--disabled", help="Create the schedule disabled"),
+    as_json: bool = typer.Option(False, "--json"),
+):
+    """Add a scheduled run for an agent."""
+    payload = {"name": name, "schedule": schedule, "prompt": prompt, "enabled": not disabled}
+    resp = api_post(f"/api/v1/agents/{slug}/schedules", json=payload)
+    if resp.status_code != 201:
+        _fail(resp)
+    row = resp.json()
+    if as_json:
+        typer.echo(json.dumps(row, indent=2))
+        return
+    typer.echo(f"Created schedule id={row.get('id')} name={row.get('name')} schedule={row.get('schedule')}")
+
+
+@schedule_app.command("remove")
+def schedule_remove(
+    slug: str = typer.Argument(..., help="Agent slug"),
+    name: str = typer.Argument(..., help="Schedule name"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
+):
+    """Remove a scheduled run."""
+    row = _resolve_schedule(slug, name)
+    if not yes:
+        confirm = typer.confirm(f"Delete schedule '{name}' from agent '{slug}'?")
+        if not confirm:
+            raise typer.Abort()
+    resp = api_delete(f"/api/v1/agents/{slug}/schedules/{row['id']}")
+    if resp.status_code != 204:
+        _fail(resp)
+    typer.echo(f"Deleted schedule {name}")
+
+
+def _set_schedule_enabled(slug: str, name: str, enabled: bool) -> None:
+    row = _resolve_schedule(slug, name)
+    resp = api_patch(f"/api/v1/agents/{slug}/schedules/{row['id']}", json={"enabled": enabled})
+    if resp.status_code != 200:
+        _fail(resp)
+    typer.echo(f"Schedule {name} {'enabled' if enabled else 'disabled'}")
+
+
+@schedule_app.command("enable")
+def schedule_enable(
+    slug: str = typer.Argument(..., help="Agent slug"),
+    name: str = typer.Argument(..., help="Schedule name"),
+):
+    """Enable a scheduled run."""
+    _set_schedule_enabled(slug, name, True)
+
+
+@schedule_app.command("disable")
+def schedule_disable(
+    slug: str = typer.Argument(..., help="Agent slug"),
+    name: str = typer.Argument(..., help="Schedule name"),
+):
+    """Disable a scheduled run."""
+    _set_schedule_enabled(slug, name, False)
