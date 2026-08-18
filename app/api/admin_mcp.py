@@ -277,7 +277,7 @@ class UpdateToolRequest(BaseModel):
 
 class AddGrantRequest(BaseModel):
     group_id: str
-    # v120: opt this group into the tool's MUTATING surface. Tri-state:
+    # v121: opt this group into the tool's MUTATING surface. Tri-state:
     # omitted (None) leaves an existing grant's flag unchanged (a new grant
     # lands read-only); an explicit true/false sets it — re-POSTing with a
     # value is the edit path. Consumed by the per-tool endpoint only; the
@@ -1939,7 +1939,7 @@ async def get_mcp_tool(
         raise HTTPException(status_code=404, detail="mcp_tool_not_found")
     out = _serialize_tool(row)
     out["grants"] = repo.grants_for_tool(tool_id)
-    # v120: same grants with their allow_mutating flags. `grants` (bare ids)
+    # v121: same grants with their allow_mutating flags. `grants` (bare ids)
     # stays for existing consumers.
     out["grant_rows"] = repo.grant_rows_for_tool(tool_id)
     return out
@@ -2178,7 +2178,7 @@ async def add_mcp_source_grant(
         "total": len(tools),
         # This bulk grant is deliberately read-only: a `mutating=True` tool
         # stays unreachable for the group until the admin opts it in per tool
-        # (POST /mcp-tools/{id}/grants with allow_mutating=true — v120). On an
+        # (POST /mcp-tools/{id}/grants with allow_mutating=true — v121). On an
         # upstream that annotates nothing that is ALL of them, so reporting
         # only "granted 37 of 37" would promise the group an access they do
         # not have. Same reasoning as `tools_admin_only` on enable.

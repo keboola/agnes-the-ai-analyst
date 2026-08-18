@@ -1055,7 +1055,7 @@ the tool-name limit model APIs enforce. Returns `tools_registered` plus
 `tools_admin_only`, the number of registered tools recorded as mutating: the
 passthrough policy gate refuses those unless the caller is an admin or one of
 the caller's groups holds a grant with `allow_mutating=true` on that specific
-tool (`POST /api/admin/mcp-tools/{tool_id}/grants` — schema v120; agent
+tool (`POST /api/admin/mcp-tools/{tool_id}/grants` — schema v121; agent
 profiles ride their owner's groups, still narrowed by connection scope), and
 on an upstream that annotates nothing that is all of them — the caller needs
 to see that before promising analysts anything. A registration failure returns 502
