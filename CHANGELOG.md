@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- **Snowflake is now configurable from the `/admin/data-sources` "Add data" wizard.** The source picker exposes a Snowflake tile, the step-1 form collects account, user, password, database, warehouse and optional role, saves non-secret coordinates to `data_source.snowflake` via `/admin/server-config`, stores the password as `SNOWFLAKE_PASSWORD`, and step 2 registers schema/table rows as `remote` (live) or `materialized`. A Snowflake derived-source card also appears on `/admin/data-sources` once configured.
+
 ## [0.83.47] - 2026-08-18
 
 ### Added

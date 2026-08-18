@@ -6760,9 +6760,9 @@ def _gib(n: int) -> str:
 
 
 # Connectors that produce tables WITHOUT keeping a `source_connections` row:
-# BigQuery is credentialed once at instance level, Jira arrives over webhooks,
-# and `local` is whatever an admin dropped in the extracts directory. They were
-# invisible on this page — the list asked the API for `?source_type=keboola`
+# BigQuery / Snowflake are credentialed once at instance level, Jira arrives over
+# webhooks, and `local` is whatever an admin dropped in the extracts directory.
+# They were invisible on this page — the list asked the API for `?source_type=keboola`
 # and the heading said "Keboola projects" — while the Add-data drawer happily
 # offered all four connectors. That is the inconsistency this table closes: a
 # connector that can be ADDED here must be VISIBLE here, so each of these gets
@@ -6774,6 +6774,12 @@ _DERIVED_SOURCES: dict[str, dict] = {
         "subtitle": "Live queries · service account in instance secrets",
         "settings_href": "/admin/datasource-credentials",
         "settings_label": "Instance secrets",
+    },
+    "snowflake": {
+        "name": "Snowflake",
+        "subtitle": "Live or materialized · SQL warehouse",
+        "settings_href": "/admin/server-config",
+        "settings_label": "Server config",
     },
     "jira": {
         "name": "Jira",
@@ -6889,7 +6895,10 @@ def _source_inventory() -> dict:
         if conns_per_type.get(stype):
             continue  # a real connection of this type owns the card
         own_tables = unlinked_by_type.pop(stype, [])
-        if not own_tables and not (stype == "bigquery" and _bigquery_credentialed()):
+        if not own_tables and not (
+            (stype == "bigquery" and _bigquery_credentialed()) or
+            (stype == "snowflake" and _snowflake_credentialed())
+        ):
             continue
         did = f"derived:{stype}"
         by_conn[did] = own_tables
@@ -6988,15 +6997,21 @@ def _source_inventory() -> dict:
                 "terms": sem_terms.get(cid, 0),
             }
 
-        # ── Cost guard (BigQuery only). A remote source never syncs, so the
-        # cell in the sync slot has to be the thing that CAN go wrong with it:
-        # what a query is allowed to scan before the server refuses it. Both
-        # caps are read from live config, so an operator who raised one sees
-        # their number here rather than the documented default.
+        # ── Cost guard (BigQuery / Snowflake). A remote source never syncs,
+        # so the cell in the sync slot has to be the thing that CAN go wrong
+        # with it: what a query is allowed to scan before the server refuses
+        # it. Both caps are read from live config, so an operator who raised one
+        # sees their number here rather than the documented default.
         if stype == "bigquery":
             cells["cost"] = {
                 "scan": _gib(_bq_cap("bq_max_scan_bytes", 5_368_709_120)),
                 "materialize": _gib(_bq_cap("max_bytes_per_materialize", 10_737_418_240)),
+            }
+        if stype == "snowflake":
+            cells["cost"] = {
+                "scan": "remote",
+                "materialize": _gib(_sf_cap("max_bytes_per_materialize", 10_737_418_240)),
+                "title": "Live queries run on Snowflake directly (no local scan cap). Materialized rows are refused above the materialize cap. Editable in server config.",
             }
 
         # ── Feeds: packages holding this source's tables → groups granted →
@@ -7053,6 +7068,31 @@ def _bigquery_credentialed() -> bool:
         return bool(system_secrets_repo().has("BIGQUERY_SERVICE_ACCOUNT_JSON"))
     except Exception:
         return False
+
+
+def _snowflake_credentialed() -> bool:
+    """Whether this instance has Snowflake coordinates + password available.
+
+    The password may live in the env or in the vault, and the non-secret
+    coordinates must be set in instance.yaml / /admin/server-config.
+    """
+    try:
+        from connectors.snowflake.settings import resolve_snowflake_settings
+
+        return bool(resolve_snowflake_settings())
+    except Exception:
+        return False
+
+
+def _sf_cap(key: str, default: int) -> int:
+    """A Snowflake materialize cap from live config."""
+    try:
+        from app.instance_config import get_value
+
+        raw = get_value("data_source", "snowflake", key, default=default)
+        return int(raw) if raw is not None else default
+    except Exception:
+        return default
 
 
 def _orphan_reason(connection_id: str) -> str:
