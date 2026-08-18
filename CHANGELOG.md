@@ -10,6 +10,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.83.48] - 2026-08-18
+
+### Fixed
+
+- **"Skip onboarding" now marks all six onboarding steps complete.** The panel sends the new `agent_created` flag and `PUT /api/chat/journey` accepts it, so the checklist reaches `6/6` and the card retires. "Start over onboarding" also resets the same flag. Previously the sixth step was neither sent by the panel nor accepted by the backend, leaving the checklist stuck at `5/6`.
+
 ## [0.83.47] - 2026-08-18
 
 ### Added
@@ -14279,4 +14285,3 @@ PR: [#120](https://github.com/keboola/agnes-the-ai-analyst/pull/120) (ci/deploy-
 [0.11.2]: https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.11.2
 [0.11.1]: https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.11.1
 [0.11.0]: https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.11.0
-
