@@ -82,6 +82,30 @@ def test_reconciliation_hint_addresses_rows_by_id_not_by_email(monkeypatch, caps
     assert "agnes admin deactivate <email>" not in out
 
 
+def test_hint_does_not_recommend_a_membership_move_it_cannot_deliver(monkeypatch, capsys):
+    """`agnes admin group add-member` takes an address, and the endpoint resolves
+    it with `get_by_email_ci` (`app/api/access.py`) — the same lookup sign-in
+    uses, i.e. always the row this report marks.
+
+    So advising "pick the row to keep, then move its memberships" is advice the
+    tooling cannot carry out for half the choices it offers: an operator keeping
+    the unmarked row gets a 201 that granted the group to the row they are about
+    to disable. The hint names the marked row as the one to keep and says plainly
+    why the other direction is not available, rather than leaving the operator to
+    discover it from a silent success.
+    """
+    _wire(monkeypatch, [DUP])
+    admin_mod.duplicate_accounts(limit=0, as_json=False)
+    out = capsys.readouterr().out
+
+    assert "KEEP the row marked" in out
+    assert "not supported by these commands" in out
+    # And the reason, so the advice is checkable rather than folklore: an
+    # operator would reasonably assume disabling the marked row redirects the
+    # lookup. It does not — `get_by_email_ci` ignores `active` on purpose.
+    assert "ignores active state" in out
+
+
 def test_shows_deactivation_state_per_row(monkeypatch, capsys):
     """The failure mode the report exists for: the disabled row is not the one
     sign-in reaches."""

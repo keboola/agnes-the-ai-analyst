@@ -1734,10 +1734,17 @@ def duplicate_accounts(
         typer.echo(f"… {len(groups) - len(shown)} more (raise --limit or use --json for all).\n")
 
     typer.echo(
-        "To reconcile: pick the row to keep (usually the one sign-in resolves to),\n"
-        "move any group memberships with `agnes admin group add-member`, then\n"
-        "deactivate the other with `agnes admin deactivate <id>` — BY ID, not by\n"
-        "address: `deactivate <email>` matches one exact spelling, which is the\n"
-        "ambiguity this report is about. Deactivating the row sign-in does NOT\n"
-        "resolve to leaves the identity reachable."
+        "To reconcile: KEEP the row marked 'sign-in resolves here', re-grant its\n"
+        "groups with `agnes admin group add-member`, then deactivate the other\n"
+        "with `agnes admin deactivate <id>` — by id, because `deactivate <email>`\n"
+        "matches one exact spelling, which is the ambiguity this report is about.\n"
+        "Deactivating the row sign-in does NOT resolve to leaves the identity\n"
+        "reachable.\n"
+        "\n"
+        "Keeping the OTHER row is not supported by these commands: `group\n"
+        "add-member` takes an address and the server resolves it the same way\n"
+        "sign-in does, so the grant lands on the marked row no matter which one\n"
+        "you meant. Deactivating the marked row first does not redirect it — the\n"
+        "lookup ignores active state deliberately, so a disabled row still wins.\n"
+        "If you must keep the other row, move the data at the database level."
     )
