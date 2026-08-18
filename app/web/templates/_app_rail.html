@@ -546,7 +546,13 @@
        `rail-getstarted-toggle`, `-panel`, `-count`): they are the seam
        chat_onboarding.js and rail_history.js bind to, so the popover, its
        hover/click/Escape handling and the progress writes are unchanged. #}
-    <div class="rail-getstarted" id="railGetStarted">
+    {# `data-brand-short` is the brand seam for chat_onboarding.js: it rewrites
+       this card's title (and renders the popover inside it) once
+       /api/chat/journey resolves, so without the resolved brand reaching the
+       script a rebranded instance would show its own name for one frame and
+       then have "Agnes" written over it. See `brandShort()` there. #}
+    <div class="rail-getstarted" id="railGetStarted"
+         data-brand-short="{{ instance_brand_short or 'Agnes' }}">
         <button type="button" class="rail-i rail-getstarted-btn"
                 id="rail-getstarted-toggle"
                 aria-expanded="false"

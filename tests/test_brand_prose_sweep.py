@@ -129,3 +129,46 @@ def test_cli_command_examples_survive_the_brand_sweep(branded):
     resp = branded["client"].get("/how-it-works", headers=_auth(branded["analyst_token"]))
     assert resp.status_code == 200
     assert "agnes catalog" in resp.text
+
+
+def test_rail_hands_the_resolved_brand_to_the_onboarding_script(branded):
+    """The rail's onboarding card is branded server-side AND rewritten by
+    `chat_onboarding.js` once `/api/chat/journey` resolves, so the resolved
+    brand has to reach the script — otherwise a rebranded instance shows its
+    own name for one frame and then has "Agnes" written over it.
+
+    The seam is `data-brand-short` on `#railGetStarted` (read by
+    `brandShort()`); this pins that the attribute is emitted with the
+    operator's value, not the fallback."""
+    resp = branded["client"].get("/chat", headers=_auth(branded["admin_token"]))
+    assert resp.status_code == 200, resp.text
+    assert 'id="railGetStarted"' in resp.text, "rail onboarding card did not render — the widget under test is absent"
+    assert f'data-brand-short="{CUSTOM_BRAND}"' in resp.text, (
+        "the rail does not hand the resolved brand to chat_onboarding.js, so the script's "
+        f"rewrite will replace {CUSTOM_BRAND!r} with the literal fallback"
+    )
+
+
+def test_onboarding_script_reads_the_brand_seam_for_the_copy_it_rewrites():
+    """pytest cannot execute the module, so this pins the source shape of the
+    three strings that overwrite server-rendered branded text: the rail card
+    title, the popover heading, and the replay tooltip in that same header.
+
+    Deliberately narrow. The module's other product-name literals (step
+    `why` copy, the first-visit greeting) are pre-existing prose that nothing
+    server-side contradicts — see `brandShort()`'s comment for what is and
+    is not in this seam's reach."""
+    from pathlib import Path
+
+    src = Path("app/web/static/js/chat_onboarding.js").read_text()
+    # Comment lines mention the old copy on purpose (they explain the flip to
+    # "Continue setup"); only executable lines are under test.
+    code = "\n".join(line for line in src.splitlines() if not line.strip().startswith("//"))
+
+    assert "`Set up ${brandShort()}`" in code, "rail card title no longer reads the brand seam"
+    assert "`Set up ${brand}`" in code, "popover heading no longer reads the brand seam"
+    assert "`Replay the ${brand} tour`" in code or "Replay the ${brand} tour" in code, (
+        "replay tooltip no longer reads the brand seam"
+    )
+    assert '"Set up Agnes"' not in code, "a hardcoded product name is back in the onboarding copy"
+    assert "Replay Agnes's" not in code, "a hardcoded product name is back in the replay tooltip"
