@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- **Jira: issues with more than 100 comments no longer silently lose their oldest comments.** The issue endpoint embeds the NEWEST 100 comments (the payload's own `fields.comment.startAt` is `total − 100`), but the pagination that completes an over-cap thread started at `startAt = len(embedded)` — inside that window — so it fetched only duplicates of what was already embedded: dedup left exactly 100 stored rows per >100-comment issue, the oldest `total − 100` comments were never fetched by any path, and each refetch's issue-scoped delete-then-insert dropped previously stored old rows. The walk now starts at the thread head (`startAt=0`) and stops when the id-deduplicated union of embed + pages reaches `comment.total`, which stays correct regardless of where the embed window sits, at the cost of at most one extra page per over-cap issue. Already-affected issues heal on their next actual refetch (webhook update or a backfill run **without** `--skip-existing` — their cached JSONs hold only the truncated embed and carry no `.incomplete` marker, so `--skip-existing` keeps skipping them); the stored-vs-total shortfall WARNING no longer misattributes the gap to comments added mid-fetch.
+
 ## [0.83.47] - 2026-08-18
 
 ### Added

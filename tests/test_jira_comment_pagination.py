@@ -1,9 +1,10 @@
 """Tests for Jira comment-pagination completion (issue #1257).
 
-Jira's issue endpoint embeds ``fields.comment.comments`` capped at 100,
-oldest-first. An issue with more than 100 comments therefore arrives missing
-its NEWEST comments unless the fetch layer pages through the comment
-endpoint for the remainder — and because every later full-refetch
+Jira's issue endpoint embeds ``fields.comment.comments`` capped at 100, and
+the window is the NEWEST 100 (the payload's own ``fields.comment.startAt`` is
+``total - 100``). An issue with more than 100 comments therefore arrives
+missing its OLDEST comments unless the fetch layer pages through the comment
+endpoint from the thread head — and because every later full-refetch
 (``fields=*all``) re-hits the same 100-comment cap, the gap never heals on
 its own.
 
@@ -35,16 +36,27 @@ def _comment(comment_id: str) -> dict:
 
 
 def _issue_with_comments(total: int, embedded: int, issue_key: str = "PROJ-1") -> dict:
+    """Issue payload whose embed carries the NEWEST ``embedded`` of ``total``
+    comments — the window Jira actually embeds (``startAt = total - embedded``,
+    comment ids ``c{total-embedded}`` .. ``c{total-1}``)."""
+    start_at = max(0, total - embedded)
     return {
         "key": issue_key,
         "id": "10001",
         "fields": {
             "comment": {
                 "total": total,
-                "comments": [_comment(f"c{i}") for i in range(embedded)],
+                "startAt": start_at,
+                "comments": [_comment(f"c{i}") for i in range(start_at, total)],
             }
         },
     }
+
+
+def _comment_page(start: int, stop: int) -> list[dict]:
+    """One page of ``GET /issue/{key}/comment`` — ids ``c{start}``..``c{stop-1}``,
+    the oldest-first order the paged endpoint serves."""
+    return [_comment(f"c{i}") for i in range(start, stop)]
 
 
 def _mock_client(pages: list[list[dict]] | None = None, status_code: int = 200) -> MagicMock:
@@ -66,19 +78,20 @@ def _mock_client(pages: list[list[dict]] | None = None, status_code: int = 200) 
 class TestCompleteIssueComments:
     """Unit tests for the shared fetch-layer completion helper."""
 
-    def test_pages_through_remaining_comments(self):
-        """total=124, 100 embedded -> ONE paginated call fetches the remaining 24."""
+    def test_pages_from_the_thread_head(self):
+        """total=124, embed carries the newest 100 (c24..c123) -> ONE paginated
+        call at startAt=0 recovers the oldest 24 (c0..c23)."""
         issue_data = _issue_with_comments(total=124, embedded=100)
-        extra_page = [_comment(f"extra{i}") for i in range(24)]
-        client = _mock_client([extra_page])
+        client = _mock_client([_comment_page(0, 100)])
 
         complete_issue_comments(issue_data, BASE_URL, AUTH, client)
 
         comments = issue_data["fields"]["comment"]["comments"]
         assert len(comments) == 124
+        assert {c["id"] for c in comments} == {f"c{i}" for i in range(124)}
         client.get.assert_called_once()
         _, kwargs = client.get.call_args
-        assert kwargs["params"]["startAt"] == 100
+        assert kwargs["params"]["startAt"] == 0
         assert kwargs["params"]["maxResults"] == 100
 
     def test_under_cap_issues_no_extra_http_call(self):
@@ -94,8 +107,7 @@ class TestCompleteIssueComments:
     def test_transform_stores_full_comment_set_and_comment_count(self):
         """After completion, transform_issue/transform_comments see the full set."""
         issue_data = _issue_with_comments(total=124, embedded=100)
-        extra_page = [_comment(f"extra{i}") for i in range(24)]
-        client = _mock_client([extra_page])
+        client = _mock_client([_comment_page(0, 100)])
 
         complete_issue_comments(issue_data, BASE_URL, AUTH, client)
 
@@ -103,20 +115,21 @@ class TestCompleteIssueComments:
         assert len(transform_comments(issue_data)) == 124
 
     def test_pages_multiple_times_when_gap_exceeds_one_page(self):
-        """total=250, 100 embedded -> two paginated calls (100 + 50)."""
+        """total=250, embed carries the newest 100 (c150..c249) -> two paginated
+        calls (c0..c99, then c100..c199 overlapping the embed's head)."""
         issue_data = _issue_with_comments(total=250, embedded=100)
-        page1 = [_comment(f"p1-{i}") for i in range(100)]
-        page2 = [_comment(f"p2-{i}") for i in range(50)]
-        client = _mock_client([page1, page2])
+        client = _mock_client([_comment_page(0, 100), _comment_page(100, 200)])
 
         complete_issue_comments(issue_data, BASE_URL, AUTH, client)
 
-        assert len(issue_data["fields"]["comment"]["comments"]) == 250
+        comments = issue_data["fields"]["comment"]["comments"]
+        assert len(comments) == 250
+        assert {c["id"] for c in comments} == {f"c{i}" for i in range(250)}
         assert client.get.call_count == 2
         first_call_start_at = client.get.call_args_list[0].kwargs["params"]["startAt"]
         second_call_start_at = client.get.call_args_list[1].kwargs["params"]["startAt"]
-        assert first_call_start_at == 100
-        assert second_call_start_at == 200
+        assert first_call_start_at == 0
+        assert second_call_start_at == 100
 
     def test_logs_warning_when_still_short_after_completion(self, caplog):
         """A page-fetch failure leaves stored < total -> WARNING, not an exception."""
@@ -134,8 +147,7 @@ class TestCompleteIssueComments:
 
     def test_no_warning_when_completion_succeeds(self, caplog):
         issue_data = _issue_with_comments(total=124, embedded=100)
-        extra_page = [_comment(f"extra{i}") for i in range(24)]
-        client = _mock_client([extra_page])
+        client = _mock_client([_comment_page(0, 100)])
 
         with caplog.at_level("WARNING"):
             complete_issue_comments(issue_data, BASE_URL, AUTH, client)
@@ -176,8 +188,7 @@ class TestPaginationFailureMarksIncomplete:
 
     def test_successful_completion_sets_no_marker(self):
         issue_data = _issue_with_comments(total=124, embedded=100)
-        extra_page = [_comment(f"extra{i}") for i in range(24)]
-        client = _mock_client([extra_page])
+        client = _mock_client([_comment_page(0, 100)])
 
         complete_issue_comments(issue_data, BASE_URL, AUTH, client)
 
@@ -208,35 +219,57 @@ class TestPaginationFailureMarksIncomplete:
 
 
 class TestPaginationDeduplicatesByCommentId:
-    """The embed and GET /issue/{key}/comment are two separate requests; on
-    ordering drift or deletions between them, ``startAt = len(embedded)`` can
-    re-serve comments already embedded. Concatenation must de-duplicate by
-    comment id (first occurrence wins, order preserved)."""
+    """The paged walk starts at the thread head while the embed carries the
+    newest comments, so the two overlap by design — the same id arrives from
+    both requests. Concatenation must de-duplicate by comment id (first
+    occurrence wins, order preserved)."""
 
     def test_overlapping_page_produces_no_duplicate_ids(self):
-        issue_data = _issue_with_comments(total=4, embedded=2)  # embeds c0, c1
-        overlap_page = [_comment("c1"), _comment("c2"), _comment("c3")]
+        issue_data = _issue_with_comments(total=4, embedded=2)  # embeds c2, c3
+        overlap_page = [_comment("c0"), _comment("c1"), _comment("c2")]
         client = _mock_client([overlap_page])
 
         complete_issue_comments(issue_data, BASE_URL, AUTH, client)
 
         comments = issue_data["fields"]["comment"]["comments"]
         ids = [c["id"] for c in comments]
-        assert ids == ["c0", "c1", "c2", "c3"]
+        assert sorted(ids) == ["c0", "c1", "c2", "c3"]
 
     def test_first_occurrence_wins_on_duplicate_id(self):
-        issue_data = _issue_with_comments(total=3, embedded=2)  # embeds c0, c1
-        embedded_c1 = issue_data["fields"]["comment"]["comments"][1]
+        issue_data = _issue_with_comments(total=3, embedded=2)  # embeds c1, c2
+        embedded_c1 = issue_data["fields"]["comment"]["comments"][0]
         embedded_c1["body"] = {"type": "doc", "content": [], "marker": "embedded"}
         paged_c1 = _comment("c1")
         paged_c1["body"] = {"type": "doc", "content": [], "marker": "paged"}
-        client = _mock_client([[paged_c1, _comment("c2")]])
+        client = _mock_client([[_comment("c0"), paged_c1]])
 
         complete_issue_comments(issue_data, BASE_URL, AUTH, client)
 
         comments = issue_data["fields"]["comment"]["comments"]
         c1 = next(c for c in comments if c["id"] == "c1")
         assert c1["body"].get("marker") == "embedded"
+
+
+class TestPaginationIsWindowPositionAgnostic:
+    """The loop stops when the id-deduplicated union of embed + pages reaches
+    ``total`` — never on a raw count of fetched items, which silently
+    under-fetches when the count includes duplicates of the embed — so
+    completion holds regardless of where Jira anchors the embed window."""
+
+    def test_oldest_window_embed_still_completes(self):
+        """If Jira ever anchored the embed at the thread head instead, page 0
+        duplicates the embed entirely — the union condition keeps paging until
+        the newest comments arrive rather than stopping on fetched-item count."""
+        issue_data = _issue_with_comments(total=124, embedded=100)
+        issue_data["fields"]["comment"]["startAt"] = 0
+        issue_data["fields"]["comment"]["comments"] = _comment_page(0, 100)
+        client = _mock_client([_comment_page(0, 100), _comment_page(100, 124)])
+
+        complete_issue_comments(issue_data, BASE_URL, AUTH, client)
+
+        ids = {c["id"] for c in issue_data["fields"]["comment"]["comments"]}
+        assert ids == {f"c{i}" for i in range(124)}
+        assert client.get.call_count == 2
 
 
 class TestServiceFetchIssuePaginates:

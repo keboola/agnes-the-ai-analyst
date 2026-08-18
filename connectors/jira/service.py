@@ -371,15 +371,14 @@ def sweep_stale_attachment_staging(directory: Path, max_age_s: int = STALE_STAGI
 def _dedupe_comments_by_id(comments: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """De-duplicate ``comments`` by ``id``, first occurrence wins, order preserved.
 
-    The embed (``GET /issue/{key}``) and the paginated ``GET
-    .../issue/{key}/comment`` are two separate requests. ``startAt =
-    len(embedded)`` assumes the paged endpoint's ordering exactly matches the
-    embed and that nothing was deleted between the two calls; when that
-    assumption breaks (ordering drift, a comment added/removed mid-fetch) the
-    same comment id can arrive from both the embed and a page. Concatenating
-    without dedup would then store it twice. A page skipping an id instead of
-    repeating one is a different, already-covered risk (the stored-vs-total
-    shortfall WARNING below), not something dedup can fix.
+    The embed (``GET /issue/{key}``) carries the NEWEST comments while the
+    paginated ``GET .../issue/{key}/comment`` walk starts at the thread head,
+    so the two overlap by design — up to a full embed's worth of ids arrives
+    from both requests, and ordering drift or a comment added/removed between
+    them can add further repeats. Concatenating without dedup would store
+    those twice. A page skipping an id instead of repeating one is a
+    different, already-covered risk (the stored-vs-total shortfall WARNING
+    below), not something dedup can fix.
     """
     seen: set[str] = set()
     deduped: list[dict[str, Any]] = []
@@ -425,18 +424,23 @@ def complete_issue_comments(
 ) -> None:
     """Fill in comments Jira's issue payload truncated at its embed page size.
 
-    ``GET /issue/{key}`` embeds ``fields.comment.comments`` capped at 100,
-    oldest-first — an issue with more than 100 comments arrives missing its
-    NEWEST comments. Because every later full-refetch (``fields=*all``)
-    re-hits the same cap, the gap never heals on its own; it only widens as
-    more comments are added.
+    ``GET /issue/{key}`` embeds ``fields.comment.comments`` capped at 100, and
+    the window is the NEWEST 100 — the payload's own ``fields.comment.startAt``
+    is ``total - 100``. An issue over the cap therefore arrives missing its
+    OLDEST comments, and
+    because every later full-refetch (``fields=*all``) re-hits the same cap,
+    the gap never heals on its own.
 
     ``fields.comment.total`` carries the true count. When it exceeds what's
     embedded, page through ``GET /issue/{key}/comment`` (``startAt``,
-    ``maxResults=100``) for the remainder and replace the embedded list with
-    the complete, de-duplicated (by comment id) one — mutated in place on
-    ``issue_data``, using the same ``client``/``auth`` as the issue fetch that
-    produced it.
+    ``maxResults=100``) from the START of the thread (``startAt=0``) until the
+    id-deduplicated union of embed + pages reaches ``total``, and replace the
+    embedded list with that union — mutated in place on ``issue_data``, using
+    the same ``client``/``auth`` as the issue fetch that produced it. Stopping
+    on the union size rather than a raw count of fetched items makes no
+    assumption about WHERE the embed window sits: the walk re-fetches at most
+    one embed's worth of duplicates (one extra page per over-cap issue) and
+    dedup drops them, but it can never terminate with an unfetched gap.
 
     This is the single fetch-layer seam shared by both ingestion paths that
     call it right after their issue GET: ``JiraService.fetch_issue`` (webhook
@@ -491,9 +495,9 @@ def complete_issue_comments(
     incomplete = False
     if issue_key and total > len(embedded):
         extra: list[dict[str, Any]] = []
-        start_at = len(embedded)
+        start_at = 0
         rate_limit_retries = 0
-        while len(embedded) + len(extra) < total:
+        while len(_dedupe_comments_by_id(embedded + extra)) < total:
             try:
                 response = client.get(
                     f"{base_url}/issue/{issue_key}/comment",
@@ -559,12 +563,11 @@ def complete_issue_comments(
     stored = len(comment_field.get("comments", embedded))
     if stored < total:
         logger.warning(
-            "Jira issue %s: stored %d comments but Jira reports comment.total=%d after "
-            "pagination completion (comments may have been added mid-fetch, or a page "
-            "request failed)",
+            "Jira issue %s: stored %d comments but Jira reports comment.total=%d after pagination completion (%s)",
             issue_key,
             stored,
             total,
+            "a page request failed" if incomplete else "comments were likely deleted mid-fetch, leaving total stale",
         )
 
 
