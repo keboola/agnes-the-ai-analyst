@@ -702,23 +702,18 @@ def _shared_seeded_app():
     return app, pristine_state
 
 
-@pytest.fixture
-def seeded_app(e2e_env, _shared_seeded_app):
-    """FastAPI TestClient with seeded users + JWT tokens for all four legacy
-    role tokens (admin, km_admin, analyst, viewer).
+def _seed_users_and_mint_tokens(app) -> dict:
+    """Seed the four legacy-role test users + mint their JWTs against
+    ``app``, and wrap it in a ``TestClient``. Shared body for ``seeded_app``
+    (session-shared app) and ``seeded_app_fresh`` (function-scoped fresh
+    app) — everything except the app object itself is identical between
+    them.
 
     v13: roles are no longer the auth source of truth. The admin user is
     placed in the Admin user_group; the others are Everyone-only members.
     Tokens for km_admin and viewer are kept so role-gating regression tests
     that still reference them keep passing — gate semantics still match
     where it matters (admin bypass, dataset_permissions checks).
-
-    The FastAPI app object is session-shared (``_shared_seeded_app``) — only
-    the DB seed, DATA_DIR and TestClient below are fresh per test. Teardown
-    restores ``app.state`` to its pristine post-``create_app()`` snapshot and
-    clears ``app.dependency_overrides``, so a test that mutates either (e.g.
-    setting ``app.state.chat_config`` because lifespan never runs under a
-    bare ``TestClient``) cannot leak into the next test.
     """
     from fastapi.testclient import TestClient
 
@@ -742,21 +737,46 @@ def seeded_app(e2e_env, _shared_seeded_app):
     )
     conn.close()
 
-    app, pristine_state = _shared_seeded_app
-    client = TestClient(app)
-    admin_token = create_access_token("admin1", "admin@test.com")
-    km_admin_token = create_access_token("km_admin1", "km@test.com")
-    analyst_token = create_access_token("analyst1", "analyst@test.com")
-    viewer_token = create_access_token("viewer1", "viewer@test.com")
-
-    yield {
-        "client": client,
-        "admin_token": admin_token,
-        "km_admin_token": km_admin_token,
-        "analyst_token": analyst_token,
-        "viewer_token": viewer_token,
-        "env": e2e_env,
+    return {
+        "client": TestClient(app),
+        "admin_token": create_access_token("admin1", "admin@test.com"),
+        "km_admin_token": create_access_token("km_admin1", "km@test.com"),
+        "analyst_token": create_access_token("analyst1", "analyst@test.com"),
+        "viewer_token": create_access_token("viewer1", "viewer@test.com"),
     }
+
+
+@pytest.fixture
+def seeded_app(e2e_env, _shared_seeded_app):
+    """FastAPI TestClient with seeded users + JWT tokens for all four legacy
+    role tokens (admin, km_admin, analyst, viewer).
+
+    The FastAPI app object is session-shared (``_shared_seeded_app``) — only
+    the DB seed, DATA_DIR and TestClient below are fresh per test. Teardown
+    restores ``app.state`` to its pristine post-``create_app()`` snapshot and
+    clears ``app.dependency_overrides``, so a test that mutates either (e.g.
+    setting ``app.state.chat_config`` because lifespan never runs under a
+    bare ``TestClient``) cannot leak into the next test.
+
+    Do NOT enter this fixture's ``client`` as a context manager (``with
+    seeded_app["client"] as client:``) — that runs the real ASGI *lifespan*,
+    which starts the streamable MCP session manager
+    (``app/api/mcp_streamable.py``). The SDK allows that manager's
+    ``run()`` to be entered at most once per instance and never restarted;
+    since the app (and therefore its one ``mcp_streamable_instance``) is now
+    shared across the whole session, a second lifespan entry on a later test
+    finds the task group already torn down from the first and raises
+    ``RuntimeError: Task group is not initialized`` (or a stale-event-loop
+    error on the manager's internal locks). Tests that must run lifespan
+    themselves — driving a live JSON-RPC call over ``/api/mcp/http`` —
+    use ``seeded_app_fresh`` instead (see
+    tests/test_mcp_oauth_handshake.py).
+    """
+    app, pristine_state = _shared_seeded_app
+    result = _seed_users_and_mint_tokens(app)
+    result["env"] = e2e_env
+
+    yield result
 
     # Undo any per-test mutation of the shared app so the next test sees the
     # same object `create_app()` produced. `app.state` is backed by a plain
@@ -766,6 +786,31 @@ def seeded_app(e2e_env, _shared_seeded_app):
     app.state._state.clear()
     app.state._state.update(pristine_state)
     app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def seeded_app_fresh(e2e_env):
+    """Same shape as ``seeded_app`` (seeded users, four role tokens,
+    TestClient) but builds its OWN fresh ``create_app()`` instead of reusing
+    the session-shared one.
+
+    For tests that must run the app's ASGI *lifespan* themselves (``with
+    seeded_app_fresh["client"] as client:``) — currently only the handful in
+    tests/test_mcp_oauth_handshake.py that drive a real JSON-RPC call over
+    the streamable MCP mount. The SDK's ``StreamableHTTPSessionManager.run()``
+    may be entered at most once per instance and cannot be restarted after
+    its context exits (see ``app/api/mcp_streamable.py::
+    streamable_session_manager_lifespan``), so those tests need a private
+    app/session-manager instance, not the one every other ``seeded_app``
+    test shares. Everything else should keep using ``seeded_app`` for the
+    speed win — see ``_shared_seeded_app``.
+    """
+    from app.main import create_app
+
+    app = create_app()
+    result = _seed_users_and_mint_tokens(app)
+    result["env"] = e2e_env
+    return result
 
 
 @pytest.fixture
