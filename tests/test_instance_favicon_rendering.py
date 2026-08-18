@@ -124,3 +124,17 @@ def test_build_context_includes_instance_favicon(tmp_path, monkeypatch):
     ctx = _build_context(_synthetic_request())
     assert ctx["instance_favicon"] == _static_url("img/agnes-orb.png")
     close_system_db()
+
+
+def test_icon_link_declares_no_type(web_client):
+    """The href is operator-configurable — a `.png`, `.svg`, `.ico` or a `data:`
+    URI are all valid — so a literal `type="image/png"` would be provably wrong
+    for several of them. Per the HTML spec `type` is only a hint a UA MAY use to
+    skip a resource it cannot render, and there is exactly one icon link per
+    page, so it buys nothing and is dropped rather than derived."""
+    for path in ("/login", "/how-it-works"):
+        html = web_client.get(path).text
+        links = [ln for ln in html.splitlines() if 'rel="icon"' in ln]
+        assert links, f"{path} renders no icon link"
+        for ln in links:
+            assert "type=" not in ln, f"{path} still declares a favicon type: {ln.strip()}"
