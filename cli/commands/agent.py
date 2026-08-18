@@ -243,22 +243,29 @@ def scope_set(
     table: list[str] = typer.Option([], "--table", help="Table id to grant (repeatable)"),
     connection: list[str] = typer.Option([], "--connection", help="Connection id to grant (repeatable)"),
     memory_domain: list[str] = typer.Option([], "--memory-domain", help="Memory domain id to grant (repeatable)"),
+    slack_channel: list[str] = typer.Option(
+        [],
+        "--slack-channel",
+        help="Slack channel id whose @mentions route to this agent (repeatable; "
+        "one agent per channel — the server 409s on a channel bound elsewhere)",
+    ),
     as_json: bool = typer.Option(False, "--json"),
 ):
     """Replace an agent's resource scope grants.
 
     Every item passed here is a `(item_type, item_id)` pair PUT in a single
     call — the server replaces the full grant set, it does not merge. At
-    least one of the four repeatable options is required.
+    least one of the repeatable options is required.
     """
     items: list[dict] = []
     items += [{"item_type": "plugin", "item_id": v} for v in plugin]
     items += [{"item_type": "table", "item_id": v} for v in table]
     items += [{"item_type": "connection", "item_id": v} for v in connection]
     items += [{"item_type": "memory_domain", "item_id": v} for v in memory_domain]
+    items += [{"item_type": "slack_channel", "item_id": v} for v in slack_channel]
     if not items:
         typer.echo(
-            "Error: at least one of --plugin/--table/--connection/--memory-domain is required.",
+            "Error: at least one of --plugin/--table/--connection/--memory-domain/--slack-channel is required.",
             err=True,
         )
         raise typer.Exit(2)

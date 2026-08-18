@@ -229,13 +229,18 @@ class ToolRegistryPgRepository:
                 {"sid": source_id},
             )
 
-    def add_grant(self, tool_id: str, group_id: str) -> None:
+    def add_grant(self, tool_id: str, group_id: str, allow_mutating: bool = False) -> None:
+        """Insert-or-update a grant. Re-granting an existing (tool, group)
+        pair updates ``allow_mutating`` in place — the flag is part of the
+        grant, not a separate row, so a re-POST is the edit path."""
         with self._engine.begin() as conn:
             conn.execute(
                 sa.text(
-                    "INSERT INTO tool_grants (tool_id, group_id) VALUES (:tool_id, :group_id) ON CONFLICT DO NOTHING"
+                    "INSERT INTO tool_grants (tool_id, group_id, allow_mutating) "
+                    "VALUES (:tool_id, :group_id, :allow_mutating) "
+                    "ON CONFLICT (tool_id, group_id) DO UPDATE SET allow_mutating = EXCLUDED.allow_mutating"
                 ),
-                {"tool_id": tool_id, "group_id": group_id},
+                {"tool_id": tool_id, "group_id": group_id, "allow_mutating": bool(allow_mutating)},
             )
 
     def remove_grant(self, tool_id: str, group_id: str) -> None:
@@ -252,3 +257,39 @@ class ToolRegistryPgRepository:
                 {"tool_id": tool_id},
             ).all()
         return [r[0] for r in rows]
+
+    def grant_rows_for_tool(self, tool_id: str) -> List[Dict[str, Any]]:
+        """Grants with their flags — ``[{"group_id", "allow_mutating"}, ...]``.
+
+        ``grants_for_tool`` (bare group ids) stays for existing callers;
+        this is the detail view. NULL ``allow_mutating`` (row predating
+        v120) reads as False.
+        """
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                sa.text(
+                    "SELECT group_id, COALESCE(allow_mutating, FALSE) AS allow_mutating "
+                    "FROM tool_grants WHERE tool_id = :tool_id"
+                ),
+                {"tool_id": tool_id},
+            ).all()
+        return [{"group_id": r[0], "allow_mutating": bool(r[1])} for r in rows]
+
+    def is_mutating_granted_to_groups(self, tool_id: str, group_ids: List[str]) -> bool:
+        """True iff any of ``group_ids`` holds a grant on this tool with
+        ``allow_mutating=TRUE`` (the v120 opt-in consumed by
+        ``app.api.mcp_policy.check_mutating``)."""
+        if not group_ids:
+            return False
+        placeholders = ",".join(f":g{i}" for i in range(len(group_ids)))
+        params: dict = {"tool_id": tool_id}
+        params.update({f"g{i}": g for i, g in enumerate(group_ids)})
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                sa.text(
+                    f"SELECT 1 FROM tool_grants WHERE tool_id = :tool_id AND group_id IN ({placeholders}) "
+                    "AND COALESCE(allow_mutating, FALSE) = TRUE LIMIT 1"
+                ),
+                params,
+            ).first()
+        return row is not None
