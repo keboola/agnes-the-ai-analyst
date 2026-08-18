@@ -12,6 +12,7 @@ import logging
 import uuid
 
 from src.repositories import users_repo
+from src.user_identity import normalize_email
 
 logger = logging.getLogger(__name__)
 
@@ -37,12 +38,19 @@ def ensure_user(email: str, name: str, *, source: str) -> dict:
     changed a claim's casing) would end up on two accounts. Normalizing here
     rather than per provider is what makes every provider agree; the
     case-insensitive read still matches accounts created before this landed.
+
+    ``get_by_email_ci`` is the ONLY lookup, deliberately. An exact-match read
+    in front of it would win whenever the arriving claim matches the *newer*
+    of two coexisting case variants — which is exactly the population the
+    case-insensitive read exists for — and the documented "oldest wins" rule
+    would never apply to it. Case is folded in SQL only (the argument is
+    stripped, not lower-cased) so "equal" is one engine's definition rather
+    than Python's and the engine's composed.
     """
     repo = users_repo()
-    normalized = (email or "").strip().lower()
-    user = repo.get_by_email(email)
-    if not user and normalized:
-        user = repo.get_by_email_ci(normalized)
+    stripped = (email or "").strip()
+    user = repo.get_by_email_ci(stripped) if stripped else None
+    normalized = normalize_email(stripped)
     if not user:
         user_id = str(uuid.uuid4())
         email = normalized or email

@@ -405,11 +405,12 @@ function renderJourneyPanel() {
   // The popover heads with the same words as the card that opened it — being
   // sent from "Set up Agnes" to a panel called something else reads as two
   // different features.
+  const brand = escapeHtml(brandShort());
   const heading = complete
-    ? "Set up Agnes"
+    ? `Set up ${brand}`
     : steps.some((s) => s.done)
       ? "Continue setup"
-      : "Set up Agnes";
+      : `Set up ${brand}`;
   // No "×" when the checklist is the rail's "Set up Agnes" popover: that panel
   // is transient chrome hanging off a launcher and already closes four other
   // ways (mouse-leave, Escape, click-away, a second click on the card — all in
@@ -425,7 +426,7 @@ function renderJourneyPanel() {
       ${complete ? '<span class="cloud-chat-journey-badge">Complete ✓</span>' : ""}
       <div class="cloud-chat-journey-actions">
         <button type="button" class="cloud-chat-journey-iconbtn" data-journey-replay
-          title="Replay Agnes's tour" aria-label="Replay the tour">↻</button>
+          title="Replay the ${brand} tour" aria-label="Replay the tour">↻</button>
         ${
           inRailPopover
             ? ""
@@ -471,6 +472,7 @@ function renderJourneyPanel() {
         explored_stack: true,
         catalog_discovered: true,
         use_anywhere: true,
+        agent_created: true,
       });
       // Say where it went, not just that it happened: this click retires the
       // whole card, and the only route back is a profile-menu entry the reader
@@ -519,6 +521,7 @@ function restartJourney() {
     explored_stack: false,
     catalog_discovered: false,
     use_anywhere: false,
+    agent_created: false,
   });
 }
 
@@ -574,8 +577,32 @@ function wireRestartOnboardingMenuItem() {
 const RING_R = 15;
 const RING_CIRCUMFERENCE = 2 * Math.PI * RING_R;
 
+// ── The product name is an operator setting ─────────────────────────────────
+// Every string this module renders that NAMES the product has to come from
+// `instance.brand_short`, not a literal: the rail renders its onboarding card
+// branded server-side and this module then rewrites the same element, so a
+// literal here would show the operator's brand for one frame and replace it
+// with "Agnes" the moment /api/chat/journey resolves.
+//
+// The seam is a data attribute on `#railGetStarted` — the element this module
+// already writes into, and the ancestor of the popover mount (`#chat-journey`),
+// so one attribute covers every branded string below with nothing to keep in
+// sync. Falls back to "Agnes", the same default the template declares, for a
+// DOM without the rail.
+//
+// NOT yet branded, and out of this seam's reach: the step labels/`why` copy,
+// the first-visit greeting and the sub-action labels in this file, plus the
+// prose in chat.js / tour.js / chat_dashboard.js / identity.js / chats_page.js.
+// Those are pre-existing literals rather than a server-rendered value being
+// overwritten, and reaching them needs a window-level stamp (like
+// `window._agTelegramBot` in base_ds.html) rather than this element.
+function brandShort() {
+  const el = document.getElementById("railGetStarted");
+  return (el && el.dataset.brandShort) || "Agnes";
+}
+
 function updateGetStartedIndicator(done, total, complete) {
-  const titleText = done > 0 ? "Continue setup" : "Set up Agnes";
+  const titleText = done > 0 ? "Continue setup" : `Set up ${brandShort()}`;
   const title = document.getElementById("rail-getstarted-title");
   if (title) title.textContent = titleText;
 

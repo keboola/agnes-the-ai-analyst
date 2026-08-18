@@ -353,7 +353,7 @@
     <span class="apg-strip__mark" aria-hidden="true">G</span>
     <span>
       This account signs in through <b>Google Workspace</b> — the password and
-      the account itself are managed at <code>admin.google.com</code>, so Agnes
+      the account itself are managed at <code>admin.google.com</code>, so {{ instance_brand or 'Agnes' }}
       offers neither a password reset nor a delete. Deactivating here still
       blocks access to this instance.
     </span>
@@ -530,7 +530,7 @@
         </div>
         <div class="dsec-empty" id="ud-sessions-empty" hidden>
           <strong>No sessions collected</strong>
-          Sessions arrive when this person runs Claude Code in an Agnes
+          Sessions arrive when this person runs Claude Code in an {{ instance_brand or 'Agnes' }}
           workspace — the <code>SessionEnd</code> hook uploads them.
         </div>
         <div class="ud-pager" id="ud-sessions-pagination" hidden>
@@ -589,7 +589,7 @@
   <p class="apg-foot">
     Groups and their grants live in <a href="/admin/access">Access</a> ·
     every token on the instance in <a href="/admin/tokens">Tokens</a> ·
-    what this person actually does with Agnes in
+    what this person actually does with {{ instance_brand or 'Agnes' }} in
     <a href="/admin/adoption/users/{{ target_user.id }}">Adoption</a>.
   </p>
 </div>

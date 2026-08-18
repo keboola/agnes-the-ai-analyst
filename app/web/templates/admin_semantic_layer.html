@@ -247,7 +247,7 @@
   <div class="sl-orphan-note">
     {{ skipped_unresolved_total }} metric definition{{ 's' if skipped_unresolved_total != 1 else '' }}
     from the last sync {{ 'were' if skipped_unresolved_total != 1 else 'was' }} skipped: the Keboola
-    tables their datasets point at are not registered in Agnes. Register them with
+    tables their datasets point at are not registered in {{ instance_brand or 'Agnes' }}. Register them with
     <em>Browse &amp; register tables</em> at <a href="/admin/data-sources">Data sources</a> and sync
     again. Glossary terms don't reference tables, which is why a project can import terms while
     importing no metrics at all.

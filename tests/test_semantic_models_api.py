@@ -14,6 +14,8 @@ it belongs to, without making the directly grantable resource type that
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from src.db import get_system_db
@@ -400,7 +402,9 @@ def test_export_succeeds_via_a_direct_model_grant(seeded_app):
 # ---------------------------------------------------------------------------
 
 
-def _upsert_model_with_constraints(*, id: str = "manual/_/retail_vq", slug: str = "retail_vq") -> dict:
+def _upsert_model_with_constraints(
+    *, id: str = "manual/_/retail_vq", slug: str = "retail_vq", model_name: str | None = None
+) -> dict:
     """A ``status='valid'`` model with a checkable error-severity constraint
     on ``revenue``, an unverifiable constraint on the same metric (degrades
     to ``post_execution_checks``), and a metric (``mrr``) whose only declared
@@ -415,10 +419,11 @@ def _upsert_model_with_constraints(*, id: str = "manual/_/retail_vq", slug: str 
 
     from src.repositories import semantic_model_repo
 
+    mname = model_name or slug
     document_json = {
         "semantic_model": [
             {
-                "name": slug,
+                "name": mname,
                 "datasets": [{"name": "orders", "source": "db.public.orders", "fields": [{"name": "region"}]}],
                 "metrics": [
                     {
@@ -463,7 +468,7 @@ def _upsert_model_with_constraints(*, id: str = "manual/_/retail_vq", slug: str 
     return semantic_model_repo().upsert(
         id=id,
         slug=slug,
-        name=slug,
+        name=mname,
         description=None,
         document="# native fixture, not schema-authored",
         document_json=document_json,
@@ -562,3 +567,224 @@ class TestValidateQuery:
         body = r.json()
         assert {"type": "metric", "name": "revenue"} in body["matched_expected_objects"]
         assert {"type": "metric", "name": "mrr"} in body["missing_expected_objects"]
+
+
+# ---------------------------------------------------------------------------
+# get_semantic_context / get_semantic_schema — wave 4 (agent read parity)
+# ---------------------------------------------------------------------------
+
+
+def _selections(*selections: dict) -> str:
+    return json.dumps(list(selections))
+
+
+class TestGetSemanticContext:
+    def test_admin_sees_all_objects_compactly_by_default(self, seeded_app):
+        _upsert_model_with_constraints()
+        c = seeded_app["client"]
+        r = c.get(
+            "/api/semantic-models/context",
+            params={"selections": _selections({"semantic_type": "dataset"})},
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["unknown_types"] == []
+        entry = body["results"][0]
+        assert entry["semantic_type"] == "dataset"
+        assert entry["mode"] == "compact"
+        assert {o["name"] for o in entry["objects"]} == {"orders"}
+        assert set(entry["objects"][0].keys()) == {"name", "summary", "model"}
+
+    def test_explicit_ids_return_full_attributes(self, seeded_app):
+        _upsert_model_with_constraints()
+        c = seeded_app["client"]
+        r = c.get(
+            "/api/semantic-models/context",
+            params={"selections": _selections({"semantic_type": "metric", "ids": ["revenue"]})},
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        body = r.json()
+        entry = body["results"][0]
+        assert entry["mode"] == "full"
+        obj = entry["objects"][0]
+        assert obj["name"] == "revenue"
+        assert "expression" in obj
+
+    def test_model_the_caller_cannot_reach_is_absent(self, seeded_app):
+        """RBAC: a model with no grant for the caller contributes no objects,
+        same tier as search/export/validate-query."""
+        _upsert_model_with_constraints()
+        c = seeded_app["client"]
+        r = c.get(
+            "/api/semantic-models/context",
+            params={"selections": _selections({"semantic_type": "dataset"})},
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        assert r.status_code == 200
+        assert r.json()["results"][0]["objects"] == []
+
+    def test_model_ids_restricts_to_named_models(self, seeded_app):
+        _upsert_model_with_constraints(id="manual/_/other", slug="other_model")
+        _upsert_model_with_constraints()  # slug=retail_vq
+        c = seeded_app["client"]
+        r = c.get(
+            "/api/semantic-models/context",
+            params={
+                "selections": _selections({"semantic_type": "dataset"}),
+                "model_ids": ["retail_vq"],
+            },
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        objects = r.json()["results"][0]["objects"]
+        assert {o["model"] for o in objects} == {"retail_vq"}
+
+    def test_model_ids_accepts_the_stored_id_not_only_the_slug(self, seeded_app):
+        """Devin #1398: filtering must match the row's stored id
+        (``<source>/<source_ref>/<slug>``), not the document's internal model
+        name — passing a real id returned an empty result before the fix."""
+        _upsert_model_with_constraints(id="manual/_/other", slug="other_model")
+        _upsert_model_with_constraints()  # id=manual/_/retail_vq, slug=retail_vq
+        c = seeded_app["client"]
+        r = c.get(
+            "/api/semantic-models/context",
+            params={
+                "selections": _selections({"semantic_type": "dataset"}),
+                "model_ids": ["manual/_/other"],  # the full stored id, not the slug
+            },
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        objects = r.json()["results"][0]["objects"]
+        assert objects, "filtering by the stored id returned nothing"
+        assert {o["model"] for o in objects} == {"other_model"}
+
+    def test_model_ids_accepts_the_document_name_so_the_output_label_round_trips(self, seeded_app):
+        """Devin #1398 follow-up: returned objects are labeled with the
+        document's model ``name``; that label must itself be usable in
+        ``model_ids`` even when it differs from the row slug — otherwise a
+        caller cannot narrow a follow-up call to a model it just saw."""
+        _upsert_model_with_constraints(id="manual/_/retail_row", slug="retail_row", model_name="Retail Model")
+        c = seeded_app["client"]
+        r = c.get(
+            "/api/semantic-models/context",
+            params={
+                "selections": _selections({"semantic_type": "dataset"}),
+                "model_ids": ["Retail Model"],  # the document name shown as each object's "model"
+            },
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        objects = r.json()["results"][0]["objects"]
+        assert objects, "the model name shown in output did not round-trip into model_ids"
+        assert {o["model"] for o in objects} == {"Retail Model"}
+
+    def test_model_ids_name_match_narrows_to_that_model_in_a_multi_model_row(self, seeded_app):
+        """Devin #1398 r3: a stored row with >1 model, filtered by ONE model
+        name, must return only that model's objects — never the sibling's."""
+        from src.repositories import semantic_model_repo
+
+        semantic_model_repo().upsert(
+            id="manual/_/multi",
+            slug="multi",
+            name="multi",
+            description=None,
+            document="# native fixture",
+            document_json={
+                "semantic_model": [
+                    {"name": "alpha", "datasets": [{"name": "a_orders", "source": "db.a.orders", "fields": []}]},
+                    {"name": "beta", "datasets": [{"name": "b_orders", "source": "db.b.orders", "fields": []}]},
+                ]
+            },
+            spec_version="0.2.0.dev0",
+            content_hash="hash-multi",
+            source="manual",
+            source_ref=None,
+            status="valid",
+            validation_errors=None,
+            validated_at=None,
+        )
+        c = seeded_app["client"]
+        r = c.get(
+            "/api/semantic-models/context",
+            params={"selections": _selections({"semantic_type": "dataset"}), "model_ids": ["alpha"]},
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        objects = r.json()["results"][0]["objects"]
+        assert {o["model"] for o in objects} == {"alpha"}, "a single-model filter leaked the sibling model"
+        assert {o["name"] for o in objects} == {"a_orders"}
+
+    def test_model_ids_matching_is_case_insensitive(self, seeded_app):
+        """Devin #1398 r3: `--model` matches case-insensitively, like `--id`."""
+        _upsert_model_with_constraints()  # slug=retail_vq
+        c = seeded_app["client"]
+        r = c.get(
+            "/api/semantic-models/context",
+            params={"selections": _selections({"semantic_type": "dataset"}), "model_ids": ["RETAIL_VQ"]},
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        assert {o["model"] for o in r.json()["results"][0]["objects"]} == {"retail_vq"}
+
+    def test_unknown_semantic_type_is_reported(self, seeded_app):
+        c = seeded_app["client"]
+        r = c.get(
+            "/api/semantic-models/context",
+            params={"selections": _selections({"semantic_type": "glossary"})},
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        assert r.status_code == 200
+        assert r.json()["unknown_types"] == ["glossary"]
+
+    def test_malformed_selections_json_is_400(self, seeded_app):
+        c = seeded_app["client"]
+        r = c.get(
+            "/api/semantic-models/context",
+            params={"selections": "not-json"},
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        assert r.status_code == 400
+
+    def test_selections_must_be_a_json_list(self, seeded_app):
+        c = seeded_app["client"]
+        r = c.get(
+            "/api/semantic-models/context",
+            params={"selections": json.dumps({"semantic_type": "dataset"})},
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        assert r.status_code == 400
+
+
+class TestGetSemanticSchema:
+    def test_returns_ref_and_defs(self, seeded_app):
+        c = seeded_app["client"]
+        r = c.get(
+            "/api/semantic-models/schema",
+            params={"semantic_types": ["dataset", "metric"]},
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["types"]["dataset"] == {"$ref": "#/$defs/Dataset"}
+        assert "Dataset" in body["$defs"]
+        assert "Metric" in body["$defs"]
+
+    def test_not_gated_on_any_semantic_model_existing(self, seeded_app):
+        """Any authenticated user can read the schema even with zero
+        semantic models registered — it is not model data, it's the
+        contract every model is validated against."""
+        c = seeded_app["client"]
+        r = c.get(
+            "/api/semantic-models/schema",
+            params={"semantic_types": ["relationship"]},
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        assert r.status_code == 200
+        assert "Relationship" in r.json()["$defs"]
+
+    def test_unknown_type_is_reported(self, seeded_app):
+        c = seeded_app["client"]
+        r = c.get(
+            "/api/semantic-models/schema",
+            params={"semantic_types": ["glossary"]},
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        assert r.status_code == 200
+        assert r.json()["unknown_types"] == ["glossary"]

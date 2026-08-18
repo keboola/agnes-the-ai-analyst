@@ -501,9 +501,10 @@ def require_agent_profiles_enabled() -> None:
     profiles toggle is off.
 
     Mounted as a router-level ``dependencies=[...]`` entry (not per-endpoint)
-    on all five agent routers (``agents_admin``, ``agent_runtime``,
-    ``agent_sessions``, ``agent_webhooks``, ``agent_memory``) — the entire
-    ``/api/v1/agents*`` + ``/api/v1/sessions*`` HTTP surface closes at once,
+    on all six agent routers (``agents_admin``, ``agent_runtime``,
+    ``agent_sessions``, ``agent_webhooks``, ``agent_memory``,
+    ``agent_schedules``) — the entire ``/api/v1/agents*`` +
+    ``/api/v1/sessions*`` HTTP surface closes at once,
     same "close the whole surface" posture as Studio's
     ``get_studio_enabled()`` guard. Covers the CLI for free: `agnes agent`
     and `agnes chat` are pure clients of this API.
