@@ -459,3 +459,19 @@ def test_run_due_one_bad_row_does_not_abort_the_sweep(env, admin_client, owner_c
     # The sweep survived the exception — it just didn't dispatch anything
     # this tick (only one row existed, and it hit the boom).
     assert created["id"] not in resp.json()["dispatched"]
+
+
+def test_agent_delete_cascades_schedules(env, owner_client):
+    """Schedules die with the agent — the delete cascade must clear
+    agent_schedules rows, not leave them orphaned behind the run-due sweep's
+    soft-deleted-agent skip."""
+    from src.repositories import agent_schedules_repo
+
+    created = owner_client.post("/api/v1/agents/briefing-bot/schedules", json=_VALID_PAYLOAD).json()
+    assert agent_schedules_repo().list_for_agent(env["agent_id"]), "precondition: schedule row exists"
+
+    resp = owner_client.delete(f"/api/v1/agents/{env['agent_id']}")
+    assert resp.status_code == 204
+
+    assert agent_schedules_repo().list_for_agent(env["agent_id"]) == []
+    assert agent_schedules_repo().get(created["id"]) is None
