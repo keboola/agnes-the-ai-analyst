@@ -4,6 +4,7 @@ import logging
 import os
 import secrets
 from datetime import datetime, timedelta, timezone
+from typing import Optional
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
@@ -117,6 +118,108 @@ def build_reset_url(request: Request, email: str, token: str) -> str:
 
 def build_setup_url(request: Request, email: str, token: str) -> str:
     return f"{_base_url(request)}/auth/password/setup?email={quote(email, safe='')}&token={token}"
+
+
+def _row_verifying_password(repo, email: str, password: str) -> tuple[Optional[dict], bool]:
+    """Resolve a sign-in by the CREDENTIAL, not by the address tie-break.
+
+    ``get_by_email_ci`` answers "which account is this address" — deterministic
+    oldest-first. That is the right answer for provisioning, and the wrong one
+    for a credential check: where two case variants of one address coexist (the
+    population the case-insensitive work exists for), the password hash may sit
+    on the newer row, and checking only the oldest turns a working sign-in into
+    ``401 Invalid email or password``.
+
+    So every row carrying a hash is tried and the one whose hash verifies is
+    returned. Inactive rows are tried too, deliberately: skipping them would
+    answer "invalid password" for a deactivated account, and the caller who
+    proved the credential is owed the honest ``Account deactivated`` instead —
+    the caller gates on the returned row's own ``active`` flag.
+
+    Returns ``(row, any_hash_present)``. ``any_hash_present`` separates "no such
+    account / external auth only" from "wrong password" for callers that report
+    them differently, without leaking which it was to the client.
+
+    Same shape as ``reset_confirm``'s ``list_by_email_ci`` scan.
+    """
+    rows = repo.list_by_email_ci(email)
+    candidates = [u for u in rows if u.get("password_hash")]
+    if not candidates:
+        return None, False
+    ph = PasswordHasher()
+    verified = None
+    for u in candidates:
+        try:
+            ph.verify(u["password_hash"], password)
+            verified = u
+            break
+        except VerifyMismatchError:
+            continue
+    if verified is None:
+        return None, True
+    return _shadowed_by_deactivated_identity(rows, verified), True
+
+
+def _shadowed_by_deactivated_identity(rows: list[dict], verified: dict) -> dict:
+    """``verified`` unless the address's resolved identity is deactivated, in
+    which case that row is returned so the caller refuses.
+
+    Scanning variants for the credential must not become a way around an
+    offboarding. ``get_by_email_ci`` deliberately does not prefer an active row
+    (see its docstring, and the 0.83.48 operator note): a stale disabled variant
+    shadowing the live account is the safe failure, because a wrongly-refused
+    sign-in is visible and fixable while a bypassed deactivation is neither.
+    Its answer is ``rows[0]`` — ``list_by_email_ci`` returns the same ordering —
+    so if THAT row is disabled, no sibling variant may serve the sign-in.
+
+    Applied after the credential verified, never before: short-circuiting on the
+    identity row's flag alone would answer "Account deactivated" to anyone who
+    typed the address, which is an enumeration oracle. The caller still has to
+    prove a credential to learn anything.
+
+    This preserves the shipped contract rather than extending it. Two questions
+    are easy to conflate here, so to be explicit about which is settled:
+
+    * **Does this rule apply on every door?** Settled: yes. Password login,
+      ``POST /auth/token``, both setup flows, ``reset_confirm`` and the email
+      magic link all apply it. A rule that held on some doors and not others
+      would let one instance answer "deactivated" at the login form and mint a
+      session cookie on a reset link for the same pair of rows.
+    * **Should a deactivated variant that is NOT the resolved identity refuse?**
+      Open. That widens who is refused rather than keeping the shipped answer,
+      and it is a policy call for the repository owner, not something to settle
+      inside a bug fix.
+    """
+    identity = rows[0] if rows else verified
+    if not bool(identity.get("active", True)):
+        return identity
+    return verified
+
+
+def _row_holding_setup_token(repo, email: str, token: str) -> tuple[Optional[dict], bool]:
+    """The row whose ``setup_token`` matches — again the credential, not the
+    tie-break. An invitation is minted by user id, so it can sit on a case
+    variant ``get_by_email_ci`` does not return, and a valid link would then
+    read "Invalid or expired setup link".
+
+    Returns ``(row, identity_active)``. Freshness and ``active`` stay the
+    caller's gates so each surface keeps its own copy and status code, and the
+    row returned is always the one that HOLDS the token — the freshness check
+    reads ``setup_token_created`` off it, and handing back a sibling would report
+    an expired link for a perfectly fresh one.
+
+    ``identity_active`` is the separate answer to "may any variant of this
+    address sign in at all": ``False`` when the row ``get_by_email_ci`` resolves
+    to is disabled, which shadows every variant (see
+    ``_shadowed_by_deactivated_identity`` for why, and why only after the token
+    matched). Callers refuse on it at their existing deactivated gate.
+    """
+    hashed = hash_token(token)
+    rows = repo.list_by_email_ci(email)
+    match = next((u for u in rows if u.get("setup_token") == hashed), None)
+    if match is None:
+        return None, True
+    return match, bool(rows[0].get("active", True))
 
 
 def _token_is_fresh(created, ttl: timedelta) -> bool:
@@ -237,20 +340,21 @@ async def password_login(
 ):
     """Login with email + password."""
     repo = users_repo()
-    user = repo.get_by_email(body.email)
-    if not user or not user.get("password_hash"):
-        raise HTTPException(status_code=401, detail="Invalid email or password")
-    if not bool(user.get("active", True)):
-        raise HTTPException(status_code=401, detail="Account deactivated")
-
+    # Strip only — case is folded by the lookup (SQL). Resolved by the
+    # credential rather than the oldest-row tie-break: see
+    # `_row_verifying_password`.
     try:
-        ph = PasswordHasher()
-        ph.verify(user["password_hash"], body.password)
-    except VerifyMismatchError:
-        raise HTTPException(status_code=401, detail="Invalid email or password")
+        user, any_hash = _row_verifying_password(repo, (body.email or "").strip(), body.password)
     except Exception:
         logger.exception("Unexpected error during password verification")
         raise HTTPException(status_code=500, detail="Internal server error")
+    if user is None:
+        # Same 401 whether the address is unknown, carries no hash at all
+        # (external auth), or the password simply did not match — `any_hash`
+        # exists for the audit trail, not for the caller.
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    if not bool(user.get("active", True)):
+        raise HTTPException(status_code=401, detail="Account deactivated")
 
     # Forced rotation: the password was set by someone else (seeded admin /
     # admin-set) and emailed/shared in plaintext. The password is verified
@@ -274,23 +378,26 @@ async def password_login_web(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Web form login — sets cookie and redirects to `next` (or /dashboard)."""
+    email = (email or "").strip()
     repo = users_repo()
-    user = repo.get_by_email(email)
-    if not user or not user.get("password_hash"):
-        return RedirectResponse(url="/login/password?error=invalid", status_code=302)
-    if not bool(user.get("active", True)):
-        return RedirectResponse(url="/login/password?error=deactivated", status_code=302)
-
+    # Resolved by the credential, not the oldest-row tie-break — see
+    # `_row_verifying_password`.
     try:
-        ph = PasswordHasher()
-        ph.verify(user["password_hash"], password)
-    except VerifyMismatchError:
-        # M9: audit failed form-login attempts (mirrors /auth/token endpoint)
-        _audit(user["id"], "login_failed", result="invalid_password")
-        return RedirectResponse(url="/login/password?error=invalid", status_code=302)
+        user, any_hash = _row_verifying_password(repo, email, password)
     except Exception:
         logger.exception("Unexpected error during web password verification for %s", email)
         return RedirectResponse(url="/login/password?err=auth_internal", status_code=302)
+    if user is None:
+        if any_hash:
+            # M9: audit failed form-login attempts (mirrors /auth/token
+            # endpoint). Attributed to the address's canonical row, since no
+            # single row proved the credential.
+            canonical = repo.get_by_email_ci(email)
+            if canonical:
+                _audit(canonical["id"], "login_failed", result="invalid_password")
+        return RedirectResponse(url="/login/password?error=invalid", status_code=302)
+    if not bool(user.get("active", True)):
+        return RedirectResponse(url="/login/password?error=deactivated", status_code=302)
 
     if user.get("must_change_password"):
         # Password set by someone else (seeded / admin-set): refuse a full
@@ -303,7 +410,7 @@ async def password_login_web(
             reset_token_created=datetime.now(timezone.utc),
         )
         return RedirectResponse(
-            url=(f"/auth/password/reset?email={quote(email, safe='')}&token={reset_tok}&reason=must_change"),
+            url=(f"/auth/password/reset?email={quote(user['email'], safe='')}&token={reset_tok}&reason=must_change"),
             status_code=303,
         )
 
@@ -336,15 +443,17 @@ async def password_setup(
     switches to this JSON path and resumes at unbounded RPS.
     """
     repo = users_repo()
-    user = repo.get_by_email(request_body.email)
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    if user.get("setup_token") != hash_token(request_body.token):
+    email = (request_body.email or "").strip()
+    # The invitation is minted by user id, so it can sit on a case variant the
+    # oldest-wins lookup does not return — resolve by the token it carries.
+    user, identity_active = _row_holding_setup_token(repo, email, request_body.token)
+    if user is None:
+        if not repo.get_by_email_ci(email):
+            raise HTTPException(status_code=404, detail="User not found")
         raise HTTPException(status_code=400, detail="Invalid setup token")
     if not _token_is_fresh(user.get("setup_token_created"), SETUP_TOKEN_TTL):
         raise HTTPException(status_code=400, detail="Setup token has expired")
-    if not bool(user.get("active", True)):
+    if not bool(user.get("active", True)) or not identity_active:
         raise HTTPException(status_code=403, detail="Account deactivated")
 
     if len(request_body.password) < MIN_PASSWORD_LEN:
@@ -406,13 +515,13 @@ async def reset_request(
     addresses, anti-enumeration response shape masks which addresses
     landed, attacker burns SMTP / SendGrid quota + spams real users).
     """
-    # Match the rest of the codebase's case-sensitive lookup (password_login,
-    # email magic-link, admin create). Lowercasing here would silently fail
-    # for mixed-case emails the admin stored as-is.
+    # Strip only — case is folded by the lookup itself (get_by_email_ci), so a
+    # mixed-case row an admin stored as-is is still found when the person types
+    # their address in lower case.
     email = (email or "").strip()
     if email:
         repo = users_repo()
-        user = repo.get_by_email(email)
+        user = repo.get_by_email_ci(email)
         if user and bool(user.get("active", True)):
             token = secrets.token_urlsafe(32)
             repo.update(
@@ -420,7 +529,7 @@ async def reset_request(
                 reset_token=hash_token(token),
                 reset_token_created=datetime.now(timezone.utc),
             )
-            send_reset_email(request, email, token)
+            send_reset_email(request, user["email"], token)
     return _render_message(
         request,
         title="Check your email",
@@ -464,6 +573,7 @@ async def reset_confirm(
     referer leaks have surfaced partial tokens before, and there's no
     reason to allow unbounded attempts.
     """
+    email = (email or "").strip()
     repo = users_repo()
 
     # Anti-enumeration: validate the token BEFORE deriving any
@@ -483,13 +593,30 @@ async def reset_confirm(
     # re-rendered form, so validating the token here must not burn it.
     # The single-use atomic consumption still happens exactly once,
     # further down, only after the passwords pass validation.
-    user = repo.get_by_email(email)
-    token_valid = (
-        bool(user)
-        and bool(user.get("active", True))
-        and user.get("reset_token") == hash_token(token)
-        and _token_is_fresh(user.get("reset_token_created"), RESET_TOKEN_TTL)
+    # Peek across every row colliding on this address, not just "the account
+    # for this address": an admin-issued reset mints the token by user id, so
+    # it can sit on a case variant that get_by_email_ci (oldest wins) does not
+    # return — and a valid link would then render "Invalid or expired".
+    hashed = hash_token(token)
+    colliding = repo.list_by_email_ci(email)
+    user = next(
+        (
+            u
+            for u in colliding
+            if bool(u.get("active", True))
+            and u.get("reset_token") == hashed
+            and _token_is_fresh(u.get("reset_token_created"), RESET_TOKEN_TTL)
+        ),
+        None,
     )
+    # The same shadow the password doors apply: a proven token on an active
+    # sibling must not outrank a deactivated resolved identity, or one instance
+    # answers "deactivated" at the login form and hands out a session cookie on
+    # a reset link for the same pair of rows. Judged after the token proved
+    # itself, so this leaks nothing a holder did not already know.
+    if user is not None and colliding and not bool(colliding[0].get("active", True)):
+        user = None
+    token_valid = user is not None
     if not token_valid:
         # Generic copy regardless of whether the account exists or is
         # flagged for forced rotation — the caller hasn't proven they
@@ -528,6 +655,7 @@ async def reset_confirm(
     # but the CAS read DuckDB, so every reset / forced-rotation login 'expired'.)
     try:
         won = repo.consume_reset_token(email=email, token=hash_token(token), cutoff=cutoff, consume_id=consume_id)
+        # `won` is the id of the stamped row — the account the token belongs to.
     except Exception as exc:
         err = str(exc).lower()
         if "conflict" in err or "transaction" in err:
@@ -542,8 +670,10 @@ async def reset_confirm(
             request, email=email, token=token, error="Invalid or expired reset link.", reason=reason
         )
 
-    # Won the race — fetch the user and apply the password change.
-    user = repo.get_by_email(email)
+    # Won the race — fetch the row the CAS stamped (not a second address
+    # lookup, which could resolve a different case variant) and apply the
+    # password change.
+    user = repo.get_by_id(won)
     if not user:
         return _render_reset_form(
             request, email=email, token=token, error="Invalid or expired reset link.", reason=reason
@@ -596,13 +726,13 @@ async def setup_request(
     — same email-bombing surface (anti-enumeration response, sends mail
     on each request).
     """
-    # Match the rest of the codebase's case-sensitive lookup (password_login,
-    # email magic-link, admin create). Lowercasing here would silently fail
-    # for mixed-case emails the admin stored as-is.
+    # Strip only — case is folded by the lookup itself (get_by_email_ci), so a
+    # mixed-case row an admin stored as-is is still found when the person types
+    # their address in lower case.
     email = (email or "").strip()
     if email:
         repo = users_repo()
-        user = repo.get_by_email(email)
+        user = repo.get_by_email_ci(email)
         # Only issue setup token if user exists, has no password yet, and is active.
         if user and not user.get("password_hash") and bool(user.get("active", True)):
             token = secrets.token_urlsafe(32)
@@ -611,7 +741,7 @@ async def setup_request(
                 setup_token=hash_token(token),
                 setup_token_created=datetime.now(timezone.utc),
             )
-            send_setup_email(request, email, token)
+            send_setup_email(request, user["email"], token)
     return _render_message(
         request,
         title="Check your email",
@@ -637,6 +767,7 @@ async def setup_confirm(
     high-entropy ``setup_token`` should still not be brute-forceable at
     unbounded RPS in case a partial token leaks via logs / referer.
     """
+    email = (email or "").strip()
     if password != confirm_password:
         return _render_setup_form(request, email=email, token=token, name=name, error="Passwords do not match.")
     if len(password) < MIN_PASSWORD_LEN:
@@ -649,8 +780,10 @@ async def setup_confirm(
         )
 
     repo = users_repo()
-    user = repo.get_by_email(email)
-    if not user or user.get("setup_token") != hash_token(token):
+    # Resolved by the token, not the oldest-row tie-break — see
+    # `_row_holding_setup_token`.
+    user, identity_active = _row_holding_setup_token(repo, email, token)
+    if user is None:
         return _render_setup_form(request, email=email, token=token, name=name, error="Invalid or expired setup link.")
     if not _token_is_fresh(user.get("setup_token_created"), SETUP_TOKEN_TTL):
         return _render_setup_form(
@@ -660,7 +793,7 @@ async def setup_confirm(
             name=name,
             error="Setup link has expired. Ask an administrator for a new one.",
         )
-    if not bool(user.get("active", True)):
+    if not bool(user.get("active", True)) or not identity_active:
         return _render_setup_form(request, email=email, token=token, name=name, error="This account is deactivated.")
 
     ph = PasswordHasher()
