@@ -26,6 +26,26 @@ def _hash(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
+#: Scopes a session-wide sweep must NOT delete: long-lived credentials, as
+#: opposed to the short-lived egress tickets a sandbox restart is clearing.
+#:
+#: Every caller of :meth:`revoke_session` is a sandbox-lifecycle sweep — the
+#: chat runner spawning, stopping, respawning or resuming a relay, and Slack's
+#: session reset — and each means "retire the tickets that relay was holding".
+#: A ticket in one of these scopes is not that: it is the caller's own proof of
+#: identity, minted once per session, and its holder has no channel to be
+#: handed a replacement. `kai_session` is the embedded turn engine's
+#: credential (``app/api/kai.py``), and the engine's chat row is an ordinary
+#: `chat_sessions` row — so a user opening that conversation in web chat used
+#: to spawn a native runner whose sweep silently killed the engine's session
+#: for good, every later turn rejected.
+#:
+#: This is an exemption from the SWEEP, not from revocation: `revoke`
+#: (single token) and `revoke_session_scopes` (named scopes) still delete these
+#: rows when asked explicitly, and every such ticket carries a TTL, so nothing
+#: outlives its expiry.
+SWEEP_EXEMPT_SCOPES: frozenset[str] = frozenset({"kai_session"})
+
 class TicketRepository:
     def __init__(self, conn: duckdb.DuckDBPyConnection) -> None:
         self.conn = conn
@@ -63,7 +83,13 @@ class TicketRepository:
         self.conn.execute("DELETE FROM chat_broker_tickets WHERE token = ?", [_hash(token)])
 
     def revoke_session(self, session_id: str) -> None:
-        self.conn.execute("DELETE FROM chat_broker_tickets WHERE session_id = ?", [session_id])
+        """Sweep the session's egress tickets. See :data:`SWEEP_EXEMPT_SCOPES`
+        for the long-lived credentials this deliberately leaves alone."""
+        placeholders = ", ".join("?" for _ in SWEEP_EXEMPT_SCOPES)
+        self.conn.execute(
+            f"DELETE FROM chat_broker_tickets WHERE session_id = ? AND scope NOT IN ({placeholders})",  # noqa: S608
+            [session_id, *sorted(SWEEP_EXEMPT_SCOPES)],
+        )
 
     def revoke_session_scopes(self, session_id: str, scopes: Sequence[str]) -> None:
         """Revoke only the session's tickets in ``scopes``, leaving its other

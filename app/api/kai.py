@@ -218,6 +218,25 @@ def _create_session_and_credential(user_email: str) -> tuple[str, str]:
     either. Making them presentable is a frontend decision (render from the
     engine, or filter engine-backed rows out of the list) rather than
     something to paper over here.
+
+    **What sharing the row costs, and the half that is still open.** The row
+    also shares its `chat_broker_tickets` namespace with a native sandbox on
+    the same id. A user opening this conversation in web chat spawns a runner
+    whose lifecycle sweep used to delete every ticket for the id — including
+    the engine's long-lived credential, killing the session for good with no
+    channel to hand it a replacement. That half is closed:
+    `SWEEP_EXEMPT_SCOPES` (`src/repositories/ticket.py`) keeps
+    `revoke_session` off long-lived credentials, in both backends.
+
+    The converse is NOT closed: a turn's rotation revokes the `main`/`mcp`
+    scopes for the id, which are exactly the scopes a live native sandbox on
+    the same row holds, so an engine turn can still strip a concurrent web-chat
+    sandbox's egress tickets. It needs the same conversation open in both
+    runtimes at once. Fixing it properly means not sharing the row — a
+    separate id space for engine-backed sessions, with its own RBAC anchor and
+    purge target — which is a design decision rather than a patch, and is
+    recorded here rather than half-done. Both directions found by Devin Review
+    on this PR.
     """
     session = chat_session_repo().create_session(
         user_email=user_email,
@@ -596,6 +615,16 @@ async def kai_mcp(request: Request, row: Dict[str, Any] = Depends(require_broker
     # the broker ticket dependency, which does not pass through
     # `_require_session_credential`, so it asserts for itself.
     _secret()
+    if not _broker_mcp_enabled():
+        # The switch gated only whether `/api/kai/tickets` ISSUES the `mcp`
+        # scope, so on an instance with the engine configured and this switch
+        # off the route still served any holder of an `mcp` ticket — and the
+        # native chat runner mints one for every chat sandbox. No authority was
+        # widened (that identity can already replay MCP through
+        # `/api/broker/agnes-mcp`), but the switch says "let the engine's
+        # sandbox reach /api/kai/mcp", so it has to actually close the door.
+        # Found by Devin Review on this PR.
+        raise HTTPException(status_code=503, detail="kai_mcp_not_enabled")
     _require_scope(row, "mcp")
     token = await asyncio.to_thread(_mint_mcp_access_token, row["session_id"])
 

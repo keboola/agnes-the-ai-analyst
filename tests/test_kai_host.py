@@ -336,11 +336,18 @@ def _mcp_ticket(seeded_app):
     return ticket_repo().mint(body["chat_id"], "mcp"), body
 
 
-def test_mcp_requires_an_mcp_scoped_ticket(seeded_app, kai_env):
+def test_mcp_requires_an_mcp_scoped_ticket(seeded_app, kai_env, monkeypatch):
     """An llm ticket must not reach the tool surface — scope split is the
-    whole point of minting two."""
+    whole point of minting two.
+
+    The switch is enabled here because feature availability is checked BEFORE
+    the credential (as `_secret()` already is): with the feature off the route
+    answers 503 for everyone and never looks at a ticket's scope, which is the
+    right posture but not what this test is about.
+    """
     from src.repositories import ticket_repo
 
+    monkeypatch.setenv("KAI_BROKER_MCP_ENABLED", "1")
     body = _mint_session(seeded_app)
     llm_ticket = ticket_repo().mint(body["chat_id"], "main")
 
@@ -352,6 +359,55 @@ def test_mcp_requires_an_mcp_scoped_ticket(seeded_app, kai_env):
 def test_mcp_rejects_an_unknown_ticket(seeded_app, kai_env):
     resp = seeded_app["client"].post("/api/kai/mcp", headers={"Authorization": "Bearer nope"})
     assert resp.status_code == 401
+
+
+def test_the_engine_session_survives_a_native_sandbox_sweep(seeded_app, kai_env):
+    """Opening the engine's conversation in web chat must not kill its session.
+
+    The engine's chat row is an ordinary `chat_sessions` row, so it shares its
+    ticket namespace with a native sandbox on the same id — and the native
+    runner's lifecycle sweep is `revoke_session`, scope-blind. Before
+    `SWEEP_EXEMPT_SCOPES` that deleted the engine's long-lived credential, and
+    the engine has no channel to be handed a replacement: every later turn was
+    rejected, permanently. Found by Devin Review.
+    """
+    from src.repositories import ticket_repo
+
+    body = _mint_session(seeded_app)
+    credential = _claims(body["token"])["downstream_credential"]
+    chat_id = body["chat_id"]
+
+    # A turn happens: egress tickets exist alongside the credential.
+    first = seeded_app["client"].post("/api/kai/tickets", headers={"Authorization": f"Bearer {credential}"})
+    assert first.status_code == 200, first.text
+
+    # The user opens that conversation in web chat -> the runner sweeps the row.
+    ticket_repo().revoke_session(chat_id)
+
+    # The engine can still authenticate and take another turn.
+    again = seeded_app["client"].post("/api/kai/tickets", headers={"Authorization": f"Bearer {credential}"})
+    assert again.status_code == 200, f"credential must survive a native sweep, got {again.status_code}: {again.text}"
+    assert isinstance(again.json().get("llm"), str)
+
+
+def test_mcp_route_refuses_when_the_switch_is_off(seeded_app, kai_env, monkeypatch):
+    """The switch has to close the door, not just stop handing out keys.
+
+    It gated only whether `/api/kai/tickets` ISSUES the `mcp` scope, so with the
+    engine configured and the switch off the route still served any holder of an
+    `mcp` ticket — and the native chat runner mints one for every chat sandbox.
+    Found by Devin Review.
+    """
+    from src.repositories import ticket_repo
+
+    chat_id = _mint_session(seeded_app)["chat_id"]
+    monkeypatch.setenv("KAI_BROKER_MCP_ENABLED", "1")
+    ticket = ticket_repo().mint(chat_id, "mcp")
+
+    monkeypatch.setenv("KAI_BROKER_MCP_ENABLED", "false")
+    resp = seeded_app["client"].post("/api/kai/mcp", headers={"Authorization": f"Bearer {ticket}"}, content=b"{}")
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == "kai_mcp_not_enabled"
 
 
 def test_mcp_token_refuses_the_two_narrowed_session_kinds(seeded_app, kai_env, monkeypatch):
