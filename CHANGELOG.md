@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Internal
+
+- **Faster cold start of the FastAPI app.** `app/api/admin_mcp.py`, `app/api/admin_source_connections.py`, and `app/api/agent_sessions.py` no longer import `connectors/mcp/extractor.py` (pandas), `connectors/mcp/client.py` (the `mcp` SDK), or `app/chat/e2b_provider.py` (the e2b SDK) at module top — those are only pulled in inside the specific handler/route that actually needs them, deferring the cost from every process/test-worker startup to first real use. No behavior change; `connectors/mcp/extractor.py` and `connectors/mcp/client.py` themselves are untouched (their own top-level SDK imports stay, since several tests monkeypatch them as module attributes).
+
 ## [0.83.51] - 2026-08-18
 
 ### Fixed

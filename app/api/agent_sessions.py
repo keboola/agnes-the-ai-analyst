@@ -64,7 +64,6 @@ from app.auth.access import can_access, require_agent_profiles_enabled
 from app.auth.dependencies import _get_db, get_current_user
 from app.auth.pat_resolver import agent_id_from_request
 from app.auth.session_principal import PRINCIPAL_TYPES
-from app.chat.artifact_harvest import sanitize_filename
 from app.chat.manager import ConcurrencyCapHit, SessionNotFound, get_current_chat_manager
 from app.chat.streaming_sink import StreamingSink
 from app.chat.structured_output import schema_directive
@@ -463,6 +462,11 @@ async def download_session_artifact(
     belongs to a different session — same non-leaking posture
     `require_session_principal` already applies at the session level (a
     cross-agent PAT never even resolves a `principal` to get this far)."""
+    # Local import: app.chat.artifact_harvest -> app.chat.e2b_provider pulls
+    # in the e2b SDK (~250ms) at module top — heavy for this one filename
+    # sanitizer, only worth paying when an artifact is actually downloaded.
+    from app.chat.artifact_harvest import sanitize_filename
+
     row = agent_artifacts_repo().get(artifact_id)
     if row is None or row.get("session_id") != principal.session.id:
         raise HTTPException(status_code=404, detail={"code": "artifact_not_found"})
