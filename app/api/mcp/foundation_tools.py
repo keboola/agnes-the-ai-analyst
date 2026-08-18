@@ -101,6 +101,9 @@ FOUNDATION_TOOL_NAMES: tuple[str, ...] = (
     "delete_contributed_skill",
     "admin_config_surface",
     "admin_source_connections_list",
+    # Register a table from an upstream source (admin only). Triple-surface with
+    # POST /api/admin/register-table + `agnes admin register-table`.
+    "admin_register_table",
     # Why imported metrics are missing — coverage of each Keboola project's
     # semantic layer against the table registry. Triple-surface with
     # /api/admin/semantic-layer/coverage + `agnes admin semantic-layer coverage`.
@@ -1337,6 +1340,68 @@ def register_foundation_tools(
             )
             r.raise_for_status()
             return {"connections": r.json()}
+
+    @tool(read_only=False)
+    async def admin_register_table(
+        name: str,
+        source_type: str,
+        bucket: str,
+        source_table: str = "",
+        query_mode: str = "",
+        source_query: str = "",
+        description: str = "",
+        dry_run: bool = False,
+    ) -> dict:
+        """Register a table from an upstream source (admin only).
+
+        Registers one row in the table registry. For ``source_type`` in
+        ``databricks`` / ``snowflake`` / ``bigquery`` / ``keboola`` the server
+        can generate the full-table SQL from ``bucket`` + ``source_table`` when
+        ``source_query`` is omitted.
+
+        Args:
+            name: DuckDB view name the table will be known by in queries.
+            source_type: ``keboola`` | ``bigquery`` | ``jira`` | ``local`` | ``databricks`` | ``snowflake``.
+            bucket: Source bucket (Keboola), dataset (BigQuery), or schema (Databricks/Snowflake).
+            source_table: Raw table/view name in the bucket/dataset/schema. Defaults to ``name`` if omitted.
+            query_mode: ``local`` | ``remote`` | ``materialized``. Defaults to ``materialized`` for
+                Databricks/Snowflake, ``remote`` for BigQuery, and ``local`` for Keboola/Jira/Local.
+            source_query: Optional SQL/materialize query. Omit for full-table auto-generation.
+            description: Optional table description.
+            dry_run: If true, call ``/api/admin/register-table/precheck`` instead (validation only).
+
+        Mirrors ``POST /api/admin/register-table`` and ``agnes admin register-table``.
+        Requires an admin PAT.
+        """
+        if not source_table:
+            source_table = name
+        if not query_mode:
+            if source_type == "bigquery":
+                query_mode = "remote"
+            elif source_type in ("databricks", "snowflake"):
+                query_mode = "materialized"
+            else:
+                query_mode = "local"
+        payload: dict[str, Any] = {
+            "name": name,
+            "source_type": source_type,
+            "bucket": bucket,
+            "source_table": source_table,
+            "query_mode": query_mode,
+            "description": description,
+        }
+        if source_query:
+            payload["source_query"] = source_query
+        path = "/api/admin/register-table/precheck" if dry_run else "/api/admin/register-table"
+        async with httpx.AsyncClient() as c:
+            r = await c.post(
+                f"{base_url}{path}",
+                json=payload,
+                headers=headers_fn(),
+                timeout=60,
+            )
+            r.raise_for_status()
+            return r.json()
 
     @tool(read_only=True)
     async def admin_semantic_layer_coverage() -> dict:

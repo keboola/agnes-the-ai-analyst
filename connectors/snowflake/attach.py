@@ -11,7 +11,11 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
+import shutil
+import sys
+from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 from src.orchestrator_security import escape_sql_string_literal, is_attach_host_allowed
@@ -31,6 +35,102 @@ _SAFE_ACCOUNT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 # Database/warehouse/user/role are Snowflake identifiers; keep the regex
 # linear-time and conservative.
 _SAFE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _duckdb_extension_dir() -> Path:
+    """Return the DuckDB community-extension directory for this version/platform."""
+    import duckdb
+    import platform as _platform
+
+    machine = _platform.machine().lower()
+    system = sys.platform
+    if system == "linux":
+        base = "linux"
+    elif system == "darwin":
+        base = "osx"
+    elif system.startswith("win"):
+        base = "windows"
+    else:
+        base = system
+    if machine in ("x86_64", "amd64"):
+        arch = "amd64"
+    elif machine in ("aarch64", "arm64"):
+        arch = "arm64"
+    else:
+        arch = machine
+    return Path.home() / ".duckdb" / "extensions" / f"v{duckdb.__version__}" / f"{base}_{arch}"
+
+
+def _find_adbc_driver_library() -> Path | None:
+    """Locate the ADBC Snowflake shared library shipped with ``adbc-driver-snowflake``."""
+    try:
+        import adbc_driver_snowflake
+
+        pkg_dir = Path(adbc_driver_snowflake.__file__).parent
+        for name in (
+            "libadbc_driver_snowflake.so",
+            "libadbc_driver_snowflake.dylib",
+            "adbc_driver_snowflake.dll",
+        ):
+            candidate = pkg_dir / name
+            if candidate.exists():
+                return candidate
+    except Exception:
+        pass
+
+    for p in os.environ.get("LD_LIBRARY_PATH", "").split(os.pathsep):
+        for name in ("libadbc_driver_snowflake.so", "libadbc_driver_snowflake.dylib", "adbc_driver_snowflake.dll"):
+            candidate = Path(p) / name
+            if candidate.exists():
+                return candidate
+
+    for p in ("/usr/local/lib", "/usr/lib"):
+        for name in ("libadbc_driver_snowflake.so", "libadbc_driver_snowflake.dylib", "adbc_driver_snowflake.dll"):
+            candidate = Path(p) / name
+            if candidate.exists():
+                return candidate
+    return None
+
+
+def install_snowflake_adbc_driver(*, missing_ok: bool = True) -> None:
+    """Copy the ADBC Snowflake driver into DuckDB's extension directory.
+
+    DuckDB's ``snowflake`` community extension looks for ``libadbc_driver_snowflake.*``
+    in ``~/.duckdb/extensions/v<version>/<platform>/``. The ``adbc-driver-snowflake``
+    Python package ships the matching shared library, but in its own site-packages
+    directory, so this helper performs a one-time copy to the directory DuckDB
+    actually searches. It is safe to call repeatedly: if the driver is already
+    present it returns immediately.
+    """
+    ext_dir = _duckdb_extension_dir()
+    source = _find_adbc_driver_library()
+
+    if source is None:
+        if missing_ok:
+            logger.warning(
+                "adbc_driver_snowflake not found; Snowflake extension may fail to load. "
+                "Install it (scripts/install-adbc-driver.sh) or set LD_LIBRARY_PATH."
+            )
+            return
+        raise RuntimeError(
+            "ADBC Snowflake driver not found. Install it with scripts/install-adbc-driver.sh "
+            "or 'uv pip install --python .venv/bin/python adbc-driver-snowflake'."
+        )
+
+    target = ext_dir / source.name
+    if target.exists():
+        return
+
+    ext_dir.mkdir(parents=True, exist_ok=True)
+    tmp_target = target.with_suffix(f"{target.suffix}.tmp")
+    try:
+        shutil.copy2(source, tmp_target)
+        os.replace(tmp_target, target)
+        logger.info("Copied ADBC Snowflake driver to %s", target)
+    except Exception:
+        if tmp_target.exists():
+            tmp_target.unlink(missing_ok=True)
+        raise
 
 
 def _is_safe_segment(value: str, name: str) -> str:

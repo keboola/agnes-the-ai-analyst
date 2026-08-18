@@ -214,6 +214,11 @@ server = [
     # (app/main.py), which prod never sets; dev/staging do. Moved here from the
     # `dev` extra so it lands in the Dockerfile's `.[server]` install.
     "fastapi-debug-toolbar>=0.6.3",
+    # Apache Arrow ADBC driver for DuckDB's ``snowflake`` community extension.
+    # DuckDB searches for the shared library in ``~/.duckdb/extensions/...``;
+    # ``connectors.snowflake.attach.install_snowflake_adbc_driver`` copies it from
+    # the installed package at runtime, but the package must be on disk.
+    "adbc-driver-snowflake>=1.0.0",
 ]
 observability = [
     # Already in base dependencies — listed here so operators who want to

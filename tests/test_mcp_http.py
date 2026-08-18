@@ -293,6 +293,9 @@ class TestToolRegistration:
             # Triple-surface with GET /api/admin/source-connections +
             # `agnes admin connection list`.
             "admin_source_connections_list",
+            # Register a table from an upstream source. Triple-surface with
+            # POST /api/admin/register-table + `agnes admin register-table`.
+            "admin_register_table",
             # Why a connected project's metrics are (or aren't) landing.
             # Triple-surface with GET /api/admin/semantic-layer/coverage +
             # `agnes admin semantic-layer coverage`.

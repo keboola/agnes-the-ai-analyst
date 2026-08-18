@@ -136,13 +136,16 @@ def remove_user(user_id: str = typer.Argument(..., help="User ID to remove")):
 @admin_app.command("register-table")
 def register_table(
     name: str = typer.Argument(..., help="Table display name (DuckDB view name for BQ)"),
-    source_type: str = typer.Option("keboola", help="Source type: keboola | bigquery | jira | local | databricks"),
+    source_type: str = typer.Option("keboola", help="Source type: keboola | bigquery | jira | local | databricks | snowflake"),
     bucket: str = typer.Option(
         "",
         help="Source bucket (Keboola), dataset (BigQuery), or schema (Databricks; 'catalog.schema' overrides the default catalog)",
     ),
-    source_table: str = typer.Option("", help="Source table name in the bucket/dataset"),
-    query_mode: str = typer.Option("local", help="Query mode: local | remote | materialized"),
+    source_table: str = typer.Option("", help="Source table name in the bucket/dataset/schema"),
+    query_mode: Optional[str] = typer.Option(
+        None,
+        help="Query mode: local | remote | materialized (default: local for keboola/jira/local, materialized for databricks/snowflake, remote for bigquery)",
+    ),
     query: str = typer.Option(
         "",
         "--query",
@@ -239,6 +242,14 @@ def register_table(
     """
     from pathlib import Path
 
+    if query_mode is None:
+        if source_type == "bigquery":
+            query_mode = "remote"
+        elif source_type in ("databricks", "snowflake"):
+            query_mode = "materialized"
+        else:
+            query_mode = "local"
+
     # Resolve --query @file.sql shorthand.
     source_query = ""
     if query:
@@ -259,7 +270,7 @@ def register_table(
     # --query is still required — BQ has no analogous "full table" semantic
     # at the registry layer (the path is a SELECT against
     # `<project>.<dataset>.<table>`, which the admin must spell out).
-    if query_mode == "materialized" and not source_query and source_type not in ("keboola", "databricks"):
+    if query_mode == "materialized" and not source_query and source_type not in ("keboola", "databricks", "snowflake"):
         typer.echo(
             "Error: --query-mode materialized requires --query (literal SQL or @path.sql) for source_type="
             + source_type,
@@ -430,7 +441,7 @@ def register_table(
 
 @admin_app.command("discover-and-register")
 def discover_and_register(
-    source_type: str = typer.Option("keboola", help="Source type"),
+    source_type: str = typer.Option("keboola", help="Source type: keboola | bigquery"),
     token: str = typer.Option(None, help="Keboola Storage API token"),
     url: str = typer.Option(None, help="Keboola stack URL"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be registered"),
@@ -439,6 +450,14 @@ def discover_and_register(
     """Discover all tables from source and register them."""
     import httpx
     import os
+
+    if source_type not in ("keboola", "bigquery"):
+        typer.echo(
+            f"Discovery is not implemented for source_type='{source_type}'. "
+            "Register individual tables with `agnes admin register-table`.",
+            err=True,
+        )
+        raise typer.Exit(2)
 
     kbc_token = token or os.environ.get("KEBOOLA_STORAGE_TOKEN", "")
     kbc_url = url or os.environ.get("KEBOOLA_STACK_URL", "")
@@ -489,7 +508,12 @@ def discover_and_register(
         # the Storage API instead of the DuckDB extension. See
         # connectors/keboola/storage_api.py + the v25→v26 migration.
         # Other connectors keep their per-source default.
-        default_mode = "materialized" if source_type == "keboola" else "local"
+        if source_type == "keboola":
+            default_mode = "materialized"
+        elif source_type == "bigquery":
+            default_mode = "remote"
+        else:
+            default_mode = "local"
         resp = api_post(
             "/api/admin/register-table",
             json={

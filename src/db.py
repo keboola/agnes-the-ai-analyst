@@ -2846,7 +2846,11 @@ def _reattach_remote_extensions(conn: duckdb.DuckDBPyConnection, extracts_dir: P
         # JWT_SECRET_KEY / SESSION_SECRET / OPENAI_API_KEY on every
         # query, defeating the rebuild-path hardening entirely.
         from connectors.databricks.attach import UC_EXTENSION, attach_unity_catalog
-        from connectors.snowflake.attach import SF_EXTENSION, attach_snowflake
+        from connectors.snowflake.attach import (
+            SF_EXTENSION,
+            attach_snowflake,
+            install_snowflake_adbc_driver,
+        )
         from src.orchestrator_security import (
             attach_host_allowlist_configured,
             escape_sql_string_literal,
@@ -2909,7 +2913,10 @@ def _reattach_remote_extensions(conn: duckdb.DuckDBPyConnection, extracts_dir: P
                 # we'll see is already on disk. If LOAD fails because the
                 # extension isn't installed, log + skip (caller will see
                 # missing remote views and the operator will trigger a
-                # rebuild).
+                # rebuild). The Snowflake extension needs the ADBC driver
+                # shared library on disk even for LOAD, so ensure it first.
+                if extension == SF_EXTENSION:
+                    install_snowflake_adbc_driver()
                 conn.execute(f"LOAD {extension};")
                 token = resolve_remote_attach_token(token_env)
                 safe_url = escape_sql_string_literal(url)
