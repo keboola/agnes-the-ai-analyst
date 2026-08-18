@@ -594,6 +594,17 @@ _KEBOOLA_LOGIN_PROJECTS_REASON = (
 
 _EXEMPT: dict[str, str] = {
     "/api/auth/keboola/projects": _KEBOOLA_LOGIN_PROJECTS_REASON,
+    "/api/admin/doctor/new-instance": (
+        "deployment-gate doctor (post-deploy smoke checks) — CLI-reachable via "
+        "`agnes admin doctor --new-instance` and called by "
+        "scripts/ops/post-deploy-smoke-test.sh, but deliberately never "
+        "MCP-exposed per the 'operator security-posture diagnostics' standing "
+        "exemption in CONTRIBUTING.md: the response enumerates the instance's "
+        "auth-configuration posture (which login doors exist, whether "
+        "bootstrap is still open, email transport state) — one-call "
+        "reconnaissance in a prompt-injected agent session, not an agent "
+        "affordance"
+    ),
     "/api/admin/mcp-tools/{tool_id}/projection-map": (
         "names which of a lister tool's columns carry an app's id, URL and "
         "name. The decision is only makeable against the column list a fetch "

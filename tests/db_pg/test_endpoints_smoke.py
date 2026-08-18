@@ -916,6 +916,45 @@ class TestAdminRegistrySmoke:
 
 
 # ---------------------------------------------------------------------------
+# Admin Doctor  (new-instance deployment gate)
+# ---------------------------------------------------------------------------
+
+
+class TestAdminDoctorSmoke:
+    COVERED_ROUTES = {
+        "POST /api/admin/doctor/new-instance",
+    }
+
+    def test_new_instance_doctor_report_shape(self, seeded_app_both):
+        """The doctor reads users/groups/grants/agents through the repo
+        factories, so running it on both backends is a genuine parity check —
+        a backend-split read inside any of the five checks would surface here."""
+        r = seeded_app_both["client"].post(
+            "/api/admin/doctor/new-instance",
+            headers=_admin_headers(seeded_app_both),
+            json={},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["status"] in ("ok", "warning", "error")
+        names = [c["name"] for c in body["checks"]]
+        assert names == ["login-door", "email-delivery", "chat-grant", "agent-scope", "branding"]
+        for check in body["checks"]:
+            assert check["status"] in ("ok", "warning", "error", "info")
+            # A crashed check reports itself; a backend-split bug in a repo
+            # read would land here as "check crashed: …" on one backend only.
+            assert "check crashed" not in check["detail"], check
+
+    def test_non_admin_is_403(self, seeded_app_both):
+        r = seeded_app_both["client"].post(
+            "/api/admin/doctor/new-instance",
+            headers=_analyst_headers(seeded_app_both),
+            json={},
+        )
+        assert r.status_code == 403
+
+
+# ---------------------------------------------------------------------------
 # Admin Store  (submissions queue + reaper)
 # ---------------------------------------------------------------------------
 

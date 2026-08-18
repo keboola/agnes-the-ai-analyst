@@ -86,6 +86,14 @@ callbacks, and internal/SSE routes — must also be:
 > privilege-escalation seam, not a convenience. Classify them `_EXEMPT` with
 > a pointer to this paragraph.
 
+> **Standing exemption — operator security-posture diagnostics.** Endpoints
+> whose *response* enumerates the instance's security/auth configuration
+> posture (which login doors exist, whether bootstrap is still open, mail
+> transport state — e.g. the new-instance doctor) are CLI-reachable but
+> deliberately **never** MCP-exposed: an agent-invokable one-call posture
+> scanner hands a prompt-injected session exactly the reconnaissance it
+> needs. Classify them `_EXEMPT` with a pointer to this paragraph.
+
 - **CLI-reachable:** a command under `cli/commands/` that calls the endpoint over
   HTTP via `cli/client.py`. State-changing endpoints also get a parity case in
   `tests/test_cli_api_parity.py`.
