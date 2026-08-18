@@ -89,10 +89,11 @@
     display: inline-flex; align-items: center; justify-content: center;
     font-size: 12px; font-weight: 800; letter-spacing: 0.02em;
   }
-  .ds-src__logo--keboola  { background: var(--ds-kind-data-soft); color: var(--ds-kind-data); }
-  .ds-src__logo--bigquery { background: var(--ds-accent-info-bg); color: var(--ds-accent-info-ink); }
-  .ds-src__logo--jira     { background: var(--ds-kind-plugin-soft); color: var(--ds-kind-plugin); }
-  .ds-src__logo--local    { background: var(--ds-kind-file-soft); color: var(--ds-kind-file); }
+  .ds-src__logo--keboola   { background: var(--ds-kind-data-soft); color: var(--ds-kind-data); }
+  .ds-src__logo--bigquery  { background: var(--ds-accent-info-bg); color: var(--ds-accent-info-ink); }
+  .ds-src__logo--snowflake { background: var(--ds-accent-info-bg); color: var(--ds-accent-info-ink); }
+  .ds-src__logo--jira      { background: var(--ds-kind-plugin-soft); color: var(--ds-kind-plugin); }
+  .ds-src__logo--local     { background: var(--ds-kind-file-soft); color: var(--ds-kind-file); }
 
   .ds-src__id { min-width: 0; flex: 1 1 auto; }
   .ds-src__name {
@@ -386,6 +387,7 @@
   }
   .ds-srcopt .so-logo--kbc  { background: var(--ds-kind-data-soft, #e1f3f1); color: var(--ds-kind-data, #185a57); }
   .ds-srcopt .so-logo--bq   { background: var(--ds-accent-info-bg); color: var(--ds-accent-info-ink); }
+  .ds-srcopt .so-logo--sf   { background: var(--ds-accent-info-bg); color: var(--ds-accent-info-ink); }
   .ds-srcopt .so-logo--csv  { background: var(--ds-accent-warn-bg); color: var(--ds-accent-warn-ink); }
   .ds-srcopt .so-logo--jira { background: var(--ds-kind-plugin-soft, #f2e9fb); color: var(--ds-kind-plugin, #391c57); }
   .ds-srcopt .so-name { font-weight: 700; font-size: 13px; }
@@ -514,14 +516,14 @@
   .ds-bqcred { display: flex; align-items: center; gap: 8px; min-height: 26px; }
 
   /* ── Step 2 (BigQuery): manual rows editor ── */
-  .ds-bqrow { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
-  .ds-bqrow input {
+  .ds-bqrow, .ds-sfrow { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+  .ds-bqrow input, .ds-sfrow input, .ds-sfrow select {
     flex: 1; font: inherit; font-size: 13px; padding: 7px 10px;
     border: 1px solid var(--border, var(--ds-border)); border-radius: 8px;
     background: var(--surface, var(--ds-surface)); color: var(--ds-text-primary);
   }
-  .ds-bqrow .ds-table-status { flex: 0 0 auto; }
-  .ds-bqrow button { flex: 0 0 auto; }
+  .ds-bqrow .ds-table-status, .ds-sfrow .ds-table-status { flex: 0 0 auto; }
+  .ds-bqrow button, .ds-sfrow button { flex: 0 0 auto; }
 
   /* ── Pipeline strip — connected → synced → semantic → feeding whom, on
         every source card. Four (or three) cells reading across the whole
@@ -915,6 +917,11 @@
             <span class="so-name">BigQuery</span>
             <span class="so-sub">Live queries, no copy</span>
           </button>
+          <button type="button" class="ds-srcopt" data-wsrc="snowflake">
+            <span class="so-logo so-logo--sf">SF</span>
+            <span class="so-name">Snowflake</span>
+            <span class="so-sub">Live or materialized, SQL warehouse</span>
+          </button>
           <button type="button" class="ds-srcopt" data-wsrc="csv">
             <span class="so-logo so-logo--csv">⇪</span>
             <span class="so-name">CSV / files</span>
@@ -1007,6 +1014,44 @@
             <p style="margin-left:0;">Tables you add here are registered as <strong>live queries</strong> — no copy, every query
                runs in BigQuery behind the scan cap. For a <strong>saved query</strong> (materialized SQL on a schedule),
                partitioning or custom SQL, use <a href="/admin/tables">Tables → Register new table</a> — the full editor stays there.</p>
+          </div>
+        </div>
+
+        {# Snowflake — real: coordinates live in server-config, password in
+           datasource-secrets; tables register as remote or materialized. #}
+        <div data-wsrcform="snowflake" hidden>
+          <div class="ds-field">
+            <label for="ds-sf-account">Account <span style="color:var(--ds-accent-danger-ink)">*</span></label>
+            <input type="text" id="ds-sf-account" placeholder="xy12345 or xy12345.eu-central-1" autocomplete="off" spellcheck="false">
+            <div class="field-hint">Snowflake account identifier, no <code>.snowflakecomputing.com</code> suffix.</div>
+          </div>
+          <div class="ds-field">
+            <label for="ds-sf-user">User <span style="color:var(--ds-accent-danger-ink)">*</span></label>
+            <input type="text" id="ds-sf-user" placeholder="service user name" autocomplete="off" spellcheck="false">
+          </div>
+          <div class="ds-field">
+            <label for="ds-sf-password">Password <span style="color:var(--ds-accent-danger-ink)">*</span></label>
+            <input type="password" id="ds-sf-password" placeholder="paste password" autocomplete="off">
+            <div class="ds-sfcred" id="ds-sfcred"><span class="ds-loading" style="padding:4px 0;">Checking credential…</span></div>
+            <div class="field-hint">Stored write-only in the server vault as <code>SNOWFLAKE_PASSWORD</code>.</div>
+          </div>
+          <div class="ds-field">
+            <label for="ds-sf-database">Database <span style="color:var(--ds-accent-danger-ink)">*</span></label>
+            <input type="text" id="ds-sf-database" placeholder="default database for registered rows" autocomplete="off" spellcheck="false">
+          </div>
+          <div class="ds-field">
+            <label for="ds-sf-warehouse">Warehouse <span style="color:var(--ds-accent-danger-ink)">*</span></label>
+            <input type="text" id="ds-sf-warehouse" placeholder="compute warehouse" autocomplete="off" spellcheck="false">
+          </div>
+          <div class="ds-field">
+            <label for="ds-sf-role">Role <span class="optional">(optional)</span></label>
+            <input type="text" id="ds-sf-role" placeholder="e.g. ACCOUNTADMIN" autocomplete="off" spellcheck="false">
+          </div>
+          <div class="ds-wsl-opt">
+            <div class="ds-wsl-opt__head" style="cursor:default;">Live or materialized, cost-guarded</div>
+            <p style="margin-left:0;">Tables you add here can be <strong>live</strong> (remote, every query runs in Snowflake) or <strong>materialized</strong>
+               (a scheduled copy to parquet). For custom SQL, partitioning or semantic views, use
+               <a href="/admin/tables">Tables → Register new table</a>.</p>
           </div>
         </div>
 
@@ -1111,6 +1156,7 @@
 <script>
 const API_CONNECTIONS = "/api/admin/source-connections";
 const API_REGISTER_TABLE = "/api/admin/register-table";
+const API_SERVER_CONFIG = "/api/admin/server-config";
 
 function _esc(s) {
   return (s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -1209,10 +1255,11 @@ const DERIVED_SOURCES = {{ derived_sources | tojson }};
    picker calls that pane `csv`. Naming the translation here keeps it out of
    the callers, where a mismatch silently hides every form in step 1. */
 const CONNECTOR = {
-  keboola:  { abbr: "KB", cls: "keboola",  wizard: "keboola" },
-  bigquery: { abbr: "BQ", cls: "bigquery", wizard: "bigquery" },
-  jira:     { abbr: "JR", cls: "jira",     wizard: "jira" },
-  local:    { abbr: "FS", cls: "local",    wizard: "csv" },
+  keboola:   { abbr: "KB", cls: "keboola",   wizard: "keboola" },
+  bigquery:  { abbr: "BQ", cls: "bigquery",  wizard: "bigquery" },
+  snowflake: { abbr: "SF", cls: "snowflake", wizard: "snowflake" },
+  jira:      { abbr: "JR", cls: "jira",      wizard: "jira" },
+  local:     { abbr: "FS", cls: "local",     wizard: "csv" },
 };
 function _connector(type) {
   return CONNECTOR[type] || { abbr: (type || "?").slice(0, 2).toUpperCase(), cls: "local", wizard: "keboola" };
@@ -1277,9 +1324,10 @@ function _pipelineStripHtml(row) {
   // is the cost guard. Jira arrives over webhooks and files are replaced by
   // hand, so both keep the freshness reading but say it in their own words.
   if (p.cost) {
+    const costTitle = p.cost.title || "Refused above these — a query over the scan cap returns remote_scan_too_large. Editable in server config.";
     cells.push(`
       <a class="ds-pipe__cell" href="/admin/server-config"
-         title="Refused above these — a query over the scan cap returns remote_scan_too_large. Editable in server config.">
+         title="${_esc(costTitle)}">
         <span class="ds-pipe__k">Cost guard</span>
         <span class="ds-pipe__v">${_esc(p.cost.scan)} scan · ${_esc(p.cost.materialize)} materialize</span>
       </a>`);
@@ -2279,8 +2327,10 @@ let _wizardConnId = null;
 let _wizardStep = 1;
 let _wizardMaxStep = 1;       // furthest step reached — what the strip lets you back into
 let _wizardDone = false;      // the receipt is up; the flow is no longer navigable
-let _wizardSource = "keboola"; // 'keboola' | 'bigquery' | 'csv' | 'jira'
+let _wizardSource = "keboola"; // 'keboola' | 'bigquery' | 'snowflake' | 'csv' | 'jira'
 let _bqCredStatus = null;      // cached /api/admin/datasource-secrets read
+let _sfCredStatus = null;      // cached Snowflake password secret status
+let _sfConfigLoaded = false;   // cached Snowflake config read for this wizard open
 let _wizardTables = [];       // [{id, name, bucket}] registered in step 2
 let _wizardBoard = null;      // {trays: [{id, name, tables: [table]}], out: [table]}
 let _wizardTrayIdSeq = 0;
@@ -2352,6 +2402,10 @@ function _setWizSource(src) {
     connectBtn.style.display = _wizardStep === 1 ? "" : "none";
     connectBtn.textContent = "Continue";
     _loadBqCredStatus();
+  } else if (src === "snowflake") {
+    connectBtn.style.display = _wizardStep === 1 ? "" : "none";
+    connectBtn.textContent = "Save & continue";
+    _loadSfConfigAndStatus();
   } else {
     // csv / jira are guidance, not forms — nothing to submit.
     connectBtn.style.display = "none";
@@ -2377,6 +2431,93 @@ async function _loadBqCredStatus() {
        <a href="/admin/datasource-credentials">Instance secrets</a> first — registering works, but nothing can query until it's there.</span>`;
 }
 
+async function _loadSfConfigAndStatus() {
+  const host = document.getElementById("ds-sfcred");
+  if (!_sfConfigLoaded) {
+    try {
+      const r = await fetch(API_SERVER_CONFIG, { credentials: "include" });
+      const data = r.ok ? await r.json() : { sections: {} };
+      const sf = (data.sections && data.sections.data_source && data.sections.data_source.snowflake) || {};
+      document.getElementById("ds-sf-account").value = sf.account || "";
+      document.getElementById("ds-sf-user").value = sf.user || "";
+      document.getElementById("ds-sf-database").value = sf.database || "";
+      document.getElementById("ds-sf-warehouse").value = sf.warehouse || "";
+      document.getElementById("ds-sf-role").value = sf.role || "";
+      _sfConfigLoaded = true;
+    } catch (e) {
+      // leave inputs empty and let the admin fill them in
+    }
+  }
+  if (!_sfCredStatus) {
+    try {
+      const r = await fetch("/api/admin/datasource-secrets", { credentials: "include" });
+      const data = r.ok ? await r.json() : { secrets: [] };
+      const row = (data.secrets || []).find((s) => s.name === "SNOWFLAKE_PASSWORD");
+      _sfCredStatus = row || { source: "unset", has_value: false };
+    } catch (e) {
+      _sfCredStatus = { source: "unset", has_value: false };
+    }
+  }
+  _renderSfCredStatus(host);
+}
+
+function _renderSfCredStatus(host) {
+  if (!host) host = document.getElementById("ds-sfcred");
+  const hasInput = document.getElementById("ds-sf-password").value.trim().length > 0;
+  if (_sfCredStatus.has_value || hasInput) {
+    const source = hasInput ? "ready to save" : _sfCredStatus.source;
+    const cls = hasInput ? "badge-vault" : (_sfCredStatus.source === "env" ? "badge-env" : "badge-vault");
+    host.innerHTML = `<span class="ds-badge ${cls}">password · ${_esc(source)}</span>`;
+  } else {
+    host.innerHTML = `<span class="ds-badge badge-unset">not set</span>
+       <span style="font-size:12px; color:var(--ds-accent-warn-ink);">Save a password here first — registering works, but nothing can query until it's stored.</span>`;
+  }
+}
+
+async function _saveSnowflakeAndContinue() {
+  const err = document.getElementById("ds-wizard-error");
+  const account = document.getElementById("ds-sf-account").value.trim();
+  const user = document.getElementById("ds-sf-user").value.trim();
+  const database = document.getElementById("ds-sf-database").value.trim();
+  const warehouse = document.getElementById("ds-sf-warehouse").value.trim();
+  const role = document.getElementById("ds-sf-role").value.trim();
+  const password = document.getElementById("ds-sf-password").value;
+  if (!account || !user || !database || !warehouse) {
+    err.textContent = "Account, user, database and warehouse are required.";
+    err.style.display = "block";
+    return;
+  }
+  if ((!_sfCredStatus || !_sfCredStatus.has_value) && !password) {
+    err.textContent = "Snowflake password is required. Paste it below or set SNOWFLAKE_PASSWORD in Instance secrets.";
+    err.style.display = "block";
+    return;
+  }
+  try {
+    const r = await fetch(API_SERVER_CONFIG, {
+      method: "POST", credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sections: { data_source: { snowflake: { account, user, database, warehouse, role } } } }),
+    });
+    if (!r.ok) throw new Error("server-config save failed");
+    if (password) {
+      const rp = await fetch("/api/admin/datasource-secrets/SNOWFLAKE_PASSWORD", {
+        method: "PUT", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: password }),
+      });
+      if (!rp.ok) throw new Error("password secret save failed");
+      _sfCredStatus = { source: "vault", has_value: true };
+      _renderSfCredStatus();
+    }
+    _sfConfigLoaded = true;
+    _setWizStep(2);
+    _renderSfRowsEditor();
+  } catch (e) {
+    err.textContent = "Could not save Snowflake settings: " + (e.message || e);
+    err.style.display = "block";
+  }
+}
+
 /* `connector` preselects step 1's picker. A card's "Add tables…" knows which
    connector it is, so landing the admin on Keboola's form when they pressed
    it on the BigQuery card would make them undo a choice they already made. */
@@ -2387,6 +2528,8 @@ function openWizard(connector) {
   _wizardPackages = [];
   _wizardShares = null;
   _bqCredStatus = null;
+  _sfCredStatus = null;
+  _sfConfigLoaded = false;
   _wizardMaxStep = 1;
   _wizardDone = false;
   document.getElementById("ds-new-name").value = "";
@@ -2394,6 +2537,12 @@ function openWizard(connector) {
   document.getElementById("ds-new-token").value = "";
   document.getElementById("ds-new-semantic").checked = false;
   document.getElementById("ds-new-master").value = "";
+  document.getElementById("ds-sf-account").value = "";
+  document.getElementById("ds-sf-user").value = "";
+  document.getElementById("ds-sf-password").value = "";
+  document.getElementById("ds-sf-database").value = "";
+  document.getElementById("ds-sf-warehouse").value = "";
+  document.getElementById("ds-sf-role").value = "";
   document.querySelector(".ds-wsl-opt__field").hidden = true;
   document.getElementById("ds-wizard-error").style.display = "none";
   const share = document.getElementById("ds-wizard-step-share");
@@ -2733,9 +2882,105 @@ async function _registerBqRows() {
   return { ok: registered, failed };
 }
 
+/* ── Step 2 (Snowflake): manual rows editor ───────────────────────────────
+   Snowflake has no bucket browser exposed in the wizard — schemas are named.
+   Each filled row registers as LIVE (query_mode='remote') or a scheduled
+   MATERIALIZED copy; custom SQL and semantic views keep their full editor. */
+
+function _renderSfRowsEditor() {
+  const body = document.getElementById("ds-wizard-tables-body");
+  document.getElementById("ds-wizard-connected-banner").innerHTML =
+    "Name the Snowflake tables to register — schema and table, one per row.";
+  body.innerHTML = `
+    <div id="ds-sfrows">
+      ${_sfRowHtml()}${_sfRowHtml()}${_sfRowHtml()}
+    </div>
+    <button type="button" class="btn btn-secondary" id="ds-sfrow-add">＋ Add another table</button>
+    <div class="ds-browse-error" id="ds-sf-rows-error" style="display:block; margin-top:8px;"></div>`;
+  body.querySelector("#ds-sfrow-add").addEventListener("click", () => {
+    body.querySelector("#ds-sfrows").insertAdjacentHTML("beforeend", _sfRowHtml());
+  });
+}
+
+function _sfRowHtml() {
+  return `
+  <div class="ds-sfrow">
+    <input type="text" data-sf-schema placeholder="schema (e.g. PUBLIC)" autocomplete="off" spellcheck="false">
+    <input type="text" data-sf-table placeholder="table (e.g. ORDERS)" autocomplete="off" spellcheck="false">
+    <select data-sf-mode>
+      <option value="remote" selected>live</option>
+      <option value="materialized">materialized</option>
+    </select>
+    <span class="ds-table-status"></span>
+  </div>`;
+}
+
+async function _registerSfRows() {
+  const rows = [...document.querySelectorAll("#ds-sfrows .ds-sfrow")]
+    .map((row) => ({
+      row,
+      schema: row.querySelector("[data-sf-schema]").value.trim(),
+      table: row.querySelector("[data-sf-table]").value.trim(),
+      mode: row.querySelector("[data-sf-mode]").value,
+      statusEl: row.querySelector(".ds-table-status"),
+    }))
+    .filter((r) => r.schema || r.table);
+  const errEl = document.getElementById("ds-sf-rows-error");
+  errEl.textContent = "";
+  if (!rows.length) {
+    errEl.textContent = "Fill in at least one schema + table row.";
+    return { ok: [], failed: 0 };
+  }
+  const registered = [];
+  let failed = 0;
+  for (const r of rows) {
+    if (!r.schema || !r.table) {
+      r.statusEl.textContent = "✗ needs both schema and table";
+      r.statusEl.className = "ds-table-status fail";
+      failed++;
+      continue;
+    }
+    r.statusEl.textContent = "registering…";
+    r.statusEl.className = "ds-table-status";
+    let name = r.table.toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "");
+    if (!name) name = "sf_" + Math.random().toString(36).slice(2, 7);
+    if (/^\d/.test(name)) name = "_" + name;
+    try {
+      const resp = await fetch(API_REGISTER_TABLE, {
+        method: "POST", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name,
+          source_type: "snowflake",
+          bucket: r.schema,
+          source_table: r.table,
+          query_mode: r.mode,
+          description: "Added via the Add-data wizard",
+        }),
+      });
+      if (resp.ok || resp.status === 201 || resp.status === 409) {
+        r.statusEl.textContent = resp.status === 409 ? "already registered" : "✓ registered";
+        r.statusEl.className = "ds-table-status ok";
+        registered.push({ id: name, name: r.table, bucket: r.schema });
+      } else {
+        const b = await resp.json().catch(() => ({}));
+        r.statusEl.textContent = "✗ " + _esc(typeof b.detail === "string" ? b.detail : "failed");
+        r.statusEl.className = "ds-table-status fail";
+        failed++;
+      }
+    } catch (e) {
+      r.statusEl.textContent = "✗ request failed";
+      r.statusEl.className = "ds-table-status fail";
+      failed++;
+    }
+  }
+  return { ok: registered, failed };
+}
+
 // One entry point for step 2's "register whatever this source selected".
 async function _registerStepTwo() {
   if (_wizardSource === "bigquery") return _registerBqRows();
+  if (_wizardSource === "snowflake") return _registerSfRows();
   if (!_wizardConnId) return { ok: [], failed: 0 };
   // Step 2's own error line — the browse panel's sits on the page behind the
   // drawer, and `#ds-wizard-error` belongs to the connect step's pane.
@@ -3175,6 +3420,10 @@ document.getElementById("ds-wizard-connect-btn").addEventListener("click", () =>
   if (_wizardSource === "bigquery") {
     _setWizStep(2);
     _renderBqRowsEditor();
+    return;
+  }
+  if (_wizardSource === "snowflake") {
+    _saveSnowflakeAndContinue();
     return;
   }
   connectAndValidate();

@@ -12,11 +12,17 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [0.83.48] - 2026-08-18
 
+### Added
+
+- **Snowflake is now configurable from the `/admin/data-sources` "Add data" wizard** with password or key-pair authentication. The source picker exposes a Snowflake tile (with an inline SVG logo), the step-1 form collects account, user, database, warehouse and optional role, saves non-secret coordinates to `data_source.snowflake` via `/admin/server-config`, and stores the credential write-only in the datasource vault (`SNOWFLAKE_PASSWORD`, `SNOWFLAKE_PRIVATE_KEY`, or `SNOWFLAKE_PRIVATE_KEY_PASSPHRASE`). Step 2 registers schema/table rows as `remote` (live) or `materialized`. A Snowflake derived-source card also appears on `/admin/data-sources` once configured.
+- **Snowflake remote-attach credentials are now resolved from datasource secrets (env or vault) at query time**, so key-pair credentials stored through the admin UI work for live queries. The orchestrator and query path resolve the key passphrase from `data_source.snowflake.private_key_passphrase_env` so custom env names are honored.
+- **Small inline SVG logos now appear on the connector picker and source cards** for BigQuery, Snowflake, and Databricks.
+
 ### Fixed
 
 - **One person, one account — the case-insensitive identity fix now applies to the accounts that actually needed it.** `ensure_user` still read `get_by_email` (an exact, case-SENSITIVE match) first and used the case-insensitive read only as a miss-fallback, so wherever two case-variant rows already coexisted the exact hit won and the documented "oldest wins" contract never applied — the fix missed exactly the population it was written for. The case-insensitive read is now the only lookup, and case is folded in SQL alone (the argument is stripped, not lower-cased) rather than composing Python's Unicode table with the engine's, which is not a well-defined equivalence. **Operator note:** where case-variant duplicates already exist and the older row was deactivated while the person kept signing in on the newer one, sign-in now resolves to the deactivated row and is refused. That is the deliberate direction — a wrongly-refused sign-in is visible and fixable, whereas preferring the active row would let a hidden duplicate bypass an offboarding — but such instances want a reconciliation pass (merge or delete the stale variant) before upgrading. A read-only report listing these collisions is queued as a follow-up.
 - **`get_by_email_ci` resolves one identity to one account deterministically.** `created_at` is not unique — rows written together tie — so a bare `ORDER BY created_at` left the winner to whatever order the engine happened to return, which need not agree between DuckDB and Postgres or between two runs on one engine. `id` breaks the tie on both backends. The ordering deliberately ignores the `active` flag: callers gate on the returned row's own flag, so ranking active rows first would let a still-enabled duplicate serve a sign-in the operator had just disabled.
-
+- **Snowflake wizard in `/admin/data-sources` now styles its credential-status row, live-updates the password/private-key badge while typing, clears credential inputs after they are saved, and prefixes the generated registered-table name with the schema to avoid cross-schema collisions.**
 ## [0.83.47] - 2026-08-18
 
 ### Added
