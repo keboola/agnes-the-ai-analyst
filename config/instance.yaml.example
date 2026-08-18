@@ -460,6 +460,21 @@ data_source:
   #                                      # community extensions and sends the PAT to the workspace endpoint
   #                                      # — pin it with AGNES_REMOTE_ATTACH_HOST_ALLOWLIST. Without it,
   #                                      # remote rows still work; every statement runs on the warehouse.
+  # snowflake:                           # Snowflake SQL warehouse (secondary source; rows register with
+  #                                      # source_type=snowflake + query_mode='remote' or 'materialized').
+  #                                      # The DuckDB Snowflake extension resolves live queries locally and
+  #                                      # materialized rows write a parquet on the scheduler tick.
+  #   account: "myaccount"               # Snowflake account identifier (e.g. xy12345 or xy12345.eu-central-1).
+  #   user: "${SNOWFLAKE_USER}"          # Snowflake user name. Password comes from the env var named by
+  #                                      # token_env (default SNOWFLAKE_PASSWORD) or the vault — never YAML.
+  #   database: "ANALYTICS"              # Default database used when bucket/schema is given without a DB prefix.
+  #   warehouse: "COMPUTE_WH"            # Warehouse used for materialized COPY statements and live queries.
+  #   role: ""                           # Optional Snowflake role. Leave empty to use the user's default.
+  #   token_env: "SNOWFLAKE_PASSWORD"    # Env var holding the Snowflake password.
+  #   max_bytes_per_materialize: 10737418240
+  #                                      # Cost guardrail (bytes) for materialized Snowflake rows. Caps the
+  #                                      # parquet size; a larger result is rejected, never written.
+  #                                      # Default 10 GiB. Set 0 to disable.
 
 # --- OpenMetadata catalog (optional) ---
 # Enriches table and column metadata from OpenMetadata REST API.

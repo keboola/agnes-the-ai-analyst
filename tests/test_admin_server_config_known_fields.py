@@ -398,3 +398,50 @@ def test_save_section_with_nested_field_merges_correctly(seeded_app, tmp_path, m
         assert loaded["data_source"]["type"] == "bigquery"
     finally:
         ic._instance_config = None
+
+
+def test_snowflake_connector_declares_its_settings():
+    """The Snowflake connector's knobs are discoverable in /admin/server-config.
+
+    Every other connector that reads ``data_source.<name>.*`` declares those
+    keys in ``_KNOWN_FIELDS`` so the panel renders them with hints instead of
+    leaving the operator to find them in ``config/instance.yaml.example`` and
+    hand-edit YAML. Snowflake shipped without that sibling entry, so its
+    settings were documented but unreachable from the UI. The expected keys
+    are exactly what ``connectors/snowflake/settings.py`` and the scheduler's
+    guardrail read — nothing aspirational.
+    """
+    from app.api.admin import _KNOWN_FIELDS
+
+    sf = _KNOWN_FIELDS["data_source"].get("snowflake")
+    assert sf is not None, "data_source.snowflake missing from the server-config registry"
+    assert sf["kind"] == "object"
+    assert sf.get("hint")
+
+    fields = sf["fields"]
+    assert set(fields) == {
+        "account",
+        "user",
+        "database",
+        "warehouse",
+        "role",
+        "token_env",
+        "max_bytes_per_materialize",
+    }, sorted(fields)
+
+    # Every field carries operator-facing help, like the databricks sibling.
+    assert all(f.get("hint") for f in fields.values()), sorted(fields)
+
+    # The cost guardrail is an int whose declared default matches the one
+    # `app/api/sync.py` falls back to, and whose hint states what 0 means.
+    cap = fields["max_bytes_per_materialize"]
+    assert cap["kind"] == "int"
+    assert cap["default"] == 10 * 2**30
+    assert "0 disables" in cap["hint"]
+
+    # The password itself is never a config field — only the name of the env
+    # var holding it, mirroring how databricks keeps DATABRICKS_TOKEN out of
+    # the registry.
+    assert "password" not in fields
+    assert fields["token_env"]["kind"] == "string"
+    assert fields["token_env"].get("default") == "SNOWFLAKE_PASSWORD"

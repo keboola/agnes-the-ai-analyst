@@ -33,6 +33,7 @@ _COMMUNITY_EXTENSIONS: frozenset[str] = frozenset(
         # other instance these two names are simply never requested.
         "uc_catalog",
         "delta",
+        "snowflake",
     }
 )
 
@@ -47,6 +48,7 @@ _DEFAULT_TOKEN_ENVS: frozenset[str] = frozenset(
         "KEBOOLA_STORAGE_TOKEN",
         "GOOGLE_APPLICATION_CREDENTIALS",  # path, not a secret value
         "DATABRICKS_TOKEN",  # workspace PAT for the Unity Catalog ATTACH
+        "SNOWFLAKE_PASSWORD",  # Snowflake user password for the snowflake extension ATTACH
     }
 )
 
