@@ -177,10 +177,18 @@ def _shadowed_by_deactivated_identity(rows: list[dict], verified: dict) -> dict:
     typed the address, which is an enumeration oracle. The caller still has to
     prove a credential to learn anything.
 
-    This preserves the shipped contract rather than extending it. The wider
-    question — whether ANY deactivated variant should refuse, including one that
-    is not the resolved identity — is a policy change that would have to apply
-    uniformly (``reset_confirm`` included) and is not decided here.
+    This preserves the shipped contract rather than extending it. Two questions
+    are easy to conflate here, so to be explicit about which is settled:
+
+    * **Does this rule apply on every door?** Settled: yes. Password login,
+      ``POST /auth/token``, both setup flows, ``reset_confirm`` and the email
+      magic link all apply it. A rule that held on some doors and not others
+      would let one instance answer "deactivated" at the login form and mint a
+      session cookie on a reset link for the same pair of rows.
+    * **Should a deactivated variant that is NOT the resolved identity refuse?**
+      Open. That widens who is refused rather than keeping the shipped answer,
+      and it is a policy call for the repository owner, not something to settle
+      inside a bug fix.
     """
     identity = rows[0] if rows else verified
     if not bool(identity.get("active", True)):
