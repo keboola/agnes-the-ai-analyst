@@ -143,7 +143,9 @@ dependencies = [
     # the subprocess has full network access so tools like catalog/query can
     # reach the Agnes server even though the Bash tool sandbox cannot.
     # mcp>=1.0 ships FastMCP (mcp.server.fastmcp) — no separate fastmcp dep.
-    "mcp>=1.28.1",
+    # mcp 2.0 renames `streamablehttp_client` -> `streamable_http_client` and
+    # moves to `mcp_types`/`httpx2`; pin until the connector is migrated.
+    "mcp>=1.28.1,<2.0",
     # Transitive dependency hardened directly to dodge 5 dependabot advisories
     # (4 high, 1 medium) flagged on urllib3<2.7.0: cross-origin sensitive
     # header leak on proxied low-level redirects, decompression-bomb bypass
