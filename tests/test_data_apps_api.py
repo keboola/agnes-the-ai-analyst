@@ -403,6 +403,30 @@ def running_idle_app_with_token(api_env):
 
 
 @pytest.fixture
+def running_dead_container_app(api_env):
+    """A `running` row whose container is actually dead. A first-deploy crash
+    loop lands in `running` (not `deploying`), so the stale-deploying scan
+    never sees it. `updated_at` far in the past (past the start grace);
+    `last_request_at` recent so the idle sweep itself would skip it — only the
+    reconcile scan should catch it."""
+    from src.db import get_system_db
+    from src.repositories.data_apps import DataAppsRepository
+
+    conn = get_system_db()
+    try:
+        repo = DataAppsRepository(conn)
+        app_id = repo.create(slug="crash1", name="Crash1", owner_user_id="owner1", idle_timeout_s=300)
+        repo.set_state(app_id, "running")
+        conn.execute(
+            "UPDATE data_apps SET updated_at = now() - INTERVAL 20 MINUTE, last_request_at = now() WHERE id = ?",
+            [app_id],
+        )
+    finally:
+        conn.close()
+    return "crash1"
+
+
+@pytest.fixture
 def stale_deploying_app(api_env):
     """A `deploying` app whose `updated_at` is far in the past — a wake or
     operator-deploy that never finished. Should be recovered (-> `error`)
@@ -1338,6 +1362,290 @@ class TestReap:
         finally:
             conn.close()
         assert row["state"] == "deploying"
+
+    @staticmethod
+    def _age_out(slug):
+        """Push a row's `updated_at` back past the start grace, the way real time
+        does between two scheduler ticks."""
+        from src.db import get_system_db
+
+        conn = get_system_db()
+        try:
+            conn.execute(
+                "UPDATE data_apps SET updated_at = now() - INTERVAL 20 MINUTE WHERE slug = ?",
+                [slug],
+            )
+        finally:
+            conn.close()
+
+    def test_reap_idle_reconciles_running_app_with_dead_container(
+        self, admin_client, fake_runner, running_dead_container_app
+    ):
+        """A `running` row whose container the runner reports as dead
+        (`stopped`/`absent`) is reconciled to `error` — but only once a SECOND
+        sweep agrees. The first sighting leaves the row `running` with a pending
+        note, because the runner folds Docker's `restarting` into "stopped" and a
+        healthy app inside its restart backoff would otherwise be latched to
+        `error` the ingress proxy never re-checks."""
+        fake_runner._status = {"container": "stopped", "ready": False}
+
+        r = admin_client.post("/api/data-apps/reap-idle")
+        assert r.status_code == 200
+        assert r.json()["reconciled"] == [], "a single dead reading must not be enough"
+
+        from src.db import get_system_db
+        from src.repositories.data_apps import DataAppsRepository
+
+        conn = get_system_db()
+        try:
+            row = DataAppsRepository(conn).get_by_slug("crash1")
+        finally:
+            conn.close()
+        assert row["state"] == "running"
+        assert "reconcile-pending" in row["state_detail"]
+
+        self._age_out("crash1")
+        r = admin_client.post("/api/data-apps/reap-idle")
+        assert r.status_code == 200
+        assert r.json()["reconciled"] == ["crash1"]
+
+        conn = get_system_db()
+        try:
+            row = DataAppsRepository(conn).get_by_slug("crash1")
+        finally:
+            conn.close()
+        assert row["state"] == "error"
+        assert "running" in row["state_detail"]
+
+    def test_reap_idle_reconcile_clears_a_pending_note_when_the_container_recovers(
+        self, admin_client, fake_runner, running_dead_container_app
+    ):
+        """A transient restart must not accumulate towards `error`. Once the
+        container reports `running` again, the pending note is dropped, so the
+        next dead reading starts the two-sweep count over."""
+        fake_runner._status = {"container": "stopped", "ready": False}
+        assert admin_client.post("/api/data-apps/reap-idle").json()["reconciled"] == []
+
+        fake_runner._status = {"container": "running", "ready": True}
+        self._age_out("crash1")
+        assert admin_client.post("/api/data-apps/reap-idle").json()["reconciled"] == []
+
+        from src.db import get_system_db
+        from src.repositories.data_apps import DataAppsRepository
+
+        conn = get_system_db()
+        try:
+            row = DataAppsRepository(conn).get_by_slug("crash1")
+        finally:
+            conn.close()
+        assert row["state"] == "running"
+        assert "reconcile-pending" not in (row["state_detail"] or "")
+
+        # ...and a dead reading now needs two sweeps again, not one.
+        fake_runner._status = {"container": "stopped", "ready": False}
+        self._age_out("crash1")
+        assert admin_client.post("/api/data-apps/reap-idle").json()["reconciled"] == []
+
+    def test_reap_idle_leaves_healthy_running_app_alone(self, admin_client, fake_runner, running_dead_container_app):
+        """Guard against false positives: a `running` row whose container the
+        runner still reports as `running` must NOT be reconciled to error,
+        even once it is past the start grace."""
+        fake_runner._status = {"container": "running", "ready": True}
+        r = admin_client.post("/api/data-apps/reap-idle")
+        assert r.status_code == 200
+        assert r.json()["reconciled"] == []
+
+        from src.db import get_system_db
+        from src.repositories.data_apps import DataAppsRepository
+
+        conn = get_system_db()
+        try:
+            row = DataAppsRepository(conn).get_by_slug("crash1")
+        finally:
+            conn.close()
+        assert row["state"] == "running"
+
+    def test_reap_idle_reconcile_does_not_resurrect_running_when_clearing_a_note(
+        self, admin_client, fake_runner, running_dead_container_app
+    ):
+        """The note-clearing write is the one place a live container is written
+        back to `running`, and `row` comes from a snapshot taken before the loop
+        began. A stop that lands in between leaves the row `sleeping` while the
+        container is not yet removed — so the probe still says "running" — and an
+        unguarded write would put `running` back over it, leaving the registry
+        claiming a container that is gone."""
+        fake_runner._status = {"container": "stopped", "ready": False}
+        assert admin_client.post("/api/data-apps/reap-idle").json()["reconciled"] == []
+
+        from src.db import get_system_db
+        from src.repositories.data_apps import DataAppsRepository
+
+        def status_with_concurrent_stop(slug):
+            conn = get_system_db()
+            try:
+                repo = DataAppsRepository(conn)
+                repo.set_state(repo.get_by_slug(slug)["id"], "sleeping")
+            finally:
+                conn.close()
+            return {"container": "running", "ready": True}
+
+        self._age_out("crash1")
+        fake_runner.status = status_with_concurrent_stop
+        assert admin_client.post("/api/data-apps/reap-idle").status_code == 200
+
+        conn = get_system_db()
+        try:
+            row = DataAppsRepository(conn).get_by_slug("crash1")
+        finally:
+            conn.close()
+        assert row["state"] == "sleeping", "the concurrent stop was clobbered back to running"
+
+    def test_reap_idle_reconcile_takes_no_lease_for_a_healthy_app(
+        self, admin_client, fake_runner, monkeypatch, running_dead_container_app
+    ):
+        """`updated_at` is only bumped by `set_state`/`record_deploy`, never by
+        `touch_last_request`, so "stale `updated_at` while running" describes
+        essentially every healthy long-lived app. Acquiring the per-slug op
+        lease for each of them would contend with a concurrent deploy/stop on a
+        healthy app — `require_op_lease` gives up after a few 100 ms retries
+        with 409 `operation_in_progress`. A live container must therefore be
+        judged without the lease ever being taken."""
+        import app.api.data_apps as data_apps_api
+
+        real = data_apps_api.try_acquire_op_lease
+        taken: list[str] = []
+
+        def spy(slug):
+            taken.append(slug)
+            return real(slug)
+
+        monkeypatch.setattr(data_apps_api, "try_acquire_op_lease", spy)
+        fake_runner._status = {"container": "running", "ready": True}
+        r = admin_client.post("/api/data-apps/reap-idle")
+        assert r.status_code == 200
+        assert r.json()["reconciled"] == []
+        assert taken == [], f"lease acquired for a healthy app: {taken}"
+
+    def test_reap_idle_reconcile_reprobes_under_the_lease(self, admin_client, fake_runner, running_dead_container_app):
+        """A deploy that finishes between the lease-free probe and the lease
+        acquisition released the lease, so the container is up again even
+        though the row never left `running`. The second probe — paid only for
+        an app that already looked dead — must catch that and leave it alone."""
+        calls = {"n": 0}
+
+        def status_recovering(slug):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return {"container": "absent", "ready": False}
+            return {"container": "running", "ready": True}
+
+        fake_runner.status = status_recovering
+        r = admin_client.post("/api/data-apps/reap-idle")
+        assert r.status_code == 200
+        assert r.json()["reconciled"] == []
+        assert calls["n"] == 2, "the lease-free probe and the under-lease re-probe must both run"
+
+        from src.db import get_system_db
+        from src.repositories.data_apps import DataAppsRepository
+
+        conn = get_system_db()
+        try:
+            row = DataAppsRepository(conn).get_by_slug("crash1")
+        finally:
+            conn.close()
+        assert row["state"] == "running"
+
+    def test_reap_idle_reconcile_skips_app_with_op_lease_held_elsewhere(
+        self, admin_client, fake_runner, running_dead_container_app
+    ):
+        """The reconcile scan must respect the same per-slug op lease the idle
+        loop above it does. `deploy_data_app` holds that lease for the whole
+        deploy while leaving the row in `running` with a stale `updated_at`,
+        and `apps_runner.up()` removes the old container BEFORE creating the
+        new one — so a mid-deploy app legitimately reports `absent` and would
+        otherwise be flipped to `error`, which the ingress proxy latches
+        (only a manual redeploy clears it)."""
+        from app.api.data_apps import release_op_lease, try_acquire_op_lease
+
+        fake_runner._status = {"container": "absent", "ready": False}
+        acquired, holder = try_acquire_op_lease("crash1")
+        assert acquired
+        try:
+            r = admin_client.post("/api/data-apps/reap-idle")
+            assert r.status_code == 200
+            assert r.json()["reconciled"] == []
+        finally:
+            release_op_lease("crash1", holder)
+
+        from src.db import get_system_db
+        from src.repositories.data_apps import DataAppsRepository
+
+        conn = get_system_db()
+        try:
+            row = DataAppsRepository(conn).get_by_slug("crash1")
+        finally:
+            conn.close()
+        assert row["state"] == "running"
+
+    def test_reap_idle_reconcile_rereads_state_under_the_lease(
+        self, admin_client, fake_runner, running_dead_container_app
+    ):
+        """The row is selected before the lease is taken, so its state can be
+        stale by the time the lease is held. Here a concurrent stop lands
+        between the scan and the lease acquisition (simulated by mutating the
+        row from inside the runner's `status` call): the row is `sleeping`, an
+        `absent` container is exactly right for it, and the reconcile must not
+        write `error` over a legitimately sleeping app."""
+        from src.db import get_system_db
+        from src.repositories.data_apps import DataAppsRepository
+
+        def status_with_concurrent_stop(slug):
+            conn = get_system_db()
+            try:
+                repo = DataAppsRepository(conn)
+                repo.set_state(repo.get_by_slug(slug)["id"], "sleeping")
+            finally:
+                conn.close()
+            return {"container": "absent", "ready": False}
+
+        fake_runner.status = status_with_concurrent_stop
+        r = admin_client.post("/api/data-apps/reap-idle")
+        assert r.status_code == 200
+        assert r.json()["reconciled"] == []
+
+        conn = get_system_db()
+        try:
+            row = DataAppsRepository(conn).get_by_slug("crash1")
+        finally:
+            conn.close()
+        assert row["state"] == "sleeping"
+
+    def test_reap_idle_stop_failure_keeps_the_error_it_recorded(self, admin_client, fake_runner, running_idle_app):
+        """A runner failure while stopping an idle app must leave the row in
+        `error` with the runner's message, as the endpoint's docstring
+        promises — and must NOT report the slug as reaped. The `finally` that
+        writes `sleeping` runs even on the `except` path's `continue`, so
+        without a guard it clobbers the error it had just recorded and the app
+        is reported reaped while its container is still live."""
+
+        def failing_stop(slug, mode="recreate"):
+            raise RunnerError(500, "daemon busy")
+
+        fake_runner.stop = failing_stop
+        r = admin_client.post("/api/data-apps/reap-idle")
+        assert r.status_code == 200
+        assert r.json()["reaped"] == []
+
+        from src.db import get_system_db
+        from src.repositories.data_apps import DataAppsRepository
+
+        conn = get_system_db()
+        try:
+            row = DataAppsRepository(conn).get_by_slug("sapp")
+        finally:
+            conn.close()
+        assert row["state"] == "error"
+        assert "daemon busy" in row["state_detail"]
 
 
 class TestGitCredential:
