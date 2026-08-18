@@ -960,3 +960,44 @@ def test_admin_register_snowflake_custom_sql_allows_ctes(seeded_app, snowflake_i
         headers=_auth(seeded_app["admin_token"]),
     )
     assert resp.status_code == 201, resp.text
+
+
+def test_attach_snowflake_refuses_a_key_carrying_the_dollar_quote_tag(monkeypatch):
+    """The PEM is written into CREATE SECRET inside `$PK$ … $PK$` dollar-quoting,
+    because a PEM carries newlines. That was safe while the key was REBUILT via
+    `private_key.private_bytes(...)` — generated output cannot contain the tag.
+    Now that the operator's bytes are forwarded verbatim (so DuckDB decrypts the
+    key itself), a key whose text contains `$PK$` would close the literal early
+    and inject the remainder as SQL into a statement that carries a credential.
+    """
+    monkeypatch.setenv("AGNES_REMOTE_ATTACH_HOST_ALLOWLIST", SF_HOST)
+    conn = MagicMock()
+    url = build_remote_attach_url(
+        SF_SETTINGS["account"],
+        SF_SETTINGS["database"],
+        SF_SETTINGS["warehouse"],
+        SF_SETTINGS["user"],
+    )
+    hostile = "-----BEGIN PRIVATE KEY-----\nQUJD$PK$, WAREHOUSE 'x'); DROP TABLE t; --\n-----END PRIVATE KEY-----"
+    with pytest.raises(ValueError, match="dollar-quote tag"):
+        attach_snowflake(conn, alias=SF_ALIAS, url=url, token=hostile)
+    assert not any("DROP TABLE" in str(c) for c in conn.execute.call_args_list)
+
+
+def test_attach_snowflake_key_pair_forwards_the_passphrase(monkeypatch):
+    """A key-pair secret carries the PEM verbatim plus PRIVATE_KEY_PASSPHRASE,
+    and the passphrase is escaped as a normal quoted literal."""
+    monkeypatch.setenv("AGNES_REMOTE_ATTACH_HOST_ALLOWLIST", SF_HOST)
+    conn = MagicMock()
+    url = build_remote_attach_url(
+        SF_SETTINGS["account"],
+        SF_SETTINGS["database"],
+        SF_SETTINGS["warehouse"],
+        SF_SETTINGS["user"],
+    )
+    pem = "-----BEGIN ENCRYPTED PRIVATE KEY-----\nQUJD\n-----END ENCRYPTED PRIVATE KEY-----"
+    attach_snowflake(conn, alias=SF_ALIAS, url=url, token=pem, passphrase="it's secret")
+    secret_call = next(c[0][0] for c in conn.execute.call_args_list if "CREATE OR REPLACE SECRET" in str(c[0][0]))
+    assert "AUTH_TYPE 'key_pair'" in secret_call
+    assert pem in secret_call
+    assert "PRIVATE_KEY_PASSPHRASE 'it''s secret'" in secret_call
