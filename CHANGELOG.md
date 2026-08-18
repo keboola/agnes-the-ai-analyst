@@ -10,6 +10,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Removed
+
+- **The SendGrid SDK mail branch is gone; SMTP relay is the only mail transport.** The `sendgrid` package was never a declared dependency, so the SDK path in the magic-link and password providers always died on `ImportError` — while `SENDGRID_API_KEY` alone made the availability predicates advertise email sign-in in the login UI, turning every magic-link/reset/invite send into a silent dead end. The env key no longer counts as a configured transport; SendGrid keeps working through its SMTP relay (`SMTP_HOST=smtp.sendgrid.net`, `SMTP_USER=apikey`).
+
+### Fixed
+
+- **A configured-but-failing mail transport no longer answers success.** `POST /auth/email/send-link` (and its web form), `POST /auth/password/reset` and `POST /auth/password/setup/request` used to answer the generic "check your email" even when SMTP delivery raised — the person waited for a mail that was never sent. A failed send now logs the error and returns HTTP 500 (the web form redirects to the login page with an explanatory banner). Anti-enumeration is preserved: unknown addresses attempt no send and keep the generic success.
+
+### Changed
+
+- **One sender key for outgoing auth mail: `SMTP_FROM`.** The SendGrid branch read `EMAIL_FROM_ADDRESS` while the SMTP branch read `SMTP_FROM`; the SMTP sender now falls back to `EMAIL_FROM_ADDRESS` when `SMTP_FROM` is unset, so deployments configured under either key keep their sender.
+
 ## [0.83.56] - 2026-08-18
 
 ### Added
