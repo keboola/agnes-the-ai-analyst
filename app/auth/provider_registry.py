@@ -54,10 +54,24 @@ _RESCUE_PROVIDERS: tuple[str, ...] = ("password", "email")
 # not on every request (same rationale as the parse cache above).
 _LOCKOUT_RESCUE_LOGGED: Optional[tuple] = None
 
-# Providers whose availability probe RAISED rather than answering. Populated by
-# `_provider_available` and read by the rescue, which must not fire on a
-# transient fault — see `_rescue_if_unusable`.
-_probe_raised: set[str] = set()
+def _probe_availability(name: str) -> tuple[bool, bool]:
+    """``(available, probe_raised)`` for one provider.
+
+    The second element is returned rather than recorded in module state: this
+    runs from a FastAPI dependency on every ``/auth/*`` request, executed
+    concurrently in the threadpool, so a shared marker would let one request's
+    reset erase another's — precisely during the transient fault the signal
+    exists to tolerate. See :func:`_provider_available` for the failure
+    direction and :func:`_rescue_if_unusable` for what reads the flag.
+    """
+    module_path = _AVAILABILITY_PROBES.get(name)
+    if module_path is None:
+        return True, False
+    try:
+        return bool(importlib.import_module(module_path).is_available()), False
+    except Exception:
+        logger.warning("availability probe for provider %r raised; treating as unavailable", name, exc_info=True)
+        return False, True
 
 
 def _provider_available(name: str) -> bool:
@@ -69,21 +83,14 @@ def _provider_available(name: str) -> bool:
     instance these probes are in-memory config/env reads that do not raise,
     and if one somehow does, reading it as available would leave the login
     page offering only a provider that is actively broken — a lockout.
-    ``_probe_raised`` records that it raised, though, so the rescue can tell
+    :func:`_probe_availability` reports that it raised, though, so the rescue
+    can tell
     "probed and found unconfigured" from "could not tell": since the rescue
     now NARROWS rather than widens, letting a transient fault trigger it would
     take the operator's intended door offline for the fault's duration on no
     information at all. Availability here gates OFFERING, never identity.
     """
-    module_path = _AVAILABILITY_PROBES.get(name)
-    if module_path is None:
-        return True
-    try:
-        return bool(importlib.import_module(module_path).is_available())
-    except Exception:
-        logger.warning("availability probe for provider %r raised; treating as unavailable", name, exc_info=True)
-        _probe_raised.add(name)
-        return False
+    return _probe_availability(name)[0]
 
 
 def configured_allowlist() -> Optional[list[str]]:
@@ -133,10 +140,15 @@ def _rescue_if_unusable(cache_key: tuple, allowlist: Optional[list[str]]) -> Opt
     without admitting anyone new."""
     if allowlist is None:
         return allowlist
-    _probe_raised.clear()
-    if any(_provider_available(name) for name in allowlist):
-        return allowlist
-    if _probe_raised:
+    # Local, not shared: see `_probe_availability`. Short-circuits on the first
+    # available provider exactly as before.
+    any_raised = False
+    for name in allowlist:
+        available, raised = _probe_availability(name)
+        if available:
+            return allowlist
+        any_raised = any_raised or raised
+    if any_raised:
         # At least one probe could not answer. "Everything looks unavailable"
         # is then an artefact of the fault, not a statement about the
         # configuration — and rescuing would narrow the offering (404 on the

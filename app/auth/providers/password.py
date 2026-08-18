@@ -486,13 +486,22 @@ async def reset_confirm(
     # re-rendered form, so validating the token here must not burn it.
     # The single-use atomic consumption still happens exactly once,
     # further down, only after the passwords pass validation.
-    user = repo.get_by_email_ci(email)
-    token_valid = (
-        bool(user)
-        and bool(user.get("active", True))
-        and user.get("reset_token") == hash_token(token)
-        and _token_is_fresh(user.get("reset_token_created"), RESET_TOKEN_TTL)
+    # Peek across every row colliding on this address, not just "the account
+    # for this address": an admin-issued reset mints the token by user id, so
+    # it can sit on a case variant that get_by_email_ci (oldest wins) does not
+    # return — and a valid link would then render "Invalid or expired".
+    hashed = hash_token(token)
+    user = next(
+        (
+            u
+            for u in repo.list_by_email_ci(email)
+            if bool(u.get("active", True))
+            and u.get("reset_token") == hashed
+            and _token_is_fresh(u.get("reset_token_created"), RESET_TOKEN_TTL)
+        ),
+        None,
     )
+    token_valid = user is not None
     if not token_valid:
         # Generic copy regardless of whether the account exists or is
         # flagged for forced rotation — the caller hasn't proven they
@@ -531,6 +540,7 @@ async def reset_confirm(
     # but the CAS read DuckDB, so every reset / forced-rotation login 'expired'.)
     try:
         won = repo.consume_reset_token(email=email, token=hash_token(token), cutoff=cutoff, consume_id=consume_id)
+        # `won` is the id of the stamped row — the account the token belongs to.
     except Exception as exc:
         err = str(exc).lower()
         if "conflict" in err or "transaction" in err:
@@ -545,8 +555,10 @@ async def reset_confirm(
             request, email=email, token=token, error="Invalid or expired reset link.", reason=reason
         )
 
-    # Won the race — fetch the user and apply the password change.
-    user = repo.get_by_email_ci(email)
+    # Won the race — fetch the row the CAS stamped (not a second address
+    # lookup, which could resolve a different case variant) and apply the
+    # password change.
+    user = repo.get_by_id(won)
     if not user:
         return _render_reset_form(
             request, email=email, token=token, error="Invalid or expired reset link.", reason=reason

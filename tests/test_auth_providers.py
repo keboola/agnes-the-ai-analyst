@@ -309,6 +309,73 @@ class TestSignInIgnoresSurroundingWhitespace:
         assert row is not None and row[0], "padded address minted no magic-link token"
 
 
+class TestTokenOwnershipDecidesIdentity:
+    """A one-time link belongs to the row that HOLDS the token.
+
+    The compare-and-swap matches ``lower(email) = ? AND reset_token = ?``, so it
+    finds whichever case variant actually holds the token, while
+    ``get_by_email_ci`` deterministically returns the OLDEST. An admin-issued
+    reset mints the token by user id, so it can live on a newer variant — and
+    resolving the account by address after the CAS would then mint a session
+    for an account the token was never issued for, carrying that account's
+    group memberships.
+    """
+
+    @pytest.fixture
+    def variants(self, client):
+        """Two case-variant rows; the magic-link token sits on the NEWER one."""
+        from datetime import datetime, timezone
+
+        from src.db import get_system_db
+        from src.repositories.users import UserRepository
+
+        conn = get_system_db()
+        try:
+            repo = UserRepository(conn)
+            repo.create(id="dup-old", email="dup@test.com", name="Old")
+            repo.create(id="dup-new", email="Dup@Test.com", name="New")
+            conn.execute("UPDATE users SET created_at = ? WHERE id = ?", ["2025-01-01 00:00:00", "dup-old"])
+            conn.execute("UPDATE users SET created_at = ? WHERE id = ?", ["2026-06-01 00:00:00", "dup-new"])
+            repo.update(id="dup-new", reset_token=hash_token("tok-abc"), reset_token_created=datetime.now(timezone.utc))
+        finally:
+            conn.close()
+        return client
+
+    def test_magic_link_signs_in_the_account_the_token_belongs_to(self, variants):
+        import jwt as pyjwt
+
+        r = variants.post("/auth/email/verify", json={"email": "dup@test.com", "token": "tok-abc"})
+        assert r.status_code == 200, r.text
+        claims = pyjwt.decode(r.json()["access_token"], options={"verify_signature": False})
+        assert claims.get("sub") == "dup-new", "session minted for the wrong account"
+
+    def test_reset_form_accepts_a_link_whose_token_is_on_a_case_variant(self, variants):
+        """The pre-check peeked with ``get_by_email_ci`` (oldest wins), so a
+        genuinely valid admin-issued link rendered "Invalid or expired"."""
+        r = variants.post(
+            "/auth/password/reset/confirm",
+            data={
+                "email": "dup@test.com",
+                "token": "tok-abc",
+                "password": "brand-new-password-1",
+                "confirm_password": "brand-new-password-1",
+            },
+        )
+        assert r.status_code == 200, r.text
+        assert "Invalid or expired reset link" not in r.text
+
+        # And the password landed on the row that held the token.
+        from src.db import get_system_db
+
+        conn = get_system_db()
+        try:
+            rows = dict(conn.execute("SELECT id, password_hash FROM users WHERE id IN ('dup-old','dup-new')").fetchall())
+        finally:
+            conn.close()
+        assert rows["dup-new"], "password was not set on the token's own account"
+        assert not rows["dup-old"], "password landed on the wrong account"
+
+
 class TestGoogleOAuth:
     def test_google_login_not_configured(self, client):
         """Without GOOGLE_CLIENT_ID, should redirect to login with error."""

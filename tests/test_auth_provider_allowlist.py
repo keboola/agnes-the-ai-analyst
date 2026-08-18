@@ -46,7 +46,7 @@ class TestRegistry:
 
         # Narrowing is what's under test, not availability — make the named
         # provider count as configured so the lockout rescue stays out of it.
-        monkeypatch.setattr(provider_registry, "_provider_available", lambda name: True)
+        monkeypatch.setattr(provider_registry, "_probe_availability", lambda name: (True, False))
         assert provider_allowed("google") is True
         assert provider_allowed("password") is False
 
@@ -68,7 +68,7 @@ class TestLockoutRescue:
         from app.auth import provider_registry
         from app.auth.provider_registry import configured_allowlist, provider_allowed
 
-        monkeypatch.setattr(provider_registry, "_provider_available", lambda name: False)
+        monkeypatch.setattr(provider_registry, "_probe_availability", lambda name: (False, False))
         assert configured_allowlist() == ["password", "email"]
         assert provider_allowed("password") is True
 
@@ -88,7 +88,7 @@ class TestLockoutRescue:
         from app.auth import provider_registry
         from app.auth.provider_registry import provider_allowed
 
-        monkeypatch.setattr(provider_registry, "_provider_available", lambda name: False)
+        monkeypatch.setattr(provider_registry, "_probe_availability", lambda name: (False, False))
         assert provider_allowed("google") is False
         assert provider_allowed("keboola") is False
         assert provider_allowed("microsoft") is False
@@ -100,7 +100,7 @@ class TestLockoutRescue:
         from app.auth import provider_registry
         from app.auth.provider_registry import configured_allowlist, provider_allowed
 
-        monkeypatch.setattr(provider_registry, "_provider_available", lambda name: name == "google")
+        monkeypatch.setattr(provider_registry, "_probe_availability", lambda name: (name == "google", False))
         assert configured_allowlist() == ["keboola", "google"]
         assert provider_allowed("password") is False
 
@@ -116,7 +116,7 @@ class TestLockoutRescue:
         from app.auth import provider_registry
         from app.auth.provider_registry import configured_allowlist
 
-        monkeypatch.setattr(provider_registry, "_provider_available", lambda name: False)
+        monkeypatch.setattr(provider_registry, "_probe_availability", lambda name: (False, False))
         monkeypatch.setattr(provider_registry, "_LOCKOUT_RESCUE_LOGGED", None)
         with caplog.at_level(logging.ERROR, logger="app.auth.provider_registry"):
             configured_allowlist()

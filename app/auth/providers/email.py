@@ -249,10 +249,19 @@ def _consume_token(email: str, token: str) -> dict:
     consume_id = f"CONSUMED:{secrets.token_hex(16)}"
 
     repo = users_repo()
-    if not repo.consume_reset_token(email=email, token=hash_token(token), cutoff=cutoff, consume_id=consume_id):
+    # The CAS returns the row it stamped, and THAT is the account this link
+    # belongs to. Re-resolving by address would go through get_by_email_ci,
+    # which returns the oldest case variant — but an admin-issued reset mints
+    # the token by user id, so it can sit on a newer one. Minting the session
+    # from a second address lookup would then log the person in as a different
+    # account, with that account's group memberships.
+    consumed_id = repo.consume_reset_token(
+        email=email, token=hash_token(token), cutoff=cutoff, consume_id=consume_id
+    )
+    if not consumed_id:
         raise HTTPException(status_code=401, detail="Invalid or expired link")
 
-    user = repo.get_by_email_ci(email)
+    user = repo.get_by_id(consumed_id)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid link")
     return user

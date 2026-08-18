@@ -70,6 +70,20 @@ class UserRepository:
         ).fetchone()
         return self._row_to_dict(result)
 
+    def list_by_email_ci(self, email: str) -> List[Dict[str, Any]]:
+        """Every row whose email matches case-insensitively, oldest first.
+
+        ``get_by_email_ci`` answers "which account is this address" and so
+        returns exactly one row. This answers "which rows collide on this
+        address" — needed wherever a specific row must be identified by
+        something other than the address (the reset-token peek) and by the
+        operator-facing duplicate report."""
+        rows = self.conn.execute(
+            "SELECT * FROM users WHERE lower(email) = lower(?) ORDER BY created_at NULLS LAST, id",
+            [email],
+        ).fetchall()
+        return [d for d in (self._row_to_dict(r) for r in rows) if d is not None]
+
     def get_by_email_prefix(self, local_part: str) -> Optional[Dict[str, Any]]:
         """Resolve the single user whose email's local part (before ``@``)
         matches *local_part* exactly, picking the most recently updated when
@@ -225,11 +239,19 @@ class UserRepository:
         values = list(updates.values()) + [id]
         self.conn.execute(f"UPDATE users SET {set_clause} WHERE id = ?", values)
 
-    def consume_reset_token(self, *, email: str, token: str, cutoff, consume_id: str) -> bool:
+    def consume_reset_token(self, *, email: str, token: str, cutoff, consume_id: str) -> Optional[str]:
         """Atomically consume a password-reset token: stamp it with ``consume_id``
         iff it is the valid, unexpired token for an active ``email`` (matched
-        case-insensitively, like every other identity read). Returns True
-        iff THIS call won the race (mirrors the magic-link CAS). Goes through the
+        case-insensitively, like every other identity read).
+
+        Returns the id of the row it stamped, or ``None`` when this call did not
+        win (truthy/falsy either way, so a boolean caller still reads correctly).
+        Returning the ROW is what keeps token ownership and identity resolution
+        on the same account: the CAS finds whichever case variant actually holds
+        the token, while ``get_by_email_ci`` deterministically returns the
+        oldest — and a token minted by user id (admin-issued reset) can live on
+        a newer variant. Resolving the account by address after the CAS would
+        then mint a session for an account the token was never issued for. Goes through the
         repo (not a raw connection) so it runs on the ACTIVE backend — a raw
         DuckDB cursor here silently failed on Postgres instances.
 
@@ -256,10 +278,10 @@ class UserRepository:
         # is the account), and a bare per-email SELECT would read an arbitrary
         # one of several variants and report a loss.
         row = self.conn.execute(
-            "SELECT 1 FROM users WHERE lower(email) = lower(?) AND reset_token = ?",
+            "SELECT id FROM users WHERE lower(email) = lower(?) AND reset_token = ?",
             [email, consume_id],
         ).fetchone()
-        return bool(row)
+        return row[0] if row else None
 
     def count_admins(self, active_only: bool = True) -> int:
         """Count active users in the Admin system group."""
