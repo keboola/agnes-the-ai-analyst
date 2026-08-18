@@ -31,6 +31,7 @@ SF_SETTINGS = {
     "database": "analytics",
     "warehouse": "compute_wh",
     "role": "analyst",
+    "auth_type": "password",
     "token_env": "SNOWFLAKE_PASSWORD",
 }
 
@@ -259,7 +260,7 @@ def test_init_extract_creates_meta_and_views(tmp_path, monkeypatch):
     out = tmp_path / "extracts" / "snowflake"
     attach_calls = []
 
-    def fake_attach(conn, *, url, token):
+    def fake_attach(conn, *, url, token, passphrase=None):
         attach_calls.append((url, token))
         conn.execute("ATTACH ':memory:' AS sf")
         conn.execute("CREATE SCHEMA sf.public")
@@ -759,7 +760,7 @@ def test_init_extract_persists_custom_token_env(tmp_path, monkeypatch):
         [{"name": "orders", "bucket": "public", "source_table": "orders"}],
         token="secret",
         token_env="SF_SECRET_PASSWORD",
-        attach_fn=lambda conn, *, url, token: None,
+        attach_fn=lambda conn, *, url, token, passphrase=None: None,
     )
 
     conn = duckdb.connect(str(out / "extract.duckdb"))
@@ -785,7 +786,7 @@ def test_init_extract_default_token_env_is_the_module_default(tmp_path, monkeypa
         SF_SETTINGS["role"],
         [{"name": "orders", "bucket": "public", "source_table": "orders"}],
         token="secret",
-        attach_fn=lambda conn, *, url, token: None,
+        attach_fn=lambda conn, *, url, token, passphrase=None: None,
     )
     conn = duckdb.connect(str(out / "extract.duckdb"))
     try:
@@ -819,7 +820,7 @@ def test_init_extract_warns_when_token_env_not_allowlisted(tmp_path, monkeypatch
             [{"name": "orders", "bucket": "public", "source_table": "orders"}],
             token="secret",
             token_env="SF_SECRET_PASSWORD",
-            attach_fn=lambda conn, *, url, token: None,
+            attach_fn=lambda conn, *, url, token, passphrase=None: None,
         )
     assert "AGNES_REMOTE_ATTACH_TOKEN_ENVS" in caplog.text
 
