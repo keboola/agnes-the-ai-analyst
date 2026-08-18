@@ -388,16 +388,21 @@ def _accessible_valid_documents(
             continue
         if not _can_read_model(user, row, conn):
             continue
-        # `model_refs` restricts to specific models by their stored identity —
-        # id (`<source>/<source_ref>/<slug>`) OR slug. Matched on the ROW, not
-        # the document's internal `name`: a document `name` is not the stored
-        # identifier a caller sees in the model list, so filtering on it drops
-        # every row when a real id is passed (Devin review on #1398).
-        if model_refs is not None and row.get("id") not in model_refs and row.get("slug") not in model_refs:
-            continue
         models = row["document_json"].get("semantic_model")
         if not isinstance(models, list):
             continue
+        # `model_refs` restricts to specific models. Matched on the ROW's
+        # stored identity — id (`<source>/<source_ref>/<slug>`) or slug —
+        # because those are what the model list shows and filtering on the
+        # document's internal `name` alone drops every row when a real id is
+        # passed. The document model name(s) are accepted TOO, so the `model`
+        # label each returned object carries (the document name) round-trips
+        # back into `--model`/`model_ids` even when it differs from the slug
+        # (Devin review on #1398).
+        if model_refs is not None:
+            row_names = {m.get("name") for m in models if isinstance(m, dict)}
+            if not ({row.get("id"), row.get("slug")} & model_refs) and not (row_names & model_refs):
+                continue
         documents.extend(m for m in models if isinstance(m, dict))
     return documents
 

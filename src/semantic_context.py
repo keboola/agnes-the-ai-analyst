@@ -112,8 +112,17 @@ def get_semantic_context(
             unknown_types.append(semantic_type if isinstance(semantic_type, str) else str(semantic_type))
             continue
 
-        ids = selection.get("ids") or []
-        wanted = {str(i).casefold() for i in ids} if ids else None
+        # Untrusted shape: coerce `ids` rather than crash or char-iterate a
+        # bare string. A lone string is treated as one id; a non-iterable
+        # (number, object) degrades to "no ids" (compact) — same never-guess/
+        # never-crash posture this module keeps for bad selections/types
+        # (Devin review on #1398).
+        raw_ids = selection.get("ids")
+        if isinstance(raw_ids, str):
+            raw_ids = [raw_ids]
+        elif not isinstance(raw_ids, (list, tuple, set)):
+            raw_ids = []
+        wanted = {str(i).casefold() for i in raw_ids} if raw_ids else None
         mode = "full" if wanted is not None else "compact"
 
         objects: list[dict[str, Any]] = []

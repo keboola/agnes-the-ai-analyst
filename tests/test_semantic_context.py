@@ -135,6 +135,22 @@ class TestGetSemanticContextMultiModelAndUnknown:
         result = get_semantic_context([_fixture_document()], ["not-a-dict", {"semantic_type": "dataset"}])
         assert len(result["results"]) == 1
 
+    def test_a_bare_string_ids_is_treated_as_one_id_not_char_iterated(self):
+        """Devin #1398: `"ids": "orders"` must match the `orders` object, not
+        char-iterate into {"o","r","d","e","s"} and match nothing."""
+        result = get_semantic_context([_fixture_document()], [{"semantic_type": "dataset", "ids": "orders"}])
+        entry = result["results"][0]
+        assert entry["mode"] == "full"
+        assert [o["name"] for o in entry["objects"]] == ["orders"]
+
+    def test_a_non_iterable_ids_degrades_to_compact_not_a_crash(self):
+        """A number (or any non-iterable) for `ids` must not raise — it
+        degrades to the compact 'every object of this type' answer."""
+        result = get_semantic_context([_fixture_document()], [{"semantic_type": "dataset", "ids": 5}])
+        entry = result["results"][0]
+        assert entry["mode"] == "compact"
+        assert entry["objects"]  # every dataset, compactly — no error
+
 
 # --------------------------------------------------------------------------- #
 # get_semantic_schema -- served from the vendored schema, never hand-written

@@ -402,7 +402,9 @@ def test_export_succeeds_via_a_direct_model_grant(seeded_app):
 # ---------------------------------------------------------------------------
 
 
-def _upsert_model_with_constraints(*, id: str = "manual/_/retail_vq", slug: str = "retail_vq") -> dict:
+def _upsert_model_with_constraints(
+    *, id: str = "manual/_/retail_vq", slug: str = "retail_vq", model_name: str | None = None
+) -> dict:
     """A ``status='valid'`` model with a checkable error-severity constraint
     on ``revenue``, an unverifiable constraint on the same metric (degrades
     to ``post_execution_checks``), and a metric (``mrr``) whose only declared
@@ -417,10 +419,11 @@ def _upsert_model_with_constraints(*, id: str = "manual/_/retail_vq", slug: str 
 
     from src.repositories import semantic_model_repo
 
+    mname = model_name or slug
     document_json = {
         "semantic_model": [
             {
-                "name": slug,
+                "name": mname,
                 "datasets": [{"name": "orders", "source": "db.public.orders", "fields": [{"name": "region"}]}],
                 "metrics": [
                     {
@@ -465,7 +468,7 @@ def _upsert_model_with_constraints(*, id: str = "manual/_/retail_vq", slug: str 
     return semantic_model_repo().upsert(
         id=id,
         slug=slug,
-        name=slug,
+        name=mname,
         description=None,
         document="# native fixture, not schema-authored",
         document_json=document_json,
@@ -654,6 +657,25 @@ class TestGetSemanticContext:
         objects = r.json()["results"][0]["objects"]
         assert objects, "filtering by the stored id returned nothing"
         assert {o["model"] for o in objects} == {"other_model"}
+
+    def test_model_ids_accepts_the_document_name_so_the_output_label_round_trips(self, seeded_app):
+        """Devin #1398 follow-up: returned objects are labeled with the
+        document's model ``name``; that label must itself be usable in
+        ``model_ids`` even when it differs from the row slug — otherwise a
+        caller cannot narrow a follow-up call to a model it just saw."""
+        _upsert_model_with_constraints(id="manual/_/retail_row", slug="retail_row", model_name="Retail Model")
+        c = seeded_app["client"]
+        r = c.get(
+            "/api/semantic-models/context",
+            params={
+                "selections": _selections({"semantic_type": "dataset"}),
+                "model_ids": ["Retail Model"],  # the document name shown as each object's "model"
+            },
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        objects = r.json()["results"][0]["objects"]
+        assert objects, "the model name shown in output did not round-trip into model_ids"
+        assert {o["model"] for o in objects} == {"Retail Model"}
 
     def test_unknown_semantic_type_is_reported(self, seeded_app):
         c = seeded_app["client"]
