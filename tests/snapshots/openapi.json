@@ -35039,11 +35039,17 @@
         "responses": {
           "200": {
             "content": {
-              "application/json": {
-                "schema": {}
+              "application/gzip": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
               }
             },
-            "description": "Successful Response"
+            "description": "gzipped tar archive of the caller's workspace tree"
+          },
+          "204": {
+            "description": "this deployment ships no workspace payload"
           },
           "401": {
             "description": "Not authenticated"

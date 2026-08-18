@@ -1512,8 +1512,11 @@ the engine exposes nothing.
 The LLM upstream needs no new route: the engine's in-sandbox relay speaks plain
 pass-through, which is exactly what `/api/broker/anthropic/{subpath}` already
 is. Point the engine's `HOST_BROKER_LLM_URL` at it and the `llm` ticket
-(`main` scope) authenticates there, where the real credential is injected,
-model-gated, budgeted and metered server-side.
+authenticates there in its own dedicated `llm` broker scope — **not** the
+native sandbox's `main`, which also authenticates `/api/broker/agnes-api` and
+would expose the caller's whole non-admin `/api/*` replay surface to the
+sandbox. The real credential is injected there, model-gated, budgeted and
+metered server-side.
 
 ### `/api/knowledge` — Unified knowledge search
 

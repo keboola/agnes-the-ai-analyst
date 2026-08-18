@@ -17,8 +17,11 @@ three:
   scope-split broker ticket per egress scope the engine's in-sandbox relay
   needs, once per turn. This is the same ``chat_broker_tickets`` machinery the
   native chat relay uses (``src/repositories/ticket.py``) — the engine's
-  ``llm`` scope maps onto our ``main`` ticket scope, its ``mcp`` scope onto
-  ``mcp``.
+  ``llm`` scope maps onto a broker scope of the same name and its ``mcp`` scope
+  onto ``mcp``. Deliberately NOT the native sandbox's ``main``: that scope also
+  authenticates ``/api/broker/agnes-api``, so reusing it would hand the engine's
+  sandbox the caller's whole non-admin ``/api/*`` replay surface rather than LLM
+  egress. ``anthropic_proxy`` accepts both.
 - **Brokers.** The LLM one was already built: ``/api/broker/anthropic/{subpath}``
   (``app/api/broker.py``) is a plain pass-through that authenticates a
   ``main``-scoped ticket over ``Authorization: Bearer`` and injects the real
@@ -861,7 +864,24 @@ def _build_workspace_archive() -> Optional[bytes]:
     return archive
 
 
-@router.get("/workspace")
+@router.get(
+    "/workspace",
+    # Without this FastAPI also advertises `application/json` on the 200, from
+    # its default response class — so the spec offered a media type this route
+    # never returns.
+    response_class=Response,
+    # The generated schema described this 200 as `application/json` — the return
+    # annotation is all FastAPI has to go on, and the body is a tarball. Stated
+    # explicitly so a client generated from the spec expects bytes. Found by
+    # Copilot on this PR.
+    responses={
+        200: {
+            "content": {"application/gzip": {"schema": {"type": "string", "format": "binary"}}},
+            "description": "gzipped tar archive of the caller's workspace tree",
+        },
+        204: {"description": "this deployment ships no workspace payload"},
+    },
+)
 async def kai_workspace(row: Dict[str, Any] = Depends(_require_session_credential)) -> Response:
     """Serve this caller's workspace tree as one gzipped tarball.
 
