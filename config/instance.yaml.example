@@ -486,7 +486,12 @@ data_source:
   #   database: "ANALYTICS"              # Default database used when bucket/schema is given without a DB prefix.
   #   warehouse: "COMPUTE_WH"            # Warehouse used for materialized COPY statements and live queries.
   #   role: ""                           # Optional Snowflake role. Leave empty to use the user's default.
-  #   token_env: "SNOWFLAKE_PASSWORD"    # Env var holding the Snowflake password.
+  #   auth_type: "password"             # "password" or "key_pair". For key_pair, set private_key_env
+  #                                      # (default SNOWFLAKE_PRIVATE_KEY) and optional private_key_passphrase_env
+  #                                      # (default SNOWFLAKE_PRIVATE_KEY_PASSPHRASE) instead of token_env.
+  #   token_env: "SNOWFLAKE_PASSWORD"    # Env var holding the Snowflake password when auth_type=password.
+  #   private_key_env: "SNOWFLAKE_PRIVATE_KEY" # Env var holding the PEM private key (or JSON key envelope) when auth_type=key_pair.
+  #   private_key_passphrase_env: "SNOWFLAKE_PRIVATE_KEY_PASSPHRASE" # Optional env var holding the private key passphrase.
   #   max_bytes_per_materialize: 10737418240
   #                                      # Cost guardrail (bytes) for materialized Snowflake rows. Caps the
   #                                      # parquet size; a larger result is rejected, never written.

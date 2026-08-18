@@ -459,6 +459,46 @@ def test_get_by_email_ci_picks_the_oldest_when_case_variants_coexist(users_repo)
     assert row["id"] == "user-old"
 
 
+def test_get_by_email_ci_tiebreaks_deterministically_on_identical_created_at(users_repo):
+    """``created_at`` is not unique. Rows written in the same transaction (or
+    backfilled with the same timestamp) tie, and a bare ``ORDER BY created_at``
+    then leaves the winner to whatever order the engine happens to return —
+    which need not agree between DuckDB and Postgres, or between two runs on
+    one engine. The id breaks the tie so one identity always resolves to one
+    account."""
+    repo, _, backend = users_repo
+    same = datetime(2025, 3, 1, tzinfo=timezone.utc)
+    _make_user(repo, id="user-b", email="Tie@example.com")
+    _make_user(repo, id="user-a", email="tie@example.com")
+    _make_user(repo, id="user-c", email="TIE@EXAMPLE.COM")
+    for uid in ("user-a", "user-b", "user-c"):
+        _set_created_at(repo, backend, uid, same)
+    row = repo.get_by_email_ci("tie@example.com")
+    assert row is not None
+    assert row["id"] == "user-a"
+
+
+def test_get_by_email_ci_does_not_prefer_an_active_row(users_repo):
+    """Selection must not depend on the ``active`` flag.
+
+    Callers gate on the returned row's own ``active`` value, so ranking active
+    rows first would let a still-enabled duplicate serve a sign-in the operator
+    just disabled — offboarding bypassed by a hidden case variant. Oldest wins
+    regardless, which fails closed: the disabled row is returned and the
+    caller's gate refuses."""
+    repo, _, backend = users_repo
+    _make_user(repo, id="user-old", email="Dup@example.com")
+    _make_user(repo, id="user-new", email="dup@example.com")
+    _set_created_at(repo, backend, "user-old", datetime(2025, 1, 1, tzinfo=timezone.utc))
+    _set_created_at(repo, backend, "user-new", datetime(2026, 6, 1, tzinfo=timezone.utc))
+    repo.update("user-old", active=False)
+
+    row = repo.get_by_email_ci("dup@example.com")
+    assert row is not None
+    assert row["id"] == "user-old", "a still-active duplicate must not outrank the deactivated oldest"
+    assert row["active"] is False
+
+
 # ---------------------------------------------------------------------------
 # get_by_email_prefix — session-directory-name → user resolution parity
 # ---------------------------------------------------------------------------

@@ -71,6 +71,35 @@ def test_data_app_reaper_job_present(monkeypatch):
     assert "data-app-idle-reaper" in names
 
 
+def test_agent_schedules_run_due_job_present_by_default(monkeypatch):
+    monkeypatch.delenv("SCHEDULER_AGENT_SCHEDULES", raising=False)
+    from services.scheduler.__main__ import build_jobs
+
+    target = next(j for j in build_jobs() if j[0] == "agents:run-due")
+    _, schedule, endpoint, method, timeout = target
+    assert schedule == "every 1m"
+    assert endpoint == "/api/v1/agents/run-due"
+    assert method == "POST"
+
+
+@pytest.mark.parametrize("value", ["0", "false", "no", "FALSE"])
+def test_agent_schedules_run_due_job_omitted_when_disabled(monkeypatch, value):
+    monkeypatch.setenv("SCHEDULER_AGENT_SCHEDULES", value)
+    from services.scheduler.__main__ import build_jobs
+
+    names = [j[0] for j in build_jobs()]
+    assert "agents:run-due" not in names
+
+
+@pytest.mark.parametrize("value", ["1", "true", "yes", "anything-else"])
+def test_agent_schedules_run_due_job_present_when_explicitly_enabled(monkeypatch, value):
+    monkeypatch.setenv("SCHEDULER_AGENT_SCHEDULES", value)
+    from services.scheduler.__main__ import build_jobs
+
+    names = [j[0] for j in build_jobs()]
+    assert "agents:run-due" in names
+
+
 def test_resolved_startup_grace_default(monkeypatch):
     monkeypatch.delenv("SCHEDULER_STARTUP_GRACE_SECONDS", raising=False)
     from services.scheduler.__main__ import resolved_startup_grace_seconds
