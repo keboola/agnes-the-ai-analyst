@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.83.58] - 2026-08-18
+
 ### Fixed
 
 - **Keboola: sliced exports from AWS-backed stacks download instead of crashing on raw `s3://` URIs.** Some AWS stacks list unsigned `s3://<bucket>/<key>` entries in the sliced-export manifest (rather than presigned HTTPS), which the downloader passed straight to `requests` — every sync of a sliced table died with `InvalidSchema: No connection adapters were found for 's3://…'`. Both download paths (the direct Storage API client's CSV-concat and per-slice-parquet routes, and the legacy SDK client still used by incremental and partitioned syncs) now presign those URIs locally — SigV4 query auth built from the temporary federation credentials the `?federationToken=1` file detail already ships, stdlib only, no boto3 — mirroring how `gs://` (OAuth bearer) and `azure://` (SAS) manifests were already handled. A defensively covered non-sliced `s3://` URL presigns the same way, gzip-by-name detection checks the URL path so the presigned query string cannot defeat it, gs:// and azure:// behavior is unchanged, and a manifest with s3:// entries but no usable credentials fails with an actionable error instead of the schema crash.
