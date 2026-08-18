@@ -10,7 +10,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
-## [0.83.37] - 2026-08-18
+## [0.83.38] - 2026-08-18
 
 - **`agnes snapshot create` works on a remote Databricks row** — both the `table_id` form (`--select` / `--where` / `--limit` / `--order-by`) and `--from-query`. `/api/v2/scan` and `/api/v2/scan/estimate` gained a Databricks branch instead of refusing with `scan_engine_unsupported`, which had left an analyst no way to pull a filtered subset of a large Databricks table short of asking an admin for a materialized row. Predicates are written in Databricks SQL — the flavor `agnes schema` already advertises for the row — and size is bounded by `api.scan.max_result_bytes` with its own longer statement timeout (`data_source.databricks.scan_timeout_seconds`, default 900), because a snapshot is a materialize rather than an answer someone is waiting on.
 
@@ -69,6 +69,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Internal
 
 - **The schema TTL cache is reset between tests.** Keyed on `table_id` with a 1 h TTL and process-global, so two suites registering the same id with different columns handed each other the wrong schema — a failure that depended only on file ordering. Added to the existing `_reset_module_caches` autouse fixture alongside the catalog and quota caches.
+
+## [0.83.37] - 2026-08-17
+
+### Internal
+
+- **Groundwork for a Microsoft Teams chat surface.** `Surface.TEAMS_DM` and a Bot Framework Connector JWT/JWKS verifier (`services/teams_bot/sigverify.py`) land ahead of the webhook route and router registration that will actually reach them. Teams' auth model is a bearer JWT verified against Microsoft's rotating JWKS rather than Slack's symmetric HMAC signing secret, so verification needed its own module rather than reusing `services/slack_bot/sigverify.py`. Nothing is wired to an endpoint yet — first increment of the Teams bot MVP.
 
 ## [0.83.36] - 2026-08-17
 

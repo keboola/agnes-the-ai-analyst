@@ -8385,6 +8385,7 @@ def _chats_rows(request: Request, user: dict) -> tuple[list[dict], dict[str, int
         "web": "Web",
         "slack_dm": "Slack DM",
         "slack_thread": "Slack thread",
+        "teams_dm": "Teams DM",
         "api": "API",
     }
 
