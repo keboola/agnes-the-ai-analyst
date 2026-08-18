@@ -235,3 +235,20 @@ def test_scope_snapshot_roundtrip(repo):
     repo.record_scope_snapshot(id="s1", session_id="c1", agent_id="a1", effective_scope='{"tables": ["t1"]}')
     snaps = repo.list_scope_snapshots("c1")
     assert len(snaps) == 1 and snaps[0]["effective_scope"] == '{"tables": ["t1"]}'
+
+
+def test_agent_for_scope_item_finds_the_binding_holder(repo):
+    repo.create(id="a-route", owner_user_id="u1", name="Router", slug="router")
+    repo.set_scope("a-route", [("slack_channel", "C123"), ("plugin", "p1")])
+    hit = repo.agent_for_scope_item("slack_channel", "C123")
+    assert hit is not None and hit["id"] == "a-route"
+    # different item id / type miss
+    assert repo.agent_for_scope_item("slack_channel", "C999") is None
+    assert repo.agent_for_scope_item("plugin", "C123") is None
+
+
+def test_agent_for_scope_item_skips_deleted_agents(repo):
+    repo.create(id="a-gone", owner_user_id="u1", name="Gone", slug="gone")
+    repo.set_scope("a-gone", [("slack_channel", "C777")])
+    repo.soft_delete("a-gone")
+    assert repo.agent_for_scope_item("slack_channel", "C777") is None

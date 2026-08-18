@@ -1053,9 +1053,12 @@ mutating rather than assumed safe. Exposed names are prefixed per connection, so
 two projects' identically-named tools stay apart, and capped at 64 characters —
 the tool-name limit model APIs enforce. Returns `tools_registered` plus
 `tools_admin_only`, the number of registered tools recorded as mutating: the
-passthrough policy gate refuses those for every non-admin even when granted, and
-on an upstream that annotates nothing that is all of them — the caller needs to
-see that before promising analysts anything. A registration failure returns 502
+passthrough policy gate refuses those unless the caller is an admin or one of
+the caller's groups holds a grant with `allow_mutating=true` on that specific
+tool (`POST /api/admin/mcp-tools/{tool_id}/grants` — schema v120; agent
+profiles ride their owner's groups, still narrowed by connection scope), and
+on an upstream that annotates nothing that is all of them — the caller needs
+to see that before promising analysts anything. A registration failure returns 502
 and rolls back the previous chat-tools state; a failed local config write
 propagates instead of being dressed up as an upstream problem.
 A connection carrying `config.workspace_schema` passes it through as
@@ -1722,7 +1725,7 @@ fanned out into group members' installs and cannot be uninstalled
 
 `DELETE /api/v1/agents/{agent_id}` cascades: every PAT minted for the agent is revoked, every outbound webhook registration (`/api/v1/agents/{slug}/webhooks`) is removed, and every harvested sandbox artifact row + its object-store blob (`/api/v1/sessions/{id}/artifacts`) is deleted. The object-store blob deletes are best-effort — a single failed delete is logged and skipped rather than blocking the agent delete (an orphaned blob under a deleted agent's `agent-artifacts/` prefix is a cheap, non-sensitive leak).
 
-`PUT /api/v1/agents/{agent_id}/scope` — replace an agent's resource-grant set. Each of `plugins_mode`/`connections_mode`/`tables_mode`/`memory_mode` is `'all'` (no narrowing on that axis — the agent's authority passes through as the owner's set) or `'selected'` (narrowed to the accompanying `agent_scope` rows for that axis, e.g. specific table/plugin/connection/memory-domain ids). **This is live-enforced, not advisory**: a `'selected'`-scoped agent's brokered requests are authorized against `(owner grants ∩ agent scope)` via a restricted `AgentPrincipal`, never the owner's full grants — see `docs/superpowers/specs/2026-07-25-agent-scope-live-enforcement-design.md`. An agent PAT is issuable only once every mode is `'selected'` (`403 agent_not_selected_mode` otherwise), so an issuable PAT is always a real restriction of its owner, never a copy of the owner's full authority.
+`PUT /api/v1/agents/{agent_id}/scope` — replace an agent's resource-grant set. Each of `plugins_mode`/`connections_mode`/`tables_mode`/`memory_mode` is `'all'` (no narrowing on that axis — the agent's authority passes through as the owner's set) or `'selected'` (narrowed to the accompanying `agent_scope` rows for that axis, e.g. specific table/plugin/connection/memory-domain ids). **This is live-enforced, not advisory**: a `'selected'`-scoped agent's brokered requests are authorized against `(owner grants ∩ agent scope)` via a restricted `AgentPrincipal`, never the owner's full grants — see `docs/superpowers/specs/2026-07-25-agent-scope-live-enforcement-design.md`. An agent PAT is issuable only once every mode is `'selected'` (`403 agent_not_selected_mode` otherwise), so an issuable PAT is always a real restriction of its owner, never a copy of the owner's full authority. One item type is routing rather than authority: `('slack_channel', <channel_id>)` binds the channel's @mentions to this agent (the Slack surface creates the thread session with this agent's id, prefixes the first turn with a `[slack context: …]` header, and acks the mention with an 👀 reaction) — at most one non-deleted agent may hold a given channel (`409 slack_channel_taken`), and the binding grants no plugin/table/connection reach.
 
 - /api/v1/agents
 - /api/v1/agents/{agent_id}

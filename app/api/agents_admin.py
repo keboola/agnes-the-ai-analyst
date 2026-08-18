@@ -61,7 +61,12 @@ _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 _RESERVED_SLUGS = frozenset({"default"})
 
 _SELECTED_MODE_FIELDS = ("plugins_mode", "connections_mode", "tables_mode", "memory_mode")
-_ITEM_TYPES = frozenset({"plugin", "connection", "table", "memory_domain"})
+# `slack_channel` is a ROUTING item, not a data-authority one: holding
+# ('slack_channel', <channel_id>) makes @mentions in that channel run this
+# agent (services/slack_bot/events.py). The scope-intersection axes each read
+# their own item_type, so a binding grants no plugin/table/connection reach.
+# At most one non-deleted agent may hold a given channel — enforced below.
+_ITEM_TYPES = frozenset({"plugin", "connection", "table", "memory_domain", "slack_channel"})
 
 _SCOPE_MODE_VALUES = frozenset({"all", "selected"})
 _MEMORY_WRITE_MODE_VALUES = frozenset({"off", "propose", "auto"})
@@ -443,6 +448,19 @@ async def set_agent_scope(
             continue
         seen.add(key)
         items.append(key)
+
+    for item_type, item_id in items:
+        if item_type != "slack_channel":
+            continue
+        holder = agents_repo().agent_for_scope_item("slack_channel", item_id)
+        if holder is not None and holder["id"] != agent_id:
+            raise _err(
+                409,
+                "slack_channel_taken",
+                f"slack channel '{item_id}' is already bound to agent "
+                f"'{holder.get('slug') or holder['id']}' — unbind it there first "
+                f"(one agent per channel)",
+            )
 
     agents_repo().set_scope(agent_id, items)
     _audit(user["id"], "agent.scope.set", agent_id, {"count": len(items)})
