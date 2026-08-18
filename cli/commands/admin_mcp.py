@@ -428,7 +428,7 @@ def tool_grant(
     allow_mutating: Optional[bool] = typer.Option(
         None,
         "--allow-mutating/--no-allow-mutating",
-        help="Opt the group into (or out of) this tool's MUTATING surface (v120). "
+        help="Opt the group into (or out of) this tool's MUTATING surface (v121). "
         "Omit both flags to leave an existing grant's setting unchanged "
         "(a brand-new grant lands read-only).",
     ),

@@ -86,7 +86,7 @@ until a second consumer needs it.
 ### 2. Grant-based mutating MCP tools (`tool_grants.allow_mutating`)
 
 `tool_grants` gains `allow_mutating BOOLEAN NOT NULL DEFAULT FALSE`
-(migration v120, both ladders). Policy change in
+(migration v121, both ladders — renumbered from v120 when the parallel agent-schedules migration merged first with that number). Policy change in
 `enforce_passthrough_access` / `check_mutating`:
 
 - Admin callers: unchanged (always allowed).
@@ -146,7 +146,7 @@ cron can call `POST /api/v1/agents/{slug}/responses` with an agent PAT.
 
 ## Implementation order
 
-1. Migration v120 (DuckDB `_v119_to_v120` + Alembic twin) —
+1. Migration v121 (DuckDB `_v120_to_v121` + Alembic twin) —
    `tool_grants.allow_mutating`; runbook version bump. (Coordinate: the
    parallel scheduled-runs effort may also bump the schema; whichever merges
    second renumbers.)

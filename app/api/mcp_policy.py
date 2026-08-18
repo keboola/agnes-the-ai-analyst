@@ -4,7 +4,7 @@ Three independent gates, each driven by a column on ``tool_registry``:
 
 * ``mutating`` (BOOLEAN) — when true, the tool is invokable by admins and
   by callers whose groups hold a ``tool_grants`` row with
-  ``allow_mutating=TRUE`` for it (v120 — the "separate ``mutating_grant``
+  ``allow_mutating=TRUE`` for it (v121 — the "separate ``mutating_grant``
   row" the POC reserved). Read-only-by-default stands: a plain grant does
   not open a mutating tool; the per-tool opt-in is an explicit admin act.
   An ``AgentPrincipal`` rides its owner's groups with ``is_admin`` forced
@@ -60,12 +60,12 @@ def check_mutating(
     """Raise ``MutatingNotAllowed`` unless the caller may run a mutating tool.
 
     No-op for tools whose registry row has ``mutating=False`` (the read-only
-    default), for admin callers (curation + testing flow), and — since v120 —
+    default), for admin callers (curation + testing flow), and — since v121 —
     for callers whose ``group_ids`` hold a ``tool_grants`` row with
     ``allow_mutating=TRUE`` for this tool. ``group_ids`` are the caller's
     resolved groups (an ``AgentPrincipal``'s OWNER groups — the owner's
     grants are the agent's ceiling); ``None``/empty fails closed to the
-    pre-v120 admin-or-bust behavior.
+    pre-v121 admin-or-bust behavior.
     """
     if not bool(tool.get("mutating", False)):
         return
