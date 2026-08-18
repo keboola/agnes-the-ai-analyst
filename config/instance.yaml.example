@@ -79,6 +79,12 @@ instance:
   #                                  # `name` above still drives browser <title> text and page
   #                                  # headings — keep it populated. Env override:
   #                                  # AGNES_INSTANCE_LOGO_SVG.
+  # favicon: "img/my-icon.png"       # Favicon href. A path (no leading slash) is resolved
+                                     # as a static asset under app/web/static/ (same
+                                     # cache-busting `static_url()` every other asset gets);
+                                     # a data: URI or an absolute URL (contains "://") is used
+                                     # verbatim instead. Default: the built-in agnes-orb icon.
+                                     # Env override: AGNES_INSTANCE_FAVICON.
   # overview: |                      # Operator-authored Overview body rendered inside the
   #   <p>Free-form HTML — paragraphs, links, lists.</p>
   #                                  # welcome hero on /home (hairline-separated footnotes

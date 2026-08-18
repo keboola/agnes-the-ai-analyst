@@ -278,6 +278,75 @@ class TestInstanceBrandShort:
         mod._instance_config = None
 
 
+class TestInstanceFavicon:
+    """instance.favicon / AGNES_INSTANCE_FAVICON — favicon href resolution:
+    env > YAML > the built-in agnes-orb asset. A data-URI or absolute URL is
+    returned verbatim; anything else is resolved through the same
+    ``static_url()`` cache-busting helper the templates use for every other
+    static asset."""
+
+    def _reload(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TESTING", "1")
+        monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-key-minimum-32-characters!!")
+        import importlib
+        import app.instance_config as mod
+
+        mod._instance_config = None
+        importlib.reload(mod)
+        return mod
+
+    def test_default_resolves_orb_via_static_url(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("AGNES_INSTANCE_FAVICON", raising=False)
+        mod = self._reload(tmp_path, monkeypatch)
+        from app.web.router import _static_url
+
+        assert mod.get_instance_favicon() == _static_url("img/agnes-orb.png")
+        mod._instance_config = None
+
+    def test_yaml_static_path_resolved_through_static_url(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("AGNES_INSTANCE_FAVICON", raising=False)
+        state_dir = tmp_path / "state"
+        state_dir.mkdir(exist_ok=True)
+        (state_dir / "instance.yaml").write_text("instance:\n  favicon: img/agnes-orb.png\n")
+        mod = self._reload(tmp_path, monkeypatch)
+        from app.web.router import _static_url
+
+        assert mod.get_instance_favicon() == _static_url("img/agnes-orb.png")
+        mod._instance_config = None
+
+    def test_env_overrides_yaml(self, tmp_path, monkeypatch):
+        state_dir = tmp_path / "state"
+        state_dir.mkdir(exist_ok=True)
+        (state_dir / "instance.yaml").write_text("instance:\n  favicon: img/agnes-orb.png\n")
+        monkeypatch.setenv("AGNES_INSTANCE_FAVICON", "https://cdn.example.com/icon.png")
+        mod = self._reload(tmp_path, monkeypatch)
+        assert mod.get_instance_favicon() == "https://cdn.example.com/icon.png"
+        mod._instance_config = None
+
+    def test_data_uri_passthrough(self, tmp_path, monkeypatch):
+        data_uri = "data:image/png;base64,iVBORw0KGgo="
+        monkeypatch.setenv("AGNES_INSTANCE_FAVICON", data_uri)
+        mod = self._reload(tmp_path, monkeypatch)
+        assert mod.get_instance_favicon() == data_uri
+        mod._instance_config = None
+
+    def test_absolute_url_passthrough(self, tmp_path, monkeypatch):
+        url = "https://cdn.example.com/favicon.ico"
+        monkeypatch.setenv("AGNES_INSTANCE_FAVICON", url)
+        mod = self._reload(tmp_path, monkeypatch)
+        assert mod.get_instance_favicon() == url
+        mod._instance_config = None
+
+    def test_empty_env_falls_back_to_default(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AGNES_INSTANCE_FAVICON", "   ")
+        mod = self._reload(tmp_path, monkeypatch)
+        from app.web.router import _static_url
+
+        assert mod.get_instance_favicon() == _static_url("img/agnes-orb.png")
+        mod._instance_config = None
+
+
 class TestHiddenLoginFeatures:
     """instance.hide_login_features / AGNES_INSTANCE_HIDE_LOGIN_FEATURES —
     stable /login feature-card keys to hide. Resolution: env (comma-string) >

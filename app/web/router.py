@@ -35,6 +35,7 @@ from app.instance_config import (
     get_privacy_policy_url,
     get_workspace_dir_name,
     get_instance_logo_svg,
+    get_instance_favicon,
     get_instance_overview,
     get_instance_support,
     get_hidden_login_features,
@@ -1312,12 +1313,13 @@ async def how_it_works_page(
     for plugin in _accessible_plugins(user):
         skills.extend(_skills_for_plugin(plugin["marketplace_id"], plugin["name"]))
 
+    _brand = get_instance_brand()
     static_tools = [
-        {"name": "server_info", "description": "Check Agnes connectivity and your account email."},
+        {"name": "server_info", "description": f"Check {_brand} connectivity and your account email."},
         {"name": "catalog", "description": "List all tables available to you — name, query_mode, row count."},
         {"name": "schema", "description": "Show column names and types for a table."},
         {"name": "describe", "description": "Schema + sample rows for a table in one call."},
-        {"name": "query", "description": "Execute SQL against Agnes data (DuckDB or BigQuery dialect)."},
+        {"name": "query", "description": f"Execute SQL against {_brand} data (DuckDB or BigQuery dialect)."},
         {"name": "skills", "description": "List marketplace skills you can access — includes full SKILL.md body."},
     ]
 
@@ -4716,6 +4718,12 @@ def _chrome_ctx(request: Request, user: Optional[dict]) -> dict:
         "instance_brand_short": get_instance_brand_short(),
         "workspace_dir": get_workspace_dir_name(),
         "instance_theme": get_instance_theme(),
+        # Resolved to a ready-to-use `<link rel="icon">` href (env/YAML
+        # value as-is for a data:/absolute URL, otherwise static_url()-
+        # wrapped) — see get_instance_favicon(). Set here, not duplicated in
+        # _build_context, same as instance_brand/instance_theme above: this
+        # dict is composed into _build_context's context too (#996).
+        "instance_favicon": get_instance_favicon(),
         "home_automode": {"show": get_home_automode_visibility()},
         "custom_scripts": get_custom_scripts(),
         # Set here too (not only in _build_context) so the Studio nav link
