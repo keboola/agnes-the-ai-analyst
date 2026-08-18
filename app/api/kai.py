@@ -108,7 +108,14 @@ _CREDENTIAL_SCOPE = "kai_session"
 #: onto our broker's ticket scopes. ``llm`` is mandatory — the engine rejects a
 #: ticket payload without it and fails the turn before any prompt reaches the
 #: sandbox.
-_EGRESS_SCOPES: Dict[str, str] = {"llm": "main", "mcp": "mcp"}
+#: The engine's egress scope names (its ticket-response keys) mapped onto the
+#: broker scopes that authenticate them. `llm` maps to the broker's own `llm`
+#: scope, NOT to `main`: `main` authenticates `/api/broker/agnes-api` as well
+#: as the LLM proxy, so minting the engine's LLM ticket as `main` handed the
+#: sandbox the caller's whole non-admin `/api/*` replay surface — reachable
+#: even with the tool switch off, which is not what "LLM egress" means. Found
+#: by Devin Review on this PR.
+_EGRESS_SCOPES: Dict[str, str] = {"llm": "llm", "mcp": "mcp"}
 
 
 def _secret() -> str:
@@ -317,6 +324,17 @@ def _require_session_credential(request: Request) -> Dict[str, Any]:
     row = ticket_repo().resolve(credential)
     if row is None:
         raise HTTPException(status_code=401, detail="invalid_or_expired_kai_credential")
+    # The credential's authority is bounded by its session ROW, not only by its
+    # own TTL. `SWEEP_EXEMPT_SCOPES` deliberately spares it from the
+    # sandbox-lifecycle sweep, and `kill()` — which runs that sweep — is also
+    # what a user's permanent delete reaches, so without this check a deleted
+    # conversation left the engine able to mint fresh upstream tickets and
+    # spend the instance's LLM budget under that user's name for the rest of
+    # the credential's 12 h life. Checked here rather than per route so
+    # `/tickets` and `/workspace` are both covered by construction. Found by
+    # Devin Review on this PR.
+    if chat_session_repo().get_session(row["session_id"]) is None:
+        raise HTTPException(status_code=401, detail="kai_session_gone")
     if row.get("scope") != _CREDENTIAL_SCOPE:
         try:
             audit_repo().log(

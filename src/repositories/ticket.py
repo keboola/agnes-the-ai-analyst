@@ -29,9 +29,16 @@ def _hash(token: str) -> str:
 #: Scopes a session-wide sweep must NOT delete: long-lived credentials, as
 #: opposed to the short-lived egress tickets a sandbox restart is clearing.
 #:
-#: Every caller of :meth:`revoke_session` is a sandbox-lifecycle sweep — the
+#: Most callers of :meth:`revoke_session` are sandbox-lifecycle sweeps — the
 #: chat runner spawning, stopping, respawning or resuming a relay, and Slack's
-#: session reset — and each means "retire the tickets that relay was holding".
+#: session reset — each meaning "retire the tickets that relay was holding".
+#: An earlier version of this note claimed that was true of EVERY caller; it is
+#: not. ``ChatManager.kill`` runs the same sweep, and a user's permanent delete
+#: reaches it (``DELETE /api/chat/sessions/{chat_id}/permanent`` ->
+#: ``_kill_quietly`` -> ``kill``). An exemption here therefore cannot be the
+#: only thing bounding an exempted credential's life: ``app/api/kai.py``
+#: additionally refuses a credential whose session row is gone, so a deleted
+#: conversation cuts the engine off immediately rather than at TTL.
 #: A ticket in one of these scopes is not that: it is the caller's own proof of
 #: identity, minted once per session, and its holder has no channel to be
 #: handed a replacement. `kai_session` is the embedded turn engine's

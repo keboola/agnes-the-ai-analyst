@@ -186,7 +186,9 @@ def test_llm_ticket_authenticates_the_main_scoped_broker_route(seeded_app, kai_e
 
     resolved = ticket_repo().resolve(tickets["llm"])
     assert resolved is not None
-    assert resolved["scope"] == "main"
+    # NOT `main`: that scope also authenticates `/api/broker/agnes-api`, the
+    # whole non-admin `/api/*` replay. The engine gets LLM egress only.
+    assert resolved["scope"] == "llm"
 
 
 def test_mcp_ticket_is_omitted_unless_the_instance_brokers_mcp(seeded_app, kai_env, monkeypatch):
@@ -359,6 +361,54 @@ def test_mcp_requires_an_mcp_scoped_ticket(seeded_app, kai_env, monkeypatch):
 def test_mcp_rejects_an_unknown_ticket(seeded_app, kai_env):
     resp = seeded_app["client"].post("/api/kai/mcp", headers={"Authorization": "Bearer nope"})
     assert resp.status_code == 401
+
+
+def test_llm_egress_ticket_cannot_reach_the_general_api_replay(seeded_app, kai_env):
+    """"LLM egress" must mean only that.
+
+    `main` authenticates BOTH `/api/broker/anthropic/*` and
+    `/api/broker/agnes-api` — the latter replaying the caller's whole non-admin
+    `/api/*` surface — so minting the engine's LLM ticket as `main` handed the
+    sandbox the user's data API, reachable even with the tool switch off. It is
+    now minted in a dedicated `llm` scope that the LLM proxy accepts and
+    `agnes-api` does not. Found by Devin Review.
+    """
+    credential = _claims(_mint_session(seeded_app)["token"])["downstream_credential"]
+    llm = (
+        seeded_app["client"].post("/api/kai/tickets", headers={"Authorization": f"Bearer {credential}"}).json()["llm"]
+    )
+
+    resp = seeded_app["client"].post(
+        "/api/broker/agnes-api",
+        headers={"Authorization": f"Bearer {llm}"},
+        json={"method": "GET", "path": "/api/catalog"},
+    )
+    assert resp.status_code == 401, f"llm ticket must not open the API replay, got {resp.status_code}"
+    assert resp.json()["detail"] == "ticket_scope_mismatch"
+
+
+def test_a_deleted_conversation_cuts_the_engine_off_immediately(seeded_app, kai_env):
+    """The credential is bounded by its session ROW, not only by its own TTL.
+
+    `SWEEP_EXEMPT_SCOPES` spares it from the lifecycle sweep — and `kill()`,
+    which runs that sweep, is also what a user's permanent delete reaches. So
+    without this the deleted conversation left the engine able to mint fresh
+    upstream tickets and spend the instance's LLM budget under that user's name
+    for the rest of the 12 h credential. Found by Devin Review.
+    """
+    from src.repositories import chat_session_repo
+
+    body = _mint_session(seeded_app)
+    credential = _claims(body["token"])["downstream_credential"]
+    ok = seeded_app["client"].post("/api/kai/tickets", headers={"Authorization": f"Bearer {credential}"})
+    assert ok.status_code == 200
+
+    # The user deletes the conversation: the row goes, the credential row may not.
+    assert chat_session_repo().hard_delete_session(body["chat_id"]) is True
+
+    after = seeded_app["client"].post("/api/kai/tickets", headers={"Authorization": f"Bearer {credential}"})
+    assert after.status_code == 401, f"a deleted conversation must cut the engine off, got {after.status_code}"
+    assert after.json()["detail"] == "kai_session_gone"
 
 
 def test_the_engine_session_survives_a_native_sandbox_sweep(seeded_app, kai_env):
