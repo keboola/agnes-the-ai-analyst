@@ -10,6 +10,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.83.46] - 2026-08-18
+
+### Internal
+
+- **The nightly `/catalog` smoke tests the page that exists.** `scripts/e2e/smoke_catalog.sh` asserted a "Browse" tab and a `2` hotkey that select "My Stack" — both of which belong to `/marketplace` (`marketplace.html`), not to `/catalog`, which has rendered `catalog_unified.html`'s kind tabs (Data · Plugins · Memory · Recipes, click-driven) since the unified-catalog cutover. So the smoke had been failing every night against a page it was no longer describing — three consecutive tracking issues (#1351, #1358, #1392) reporting the same stale assertion rather than a regression. It now asserts the kind tabs that actually render (Data and Memory are `hidden` when empty, so Plugins and Recipes are the dependable pair) and drives the switch by clicking the Recipes tab. The new check reads the accessibility snapshot's own `[selected]` marker instead of matching the word "recipe", which the tab's own label contains either way — a text match there would have passed even when the click did nothing.
+
 ## [0.83.45] - 2026-08-18
 
 ### Added
