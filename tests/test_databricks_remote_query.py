@@ -404,16 +404,15 @@ class TestQueryEndpoint:
 
 
 class TestAccessPolicyInterlock:
-    def test_policied_databricks_table_is_refused_not_shipped_unfiltered(
-        self, seeded_app, warehouse, monkeypatch
-    ):
-        """§17 — every access-policy failure denies.
+    def test_policied_databricks_table_is_filtered_not_shipped_unfiltered(self, seeded_app, warehouse, monkeypatch):
+        """The policy travels to the warehouse instead of denying the query.
 
-        BigQuery has a dedicated path that transpiles a policy and binds it as
-        named parameters, so the filter survives the engine boundary. Databricks
-        has no such path yet, and the only alternative to refusing is forwarding
-        the caller's unfiltered statement to the warehouse — which would return
-        exactly the rows the policy exists to hide, with a 200.
+        This used to assert a refusal (`policy_unsupported_on_remote_engine`):
+        the only two options were "deny" and "ship the caller's unfiltered
+        statement", and §17 makes that choice for you. There is now a third —
+        substitute the policy body into the statement and bind its values as
+        API parameters — so the correct assertion is inverted: a 200 whose
+        submitted SQL contains the policy predicate.
         """
         from src.db import get_system_db
         from src.repositories.table_registry import TableRegistryRepository
@@ -455,18 +454,35 @@ class TestAccessPolicyInterlock:
             json={"sql": "SELECT country, n FROM orders_raw"},
             headers=_auth(seeded_app["analyst_token"]),
         )
-        assert r.status_code == 400, r.text
-        assert r.json()["detail"]["reason"] == "policy_unsupported_on_remote_engine"
-        assert r.json()["detail"]["engine"] == "Databricks"
+        assert r.status_code == 200, r.text
+
+        submitted = _wh.statements[-1]
+        # The policy body was substituted in, and BOTH its own `FROM` and the
+        # caller's reference resolved to the physical path.
+        assert "country = 'CZ'" in submitted
+        assert "`main`.`sales`.`orders_raw`" in submitted
+        # ...and the caller's projection still wraps it, so this is the policy
+        # applied to their query rather than the policy replacing it.
+        assert submitted.count("orders_raw") >= 2
 
 
 class TestSnapshotInterlock:
-    def test_snapshot_from_query_refuses_a_databricks_statement(self, seeded_app, monkeypatch):
-        """`--auto-snapshot` materializes through the BigQuery path only. Without
-        this gate the statement skips a registry check that only knows BQ rows and
-        then dies inside DuckDB with "table does not exist"."""
-        from app.api.query import run_remote_select_to_arrow
+    def test_snapshot_from_query_materializes_a_databricks_statement(self, seeded_app, warehouse, monkeypatch):
+        """`--from-query` now materializes on Databricks too.
 
+        This used to assert `snapshot_engine_unsupported`. The refusal existed
+        because the path would otherwise skip a registry gate that only knew BQ
+        rows and then die inside DuckDB; it now routes through the Databricks
+        planner, which has a gate of its own.
+        """
+        from app.api.query import run_remote_select_to_arrow
+        from app.api.v2_quota import _build_quota_tracker
+
+        _wh, settings = warehouse
+        monkeypatch.setattr(
+            "connectors.databricks.semantic_layer.resolve_databricks_settings",
+            lambda: settings,
+        )
         _register(
             id="dbx.sales.orders_raw",
             name="orders_raw",
@@ -474,8 +490,42 @@ class TestSnapshotInterlock:
             bucket="sales",
             source_table="orders_raw",
         )
+        from src.db import get_system_db
+
+        conn = get_system_db()
+        try:
+            table = run_remote_select_to_arrow(
+                conn,
+                {"id": "admin1", "email": "admin@test.com"},
+                "SELECT * FROM orders_raw",
+                None,
+                quota=_build_quota_tracker(),
+            )
+        finally:
+            conn.close()
+
+        assert table.num_rows == 3
+        assert set(table.column_names) == {"country", "n"}
+        # No `LIMIT n + 1` probe wrap: a materialize wants every row, and the
+        # interactive path's truncation signal would silently cap the snapshot.
+        assert "agnes_remote_q" not in _wh.statements[-1]
+
+    def test_snapshot_from_query_still_refuses_an_engine_with_no_materialize_path(self, seeded_app, monkeypatch):
+        """The refusal is not gone, only narrowed to engines that really cannot."""
         from fastapi import HTTPException
 
+        from app.api.query import run_remote_select_to_arrow
+
+        # The function imports this at call time, so patching the definition
+        # site is what the call actually sees.
+        monkeypatch.setattr("src.remote_engines.resolve_single_engine", lambda _refs: "snowflake")
+        _register(
+            id="dbx.sales.orders_raw",
+            name="orders_raw",
+            source_type="databricks",
+            bucket="sales",
+            source_table="orders_raw",
+        )
         from src.db import get_system_db
 
         conn = get_system_db()
@@ -736,17 +786,13 @@ class TestDialectSurvivesTheGate:
         ],
     )
     def test_databricks_syntax_is_not_refused(self, sql):
-        lookups, blocked = guardrail_inputs(
-            sql, sql.lower(), allowed=None, is_admin=True, default_catalog="main"
-        )
+        lookups, blocked = guardrail_inputs(sql, sql.lower(), allowed=None, is_admin=True, default_catalog="main")
         assert blocked is None, blocked
         assert ("revenue_kpis", "main", "sales", "kpis") in lookups
 
     def test_measure_query_reaches_the_warehouse_rewritten(self):
         sql = "SELECT o_date, MEASURE(`Total Revenue`) FROM revenue_kpis GROUP BY o_date"
-        lookups, blocked = guardrail_inputs(
-            sql, sql.lower(), allowed=None, is_admin=True, default_catalog="main"
-        )
+        lookups, blocked = guardrail_inputs(sql, sql.lower(), allowed=None, is_admin=True, default_catalog="main")
         assert blocked is None
         out = rewrite_to_native(sql, lookups, "main")
         # The metric view is addressed by its real path; MEASURE() and the
