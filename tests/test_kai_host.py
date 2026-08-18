@@ -358,9 +358,82 @@ def test_mcp_requires_an_mcp_scoped_ticket(seeded_app, kai_env, monkeypatch):
     assert resp.json()["detail"] == "ticket_scope_mismatch"
 
 
-def test_mcp_rejects_an_unknown_ticket(seeded_app, kai_env):
+def test_mcp_rejects_an_unknown_ticket(seeded_app, kai_env, monkeypatch):
+    """Switch on, because availability is decided before the credential: with the
+    tool surface off the route answers 503 for every caller and never inspects a
+    ticket, which is the point of `_require_mcp_surface` running as a dependency
+    ahead of `require_broker_ticket`."""
+    monkeypatch.setenv("KAI_BROKER_MCP_ENABLED", "1")
     resp = seeded_app["client"].post("/api/kai/mcp", headers={"Authorization": "Bearer nope"})
     assert resp.status_code == 401
+
+
+def test_a_cache_hit_cannot_skip_the_authorization_guards(seeded_app, kai_env):
+    """The token cache must not be a way around the checks in front of it.
+
+    `_mint_mcp_access_token` fails closed for a missing session, a co-session and
+    a scope-limited agent — but the cache read used to sit ABOVE all three, so a
+    hit returned a token without consulting any of them and a deleted
+    conversation kept serving tools for the rest of the cache's life. The guards
+    now run first and the cache is only a way to avoid re-signing a JWT. Found
+    by Devin Review on this PR, on top of the guards themselves.
+    """
+    from fastapi import HTTPException
+
+    from app.api import kai as kai_mod
+
+    body = _mint_session(seeded_app)
+    chat_id = body["chat_id"]
+
+    # Warm the cache, so the fast path is live.
+    first = kai_mod._mint_mcp_access_token(chat_id)
+    assert kai_mod._mcp_token_cache.get(chat_id) is not None
+    assert kai_mod._mint_mcp_access_token(chat_id) == first, "second call should be a cache hit"
+
+    # Delete the conversation WITHOUT clearing the cache — the exact state the
+    # short-circuit used to serve straight through.
+    assert kai_mod.chat_session_repo().hard_delete_session(chat_id) is True
+
+    with pytest.raises(HTTPException) as exc:
+        kai_mod._mint_mcp_access_token(chat_id)
+    assert (exc.value.status_code, exc.value.detail) == (401, "ticket_session_not_found")
+
+
+def test_credential_responses_are_never_cacheable(seeded_app, kai_env):
+    """A live JWT and live broker tickets must not be written down by any cache
+    between here and the engine. Found by Copilot on this PR."""
+    resp = seeded_app["client"].post(
+        "/api/kai/sessions", headers={"Authorization": f"Bearer {seeded_app['analyst_token']}"}
+    )
+    assert resp.status_code == 200, resp.text
+    assert "no-store" in resp.headers.get("cache-control", "")
+
+    credential = _claims(resp.json()["token"])["downstream_credential"]
+    tickets = seeded_app["client"].post("/api/kai/tickets", headers={"Authorization": f"Bearer {credential}"})
+    assert tickets.status_code == 200, tickets.text
+    assert "no-store" in tickets.headers.get("cache-control", "")
+
+
+def test_mcp_availability_is_decided_before_the_credential(seeded_app, kai_env, monkeypatch):
+    """An unconfigured surface must not answer with a credential error.
+
+    `require_broker_ticket` is a dependency, so a check written in the handler
+    body ran after it: an instance with the engine off answered `401
+    missing_broker_ticket` — a credential complaint about a surface that is not
+    there. Found by Copilot on this PR.
+    """
+    # Tool switch off, engine configured: 503 even with NO Authorization header.
+    monkeypatch.setenv("KAI_BROKER_MCP_ENABLED", "false")
+    resp = seeded_app["client"].post("/api/kai/mcp", content=b"{}")
+    assert resp.status_code == 503, f"expected the surface to answer 503, got {resp.status_code}"
+    assert resp.json()["detail"] == "kai_mcp_not_enabled"
+
+    # Engine not configured at all: the kill switch, still ahead of the ticket.
+    monkeypatch.setenv("KAI_BROKER_MCP_ENABLED", "1")
+    monkeypatch.delenv("KAI_HOST_JWT_SECRET", raising=False)
+    resp = seeded_app["client"].post("/api/kai/mcp", content=b"{}")
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == "kai_integration_not_configured"
 
 
 def test_llm_egress_ticket_cannot_reach_the_general_api_replay(seeded_app, kai_env):

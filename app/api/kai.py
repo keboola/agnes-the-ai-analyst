@@ -256,8 +256,16 @@ def _create_session_and_credential(user_email: str) -> tuple[str, str]:
     return session.id, credential
 
 
+#: Both credential-returning routes answer with `no-store`: their bodies are a
+#: live session JWT and live broker tickets, and an intermediary or browser
+#: cache holding either is a credential at rest in a place nobody audits.
+#: `no-store` (not merely `no-cache`) is the directive that forbids writing it
+#: down at all. Found by Copilot on this PR.
+_NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache"}
+
+
 @router.post("/sessions", response_model=KaiSessionResponse)
-async def create_kai_session(user: dict = Depends(get_current_user)) -> KaiSessionResponse:
+async def create_kai_session(response: Response, user: dict = Depends(get_current_user)) -> KaiSessionResponse:
     """Create a chat session and mint the engine session token for it.
 
     Authenticated as an ordinary user: the caller can only ever mint a token
@@ -295,6 +303,7 @@ async def create_kai_session(user: dict = Depends(get_current_user)) -> KaiSessi
         },
         secret=secret,
     )
+    response.headers.update(_NO_STORE)
     return KaiSessionResponse(chat_id=session_id, token=token, expires_at=expires_at)
 
 
@@ -371,7 +380,15 @@ def _rotate_egress_tickets(session_id: str, scopes: Dict[str, str]) -> Dict[str,
     # engine has no way to be handed a replacement: its ticket-response schema
     # is `{llm, mcp}` and it keeps using the credential baked into the session
     # JWT. A scope-blind sweep here 401s every subsequent turn.
-    ticket_repo().revoke_session_scopes(session_id, list(_EGRESS_SCOPES.values()))
+    # Revoke exactly what this turn re-mints, not every scope the map knows.
+    # With the tool switch off `scopes` has no `mcp`, and sweeping it anyway
+    # both retired a ticket nothing was going to replace and — because this
+    # chat row shares its ticket namespace with a native sandbox on the same id
+    # — deleted a concurrent web-chat sandbox's MCP ticket for no reason. A
+    # previously-issued kai `mcp` ticket is then not proactively retired here,
+    # which costs nothing: it carries a short TTL and `/api/kai/mcp` refuses
+    # outright while the switch is off. Found by Copilot on this PR.
+    ticket_repo().revoke_session_scopes(session_id, list(scopes.values()))
     return {
         egress_scope: ticket_repo().mint(session_id, broker_scope, ttl_seconds=_TICKET_TTL_SECONDS)
         for egress_scope, broker_scope in scopes.items()
@@ -379,7 +396,9 @@ def _rotate_egress_tickets(session_id: str, scopes: Dict[str, str]) -> Dict[str,
 
 
 @router.post("/tickets")
-async def issue_kai_tickets(row: Dict[str, Any] = Depends(_require_session_credential)) -> Dict[str, str]:
+async def issue_kai_tickets(
+    response: Response, row: Dict[str, Any] = Depends(_require_session_credential)
+) -> Dict[str, str]:
     """Mint this turn's scope-split broker tickets for the engine's relay.
 
     Called once per turn by the engine's server (never by the sandbox), which
@@ -395,6 +414,7 @@ async def issue_kai_tickets(row: Dict[str, Any] = Depends(_require_session_crede
     scopes = dict(_EGRESS_SCOPES)
     if not _broker_mcp_enabled():
         scopes.pop("mcp", None)
+    response.headers.update(_NO_STORE)
     return await asyncio.to_thread(_rotate_egress_tickets, row["session_id"], scopes)
 
 
@@ -558,11 +578,15 @@ def _mint_mcp_access_token(session_id: str) -> str:
     from src.repositories import oauth_clients_repo, users_repo
 
     now = int(_time.time())
-    cached = _mcp_token_cache.get(session_id)
-    if cached and cached[1] - _MCP_ACCESS_TOKEN_REFRESH_MARGIN_SECONDS > now:
-        return cached[0]
-    _prune_mcp_token_cache(now)
 
+    # Authorization first, cache second. The cache exists to avoid re-signing a
+    # JWT, never to skip a check: reading it before the guards below made all
+    # three of them unreachable on a hit, so a conversation that was deleted —
+    # or that became a co-session, or acquired a scope-limited agent — kept
+    # serving tools for the rest of the cache's life. Found by Devin Review on
+    # this PR, after those guards had already been added and were bypassed by
+    # the very fast path above them. The cost is one session read per call,
+    # which this route was already paying elsewhere.
     session = chat_session_repo().get_session(session_id)
     if session is None:
         raise HTTPException(status_code=401, detail="ticket_session_not_found")
@@ -584,6 +608,11 @@ def _mint_mcp_access_token(session_id: str) -> str:
     user = users_repo().get_by_email(session.user_email)
     if user is None:
         raise HTTPException(status_code=401, detail="ticket_user_not_found")
+
+    cached = _mcp_token_cache.get(session_id)
+    if cached and cached[1] - _MCP_ACCESS_TOKEN_REFRESH_MARGIN_SECONDS > now:
+        return cached[0]
+    _prune_mcp_token_cache(now)
 
     expires_at = now + _MCP_ACCESS_TOKEN_TTL_SECONDS
     token = create_access_token(
@@ -613,8 +642,28 @@ def _mint_mcp_access_token(session_id: str) -> str:
     return token
 
 
+def _require_mcp_surface() -> None:
+    """503 unless this instance both embeds the engine and brokers its tools.
+
+    A dependency rather than a line in the handler body: FastAPI resolves a
+    signature's dependencies in declaration order and `require_broker_ticket`
+    is one of them, so a check written in the body ran *after* the ticket had
+    already been evaluated — an unconfigured instance answered `401
+    missing_broker_ticket` instead of the 503 that means "this integration is
+    not here". Declared first, it decides before any credential is inspected.
+    Found by Copilot on this PR.
+    """
+    _secret()
+    if not _broker_mcp_enabled():
+        raise HTTPException(status_code=503, detail="kai_mcp_not_enabled")
+
+
 @router.post("/mcp")
-async def kai_mcp(request: Request, row: Dict[str, Any] = Depends(require_broker_ticket)) -> Response:
+async def kai_mcp(
+    request: Request,
+    _gate: None = Depends(_require_mcp_surface),
+    row: Dict[str, Any] = Depends(require_broker_ticket),
+) -> Response:
     """Forward the engine sandbox's MCP request to Agnes's own MCP server,
     under the ticket's real identity.
 
@@ -632,17 +681,8 @@ async def kai_mcp(request: Request, row: Dict[str, Any] = Depends(require_broker
     # Same kill switch as every other route — this one authenticates through
     # the broker ticket dependency, which does not pass through
     # `_require_session_credential`, so it asserts for itself.
-    _secret()
-    if not _broker_mcp_enabled():
-        # The switch gated only whether `/api/kai/tickets` ISSUES the `mcp`
-        # scope, so on an instance with the engine configured and this switch
-        # off the route still served any holder of an `mcp` ticket — and the
-        # native chat runner mints one for every chat sandbox. No authority was
-        # widened (that identity can already replay MCP through
-        # `/api/broker/agnes-mcp`), but the switch says "let the engine's
-        # sandbox reach /api/kai/mcp", so it has to actually close the door.
-        # Found by Devin Review on this PR.
-        raise HTTPException(status_code=503, detail="kai_mcp_not_enabled")
+    # Availability (kill switch + tool switch) is decided by
+    # `_require_mcp_surface`, declared ahead of the ticket dependency.
     _require_scope(row, "mcp")
     token = await asyncio.to_thread(_mint_mcp_access_token, row["session_id"])
 
