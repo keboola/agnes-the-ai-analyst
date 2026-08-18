@@ -4187,7 +4187,13 @@ async def semantic_layer_object(
     if obj is None:
         raise HTTPException(status_code=404, detail=f"{object_type} '{object_name}' not found in '{slug}'")
 
-    instructions, examples = ai_instructions_and_examples(obj) if object_type in ("dataset", "metric") else (None, [])
+    # Relationships render the AI-context panel too (see `ai=` below), so their
+    # instructions/examples must be read alongside the five groups — otherwise a
+    # relationship carrying `ai_context.instructions` shows a panel that says
+    # "None declared." while its prose is silently dropped (Devin #1398).
+    instructions, examples = (
+        ai_instructions_and_examples(obj) if object_type in ("dataset", "metric", "relationship") else (None, [])
+    )
 
     datasets_by_name = {d.get("name"): d for d in model.get("datasets") or [] if isinstance(d, dict) and d.get("name")}
 

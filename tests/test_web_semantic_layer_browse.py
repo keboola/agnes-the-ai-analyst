@@ -466,6 +466,38 @@ class TestObjectDetail:
         assert 'href="/semantic-layer/retail/dataset:orders"' in body
         assert 'href="/semantic-layer/retail/dataset:customers"' in body
 
+    def test_relationship_ai_context_instructions_are_rendered(self, seeded_app):
+        """Devin #1398: a relationship renders the AI-context panel, so its
+        `ai_context.instructions`/examples must show — not be dropped while the
+        panel says 'None declared.'"""
+        doc = {
+            "semantic_model": [
+                {
+                    "name": "rels",
+                    "datasets": [{"name": "orders", "fields": []}, {"name": "customers", "fields": []}],
+                    "relationships": [
+                        {
+                            "name": "o2c",
+                            "from": "orders",
+                            "to": "customers",
+                            "from_columns": ["customer_id"],
+                            "to_columns": ["customer_id"],
+                            "ai_context": {
+                                "instructions": "Join orders to customers on customer_id, never on email.",
+                                "examples": ["orders.customer_id = customers.customer_id"],
+                            },
+                        }
+                    ],
+                }
+            ]
+        }
+        _seed_document("rels", doc)
+        c = seeded_app["client"]
+        r = c.get("/semantic-layer/rels/relationship:o2c", headers=_auth(seeded_app["admin_token"]))
+        assert r.status_code == 200
+        assert "never on email" in r.text
+        assert "orders.customer_id = customers.customer_id" in r.text
+
     def test_imported_source_shows_readonly_badge_and_no_edit_controls(self, seeded_app):
         _seed_model(id="manual/_/kb2", slug="kb_retail2", source="keboola_metastore")
         c = seeded_app["client"]
