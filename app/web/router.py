@@ -7008,11 +7008,21 @@ def _source_inventory() -> dict:
                 "materialize": _gib(_bq_cap("max_bytes_per_materialize", 10_737_418_240)),
             }
         if stype == "snowflake":
-            cells["cost"] = {
-                "scan": "remote",
-                "materialize": _gib(_sf_cap("max_bytes_per_materialize", 10_737_418_240)),
-                "title": "Live queries run on Snowflake directly (no local scan cap). Materialized rows are refused above the materialize cap. Editable in server config.",
-            }
+            has_materialized = any(t.get("query_mode") == "materialized" for t in own)
+            materialize_cap = _gib(_sf_cap("max_bytes_per_materialize", 10_737_418_240))
+            if has_materialized:
+                # Materialized rows sync, so show the sync cell and explain the
+                # cost guard in its title instead of replacing it.
+                cells["sync"]["title"] = (
+                    f"Live queries run on Snowflake directly (no local scan cap). "
+                    f"Materialized rows are refused above {materialize_cap}. Editable in server config."
+                )
+            else:
+                cells["cost"] = {
+                    "scan": "remote",
+                    "materialize": materialize_cap,
+                    "title": "Live queries run on Snowflake directly (no local scan cap). Materialized rows are refused above the materialize cap. Editable in server config.",
+                }
 
         # ── Feeds: packages holding this source's tables → groups granted →
         # people reached. The end of the chain the redesign cares about; a
