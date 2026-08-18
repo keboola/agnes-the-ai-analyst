@@ -53,7 +53,7 @@ def test_break_glass_grant_admin_never_opens_system_duckdb_on_pg(monkeypatch):
     monkeypatch.setattr(repos_mod, "use_pg", lambda: True)
 
     class _Users:
-        def get_by_email(self, _email):
+        def get_by_email_ci(self, _email):
             return {"id": "u1"}
 
     class _Groups:
