@@ -64,6 +64,7 @@ import json
 import logging
 import os
 import tarfile
+import threading
 import time
 import uuid
 from base64 import urlsafe_b64encode
@@ -497,6 +498,14 @@ _MCP_SCOPES = ["read"]
 #: memory grew with the number of engine chats ever served and never shrank.
 _mcp_token_cache: Dict[str, tuple[str, int]] = {}
 
+#: Guards every read, prune and write of `_mcp_token_cache`. A `threading.Lock`
+#: rather than an asyncio one because the function that touches the cache runs
+#: on the anyio worker pool, not the event loop. Held only around the dict
+#: operations — never across the DB read or the JWT signing — so mints stay
+#: concurrent; two threads racing to mint for one session simply both win, and
+#: the last write stands (both tokens are valid and registered).
+_mcp_token_cache_lock = threading.Lock()
+
 #: Headers never copied from the sandbox's request. `authorization` is
 #: replaced with the minted identity; the rest are hop-by-hop or recomputed by
 #: httpx. Mirrors the relay's own drop list.
@@ -517,6 +526,21 @@ _MCP_DROP_REQUEST_HEADERS = frozenset(
         "expect",
         "cookie",
         "x-api-key",
+        # Forwarding headers, dropped so the sandbox cannot forge the client IP
+        # on the internal hop. `trusted_client_ip` (app/auth/client_ip.py) reads
+        # `x-forwarded-for` and trusts the RIGHTMOST
+        # `AGNES_TRUSTED_PROXY_HOPS` entries; a value the sandbox supplied would
+        # arrive as an extra hop, landing an attacker-chosen address in the
+        # audit log and in any IP-keyed throttle on this call. The security
+        # playbook's rule is to derive the IP from trusted proxy hops only, and
+        # forwarding an agent-supplied one defeats the hop arithmetic that rule
+        # rests on. Found by Copilot on this PR.
+        "x-forwarded-for",
+        "x-forwarded-host",
+        "x-forwarded-proto",
+        "x-forwarded-port",
+        "forwarded",
+        "x-real-ip",
     }
 )
 
@@ -537,8 +561,15 @@ def _prune_mcp_token_cache(now: int) -> None:
     dict is fine at this size: one entry per live engine chat, and the sweep
     runs only on a mint (a DB write already dominates it).
     """
-    for stale in [sid for sid, (_, exp) in _mcp_token_cache.items() if exp <= now]:
-        del _mcp_token_cache[stale]
+    # Snapshot then `pop(..., None)`, and every caller holds
+    # `_mcp_token_cache_lock`. `_mint_mcp_access_token` runs under
+    # `asyncio.to_thread`, so several worker threads reach this dict at once:
+    # iterating it live raised `RuntimeError: dictionary changed size during
+    # iteration`, and a bare `del` raced another thread's prune into a
+    # `KeyError` — both surfacing as intermittent 500s on `/api/kai/mcp` rather
+    # than as anything diagnosable. Found by Copilot on this PR.
+    for stale in [sid for sid, (_, exp) in list(_mcp_token_cache.items()) if exp <= now]:
+        _mcp_token_cache.pop(stale, None)
 
 
 def _mint_mcp_access_token(session_id: str) -> str:
@@ -609,10 +640,11 @@ def _mint_mcp_access_token(session_id: str) -> str:
     if user is None:
         raise HTTPException(status_code=401, detail="ticket_user_not_found")
 
-    cached = _mcp_token_cache.get(session_id)
-    if cached and cached[1] - _MCP_ACCESS_TOKEN_REFRESH_MARGIN_SECONDS > now:
-        return cached[0]
-    _prune_mcp_token_cache(now)
+    with _mcp_token_cache_lock:
+        cached = _mcp_token_cache.get(session_id)
+        if cached and cached[1] - _MCP_ACCESS_TOKEN_REFRESH_MARGIN_SECONDS > now:
+            return cached[0]
+        _prune_mcp_token_cache(now)
 
     expires_at = now + _MCP_ACCESS_TOKEN_TTL_SECONDS
     token = create_access_token(
@@ -638,7 +670,8 @@ def _mint_mcp_access_token(session_id: str) -> str:
         # connectors keep working. Found by Devin Review on this PR.
         resource=mcp_issuer_url(),
     )
-    _mcp_token_cache[session_id] = (token, expires_at)
+    with _mcp_token_cache_lock:
+        _mcp_token_cache[session_id] = (token, expires_at)
     return token
 
 

@@ -14,6 +14,7 @@ import io
 import hashlib
 import hmac
 import json
+import threading
 import time
 from unittest import mock
 
@@ -397,6 +398,60 @@ def test_a_cache_hit_cannot_skip_the_authorization_guards(seeded_app, kai_env):
     with pytest.raises(HTTPException) as exc:
         kai_mod._mint_mcp_access_token(chat_id)
     assert (exc.value.status_code, exc.value.detail) == (401, "ticket_session_not_found")
+
+
+def test_the_sandbox_cannot_forge_the_client_ip_on_the_internal_hop(seeded_app, kai_env):
+    """Forwarding headers must not survive the proxy.
+
+    `trusted_client_ip` reads `x-forwarded-for` and trusts the rightmost
+    AGNES_TRUSTED_PROXY_HOPS entries, so a value the sandbox supplied arrives as
+    an extra hop — putting an attacker-chosen address in the audit log and in
+    any IP-keyed throttle on this call. The playbook's rule is to derive the IP
+    from trusted proxy hops only, which the hop arithmetic cannot honour if an
+    agent gets to contribute a hop. Found by Copilot on this PR.
+    """
+    from app.api import kai as kai_mod
+
+    for header in ("x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "forwarded", "x-real-ip"):
+        assert header in kai_mod._MCP_DROP_REQUEST_HEADERS, f"{header} must not reach the internal hop"
+    # The header trusted_client_ip actually reads is the one that matters most.
+    import inspect
+
+    assert "x-forwarded-for" in inspect.getsource(kai_mod).split("_MCP_DROP_REQUEST_HEADERS")[1]
+
+
+def test_token_cache_access_is_serialized_and_prunes_without_mutating_live(seeded_app, kai_env):
+    """Assert the PROPERTIES that make the cache thread-safe, not a race.
+
+    `_mint_mcp_access_token` runs under `asyncio.to_thread`, so several anyio
+    workers reach this dict at once: live iteration raised `RuntimeError:
+    dictionary changed size during iteration` and a bare `del` raced another
+    prune into `KeyError`, both surfacing as intermittent 500s.
+
+    A thread-stress test is NOT used here on purpose. One was written first and
+    it passed against the racy version three runs out of three — the DB read and
+    JWT signing dominate each call, so two threads practically never sit inside
+    the prune loop together. A test that cannot fail against the bug it names is
+    worse than no test, because it makes the next reader believe the race is
+    covered. What is checkable is the construction: a lock around every cache
+    read/prune/write, and a prune that iterates a snapshot and pops defensively.
+    Found by Copilot on this PR.
+    """
+    import inspect
+
+    from app.api import kai as kai_mod
+
+    assert isinstance(kai_mod._mcp_token_cache_lock, type(threading.Lock()))
+
+    prune = inspect.getsource(kai_mod._prune_mcp_token_cache)
+    code = "\n".join(line.split("#", 1)[0] for line in prune.splitlines())
+    assert "list(_mcp_token_cache.items())" in code, "must iterate a snapshot, not the live dict"
+    assert ".pop(" in code and "del _mcp_token_cache[" not in code, "must pop defensively, not del"
+
+    mint = "\n".join(line.split("#", 1)[0] for line in inspect.getsource(kai_mod._mint_mcp_access_token).splitlines())
+    assert mint.count("with _mcp_token_cache_lock:") == 2, "the read and the write must both be guarded"
+    # The lock must NOT wrap the DB read or the signing — that would serialize mints.
+    assert "create_access_token(" in mint.split("with _mcp_token_cache_lock:")[1], "signing stays outside the lock"
 
 
 def test_credential_responses_are_never_cacheable(seeded_app, kai_env):
