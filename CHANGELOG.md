@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- **Databricks `/admin/data-sources` wizard, Snowflake connector CLI/MCP parity, ADBC driver staging, and session-pipeline mtime-skew guard.** Full details for these changes live in the 0.83.57 section below.
+
 ## [0.83.57] - 2026-08-18
 
 ### Added
