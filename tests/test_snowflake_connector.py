@@ -1,5 +1,6 @@
 """Tests for the Snowflake connector: attach, extract, settings, admin registration, sync dispatch, and query guardrail."""
 
+import os
 from unittest.mock import MagicMock
 
 import duckdb
@@ -281,13 +282,9 @@ def test_init_extract_creates_meta_and_views(tmp_path, monkeypatch):
 
     extract_db = duckdb.connect(str(out / "extract.duckdb"))
     try:
-        meta = extract_db.execute(
-            "SELECT table_name, query_mode FROM _meta"
-        ).fetchall()
+        meta = extract_db.execute("SELECT table_name, query_mode FROM _meta").fetchall()
         assert meta == [("orders", "remote")]
-        attach_rows = extract_db.execute(
-            "SELECT alias, extension, token_env FROM _remote_attach"
-        ).fetchall()
+        attach_rows = extract_db.execute("SELECT alias, extension, token_env FROM _remote_attach").fetchall()
         assert attach_rows == [("sf", "snowflake", "SNOWFLAKE_PASSWORD")]
         views = extract_db.execute(
             "SELECT table_name FROM information_schema.tables WHERE table_name = 'orders'"
@@ -451,9 +448,7 @@ def test_run_materialized_pass_dispatches_snowflake(monkeypatch, tmp_path, snowf
     monkeypatch.setattr("app.api.sync.is_table_due", lambda schedule, last: True)
     monkeypatch.setattr("connectors.snowflake.settings.resolve_snowflake_settings", lambda: snowflake_settings)
 
-    sf_materialize = MagicMock(
-        return_value={"rows": 5, "size_bytes": 100, "hash": "abc", "query_mode": "materialized"}
-    )
+    sf_materialize = MagicMock(return_value={"rows": 5, "size_bytes": 100, "hash": "abc", "query_mode": "materialized"})
     monkeypatch.setattr("connectors.snowflake.extractor.materialize_query", sf_materialize)
 
     registry = MagicMock()
@@ -547,9 +542,7 @@ def test_sf_guardrail_access_denied(monkeypatch):
 # --- PR #1389 review-finding regressions -------------------------------------------
 
 
-def test_admin_register_snowflake_custom_sql_without_bucket(
-    seeded_app, snowflake_instance, stub_snowflake_extract
-):
+def test_admin_register_snowflake_custom_sql_without_bucket(seeded_app, snowflake_instance, stub_snowflake_extract):
     """Finding #1: a materialized row carrying only custom SQL must register.
 
     The UI's synced+custom payload deliberately omits bucket/source_table. If the
@@ -597,6 +590,10 @@ def test_materialize_query_swap_is_atomic(tmp_path, monkeypatch, snowflake_setti
     into place, so a crash (or a concurrent reader) at that instant saw no file
     at all. With a single ``os.replace`` the old copy is still readable when the
     swap itself fails.
+
+    The swap now lives in `src.parquet_publish.atomic_publish_finalize` (the
+    shared publish protocol every connector answers to), so the break is
+    injected there rather than at a connector-local ``os.replace``.
     """
     out = tmp_path / "extracts" / "snowflake"
     (out / "data").mkdir(parents=True)
@@ -612,7 +609,7 @@ def test_materialize_query_swap_is_atomic(tmp_path, monkeypatch, snowflake_setti
     def _boom(src, dst):
         raise OSError("swap interrupted")
 
-    monkeypatch.setattr("connectors.snowflake.extractor.os.replace", _boom)
+    monkeypatch.setattr("src.parquet_publish.os.replace", _boom)
 
     with pytest.raises(OSError, match="swap interrupted"):
         materialize_query(
@@ -625,6 +622,43 @@ def test_materialize_query_swap_is_atomic(tmp_path, monkeypatch, snowflake_setti
 
     assert parquet_path.exists()
     assert parquet_path.read_bytes() == b"PREVIOUS-GENERATION"
+    # And the failed publish takes its own temp with it — `atomic_publish_
+    # finalize` cleans up the commit half, so nothing is stranded beside the
+    # destination for a later run (or an operator) to collect.
+    assert list((out / "data").glob("*.tmp")) == []
+
+
+def test_materialize_query_publishes_world_readable(tmp_path, monkeypatch, snowflake_settings):
+    """The published parquet is 0644 whatever the ambient umask.
+
+    A bare ``os.replace`` preserves the temp's mode, so under a restrictive
+    umask (0077, seen in some container/systemd units) the served file lands
+    0600 and `agnes pull` can no longer read it — incident #203, the reason
+    `src.parquet_publish` chmods before it replaces.
+    """
+    out = tmp_path / "extracts" / "snowflake"
+    monkeypatch.setenv("AGNES_REMOTE_ATTACH_HOST_ALLOWLIST", SF_HOST)
+    monkeypatch.setattr(
+        "connectors.snowflake.extractor._open_duckdb",
+        lambda path, **kw: _make_stub_duckdb_conn(),
+    )
+
+    old_umask = os.umask(0o077)
+    try:
+        materialize_query(
+            "orders_summary",
+            output_dir=str(out),
+            source_query='SELECT * FROM "sf"."public"."orders"',
+            settings=snowflake_settings,
+            max_bytes=None,
+        )
+    finally:
+        os.umask(old_umask)
+
+    pq_path = out / "data" / "orders_summary.parquet"
+    assert pq_path.exists()
+    assert oct(pq_path.stat().st_mode & 0o777) == oct(0o644)
+    assert list((out / "data").glob("*.tmp")) == []
 
 
 def test_materialize_query_scratch_db_is_per_table(tmp_path, monkeypatch, snowflake_settings):
@@ -658,18 +692,14 @@ def test_materialize_query_scratch_db_is_per_table(tmp_path, monkeypatch, snowfl
     assert scratch[0] != scratch[1], f"scratch DuckDB path is shared across tables: {scratch}"
 
 
-def test_run_materialized_pass_hash_fallback_uses_snowflake_dir(
-    monkeypatch, tmp_path, snowflake_settings
-):
+def test_run_materialized_pass_hash_fallback_uses_snowflake_dir(monkeypatch, tmp_path, snowflake_settings):
     """Finding #4: a Snowflake row that falls back to hashing must read the
     Snowflake extract dir, not the Keboola one."""
     from app.api.sync import _run_materialized_pass
 
     monkeypatch.setattr("app.api.sync._get_data_dir", lambda: str(tmp_path))
     monkeypatch.setattr("app.api.sync.is_table_due", lambda schedule, last: True)
-    monkeypatch.setattr(
-        "connectors.snowflake.settings.resolve_snowflake_settings", lambda: snowflake_settings
-    )
+    monkeypatch.setattr("connectors.snowflake.settings.resolve_snowflake_settings", lambda: snowflake_settings)
     # No `hash` in the stats dict → the fallback branch runs.
     monkeypatch.setattr(
         "connectors.snowflake.extractor.materialize_query",
@@ -843,9 +873,7 @@ def test_snapshot_from_query_refuses_unregistered_sf_path(seeded_app):
     assert exc.value.detail["reason"] == "sf_path_not_registered"
 
 
-def test_admin_register_snowflake_remote_not_configured_is_not_a_500(
-    seeded_app, snowflake_instance, monkeypatch
-):
+def test_admin_register_snowflake_remote_not_configured_is_not_a_500(seeded_app, snowflake_instance, monkeypatch):
     """Finding #8: a *skipped* rebuild is a message, not a failed registration.
 
     ``rebuild_from_registry`` returns ``skipped/not_configured`` when the password
@@ -876,9 +904,7 @@ def test_admin_register_snowflake_remote_not_configured_is_not_a_500(
     assert "not configured" in (body.get("message") or "").lower()
 
 
-def test_admin_register_snowflake_custom_sql_foreign_catalog_refused(
-    seeded_app, snowflake_instance
-):
+def test_admin_register_snowflake_custom_sql_foreign_catalog_refused(seeded_app, snowflake_instance):
     """Finding #9: the materialize session ATTACHes only ``sf``. Custom SQL naming
     another catalog registers happily today and then fails at COPY time on the
     scheduler tick — exactly the 'registered but never materializes' state the
@@ -916,9 +942,7 @@ def test_admin_register_snowflake_custom_sql_unqualified_refused(seeded_app, sno
     assert resp.status_code == 400, resp.text
 
 
-def test_admin_register_snowflake_custom_sql_allows_ctes(
-    seeded_app, snowflake_instance, stub_snowflake_extract
-):
+def test_admin_register_snowflake_custom_sql_allows_ctes(seeded_app, snowflake_instance, stub_snowflake_extract):
     """Finding #9: a CTE alias is a local name, not a foreign catalog."""
     c = seeded_app["client"]
     resp = c.post(

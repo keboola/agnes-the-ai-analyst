@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import os
 import re
 import threading
 from pathlib import Path
@@ -22,6 +21,7 @@ from connectors.snowflake.attach import build_remote_attach_url
 from src.duckdb_conn import _open_duckdb
 from src.identifier_validation import validate_identifier
 from src.orchestrator_security import is_attach_host_allowed
+from src.parquet_publish import atomic_publish_finalize, atomic_publish_temp_path
 from src.sql_ident import quote_ident
 
 logger = logging.getLogger(__name__)
@@ -113,10 +113,7 @@ def _persist_materialized_inner_view(
                 "INSERT INTO _meta VALUES (?, ?, ?, ?, current_timestamp, 'materialized')",
                 [table_id, "", rows, size_bytes],
             )
-            conn.execute(
-                f"CREATE OR REPLACE VIEW {quote_ident(table_id)} AS "
-                f"SELECT * FROM read_parquet('{safe_path}')"
-            )
+            conn.execute(f"CREATE OR REPLACE VIEW {quote_ident(table_id)} AS SELECT * FROM read_parquet('{safe_path}')")
             conn.execute("COMMIT")
         except Exception:
             try:
@@ -184,9 +181,7 @@ def materialize_query(
     sql = (source_query or "").strip()
     if not sql:
         if not (bucket and source_table):
-            raise ValueError(
-                "snowflake materialized requires source_query or bucket+source_table"
-            )
+            raise ValueError("snowflake materialized requires source_query or bucket+source_table")
         row_database, schema = split_bucket(bucket, database or settings.get("database") or "")
         if not row_database:
             raise ValueError("snowflake: no database to resolve against")
@@ -197,7 +192,17 @@ def materialize_query(
     data_dir.mkdir(parents=True, exist_ok=True)
 
     parquet_path = data_dir / f"{table_id}.parquet"
-    tmp_path = data_dir / f"{table_id}.parquet.tmp"
+    # Per-process temp + chmod 0644 + os.replace, via the shared publish
+    # protocol (#1359). A bare `os.replace` off a fixed `{table_id}.parquet.tmp`
+    # was two bugs at once: the shared name let two writers replace each other's
+    # in-flight file while the loser's cleanup deleted the winner's temp (#1274),
+    # and skipping the chmod let the DuckDB COPY's own umask decide the published
+    # mode — 0600 under a restrictive umask, so `agnes pull` could no longer read
+    # it (#203). The two-step form (temp path here, `atomic_publish_finalize`
+    # below) rather than the `with atomic_publish(...)` block, because the write
+    # spans the COPY, a `finally` that tears down the DuckDB session, and a
+    # budget check that deletes the temp instead of publishing it.
+    tmp_path = atomic_publish_temp_path(parquet_path)
     tmp_db = out_path / f".tmp_materialize_{table_id}.duckdb"
 
     lock = _get_table_lock(table_id)
@@ -231,9 +236,7 @@ def materialize_query(
             f"WAREHOUSE '{_escape_sql_string_literal(settings['warehouse'])}'"
             f"{role_sql})"
         )
-        conn.execute(
-            f"ATTACH '' AS {_SF_ALIAS} (TYPE {_SF_EXTENSION}, SECRET {secret_name}, READ_ONLY)"
-        )
+        conn.execute(f"ATTACH '' AS {_SF_ALIAS} (TYPE {_SF_EXTENSION}, SECRET {secret_name}, READ_ONLY)")
 
         safe_tmp = str(tmp_path).replace("'", "''")
         copy_sql = f"COPY ({sql}) TO '{safe_tmp}' (FORMAT PARQUET)"
@@ -242,6 +245,17 @@ def materialize_query(
             rows = result.fetchone()[0]
         except Exception:
             rows = None
+    except BaseException:
+        # Write-half cleanup is the caller's job under the publish protocol
+        # (`atomic_publish_finalize` only owns the commit half). Needed now
+        # that the temp name carries the pid: a failed COPY used to leave a
+        # partial `{table_id}.parquet.tmp` that the NEXT run's pre-clean
+        # removed, but a per-process name is never the next run's name, so
+        # without this every failure strands one more file. Only ever this
+        # process's own temp — never a glob — so a concurrent writer's
+        # in-flight publish is untouched.
+        tmp_path.unlink(missing_ok=True)
+        raise
     finally:
         if conn:
             try:
@@ -268,7 +282,7 @@ def materialize_query(
             limit=max_bytes,
         )
 
-    os.replace(tmp_path, parquet_path)
+    atomic_publish_finalize(tmp_path, parquet_path)
 
     size_bytes = parquet_path.stat().st_size
 

@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- **The Snowflake materializer publishes its parquet through the shared protocol.** It swapped the finished file into place with a bare `os.replace` off a fixed `<table_id>.parquet.tmp`, which skipped both guarantees `src/parquet_publish.py` exists to provide: without the `chmod 0644` the DuckDB `COPY`'s own umask decided the served file's mode — 0600 under a restrictive umask (0077, seen in some container/systemd units), so `agnes pull` could no longer read it (incident #203) — and the process-independent temp name let two concurrent writers replace each other's in-flight file while the loser's cleanup deleted the winner's temp (#1274). It now uses `atomic_publish_temp_path` + `atomic_publish_finalize` like every other connector, and unlinks its own temp when the `COPY` itself fails so a per-process name cannot strand one.
+
 ## [0.83.42] - 2026-08-18
 
 ### Changed
