@@ -202,6 +202,63 @@ def test_mcp_ticket_is_omitted_unless_the_instance_brokers_mcp(seeded_app, kai_e
     assert isinstance(payload.get("mcp"), str) and payload["mcp"]
 
 
+def test_mcp_toggle_honours_the_shared_falsey_vocabulary(seeded_app, kai_env, monkeypatch):
+    """`KAI_BROKER_MCP_ENABLED=false` must take the tool surface AWAY.
+
+    An inline `os.environ.get(...).strip()` truthiness test reads every
+    non-blank value as on, so the operator who spells the disable explicitly —
+    `false`, `0`, `off` — hands the sandbox the very scope they meant to
+    withhold. Routed through `feature_enabled` (`docs/feature-flags.md`), which
+    is the only reason those spellings mean what they say. Found by Devin
+    Review on this PR.
+    """
+    credential = _claims(_mint_session(seeded_app)["token"])["downstream_credential"]
+
+    def _mcp_scope_issued() -> bool:
+        payload = (
+            seeded_app["client"]
+            .post("/api/kai/tickets", headers={"Authorization": f"Bearer {credential}"})
+            .json()
+        )
+        return "mcp" in payload
+
+    for off in ("false", "False", "0", "off", "no", ""):
+        monkeypatch.setenv("KAI_BROKER_MCP_ENABLED", off)
+        assert not _mcp_scope_issued(), f"{off!r} must leave the mcp scope unissued"
+
+    for on in ("true", "1", "yes", "on"):
+        monkeypatch.setenv("KAI_BROKER_MCP_ENABLED", on)
+        assert _mcp_scope_issued(), f"{on!r} must issue the mcp scope"
+
+
+def test_mcp_proxy_never_hands_the_sandbox_undecoded_bytes(seeded_app, kai_env):
+    """The forwarded reply must be readable, not gzip under a stripped header.
+
+    `_MCP_DROP_RESPONSE_HEADERS` strips `content-encoding`, which is only sound
+    if the body we forward is decoded. Two independent halves, because either
+    alone still breaks: the request must ask for `identity` (the sandbox's own
+    `accept-encoding` is dropped, but `build_request` re-adds httpx's default
+    `gzip, deflate`, so an upstream may compress with nothing downstream
+    asking), and the body must stream through `aiter_bytes()` — `aiter_raw()`
+    emits the undecoded body, i.e. gzip bytes labelled as plain text. Found by
+    Devin Review on this PR.
+    """
+    import inspect
+
+    from app.api import kai as kai_mod
+
+    # Comments are stripped before the negative assertion: this function's own
+    # comment NAMES `aiter_raw` to explain why it is wrong, and a test that
+    # cannot tell prose from code would fail on the very explanation.
+    source = inspect.getsource(kai_mod.kai_mcp)
+    code = "\n".join(line.split("#", 1)[0] for line in source.splitlines())
+    assert '"Accept-Encoding"] = "identity"' in code, "must ask the upstream not to compress"
+    assert "aiter_bytes()" in code, "must forward the DECODED body"
+    assert "aiter_raw()" not in code, "aiter_raw would emit gzip under a stripped content-encoding"
+    # And the header it strips is still stripped — the pairing is what matters.
+    assert "content-encoding" in kai_mod._MCP_DROP_RESPONSE_HEADERS
+
+
 def test_a_broker_ticket_cannot_mint_more_tickets(seeded_app, kai_env):
     """Scope check on the credential route: if a sandbox got hold of one turn's
     ticket, it must not be able to refresh itself indefinitely."""

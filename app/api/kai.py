@@ -133,6 +133,28 @@ def _tenant_id() -> str:
     return os.environ.get("KAI_TENANT_ID", "agnes").strip() or "agnes"
 
 
+def _broker_mcp_enabled() -> bool:
+    """Whether this instance issues the ``mcp`` ticket scope.
+
+    Routed through :func:`app.instance_config.feature_enabled` rather than a
+    bare ``os.environ`` read, because a switch is the one place where "any
+    non-blank value is on" is actively harmful: an operator who writes
+    ``KAI_BROKER_MCP_ENABLED=false`` to take the engine's tool surface away
+    would have handed it to them instead. `feature_enabled` applies the
+    shared truthy convention (``0`` / ``false`` / ``no`` / ``off`` / empty are
+    off, per ``docs/feature-flags.md``) and lets the same switch be set in
+    ``instance.yaml`` under ``kai.broker_mcp_enabled`` for deployments that
+    configure Agnes there rather than through the environment.
+
+    Unlike the other ``KAI_*`` names this one is a toggle, not a credential or
+    an identity claim — which is why it, alone among them, is registered in
+    ``app.switches.SWITCHES``.
+    """
+    from app.instance_config import feature_enabled
+
+    return feature_enabled("kai", "broker_mcp_enabled", env_var="KAI_BROKER_MCP_ENABLED", default=False)
+
+
 def _b64url(raw: bytes) -> str:
     """base64url without padding, per RFC 7515 §2."""
     return urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
@@ -323,7 +345,7 @@ async def issue_kai_tickets(row: Dict[str, Any] = Depends(_require_session_crede
     the engine's own contract ("minting retires the chat's previous set").
     """
     scopes = dict(_EGRESS_SCOPES)
-    if not os.environ.get("KAI_BROKER_MCP_ENABLED", "").strip():
+    if not _broker_mcp_enabled():
         scopes.pop("mcp", None)
     return await asyncio.to_thread(_rotate_egress_tickets, row["session_id"], scopes)
 
@@ -530,6 +552,16 @@ async def kai_mcp(request: Request, row: Dict[str, Any] = Depends(require_broker
     body = await request.body()
     headers = {k: v for k, v in request.headers.items() if k.lower() not in _MCP_DROP_REQUEST_HEADERS}
     headers["Authorization"] = f"Bearer {token}"
+    # Dropping `content-encoding` from the RESPONSE (`_MCP_DROP_RESPONSE_HEADERS`)
+    # is only sound if what we forward is decoded. Two halves, because either
+    # alone is a trap: the sandbox's own `accept-encoding` is dropped, but
+    # `build_request` re-adds httpx's default `gzip, deflate`, so the upstream
+    # may compress even though nothing downstream asked it to — ask for
+    # `identity` so a chunk arrives ready to forward and no decoder sits
+    # between a slow tool and the agent. And should an upstream compress
+    # anyway, `aiter_bytes()` below decodes rather than `aiter_raw()`, which
+    # would emit gzip bytes labelled as plain text.
+    headers["Accept-Encoding"] = "identity"
 
     client = httpx.AsyncClient(base_url=_mcp_internal_base(), timeout=_MCP_PROXY_TIMEOUT)
     try:
@@ -543,7 +575,7 @@ async def kai_mcp(request: Request, row: Dict[str, Any] = Depends(require_broker
 
     async def _body_iter():
         try:
-            async for chunk in upstream.aiter_raw():
+            async for chunk in upstream.aiter_bytes():
                 yield chunk
         finally:
             await upstream.aclose()
