@@ -351,3 +351,27 @@ def test_the_renamed_transport_is_not_a_drop_in_for_the_old_one():
         "the two spellings now take the same arguments -- if that is real, "
         "this guard and the `mcp<2` cap can both be revisited together"
     )
+
+
+def test_the_mcp_install_hint_carries_the_same_bound_as_pyproject():
+    """`agnes mcp` catches the FastMCP ImportError and tells the reader what to
+    install. That hint has to carry pyproject's bound, or it resolves the very
+    SDK whose missing module raised the error being reported — sending the
+    reader straight back to the same message.
+
+    Pinned against pyproject rather than a literal so the two cannot drift:
+    they did, the moment the cap was added.
+    """
+    import pathlib
+    import re
+    import tomllib
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    pyproject = tomllib.loads((root / "pyproject.toml").read_text())
+    spec = next(d for d in pyproject["project"]["dependencies"] if re.match(r"^mcp\b", d))
+
+    hint = (root / "cli" / "commands" / "mcp.py").read_text()
+    assert f"uv pip install '{spec}'" in hint, (
+        f"the install hint in cli/commands/mcp.py must offer {spec!r} -- "
+        "pyproject's bound is what makes the resulting install usable"
+    )

@@ -61,7 +61,11 @@ def mcp_command(ctx: typer.Context) -> None:
     except ImportError as exc:
         typer.echo(
             f"Error: MCP server requires the 'mcp' package.\n"
-            f"Install it with: uv pip install 'mcp>=1.0'\n"
+            # Must carry the same bound as pyproject: a bare `mcp>=1.0`
+            # resolves 2.x, which is missing `mcp.server.fastmcp` — the exact
+            # import that raised the ImportError being reported here, so the
+            # hint would send the reader straight back to this message.
+            f"Install it with: uv pip install 'mcp>=1.28.1,<2'\n"
             f"Details: {exc}",
             err=True,
         )
