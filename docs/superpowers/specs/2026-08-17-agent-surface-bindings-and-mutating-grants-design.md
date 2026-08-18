@@ -70,6 +70,19 @@ marketplace/table/connection filters) key off their own item types and ignore
 `slack_channel` rows by construction; a binding grants the agent no data
 authority.
 
+**Trust model — a binding is a deliberately SHARED surface.** Any channel
+member who passes the Slack gates (admin-controlled channel allowlist +
+identity binding + CHAT grant) can invoke the bound agent, and the turn runs
+with the AGENT's authority — owner grants ∩ agent scope, including any
+`allow_mutating` tools and the agent's memory notebook — not the mentioning
+user's. That is the point of a channel service agent (the driving use case:
+anyone on the team asks it to draft), and it is consented twice: the owner
+consents by writing the binding; the admin consents by allowlisting the
+channel for the Slack surface at all. Owners should bind only channels where
+"anyone here may drive my agent" is intended, and narrow the agent's scope
+accordingly. A per-binding `shared` flag / mentioner-allowlist is deferred
+until a second consumer needs it.
+
 ### 2. Grant-based mutating MCP tools (`tool_grants.allow_mutating`)
 
 `tool_grants` gains `allow_mutating BOOLEAN NOT NULL DEFAULT FALSE`

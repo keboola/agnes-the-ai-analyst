@@ -379,11 +379,6 @@ async def _handle_mention(app, event: dict) -> None:
         bound_agent = agents_repo().agent_for_scope_item("slack_channel", channel)
     except Exception:
         logger.exception("slack_channel binding lookup failed for %s — continuing unrouted", channel)
-    if bound_agent is not None:
-        # Instant acknowledgement on the mentioning message, before the
-        # (seconds-long) session spawn. Fire-and-forget; add_reaction
-        # swallows its own failures.
-        _schedule(add_reaction(channel, event["ts"], "eyes"))
 
     # 6. Thread session: reuse or create; reject if owned by someone else.
     mgr = app.state.chat_manager
@@ -399,6 +394,15 @@ async def _handle_mention(app, event: dict) -> None:
         owner_ref = f"<@{owner_slack_id}>" if owner_slack_id else "another user"
         await send_ephemeral_to_user(channel, slack_user_id, f"This thread belongs to {owner_ref}.")
         return
+
+    if bound_agent is not None:
+        # Instant acknowledgement on the mentioning message, before the
+        # (seconds-long) session spawn — but AFTER every gate that can still
+        # refuse the mention (allowlist, identity, CHAT grant, thread
+        # ownership above): an ack on a mention we then reject would promise
+        # an answer that never comes. Fire-and-forget; add_reaction swallows
+        # its own failures.
+        _schedule(add_reaction(channel, event["ts"], "eyes"))
 
     # 7. Strip our own mention token. (Before session creation so the
     # api-role thin-producer branch below can forward the cleaned text.)

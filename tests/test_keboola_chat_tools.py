@@ -617,7 +617,9 @@ class TestAFailedReRunPutsEverythingBack(TestChatToolsEndpoint):
         assert before, "enable registered nothing — fixture is broken"
         granted_id = before[0]["tool_id"]
         everyone = user_groups_repo().get_by_name("Everyone")
-        tool_registry_repo().add_grant(granted_id, everyone["id"])
+        # Opt the grant into the mutating surface (v120) so the restore path
+        # is proven to carry the flag, not just the bare group id.
+        tool_registry_repo().add_grant(granted_id, everyone["id"], allow_mutating=True)
 
         # This run's upstream offers a NEW tool first, then the registry dies
         # on the second write: one half-written addition, zero reconcile.
@@ -663,6 +665,9 @@ class TestAFailedReRunPutsEverythingBack(TestChatToolsEndpoint):
         assert tool_registry_repo().grants_for_tool(granted_id) == [everyone["id"]], (
             "the rollback resurrected the tool but silently dropped its grant"
         )
+        assert tool_registry_repo().grant_rows_for_tool(granted_id) == [
+            {"group_id": everyone["id"], "allow_mutating": True}
+        ], "the rollback restored the grant but silently reset its mutating opt-in to read-only"
 
 
 class TestAResyncKeepsTheAdminsPerToolCuration(TestChatToolsEndpoint):
