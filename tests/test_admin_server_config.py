@@ -185,6 +185,50 @@ class TestGetServerConfigAPI:
         assert data["sections"]["email"]["smtp_host"] == "smtp.example.com"
         assert data["sections"]["auth"]["allowed_domain"] == "example.com"
 
+    def test_get_redacts_the_snowflake_credential_env_NAMES(self, seeded_app, monkeypatch, tmp_path):
+        """`token_env` / `private_key_env` hold env-var NAMES, not values, but
+        `_is_secret_key` matches them on "token"/"private" and `_redact` masks
+        them anyway — the key signals it points at a credential.
+
+        That is deliberate, and it is also why the /admin/data-sources
+        Snowflake wizard must not take a credential's storage name from this
+        read: doing so made it PUT the password to
+        `/api/admin/datasource-secrets/***`, so a second pass through the
+        wizard could never store or rotate one. Pinned here because the
+        wizard's shape guard becomes removable the day this stops masking."""
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        state = tmp_path / "state"
+        state.mkdir(parents=True, exist_ok=True)
+        (state / "instance.yaml").write_text(
+            yaml.dump(
+                {
+                    "data_source": {
+                        "snowflake": {
+                            "account": "acme-xy12345",
+                            "user": "AGNES",
+                            "token_env": "SNOWFLAKE_PASSWORD",
+                            "private_key_env": "SNOWFLAKE_PRIVATE_KEY",
+                            "private_key_passphrase_env": "SNOWFLAKE_PRIVATE_KEY_PASSPHRASE",
+                        }
+                    }
+                }
+            )
+        )
+        import app.instance_config as ic
+
+        ic._instance_config = None
+
+        c = seeded_app["client"]
+        resp = c.get("/api/admin/server-config", headers=_auth(seeded_app["admin_token"]))
+        assert resp.status_code == 200
+        sf = resp.json()["sections"]["data_source"]["snowflake"]
+        assert sf["token_env"] == "***"
+        assert sf["private_key_env"] == "***"
+        assert sf["private_key_passphrase_env"] == "***"
+        # Non-secret siblings still come through, so the wizard can prefill.
+        assert sf["account"] == "acme-xy12345"
+        assert sf["user"] == "AGNES"
+
 
 # --- POST /api/admin/server-config -------------------------------------------
 

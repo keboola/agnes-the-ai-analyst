@@ -1,21 +1,26 @@
 """Snowflake remote ATTACH helpers.
 
 DuckDB's ``snowflake`` community extension connects to a Snowflake account
-through a SECRET that carries ACCOUNT, USER, PASSWORD, DATABASE and WAREHOUSE.
-The non-secret coordinates are packed into the ``_remote_attach`` ``url``
-column so the orchestrator can gate credential egress with the host allowlist
-before creating the SECRET and ATTACHing the catalog.
+through a SECRET that carries ACCOUNT, USER, PASSWORD or KEY-PAIR, DATABASE
+and WAREHOUSE. The non-secret coordinates are packed into the ``_remote_attach``
+``url`` column so the orchestrator can gate credential egress with the host
+allowlist before creating the SECRET and ATTACHing the catalog.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from urllib.parse import parse_qs, urlencode, urlsplit
 
-from src.orchestrator_security import is_attach_host_allowed
+from src.orchestrator_security import escape_sql_string_literal, is_attach_host_allowed
 
 logger = logging.getLogger(__name__)
+
+# Dollar-quote tag for the PEM inside CREATE SECRET. Named once so the guard in
+# `_private_key_pem_and_passphrase` and the SQL below can never drift apart.
+_DOLLAR_TAG = "$PK$"
 
 SF_ALIAS = "sf"
 SF_EXTENSION = "snowflake"
@@ -115,29 +120,92 @@ def parse_remote_attach_url(url: str) -> dict[str, str]:
     }
 
 
-def attach_snowflake(conn, *, alias: str, url: str, token: str) -> None:
-    """Install/load the Snowflake extension, create a SECRET, and ATTACH.
+def _looks_like_key_pair(token: str) -> bool:
+    """Return True when ``token`` is a PEM key or a JSON key envelope."""
+    t = (token or "").strip()
+    if "-----BEGIN" in t and "-----END" in t:
+        return True
+    if t.startswith("{") and t.endswith("}"):
+        try:
+            data = json.loads(t)
+        except json.JSONDecodeError:
+            return False
+        return isinstance(data, dict) and "private_key" in data
+    return False
 
-    ``url`` carries the non-secret coordinates; ``token`` is the Snowflake
-    password. Identifiers for ``alias`` and the derived SECRET name must be
-    safe before this is called (the orchestrator validates the alias).
+
+def _private_key_pem_and_passphrase(token: str, passphrase: str | None = None) -> tuple[str, str | None]:
+    """Extract a PEM or JSON-wrapped PEM and the matching passphrase.
+
+    DuckDB's Snowflake extension accepts either an unencrypted PKCS#8 PEM or an
+    encrypted PEM plus ``PRIVATE_KEY_PASSPHRASE``; it decrypts the key itself,
+    so we never need to unwrap it locally.
     """
-    from src.orchestrator_security import escape_sql_string_literal
+    raw = (token or "").strip()
+    if not raw:
+        raise ValueError("empty snowflake private key")
 
-    if not is_attach_host_allowed(url):
-        raise ValueError(
-            f"Snowflake host {url!r} is not in AGNES_REMOTE_ATTACH_HOST_ALLOWLIST; "
-            "refusing to send credential"
-        )
+    if raw.startswith("{"):
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"snowflake private key is not valid JSON: {exc}") from exc
+        if not isinstance(data, dict):
+            raise ValueError("snowflake private key JSON must be an object")
+        raw = data.get("private_key") or ""
+        if not isinstance(raw, str) or not raw.strip():
+            raise ValueError("snowflake private key JSON missing 'private_key'")
+        if not passphrase:
+            passphrase = data.get("passphrase") or None
 
-    params = parse_remote_attach_url(url)
-    secret_name = f"sf_secret_{alias}"
+    if "-----BEGIN" not in raw or "-----END" not in raw:
+        raise ValueError("snowflake private key is not a PEM block")
 
+    # The PEM goes into the CREATE SECRET statement inside `$PK$ … $PK$`
+    # dollar-quoting (a PEM carries newlines, so it is not written as a plain
+    # quoted literal). That was safe while this function REBUILT the key via
+    # `private_key.private_bytes(...)` — generated output cannot contain the
+    # tag. Now that the operator's bytes are forwarded verbatim so DuckDB can
+    # decrypt them itself, the tag has to be refused explicitly: a key whose
+    # text contains `$PK$` would close the literal early and inject the rest of
+    # itself as SQL into a statement that carries a credential. A real PEM is
+    # base64 plus `-----BEGIN/END-----` armour and never contains `$`.
+    if _DOLLAR_TAG in raw:
+        raise ValueError("snowflake private key contains the SQL dollar-quote tag; refusing to build a secret")
+
+    return raw, passphrase
+
+
+def _create_snowflake_secret_sql(
+    secret_name: str,
+    params: dict[str, str],
+    token: str,
+    passphrase: str | None = None,
+) -> str:
+    """Return the ``CREATE OR REPLACE SECRET`` SQL for Snowflake."""
     role_sql = ""
     if params.get("role"):
         role_sql = f", ROLE '{escape_sql_string_literal(params['role'])}'"
 
-    conn.execute(
+    if _looks_like_key_pair(token):
+        private_key_pem, key_passphrase = _private_key_pem_and_passphrase(token, passphrase)
+        passphrase_sql = ""
+        if key_passphrase:
+            passphrase_sql = f", PRIVATE_KEY_PASSPHRASE '{escape_sql_string_literal(key_passphrase)}'"
+        return (
+            f"CREATE OR REPLACE SECRET {secret_name} ("
+            f"TYPE snowflake, "
+            f"ACCOUNT '{escape_sql_string_literal(params['account'])}', "
+            f"USER '{escape_sql_string_literal(params['user'])}', "
+            f"AUTH_TYPE 'key_pair', "
+            f"PRIVATE_KEY {_DOLLAR_TAG}{private_key_pem}{_DOLLAR_TAG}, "
+            f"DATABASE '{escape_sql_string_literal(params['database'])}', "
+            f"WAREHOUSE '{escape_sql_string_literal(params['warehouse'])}'"
+            f"{role_sql}"
+            f"{passphrase_sql})"
+        )
+
+    return (
         f"CREATE OR REPLACE SECRET {secret_name} ("
         f"TYPE snowflake, "
         f"ACCOUNT '{escape_sql_string_literal(params['account'])}', "
@@ -147,7 +215,32 @@ def attach_snowflake(conn, *, alias: str, url: str, token: str) -> None:
         f"WAREHOUSE '{escape_sql_string_literal(params['warehouse'])}'"
         f"{role_sql})"
     )
-    conn.execute(
-        f"ATTACH '' AS {alias} (TYPE {SF_EXTENSION}, SECRET {secret_name}, READ_ONLY)"
-    )
+
+
+def attach_snowflake(
+    conn,
+    *,
+    alias: str,
+    url: str,
+    token: str,
+    passphrase: str | None = None,
+) -> None:
+    """Install/load the Snowflake extension, create a SECRET, and ATTACH.
+
+    ``url`` carries the non-secret coordinates; ``token`` is either the
+    Snowflake password or a PEM / JSON-wrapped private key. Identifiers for
+    ``alias`` and the derived SECRET name must be safe before this is called
+    (the orchestrator validates the alias).
+    """
+    if not is_attach_host_allowed(url):
+        raise ValueError(
+            f"Snowflake host {url!r} is not in AGNES_REMOTE_ATTACH_HOST_ALLOWLIST; refusing to send credential"
+        )
+
+    params = parse_remote_attach_url(url)
+    secret_name = f"sf_secret_{alias}"
+
+    secret_sql = _create_snowflake_secret_sql(secret_name, params, token, passphrase)
+    conn.execute(secret_sql)
+    conn.execute(f"ATTACH '' AS {alias} (TYPE {SF_EXTENSION}, SECRET {secret_name}, READ_ONLY)")
     logger.info("Attached Snowflake database %r as catalog %r", params["database"], alias)

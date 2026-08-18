@@ -60,7 +60,11 @@ user). Modeled on `POST /api/scripts/run-due`:
 
 1. Walk `enabled=TRUE` rows joined to live agents (`status='active'`).
 2. `is_table_due(schedule, last_run_at)` decides due-ness (same catch-up
-   semantics as every other schedule in the product).
+   semantics as every other schedule in the product), with one deliberate
+   deviation: `last_run_at` is stamped at creation, so a brand-new schedule
+   anchors its cadence there and never fires an immediate catch-up run — an
+   unattended agent run spends tokens; the create-then-instant-fire surprise
+   a data sync tolerates is wrong here.
 3. Atomic claim: repo `claim_for_run(id, now)` updates `last_run_at` only if
    unchanged since read (optimistic, single-writer per row) — a concurrent
    sweep can't double-fire.
@@ -86,8 +90,10 @@ throttles execution (2 slots) and per-user session caps still apply
 
 ## Owner surface
 
-REST, owner-gated exactly like the existing agent CRUD (owner session or
-plain user PAT; agent PATs denied):
+REST, owner-gated exactly like the existing agent CRUD — `require_session_token`,
+which rejects every PAT flavor (plain user PATs included), matching
+`agents_admin.py` / `agent_webhooks.py`. The CLI therefore needs an
+interactive `agnes auth` session, same as the rest of agent management:
 
 - `GET    /api/v1/agents/{slug}/schedules`
 - `POST   /api/v1/agents/{slug}/schedules`   `{name, schedule, prompt, enabled?}`

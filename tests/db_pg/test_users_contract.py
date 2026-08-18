@@ -385,9 +385,7 @@ def test_consume_reset_token_single_use(users_repo):
     cutoff = now - timedelta(hours=24)
     assert repo.consume_reset_token(email="u@example.com", token="rtok", cutoff=cutoff, consume_id="CONSUMED:1")
     # second attempt with the same original token loses (already consumed)
-    assert (
-        repo.consume_reset_token(email="u@example.com", token="rtok", cutoff=cutoff, consume_id="CONSUMED:2") is None
-    )
+    assert repo.consume_reset_token(email="u@example.com", token="rtok", cutoff=cutoff, consume_id="CONSUMED:2") is None
 
 
 # ---------------------------------------------------------------------------
@@ -528,6 +526,27 @@ def test_list_by_email_ci_returns_every_colliding_row_oldest_first(users_repo):
     rows = repo.list_by_email_ci("DUP@example.COM")
     assert [r["id"] for r in rows] == ["user-old", "user-new"]
     assert repo.list_by_email_ci("nobody@example.com") == []
+
+
+def test_get_by_email_ci_does_not_prefer_an_active_row(users_repo):
+    """Selection must not depend on the ``active`` flag.
+
+    Callers gate on the returned row's own ``active`` value, so ranking active
+    rows first would let a still-enabled duplicate serve a sign-in the operator
+    just disabled — offboarding bypassed by a hidden case variant. Oldest wins
+    regardless, which fails closed: the disabled row is returned and the
+    caller's gate refuses."""
+    repo, _, backend = users_repo
+    _make_user(repo, id="user-old", email="Dup@example.com")
+    _make_user(repo, id="user-new", email="dup@example.com")
+    _set_created_at(repo, backend, "user-old", datetime(2025, 1, 1, tzinfo=timezone.utc))
+    _set_created_at(repo, backend, "user-new", datetime(2026, 6, 1, tzinfo=timezone.utc))
+    repo.update("user-old", active=False)
+
+    row = repo.get_by_email_ci("dup@example.com")
+    assert row is not None
+    assert row["id"] == "user-old", "a still-active duplicate must not outrank the deactivated oldest"
+    assert row["active"] is False
 
 
 # ---------------------------------------------------------------------------

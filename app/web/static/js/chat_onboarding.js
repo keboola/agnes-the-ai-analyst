@@ -471,6 +471,7 @@ function renderJourneyPanel() {
         explored_stack: true,
         catalog_discovered: true,
         use_anywhere: true,
+        agent_created: true,
       });
       // Say where it went, not just that it happened: this click retires the
       // whole card, and the only route back is a profile-menu entry the reader
@@ -519,6 +520,7 @@ function restartJourney() {
     explored_stack: false,
     catalog_discovered: false,
     use_anywhere: false,
+    agent_created: false,
   });
 }
 

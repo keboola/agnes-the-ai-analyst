@@ -438,6 +438,21 @@ def resolved_bq_metadata_initial_offset_seconds(rng=None) -> int:
     return r.randint(0, cap)
 
 
+def _agent_schedules_enabled() -> bool:
+    """Whether the ``agents:run-due`` sweep row is included in
+    ``build_jobs()`` (agent-schedules design,
+    docs/superpowers/specs/2026-08-17-agent-schedules-design.md).
+
+    Default ON — a boolean toggle, not one of the interval-seconds knobs
+    above, so it follows the codebase's existing default-on boolean-env
+    convention (``AGNES_DB_SELF_HEAL``, ``EGRESS_BLOCK_PRIVATE``) rather
+    than ``_read_positive_int``. Set ``SCHEDULER_AGENT_SCHEDULES=0`` (or
+    ``false``/``no``) to disable the sweep on an instance that doesn't want
+    scheduled agent runs firing.
+    """
+    return os.environ.get("SCHEDULER_AGENT_SCHEDULES", "1").strip().lower() not in ("0", "false", "no")
+
+
 # Wave-2B job-queue migration (Task 6), plus ``ducklake-maintenance`` (wave-2G
 # Task 5). These scheduler rows no longer run their work synchronously inside
 # the scheduler's HTTP call — they POST
@@ -727,6 +742,17 @@ def build_jobs() -> list[JobRow | EnqueueJobRow]:
             4,
             ("initial-workspace", iw_sched, "/api/admin/initial-workspace/sync-if-configured", "POST", 900),
         )
+
+    # Agent schedules run-due sweep (design doc
+    # docs/superpowers/specs/2026-08-17-agent-schedules-design.md), modeled
+    # on `script-runner` above. Fixed "every 1m" — not driven by an interval
+    # env var, so (like `jira-org-refresh`'s fixed daily schedule) it
+    # deliberately stays out of the `smallest`/tick-guard computation; a
+    # coarser SCHEDULER_TICK_SECONDS only makes it fire less precisely on
+    # the minute, never more often than configured.
+    if _agent_schedules_enabled():
+        jobs.append(("agents:run-due", "every 1m", "/api/v1/agents/run-due", "POST", 600))
+
     return jobs
 
 

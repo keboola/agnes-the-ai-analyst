@@ -59,7 +59,8 @@ class UsersPgRepository:
             row = (
                 conn.execute(
                     sa.text(
-                        "SELECT * FROM users WHERE lower(email) = lower(:email) ORDER BY created_at NULLS LAST, id LIMIT 1"
+                        "SELECT * FROM users WHERE lower(email) = lower(:email) "
+                        "ORDER BY created_at NULLS LAST, id LIMIT 1"
                     ),
                     {"email": email},
                 )
@@ -75,8 +76,7 @@ class UsersPgRepository:
             rows = (
                 conn.execute(
                     sa.text(
-                        "SELECT * FROM users WHERE lower(email) = lower(:email) "
-                        "ORDER BY created_at NULLS LAST, id"
+                        "SELECT * FROM users WHERE lower(email) = lower(:email) ORDER BY created_at NULLS LAST, id"
                     ),
                     {"email": email},
                 )
