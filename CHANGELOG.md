@@ -10,7 +10,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.83.48] - 2026-08-18
+
 ### Internal
+
+- **`extract_option_list` no longer leaks `None` into its declared `list[str]`.** An option dict carrying neither `value` nor `name` resolved to `None` and was serialized as a JSON `null` inside the arrays stored in `issues.triage`, `issues.configuration_item` and `issues.organizations`; it is now skipped. No stored value changes in practice — the case has never occurred (0 of 16,018 issues carry a null inside any of those three arrays) — so this closes a latent type hole rather than reshaping the dataset. Also clears the pre-existing mypy `misc` error on the comprehension.
 
 - **Corrected the Jira comment-embed window in `complete_issue_comments`' docstring, which was documented backwards.** It described the embed as "capped at 100, oldest-first — an issue with more than 100 comments arrives missing its NEWEST comments"; the payload's own `fields.comment.startAt` is `total - 100`, so the embed is the newest 100 and the issue arrives missing its OLDEST (verified live: startAt 24/122, 22/122, 6/106 on three >100-comment issues). That inversion is load-bearing — it is what makes the pagination loop's `startAt = len(embedded)` look correct when it in fact starts past the window head and never reaches the oldest `total - 100` comments. Behaviour is unchanged here; the fetch-layer fix is tracked separately. Two test-module docstrings repeating the claim are corrected too.
 
