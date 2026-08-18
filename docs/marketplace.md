@@ -101,6 +101,27 @@ one wins, identical to how Claude Code behaves when a user adds two upstream
 marketplaces with overlapping plugin names directly. `/marketplace/info` exposes
 both `name` and `prefixed_name` so operators can disambiguate.
 
+**Where a plugin's files come from (`source`).** Each entry in the upstream
+`.claude-plugin/marketplace.json` declares a `source`. Agnes serves files it has
+on disk inside the clone, so it resolves the entry like this
+(`src.marketplace_filter._contained_plugin_dir`):
+
+| `source` | Files served from |
+|---|---|
+| absent / empty | `plugins/<name>/` (the conventional layout) |
+| `"./"` | the clone root — the single-plugin-repo shape, where the plugin IS the repo |
+| `"./any/sub/dir"` | that subdirectory of the clone |
+| object, e.g. `{"source": "github", "repo": "owner/repo"}`, or a remote string (`https://…`, `git@host:owner/repo`) | nothing — unless the curator ALSO vendored the plugin at `plugins/<name>/`, in which case that directory is served |
+| a path escaping the clone (absolute, or containing `..`) | the row is dropped at ingest with a warning; it never reaches the catalog |
+
+A plugin with an external `source` and no vendored directory stays a
+**catalog-only entry**: it shows on Browse and keeps its grants, but the served ZIP / git tree
+carries no files for it (Claude Code fetches those from the external source
+itself). The server logs one line per such plugin naming it and the reason.
+`.git/**`, `.agnes/**` and `marketplace-metadata.json` are never served, which
+matters most for `source: "./"` where the plugin directory is the git clone;
+the plugin detail page's file list and bundle size apply the same exclusion.
+
 **Cache:** content-addressed bare repos at `${DATA_DIR}/marketplaces/git-cache/`
 keyed by sha256(filtered content). Two users with the same RBAC view share one
 repo; content change → new repo next to the old one. No TTL / prune yet.

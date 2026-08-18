@@ -23,7 +23,7 @@ import os
 import shutil
 import uuid
 from pathlib import Path
-from typing import Dict
+from typing import Collection, Dict, Set, Tuple
 
 import duckdb
 from dulwich.index import commit_tree
@@ -58,7 +58,9 @@ FIXED_ENCODING = b"UTF-8"
 #       containment half touches no hashed byte — so without this bump a repo
 #       cached before the deploy keeps being served under the old rules
 #       (Devin Review on #1180).
-_TREE_FORMAT_VERSION = 3
+#   v4: executable files keep their exec bit as mode-100755 tree entries —
+#       identical hashed bytes, different tree, so cached repos must rebuild.
+_TREE_FORMAT_VERSION = 4
 
 
 def cache_dir() -> Path:
@@ -98,10 +100,13 @@ def file_set_for_user(
     *,
     plugins: list[dict] | None = None,
     etag: str | None = None,
-) -> Dict[str, bytes]:
-    """Files that go into the bare repo tree, in the same layout as the ZIP
-    but without `.agnes/version.json` (which contains `generated_at` and
-    would force a different commit SHA on every rebuild).
+) -> Tuple[Dict[str, bytes], Set[str]]:
+    """``(files, executables)`` that go into the bare repo tree, in the same
+    layout as the ZIP but without `.agnes/version.json` (which contains
+    `generated_at` and would force a different commit SHA on every rebuild).
+    ``executables`` names the arcs whose source file carries the owner-exec
+    bit — they become mode 100755 tree entries so a plugin's engine launcher
+    still runs after ``claude plugin install``.
 
     When *plugins* and *etag* are supplied the expensive
     ``resolve_allowed_plugins`` / ``compute_etag`` round-trip is skipped
@@ -114,6 +119,7 @@ def file_set_for_user(
         etag = marketplace_filter.compute_etag(plugins)
 
     files: Dict[str, bytes] = {}
+    executables: Set[str] = set()
     files[".claude-plugin/marketplace.json"] = _merged_manifest_bytes(plugins, etag)
 
     for plugin in plugins:
@@ -127,7 +133,10 @@ def file_set_for_user(
 
             files[f"plugins/{prefix}/.claude-plugin/plugin.json"] = _bundle_plugin_json_bytes(plugin)
             for rel, abs_path in _bundle_files(plugin["bundle_dirs"]):
-                files[f"plugins/{prefix}/{rel}"] = abs_path.read_bytes()
+                arc = f"plugins/{prefix}/{rel}"
+                files[arc] = abs_path.read_bytes()
+                if marketplace_filter.is_executable_file(abs_path):
+                    executables.add(arc)
             continue
 
         plugin_dir: Path = plugin["plugin_dir"]
@@ -144,11 +153,12 @@ def file_set_for_user(
             rel_parts = f.relative_to(plugin_dir).parts
             # v32: same Agnes-only file stripping as the ZIP path —
             # `.agnes/**` and `marketplace-metadata.json` never enter the synth
-            # Claude Code git tree. See app/marketplace_server/packager.py
-            # for context.
-            from src.marketplace_filter import is_agnes_only_path
+            # Claude Code git tree, and neither does a root-source plugin's
+            # `.git/**` (git refuses a tree containing a `.git` entry). See
+            # app/marketplace_server/packager.py for context.
+            from src.marketplace_filter import is_unserved_path
 
-            if is_agnes_only_path(rel_parts):
+            if is_unserved_path(rel_parts):
                 continue
             rel = f.relative_to(plugin_dir).as_posix()
             arc = f"plugins/{prefix}/{rel}"
@@ -163,11 +173,16 @@ def file_set_for_user(
 
                 data = _sanitize_served_plugin_json(data, plugin_dir, plugin["manifest_name"])
             files[arc] = data
-    return files
+            if marketplace_filter.is_executable_file(f):
+                executables.add(arc)
+    return files, executables
 
 
-def build_bare_repo(files: Dict[str, bytes], target_path: Path) -> None:
+def build_bare_repo(files: Dict[str, bytes], target_path: Path, executables: Collection[str] = ()) -> None:
     """Initialize a fresh bare repo at target_path with one deterministic commit.
+
+    Arcs named in ``executables`` become mode-100755 tree entries; everything
+    else stays 100644.
 
     `target_path` MUST NOT exist — caller atomically renames a tmp dir into
     place so concurrent workers never observe a half-written repo.
@@ -179,7 +194,8 @@ def build_bare_repo(files: Dict[str, bytes], target_path: Path) -> None:
         for path, content in sorted(files.items()):
             blob = Blob.from_string(content)
             repo.object_store.add_object(blob)
-            blobs.append((path.encode("utf-8"), blob.id, 0o100644))
+            mode = 0o100755 if path in executables else 0o100644
+            blobs.append((path.encode("utf-8"), blob.id, mode))
 
         tree_sha = commit_tree(repo.object_store, blobs)
 
@@ -213,10 +229,10 @@ def ensure_repo_for_user(conn: duckdb.DuckDBPyConnection, user: dict) -> Path:
     if target.is_dir():
         return target
 
-    files = file_set_for_user(conn, user, plugins=plugins, etag=etag)
+    files, executables = file_set_for_user(conn, user, plugins=plugins, etag=etag)
     tmp = root / f".tmp-{etag}.{uuid.uuid4().hex}.git"
     try:
-        build_bare_repo(files, tmp)
+        build_bare_repo(files, tmp, executables=executables)
     except Exception:
         shutil.rmtree(tmp, ignore_errors=True)
         raise

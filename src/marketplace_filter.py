@@ -45,7 +45,11 @@ import duckdb
 
 from app.auth.access import _user_group_ids
 from app.utils import get_marketplaces_dir, get_store_dir
-from src.marketplace import is_safe_plugin_name
+from src.marketplace import (
+    is_external_plugin_source,
+    is_safe_plugin_name,
+    is_safe_plugin_source,
+)
 from src.repositories import (
     marketplace_plugins_repo,
     resource_grants_repo,
@@ -76,30 +80,91 @@ MAX_MANIFEST_NAME_LEN = 64
 # v2: the served `plugin.json` `name` is forced to the resolved manifest name
 #     (`_sanitize_served_plugin_json`), so a plugin whose declared name was
 #     rejected no longer ships an identity its catalog entry disagrees with.
-SERVED_FORMAT_VERSION = 2
+# v3: executable files keep their exec bit (ZIP external_attr 755 / git tree
+#     mode 100755) — same bytes, different packaging, so caches must roll.
+SERVED_FORMAT_VERSION = 3
 
 
-def _contained_plugin_dir(root: Path, slug: str, name: str) -> Optional[Path]:
-    """``root/slug/plugins/name``, or None when that escapes ``root``.
+def _contained_plugin_dir(root: Path, slug: str, name: str, source: Any = None) -> Optional[Path]:
+    """The plugin's on-disk directory inside its marketplace clone, or None.
 
-    Layer 2 behind ``is_safe_plugin_name``'s ingest rejection — security playbook
-    §6 requires both. Rows written by an older Agnes version, or edited directly
-    in the DB, never passed the ingest check, and this is the last point before
-    the path reaches ``rglob`` + ``read_bytes`` in the ZIP and git packagers.
-    ``resolve()`` also collapses a symlinked ``plugins/<name>`` pointing out of
-    the tree, which the regex alone cannot see.
+    ``source`` is the catalog entry's declared location relative to the clone
+    root (from ``marketplace_plugins.raw``): ``"./"`` for a root-source plugin
+    (the plugin IS the repo — the single-plugin-repo shape), a subdirectory
+    like ``"./plugins/<name>"``, or an external location whose files live
+    outside the clone — Claude Code's object form, or a remote string
+    (``is_external_plugin_source``). No source (or a blank one) keeps the
+    conventional ``plugins/<name>`` default.
+
+    An external source falls back to that same ``plugins/<name>``
+    directory — but ONLY when it actually exists on disk. Before source-aware
+    resolution every row resolved there unconditionally, so a curator who
+    declared ``{"source": "github", …}`` AND vendored the plugin under
+    ``plugins/<name>`` (belt-and-braces) had those files served; dropping the
+    row outright is a silent regression that also leaves grants and
+    subscriptions pointing at nothing. The fallback cannot be steered by the
+    source's contents — it is always ``plugins/<validated name>`` inside this
+    marketplace's own clone. With no vendored directory the plugin stays a
+    metadata-only catalog entry (None).
+
+    Layer 2 behind the ingest rejections (``is_safe_plugin_name`` /
+    ``is_safe_plugin_source``) — security playbook §6 requires both. Rows
+    written by an older Agnes version, or edited directly in the DB, never
+    passed the ingest check, and this is the last point before the path
+    reaches ``rglob`` + ``read_bytes`` in the ZIP and git packagers.
+    ``resolve()`` also collapses a symlink pointing out of the tree, which
+    string checks alone cannot see. Containment is anchored on the CLONE
+    (``root/slug``), not the marketplaces root — a declared source must never
+    reach a sibling marketplace's differently-RBAC'd content — and the clone
+    itself is re-anchored on ``root`` so a hostile slug row cannot move the
+    base.
 
     The name is used unstripped: rows in ``marketplace_plugins`` were already
     stripped by ``_refresh_plugin_cache``, so the strict helper is correct here.
     """
     if not is_safe_plugin_name(name):
         return None
-    candidate = root / slug / "plugins" / name
+    clone = root / slug
+    if isinstance(source, str) and source.strip() and not is_external_plugin_source(source):
+        rel = source.strip()
+        if not is_safe_plugin_source(rel):
+            return None
+        parts = [seg for seg in rel.split("/") if seg not in ("", ".")]
+        candidate = clone.joinpath(*parts) if parts else clone
+    elif source is None or (isinstance(source, str) and not source.strip()):
+        candidate = clone / "plugins" / name
+    else:
+        # External source — Claude Code's object form, or a remote string
+        # (URL / scp-style git address). The plugin's files live outside the
+        # clone. Serve a vendored copy if the curator left one at the
+        # conventional path, otherwise there is nothing on disk to re-serve.
+        candidate = clone / "plugins" / name
+        if not candidate.is_dir():
+            return None
     try:
-        candidate.resolve().relative_to(root.resolve())
+        resolved = candidate.resolve()
+        resolved.relative_to(clone.resolve())
+        resolved.relative_to(root.resolve())
     except (OSError, ValueError):
         return None
     return candidate
+
+
+def _no_local_dir_reason(source: Any) -> str:
+    """Operator-facing reason a catalog row resolved to no local directory.
+
+    A plugin that resolves to nothing is invisible on the shelf with only a
+    log line to explain it, and the two causes want different reactions: an
+    external source is the curator's declared intent (nothing to fix), a
+    non-contained path is a broken or hostile catalog entry.
+    """
+    if (source is not None and not isinstance(source, str)) or is_external_plugin_source(source):
+        return (
+            "its source is external (a remote URL, or Claude Code's object form) and the clone "
+            "carries no vendored plugins/<name> directory — the catalog entry stands, its files "
+            "are not served"
+        )
+    return "no contained local source directory — the declared source escapes the clone, or the name is unsafe"
 
 
 def required_store_entity_keys(conn: duckdb.DuckDBPyConnection | None, user_id: str | None) -> set[str]:
@@ -287,12 +352,14 @@ def resolve_allowed_plugins(conn: duckdb.DuckDBPyConnection, user: dict) -> List
         marketplace_id = row["marketplace_id"]
         name = row["name"]
         slug = marketplace_id  # registry.id IS the slug (see src/marketplace.py)
-        plugin_dir = _contained_plugin_dir(root, slug, name)
+        raw = _resolve_raw(row.get("raw"))
+        plugin_dir = _contained_plugin_dir(root, slug, name, source=raw.get("source"))
         if plugin_dir is None:
             logger.warning(
-                "marketplace %s: skipping granted plugin %r — name is not a contained path segment",
+                "marketplace %s: not serving granted plugin %r — %s",
                 slug,
                 name,
+                _no_local_dir_reason(raw.get("source")),
             )
             continue
         result.append(
@@ -303,7 +370,7 @@ def resolve_allowed_plugins(conn: duckdb.DuckDBPyConnection, user: dict) -> List
                 "prefixed_name": _prefixed_name(slug, name),
                 "manifest_name": resolve_manifest_name(plugin_dir, fallback=name),
                 "version": row.get("version"),
-                "raw": _resolve_raw(row.get("raw")),
+                "raw": raw,
                 "plugin_dir": plugin_dir,
             }
         )
@@ -364,6 +431,30 @@ def is_agnes_only_path(rel_parts: tuple[str, ...]) -> bool:
     return False
 
 
+def is_executable_file(path: Path) -> bool:
+    """True when the file carries the owner-exec bit — preserved into the
+    served ZIP (external_attr) and git tree (mode 100755) so a plugin's
+    executable content (engine launchers its hooks invoke via
+    ``${CLAUDE_PLUGIN_ROOT}``) still runs after install. False on stat
+    failure: a vanished file degrades to the historical 644, never a crash."""
+    try:
+        return bool(path.stat().st_mode & 0o100)
+    except OSError:
+        return False
+
+
+def is_unserved_path(rel_parts: tuple[str, ...]) -> bool:
+    """True when a relative path inside a plugin / bundle source must never be
+    served or hashed: Agnes-only enrichment (``is_agnes_only_path``) or VCS
+    internals. A root-source plugin's ``plugin_dir`` IS the marketplace git
+    clone, so its ``.git/**`` would otherwise be swept wholesale into the
+    served ZIP — and into the git channel's synthetic tree, which git refuses
+    to check out (no tree may contain a ``.git`` entry)."""
+    if is_agnes_only_path(rel_parts):
+        return True
+    return any(part == ".git" for part in rel_parts)
+
+
 def _bundle_files(bundle_dirs: list[Path]) -> list[tuple[str, Path]]:
     """Return [(relpath_in_bundle, abs_path)] for every file across the bundle
     sources, dropping each per-entity ``.claude-plugin/`` content (the bundle
@@ -384,7 +475,7 @@ def _bundle_files(bundle_dirs: list[Path]) -> list[tuple[str, Path]]:
             rel_parts = f.relative_to(src).parts
             if rel_parts and rel_parts[0] == _BUNDLE_EXCLUDE_DIR:
                 continue
-            if is_agnes_only_path(rel_parts):
+            if is_unserved_path(rel_parts):
                 continue
             out.append((Path(*rel_parts).as_posix(), f))
     return out
@@ -487,12 +578,14 @@ def _entries_for_grant_keys(keys: frozenset[str]) -> List[dict]:
         name = row["name"]
         if f"{slug}/{name}" not in keys or row.get("admin_disabled"):
             continue
-        plugin_dir = _contained_plugin_dir(root, slug, name)
+        raw = _resolve_raw(row.get("raw"))
+        plugin_dir = _contained_plugin_dir(root, slug, name, source=raw.get("source"))
         if plugin_dir is None:
             logger.warning(
-                "marketplace %s: skipping granted plugin %r — name is not a contained path segment",
+                "marketplace %s: not serving granted plugin %r — %s",
                 slug,
                 name,
+                _no_local_dir_reason(raw.get("source")),
             )
             continue
         out.append(
@@ -503,7 +596,7 @@ def _entries_for_grant_keys(keys: frozenset[str]) -> List[dict]:
                 "prefixed_name": _prefixed_name(slug, name),
                 "manifest_name": resolve_manifest_name(plugin_dir, fallback=name),
                 "version": row.get("version"),
-                "raw": _resolve_raw(row.get("raw")),
+                "raw": raw,
                 "plugin_dir": plugin_dir,
                 "source": "marketplace",
             }
@@ -774,22 +867,29 @@ def compute_etag(plugins: Iterable[dict]) -> str:
     every file under each source dir except the per-entity ``.claude-plugin/``
     content; the bundle ships one synth plugin.json so the per-entity ones
     don't enter the served tree.
+
+    The per-file executable bit is hashed alongside the bytes because it is
+    now part of what gets packaged (ZIP ``external_attr`` / git tree mode).
+    A curator commit that only ``chmod +x``-es a launcher — the archetypal
+    "fix the broken hook" commit — leaves every byte identical, so hashing
+    bytes alone would answer ``If-None-Match`` with 304 and re-serve the
+    cached ``<etag>.v<N>.git`` tree, both still mode 644.
     """
     tokens: List[List[Any]] = []
     for plugin in plugins:
-        files: List[List[str]] = []
+        files: List[List[Any]] = []
         if plugin.get("bundle_dirs"):
             for rel, abs_path in _bundle_files(plugin["bundle_dirs"]):
-                files.append([rel, _sha256_file(abs_path)])
+                files.append([rel, _sha256_file(abs_path), is_executable_file(abs_path)])
         else:
             plugin_dir: Path = plugin["plugin_dir"]
             if plugin_dir is not None and plugin_dir.is_dir():
                 for f in _iter_files(plugin_dir):
                     rel_parts = f.relative_to(plugin_dir).parts
-                    if is_agnes_only_path(rel_parts):
+                    if is_unserved_path(rel_parts):
                         continue
                     rel = f.relative_to(plugin_dir).as_posix()
-                    files.append([rel, _sha256_file(f)])
+                    files.append([rel, _sha256_file(f), is_executable_file(f)])
         tokens.append([plugin["prefixed_name"], plugin.get("version") or "", files])
     payload = json.dumps(
         {"format": SERVED_FORMAT_VERSION, "plugins": tokens},

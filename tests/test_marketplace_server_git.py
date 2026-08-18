@@ -807,3 +807,74 @@ class TestRunGitHttpBackendKillsOnClientDisconnect:
             await agen.aclose()
 
         asyncio.run(asyncio.wait_for(run(), timeout=10))
+
+
+class TestExecutableBitPreserved:
+    """A plugin's executable files (engine launchers invoked by hooks via
+    ${CLAUDE_PLUGIN_ROOT}) must land in the served git tree as mode 100755 —
+    a clone that flattens them to 100644 breaks every hook that execs them."""
+
+    def _plugin(self, tmp_path):
+        import json as _json
+
+        d = tmp_path / "marketplaces" / "mkt" / "plugins" / "p"
+        (d / ".claude-plugin").mkdir(parents=True)
+        (d / ".claude-plugin" / "plugin.json").write_text(_json.dumps({"name": "p"}), encoding="utf-8")
+        (d / "README.md").write_text("readme", encoding="utf-8")
+        bin_dir = d / "engine" / "bin"
+        bin_dir.mkdir(parents=True)
+        launcher = bin_dir / "enginectl"
+        launcher.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+        launcher.chmod(0o755)
+        return {
+            "marketplace_id": "mkt",
+            "marketplace_slug": "mkt",
+            "original_name": "p",
+            "prefixed_name": "mkt-p",
+            "manifest_name": "p",
+            "version": "1",
+            "raw": {"name": "p"},
+            "plugin_dir": d,
+        }
+
+    def _tree_modes(self, repo_path):
+        """{'path/in/tree': mode} for every blob in HEAD's tree."""
+        from dulwich.repo import Repo as DRepo
+
+        repo = DRepo(str(repo_path))
+        try:
+            commit = repo[repo.refs[b"refs/heads/main"]]
+            modes = {}
+
+            def walk(tree_sha, prefix=""):
+                tree = repo[tree_sha]
+                for entry in tree.items():
+                    name = entry.path.decode("utf-8")
+                    full = f"{prefix}{name}"
+                    if entry.mode == 0o040000:
+                        walk(entry.sha, prefix=f"{full}/")
+                    else:
+                        modes[full] = entry.mode
+
+            walk(commit.tree)
+            return modes
+        finally:
+            repo.close()
+
+    def test_git_tree_preserves_executable_bit(self, tmp_path, monkeypatch):
+        from app.marketplace_server import git_backend
+
+        plugins = [self._plugin(tmp_path)]
+        monkeypatch.setattr(git_backend.marketplace_filter, "resolve_user_marketplace", lambda *a, **k: plugins)
+        monkeypatch.setattr(git_backend.marketplace_filter, "compute_etag", lambda *a, **k: "e")
+
+        files, executables = git_backend.file_set_for_user(None, {"id": "u", "email": "u@example.com"})
+        assert "plugins/mkt-p/engine/bin/enginectl" in executables
+        assert "plugins/mkt-p/README.md" not in executables
+
+        target = tmp_path / "bare.git"
+        git_backend.build_bare_repo(files, target, executables=executables)
+        modes = self._tree_modes(target)
+        assert modes["plugins/mkt-p/engine/bin/enginectl"] == 0o100755
+        assert modes["plugins/mkt-p/README.md"] == 0o100644
+        assert modes[".claude-plugin/marketplace.json"] == 0o100644
