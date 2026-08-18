@@ -19,6 +19,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 - `ticket_repo().revoke_session_scopes(session_id, scopes)` (both backends) revokes a session's tickets in the named scopes only. The existing `revoke_session` is scope-blind, which is wrong for a caller holding a long-lived credential in one scope while rotating short-lived egress tickets in others: sweeping the whole session would delete the credential the caller just authenticated with, and the embedded engine has no way to be handed a replacement — its ticket-response schema is `{llm, mcp}` and it keeps using the credential baked into its session JWT, so a scope-blind revoke would `401` every turn after the first. An empty scope list deletes nothing rather than degrading to "match everything".
 
+## [0.83.38] - 2026-08-18
+
+### Added
+
+- **Tunnel recipe for exposing agents (or the full connector) from a VPN/intranet-only instance (#1024).** A VPN-only Agnes instance can't be reached by cloud-based AI clients (Claude.ai, ChatGPT). `docs/DEPLOYMENT.md` now documents two operator-run outbound-tunnel patterns (Cloudflare Tunnel or Tailscale Funnel, templates under `infra/examples/vpn-agent-tunnel/`): an agent-only tunnel exposing just the Bearer-PAT-authenticated, owner-scoped agent-as-API runtime surface (recommended for VPN-only instances that still want external automation), or the existing full OAuth MCP connector for operators who want the whole "Claude as my assistant" experience despite being VPN-only. Operators who'd rather not tunnel at all already have `mcp.connector_ui_enabled` (#1291) to hide the misleading connector instructions instead.
+
 ## [0.83.37] - 2026-08-17
 
 ### Internal
