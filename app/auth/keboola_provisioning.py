@@ -252,8 +252,10 @@ def _ensure_group(project: kp.DiscoveredProject) -> Dict[str, Any]:
 def apply_tool_grants(connection_id: str, group_id: str, role: str) -> int:
     """Grant the connection's registered chat tools to ``group_id`` per the
     role policy (admin: everything; other roles: non-mutating only).
-    Idempotent — ``add_grant`` is ON CONFLICT DO NOTHING. Returns how many
-    tools the group now holds a grant for from this pass."""
+    Idempotent — ``add_grant`` without an explicit ``allow_mutating`` is
+    ON CONFLICT DO NOTHING, so a re-run on sign-in neither duplicates rows
+    nor resets an admin's v120 mutating opt-in on an existing grant.
+    Returns how many tools the group now holds a grant for from this pass."""
     from src.keboola_chat_tools import derived_source_id
     from src.repositories import tool_registry_repo
 
