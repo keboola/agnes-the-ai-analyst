@@ -48,10 +48,32 @@
      agent, which cannot be deleted — a label, not a disabled button, since
      there is no state in which pressing it would work. */
   .ag-card-locked { font-size: 12.5px; color: var(--ds-text-muted); font-weight: 500; padding: 2px 6px; }
+  .ag-card-acts { display: flex; align-items: center; gap: 4px; }
+  /* The primary action on a card — an agent you cannot talk to is a form you
+     filled in. Anchor, not a button: it is a navigation, and the card's own
+     click handler opens the builder, so this must not inherit that. */
+  .ag-chat { font-size: 13px; font-weight: 600; color: var(--ds-primary); text-decoration: none; padding: 2px 8px; border-radius: 8px; }
+  .ag-chat:hover { background: var(--ds-primary-light); }
   .ag-del { border: none; background: none; color: var(--ds-text-muted); cursor: pointer; font-size: 13px; padding: 2px 6px; border-radius: 8px; font-family: inherit; }
   .ag-del:hover { color: var(--ds-accent-danger-ink); background: var(--ds-accent-danger-bg); }
   .ag-new { border: 1.5px dashed var(--ds-border); background: var(--ds-surface-sunken); color: var(--ds-text-secondary); border-radius: 14px; padding: 16px 18px; display: flex; align-items: center; justify-content: center; gap: 9px; font-size: 14px; font-weight: 600; cursor: pointer; min-height: 158px; font-family: inherit; transition: color var(--ds-motion-fast) var(--ds-ease-standard), border-color var(--ds-motion-fast) var(--ds-ease-standard); }
   .ag-new:hover { border-color: var(--ds-primary); color: var(--ds-primary); background: var(--ds-primary-light); }
+  /* Template picker — the first step of "New agent" once the caller has any
+     Agent Template installed. */
+  /* No --ds-* scrim token exists (every modal in the codebase hard-codes its
+     backdrop); matching the neighbours rather than inventing a token that
+     would need a value in all three themes for one dialog's sake. */
+  .ag-tpl-back { position: fixed; inset: 0; background: rgba(15, 23, 42, 0.55); display: flex; align-items: center; justify-content: center; padding: 20px; z-index: 60; }
+  .ag-tpl-card { background: var(--ds-surface); border: 1px solid var(--ds-border); border-radius: 14px; padding: 20px; width: min(520px, 100%); max-height: 80vh; overflow: auto; }
+  .ag-tpl-card h3 { margin: 0 0 4px; font-size: 16px; color: var(--ds-text-primary); }
+  .ag-tpl-lede { margin: 0 0 14px; font-size: 13px; color: var(--ds-text-secondary); }
+  .ag-tpl-list { display: flex; flex-direction: column; gap: 8px; }
+  .ag-tpl-row { text-align: left; border: 1px solid var(--ds-border); background: var(--ds-surface-sunken); border-radius: 10px; padding: 11px 13px; cursor: pointer; font-family: inherit; display: flex; flex-direction: column; gap: 3px; }
+  .ag-tpl-row:hover { border-color: var(--ds-primary); background: var(--ds-primary-light); }
+  .ag-tpl-name { font-size: 14px; font-weight: 600; color: var(--ds-text-primary); }
+  .ag-tpl-desc { font-size: 12px; color: var(--ds-text-muted); }
+  .ag-tpl-foot { display: flex; gap: 10px; align-items: center; margin-top: 16px; }
+  .ag-tpl-x { border: 0; background: none; color: var(--ds-text-muted); font-size: 13px; cursor: pointer; font-family: inherit; }
   .ag-empty { text-align: center; padding: 48px 20px; border: 1px dashed var(--ds-border); border-radius: 14px; }
   .ag-empty .ag-ava { margin: 0 auto 12px; width: 46px; height: 46px; }
   .ag-empty h3 { margin: 0 0 6px; font-size: 16px; color: var(--ds-text-primary); }
@@ -181,14 +203,10 @@
     <p class="lede">Build a focused assistant from anything you can access — governed data, memory, and your files for what it knows, plus any plugin or skill for what it can do. Everything here respects your existing permissions.</p>
   </div>
 </div>
-{# The "not wired to the surfaces yet" caveat belongs under the description,
-   not at the foot of the grid: it qualifies the whole page, and a caller who
-   reads it before building an agent learns the limit before investing in one
-   — at the bottom it landed after the work, and below the fold once the grid
-   filled. Shared `.pnote` component, so it reads identically to the Library's
-   caveats. #}
-{{ page_notice('Work in progress',
-     'Your agents are saved to your workspace and live on this page. Actually running them on the surfaces you pick is the next step.') }}
+{# The "not wired to the surfaces yet" caveat is gone: agents run from here now
+   (the Chat button on each card opens a session as that agent). The other
+   surfaces are still a per-surface rollout, but "you cannot use what you
+   built" — the thing this notice was apologising for — is no longer true. #}
 {% endblock %}
 
 {% block page_surface %}
@@ -245,7 +263,14 @@
           tone: a.tone, greeting: a.greeting, knowledge: a.knowledge,
           plugins: a.plugins, surfaces: a.surfaces, status: a.status
         })
-      }).catch(function (e) { console.error('agents: save failed', e); });
+      }).then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (updated) {
+          // A rename re-derives a draft's slug server-side (`_draft_slug_rename`);
+          // the local copy must pick it up, or the card's Chat link (built from
+          // `a.slug`) keeps pointing at the pre-rename address until a reload.
+          if (updated && updated.slug) a.slug = updated.slug;
+        })
+        .catch(function (e) { console.error('agents: save failed', e); });
     }, 400);
   }
   /* Every existing call site means "persist what the user just changed", which
@@ -357,12 +382,25 @@
         '<div class="ag-card-role">' + (esc(a.role) || '<span style="color:var(--ds-text-muted)">No role yet — open to configure.</span>') + '</div>' +
         '<div class="ag-card-foot">' +
           '<span class="ag-card-count">' + agentCounts(a) + '</span>' +
-          // The seeded default agent is not deletable (the API refuses it with
-          // 400 default_agent_undeletable) — every chat session is attributed
-          // to it. Render the reason in place of a control that cannot work.
-          (a.is_default
-            ? '<span class="ag-card-locked" title="Every chat is attributed to this agent">Default</span>'
-            : '<button type="button" class="ag-del" data-ag-del="' + esc(a.id) + '">Delete</button>') +
+          '<span class="ag-card-acts">' +
+            // The point of the page: an agent you can actually talk to. Opens a
+            // session running AS this agent instead of the caller's default.
+            // Every agent gets one, `draft` included and regardless of
+            // `surfaces.web` — that field is descriptive today (nothing else
+            // in the platform enforces it either: the agent-as-API surface
+            // and Slack/Telegram routing read the same JSON blob and act on
+            // it just as little), so gating only this button would be an
+            // inconsistent, partial enforcement rather than a real one.
+            (a.slug
+              ? '<a class="ag-chat" href="/chat?agent=' + encodeURIComponent(a.slug) + '">Chat</a>'
+              : '') +
+            // The seeded default agent is not deletable (the API refuses it with
+            // 400 default_agent_undeletable) — every chat session is attributed
+            // to it. Render the reason in place of a control that cannot work.
+            (a.is_default
+              ? '<span class="ag-card-locked" title="Every chat is attributed to this agent">Default</span>'
+              : '<button type="button" class="ag-del" data-ag-del="' + esc(a.id) + '">Delete</button>') +
+          '</span>' +
         '</div>' +
       '</div>';
     }).join('');
@@ -372,22 +410,6 @@
     listView.innerHTML = '<div class="ag-grid">' +
       '<button type="button" class="ag-new" data-ag-new><span style="font-size:18px">+</span> New agent</button>' +
       cards + '</div>';
-  }
-
-  /* The list view no longer appends this — the page head carries the caveat
-     server-rendered, under the description (macros/_page_notice.html). The
-     BUILDER still needs its own copy: setPageHead(false) hides the whole
-     `.idx-head` there, and the builder is where the limit actually bites, one
-     section below "Surfaces". Same `.pnote` markup as the macro so the two
-     placements are visually identical — keep them in step if either moves. */
-  function localNote() {
-    return '<div class="pnote" role="note">' +
-      '<span class="pnote-icon" aria-hidden="true">' + WARN_SVG + '</span>' +
-      '<div class="pnote-body">' +
-        '<p class="pnote-title">Work in progress</p>' +
-        '<p class="pnote-text">Your agents are saved to your workspace and live on this page. ' +
-        'Actually running them on the surfaces you pick is the next step.</p>' +
-      '</div></div>';
   }
 
   /* ── Builder view ── */
@@ -444,6 +466,12 @@
   }
 
   var KIND_LABEL = { data: 'Data', memory: 'Memory', file: 'File' };
+  /* Store `type` is a wire value ('plugin' | 'skill' | 'agent'); the tag beside
+     a capability's name is read by a person. Rendering the raw value put the
+     bare word "agent" on a row in THIS page's picker — the one place it is
+     most likely to be mistaken for one of the agents being built here, when it
+     is a template someone published to the Library. */
+  var TYPE_LABEL = { plugin: 'Plugin', skill: 'Skill', agent: 'Agent Template' };
 
   function knowledgeRows(a) {
     var q = query.knowledge;
@@ -488,7 +516,7 @@
       return '<div class="ag-row">' +
         '<div class="ag-row-body">' +
           '<div class="ag-row-name">' + esc(p.name) +
-            '<span class="ag-kind ag-kind--' + esc(type) + '">' + esc(type) + '</span>' +
+            '<span class="ag-kind ag-kind--' + esc(type) + '">' + esc(TYPE_LABEL[type] || type) + '</span>' +
             (p.installed ? '<span class="ag-instack">In your stack</span>' : '') +
             (p.category ? '<span class="ag-row-meta">' + esc(p.category) + '</span>' : '') + '</div>' +
           '<div class="ag-row-desc">' + esc(p.description || '') + '</div>' +
@@ -593,7 +621,7 @@
             'Admin-managed', boundariesBody()) +
         '</div>' +
         '<aside class="ag-preview" id="ag-preview">' + previewHtml(a) + '</aside>' +
-      '</div>' + localNote();
+      '</div>';
   }
 
   /* Light-touch preview sync while typing (no re-render → keeps focus). */
@@ -613,13 +641,34 @@
      `?new=1` deep link shares this path instead of rendering an unsaved shell.
      `btn`, when given, is disabled for the duration so a double-click can't
      create two agents. */
-  function createAgent(btn) {
+  /* Installed Agent Templates, from the same `plugins` list the capability
+     picker reads. Store entities arrive with a `flea-` prefixed id; the create
+     API wants the bare entity id. */
+  function installedTemplates() {
+    return (plugins || []).filter(function (p) { return p.type === 'agent'; });
+  }
+  function templateEntityId(p) {
+    return String(p.id || '').replace(/^flea-/, '');
+  }
+
+  function createAgent(btn, templateId) {
     if (btn) btn.disabled = true;
+    var payload = makeAgent();
+    if (templateId) {
+      payload.template_entity_id = templateId;
+      // makeAgent()'s tone/greeting are this SHELL's defaults, not a real
+      // choice — sending them would always beat the template's own (the
+      // server only prefills a field the caller left blank). Omitting them
+      // lets the template's tone/greeting apply, with these same defaults as
+      // the fallback when the template declares neither.
+      delete payload.tone;
+      delete payload.greeting;
+    }
     return fetch('/api/agents', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'same-origin',
-      body: JSON.stringify(makeAgent())
+      body: JSON.stringify(payload)
     }).then(function (r) {
       if (!r.ok) throw new Error('HTTP ' + r.status);
       return r.json();
@@ -633,13 +682,67 @@
     }).finally(function () { if (btn) btn.disabled = false; });
   }
 
+  /* ── Template picker ──
+     A template supplies BEHAVIOUR only (role, instructions). Knowledge and
+     access stay the caller's to choose, which is why the copy says so — an
+     author who expects their data to travel writes a template that assumes
+     tables the installer will never have. */
+  function openTemplatePicker() {
+    var tpls = installedTemplates();
+    var rows = tpls.map(function (p) {
+      return '<button type="button" class="ag-tpl-row" data-ag-tpl="' + esc(templateEntityId(p)) + '">' +
+          '<span class="ag-tpl-name">' + esc(p.name || 'Untitled template') + '</span>' +
+          '<span class="ag-tpl-desc">' + esc(p.description || '') + '</span>' +
+        '</button>';
+    }).join('');
+    var el = document.createElement('div');
+    el.className = 'ag-tpl-back';
+    el.id = 'ag-tpl-modal';
+    el.innerHTML =
+      '<div class="ag-tpl-card" role="dialog" aria-modal="true" aria-label="Start a new agent">' +
+        '<h3>Start from a template</h3>' +
+        '<p class="ag-tpl-lede">A template gives your agent its role and instructions. You choose what it can reach.</p>' +
+        '<div class="ag-tpl-list">' + rows + '</div>' +
+        '<div class="ag-tpl-foot">' +
+          '<button type="button" class="cc-btn" data-ag-tpl="">Start blank</button>' +
+          '<button type="button" class="ag-tpl-x" data-ag-tpl-close>Cancel</button>' +
+        '</div>' +
+      '</div>';
+    document.body.appendChild(el);
+  }
+  function closeTemplatePicker() {
+    var el = document.getElementById('ag-tpl-modal');
+    if (el) el.remove();
+  }
+
   /* ── Event delegation ── */
   document.addEventListener('click', function (e) {
-    var t = e.target.closest('[data-ag-new],[data-ag-open],[data-ag-del],[data-ag-back],[data-ag-status],[data-ag-toggle-sec],[data-ag-tone],[data-ag-kn],[data-ag-cap],[data-ag-surf]');
+    // "Chat" sits INSIDE the card, whose own handler opens the builder — so
+    // without this the click both navigated and swapped the view underneath it.
+    // Let the anchor do what an anchor does.
+    if (e.target.closest('.ag-chat')) return;
+    var t = e.target.closest('[data-ag-new],[data-ag-open],[data-ag-del],[data-ag-back],[data-ag-status],[data-ag-toggle-sec],[data-ag-tone],[data-ag-kn],[data-ag-cap],[data-ag-surf],[data-ag-tpl],[data-ag-tpl-close]');
     if (!t) return;
     var a = current();
     if (t.hasAttribute('data-ag-new')) {
-      createAgent(t);
+      // With templates installed, picking one is the leading path — that is the
+      // relationship between the two entities made visible, instead of leaving
+      // the reader to open a template, copy its prompt and paste it into a
+      // blank agent. "Start blank" stays a visible peer, and is the whole flow
+      // for anyone with no templates. `plugins` is only guaranteed loaded once
+      // a builder has opened (openBuilder's loadPlugins call) — boot() also
+      // kicks it off, but a caller clicking "New agent" before that resolves
+      // must not fall through to a blank agent as if none were installed.
+      loadPlugins().then(function () {
+        if (installedTemplates().length) { openTemplatePicker(); return; }
+        createAgent(t);
+      });
+    } else if (t.hasAttribute('data-ag-tpl')) {
+      var tpl = t.getAttribute('data-ag-tpl');
+      closeTemplatePicker();
+      createAgent(null, tpl || null);
+    } else if (t.hasAttribute('data-ag-tpl-close')) {
+      closeTemplatePicker();
     } else if (t.hasAttribute('data-ag-del')) {
       e.stopPropagation();
       var id = t.getAttribute('data-ag-del');
@@ -725,9 +828,14 @@
     save(); syncPreview();
   });
 
-  /* Keyboard access for the div-based cards/section headers. */
+  /* Keyboard access for the div-based cards/section headers. The Chat link is
+     a real <a> nested inside a card — it already gets native Enter/Space
+     handling from the browser, so re-dispatching the CARD's click for it
+     (same guard the click handler above already applies to .ag-chat) would
+     override the anchor's own navigation with openBuilder(). */
   document.addEventListener('keydown', function (e) {
     if (e.key !== 'Enter' && e.key !== ' ') return;
+    if (e.target.closest && e.target.closest('.ag-chat')) return;
     var t = e.target.closest && e.target.closest('[data-ag-open],[data-ag-toggle-sec]');
     if (t) { e.preventDefault(); t.click(); }
   });
@@ -762,6 +870,12 @@
     if (wantNew) { createAgent(null); return true; }
     return false;
   }
+
+  /* Kicked off in parallel with the agents fetch below so "New agent" already
+     knows whether any templates are installed by the time someone clicks it —
+     the click handler also awaits this itself, so a click that lands before
+     it resolves still sees the real answer instead of "none installed". */
+  loadPlugins();
 
   /* Boot: hydrate the working copy from the registry, then render. A failed
      load renders the empty list rather than a blank page, and says so. */

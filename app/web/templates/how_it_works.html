@@ -1267,21 +1267,12 @@ a.cowork-plugin-row:hover { border-color: var(--ds-primary); background: var(--d
        where almost nobody scrolled. It gets its own section and its own
        TOC entry.
 
-       TODO (CON-2): this is NOT a privacy policy URL, and must not be handed
-       out as one. /how-it-works sits behind `Depends(get_current_user)`, so a
-       reviewer given `<instance>/how-it-works#privacy` gets a login redirect
-       rather than a policy — and both the Anthropic and the OpenAI connector
-       submissions treat an unreachable privacy policy as an automatic
-       rejection. A dedicated, UNAUTHENTICATED `/privacy` route is still
-       needed before either submission is filed.
-
-       Deliberately not written yet rather than forgotten: the content is a
-       legal document, and Agnes is self-hosted — the data controller is the
-       operator running the instance, not whoever ships the code. So it needs
-       a product decision first (does the operator supply their own policy URL
-       via config, or does the page ship boilerplate describing what the
-       software does with data?). The four guarantees below are the factual
-       raw material for whichever shape wins. #}
+       This is orientation copy for signed-in readers, NOT the public privacy
+       policy: /how-it-works is behind `Depends(get_current_user)`, so this
+       anchor answers a signed-out fetch with a login redirect. The public
+       statement lives at `/privacy` (unauthenticated) — that is the URL to
+       hand a connector directory. The two share these four guarantees on
+       purpose; edit them here and edit `privacy.html` too. #}
     <section class="hiw-sec" id="privacy">
       {# Collapsed by default — see `.hiw-fold`. The lede IS the answer for most
          readers; the four rows are for the one who needs to be precise about

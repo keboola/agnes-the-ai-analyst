@@ -1672,6 +1672,26 @@ class TestReportsSmoke:
 
 
 # ---------------------------------------------------------------------------
+# Privacy (public, unauthenticated statement — CON-2)
+# ---------------------------------------------------------------------------
+
+
+class TestPrivacyPageSmoke:
+    """Behavioral depth (auth bypass, operator-override redirect) is in
+    tests/test_privacy_page.py; this is the parameter-free cross-backend
+    smoke check the route-coverage guard requires."""
+
+    COVERED_ROUTES = {
+        "GET /privacy",
+    }
+
+    def test_answers_without_credentials(self, seeded_app_both):
+        r = seeded_app_both["client"].get("/privacy", follow_redirects=False)
+        assert r.status_code == 200
+        assert "Where your data goes" in r.text
+
+
+# ---------------------------------------------------------------------------
 # Route-coverage guard
 # ---------------------------------------------------------------------------
 
