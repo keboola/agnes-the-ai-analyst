@@ -143,6 +143,30 @@ def test_glossary_is_projected_from_custom_extensions(system_db):
     assert "ARR" in terms
 
 
+def test_glossary_is_projected_from_a_lowercase_vendor_tag(system_db):
+    """Devin #1398: the vendor tag matches case-insensitively (like the query
+    validator and the browse UI), so a hand-authored document spelling it
+    `agnes` projects rather than being silently dropped from the flat
+    catalog while it still browses/validates."""
+    doc = {
+        "semantic_model": [
+            {
+                "name": "retail",
+                "datasets": [_stub_dataset()],
+                "custom_extensions": [
+                    {"vendor_name": "agnes", "data": json.dumps({"glossary": [{"term": "ARR", "definition": "x"}]})}
+                ],
+            }
+        ]
+    }
+    report = project_document(doc, source="git", source_ref="repo-a")
+    assert report.glossary_written == 1
+
+    from src.repositories import glossary_repo
+
+    assert "ARR" in {g["term"] for g in glossary_repo().list(limit=1000)}
+
+
 def test_document_without_glossary_extension_writes_none(system_db):
     report = project_document(DOC, source="git", source_ref="repo-a")
     assert report.glossary_written == 0
