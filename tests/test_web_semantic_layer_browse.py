@@ -396,6 +396,22 @@ class TestModelDetail:
         cx = c.get("/semantic-layer/multi?tab=constraints", headers=_auth(seeded_app["admin_token"]))
         assert "c_beta" in cx.text
 
+    def test_shared_slug_drills_into_the_row_the_caller_can_read(self, seeded_app):
+        """Devin #1398: two models can share a slug (unique only per source).
+        The drill-down resolves to the newest row THIS caller can read — not
+        the newest overall — so a card the analyst can see never 404s or opens
+        a row they lack a grant on."""
+        doc_a = {"semantic_model": [{"name": "A", "datasets": [{"name": "alpha_ds", "fields": []}]}]}
+        doc_b = {"semantic_model": [{"name": "B", "datasets": [{"name": "beta_ds", "fields": []}]}]}
+        a = _seed_document("dup", doc_a, source="manual")
+        _seed_document("dup", doc_b, source="ossie_git")  # coexists (different source), newer, no grant
+        _grant_model(a["id"])  # the analyst can read only A
+        c = seeded_app["client"]
+        r = c.get("/semantic-layer/dup", headers=_auth(seeded_app["analyst_token"]))
+        assert r.status_code == 200  # would 404 if it resolved B (the newest overall) instead
+        assert "alpha_ds" in r.text
+        assert "beta_ds" not in r.text
+
 
 class TestObjectDetail:
     def test_dataset_object_renders_fields_table_and_all_five_ai_groups(self, seeded_app):

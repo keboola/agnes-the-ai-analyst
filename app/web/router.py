@@ -3972,6 +3972,32 @@ def _semantic_layer_tab_label(tab: str) -> str:
     }[tab]
 
 
+def _readable_model_by_slug(slug: str, user: dict, conn) -> Optional[dict]:
+    """Resolve a slug to the newest ``semantic_models`` row the CALLER CAN READ.
+
+    Slugs are unique only per ``(source, source_ref)`` (``upsert`` prunes only
+    within that scope), so two models can share one — a hand-authored
+    ``manual`` and an imported ``ossie_git``, say. The repo's ``get_by_slug``
+    returns the newest row OVERALL, which for this browse UI means a card the
+    caller can read could resolve to a *different* row: a 404 when they lack a
+    grant on the newest, or the wrong document when they can read both. Picking
+    the newest row THIS caller can read keeps the click on a model they were
+    actually shown (Devin #1398); RBAC stays applied to the row finally served.
+    The residual — a caller who can read two same-slug rows still reaches only
+    the newer from either card — needs a unique-per-row URL and is left with
+    the pre-existing export endpoint that shares the slug-only resolution.
+    """
+    from app.api.semantic_models import _can_read_model
+
+    candidates = [
+        r for r in semantic_model_repo().list_all() if r.get("slug") == slug and _can_read_model(user, r, conn)
+    ]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda r: str(r.get("updated_at") or ""), reverse=True)
+    return candidates[0]
+
+
 @router.get("/semantic-layer", response_class=HTMLResponse)
 async def semantic_layer_list(
     request: Request,
@@ -4029,7 +4055,6 @@ async def semantic_layer_detail(
     name>``) — a plain case-insensitive substring match scoped to whichever
     tab is active, not a new search endpoint.
     """
-    from app.api.semantic_models import _can_read_model
     from app.web.semantic_layer_view import (
         agnes_extension_payload,
         is_imported,
@@ -4040,8 +4065,8 @@ async def semantic_layer_detail(
         source_label,
     )
 
-    row = semantic_model_repo().get_by_slug(slug)
-    if row is None or not _can_read_model(user, row, conn):
+    row = _readable_model_by_slug(slug, user, conn)
+    if row is None:
         raise HTTPException(status_code=404, detail=f"Semantic model '{slug}' not found")
 
     active_tab = tab if tab in _SEMANTIC_LAYER_TABS else "datasets"
@@ -4162,7 +4187,6 @@ async def semantic_layer_object(
     ``name`` (``term`` for glossary),
     case-insensitively matched.
     """
-    from app.api.semantic_models import _can_read_model
     from app.web.semantic_layer_view import (
         OBJECT_TYPE_LABELS,
         OBJECT_TYPE_TAB,
@@ -4176,8 +4200,8 @@ async def semantic_layer_object(
         source_label,
     )
 
-    row = semantic_model_repo().get_by_slug(slug)
-    if row is None or not _can_read_model(user, row, conn):
+    row = _readable_model_by_slug(slug, user, conn)
+    if row is None:
         raise HTTPException(status_code=404, detail=f"Semantic model '{slug}' not found")
 
     object_type, _, object_name = object_id.partition(":")
