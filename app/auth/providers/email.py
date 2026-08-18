@@ -53,14 +53,18 @@ class MagicLinkVerify(BaseModel):
 
 def is_available() -> bool:
     # In dev mode the link is rendered to logs + response, so the provider is "available"
-    # even without SMTP/SendGrid. Keeps the login UI showing the magic-link option.
+    # even without SMTP. Keeps the login UI showing the magic-link option.
     if is_local_dev_mode():
         return True
-    return bool(os.environ.get("SMTP_HOST") or os.environ.get("SENDGRID_API_KEY"))
+    return _has_email_transport()
 
 
 def _has_email_transport() -> bool:
-    return bool(os.environ.get("SMTP_HOST") or os.environ.get("SENDGRID_API_KEY"))
+    # SMTP only. SENDGRID_API_KEY used to count here, but the SDK branch it
+    # advertised could never send (the `sendgrid` package was not a
+    # dependency), so the key alone turned the login UI's magic-link option
+    # into a dead end.
+    return bool(os.environ.get("SMTP_HOST"))
 
 
 def _build_magic_link(email: str, token: str, next_path: str = "") -> str:
@@ -80,7 +84,7 @@ def _build_magic_link(email: str, token: str, next_path: str = "") -> str:
 
 def _generate_and_deliver_magic_link(email: str, next_path: str = "") -> tuple[dict | None, str | None, str | None]:
     """Look up the user, mint + persist a magic-link token, and attempt
-    delivery via SMTP/SendGrid. Shared by the JSON (``/send-link``) and web
+    delivery via SMTP. Shared by the JSON (``/send-link``) and web
     form (``/send-link/web``) variants so the token/email plumbing lives in
     one place.
 
@@ -132,12 +136,12 @@ async def send_magic_link(
 ):
     """Send a magic link to the user's email.
 
-    When SMTP/SendGrid is not configured, or LOCAL_DEV_MODE=1, the link is
+    When SMTP is not configured, or LOCAL_DEV_MODE=1, the link is
     logged to stderr and returned in the response body so a developer can
     click it without an email transport.
     """
-    # The delivery helper does a blocking SMTP/SendGrid send (+ sync repo
-    # writes); offload it so a slow mail server can't freeze the single event
+    # The delivery helper does a blocking SMTP send (+ sync repo writes);
+    # offload it so a slow mail server can't freeze the single event
     # loop for every other request (the Tier-1 convention in get_current_user).
     user, link, send_error = await run_in_threadpool(_generate_and_deliver_magic_link, body.email)
 
@@ -159,6 +163,19 @@ async def send_magic_link(
         if send_error:
             response["send_error"] = send_error
         return response
+
+    if send_error:
+        # A configured transport that failed is a server-side fault the caller
+        # must see — answering the generic success left people waiting for a
+        # mail that was never sent, with nothing surfacing the misconfiguration.
+        # This trades a sliver of anti-enumeration away while the relay is down
+        # (a 500 implies the account exists); the silent failure was judged
+        # worse. Unknown addresses never attempt a send, so they still get the
+        # generic success below.
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to send the sign-in email. Contact your administrator.",
+        )
 
     return {"message": "If this email is registered, you will receive a login link."}
 
@@ -199,11 +216,16 @@ async def send_magic_link_web(
     email = (email or "").strip()
     next_path = safe_next_path(next, default="")
 
-    # Offload the blocking SMTP/SendGrid send off the event loop — same Tier-1
+    # Offload the blocking SMTP send off the event loop — same Tier-1
     # rationale as the JSON /send-link variant.
-    user, link, _send_error = await run_in_threadpool(_generate_and_deliver_magic_link, email, next_path)
+    user, link, send_error = await run_in_threadpool(_generate_and_deliver_magic_link, email, next_path)
 
     console_mode = bool(user) and is_local_dev_mode()
+    if send_error and not console_mode:
+        # Same trade as the JSON sibling: a configured-but-failing transport
+        # must not render the "we sent a link" page. send_error is only set
+        # for existing accounts, so unknown addresses keep the generic page.
+        return RedirectResponse(url="/login?error=email_send_failed", status_code=303)
     if console_mode:
         logger.warning("=" * 60)
         logger.warning("Magic link for %s (LOCAL_DEV_MODE fallback):", email)
@@ -255,9 +277,7 @@ def _consume_token(email: str, token: str) -> dict:
     # the token by user id, so it can sit on a newer one. Minting the session
     # from a second address lookup would then log the person in as a different
     # account, with that account's group memberships.
-    consumed_id = repo.consume_reset_token(
-        email=email, token=hash_token(token), cutoff=cutoff, consume_id=consume_id
-    )
+    consumed_id = repo.consume_reset_token(email=email, token=hash_token(token), cutoff=cutoff, consume_id=consume_id)
     if not consumed_id:
         raise HTTPException(status_code=401, detail="Invalid or expired link")
 
@@ -343,36 +363,13 @@ async def verify_magic_link_get(
 
 
 def _send_email(email: str, token: str, next_path: str = ""):
-    """Send magic link email via SMTP or SendGrid."""
+    """Send the magic-link email via SMTP (raises on delivery failure).
+
+    SMTP relay is the only transport — SendGrid works through
+    ``SMTP_HOST=smtp.sendgrid.net`` (see ``app.auth._common.send_smtp_email``
+    for why the SDK branch is gone).
+    """
+    from app.auth._common import send_smtp_email
+
     link = _build_magic_link(email, token, next_path)
-    sendgrid_key = os.environ.get("SENDGRID_API_KEY")
-    if sendgrid_key:
-        import sendgrid
-        from sendgrid.helpers.mail import Mail
-
-        sg = sendgrid.SendGridAPIClient(api_key=sendgrid_key)
-        message = Mail(
-            from_email=os.environ.get("EMAIL_FROM_ADDRESS", "noreply@example.com"),
-            to_emails=email,
-            subject="Login Link",
-            html_content=f'<p>Click to login: <a href="{link}">Login</a></p>',
-        )
-        sg.send(message)
-        return
-
-    smtp_host = os.environ.get("SMTP_HOST")
-    if smtp_host:
-        import smtplib
-        from email.mime.text import MIMEText
-
-        msg = MIMEText(f"Login link: {link}")
-        msg["Subject"] = "Login Link"
-        msg["From"] = os.environ.get("SMTP_FROM", "noreply@example.com")
-        msg["To"] = email
-        with smtplib.SMTP(smtp_host, int(os.environ.get("SMTP_PORT", "587"))) as s:
-            if os.environ.get("SMTP_USE_TLS", "true").lower() == "true":
-                s.starttls()
-            smtp_user = os.environ.get("SMTP_USER")
-            if smtp_user:
-                s.login(smtp_user, os.environ.get("SMTP_PASSWORD", ""))
-            s.send_message(msg)
+    send_smtp_email(email, "Login Link", f"Login link: {link}")

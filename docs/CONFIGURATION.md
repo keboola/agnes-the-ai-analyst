@@ -195,6 +195,14 @@ Used for magic link authentication. Without SMTP configured, magic links are
 shown directly in the browser (development mode). Compatible with any SMTP relay
 (Gmail, Mailgun, SendGrid SMTP, etc.).
 
+SMTP is the **only** mail transport. Providers with an HTTP API are used
+through their SMTP relay — e.g. for SendGrid set `SMTP_HOST=smtp.sendgrid.net`
+with your API key as `SMTP_PASSWORD` (user `apikey`). The former SendGrid SDK
+integration (`SENDGRID_API_KEY`) was removed: the SDK was never installed, so
+that path only ever failed, and the key no longer counts as a configured mail
+transport. The sender address comes from `SMTP_FROM` (the legacy
+`EMAIL_FROM_ADDRESS` is still honored as a fallback).
+
 ### Server
 
 ```yaml
@@ -288,10 +296,11 @@ values. Never commit `.env`.
 | `MICROSOFT_TENANT_ID` | Microsoft Entra ID directory (tenant) ID — a GUID or a verified domain. Multi-tenant endpoints (`common` / `organizations` / `consumers`) are refused; see [`auth-microsoft-oauth.md`](auth-microsoft-oauth.md) |
 | `MICROSOFT_CLIENT_ID` | Microsoft Entra ID application (client) ID |
 | `MICROSOFT_CLIENT_SECRET` | Microsoft Entra ID client secret value. All three are required for Microsoft sign-in and are read at process start |
-| `SMTP_HOST` | SMTP relay host for magic link emails |
+| `SMTP_HOST` | SMTP relay host for magic link / password-reset / invite emails. The only mail transport — for SendGrid use `smtp.sendgrid.net` |
 | `SMTP_PORT` | SMTP port (587 for STARTTLS, 465 for SSL) |
 | `SMTP_USER` | SMTP username |
 | `SMTP_PASSWORD` | SMTP password |
+| `SMTP_FROM` | Sender address for outgoing auth mail (default `noreply@example.com`). Legacy `EMAIL_FROM_ADDRESS` is honored as a fallback |
 | `TELEGRAM_BOT_TOKEN` | For Telegram notifications |
 | `ANTHROPIC_API_KEY` | For Corporate Memory AI extraction AND `agnes admin ask` (LLM text-to-SQL on telemetry). Without this, both features show a clear 503 error and skip silently. |
 | `LLM_API_KEY` | API key for LLM proxy (LiteLLM, OpenRouter, etc.) |
