@@ -90,6 +90,11 @@ def _generate_and_deliver_magic_link(email: str, next_path: str = "") -> tuple[d
     that case. ``send_error`` carries the exception string when the
     transport is configured but delivery failed.
     """
+    # Strip here, in the shared helper, so the JSON /send-link and the web
+    # form agree: the form used to strip and the JSON path did not, which made
+    # a pasted address work through one door and not the other. Case is folded
+    # by the lookup itself (SQL), never here.
+    email = (email or "").strip()
     repo = users_repo()
     user = repo.get_by_email_ci(email)
     if not user:
@@ -185,9 +190,8 @@ async def send_magic_link_web(
     if not is_available():
         return RedirectResponse(url="/login?error=email_not_configured", status_code=303)
 
-    # Match the rest of the codebase's case-sensitive lookup (password_login,
-    # reset_request, setup_request). Lowercasing here would silently fail
-    # for mixed-case emails the admin stored as-is.
+    # Strip early so the rendered "we sent a link to <address>" copy shows the
+    # cleaned address; the shared helper strips again, harmlessly.
     email = (email or "").strip()
     next_path = safe_next_path(next, default="")
 
@@ -234,6 +238,7 @@ def _consume_token(email: str, token: str) -> dict:
     """
     # TTL cutoff computed in Python (parameterized INTERVAL arithmetic isn't
     # portable across backends).
+    email = (email or "").strip()
     cutoff = datetime.now(timezone.utc) - timedelta(seconds=MAGIC_LINK_EXPIRY)
     # Unique marker for this consumption attempt — the CAS stamps it so the
     # repo can report who won the race without relying on affected-row counts.

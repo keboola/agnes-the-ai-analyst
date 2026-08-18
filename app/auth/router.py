@@ -91,7 +91,9 @@ async def create_token(
     dependency raises before body validation gets a chance to.
     """
     repo = users_repo()
-    user = repo.get_by_email_ci(body.email)
+    # Strip only — case is folded by the lookup (SQL). A pasted address
+    # carries whitespace and must not be a hard auth failure.
+    user = repo.get_by_email_ci((body.email or "").strip())
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
     if not bool(user.get("active", True)):

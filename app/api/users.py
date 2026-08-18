@@ -318,6 +318,14 @@ async def create_user(
     # "ada@example.com" would otherwise create the second account rather than
     # be told the first one exists.
     email = normalize_email(payload.email)
+    # Shape check after normalization: whitespace-only input collapses to "",
+    # and the payload's email is a plain `str` with no validator, so without
+    # this an admin could create a row whose identity matches nothing an auth
+    # provider will ever resolve. Deliberately minimal — an `@` with something
+    # either side, not RFC 5322 — so an internal or dev address still works.
+    local, _, domain = email.partition("@")
+    if not local or not domain:
+        raise HTTPException(status_code=422, detail="A valid email address is required")
     if repo.get_by_email_ci(email):
         raise HTTPException(status_code=409, detail="User with this email already exists")
     import secrets

@@ -237,7 +237,8 @@ async def password_login(
 ):
     """Login with email + password."""
     repo = users_repo()
-    user = repo.get_by_email_ci(body.email)
+    # Strip only — case is folded by the lookup (SQL).
+    user = repo.get_by_email_ci((body.email or "").strip())
     if not user or not user.get("password_hash"):
         raise HTTPException(status_code=401, detail="Invalid email or password")
     if not bool(user.get("active", True)):
@@ -274,6 +275,7 @@ async def password_login_web(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Web form login — sets cookie and redirects to `next` (or /dashboard)."""
+    email = (email or "").strip()
     repo = users_repo()
     user = repo.get_by_email_ci(email)
     if not user or not user.get("password_hash"):
@@ -336,7 +338,7 @@ async def password_setup(
     switches to this JSON path and resumes at unbounded RPS.
     """
     repo = users_repo()
-    user = repo.get_by_email_ci(request_body.email)
+    user = repo.get_by_email_ci((request_body.email or "").strip())
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
@@ -464,6 +466,7 @@ async def reset_confirm(
     referer leaks have surfaced partial tokens before, and there's no
     reason to allow unbounded attempts.
     """
+    email = (email or "").strip()
     repo = users_repo()
 
     # Anti-enumeration: validate the token BEFORE deriving any
@@ -637,6 +640,7 @@ async def setup_confirm(
     high-entropy ``setup_token`` should still not be brute-forceable at
     unbounded RPS in case a partial token leaks via logs / referer.
     """
+    email = (email or "").strip()
     if password != confirm_password:
         return _render_setup_form(request, email=email, token=token, name=name, error="Passwords do not match.")
     if len(password) < MIN_PASSWORD_LEN:

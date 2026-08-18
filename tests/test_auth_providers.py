@@ -277,6 +277,38 @@ class TestEmailCaseInsensitiveSignIn:
         assert r.status_code == 200, r.text
 
 
+class TestSignInIgnoresSurroundingWhitespace:
+    """A pasted address carries whitespace, and every entry point has to
+    tolerate it identically.
+
+    ``ensure_user`` strips, and so did the web magic-link form — but the JSON
+    ``/send-link``, ``/auth/token`` and the password handlers passed the raw
+    field straight to the lookup, so the same address succeeded or failed
+    depending on which door it came through. Stripping (not lower-casing —
+    case is SQL's job) at each entry point is what makes them agree.
+    """
+
+    def test_token_endpoint_tolerates_padding(self, client):
+        r = client.post("/auth/token", json={"email": "  pw@test.com  ", "password": "testpass123"})
+        assert r.status_code == 200, r.text
+
+    def test_password_login_tolerates_padding(self, client):
+        r = client.post("/auth/password/login", json={"email": "  pw@test.com ", "password": "testpass123"})
+        assert r.status_code == 200, r.text
+
+    def test_json_magic_link_tolerates_padding(self, client):
+        from src.db import get_system_db
+
+        r = client.post("/auth/email/send-link", json={"email": "  ml@test.com  "})
+        assert r.status_code == 200, r.text
+        conn = get_system_db()
+        try:
+            row = conn.execute("SELECT reset_token FROM users WHERE id = 'ml1'").fetchone()
+        finally:
+            conn.close()
+        assert row is not None and row[0], "padded address minted no magic-link token"
+
+
 class TestGoogleOAuth:
     def test_google_login_not_configured(self, client):
         """Without GOOGLE_CLIENT_ID, should redirect to login with error."""
