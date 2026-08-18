@@ -759,3 +759,95 @@ class TestCredentialFollowsTheRowNotTheTieBreak:
             json={"email": "nobody@example.com", "token": "x", "password": "brand-new-password"},
         )
         assert r.status_code == 404
+
+
+class TestADeactivatedIdentityShadowsEveryVariant:
+    """Scanning case variants for the credential must not become a route around
+    an offboarding.
+
+    `get_by_email_ci` deliberately does not prefer an active row — its docstring
+    and the 0.83.48 operator note both say a stale disabled variant shadowing
+    the live account is the SAFE failure. So when the row that lookup resolves
+    to is disabled, no sibling variant may serve the sign-in, however good its
+    password is.
+
+    The wider policy question (should ANY disabled variant refuse, even one that
+    is not the resolved identity) is deliberately not answered here.
+    """
+
+    @staticmethod
+    def _identity_deactivated_password_on_active_variant(password: str = "correct-horse-battery"):
+        """Oldest row — the resolved identity — deactivated and password-less.
+        Newer row active, carrying the real password."""
+        from argon2 import PasswordHasher
+
+        from src.db import get_system_db
+
+        old_id = _seed_user("erin@example.com")
+        _age_row(old_id, 60)
+        new_id = _seed_user("Erin@example.com", password_hash=PasswordHasher().hash(password))
+        conn = get_system_db()
+        try:
+            conn.execute("UPDATE users SET active = FALSE WHERE id = ?", [old_id])
+        finally:
+            conn.close()
+        return old_id, new_id
+
+    def test_json_login_refuses_when_the_resolved_identity_is_deactivated(self, app_client, fresh_db):
+        self._identity_deactivated_password_on_active_variant()
+        r = app_client.post(
+            "/auth/password/login",
+            json={"email": "erin@example.com", "password": "correct-horse-battery"},
+        )
+        assert r.status_code == 401, r.text
+        assert "deactivated" in r.text.lower(), r.text
+
+    def test_token_endpoint_refuses_when_the_resolved_identity_is_deactivated(self, app_client, fresh_db):
+        self._identity_deactivated_password_on_active_variant()
+        r = app_client.post(
+            "/auth/token",
+            json={"email": "Erin@example.com", "password": "correct-horse-battery"},
+        )
+        assert r.status_code == 401, r.text
+        assert "deactivated" in r.text.lower(), r.text
+
+    def test_the_refusal_still_requires_proving_a_credential(self, app_client, fresh_db):
+        """The shadow is applied AFTER the password verifies, never before.
+        Short-circuiting on the identity row's flag would answer "Account
+        deactivated" to anyone who typed the address — an oracle for both the
+        account's existence and its state."""
+        self._identity_deactivated_password_on_active_variant()
+        r = app_client.post(
+            "/auth/password/login",
+            json={"email": "erin@example.com", "password": "not-the-password"},
+        )
+        assert r.status_code == 401, r.text
+        assert "deactivated" not in r.text.lower(), (
+            "a wrong password revealed the account's deactivated state without proving anything"
+        )
+
+    def test_a_setup_link_on_a_variant_is_refused_when_the_identity_is_deactivated(self, app_client, fresh_db):
+        from src.db import get_system_db
+
+        old_id = _seed_user("fred@example.com")
+        _age_row(old_id, 60)
+        _seed_user(
+            "Fred@example.com",
+            setup_token="setup-tok-shadowed",
+            setup_token_created=datetime.now(timezone.utc),
+        )
+        conn = get_system_db()
+        try:
+            conn.execute("UPDATE users SET active = FALSE WHERE id = ?", [old_id])
+        finally:
+            conn.close()
+        r = app_client.post(
+            "/auth/password/setup",
+            json={
+                "email": "fred@example.com",
+                "token": "setup-tok-shadowed",
+                "password": "brand-new-password",
+            },
+        )
+        assert r.status_code == 403, r.text
+        assert "deactivated" in r.text.lower(), r.text

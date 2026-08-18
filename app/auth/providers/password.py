@@ -147,26 +147,71 @@ def _row_verifying_password(repo, email: str, password: str) -> tuple[Optional[d
     if not candidates:
         return None, False
     ph = PasswordHasher()
+    verified = None
     for u in candidates:
         try:
             ph.verify(u["password_hash"], password)
-            return u, True
+            verified = u
+            break
         except VerifyMismatchError:
             continue
-    return None, True
+    if verified is None:
+        return None, True
+    return _shadowed_by_deactivated_identity(rows, verified), True
 
 
-def _row_holding_setup_token(repo, email: str, token: str) -> Optional[dict]:
+def _shadowed_by_deactivated_identity(rows: list[dict], verified: dict) -> dict:
+    """``verified`` unless the address's resolved identity is deactivated, in
+    which case that row is returned so the caller refuses.
+
+    Scanning variants for the credential must not become a way around an
+    offboarding. ``get_by_email_ci`` deliberately does not prefer an active row
+    (see its docstring, and the 0.83.48 operator note): a stale disabled variant
+    shadowing the live account is the safe failure, because a wrongly-refused
+    sign-in is visible and fixable while a bypassed deactivation is neither.
+    Its answer is ``rows[0]`` — ``list_by_email_ci`` returns the same ordering —
+    so if THAT row is disabled, no sibling variant may serve the sign-in.
+
+    Applied after the credential verified, never before: short-circuiting on the
+    identity row's flag alone would answer "Account deactivated" to anyone who
+    typed the address, which is an enumeration oracle. The caller still has to
+    prove a credential to learn anything.
+
+    This preserves the shipped contract rather than extending it. The wider
+    question — whether ANY deactivated variant should refuse, including one that
+    is not the resolved identity — is a policy change that would have to apply
+    uniformly (``reset_confirm`` included) and is not decided here.
+    """
+    identity = rows[0] if rows else verified
+    if not bool(identity.get("active", True)):
+        return identity
+    return verified
+
+
+def _row_holding_setup_token(repo, email: str, token: str) -> tuple[Optional[dict], bool]:
     """The row whose ``setup_token`` matches — again the credential, not the
     tie-break. An invitation is minted by user id, so it can sit on a case
     variant ``get_by_email_ci`` does not return, and a valid link would then
     read "Invalid or expired setup link".
 
-    Freshness and ``active`` are left to the caller so each surface keeps its
-    own copy and status code; only the row identity is resolved here.
+    Returns ``(row, identity_active)``. Freshness and ``active`` stay the
+    caller's gates so each surface keeps its own copy and status code, and the
+    row returned is always the one that HOLDS the token — the freshness check
+    reads ``setup_token_created`` off it, and handing back a sibling would report
+    an expired link for a perfectly fresh one.
+
+    ``identity_active`` is the separate answer to "may any variant of this
+    address sign in at all": ``False`` when the row ``get_by_email_ci`` resolves
+    to is disabled, which shadows every variant (see
+    ``_shadowed_by_deactivated_identity`` for why, and why only after the token
+    matched). Callers refuse on it at their existing deactivated gate.
     """
     hashed = hash_token(token)
-    return next((u for u in repo.list_by_email_ci(email) if u.get("setup_token") == hashed), None)
+    rows = repo.list_by_email_ci(email)
+    match = next((u for u in rows if u.get("setup_token") == hashed), None)
+    if match is None:
+        return None, True
+    return match, bool(rows[0].get("active", True))
 
 
 def _token_is_fresh(created, ttl: timedelta) -> bool:
@@ -393,14 +438,14 @@ async def password_setup(
     email = (request_body.email or "").strip()
     # The invitation is minted by user id, so it can sit on a case variant the
     # oldest-wins lookup does not return — resolve by the token it carries.
-    user = _row_holding_setup_token(repo, email, request_body.token)
+    user, identity_active = _row_holding_setup_token(repo, email, request_body.token)
     if user is None:
         if not repo.get_by_email_ci(email):
             raise HTTPException(status_code=404, detail="User not found")
         raise HTTPException(status_code=400, detail="Invalid setup token")
     if not _token_is_fresh(user.get("setup_token_created"), SETUP_TOKEN_TTL):
         raise HTTPException(status_code=400, detail="Setup token has expired")
-    if not bool(user.get("active", True)):
+    if not bool(user.get("active", True)) or not identity_active:
         raise HTTPException(status_code=403, detail="Account deactivated")
 
     if len(request_body.password) < MIN_PASSWORD_LEN:
@@ -721,7 +766,7 @@ async def setup_confirm(
     repo = users_repo()
     # Resolved by the token, not the oldest-row tie-break — see
     # `_row_holding_setup_token`.
-    user = _row_holding_setup_token(repo, email, token)
+    user, identity_active = _row_holding_setup_token(repo, email, token)
     if user is None:
         return _render_setup_form(request, email=email, token=token, name=name, error="Invalid or expired setup link.")
     if not _token_is_fresh(user.get("setup_token_created"), SETUP_TOKEN_TTL):
@@ -732,7 +777,7 @@ async def setup_confirm(
             name=name,
             error="Setup link has expired. Ask an administrator for a new one.",
         )
-    if not bool(user.get("active", True)):
+    if not bool(user.get("active", True)) or not identity_active:
         return _render_setup_form(request, email=email, token=token, name=name, error="This account is deactivated.")
 
     ph = PasswordHasher()
