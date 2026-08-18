@@ -10,12 +10,23 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Removed
+
+- **The SendGrid SDK mail branch is gone; SMTP relay is the only mail transport.** The `sendgrid` package was never a declared dependency, so the SDK path in the magic-link and password providers always died on `ImportError` — while `SENDGRID_API_KEY` alone made the availability predicates advertise email sign-in in the login UI, turning every magic-link/reset/invite send into a silent dead end. The env key no longer counts as a configured transport; SendGrid keeps working through its SMTP relay (`SMTP_HOST=smtp.sendgrid.net`, `SMTP_USER=apikey`).
+
+### Fixed
+
+- **A configured-but-failing mail transport no longer answers success.** `POST /auth/email/send-link` (and its web form), `POST /auth/password/reset` and `POST /auth/password/setup/request` used to answer the generic "check your email" even when SMTP delivery raised — the person waited for a mail that was never sent. A failed send now logs the error and returns HTTP 500 (the web form redirects to the login page with an explanatory banner). Anti-enumeration is preserved: unknown addresses attempt no send and keep the generic success.
+
+### Changed
+
+- **One sender key for outgoing auth mail: `SMTP_FROM`.** The SendGrid branch read `EMAIL_FROM_ADDRESS` while the SMTP branch read `SMTP_FROM`; the SMTP sender now falls back to `EMAIL_FROM_ADDRESS` when `SMTP_FROM` is unset, so deployments configured under either key keep their sender.
+
 ## [0.83.57] - 2026-08-18
 
 ### Fixed
 
 - **The MCP SDK is capped below 2.0, which is what turned every CI shard red.** `pyproject.toml` declared an unbounded `mcp>=1.28.1` and CI installs from that range rather than from `uv.lock` (which still pins 1.28.1, so no local run ever reproduced it). When the 2.x SDK shipped, resolution picked it up on every branch at once and two unrelated import-time breakages landed together: `mcp.server.fastmcp` moved (five modules import `FastMCP` from it, including `app/api/mcp/foundation_tools.py`), and the streamable-HTTP transport was renamed `streamablehttp_client` → `streamable_http_client`. Since `app.main` reaches `connectors/mcp/client.py` at import time, neither failed one test — they errored out collection for essentially every test that builds the app, with nothing in any diff to explain it. The cap restores the SDK the callsites are written against; speaking the 2.x API is a migration to do with the callsites, not ahead of them. Two guards in `tests/test_mcp_client_transport.py` hold the line: one asserts the installed SDK still exports `mcp.server.fastmcp` and a streamable-HTTP transport accepting the `headers=` the callsite passes, the other records that the renamed entry point is **not** a drop-in — it takes an `http_client` where the old one takes `headers`, so aliasing the new name to the old (a tempting one-line 'fix' that passes every mocked test in that file) would raise `TypeError` on every HTTP MCP connection and silently send no auth header. A third guard ties `agnes mcp`'s install hint to pyproject's bound — it read `uv pip install 'mcp>=1.0'`, which now resolves the 2.x SDK, so someone hitting the FastMCP `ImportError` and following the printed instruction landed back on the same error. `uv.lock`'s recorded specifier is synced to match; the lock is not in CI's install path and was already stale on `main` (it records 0.83.49), so it is not regenerated here.
-
 
 ## [0.83.56] - 2026-08-18
 
