@@ -4015,10 +4015,24 @@ async def semantic_layer_list(
     from app.api.semantic_models import _can_read_model
     from app.web.semantic_layer_view import model_dialects, model_of, object_counts, source_label
 
-    models = []
+    # One card per slug — the newest readable row, matching what the
+    # drill-down (`_readable_model_by_slug`) resolves to. Two models can share
+    # a slug (unique only per source/source_ref); listing both would render a
+    # second card that silently opens the first, since every card links to the
+    # same `/semantic-layer/{slug}` (Devin #1398). Deduping loses no
+    # reachability — the older row is unreachable from this UI either way — and
+    # removes the misleading card. Full disambiguation (both reachable) needs a
+    # unique-per-row URL, the follow-up noted on `_readable_model_by_slug`.
+    newest_by_slug: dict[str, dict] = {}
     for row in semantic_model_repo().list_all():
         if not _can_read_model(user, row, conn):
             continue
+        current = newest_by_slug.get(row["slug"])
+        if current is None or str(row.get("updated_at") or "") > str(current.get("updated_at") or ""):
+            newest_by_slug[row["slug"]] = row
+
+    models = []
+    for row in newest_by_slug.values():
         model = model_of(row)
         models.append(
             {

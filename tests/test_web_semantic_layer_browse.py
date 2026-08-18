@@ -245,6 +245,23 @@ class TestModelList:
         assert r.status_code == 200
         assert "retail" in r.text
 
+    def test_same_slug_rows_collapse_to_one_reachable_card(self, seeded_app):
+        """Devin #1398: two models can share a slug (unique only per source).
+        The list shows one card per slug — the newest readable row, the one the
+        drill-down resolves to — never a second card that silently opens the
+        first."""
+        doc_a = {"semantic_model": [{"name": "older", "datasets": [{"name": "alpha_ds", "fields": []}]}]}
+        doc_b = {"semantic_model": [{"name": "newer", "datasets": [{"name": "beta_ds", "fields": []}]}]}
+        _seed_document("dup", doc_a, source="manual")
+        _seed_document("dup", doc_b, source="ossie_git")  # coexists (different source), newer
+        c = seeded_app["client"]
+        r = c.get("/semantic-layer", headers=_auth(seeded_app["admin_token"]))
+        assert r.status_code == 200
+        assert r.text.count('href="/semantic-layer/dup"') == 1  # exactly one card for the slug
+        d = c.get("/semantic-layer/dup", headers=_auth(seeded_app["admin_token"]))
+        assert d.status_code == 200  # and it is reachable
+        assert "beta_ds" in d.text  # opens the newer row, matching the single card
+
 
 class TestModelDetail:
     def test_each_tab_renders(self, seeded_app):
