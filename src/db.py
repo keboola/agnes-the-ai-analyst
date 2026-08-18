@@ -2873,6 +2873,7 @@ def _reattach_remote_extensions(conn: duckdb.DuckDBPyConnection, extracts_dir: P
             is_attach_host_allowed,
             is_extension_allowed,
             is_token_env_allowed,
+            resolve_remote_attach_token,
         )
 
         for alias, extension, url, token_env in rows:
@@ -2930,7 +2931,7 @@ def _reattach_remote_extensions(conn: duckdb.DuckDBPyConnection, extracts_dir: P
                 # missing remote views and the operator will trigger a
                 # rebuild).
                 conn.execute(f"LOAD {extension};")
-                token = os.environ.get(token_env, "") if token_env else ""
+                token = resolve_remote_attach_token(token_env)
                 safe_url = escape_sql_string_literal(url)
 
                 # BQ-specific: refresh token from GCE metadata, create session-scoped
@@ -2985,6 +2986,24 @@ def _reattach_remote_extensions(conn: duckdb.DuckDBPyConnection, extracts_dir: P
                         )
                     attach_unity_catalog(conn, alias=alias, url=url, token=token)
                 elif extension == SF_EXTENSION:
+                    if token_env and not token:
+                        # Mirror the rebuild path (src/orchestrator.py), which
+                        # skips an unresolvable token_env with this warning. This
+                        # branch is reached BEFORE the `elif token:` guard below,
+                        # so without it an ATTACH goes out with `PASSWORD ''` and
+                        # fails at Snowflake — the operator sees an
+                        # authentication error instead of the real cause, a name
+                        # nothing resolves. Reachable in normal operation: an
+                        # `auth_type` flip in /admin/server-config changes which
+                        # env name the credential lives under, while the extract's
+                        # `_remote_attach.token_env` keeps the old one until
+                        # something rebuilds it.
+                        logger.warning(
+                            "Re-attach %s: token_env %s not resolvable, skipping",
+                            alias,
+                            token_env,
+                        )
+                        continue
                     if not is_attach_host_allowed(url):
                         logger.error(
                             "Re-attach %s: url host %r not in AGNES_REMOTE_ATTACH_HOST_ALLOWLIST; "
@@ -3003,7 +3022,10 @@ def _reattach_remote_extensions(conn: duckdb.DuckDBPyConnection, extracts_dir: P
                             token_env,
                             url,
                         )
-                    attach_snowflake(conn, alias=alias, url=url, token=token)
+                    from connectors.snowflake.settings import resolve_snowflake_passphrase_for_token
+
+                    passphrase = resolve_snowflake_passphrase_for_token(token_env)
+                    attach_snowflake(conn, alias=alias, url=url, token=token, passphrase=passphrase)
                 elif token:
                     # #F11 — never ship a real credential to a connector-chosen
                     # host the operator has not approved (mirrors the rebuild
