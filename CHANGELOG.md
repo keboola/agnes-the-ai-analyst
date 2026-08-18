@@ -10,7 +10,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
-## [0.83.48] - 2026-08-18
+## [0.83.49] - 2026-08-18
 
 ### Added
 
@@ -20,6 +20,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Internal
 
 - `ticket_repo().revoke_session_scopes(session_id, scopes)` (both backends) revokes a session's tickets in the named scopes only. The existing `revoke_session` is scope-blind, which is wrong for a caller holding a long-lived credential in one scope while rotating short-lived egress tickets in others: sweeping the whole session would delete the credential the caller just authenticated with, and the embedded engine has no way to be handed a replacement — its ticket-response schema is `{llm, mcp}` and it keeps using the credential baked into its session JWT, so a scope-blind revoke would `401` every turn after the first. An empty scope list deletes nothing rather than degrading to "match everything". Its counterpart: `revoke_session` — the scope-blind sweep every sandbox-lifecycle caller uses — now spares the scopes in `SWEEP_EXEMPT_SCOPES`, because the engine's chat row is an ordinary `chat_sessions` row and a user opening that conversation in web chat spawned a native runner whose sweep deleted the engine's credential outright, killing the session permanently with no channel to hand it a replacement. Exempt from the sweep, not from revocation: `revoke` and `revoke_session_scopes` still delete those rows when asked, and every such ticket carries a TTL — and a credential is refused outright once its chat row is gone, so a user deleting the conversation cuts the engine off immediately instead of at expiry.
+
+## [0.83.48] - 2026-08-18
+
+### Fixed
+
+- **One person, one account — the case-insensitive identity fix now applies to the accounts that actually needed it.** `ensure_user` still read `get_by_email` (an exact, case-SENSITIVE match) first and used the case-insensitive read only as a miss-fallback, so wherever two case-variant rows already coexisted the exact hit won and the documented "oldest wins" contract never applied — the fix missed exactly the population it was written for. The case-insensitive read is now the only lookup, and case is folded in SQL alone (the argument is stripped, not lower-cased) rather than composing Python's Unicode table with the engine's, which is not a well-defined equivalence. **Operator note:** where case-variant duplicates already exist and the older row was deactivated while the person kept signing in on the newer one, sign-in now resolves to the deactivated row and is refused. That is the deliberate direction — a wrongly-refused sign-in is visible and fixable, whereas preferring the active row would let a hidden duplicate bypass an offboarding — but such instances want a reconciliation pass (merge or delete the stale variant) before upgrading. A read-only report listing these collisions is queued as a follow-up.
+- **`get_by_email_ci` resolves one identity to one account deterministically.** `created_at` is not unique — rows written together tie — so a bare `ORDER BY created_at` left the winner to whatever order the engine happened to return, which need not agree between DuckDB and Postgres or between two runs on one engine. `id` breaks the tie on both backends. The ordering deliberately ignores the `active` flag: callers gate on the returned row's own flag, so ranking active rows first would let a still-enabled duplicate serve a sign-in the operator had just disabled.
 
 ## [0.83.47] - 2026-08-18
 
