@@ -102,7 +102,12 @@ def test_break_glass_grant_admin_tolerates_a_padded_address(monkeypatch):
     monkeypatch.setattr(admin_mod, "users_repo", lambda: _Users())
     monkeypatch.setattr(admin_mod, "user_groups_repo", lambda: _Groups())
     monkeypatch.setattr(admin_mod, "user_group_members_repo", lambda: _Members())
-    monkeypatch.setattr(admin_mod, "use_pg", lambda: True, raising=False)
+    # `break_glass_grant_admin` imports use_pg INSIDE the function body, so the
+    # name resolves against src.repositories at call time — patching it on the
+    # admin module would be inert (and would silently let the real
+    # get_system_db run). Same shape as the sibling tests above.
+    monkeypatch.setattr(db_mod, "get_system_db", _boom)
+    monkeypatch.setattr(repos_mod, "use_pg", lambda: True)
 
     admin_mod.break_glass_grant_admin(email="  Ops@Example.com  ", yes=True)
     assert looked_up == ["ops@example.com"], looked_up
