@@ -177,3 +177,60 @@ class TestBothTransformPathsCarryTheColumn:
         issue = _issue(_comment(jsdPublic=True))
         issue["_comments_incomplete"] = True
         assert transform_comments(issue) is None
+
+
+class TestWebhookFallbackDoesNotNullStoredVisibility:
+    """The one path in this connector that transforms a payload other than a GET
+    refetch: `process_webhook_event`'s fetch-failure fallback. Its write is an
+    issue-scoped delete-then-insert, so a comment arriving without a boolean
+    `jsdPublic` does not just fail to add information — it replaces an
+    already-observed `public_visibility` with NULL.
+
+    `jsdPublic` was measured present on 100% of comments across five fetch
+    shapes, but webhook bodies were not one of them, and webhook serialization
+    is precisely what the known Atlassian reports concern. So the completeness
+    guard answers False when the flag is missing, and the existing
+    `_comments_incomplete` marker preserves the stored rows.
+    """
+
+    @staticmethod
+    def _payload(comments):
+        return {"fields": {"comment": {"comments": comments, "total": len(comments)}}}
+
+    def test_a_complete_thread_with_the_flag_is_still_accepted(self):
+        from connectors.jira.service import _embedded_comments_are_complete
+
+        payload = self._payload([{"id": "1", "jsdPublic": True}, {"id": "2", "jsdPublic": False}])
+        assert _embedded_comments_are_complete(payload) is True
+
+    def test_a_comment_missing_the_flag_makes_the_thread_incomplete(self):
+        from connectors.jira.service import _embedded_comments_are_complete
+
+        payload = self._payload([{"id": "1", "jsdPublic": True}, {"id": "2"}])
+        assert _embedded_comments_are_complete(payload) is False, (
+            "accepting this payload would overwrite an observed public_visibility with NULL"
+        )
+
+    def test_a_string_typed_flag_also_makes_the_thread_incomplete(self):
+        """`_comment_public_visibility` resolves a non-boolean to NULL, so a
+        string-typed flag reaches the store as NULL exactly like an absent one.
+        The guard has to reject the same shapes the transform refuses to trust,
+        or the two disagree about what counts as observed."""
+        from connectors.jira.service import _embedded_comments_are_complete
+
+        assert _embedded_comments_are_complete(self._payload([{"id": "1", "jsdPublic": "false"}])) is False
+        assert _embedded_comments_are_complete(self._payload([{"id": "1", "jsdPublic": None}])) is False
+
+    def test_an_empty_thread_is_still_complete(self):
+        """No comments, nothing to lose — and `total == 0` is a real state that
+        must not be turned into a permanent incomplete marker."""
+        from connectors.jira.service import _embedded_comments_are_complete
+
+        assert _embedded_comments_are_complete(self._payload([])) is True
+
+    def test_a_short_thread_is_incomplete_regardless_of_the_flag(self):
+        """The original length check still stands on its own."""
+        from connectors.jira.service import _embedded_comments_are_complete
+
+        payload = {"fields": {"comment": {"comments": [{"id": "1", "jsdPublic": True}], "total": 5}}}
+        assert _embedded_comments_are_complete(payload) is False

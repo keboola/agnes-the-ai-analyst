@@ -413,7 +413,23 @@ def _embedded_comments_are_complete(issue_data: dict[str, Any]) -> bool:
     if not isinstance(total, int):
         # No count to check against: a list of unknown completeness.
         return False
-    return len(comments) >= total
+    if len(comments) < total:
+        return False
+    # Length is not the only kind of incompleteness. This payload's one caller
+    # is the webhook fetch-failure fallback, whose write is an issue-scoped
+    # delete-then-insert -- so a comment here that carries no boolean
+    # `jsdPublic` does not merely fail to add information, it REPLACES an
+    # already-observed `public_visibility` with NULL until the next successful
+    # refetch. The flag is present on 100% of comments across every GET shape
+    # measured for this column, but webhook bodies were not among those shapes,
+    # and webhook serialization is exactly what the known Atlassian reports
+    # (JSDCLOUD-7997, -8275, -6050) concern. Rather than assume, answer False
+    # and let the existing `_comments_incomplete` marker preserve the stored
+    # rows: this path only runs when a refetch has already failed, so the cost
+    # of being conservative is one deferred update on a rare path, and the cost
+    # of being wrong is silent data loss on a column whose entire design
+    # principle is that NULL means "not observed".
+    return all(isinstance(c.get("jsdPublic"), bool) for c in comments if isinstance(c, dict))
 
 
 def complete_issue_comments(
