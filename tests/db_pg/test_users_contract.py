@@ -478,6 +478,33 @@ def test_get_by_email_ci_tiebreaks_deterministically_on_identical_created_at(use
     assert row["id"] == "user-a"
 
 
+def test_get_by_email_ci_prefers_an_active_row_over_an_older_deactivated_one(users_repo):
+    """Oldest wins, but an ACTIVE row wins over an older deactivated one.
+
+    ``ensure_user`` feeds this row straight into the deactivated gate. With two
+    case variants where the older is deactivated and the newer is the account
+    the person actually uses, a bare oldest-wins read refuses the sign-in
+    outright — the person is told their account is deactivated while their real
+    one is active. Offboarding still works: when NO variant is active, the
+    oldest is returned and the gate fires."""
+    repo, _, backend = users_repo
+    _make_user(repo, id="user-old", email="Dup@example.com")
+    _make_user(repo, id="user-new", email="dup@example.com")
+    _set_created_at(repo, backend, "user-old", datetime(2025, 1, 1, tzinfo=timezone.utc))
+    _set_created_at(repo, backend, "user-new", datetime(2026, 6, 1, tzinfo=timezone.utc))
+    repo.update("user-old", active=False)
+
+    row = repo.get_by_email_ci("dup@example.com")
+    assert row is not None
+    assert row["id"] == "user-new", "an older deactivated variant must not shadow the active account"
+
+    # Genuinely offboarded: every variant inactive → the oldest comes back and
+    # the caller's deactivated gate still refuses.
+    repo.update("user-new", active=False)
+    row = repo.get_by_email_ci("dup@example.com")
+    assert row is not None and row["id"] == "user-old"
+
+
 # ---------------------------------------------------------------------------
 # get_by_email_prefix — session-directory-name → user resolution parity
 # ---------------------------------------------------------------------------

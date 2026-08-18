@@ -63,9 +63,16 @@ class UserRepository:
         rows may already differ only in case: the OLDEST wins, so the answer is
         deterministic and the original account keeps the identity. ``created_at``
         is not unique — rows written together tie — so ``id`` breaks the tie and
-        both engines land on the same row."""
+        both engines land on the same row.
+
+        An ACTIVE row wins over an older deactivated one, though. Callers feed
+        this row straight into a deactivated gate, so a bare oldest-wins read
+        would let a stale disabled variant shadow the account the person
+        actually uses and refuse the sign-in outright. Offboarding still works:
+        when no variant is active the oldest comes back and the gate fires."""
         result = self.conn.execute(
-            "SELECT * FROM users WHERE lower(email) = lower(?) ORDER BY created_at NULLS LAST, id LIMIT 1",
+            "SELECT * FROM users WHERE lower(email) = lower(?) "
+            "ORDER BY COALESCE(active, TRUE) DESC, created_at NULLS LAST, id LIMIT 1",
             [email],
         ).fetchone()
         return self._row_to_dict(result)
