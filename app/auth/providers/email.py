@@ -90,13 +90,8 @@ def _generate_and_deliver_magic_link(email: str, next_path: str = "") -> tuple[d
     that case. ``send_error`` carries the exception string when the
     transport is configured but delivery failed.
     """
-    # Strip here, in the shared helper, so the JSON /send-link and the web
-    # form agree: the form used to strip and the JSON path did not, which made
-    # a pasted address work through one door and not the other. Case is folded
-    # by the lookup itself (SQL), never here.
-    email = (email or "").strip()
     repo = users_repo()
-    user = repo.get_by_email_ci(email)
+    user = repo.get_by_email(email)
     if not user:
         return None, None, None
 
@@ -107,15 +102,11 @@ def _generate_and_deliver_magic_link(email: str, next_path: str = "") -> tuple[d
         reset_token_created=datetime.now(timezone.utc),
     )
 
-    # The link and the delivery address are the RESOLVED account's, not the
-    # spelling that was typed — the link's own verify path folds case either
-    # way, but a mail sent to the typed string is a mail to an unverified
-    # address.
-    link = _build_magic_link(user["email"], token, next_path)
+    link = _build_magic_link(email, token, next_path)
     send_error: str | None = None
     if _has_email_transport():
         try:
-            _send_email(user["email"], token, next_path)
+            _send_email(email, token, next_path)
         except Exception as e:
             send_error = str(e)
             logger.error("Failed to send magic link email to %s: %s", email, e)
@@ -194,8 +185,9 @@ async def send_magic_link_web(
     if not is_available():
         return RedirectResponse(url="/login?error=email_not_configured", status_code=303)
 
-    # Strip early so the rendered "we sent a link to <address>" copy shows the
-    # cleaned address; the shared helper strips again, harmlessly.
+    # Match the rest of the codebase's case-sensitive lookup (password_login,
+    # reset_request, setup_request). Lowercasing here would silently fail
+    # for mixed-case emails the admin stored as-is.
     email = (email or "").strip()
     next_path = safe_next_path(next, default="")
 
@@ -242,26 +234,16 @@ def _consume_token(email: str, token: str) -> dict:
     """
     # TTL cutoff computed in Python (parameterized INTERVAL arithmetic isn't
     # portable across backends).
-    email = (email or "").strip()
     cutoff = datetime.now(timezone.utc) - timedelta(seconds=MAGIC_LINK_EXPIRY)
     # Unique marker for this consumption attempt — the CAS stamps it so the
     # repo can report who won the race without relying on affected-row counts.
     consume_id = f"CONSUMED:{secrets.token_hex(16)}"
 
     repo = users_repo()
-    # The CAS returns the row it stamped, and THAT is the account this link
-    # belongs to. Re-resolving by address would go through get_by_email_ci,
-    # which returns the oldest case variant — but an admin-issued reset mints
-    # the token by user id, so it can sit on a newer one. Minting the session
-    # from a second address lookup would then log the person in as a different
-    # account, with that account's group memberships.
-    consumed_id = repo.consume_reset_token(
-        email=email, token=hash_token(token), cutoff=cutoff, consume_id=consume_id
-    )
-    if not consumed_id:
+    if not repo.consume_reset_token(email=email, token=hash_token(token), cutoff=cutoff, consume_id=consume_id):
         raise HTTPException(status_code=401, detail="Invalid or expired link")
 
-    user = repo.get_by_id(consumed_id)
+    user = repo.get_by_email(email)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid link")
     return user

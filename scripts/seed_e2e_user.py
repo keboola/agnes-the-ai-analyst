@@ -66,7 +66,7 @@ def seed() -> None:
 
         users = UserRepository(conn)
         memberships = UserGroupMembersRepository(conn)
-        existing = users.get_by_email_ci(E2E_USER_EMAIL)
+        existing = users.get_by_email(E2E_USER_EMAIL)
         now = datetime.now(timezone.utc)
 
         # Single PasswordHasher instance — argon2-cffi reuses the same

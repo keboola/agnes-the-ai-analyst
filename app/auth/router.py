@@ -16,7 +16,6 @@ from app.auth.dependencies import _get_db, get_current_user
 from app.auth.provider_registry import require_provider
 from app.auth.rate_limit import limiter as _rate_limiter
 from src.db import SYSTEM_ADMIN_GROUP
-from src.user_identity import normalize_email
 
 from src.repositories import (
     audit_repo,
@@ -91,9 +90,7 @@ async def create_token(
     dependency raises before body validation gets a chance to.
     """
     repo = users_repo()
-    # Strip only — case is folded by the lookup (SQL). A pasted address
-    # carries whitespace and must not be a hard auth failure.
-    user = repo.get_by_email_ci((body.email or "").strip())
+    user = repo.get_by_email(body.email)
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
     if not bool(user.get("active", True)):
@@ -216,14 +213,7 @@ async def bootstrap(
     password_hash = PasswordHasher().hash(body.password) if body.password else None
 
     # If a matching user already exists (e.g. seed), update it; else create fresh.
-    # Resolved through the SHARED resolver, not by scanning `existing` — that
-    # list is ordered by email, so picking the first case-insensitive match
-    # tie-breaks alphabetically while every sign-in door tie-breaks on oldest.
-    # With two case variants present, bootstrap would then set the password on
-    # a row no sign-in path ever resolves to. (`existing` is still the read
-    # behind the lockout check above.)
-    normalized_email = normalize_email(body.email)
-    existing_user = repo.get_by_email_ci(normalized_email) if normalized_email else None
+    existing_user = next((u for u in existing if u.get("email") == body.email), None)
     if existing_user:
         user_id = existing_user["id"]
         repo.update(id=user_id, password_hash=password_hash)
@@ -232,8 +222,8 @@ async def bootstrap(
         user_id = str(uuid.uuid4())
         repo.create(
             id=user_id,
-            email=normalized_email,
-            name=body.name or normalized_email.split("@")[0],
+            email=body.email,
+            name=body.name or body.email.split("@")[0],
             password_hash=password_hash,
         )
         # v39: bootstrap user is the very first user; on first install
@@ -281,13 +271,11 @@ async def bootstrap(
             body.email,
         )
 
-    # The account's own address, not the spelling that was typed.
-    account_email = (existing_user or {}).get("email") or normalized_email
-    token = create_access_token(user_id=user_id, email=account_email)
+    token = create_access_token(user_id=user_id, email=body.email)
     return TokenResponse(
         access_token=token,
         user_id=user_id,
-        email=account_email,
+        email=body.email,
         role="admin",
     )
 

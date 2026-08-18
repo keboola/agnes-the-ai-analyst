@@ -99,24 +99,18 @@ Microsoft sign-in is enabled. When it is unset, boot logs
 Microsoft auth check: Microsoft sign-in is enabled but auth.allowed_domain is unset. …
 ```
 
-`auth.allowed_domain` is the **only** control on who may sign in. Two narrower
-behaviours exist, but read them for what they are:
+Two narrower guards are already in place:
 
 - The identity comes from the `email` claim; `preferred_username` (the UPN) is
   used only when `email` is absent — many work/school tenants omit it — and
   only when it is address-shaped. Entra **guest UPNs**
-  (`user_othercorp.com#EXT#@tenant.onmicrosoft.com`) are refused there: they
-  are not mailboxes, and provisioning an account keyed on one is meaningless.
-  **This is not a guard against guests.** Entra emits `email` for guest
-  accounts by default, so a guest is resolved from that claim and the UPN
-  branch is never reached. Do not read the `#EXT#` refusal as keeping B2B
-  guests out — only `auth.allowed_domain` does that, and Entra's default
-  `allowInvitesFrom` lets any tenant member invite an outsider.
+  (`user_othercorp.com#EXT#@tenant.onmicrosoft.com`) are refused: they are not
+  mailboxes, and provisioning an account keyed on one is meaningless.
 - `ensure_user` normalizes the address (stripped, lower-cased) before matching,
   so one person cannot end up on two accounts by signing in through two
-  providers that disagree on the casing of a claim. `auth.allowed_domain` is
-  matched case-insensitively (both sides folded), so the case you write the
-  configured domains in does not matter.
+  providers that disagree on the casing of a claim. The resolved address
+  reaching the `auth.allowed_domain` check is lower-cased too — write the
+  configured domains in lower case.
 
 ## `/login?error=…` codes this provider emits
 

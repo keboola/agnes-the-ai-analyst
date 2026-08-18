@@ -31,28 +31,6 @@ def seeded_client(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def duplicate_variants_client(tmp_path, monkeypatch):
-    """Two case-variant rows for one person, the OLDER one sorting SECOND by
-    email. Returns (client, older_id, newer_id)."""
-    monkeypatch.setenv("DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-32chars-minimum!!!!!")
-    from app.main import create_app
-    from src.db import get_system_db
-    from src.repositories.users import UserRepository
-
-    conn = get_system_db()
-    repo = UserRepository(conn)
-    # ASCII sort puts "Ada@test.com" before "ada@test.com", so the alphabetical
-    # winner is the NEWER row — the tie-break has to disagree to be visible.
-    repo.create(id="newer", email="Ada@test.com", name="A")
-    repo.create(id="older", email="ada@test.com", name="A")
-    conn.execute("UPDATE users SET created_at = ? WHERE id = ?", ["2025-01-01 00:00:00", "older"])
-    conn.execute("UPDATE users SET created_at = ? WHERE id = ?", ["2026-06-01 00:00:00", "newer"])
-    conn.close()
-    return TestClient(create_app()), "older", "newer"
-
-
-@pytest.fixture
 def password_user_client(tmp_path, monkeypatch):
     """Client with a user who already has a password set — bootstrap must be disabled."""
     from argon2 import PasswordHasher
@@ -409,25 +387,3 @@ class TestBootstrap:
         # 6. Verify via detailed health (requires auth)
         resp = fresh_client.get("/api/health/detailed", headers=headers)
         assert resp.json()["services"]["users"]["count"] == 2
-
-
-def test_bootstrap_activates_the_row_the_sign_in_doors_resolve_to(duplicate_variants_client):
-    """Bootstrap must agree with the shared resolver, not with row order.
-
-    ``repo.list_all()`` is ordered by email, so scanning it for a
-    case-insensitive match tie-breaks alphabetically, while every sign-in door
-    goes through ``get_by_email_ci`` and tie-breaks on OLDEST. With two case
-    variants present, the two can pick different rows — and then the operator
-    is told bootstrap succeeded while the password sits on a row nobody ever
-    authenticates as.
-    """
-    client, older_id, newer_id = duplicate_variants_client
-    resp = client.post("/auth/bootstrap", json={"email": "ada@test.com", "password": "bootstrap-pw-123"})
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["user_id"] == older_id
-    # The response carries the ACCOUNT's address, not the typed spelling.
-    assert resp.json()["email"] == "ada@test.com"
-
-    # And the password actually works through the sign-in door.
-    login = client.post("/auth/password/login", json={"email": "ada@test.com", "password": "bootstrap-pw-123"})
-    assert login.status_code == 200, login.text

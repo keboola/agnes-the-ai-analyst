@@ -15,7 +15,6 @@ from app.auth.access import is_user_admin, require_admin
 from app.auth.dependencies import _get_db
 from app.auth.token_hash import hash_token
 from src.db import SYSTEM_ADMIN_GROUP, SYSTEM_EVERYONE_GROUP
-from src.user_identity import normalize_email
 
 from src.repositories import (
     audit_repo,
@@ -313,25 +312,12 @@ async def create_user(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     repo = users_repo()
-    # Normalize on write and check for the duplicate case-insensitively: an
-    # admin typing "Ada@Example.com" for someone whose OAuth claim is
-    # "ada@example.com" would otherwise create the second account rather than
-    # be told the first one exists.
-    email = normalize_email(payload.email)
-    # Shape check after normalization: whitespace-only input collapses to "",
-    # and the payload's email is a plain `str` with no validator, so without
-    # this an admin could create a row whose identity matches nothing an auth
-    # provider will ever resolve. Deliberately minimal — an `@` with something
-    # either side, not RFC 5322 — so an internal or dev address still works.
-    local, _, domain = email.partition("@")
-    if not local or not domain:
-        raise HTTPException(status_code=422, detail="A valid email address is required")
-    if repo.get_by_email_ci(email):
+    if repo.get_by_email(payload.email):
         raise HTTPException(status_code=409, detail="User with this email already exists")
     import secrets
 
     user_id = str(uuid.uuid4())
-    repo.create(id=user_id, email=email, name=payload.name)
+    repo.create(id=user_id, email=payload.email, name=payload.name)
     # New users are auto-granted the Everyone system group at creation
     # (source='system_seed', issue #748) unless AGNES_GROUP_EVERYONE_EMAIL
     # maps Everyone to a Workspace group instead. Admin promotion (Admin
@@ -345,7 +331,7 @@ async def create_user(
     except Exception:
         logger.exception(
             "ensure_everyone_membership failed for new user %s",
-            email,
+            payload.email,
         )
     # v39: subscribe to every system plugin so the mandatory tier
     # reaches the new user on first sign-in without admin reconcile.
@@ -356,9 +342,9 @@ async def create_user(
     except Exception:
         logger.exception(
             "system-plugin fanout failed for new user %s",
-            email,
+            payload.email,
         )
-    _audit(conn, user["id"], "user.create", user_id, {"email": email})
+    _audit(conn, user["id"], "user.create", user_id, {"email": payload.email})
 
     invite_url: Optional[str] = None
     invite_email_sent: Optional[bool] = None
@@ -371,9 +357,9 @@ async def create_user(
         )
         from app.auth.providers.password import build_setup_url, send_setup_email
 
-        invite_url = build_setup_url(request, email, token)
-        invite_email_sent = send_setup_email(request, email, token)
-        _audit(conn, user["id"], "user.invite", user_id, {"email": email, "email_sent": invite_email_sent})
+        invite_url = build_setup_url(request, payload.email, token)
+        invite_email_sent = send_setup_email(request, payload.email, token)
+        _audit(conn, user["id"], "user.invite", user_id, {"email": payload.email, "email_sent": invite_email_sent})
 
     created = repo.get_by_id(user_id)
     return _to_response(created, conn, invite_url=invite_url, invite_email_sent=invite_email_sent)

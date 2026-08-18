@@ -60,20 +60,7 @@ MICROSOFT_TENANT_ID = os.environ.get("MICROSOFT_TENANT_ID", "")
 # account, `organizations` = any work/school account in ANY tenant,
 # `consumers` = any personal Microsoft account. With `auth.allowed_domain`
 # unset that means any Microsoft account on earth signs in and self-provisions.
-#
-# The two GUIDs are the same thing spelled differently: Microsoft publishes
-# well-known directory IDs for the consumer tenants, and a discovery URL built
-# from one is functionally `consumers`. They pass the GUID shape check, so
-# refusing only the names would leave the door open to whoever pasted a GUID.
-_RESERVED_TENANT_IDS = frozenset(
-    {
-        "common",
-        "organizations",
-        "consumers",
-        "9188040d-6c67-4c5b-b112-36a304b66dad",
-        "f8cdef31-a31e-4b4a-93e4-5f571e91255a",
-    }
-)
+_RESERVED_TENANT_IDS = frozenset({"common", "organizations", "consumers"})
 
 
 def _is_directory_guid(value: str) -> bool:
@@ -174,12 +161,6 @@ def _upn_is_usable_identity(upn: str) -> bool:
     email-shaped is accepted: most work/school tenants use a mail-shaped UPN
     and many omit the ``email`` claim entirely, so dropping the fallback
     outright would lock those tenants out.
-
-    NOT a guard against guests, despite what the shape of the string suggests:
-    :func:`resolve_identity` only consults the UPN when the ``email`` claim is
-    absent, and Entra emits ``email`` for guest accounts by default — so a B2B
-    guest is resolved from that claim and never reaches this function.
-    ``auth.allowed_domain`` is the only control on guests.
     """
     return bool(upn) and "@" in upn and "#" not in upn
 
@@ -268,7 +249,7 @@ async def microsoft_callback(request: Request):
         # account matched by that address — see the module docstring.
         allowed = get_allowed_domains()
         if allowed:
-            domain = email.split("@")[-1].lower()
+            domain = email.split("@")[-1]
             if domain not in allowed:
                 return RedirectResponse(url="/login?error=domain_not_allowed")
 
@@ -320,10 +301,5 @@ async def microsoft_callback(request: Request):
         return response
 
     except Exception as e:
-        # %r, not f-string: authlib raises OAuthError built verbatim from the
-        # `error`/`error_description` QUERY PARAMS, and it does so BEFORE state
-        # validation — so any unauthenticated caller can put arbitrary text
-        # (CRLF included) on this line. repr() escapes the newlines; the slice
-        # caps the flood.
-        logger.error("Microsoft OAuth error: %r", str(e)[:500])
+        logger.error(f"Microsoft OAuth error: {e}")
         return RedirectResponse(url="/login?error=microsoft_oauth_failed")

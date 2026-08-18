@@ -4293,7 +4293,7 @@ def _import_one_entry(
     stub_created = 0
     owner_user_id: Optional[str] = None
     if owner_email:
-        existing_user = user_repo.get_by_email_ci(owner_email)
+        existing_user = user_repo.get_by_email(owner_email)
         if existing_user:
             owner_user_id = existing_user["id"]
         else:
