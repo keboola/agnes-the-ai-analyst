@@ -81,6 +81,65 @@ class TestEnsureUser:
         user = ensure_user("legacy.user@example.com", "L", source="test")
         assert user["id"] == legacy_id
 
+    def test_preexisting_case_variants_resolve_to_the_oldest(self, sysdb):
+        """Two case-variant rows already coexist — the oldest must win.
+
+        This is the population the case-insensitive lookup was written for: an
+        exact-match read that runs FIRST silently preserves the split, because
+        the arriving claim matches the newer duplicate byte-for-byte and the
+        case-insensitive read is never consulted. The documented contract is
+        "oldest wins", so it has to be the ONLY lookup.
+        """
+        import uuid
+
+        from app.auth.provisioning import ensure_user
+        from src.repositories import users_repo
+
+        repo = users_repo()
+        old_id = str(uuid.uuid4())
+        new_id = str(uuid.uuid4())
+        repo.create(id=old_id, email="dup@example.com", name="Old")
+        repo.create(id=new_id, email="Dup@Example.com", name="New")
+        sysdb.execute("UPDATE users SET created_at = ? WHERE id = ?", ["2025-01-01 00:00:00", old_id])
+        sysdb.execute("UPDATE users SET created_at = ? WHERE id = ?", ["2026-06-01 00:00:00", new_id])
+
+        # The claim matches the NEWER row exactly — an exact-first lookup
+        # returns it and the split survives.
+        user = ensure_user("Dup@Example.com", "New", source="test")
+        assert user["id"] == old_id
+
+    def test_deactivating_the_resolved_account_is_not_bypassable_by_a_duplicate(self, sysdb):
+        """Offboarding must not fall through to a sibling case variant.
+
+        Resolution picks one row and the caller gates on ITS ``active`` flag.
+        If the ordering preferred active rows, an operator who disables the
+        account they can see would silently hand the person the other, still
+        enabled variant — a different account id, with different group
+        memberships — and let them in. Refusing is the safe direction here:
+        a wrongly-refused sign-in is visible and fixable, a bypassed
+        deactivation is neither.
+        """
+        import uuid
+
+        from app.auth.provisioning import UserDeactivatedError, ensure_user
+        from src.repositories import users_repo
+
+        repo = users_repo()
+        old_id, new_id = str(uuid.uuid4()), str(uuid.uuid4())
+        repo.create(id=old_id, email="leaver@example.com", name="Leaver")
+        repo.create(id=new_id, email="Leaver@Example.com", name="Leaver")
+        sysdb.execute("UPDATE users SET created_at = ? WHERE id = ?", ["2025-01-01 00:00:00", old_id])
+        sysdb.execute("UPDATE users SET created_at = ? WHERE id = ?", ["2026-06-01 00:00:00", new_id])
+
+        # Both active: the sign-in the operator sees resolves to the oldest.
+        assert ensure_user("leaver@example.com", "Leaver", source="test")["id"] == old_id
+
+        # The operator offboards THAT account. The sign-in must now be refused,
+        # not silently served by the still-active duplicate.
+        repo.update(id=old_id, active=False)
+        with pytest.raises(UserDeactivatedError):
+            ensure_user("leaver@example.com", "Leaver", source="test")
+
     def test_deactivated_user_raises(self, sysdb):
         from app.auth.provisioning import UserDeactivatedError, ensure_user
         from src.repositories import users_repo
