@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- **Access policy builder compile errors no longer block saving hand-written SQL, and composite-type policies pass validation.** Switching to the Advanced SQL tab or editing the SQL text clears a stale builder compile error, so admins are not locked out by a transient schema problem. The policy validator also accepts `STRUCT` type definitions emitted by the compiler for array/struct columns, and an end-to-end test confirms compiled output passes both local and remote validation.
+
 ## [0.83.52] - 2026-08-18
 
 ### Added

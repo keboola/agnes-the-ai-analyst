@@ -112,6 +112,9 @@ _PERMITTED_NODE_TYPES: tuple[type[exp.Expression], ...] = (
     exp.Paren,
     exp.Tuple,
     exp.DataType,
+    # STRUCT(...) type definitions contain ColumnDef nodes (column name + type);
+    # they only appear inside DataType and are not a separate statement.
+    exp.ColumnDef,
     # operators that are NOT exp.Func subclasses
     exp.Not,
     exp.Neg,

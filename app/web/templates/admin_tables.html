@@ -4214,7 +4214,8 @@
                 <div class="form-group" data-ap-panel="sql" id="apSqlPanel" style="display:none;">
                     <label class="form-label" for="apSql">Policy SQL</label>
                     <textarea class="form-textarea" id="apSql" rows="8"
-                              placeholder="SELECT * FROM &lt;table&gt; WHERE ..."></textarea>
+                              placeholder="SELECT * FROM &lt;table&gt; WHERE ..."
+                              oninput="_apCompileError = null; _apHideSaveError();"></textarea>
                     <div class="form-hint">
                         Plain SQL, DuckDB dialect. Reference the caller's identity with
                         <code>$user_email</code>, <code>$user_id</code>, or <code>$user_groups</code>
@@ -6843,6 +6844,12 @@
         document.querySelectorAll('[data-ap-panel]').forEach(function(panel) {
             panel.style.display = (panel.getAttribute('data-ap-panel') === tab) ? '' : 'none';
         });
+        // Moving to the Advanced SQL tab means the admin is taking over the
+        // SQL by hand; a stale builder compile error must not block saving it.
+        if (tab === 'sql') {
+            _apCompileError = null;
+            _apHideSaveError();
+        }
     }
 
     var _AP_MASK_LABELS = { show: 'Show', hide: 'Hide', nullify: 'Nullify', hash: 'Pseudonymize', unmask: 'Unmask for groups' };
@@ -7097,8 +7104,8 @@
             _apRenderCompileWarnings(body.warnings);
             _apHideSaveError();
         } catch (err) {
-            // Network hiccup — leave #apSql unchanged; the Advanced SQL tab
-            // still works standalone.
+            // Network hiccup — leave #apSql unchanged. The admin can still
+            // switch to Advanced SQL and save hand-written SQL.
             _apCompileError = 'Network error: ' + err.message;
             _apShowSaveError(_apCompileError);
             _apRenderCompileWarnings([]);
