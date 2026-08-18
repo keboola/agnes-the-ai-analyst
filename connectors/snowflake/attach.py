@@ -14,8 +14,6 @@ import logging
 import re
 from urllib.parse import parse_qs, urlencode, urlsplit
 
-from cryptography.hazmat.primitives import serialization
-
 from src.orchestrator_security import escape_sql_string_literal, is_attach_host_allowed
 
 logger = logging.getLogger(__name__)
@@ -132,8 +130,15 @@ def _looks_like_key_pair(token: str) -> bool:
     return False
 
 
-def _unencrypted_private_key_pem(token: str, passphrase: str | None = None) -> str:
-    """Decode a PEM or JSON-wrapped PEM and return an unencrypted PKCS#8 key."""
+def _private_key_pem_and_passphrase(
+    token: str, passphrase: str | None = None
+) -> tuple[str, str | None]:
+    """Extract a PEM or JSON-wrapped PEM and the matching passphrase.
+
+    DuckDB's Snowflake extension accepts either an unencrypted PKCS#8 PEM or an
+    encrypted PEM plus ``PRIVATE_KEY_PASSPHRASE``; it decrypts the key itself,
+    so we never need to unwrap it locally.
+    """
     raw = (token or "").strip()
     if not raw:
         raise ValueError("empty snowflake private key")
@@ -151,26 +156,10 @@ def _unencrypted_private_key_pem(token: str, passphrase: str | None = None) -> s
         if not passphrase:
             passphrase = data.get("passphrase") or None
 
-    key_bytes = raw.encode("utf-8")
-    pwd_bytes = passphrase.encode("utf-8") if passphrase else None
+    if "-----BEGIN" not in raw or "-----END" not in raw:
+        raise ValueError("snowflake private key is not a PEM block")
 
-    try:
-        private_key = serialization.load_pem_private_key(key_bytes, password=pwd_bytes)
-    except Exception as exc:
-        # A passphrase was given for an already-unencrypted key; try without it.
-        if pwd_bytes is not None:
-            try:
-                private_key = serialization.load_pem_private_key(key_bytes, password=None)
-            except Exception:
-                raise ValueError(f"could not load snowflake private key: {exc}") from exc
-        else:
-            raise ValueError(f"could not load snowflake private key: {exc}") from exc
-
-    return private_key.private_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PrivateFormat.PKCS8,
-        encryption_algorithm=serialization.NoEncryption(),
-    ).decode("utf-8")
+    return raw, passphrase
 
 
 def _create_snowflake_secret_sql(
@@ -185,7 +174,10 @@ def _create_snowflake_secret_sql(
         role_sql = f", ROLE '{escape_sql_string_literal(params['role'])}'"
 
     if _looks_like_key_pair(token):
-        private_key_pem = _unencrypted_private_key_pem(token, passphrase)
+        private_key_pem, key_passphrase = _private_key_pem_and_passphrase(token, passphrase)
+        passphrase_sql = ""
+        if key_passphrase:
+            passphrase_sql = f", PRIVATE_KEY_PASSPHRASE '{escape_sql_string_literal(key_passphrase)}'"
         return (
             f"CREATE OR REPLACE SECRET {secret_name} ("
             f"TYPE snowflake, "
@@ -195,7 +187,8 @@ def _create_snowflake_secret_sql(
             f"PRIVATE_KEY $PK${private_key_pem}$PK$, "
             f"DATABASE '{escape_sql_string_literal(params['database'])}', "
             f"WAREHOUSE '{escape_sql_string_literal(params['warehouse'])}'"
-            f"{role_sql})"
+            f"{role_sql}"
+            f"{passphrase_sql})"
         )
 
     return (

@@ -924,6 +924,11 @@
             <span class="so-name">Snowflake</span>
             <span class="so-sub">Live or materialized, SQL warehouse</span>
           </button>
+          <button type="button" class="ds-srcopt" data-wsrc="databricks">
+            <span class="so-logo so-logo--dbx"><svg class="connector-logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" role="img" aria-label="Databricks"><path d="M12 2l8.7 5v10L12 22l-8.7-5V7L12 2z"/></svg></span>
+            <span class="so-name">Databricks</span>
+            <span class="so-sub">Live queries &amp; materialized · Unity Catalog</span>
+          </button>
           <button type="button" class="ds-srcopt" data-wsrc="csv">
             <span class="so-logo so-logo--csv">⇪</span>
             <span class="so-name">CSV / files</span>
@@ -1077,6 +1082,19 @@
             <p style="margin-left:0;">Tables you add here can be <strong>live</strong> (remote, every query runs in Snowflake) or <strong>materialized</strong>
                (a scheduled copy to parquet). For custom SQL, partitioning or semantic views, use
                <a href="/admin/tables">Tables → Register new table</a>.</p>
+          </div>
+        </div>
+
+        {# Databricks — configured instance-side; tables register through
+           /admin/tables where the full SQL warehouse / metric-view editor lives. #}
+        <div data-wsrcform="databricks" hidden>
+          <div class="ds-wguide">
+            <h4>Databricks is configured on the instance.</h4>
+            <p>Set <strong>host, warehouse ID, catalog and token</strong> in
+               <a href="/admin/server-config">Server config</a> under <code>data_source.databricks</code>.</p>
+            <p>Then register tables and semantic views on
+               <a href="/admin/tables">Tables → Register new table</a> — the full editor
+               (live query, materialized, custom SQL with <code>MEASURE()</code>) lives there.</p>
           </div>
         </div>
 
@@ -1287,11 +1305,12 @@ const _SVG_LOGO = {
 };
 
 const CONNECTOR = {
-  keboola:   { abbr: "KB", cls: "keboola",   wizard: "keboola" },
-  bigquery:  { abbr: "BQ", cls: "bigquery",  wizard: "bigquery" },
-  snowflake: { abbr: "SF", cls: "snowflake", wizard: "snowflake" },
-  jira:      { abbr: "JR", cls: "jira",      wizard: "jira" },
-  local:     { abbr: "FS", cls: "local",     wizard: "csv" },
+  keboola:    { abbr: "KB", cls: "keboola",   wizard: "keboola" },
+  bigquery:   { abbr: "BQ", cls: "bigquery",  wizard: "bigquery" },
+  snowflake:  { abbr: "SF", cls: "snowflake", wizard: "snowflake" },
+  databricks: { abbr: "DB", cls: "databricks", wizard: "databricks" },
+  jira:       { abbr: "JR", cls: "jira",      wizard: "jira" },
+  local:      { abbr: "FS", cls: "local",     wizard: "csv" },
 };
 function _connector(type) {
   return CONNECTOR[type] || { abbr: (type || "?").slice(0, 2).toUpperCase(), cls: "local", wizard: "keboola" };
@@ -2443,6 +2462,9 @@ function _setWizSource(src) {
     connectBtn.textContent = "Save & continue";
     _loadSfConfigAndStatus();
     _updateSfAuthUI();
+  } else if (src === "databricks") {
+    // Databricks is configured instance-side; tables register on /admin/tables.
+    connectBtn.style.display = "none";
   } else {
     // csv / jira are guidance, not forms — nothing to submit.
     connectBtn.style.display = "none";

@@ -16,6 +16,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **Snowflake is now configurable from the `/admin/data-sources` "Add data" wizard** with password or key-pair authentication. The source picker exposes a Snowflake tile (with an inline SVG logo), the step-1 form collects account, user, database, warehouse and optional role, saves non-secret coordinates to `data_source.snowflake` via `/admin/server-config`, and stores the credential write-only in the datasource vault (`SNOWFLAKE_PASSWORD`, `SNOWFLAKE_PRIVATE_KEY`, or `SNOWFLAKE_PRIVATE_KEY_PASSPHRASE`). Step 2 registers schema/table rows as `remote` (live) or `materialized`. A Snowflake derived-source card also appears on `/admin/data-sources` once configured.
 - **Snowflake remote-attach credentials are now resolved from datasource secrets (env or vault) at query time**, so key-pair credentials stored through the admin UI work for live queries. The orchestrator and query path resolve the key passphrase from `data_source.snowflake.private_key_passphrase_env` so custom env names are honored.
 - **Small inline SVG logos now appear on the connector picker and source cards** for BigQuery, Snowflake, and Databricks.
+- **Databricks now appears in the `/admin/data-sources` connector picker and as a derived source card** with cost/sync cells; tables still register through `Tables → Register new table` where the SQL warehouse / metric-view editor lives.
 
 ### Fixed
 
