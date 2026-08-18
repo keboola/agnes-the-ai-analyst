@@ -1093,6 +1093,12 @@ def test_mention_routed_session_runs_as_the_agents_owner(monkeypatch):
     _seed_bound_chat_user(conn)  # mentioner u@x / U_OK
     _allow_channel(conn)
     conn.execute("INSERT INTO users(id, email, name) VALUES ('uid_boss', 'boss@x', 'Boss') ON CONFLICT DO NOTHING")
+    _egid = conn.execute("SELECT id FROM user_groups WHERE name='Everyone'").fetchone()[0]
+    conn.execute(
+        "INSERT INTO user_group_members(user_id, group_id, source) VALUES ('uid_boss', ?, 'system_seed') "
+        "ON CONFLICT DO NOTHING",
+        [_egid],
+    )
     _seed_channel_bound_agent(conn, owner="uid_boss", slug="router-owner")
     mgr = _FakeMgr()
     app = _FakeApp(conn=conn, mgr=mgr)
@@ -1124,6 +1130,12 @@ def test_mention_routed_thread_continued_by_second_gated_user(monkeypatch):
     _seed_bound_chat_user(conn, email="second@x", slack_id="U_SECOND")
     _allow_channel(conn)
     conn.execute("INSERT INTO users(id, email, name) VALUES ('uid_boss3', 'boss3@x', 'Boss') ON CONFLICT DO NOTHING")
+    _egid = conn.execute("SELECT id FROM user_groups WHERE name='Everyone'").fetchone()[0]
+    conn.execute(
+        "INSERT INTO user_group_members(user_id, group_id, source) VALUES ('uid_boss3', ?, 'system_seed') "
+        "ON CONFLICT DO NOTHING",
+        [_egid],
+    )
     _seed_channel_bound_agent(conn, owner="uid_boss3", slug="router-shared")
     conn.execute(
         "INSERT INTO chat_sessions(id, user_email, surface, slack_channel_id, "
@@ -1244,6 +1256,37 @@ def test_mention_cap_hit_gets_ephemeral_not_silence(monkeypatch):
     asyncio.run(ev._handle_mention(app, {"channel": "C_OK", "ts": "9.14", "user": "U_OK", "text": "<@U07BOT> busy"}))
     assert posts and "at capacity" in posts[-1]
     assert mgr.sent == []
+
+
+def test_mention_binding_skipped_when_owner_lost_chat_grant(monkeypatch):
+    """A routed session runs AS the owner, so revoking the owner's CHAT
+    access must also stop the binding — mentions degrade to the unrouted
+    profile instead of spawning sessions under a revoked identity."""
+    import asyncio
+    import services.slack_bot.events as ev
+
+    monkeypatch.setattr(ev, "send_ephemeral_to_user", lambda *a, **k: None)
+    reactions = []
+
+    async def _fake_react(channel, ts, emoji):
+        reactions.append((channel, ts, emoji))
+
+    monkeypatch.setattr(ev, "add_reaction", _fake_react)
+    conn = get_system_db()
+    _ensure_schema(conn)
+    _seed_bound_chat_user(conn)  # mentioner has CHAT via Everyone
+    _allow_channel(conn)
+    # Owner exists but holds NO chat grant: not in Everyone, no groups.
+    conn.execute("INSERT INTO users(id, email, name) VALUES ('uid_nochat', 'nochat@x', 'Gone') ON CONFLICT DO NOTHING")
+    _seed_channel_bound_agent(conn, owner="uid_nochat", slug="router-revoked")
+    mgr = _FakeMgr()
+    app = _FakeApp(conn=conn, mgr=mgr)
+    asyncio.run(ev._handle_mention(app, {"channel": "C_OK", "ts": "9.15", "user": "U_OK", "text": "<@U07BOT> hi"}))
+    # Unrouted: mentioner-owned session, no agent, no ack, plain text.
+    assert mgr.create_kwargs[0]["user_email"] == "u@x"
+    assert mgr.create_kwargs[0]["agent_id"] is None
+    assert mgr.sent and mgr.sent[0][1] == "hi"
+    assert reactions == []
 
 
 def test_mention_attach_not_awaited_returns_under_budget(monkeypatch):

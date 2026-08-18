@@ -459,12 +459,19 @@ async def set_agent_scope(
             continue
         holder = agents_repo().agent_for_scope_item("slack_channel", item_id)
         if holder is not None and holder["id"] != agent_id:
+            # Name the holder only when the caller could see it anyway
+            # (their own agent, or an admin) — the module invariant is that
+            # a foreign agent's existence/slug is never leaked, and the slug
+            # doubles as the public /responses address.
+            if holder.get("owner_user_id") == user["id"] or is_user_admin(user["id"]):
+                who = f"agent '{holder.get('slug') or holder['id']}'"
+            else:
+                who = "another user's agent"
             raise _err(
                 409,
                 "slack_channel_taken",
-                f"slack channel '{item_id}' is already bound to agent "
-                f"'{holder.get('slug') or holder['id']}' — unbind it there first "
-                f"(one agent per channel)",
+                f"slack channel '{item_id}' is already bound to {who} — "
+                f"unbind it there first (one agent per channel)",
             )
 
     agents_repo().set_scope(agent_id, items)

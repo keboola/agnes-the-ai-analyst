@@ -276,7 +276,12 @@ def scope_set(
     # (mentions revert to the generic agent-less profile with no error). Warn
     # when this PUT would do that; still proceed — the contract is replace.
     kept = set(slack_channel)
-    detail = api_get(f"/api/v1/agents/{row['id']}").json()
+    # Purely advisory — a proxy 502/HTML body or transient 500 here must not
+    # abort the PUT the user actually asked for.
+    try:
+        detail = api_get(f"/api/v1/agents/{row['id']}").json()
+    except Exception:
+        detail = None
     if isinstance(detail, dict):
         dropped = [
             i["item_id"]

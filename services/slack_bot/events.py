@@ -398,6 +398,17 @@ async def _handle_mention(app, event: dict) -> None:
                 bound_agent.get("id"),
             )
             bound_agent = None
+        elif not can_access(owner_row["id"], ResourceType.CHAT.value, "chat", conn):
+            # The routed session runs AS the owner, so the owner's CHAT grant
+            # is the authority that matters here — revoking a user's chat
+            # access must also stop their agent's channel turns, or the
+            # binding would keep spawning sessions under a revoked identity.
+            logger.warning(
+                "slack_channel binding for %s skipped: agent %s's owner no longer holds the CHAT grant",
+                channel,
+                bound_agent.get("id"),
+            )
+            bound_agent = None
         else:
             routed_session_user = owner_row["email"]
 
@@ -425,7 +436,9 @@ async def _handle_mention(app, event: dict) -> None:
         routed_session_user = None
 
     # The identity the session row (and everything keyed off it) belongs to.
-    session_user = routed_session_user if bound_agent is not None else user_email
+    # (routed_session_user is non-None exactly when bound_agent survived all
+    # the routing checks above — the two are set and cleared together.)
+    session_user = routed_session_user if routed_session_user is not None else user_email
 
     if existing is not None and not service_thread and existing.user_email != user_email:
         # Human thread owned by someone else. Resolved through the factory
