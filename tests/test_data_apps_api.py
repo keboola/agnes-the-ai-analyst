@@ -1363,18 +1363,35 @@ class TestReap:
             conn.close()
         assert row["state"] == "deploying"
 
+    @staticmethod
+    def _age_out(slug):
+        """Push a row's `updated_at` back past the start grace, the way real time
+        does between two scheduler ticks."""
+        from src.db import get_system_db
+
+        conn = get_system_db()
+        try:
+            conn.execute(
+                "UPDATE data_apps SET updated_at = now() - INTERVAL 20 MINUTE WHERE slug = ?",
+                [slug],
+            )
+        finally:
+            conn.close()
+
     def test_reap_idle_reconciles_running_app_with_dead_container(
         self, admin_client, fake_runner, running_dead_container_app
     ):
         """A `running` row whose container the runner reports as dead
-        (`stopped`/`absent`) — a crash loop that exhausted its restart budget,
-        or a vanished container — is reconciled to `error`. Otherwise it stays
-        `running` with `ready:false` forever and nothing flips it (the
-        stale-deploying scan only sees `deploying` rows, never `running`)."""
+        (`stopped`/`absent`) is reconciled to `error` — but only once a SECOND
+        sweep agrees. The first sighting leaves the row `running` with a pending
+        note, because the runner folds Docker's `restarting` into "stopped" and a
+        healthy app inside its restart backoff would otherwise be latched to
+        `error` the ingress proxy never re-checks."""
         fake_runner._status = {"container": "stopped", "ready": False}
+
         r = admin_client.post("/api/data-apps/reap-idle")
         assert r.status_code == 200
-        assert r.json()["reconciled"] == ["crash1"]
+        assert r.json()["reconciled"] == [], "a single dead reading must not be enough"
 
         from src.db import get_system_db
         from src.repositories.data_apps import DataAppsRepository
@@ -1384,8 +1401,50 @@ class TestReap:
             row = DataAppsRepository(conn).get_by_slug("crash1")
         finally:
             conn.close()
+        assert row["state"] == "running"
+        assert "reconcile-pending" in row["state_detail"]
+
+        self._age_out("crash1")
+        r = admin_client.post("/api/data-apps/reap-idle")
+        assert r.status_code == 200
+        assert r.json()["reconciled"] == ["crash1"]
+
+        conn = get_system_db()
+        try:
+            row = DataAppsRepository(conn).get_by_slug("crash1")
+        finally:
+            conn.close()
         assert row["state"] == "error"
         assert "running" in row["state_detail"]
+
+    def test_reap_idle_reconcile_clears_a_pending_note_when_the_container_recovers(
+        self, admin_client, fake_runner, running_dead_container_app
+    ):
+        """A transient restart must not accumulate towards `error`. Once the
+        container reports `running` again, the pending note is dropped, so the
+        next dead reading starts the two-sweep count over."""
+        fake_runner._status = {"container": "stopped", "ready": False}
+        assert admin_client.post("/api/data-apps/reap-idle").json()["reconciled"] == []
+
+        fake_runner._status = {"container": "running", "ready": True}
+        self._age_out("crash1")
+        assert admin_client.post("/api/data-apps/reap-idle").json()["reconciled"] == []
+
+        from src.db import get_system_db
+        from src.repositories.data_apps import DataAppsRepository
+
+        conn = get_system_db()
+        try:
+            row = DataAppsRepository(conn).get_by_slug("crash1")
+        finally:
+            conn.close()
+        assert row["state"] == "running"
+        assert "reconcile-pending" not in (row["state_detail"] or "")
+
+        # ...and a dead reading now needs two sweeps again, not one.
+        fake_runner._status = {"container": "stopped", "ready": False}
+        self._age_out("crash1")
+        assert admin_client.post("/api/data-apps/reap-idle").json()["reconciled"] == []
 
     def test_reap_idle_leaves_healthy_running_app_alone(self, admin_client, fake_runner, running_dead_container_app):
         """Guard against false positives: a `running` row whose container the

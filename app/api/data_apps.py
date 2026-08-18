@@ -121,6 +121,13 @@ _IDLE_TIMEOUT_MAX = 86400
 # full idle_timeout_s cycle to find out a wake silently failed.
 _DEPLOY_STALE_TIMEOUT_S = 600
 
+# Marker the reconcile scan leaves in `state_detail` on the FIRST sweep that
+# finds a `running` row's container dead, so `error` is only written once a
+# second sweep agrees. Written with state unchanged (`running`), which bumps
+# `updated_at` and therefore defers the confirming look by a whole start grace —
+# the spacing that keeps Docker's restart backoff from reading as a dead app.
+_RECONCILE_PENDING = "reconcile-pending"
+
 # Fallback values for keys instance.yaml's `data_apps:` block may omit —
 # mirrors the documented defaults in config/instance.yaml.example so an
 # operator who only sets `enabled: true` still gets a working feature.
@@ -2007,6 +2014,15 @@ async def reap_idle_data_apps(
     # so a container that only just started is never second-guessed — a healthy
     # running container still reports "running" here regardless of age, so only a
     # genuinely dead ("stopped"/"absent") container is flipped to error.
+    #
+    # This works under the runtime's unbounded `unless-stopped` policy, which is
+    # what ships today: a crash-looping container alternates between Docker
+    # `running` and `restarting`, and the runner folds `restarting` into
+    # "stopped", so the loop is detected either way. The consequence is that a
+    # single transient restart also reads dead, which is why a dead reading has
+    # to be confirmed by a second sweep before `error` is written (below). The
+    # bounded `on-failure` policy that would let a doomed container settle
+    # instead of retrying forever is a separate change (#1406).
     reconciled: list[str] = []
     for row in repo.list(state="running", limit=100000):
         updated_at = row.get("updated_at")
@@ -2030,6 +2046,11 @@ async def reap_idle_data_apps(
             logger.warning("reap-idle: reconcile status check failed for %s: %s", row["slug"], exc)
             continue
         if status.get("container") not in ("stopped", "absent"):
+            # Alive. Drop a pending note from an earlier sweep so a single
+            # transient restart cannot accumulate towards an `error` later.
+            if _RECONCILE_PENDING in (row.get("state_detail") or ""):
+                repo.set_state(row["id"], "running", "")
+                logger.info("reap-idle: %s recovered before confirmation; cleared the pending note", row["slug"])
             continue
 
         # It looks dead — now the lease is required before judging it, and
@@ -2064,6 +2085,29 @@ async def reap_idle_data_apps(
             # to record over it.
             fresh = repo.get(row["id"])
             if fresh is None or fresh["state"] != "running":
+                continue
+            # One dead reading is not proof. The runner folds Docker's
+            # `restarting` into "stopped", so a healthy app that exited once and
+            # is inside Docker's restart backoff (delay doubles up to ~1 min)
+            # reads dead — and both probes above are milliseconds apart, so the
+            # second one does not decorrelate that. Writing `error` there would
+            # latch a container that was about to come back on its own, and the
+            # ingress proxy never re-checks `error`.
+            #
+            # So the first sighting only records a note, leaving the row
+            # `running`. That write bumps `updated_at`, which puts the row back
+            # outside this scan's start grace — so the confirming look happens a
+            # grace period later (10 min, an order of magnitude past Docker's
+            # backoff cap) without needing any state of its own. A container that
+            # recovered reports "running" then and the note is cleared; one still
+            # dead is dead.
+            if _RECONCILE_PENDING not in (fresh.get("state_detail") or ""):
+                repo.set_state(row["id"], "running", f"{_RECONCILE_PENDING}: container {container}")
+                logger.info(
+                    "reap-idle: %s state=running but container %s; confirming on the next sweep",
+                    row["slug"],
+                    container,
+                )
                 continue
             repo.set_state(row["id"], "error", f"container {container} while state=running")
             logger.warning("reap-idle: %s state=running but container %s; marked error", row["slug"], container)
