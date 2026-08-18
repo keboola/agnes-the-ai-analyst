@@ -18,6 +18,7 @@ transports.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Annotated, Any, Callable, Literal
 
@@ -66,6 +67,12 @@ FOUNDATION_TOOL_NAMES: tuple[str, ...] = (
     # the REST response carries `available: false` rather than a misleading
     # all-clear (see the tool's own docstring).
     "validate_semantic_query",
+    # Agent read-parity tools (wave 4) — typed context lookup + JSON Schema
+    # introspection over the caller's accessible semantic models. Triple-
+    # surface with GET /api/semantic-models/context + GET
+    # /api/semantic-models/schema + `agnes semantic-model context/schema`.
+    "get_semantic_context",
+    "get_semantic_schema",
     "collections_reingest",
     "schema",
     "describe",
@@ -507,6 +514,81 @@ def register_foundation_tools(
                 f"{base_url}/api/semantic-models/validate-query",
                 json=payload,
                 headers=headers_fn(),
+                timeout=30,
+            )
+            r.raise_for_status()
+            return r.json()
+
+    @tool(read_only=True)
+    async def get_semantic_context(
+        semantic_type: Literal["dataset", "metric", "relationship"],
+        ids: list[str] | None = None,
+        model_ids: list[str] | None = None,
+    ) -> dict:
+        """Look up datasets/metrics/relationships from your accessible semantic models.
+
+        Use this instead of guessing what a table/column means from its name:
+        the semantic layer is the authoritative source of business meaning.
+        Omitting ``ids`` returns EVERY object of ``semantic_type`` COMPACTLY
+        (name + a short summary) — good for a first pass, "what datasets
+        exist here?". Passing ``ids`` returns the FULL attributes (fields,
+        expression, ai_context, ...) of just those objects — use it once you
+        know which object you need to inspect closely. Same RBAC tier as
+        `semantic_model_search` / `semantic_model_get` (a Data Package or
+        direct model grant, not admin-only); a model you cannot reach
+        contributes no objects, silently — not an error. Mirrors
+        ``GET /api/semantic-models/context`` and `agnes semantic-model context`.
+
+        Args:
+            semantic_type: ``dataset``, ``metric``, or ``relationship``.
+            ids: Specific object names to fetch in full. Omit (or pass an
+                empty list) for every object of this type, compactly.
+            model_ids: Restrict to these models by id, slug, or model name
+                (the ``model`` label each returned object carries; matched
+                case-insensitively). Omit for every model you can access.
+
+        Returns ``{"results": [{"semantic_type", "mode", "objects": [...]}],
+        "unknown_types": [...]}``. Each object carries ``"model"`` (which
+        semantic model it came from) alongside its own attributes.
+        """
+        params: dict[str, Any] = {"selections": json.dumps([{"semantic_type": semantic_type, "ids": ids or None}])}
+        if model_ids:
+            params["model_ids"] = model_ids
+        async with httpx.AsyncClient() as c:
+            r = await c.get(
+                f"{base_url}/api/semantic-models/context",
+                headers=headers_fn(),
+                params=params,
+                timeout=30,
+            )
+            r.raise_for_status()
+            return r.json()
+
+    @tool(read_only=True)
+    async def get_semantic_schema(semantic_types: list[Literal["dataset", "metric", "relationship"]]) -> dict:
+        """Show the JSON Schema for one or more semantic-layer object types.
+
+        Served straight from the vendored Apache Ossie schema every
+        semantic-model document is validated against — use it to see exactly
+        which attributes a ``dataset``/``metric``/``relationship`` object
+        may carry before authoring or editing one. Not gated on any
+        particular model (there is nothing model-specific in a schema) —
+        any authenticated caller may read it. Mirrors
+        ``GET /api/semantic-models/schema`` and `agnes semantic-model schema`.
+
+        Args:
+            semantic_types: One or more of ``dataset``, ``metric``,
+                ``relationship``.
+
+        Returns ``{"$defs": {...}, "types": {<type>: {"$ref": "#/$defs/..."}},
+        "unknown_types": [...]}`` — a self-contained JSON Schema document:
+        resolve each requested type's entry in ``types`` against ``$defs``.
+        """
+        async with httpx.AsyncClient() as c:
+            r = await c.get(
+                f"{base_url}/api/semantic-models/schema",
+                headers=headers_fn(),
+                params={"semantic_types": semantic_types},
                 timeout=30,
             )
             r.raise_for_status()

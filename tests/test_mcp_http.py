@@ -279,6 +279,13 @@ class TestToolRegistration:
             # POST /api/semantic-models/validate-query + `agnes semantic-model
             # validate-query`.
             "validate_semantic_query",
+            # Agent read-parity tools (wave 4) — typed context lookup + JSON
+            # Schema introspection over the caller's accessible semantic
+            # models. Triple-surface with GET /api/semantic-models/context +
+            # GET /api/semantic-models/schema + `agnes semantic-model
+            # context/schema`.
+            "get_semantic_context",
+            "get_semantic_schema",
             # Re-run ingestion for one stuck file (needs_review/rejected) —
             # status-honesty follow-up (spec 2026-07-08). Triple-surface with
             # POST /api/collections/{cid}/files/{fid}/reingest +
@@ -679,6 +686,65 @@ class TestValidateSemanticQueryTool:
 
         assert result["available"] is False
         assert "valid" not in result
+
+
+class TestSemanticContextAndSchemaTools:
+    """Agent read-parity tools (wave 4) — same request/response shape as
+    ``GET /api/semantic-models/context`` / ``GET /api/semantic-models/schema``
+    and `agnes semantic-model context` / `schema`."""
+
+    def test_context_builds_a_single_element_selections_list(self):
+        import json
+
+        mod = _import_mod()
+        data = {
+            "results": [{"semantic_type": "dataset", "mode": "compact", "objects": []}],
+            "unknown_types": [],
+        }
+
+        with patch("app.api.mcp_http._current_token") as tv, patch("httpx.AsyncClient") as MC:
+            tv.get.return_value = "tok"
+            mock_get = AsyncMock(return_value=_mock_resp(data))
+            MC.return_value.__aenter__.return_value.get = mock_get
+            result = _run(mod.get_semantic_context("dataset"))
+
+        assert result == data
+        called_url = mock_get.call_args[0][0]
+        assert "/api/semantic-models/context" in called_url
+        params = mock_get.call_args[1]["params"]
+        assert json.loads(params["selections"]) == [{"semantic_type": "dataset", "ids": None}]
+        assert "model_ids" not in params
+
+    def test_context_forwards_ids_and_model_ids(self):
+        import json
+
+        mod = _import_mod()
+        data = {"results": [], "unknown_types": []}
+
+        with patch("app.api.mcp_http._current_token") as tv, patch("httpx.AsyncClient") as MC:
+            tv.get.return_value = "tok"
+            mock_get = AsyncMock(return_value=_mock_resp(data))
+            MC.return_value.__aenter__.return_value.get = mock_get
+            _run(mod.get_semantic_context("metric", ids=["revenue"], model_ids=["retail"]))
+
+        params = mock_get.call_args[1]["params"]
+        assert json.loads(params["selections"]) == [{"semantic_type": "metric", "ids": ["revenue"]}]
+        assert params["model_ids"] == ["retail"]
+
+    def test_schema_forwards_semantic_types(self):
+        mod = _import_mod()
+        data = {"$defs": {"Dataset": {}}, "types": {"dataset": {"$ref": "#/$defs/Dataset"}}, "unknown_types": []}
+
+        with patch("app.api.mcp_http._current_token") as tv, patch("httpx.AsyncClient") as MC:
+            tv.get.return_value = "tok"
+            mock_get = AsyncMock(return_value=_mock_resp(data))
+            MC.return_value.__aenter__.return_value.get = mock_get
+            result = _run(mod.get_semantic_schema(["dataset"]))
+
+        assert result == data
+        called_url = mock_get.call_args[0][0]
+        assert "/api/semantic-models/schema" in called_url
+        assert mock_get.call_args[1]["params"] == {"semantic_types": ["dataset"]}
 
 
 # ── marketplace lifecycle tools (agent-management triple-surface parity) ────────
