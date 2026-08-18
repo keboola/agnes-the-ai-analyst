@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.83.49] - 2026-08-18
+
 ### Added
 
 - **Semantic layer: agent read-parity tools, `semantic-layer-building` skill, and a CLAUDE.md rails section.** `get_semantic_context` (typed lookup — compact by default, full attributes when you pass `ids`) and `get_semantic_schema` (the vendored Apache Ossie JSON Schema per object type) round out the agent read surface alongside the existing `semantic_model_search`/`semantic_model_get`/`validate_semantic_query`. Triple-surface: `GET /api/semantic-models/context` + `GET /api/semantic-models/schema`, `agnes semantic-model context`/`schema`, and the matching MCP foundation tools. `context` uses the same read-tier RBAC as search/export/validate-query (a Data Package or direct model grant, not admin-only); `schema` is authentication-only — it reflects no model-specific data. A new `.claude/skills/semantic-layer-building/` skill documents modeling rules, the document payload shapes, and layer-maintenance/drift checks. The generated workspace `CLAUDE.md` gains a "Semantic layer" section — present only when the calling user can read ≥1 `status='valid'` model — stating the layer as the authoritative source of business meaning; the existing Metrics Workflow section links into it instead of duplicating it.
