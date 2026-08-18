@@ -5813,7 +5813,7 @@ async def policy_builder_compile(
         raise HTTPException(status_code=404, detail="Table not found")
 
     name = row.get("name") or table_id
-    columns = [c[0] for c in _policy_builder_describe(name)]
+    columns = [{"name": c[0], "type": c[1]} for c in _policy_builder_describe(name)]
 
     from src.access_policy_compile import compile_policy
 

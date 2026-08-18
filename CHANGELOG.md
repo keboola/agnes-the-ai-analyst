@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Changed
+
+- **Table access policy builder masks columns with group-based unmask and fixed redaction values.** The no-SQL builder (`/admin/tables` access-policy modal) now compiles `unmask` masks with a multi-select group allowlist: members see the original value, everyone else sees `'*****'` for `VARCHAR`/TEXT-like columns and a type-preserving `NULL` for all other types. The generated policy SQL uses an explicit, fixed column projection instead of `SELECT *`, so any source column added after the policy is saved is omitted (deny-by-omission) and any removed source column causes the policy to fail closed at execution time. No new feature flag or page is required; the existing `access_policies` switch controls the feature.
+
 ## [0.83.47] - 2026-08-18
 
 ### Added
@@ -14279,4 +14283,3 @@ PR: [#120](https://github.com/keboola/agnes-the-ai-analyst/pull/120) (ci/deploy-
 [0.11.2]: https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.11.2
 [0.11.1]: https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.11.1
 [0.11.0]: https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.11.0
-

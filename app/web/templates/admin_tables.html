@@ -6844,7 +6844,7 @@
         });
     }
 
-    var _AP_MASK_LABELS = { show: 'Show', hide: 'Hide', nullify: 'Nullify', hash: 'Pseudonymize', unmask: 'Unmask for group' };
+    var _AP_MASK_LABELS = { show: 'Show', hide: 'Hide', nullify: 'Nullify', hash: 'Pseudonymize', unmask: 'Unmask for groups' };
     let _apColumns = [];
     let _apMaskState = {};
     let _apCompileTimer = null;
@@ -6907,9 +6907,9 @@
                 return '<option value="' + m + '"' + (m === maskChoice ? ' selected' : '') + '>' + _AP_MASK_LABELS[m] + '</option>';
             }).join('');
             var groupInput = (maskChoice === 'unmask')
-                ? '<input type="text" class="form-input ap-unmask-group" placeholder="group name" '
+                ? '<input type="text" class="form-input ap-unmask-group" placeholder="group names, comma-separated" '
                   + (disabled ? 'disabled ' : '')
-                  + 'value="' + escapeHtmlAttr((maskEntry && maskEntry.group) || '') + '" '
+                  + 'value="' + escapeHtmlAttr((maskEntry && Array.isArray(maskEntry.groups) ? maskEntry.groups.join(', ') : '')) + '" '
                   + 'oninput="_apOnUnmaskGroupChange(' + colArg + ', this.value)">'
                 : '';
             return ''
@@ -6934,7 +6934,15 @@
             delete _apMaskState[colName];
         } else if (maskValue === 'unmask') {
             var prev = _apMaskState[colName];
-            _apMaskState[colName] = { choice: 'unmask', group: (prev && prev.group) || '' };
+            var prevGroups = [];
+            if (prev && typeof prev === 'object') {
+                if (Array.isArray(prev.groups)) {
+                    prevGroups = prev.groups;
+                } else if (prev.group) {
+                    prevGroups = [prev.group];
+                }
+            }
+            _apMaskState[colName] = { choice: 'unmask', groups: prevGroups };
         } else {
             _apMaskState[colName] = maskValue;
         }
@@ -6942,10 +6950,10 @@
         _apScheduleCompile();
     }
 
-    function _apOnUnmaskGroupChange(colName, group) {
+    function _apOnUnmaskGroupChange(colName, groupValue) {
         var entry = _apMaskState[colName];
         if (entry && typeof entry === 'object') {
-            entry.group = group;
+            entry.groups = groupValue.split(',').map(function(g) { return g.trim(); }).filter(Boolean);
         }
         _apScheduleCompile();
     }

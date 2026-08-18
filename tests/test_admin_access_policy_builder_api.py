@@ -267,8 +267,13 @@ class TestPolicyBuilderCompile:
         assert resp.status_code == 200, resp.text
         body = resp.json()
         sql = body["sql"]
-        assert "EXCLUDE" in sql
-        assert '"national_id"' in sql and '"email"' in sql
+        # The compiler must never emit SELECT *; the projection is fixed so a
+        # newly-added source column cannot leak through an implicit *.
+        assert "SELECT *" not in sql
+        assert "EXCLUDE" not in sql
+        # hidden columns are omitted from the projection entirely
+        assert '"national_id"' not in sql
+        assert '"email"' in sql
         assert 'md5("email") AS "email"' in sql
         assert 'list_contains($user_groups, "cost_center")' in sql
         assert '"policy_builder_invoices"' in sql
