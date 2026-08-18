@@ -7010,6 +7010,64 @@ def _connected_source_types() -> list[str]:
         return []
 
 
+def _connected_sources() -> list[str]:
+    """Every source type this instance can prove is reachable — sorted,
+    lowercased source-type names.
+
+    "Is source type X connected?" has two stores and neither is correct
+    alone. `_connected_source_types()` reads the `source_connections`
+    registry, which is right for a project added through the multi-connection
+    wizard (mainly Keboola) but says nothing about Snowflake or Databricks —
+    those are credentialed once at the INSTANCE level and no registry row is
+    ever seeded for them (`app/connections_seed.py` seeds keboola + bigquery
+    only). The legacy `data_source.type` scalar (`get_data_source_type()`) is
+    right for whatever an instance was first configured with, but `"local"`
+    — and its CLI-facing alias `"csv"` — is that scalar's UNSET SENTINEL, not
+    an assertion that local files are connected; treating it as a real value
+    is exactly the bug class this closes (the next contributor's default
+    assumption otherwise), so neither is ever added here.
+
+    The union, in order:
+    - every `source_type` already in the registry (`_connected_source_types`);
+    - the legacy scalar, but only when it names a real source (not
+      `local`/`csv`);
+    - each of BigQuery/Snowflake/Databricks, proven credentialed at the
+      instance level by this file's own `_bigquery_credentialed()` /
+      `_snowflake_credentialed()` / `_databricks_credentialed()` — which the
+      registry and the scalar both miss for a connector set up without ever
+      registering a project.
+
+    Every read degrades independently to "cannot claim connected" rather
+    than a 500 — an unreadable registry, an unreadable legacy scalar, or a
+    throwing credential probe must never break a page that is only asking
+    this question.
+    """
+    types = set(_connected_source_types())
+
+    try:
+        from app.instance_config import get_data_source_type
+
+        primary = (get_data_source_type() or "").strip().lower()
+    except Exception as e:  # noqa: BLE001 — unreadable means "cannot claim connected", not a 500
+        logger.warning("connected sources: could not read legacy data_source.type: %s", e)
+        primary = ""
+    if primary and primary not in ("local", "csv"):
+        types.add(primary)
+
+    for stype, probe in (
+        ("bigquery", _bigquery_credentialed),
+        ("snowflake", _snowflake_credentialed),
+        ("databricks", _databricks_credentialed),
+    ):
+        try:
+            if probe():
+                types.add(stype)
+        except Exception as e:  # noqa: BLE001 — a throwing probe is "not proven", not a 500
+            logger.warning("connected sources: %s credential probe failed: %s", stype, e)
+
+    return sorted(types)
+
+
 @router.get("/admin/tables", response_class=HTMLResponse)
 async def admin_tables(
     request: Request,
@@ -7018,15 +7076,12 @@ async def admin_tables(
 ):
     from app.instance_config import get_data_source_type
 
-    repo = table_registry_repo()
-    tables = repo.list_all()
     # Branch the register-modal layout server-side so the JS doesn't have
     # to round-trip /api/admin/server-config to learn the source type.
     data_source_type = get_data_source_type() or "keboola"
     ctx = _build_context(
         request,
         user=user,
-        registered_tables=tables,
         data_source_type=data_source_type,
         # The end of each table's chain — which package carries it and how
         # many people that reaches. The page hydrates its rows client-side
@@ -7039,10 +7094,16 @@ async def admin_tables(
         # Project filter. The registry response carries the id but not the
         # name, and one lookup map is cheaper than widening that endpoint.
         source_connections=_source_connection_names(),
-        # Which source types actually have a connection — the instance-level
-        # "X is not connected" strip is resolved against this, not against the
-        # legacy single-source scalar above.
+        # Which source types have a `source_connections` registry row —
+        # SUPERSEDED by `connected_sources` below (registry-only, misses
+        # instance-level-only Snowflake/Databricks/legacy-scalar). Kept
+        # only until every template consumer migrates off this key.
         connected_source_types=_connected_source_types(),
+        # Every source type this instance can prove is reachable — registry
+        # rows + the legacy scalar (when not the `local`/`csv` unset
+        # sentinel) + instance-level credential probes. See
+        # `_connected_sources()`.
+        connected_sources=_connected_sources(),
     )
     return templates.TemplateResponse(request, "admin_tables.html", ctx)
 
@@ -7144,15 +7205,30 @@ def _gib(n: int) -> str:
 
 
 # Connectors that produce tables WITHOUT keeping a `source_connections` row:
-# BigQuery / Snowflake are credentialed once at instance level, Jira arrives over
-# webhooks, and `local` is whatever an admin dropped in the extracts directory.
-# They were invisible on this page — the list asked the API for `?source_type=keboola`
-# and the heading said "Keboola projects" — while the Add-data drawer happily
-# offered all four connectors. That is the inconsistency this table closes: a
-# connector that can be ADDED here must be VISIBLE here, so each of these gets
-# a card built from the tables it actually registered, and its card names where
-# its credentials really live instead of pretending they live on the card.
+# BigQuery / Snowflake / Databricks are credentialed once at instance level,
+# Jira arrives over webhooks, and `local` is whatever an admin dropped in the
+# extracts directory. They were invisible on this page — the list asked the
+# API for `?source_type=keboola` and the heading said "Keboola projects" —
+# while the Add-data drawer happily offered all four connectors. That is the
+# inconsistency this table closes: a connector that can be ADDED here must be
+# VISIBLE here, so each of these gets a card built from the tables it
+# actually registered, and its card names where its credentials really live
+# instead of pretending they live on the card.
+#
+# Keboola also earns an entry — NOT because it never keeps a connection row
+# (the multi-connection wizard normally seeds one), but because an instance
+# configured the OLD way (first-time-setup / server-config, before that
+# wizard existed) can be fully credentialed at instance level with no
+# registry row at all. `_source_inventory()` only ever builds a Keboola card
+# from this entry when no real `source_connections` row of that type exists,
+# so a real connection's card is never duplicated.
 _DERIVED_SOURCES: dict[str, dict] = {
+    "keboola": {
+        "name": "Keboola",
+        "subtitle": "Instance-level connection · token from env or vault",
+        "settings_href": "/admin/server-config",
+        "settings_label": "Server config",
+    },
     "bigquery": {
         "name": "BigQuery",
         "subtitle": "Live queries · service account in instance secrets",
@@ -7286,9 +7362,10 @@ def _source_inventory() -> dict:
             continue  # a real connection of this type owns the card
         own_tables = unlinked_by_type.pop(stype, [])
         if not own_tables and not (
-            (stype == "bigquery" and _bigquery_credentialed()) or
-            (stype == "snowflake" and _snowflake_credentialed()) or
-            (stype == "databricks" and _databricks_credentialed())
+            (stype == "keboola" and _keboola_credentialed())
+            or (stype == "bigquery" and _bigquery_credentialed())
+            or (stype == "snowflake" and _snowflake_credentialed())
+            or (stype == "databricks" and _databricks_credentialed())
         ):
             continue
         did = f"derived:{stype}"
@@ -7531,6 +7608,42 @@ def _db_cap(key: str, default: int) -> int:
         return int(raw) if raw is not None else default
     except Exception:
         return default
+
+
+def _keboola_credentialed() -> bool:
+    """Whether this instance has an instance-level Keboola stack URL + token
+    — the pre-flight half of the same check
+    `app.api.admin_keboola_test.test_connection` runs before it makes a
+    network round trip, reused here because a card render cannot afford one.
+
+    A `source_connections` registry row proves a Keboola PROJECT was
+    connected through the multi-connection wizard; this proves the OLDER,
+    still-supported path — `data_source.keboola.*` in instance.yaml /
+    server-config plus a token in the environment or the vault — is usable
+    even when no such row exists. That gap is exactly what left
+    `_DERIVED_SOURCES` without a Keboola entry despite
+    `app/connections_seed.py` seeding one on first boot only when both are
+    already present.
+    """
+    from app.instance_config import get_value
+
+    stack_url = (get_value("data_source", "keboola", "stack_url", default="") or "").strip()
+    if not stack_url:
+        return False
+
+    token_env = (
+        get_value("data_source", "keboola", "token_env", default="KEBOOLA_STORAGE_TOKEN") or "KEBOOLA_STORAGE_TOKEN"
+    ).strip()
+    if os.environ.get(token_env, "").strip():
+        return True
+    if os.environ.get("KEBOOLA_STORAGE_TOKEN", "").strip():
+        return True
+    try:
+        from app.datasource_secrets import datasource_secret
+
+        return bool((datasource_secret("KEBOOLA_STORAGE_TOKEN") or "").strip())
+    except Exception:
+        return False
 
 
 def _orphan_reason(connection_id: str) -> str:
