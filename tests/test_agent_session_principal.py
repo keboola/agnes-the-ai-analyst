@@ -129,6 +129,26 @@ def test_broker_default_all_agent_mints_plain_owner_jwt(e2e_env):
     assert payload["email"] == owner_email
 
 
+def test_broker_all_agent_on_foreign_session_takes_enforced_path(e2e_env):
+    """An all-'all' agent on a session whose user is NOT the agent's owner
+    (a Slack channel binding routes the MENTIONER's session to the owner's
+    agent) must mint an agent-session JWT: the plain-identity fall-through
+    would run the turn with the mentioning user's own authority — admin
+    short-circuit included (Devin Review on this PR)."""
+    from app.api.broker import _mint_identity_jwt
+
+    owner_id, _owner_email = _make_user()
+    _mentioner_id, mentioner_email = _make_user()
+    agent_id = _make_agent(owner_id)  # every mode 'all' — passthrough shape
+    session_id = _make_session(mentioner_email, agent_id=agent_id)
+
+    payload = verify_token(_mint_identity_jwt(session_id))
+
+    assert payload["typ"] == "agent_session"
+    assert payload["chat_session_id"] == session_id
+    assert payload["sub"] == f"agent-session:{session_id}"
+
+
 def test_broker_no_agent_session_mints_plain_owner_jwt(e2e_env):
     """A session with no agent_id at all (legacy / Slack path) is unchanged."""
     from app.api.broker import _mint_identity_jwt
