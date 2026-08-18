@@ -104,6 +104,26 @@ class TestLockoutRescue:
         assert configured_allowlist() == ["keboola", "google"]
         assert provider_allowed("password") is False
 
+    def test_rescue_says_what_it_can_actually_do_without_a_mail_transport(self, monkeypatch, caplog):
+        """The fallback authenticates only EXISTING accounts, and without a mail
+        transport that narrows to password alone. On an OAuth-only instance that
+        can mean no usable door at all — the operator has to learn that from
+        this log line, not from the login page, so it must name the recovery
+        path instead of asserting the instance stays reachable."""
+        import logging
+
+        monkeypatch.setenv("AGNES_AUTH_PROVIDERS", "microsoft")
+        from app.auth import provider_registry
+        from app.auth.provider_registry import configured_allowlist
+
+        monkeypatch.setattr(provider_registry, "_provider_available", lambda name: False)
+        monkeypatch.setattr(provider_registry, "_LOCKOUT_RESCUE_LOGGED", None)
+        with caplog.at_level(logging.ERROR, logger="app.auth.provider_registry"):
+            configured_allowlist()
+        text = "\n".join(r.getMessage() for r in caplog.records)
+        assert "break-glass" in text, text
+        assert "stays reachable" not in text, text
+
     def test_web_lockout_config_still_offers_usable_logins(self, make_client):
         # End-to-end: keboola named alone with no stack configured — exactly
         # the lockout scenario. Login page must still offer usable methods and

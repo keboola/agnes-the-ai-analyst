@@ -130,13 +130,32 @@ def _rescue_if_unusable(cache_key: tuple, allowlist: Optional[list[str]]) -> Opt
     state = (cache_key, tuple(allowlist))
     if _LOCKOUT_RESCUE_LOGGED != state:
         _LOCKOUT_RESCUE_LOGGED = state
-        logger.error(
-            "auth.providers names only unconfigured providers (%s) — no login method "
-            "would be usable; falling back to %s (neither can self-provision an "
-            "account) so the instance stays reachable; fix the configuration",
-            ", ".join(allowlist),
-            ", ".join(_RESCUE_PROVIDERS),
-        )
+        # Say what the fallback can actually do, rather than asserting
+        # reachability. Both rescue providers authenticate only EXISTING
+        # accounts, and on an instance with no mail transport that leaves
+        # password — which needs a row that already carries a hash. An
+        # OAuth-only instance may therefore have no usable door until the
+        # configuration is fixed, and the operator has to hear that here
+        # rather than discover it on the login page.
+        if _provider_available("email"):
+            logger.error(
+                "auth.providers names only unconfigured providers (%s) — no login method "
+                "would be usable; falling back to %s. Neither can self-provision an "
+                "account, so only EXISTING users can sign in until the configuration "
+                "is fixed.",
+                ", ".join(allowlist),
+                ", ".join(_RESCUE_PROVIDERS),
+            )
+        else:
+            logger.error(
+                "auth.providers names only unconfigured providers (%s) AND no mail "
+                "transport is configured — the fallback is password sign-in alone, "
+                "which works only for accounts that already hold a password. If none "
+                "do, NOBODY can sign in until the configuration is fixed; recover with "
+                "`agnes admin break-glass grant-admin` (operates on the database "
+                "directly, no login) or SEED_ADMIN_EMAIL/SEED_ADMIN_PASSWORD.",
+                ", ".join(allowlist),
+            )
     return list(_RESCUE_PROVIDERS)
 
 

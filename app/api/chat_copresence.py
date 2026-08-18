@@ -105,7 +105,7 @@ async def invite(
     s0 = repo.get_session(session_id)
     if s0 is None or s0.user_email != user["email"]:
         raise HTTPException(403, "only the owner can invite")
-    inv_row = users_repo().get_by_email(body.invitee_email)
+    inv_row = users_repo().get_by_email_ci(body.invitee_email)
     if inv_row is None:
         raise HTTPException(403, "invitee not found or lacks chat access")
     inv_user_id = inv_row["id"]
