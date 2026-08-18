@@ -1088,16 +1088,34 @@
           </div>
         </div>
 
-        {# Databricks — configured instance-side; tables register through
+        {# Databricks — configured in the wizard; tables register through
            /admin/tables where the full SQL warehouse / metric-view editor lives. #}
         <div data-wsrcform="databricks" hidden>
-          <div class="ds-wguide">
-            <h4>Databricks is configured on the instance.</h4>
-            <p>Set <strong>host, warehouse ID, catalog and token</strong> in
-               <a href="/admin/server-config">Server config</a> under <code>data_source.databricks</code>.</p>
-            <p>Then register tables and semantic views on
-               <a href="/admin/tables">Tables → Register new table</a> — the full editor
-               (live query, materialized, custom SQL with <code>MEASURE()</code>) lives there.</p>
+          <div class="ds-field">
+            <label for="ds-dbx-host">Host <span style="color:var(--ds-accent-danger-ink)">*</span></label>
+            <input type="text" id="ds-dbx-host" placeholder="https://dbc-a1b2c3d4-e5f6.cloud.databricks.com" autocomplete="off" spellcheck="false">
+            <div class="field-hint">Databricks workspace URL, <code>https://</code> only, no path.</div>
+          </div>
+          <div class="ds-field">
+            <label for="ds-dbx-warehouse">Warehouse ID <span style="color:var(--ds-accent-danger-ink)">*</span></label>
+            <input type="text" id="ds-dbx-warehouse" placeholder="SQL warehouse ID" autocomplete="off" spellcheck="false">
+          </div>
+          <div class="ds-field">
+            <label for="ds-dbx-catalog">Catalog <span style="color:var(--ds-accent-danger-ink)">*</span></label>
+            <input type="text" id="ds-dbx-catalog" placeholder="main" autocomplete="off" spellcheck="false">
+            <div class="field-hint">Default Unity Catalog catalog. Bucket on registered rows is a schema inside it.</div>
+          </div>
+          <div class="ds-field">
+            <label for="ds-dbx-token">Token <span style="color:var(--ds-accent-danger-ink)">*</span></label>
+            <input type="password" id="ds-dbx-token" placeholder="paste workspace PAT" autocomplete="off">
+            <div class="ds-dbxcred" id="ds-dbxcred"><span class="ds-loading" style="padding:4px 0;">Checking credential…</span></div>
+            <div class="field-hint">Stored write-only in the server vault as <code>DATABRICKS_TOKEN</code>.</div>
+          </div>
+          <div class="ds-wsl-opt">
+            <div class="ds-wsl-opt__head" style="cursor:default;">Live or materialized, SQL warehouse</div>
+            <p style="margin-left:0;">Tables you add here can be <strong>live</strong> (remote, every query runs on the SQL warehouse) or <strong>materialized</strong>
+               (a scheduled copy to parquet). For custom SQL, partitioning or metric views, use
+               <a href="/admin/tables">Tables → Register new table</a> — the full editor (live, materialized, custom SQL with <code>MEASURE()</code>) lives there.</p>
           </div>
         </div>
 
@@ -2389,6 +2407,8 @@ let _wizardSource = "keboola"; // 'keboola' | 'bigquery' | 'snowflake' | 'csv' |
 let _bqCredStatus = null;      // cached /api/admin/datasource-secrets read
 let _sfCredStatus = null;      // cached Snowflake credential status {password, key}
 let _sfConfigLoaded = false;   // cached Snowflake config read for this wizard open
+let _dbxCredStatus = null;     // cached Databricks credential status
+let _dbxConfigLoaded = false;  // cached Databricks config read for this wizard open
 let _wizardTables = [];       // [{id, name, bucket}] registered in step 2
 let _wizardBoard = null;      // {trays: [{id, name, tables: [table]}], out: [table]}
 let _wizardTrayIdSeq = 0;
@@ -2466,8 +2486,9 @@ function _setWizSource(src) {
     _loadSfConfigAndStatus();
     _updateSfAuthUI();
   } else if (src === "databricks") {
-    // Databricks is configured instance-side; tables register on /admin/tables.
-    connectBtn.style.display = "none";
+    connectBtn.style.display = _wizardStep === 1 ? "" : "none";
+    connectBtn.textContent = "Save & continue";
+    _loadDbxConfigAndStatus();
   } else {
     // csv / jira are guidance, not forms — nothing to submit.
     connectBtn.style.display = "none";
@@ -2738,6 +2759,94 @@ async function _saveSnowflakeAndContinue() {
   }
 }
 
+const _DBX_TOKEN_ENV = "DATABRICKS_TOKEN";
+
+async function _loadDbxConfigAndStatus() {
+  const hostCred = document.getElementById("ds-dbxcred");
+  if (!_dbxConfigLoaded) {
+    try {
+      const r = await fetch(API_SERVER_CONFIG, { credentials: "include" });
+      const data = r.ok ? await r.json() : { sections: {} };
+      const dbx = (data.sections && data.sections.data_source && data.sections.data_source.databricks) || {};
+      document.getElementById("ds-dbx-host").value = dbx.host || "";
+      document.getElementById("ds-dbx-warehouse").value = dbx.warehouse_id || "";
+      document.getElementById("ds-dbx-catalog").value = dbx.catalog || "";
+      _dbxConfigLoaded = true;
+    } catch (e) {
+      // leave inputs empty and let the admin fill them in
+    }
+  }
+  if (!_dbxCredStatus) {
+    try {
+      const r = await fetch("/api/admin/datasource-secrets", { credentials: "include" });
+      const data = r.ok ? await r.json() : { secrets: [] };
+      const row = (data.secrets || []).find((s) => s.name === _DBX_TOKEN_ENV);
+      _dbxCredStatus = row || { source: "unset", has_value: false };
+    } catch (e) {
+      _dbxCredStatus = { source: "unset", has_value: false };
+    }
+  }
+  _renderDbxCredStatus(hostCred);
+}
+
+function _renderDbxCredStatus(host) {
+  if (!host) host = document.getElementById("ds-dbxcred");
+  const status = _dbxCredStatus || { source: "unset", has_value: false };
+  const hasInput = document.getElementById("ds-dbx-token").value.trim().length > 0;
+  if (status.has_value || hasInput) {
+    const source = hasInput ? "ready to save" : status.source;
+    const cls = hasInput ? "badge-vault" : (status.source === "env" ? "badge-env" : "badge-vault");
+    host.innerHTML = `<span class="ds-badge ${cls}">token · ${_esc(source)}</span>`;
+  } else {
+    host.innerHTML = `<span class="ds-badge badge-unset">not set</span>
+       <span style="font-size:12px; color:var(--ds-accent-warn-ink);">Save a token here first — registering tables works, but nothing can query until it's stored.</span>`;
+  }
+}
+
+async function _saveDatabricksAndContinue() {
+  const err = document.getElementById("ds-wizard-error");
+  const host = document.getElementById("ds-dbx-host").value.trim();
+  const warehouse = document.getElementById("ds-dbx-warehouse").value.trim();
+  const catalog = document.getElementById("ds-dbx-catalog").value.trim();
+  const token = document.getElementById("ds-dbx-token").value;
+  if (!host || !warehouse || !catalog) {
+    err.textContent = "Host, warehouse ID and catalog are required.";
+    err.style.display = "block";
+    return;
+  }
+  if ((!_dbxCredStatus || !_dbxCredStatus.has_value) && !token) {
+    err.textContent = "Databricks token is required. Paste it below or set DATABRICKS_TOKEN in Instance secrets.";
+    err.style.display = "block";
+    return;
+  }
+  try {
+    const r = await fetch(API_SERVER_CONFIG, {
+      method: "POST", credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sections: { data_source: { databricks: { host, warehouse_id: warehouse, catalog } } } }),
+    });
+    if (!r.ok) throw new Error("server-config save failed");
+    if (!_dbxCredStatus) _dbxCredStatus = { source: "unset", has_value: false };
+    if (token) {
+      const rt = await fetch(`/api/admin/datasource-secrets/${encodeURIComponent(_DBX_TOKEN_ENV)}`, {
+        method: "PUT", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: token }),
+      });
+      if (!rt.ok) throw new Error("token secret save failed");
+      document.getElementById("ds-dbx-token").value = "";
+      _dbxCredStatus = { source: "vault", has_value: true };
+      _renderDbxCredStatus();
+    }
+    _dbxConfigLoaded = true;
+    closeWizard();
+    window.location.href = "/admin/tables";
+  } catch (e) {
+    err.textContent = "Could not save Databricks settings: " + (e.message || e);
+    err.style.display = "block";
+  }
+}
+
 /* `connector` preselects step 1's picker. A card's "Add tables…" knows which
    connector it is, so landing the admin on Keboola's form when they pressed
    it on the BigQuery card would make them undo a choice they already made. */
@@ -2754,6 +2863,8 @@ function openWizard(connector) {
   _sfStoredUnder = [];
   _sfEnvNames = _defaultSfEnvNames();
   _sfConfigLoaded = false;
+  _dbxCredStatus = null;
+  _dbxConfigLoaded = false;
   _wizardMaxStep = 1;
   _wizardDone = false;
   document.getElementById("ds-new-name").value = "";
@@ -2772,6 +2883,11 @@ function openWizard(connector) {
   document.getElementById("ds-sf-warehouse").value = "";
   document.getElementById("ds-sf-role").value = "";
   document.querySelector(".ds-wsl-opt__field").hidden = true;
+  document.getElementById("ds-dbx-host").value = "";
+  document.getElementById("ds-dbx-warehouse").value = "";
+  document.getElementById("ds-dbx-catalog").value = "";
+  document.getElementById("ds-dbx-token").value = "";
+  document.getElementById("ds-dbxcred").innerHTML = "";
   document.getElementById("ds-wizard-error").style.display = "none";
   const share = document.getElementById("ds-wizard-step-share");
   share.querySelector(".ds-wshare").style.display = "";
@@ -3667,6 +3783,10 @@ document.getElementById("ds-wizard-connect-btn").addEventListener("click", () =>
     _saveSnowflakeAndContinue();
     return;
   }
+  if (_wizardSource === "databricks") {
+    _saveDatabricksAndContinue();
+    return;
+  }
   connectAndValidate();
 });
 
@@ -3674,6 +3794,9 @@ document.getElementById("ds-wizard-connect-btn").addEventListener("click", () =>
 document.getElementById("ds-sf-auth-type").addEventListener("change", () => { _updateSfAuthUI(); _renderSfCredStatus(null, "password"); _renderSfCredStatus(null, "key"); });
 document.getElementById("ds-sf-password").addEventListener("input", () => _renderSfCredStatus(null, "password"));
 document.getElementById("ds-sf-private-key").addEventListener("input", () => _renderSfCredStatus(null, "key"));
+
+// Update the Databricks credential status badge as the admin types.
+document.getElementById("ds-dbx-token").addEventListener("input", () => _renderDbxCredStatus(null));
 
 /* The steps strip as a back button. Nothing is re-fetched and nothing is
    re-rendered: every screen's state lives where it was left — the connect
