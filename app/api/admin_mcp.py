@@ -2096,6 +2096,24 @@ async def add_mcp_source_grant(
     src = mcp_sources_repo().get(source_id)
     if src is None:
         raise HTTPException(status_code=404, detail="mcp_source_not_found")
+    if payload.allow_mutating is not None:
+        # Shared body model with the per-tool endpoint — but the bulk grant is
+        # deliberately read-only (see AddGrantRequest). Silently ignoring the
+        # field would tell an admin they opened write access across a server
+        # when nothing was opened; refuse loudly and point at the per-tool
+        # opt-in instead.
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "allow_mutating_not_supported_here",
+                "message": (
+                    "The source-wide grant is read-only by design. Opt groups into "
+                    "mutating tools one at a time: POST /api/admin/mcp-tools/{tool_id}/grants "
+                    "with allow_mutating, or `agnes admin mcp tool grant <tool_id> "
+                    "--group <g> --allow-mutating`."
+                ),
+            },
+        )
     group_id = (payload.group_id or "").strip()
     if not group_id:
         raise HTTPException(status_code=400, detail="group_id is required")

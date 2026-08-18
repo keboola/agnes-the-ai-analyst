@@ -253,10 +253,13 @@ def _mint_identity_jwt(session_id: str) -> str:
       (``mint_agent_session_jwt``). Same no-baked-in-authority contract as
       the co-session branch: the resolver rebuilds owner-grants ∩
       agent-scope live, per request. Only an explicit all-``'all'`` agent
-      (every user's lazily-seeded default) falls through to the plain
-      owner-identity branch below so web chat's JWT shape is unchanged
-      (identical authority either way; an optimization, not a security
-      exception).
+      (every user's lazily-seeded default) — and only on a session whose
+      user IS the agent's owner — falls through to the plain owner-identity
+      branch below so web chat's JWT shape is unchanged (identical authority
+      either way; an optimization, not a security exception). A session
+      whose user is NOT the owner (Slack channel binding: the mentioner)
+      always takes the agent-session path, or the turn would run with the
+      mentioning user's own authority instead of the agent's.
     - **Solo session, no narrowing agent**: resolve the owner via the
       dual-backend chat-session + users lookup and mint an ordinary
       identity JWT (unchanged legacy/no-agent path).
@@ -270,6 +273,7 @@ def _mint_identity_jwt(session_id: str) -> str:
     if getattr(session, "is_co_session", False):
         return mint_co_session_jwt(session_id)
     agent_id = getattr(session, "agent_id", None)
+    agent = None
     if agent_id:
         agent = agents_repo().get_by_id(agent_id)
         if agent is None or agent.get("deleted_at") is not None:
@@ -286,6 +290,16 @@ def _mint_identity_jwt(session_id: str) -> str:
     user = users_repo().get_by_email(session.user_email)
     if user is None:
         raise HTTPException(status_code=401, detail="ticket_user_not_found")
+    if agent is not None and str(user["id"]) != str(agent.get("owner_user_id")):
+        # An all-'all' agent on a session whose user is NOT the agent's owner
+        # (a Slack channel binding: the session user is the MENTIONER). The
+        # passthrough optimization's premise — "identical authority either
+        # way" — holds only when session user == owner; a plain identity JWT
+        # here would run the agent's turn with the mentioning user's own
+        # authority (admin short-circuit included). Take the enforced
+        # agent-session path so the turn carries the OWNER-derived
+        # AgentPrincipal regardless of who mentioned the bot.
+        return mint_agent_session_jwt(session_id)
     # scope="chat" is what makes `_stash_chat_session_id_from_token` stash the
     # chat_session_id that `execute_query`'s per-session BigQuery budget keys
     # off — it ignores the claim without that scope. The pre-broker solo token
