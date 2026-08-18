@@ -2048,9 +2048,38 @@ async def reap_idle_data_apps(
         if status.get("container") not in ("stopped", "absent"):
             # Alive. Drop a pending note from an earlier sweep so a single
             # transient restart cannot accumulate towards an `error` later.
+            #
+            # Guarded exactly like the dead path below, and for the same reason:
+            # `row` came from a `repo.list(state="running")` snapshot taken
+            # before this loop began, so a stop or a second sweep may have moved
+            # the row to `sleeping`/`stopped` since — and the container is not
+            # removed until that stop completes, so the probe above can still
+            # report "running". An unguarded write would put `running` back over
+            # it, leaving the registry claiming a container that is gone and the
+            # proxy latching `error` on the next request. The lease is only taken
+            # when there is actually a note to clear, so a healthy app still
+            # costs no lease on the common path.
             if _RECONCILE_PENDING in (row.get("state_detail") or ""):
-                repo.set_state(row["id"], "running", "")
-                logger.info("reap-idle: %s recovered before confirmation; cleared the pending note", row["slug"])
+                acquired, holder = try_acquire_op_lease(row["slug"])
+                if not acquired:
+                    logger.info(
+                        "reap-idle: leaving %s's pending note for the next sweep — an operation is in flight",
+                        row["slug"],
+                    )
+                    continue
+                try:
+                    fresh = repo.get(row["id"])
+                    if (
+                        fresh is not None
+                        and fresh["state"] == "running"
+                        and _RECONCILE_PENDING in (fresh.get("state_detail") or "")
+                    ):
+                        repo.set_state(row["id"], "running", "")
+                        logger.info(
+                            "reap-idle: %s recovered before confirmation; cleared the pending note", row["slug"]
+                        )
+                finally:
+                    release_op_lease(row["slug"], holder)
             continue
 
         # It looks dead — now the lease is required before judging it, and

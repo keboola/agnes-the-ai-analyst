@@ -1465,6 +1465,41 @@ class TestReap:
             conn.close()
         assert row["state"] == "running"
 
+    def test_reap_idle_reconcile_does_not_resurrect_running_when_clearing_a_note(
+        self, admin_client, fake_runner, running_dead_container_app
+    ):
+        """The note-clearing write is the one place a live container is written
+        back to `running`, and `row` comes from a snapshot taken before the loop
+        began. A stop that lands in between leaves the row `sleeping` while the
+        container is not yet removed — so the probe still says "running" — and an
+        unguarded write would put `running` back over it, leaving the registry
+        claiming a container that is gone."""
+        fake_runner._status = {"container": "stopped", "ready": False}
+        assert admin_client.post("/api/data-apps/reap-idle").json()["reconciled"] == []
+
+        from src.db import get_system_db
+        from src.repositories.data_apps import DataAppsRepository
+
+        def status_with_concurrent_stop(slug):
+            conn = get_system_db()
+            try:
+                repo = DataAppsRepository(conn)
+                repo.set_state(repo.get_by_slug(slug)["id"], "sleeping")
+            finally:
+                conn.close()
+            return {"container": "running", "ready": True}
+
+        self._age_out("crash1")
+        fake_runner.status = status_with_concurrent_stop
+        assert admin_client.post("/api/data-apps/reap-idle").status_code == 200
+
+        conn = get_system_db()
+        try:
+            row = DataAppsRepository(conn).get_by_slug("crash1")
+        finally:
+            conn.close()
+        assert row["state"] == "sleeping", "the concurrent stop was clobbered back to running"
+
     def test_reap_idle_reconcile_takes_no_lease_for_a_healthy_app(
         self, admin_client, fake_runner, monkeypatch, running_dead_container_app
     ):
