@@ -12,9 +12,11 @@ import gzip
 import json
 import os
 import time
+from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+from urllib.parse import parse_qsl, urlsplit
 
 import pytest
 import requests
@@ -26,6 +28,7 @@ from connectors.keboola.storage_api import (
     ExportFilter,
     KeboolaStorageClient,
     StorageApiError,
+    _s3_to_https,
     _slice_sort_key,
     get_temp_root,
     sweep_orphaned_scratch,
@@ -645,6 +648,256 @@ class TestSlicedGcpDownload:
                 },
                 dest,
             )
+
+
+# ---- _s3_to_https presigning ------------------------------------------------
+
+
+_AWS_CREDS = {
+    "AccessKeyId": "ASIAEXAMPLEKEY",
+    "SecretAccessKey": "example-secret",
+    "SessionToken": "example-session-token",
+}
+_AWS_NOW = datetime(2026, 8, 18, 12, 0, 0, tzinfo=timezone.utc)
+
+
+class TestS3ToHttps:
+    """AWS-backed Keboola stacks return raw ``s3://`` URIs in sliced-export
+    manifests (not presigned HTTPS) — the file-detail response ships temporary
+    federation credentials instead. `_s3_to_https` must turn the URI into a
+    SigV4 query-presigned HTTPS URL downloadable by plain `requests`."""
+
+    def test_presigns_get_with_sigv4_query_params(self):
+        url = _s3_to_https(
+            "s3://kbc-sapi-files/exp-2/a b.parquet",
+            _AWS_CREDS,
+            "us-east-1",
+            now=_AWS_NOW,
+        )
+        parts = urlsplit(url)
+        assert parts.scheme == "https"
+        assert parts.netloc == "kbc-sapi-files.s3.us-east-1.amazonaws.com"
+        assert parts.path == "/exp-2/a%20b.parquet"
+        q = dict(parse_qsl(parts.query))
+        assert q["X-Amz-Algorithm"] == "AWS4-HMAC-SHA256"
+        assert q["X-Amz-Credential"] == "ASIAEXAMPLEKEY/20260818/us-east-1/s3/aws4_request"
+        assert q["X-Amz-Date"] == "20260818T120000Z"
+        assert q["X-Amz-Expires"] == "3600"
+        assert q["X-Amz-Security-Token"] == "example-session-token"
+        assert q["X-Amz-SignedHeaders"] == "host"
+        assert len(q["X-Amz-Signature"]) == 64
+        assert set(q["X-Amz-Signature"]) <= set("0123456789abcdef")
+
+    def test_deterministic_for_fixed_inputs(self):
+        a = _s3_to_https("s3://bkt/k.csv", _AWS_CREDS, "eu-central-1", now=_AWS_NOW)
+        b = _s3_to_https("s3://bkt/k.csv", _AWS_CREDS, "eu-central-1", now=_AWS_NOW)
+        assert a == b
+
+    def test_signature_matches_botocore_reference(self):
+        """Conformance against AWS's own signer — botocore's S3SigV4QueryAuth
+        is exactly what boto3's `generate_presigned_url` uses. Feed botocore's
+        chosen X-Amz-Date back into our helper so both sign the same instant;
+        the signatures must then be byte-identical."""
+        pytest.importorskip("botocore")
+        from botocore.auth import S3SigV4QueryAuth
+        from botocore.awsrequest import AWSRequest
+        from botocore.credentials import Credentials
+
+        ref_req = AWSRequest(
+            method="GET",
+            url="https://kbc-sapi-files.s3.us-east-1.amazonaws.com/exp-2/slice.parquet",
+        )
+        S3SigV4QueryAuth(
+            Credentials(
+                _AWS_CREDS["AccessKeyId"],
+                _AWS_CREDS["SecretAccessKey"],
+                _AWS_CREDS["SessionToken"],
+            ),
+            "s3",
+            "us-east-1",
+            expires=3600,
+        ).add_auth(ref_req)
+        ref_q = dict(parse_qsl(urlsplit(ref_req.url).query))
+
+        now = datetime.strptime(ref_q["X-Amz-Date"], "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+        ours = _s3_to_https(
+            "s3://kbc-sapi-files/exp-2/slice.parquet",
+            _AWS_CREDS,
+            "us-east-1",
+            now=now,
+        )
+        our_q = dict(parse_qsl(urlsplit(ours).query))
+        assert our_q["X-Amz-Signature"] == ref_q["X-Amz-Signature"]
+
+    def test_lowercase_credential_keys_accepted(self):
+        # Defensive: docs show CamelCase (STS shape) but be tolerant of
+        # lowerCamel variants seen in the wild.
+        url = _s3_to_https(
+            "s3://bkt/k.csv",
+            {
+                "accessKeyId": "ASIAEXAMPLEKEY",
+                "secretAccessKey": "example-secret",
+                "sessionToken": "example-session-token",
+            },
+            "us-east-1",
+            now=_AWS_NOW,
+        )
+        assert url == _s3_to_https("s3://bkt/k.csv", _AWS_CREDS, "us-east-1", now=_AWS_NOW)
+
+    def test_no_session_token_omits_security_token_param(self):
+        url = _s3_to_https(
+            "s3://bkt/k.csv",
+            {"AccessKeyId": "AKIAEXAMPLEKEY", "SecretAccessKey": "example-secret"},
+            "us-east-1",
+            now=_AWS_NOW,
+        )
+        assert "X-Amz-Security-Token" not in dict(parse_qsl(urlsplit(url).query))
+
+    def test_rejects_non_s3_scheme(self):
+        with pytest.raises(ValueError, match="expects s3://"):
+            _s3_to_https("https://not-s3/x", _AWS_CREDS, "us-east-1")
+
+    def test_rejects_malformed_url_missing_key(self):
+        with pytest.raises(ValueError, match="malformed"):
+            _s3_to_https("s3://bucket-only-no-key", _AWS_CREDS, "us-east-1")
+
+    def test_missing_credentials_raise_without_echoing_them(self):
+        with pytest.raises(StorageApiError, match="credentials"):
+            _s3_to_https("s3://bkt/k.csv", {}, "us-east-1")
+
+    def test_missing_region_raises(self):
+        with pytest.raises(StorageApiError, match="region"):
+            _s3_to_https("s3://bkt/k.csv", _AWS_CREDS, None)
+
+
+# ---- sliced AWS download (download_file / download_file_slices) -------------
+
+
+class TestSlicedAwsDownload:
+    """`download_file` sliced branch when the manifest carries raw ``s3://``
+    entries — the AWS counterpart of TestSlicedGcpDownload. Regression for
+    the real failure `requests.exceptions.InvalidSchema: No connection
+    adapters were found for 's3://kbc-sapi-files/…'` on an AWS Keboola stack
+    whose manifest returns unsigned s3:// URIs."""
+
+    @staticmethod
+    def _slice_resp(chunks):
+        r = MagicMock()
+        r.__enter__ = MagicMock(return_value=r)
+        r.__exit__ = MagicMock(return_value=False)
+        r.iter_content.return_value = chunks
+        r.raise_for_status = MagicMock()
+        return r
+
+    def _aws_file_info(self, url="https://signed/manifest.json", sliced=True):
+        return {
+            "url": url,
+            "name": "sliced",
+            "isSliced": sliced,
+            "provider": "aws",
+            "region": "us-east-1",
+            "credentials": dict(_AWS_CREDS),
+        }
+
+    def test_presigns_each_s3_slice_and_concatenates(self, tmp_path):
+        sess = MagicMock()
+        manifest_resp = MagicMock()
+        manifest_resp.json.return_value = {
+            "entries": [
+                {"url": "s3://kbc-sapi-files/exp-2/slice_0_0_0.csv"},
+                {"url": "s3://kbc-sapi-files/exp-2/slice_0_0_1.csv"},
+            ]
+        }
+        manifest_resp.raise_for_status = MagicMock()
+        sess.get.side_effect = [
+            manifest_resp,
+            self._slice_resp([b"col\n", b"a\n"]),
+            self._slice_resp([b"b\n"]),
+        ]
+
+        c = KeboolaStorageClient(url="https://kbc", token="t", session=sess)
+        dest = tmp_path / "out.csv"
+        c.download_file(self._aws_file_info(), dest)
+
+        assert dest.read_bytes() == b"col\na\nb\n"
+        assert sess.get.call_count == 3
+        for call, key in zip(
+            sess.get.call_args_list[1:],
+            ["/exp-2/slice_0_0_0.csv", "/exp-2/slice_0_0_1.csv"],
+        ):
+            parts = urlsplit(call.args[0])
+            assert parts.scheme == "https"
+            assert parts.netloc == "kbc-sapi-files.s3.us-east-1.amazonaws.com"
+            assert parts.path == key
+            q = dict(parse_qsl(parts.query))
+            assert q["X-Amz-Security-Token"] == "example-session-token"
+            assert "X-Amz-Signature" in q
+
+    def test_missing_aws_credentials_raises_storage_api_error(self, tmp_path):
+        sess = MagicMock()
+        manifest_resp = MagicMock()
+        manifest_resp.json.return_value = {"entries": [{"url": "s3://bkt/slice-0"}]}
+        manifest_resp.raise_for_status = MagicMock()
+        sess.get.return_value = manifest_resp
+
+        c = KeboolaStorageClient(url="https://kbc", token="t", session=sess)
+        with pytest.raises(StorageApiError, match="credentials"):
+            c.download_file(
+                {
+                    "url": "https://signed/manifest.json",
+                    "name": "sliced",
+                    "isSliced": True,
+                    "region": "us-east-1",
+                    # no `credentials` — federationToken detail missing them
+                },
+                tmp_path / "out.csv",
+            )
+
+    def test_single_file_s3_url_is_presigned(self, tmp_path):
+        # Defensive: the observed stack returns https for the non-sliced
+        # `url`, but the same raw-s3 shape must not crash there either.
+        sess = MagicMock()
+        sess.get.return_value = self._slice_resp([b"col\n", b"x\n"])
+
+        c = KeboolaStorageClient(url="https://kbc", token="t", session=sess)
+        dest = tmp_path / "out.csv"
+        c.download_file(
+            self._aws_file_info(url="s3://kbc-sapi-files/exp-2/single.csv", sliced=False),
+            dest,
+        )
+
+        assert dest.read_bytes() == b"col\nx\n"
+        parts = urlsplit(sess.get.call_args.args[0])
+        assert parts.netloc == "kbc-sapi-files.s3.us-east-1.amazonaws.com"
+        assert parts.path == "/exp-2/single.csv"
+        assert "X-Amz-Signature" in dict(parse_qsl(parts.query))
+
+    def test_download_file_slices_presigns_s3_entries(self, tmp_path):
+        # The parquet path (per-slice files, no concat) — this is the exact
+        # entry point the original InvalidSchema traceback came from.
+        sess = MagicMock()
+        manifest_resp = MagicMock()
+        manifest_resp.json.return_value = {
+            "entries": [
+                {"url": "s3://kbc-sapi-files/exp-2/part.0.parquet"},
+                {"url": "s3://kbc-sapi-files/exp-2/part.1.parquet"},
+            ]
+        }
+        manifest_resp.raise_for_status = MagicMock()
+        sess.get.side_effect = [
+            manifest_resp,
+            self._slice_resp([b"pq0"]),
+            self._slice_resp([b"pq1"]),
+        ]
+
+        c = KeboolaStorageClient(url="https://kbc", token="t", session=sess)
+        paths = c.download_file_slices(self._aws_file_info(), tmp_path / "slices")
+
+        assert [p.read_bytes() for p in paths] == [b"pq0", b"pq1"]
+        for call in sess.get.call_args_list[1:]:
+            parts = urlsplit(call.args[0])
+            assert parts.netloc == "kbc-sapi-files.s3.us-east-1.amazonaws.com"
+            assert "X-Amz-Signature" in dict(parse_qsl(parts.query))
 
 
 # ---- end-to-end export_table_to_csv ---------------------------------------
