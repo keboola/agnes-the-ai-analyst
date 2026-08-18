@@ -13,6 +13,7 @@ seam: the batch/full extract (``JiraBackfill.fetch_issue``) and the webhook
 full-refetch (``JiraService.fetch_issue``).
 """
 
+import re
 from unittest.mock import MagicMock, patch
 
 import httpx
@@ -25,13 +26,19 @@ AUTH = ("bot@mycompany.com", "test-token")
 
 
 def _comment(comment_id: str) -> dict:
+    # Distinct, id-ordered timestamps (cN -> N seconds past midnight) so any
+    # order-sensitivity in the code under test is observable — identical
+    # timestamps would hide a reordering from every assertion.
+    digits = re.search(r"(\d+)$", comment_id)
+    n = int(digits.group(1)) if digits else 0
+    created = f"2026-01-01T{n // 3600:02d}:{n % 3600 // 60:02d}:{n % 60:02d}.000+0000"
     return {
         "id": comment_id,
         "author": {"emailAddress": f"{comment_id}@example.com", "displayName": comment_id},
         "updateAuthor": {"emailAddress": f"{comment_id}@example.com", "displayName": comment_id},
         "body": {"type": "doc", "content": []},
-        "created": "2026-01-01T00:00:00.000+0000",
-        "updated": "2026-01-01T00:00:00.000+0000",
+        "created": created,
+        "updated": created,
     }
 
 
@@ -80,15 +87,17 @@ class TestCompleteIssueComments:
 
     def test_pages_from_the_thread_head(self):
         """total=124, embed carries the newest 100 (c24..c123) -> ONE paginated
-        call at startAt=0 recovers the oldest 24 (c0..c23)."""
+        call at startAt=0 recovers the oldest 24 (c0..c23), and the merged
+        thread is stored oldest-first."""
         issue_data = _issue_with_comments(total=124, embedded=100)
         client = _mock_client([_comment_page(0, 100)])
 
         complete_issue_comments(issue_data, BASE_URL, AUTH, client)
 
         comments = issue_data["fields"]["comment"]["comments"]
-        assert len(comments) == 124
-        assert {c["id"] for c in comments} == {f"c{i}" for i in range(124)}
+        assert [c["id"] for c in comments] == [f"c{i}" for i in range(124)]
+        created = [c["created"] for c in comments]
+        assert created == sorted(created), "merged thread must stay chronological"
         client.get.assert_called_once()
         _, kwargs = client.get.call_args
         assert kwargs["params"]["startAt"] == 0
@@ -123,16 +132,30 @@ class TestCompleteIssueComments:
         complete_issue_comments(issue_data, BASE_URL, AUTH, client)
 
         comments = issue_data["fields"]["comment"]["comments"]
-        assert len(comments) == 250
-        assert {c["id"] for c in comments} == {f"c{i}" for i in range(250)}
+        assert [c["id"] for c in comments] == [f"c{i}" for i in range(250)]
         assert client.get.call_count == 2
         first_call_start_at = client.get.call_args_list[0].kwargs["params"]["startAt"]
         second_call_start_at = client.get.call_args_list[1].kwargs["params"]["startAt"]
         assert first_call_start_at == 0
         assert second_call_start_at == 100
 
+    def test_short_page_advances_start_at_by_page_length(self):
+        """The next offset is the count of items actually received, not a
+        fixed page-size stride — a server that clamps maxResults (or any
+        short page) must not make the walk skip comments."""
+        issue_data = _issue_with_comments(total=250, embedded=100)  # embeds c150..c249
+        client = _mock_client([_comment_page(0, 50), _comment_page(50, 150)])
+
+        complete_issue_comments(issue_data, BASE_URL, AUTH, client)
+
+        comments = issue_data["fields"]["comment"]["comments"]
+        assert [c["id"] for c in comments] == [f"c{i}" for i in range(250)]
+        offsets = [call.kwargs["params"]["startAt"] for call in client.get.call_args_list]
+        assert offsets == [0, 50], "a 50-item page must advance startAt by 50, not by the page size"
+
     def test_logs_warning_when_still_short_after_completion(self, caplog):
-        """A page-fetch failure leaves stored < total -> WARNING, not an exception."""
+        """A page-fetch failure leaves stored < total -> WARNING, not an exception,
+        and the shortfall is attributed to the failed pagination."""
         issue_data = _issue_with_comments(total=124, embedded=100)
         failing_response = MagicMock()
         failing_response.status_code = 500
@@ -143,7 +166,38 @@ class TestCompleteIssueComments:
             complete_issue_comments(issue_data, BASE_URL, AUTH, client)
 
         assert len(issue_data["fields"]["comment"]["comments"]) == 100
-        assert any("comment.total" in record.message for record in caplog.records)
+        shortfall = [r.message for r in caplog.records if "comment.total" in r.message]
+        assert shortfall and "gave up early" in shortfall[0]
+
+    def test_shortfall_after_stale_total_is_attributed_to_deletion(self, caplog):
+        """An empty page with no failure means total was stale — the WARNING
+        must say so, not blame the pagination."""
+        issue_data = _issue_with_comments(total=124, embedded=100)
+        empty_response = MagicMock()
+        empty_response.status_code = 200
+        empty_response.json.return_value = {"comments": []}
+        client = MagicMock()
+        client.get.side_effect = [empty_response]
+
+        with caplog.at_level("WARNING"):
+            complete_issue_comments(issue_data, BASE_URL, AUTH, client)
+
+        shortfall = [r.message for r in caplog.records if "comment.total" in r.message]
+        assert shortfall and "deleted mid-fetch" in shortfall[0]
+
+    def test_shortfall_with_no_issue_key_is_attributed_to_skipped_pagination(self, caplog):
+        """A payload without a key never paginates — the WARNING must not
+        claim anything happened mid-fetch when no fetch was attempted."""
+        issue_data = _issue_with_comments(total=124, embedded=100)
+        del issue_data["key"]
+        client = _mock_client([])
+
+        with caplog.at_level("WARNING"):
+            complete_issue_comments(issue_data, BASE_URL, AUTH, client)
+
+        client.get.assert_not_called()
+        shortfall = [r.message for r in caplog.records if "comment.total" in r.message]
+        assert shortfall and "never attempted" in shortfall[0]
 
     def test_no_warning_when_completion_succeeds(self, caplog):
         issue_data = _issue_with_comments(total=124, embedded=100)
@@ -221,10 +275,12 @@ class TestPaginationFailureMarksIncomplete:
 class TestPaginationDeduplicatesByCommentId:
     """The paged walk starts at the thread head while the embed carries the
     newest comments, so the two overlap by design — the same id arrives from
-    both requests. Concatenation must de-duplicate by comment id (first
-    occurrence wins, order preserved)."""
+    both requests. Concatenation must de-duplicate by comment id, keep the
+    merged thread oldest-first (pages first, embed's unseen tail after), and
+    on a duplicate id keep the paged copy — it was fetched after the embed,
+    so it is the fresher one."""
 
-    def test_overlapping_page_produces_no_duplicate_ids(self):
+    def test_overlapping_page_produces_no_duplicate_ids_and_stays_chronological(self):
         issue_data = _issue_with_comments(total=4, embedded=2)  # embeds c2, c3
         overlap_page = [_comment("c0"), _comment("c1"), _comment("c2")]
         client = _mock_client([overlap_page])
@@ -233,9 +289,9 @@ class TestPaginationDeduplicatesByCommentId:
 
         comments = issue_data["fields"]["comment"]["comments"]
         ids = [c["id"] for c in comments]
-        assert sorted(ids) == ["c0", "c1", "c2", "c3"]
+        assert ids == ["c0", "c1", "c2", "c3"]
 
-    def test_first_occurrence_wins_on_duplicate_id(self):
+    def test_paged_copy_wins_on_duplicate_id(self):
         issue_data = _issue_with_comments(total=3, embedded=2)  # embeds c1, c2
         embedded_c1 = issue_data["fields"]["comment"]["comments"][0]
         embedded_c1["body"] = {"type": "doc", "content": [], "marker": "embedded"}
@@ -247,7 +303,10 @@ class TestPaginationDeduplicatesByCommentId:
 
         comments = issue_data["fields"]["comment"]["comments"]
         c1 = next(c for c in comments if c["id"] == "c1")
-        assert c1["body"].get("marker") == "embedded"
+        assert c1["body"].get("marker") == "paged", (
+            "the paged copy is fetched after the embed — a comment edited "
+            "between the two requests must keep its fresher body"
+        )
 
 
 class TestPaginationIsWindowPositionAgnostic:
@@ -267,9 +326,30 @@ class TestPaginationIsWindowPositionAgnostic:
 
         complete_issue_comments(issue_data, BASE_URL, AUTH, client)
 
-        ids = {c["id"] for c in issue_data["fields"]["comment"]["comments"]}
-        assert ids == {f"c{i}" for i in range(124)}
-        assert client.get.call_count == 2
+        ids = [c["id"] for c in issue_data["fields"]["comment"]["comments"]]
+        assert ids == [f"c{i}" for i in range(124)]
+        offsets = [call.kwargs["params"]["startAt"] for call in client.get.call_args_list]
+        assert offsets == [0, 100], "the walk must advance through the endpoint, not re-request page 0"
+
+    def test_endpoint_that_ignores_start_at_terminates_and_marks_incomplete(self, caplog):
+        """The union-based stop condition has no intrinsic progress guarantee:
+        a server/proxy that serves the SAME non-empty page for every startAt
+        would freeze the union below total forever. The walk must cut itself
+        off once startAt passes total — bounded requests, marked incomplete —
+        instead of looping unboundedly inside a webhook request."""
+        issue_data = _issue_with_comments(total=250, embedded=100)
+        same_page = MagicMock()
+        same_page.status_code = 200
+        same_page.json.return_value = {"comments": _comment_page(0, 100)}
+        client = MagicMock()
+        client.get.return_value = same_page  # identical page for EVERY offset
+
+        with caplog.at_level("WARNING"):
+            complete_issue_comments(issue_data, BASE_URL, AUTH, client)
+
+        assert client.get.call_count == 3, "startAt 0/100/200, then the guard fires at 300 >= 250"
+        assert issue_data.get("_comments_incomplete") is True
+        assert any("non-conforming pagination" in r.message for r in caplog.records)
 
 
 class TestServiceFetchIssuePaginates:
@@ -925,6 +1005,63 @@ class TestNeedsRefetchSidecarMarker:
         backfill.save_issue(healed)
 
         assert not (backfill.issues_dir / "PROJ-6.json.incomplete").exists()
+
+
+class TestWebhookSaveIssueSyncsSidecarMarker:
+    """``JiraService.save_issue`` (the webhook path) must keep the sidecar
+    marker in sync exactly like ``JiraBackfill.save_issue`` does — both save
+    paths write the SAME ``issues/{key}.json`` files, and ``_needs_refetch``
+    is a stat on the sidecar only. Without this, a webhook refetch that
+    failed mid-pagination (one 429 under the zero in-request retry budget)
+    persists a truncated JSON that every ``--skip-existing`` backfill skips
+    forever, and a webhook save could also leave a stale sidecar behind after
+    healing an issue the backfill had marked."""
+
+    def _make_service(self, tmp_path):
+        from connectors.jira import service as svc
+
+        svc.Config.JIRA_DOMAIN = "mycompany.atlassian.net"
+        svc.Config.JIRA_EMAIL = "bot@mycompany.com"
+        svc.Config.JIRA_API_TOKEN = "test-token-xyz"
+        svc.Config.JIRA_DATA_DIR = tmp_path
+        svc._jira_service = None
+        return svc.JiraService()
+
+    def _save(self, service, issue):
+        with (
+            patch("connectors.jira.service.trigger_incremental_transform", return_value=True),
+            patch.object(service, "download_all_attachments", return_value=[]),
+        ):
+            return service.save_issue(issue)
+
+    def test_incomplete_issue_writes_sidecar(self, tmp_path):
+        service = self._make_service(tmp_path)
+        issue = _issue_with_comments(total=190, embedded=124, issue_key="PROJ-900")
+        issue["_comments_incomplete"] = True
+
+        saved = self._save(service, issue)
+
+        assert saved is not None
+        assert (tmp_path / "issues" / "PROJ-900.json.incomplete").exists(), (
+            "a webhook save of an incomplete fetch must be visible to the "
+            "backfill's --skip-existing stat, or the issue only heals on "
+            "further webhook activity"
+        )
+
+    def test_complete_issue_clears_stale_sidecar(self, tmp_path):
+        service = self._make_service(tmp_path)
+        issues_dir = tmp_path / "issues"
+        issues_dir.mkdir(parents=True, exist_ok=True)
+        (issues_dir / "PROJ-901.json.incomplete").touch()
+
+        healed = _issue_with_comments(total=3, embedded=3, issue_key="PROJ-901")
+        saved = self._save(service, healed)
+
+        assert saved is not None
+        assert not (issues_dir / "PROJ-901.json.incomplete").exists(), (
+            "a complete webhook save must clear the marker, or the next "
+            "--skip-existing backfill refetches a healed issue forever"
+        )
 
 
 class TestDryRunCountsMatchRealSkipDecision:

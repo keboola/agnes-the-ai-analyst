@@ -368,6 +368,35 @@ def sweep_stale_attachment_staging(directory: Path, max_age_s: int = STALE_STAGI
             continue
 
 
+def _incomplete_marker_path(json_path: Path) -> Path:
+    """Sidecar marker path for an issue JSON's ``_comments_incomplete`` state.
+
+    A dedicated file next to the JSON — rather than a key inside it — so
+    ``--skip-existing`` can answer "does this issue need a re-fetch?" with a
+    single ``stat()``, the same cost as the pre-pagination ``json_path.exists()``
+    check it replaces. ``_comments_incomplete`` is added to the dict well
+    after ``fields`` (often the largest part of a ``fields=*all`` payload),
+    so it sits late in the file — a bounded read from the front would
+    routinely miss it, and parsing the whole file to find it is exactly the
+    six-figure-issue-count cost this sidecar avoids (Devin Review on #1283).
+    """
+    return json_path.with_suffix(json_path.suffix + ".incomplete")
+
+
+def _sync_incomplete_marker(json_path: Path, issue_data: dict[str, Any]) -> None:
+    """Create/remove the sidecar marker to match ``issue_data``'s current
+    ``_comments_incomplete`` state. Called right after writing *json_path*
+    by BOTH save paths — ``JiraBackfill.save_issue`` (batch) and
+    ``JiraService.save_issue`` (webhook) — so ``_needs_refetch`` sees a
+    marked issue no matter which path wrote it last.
+    """
+    marker_path = _incomplete_marker_path(json_path)
+    if issue_data.get("_comments_incomplete") is True:
+        marker_path.touch(exist_ok=True)
+    else:
+        marker_path.unlink(missing_ok=True)
+
+
 def _dedupe_comments_by_id(comments: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """De-duplicate ``comments`` by ``id``, first occurrence wins, order preserved.
 
@@ -376,7 +405,10 @@ def _dedupe_comments_by_id(comments: list[dict[str, Any]]) -> list[dict[str, Any
     so the two overlap by design — up to a full embed's worth of ids arrives
     from both requests, and ordering drift or a comment added/removed between
     them can add further repeats. Concatenating without dedup would store
-    those twice. A page skipping an id instead of repeating one is a
+    those twice. The caller concatenates PAGES FIRST and the embed second, so
+    the merged list stays oldest-first (the order the stored thread has
+    always had) and on a duplicate id the paged copy — fetched after the
+    embed — wins. A page skipping an id instead of repeating one is a
     different, already-covered risk (the stored-vs-total shortfall WARNING
     below), not something dedup can fix.
     """
@@ -427,20 +459,28 @@ def complete_issue_comments(
     ``GET /issue/{key}`` embeds ``fields.comment.comments`` capped at 100, and
     the window is the NEWEST 100 — the payload's own ``fields.comment.startAt``
     is ``total - 100``. An issue over the cap therefore arrives missing its
-    OLDEST comments, and
-    because every later full-refetch (``fields=*all``) re-hits the same cap,
-    the gap never heals on its own.
+    OLDEST comments, and because every later full-refetch (``fields=*all``)
+    re-hits the same cap, the gap never heals on its own.
 
     ``fields.comment.total`` carries the true count. When it exceeds what's
     embedded, page through ``GET /issue/{key}/comment`` (``startAt``,
     ``maxResults=100``) from the START of the thread (``startAt=0``) until the
-    id-deduplicated union of embed + pages reaches ``total``, and replace the
-    embedded list with that union — mutated in place on ``issue_data``, using
-    the same ``client``/``auth`` as the issue fetch that produced it. Stopping
-    on the union size rather than a raw count of fetched items makes no
-    assumption about WHERE the embed window sits: the walk re-fetches at most
-    one embed's worth of duplicates (one extra page per over-cap issue) and
-    dedup drops them, but it can never terminate with an unfetched gap.
+    id-deduplicated union of pages + embed reaches ``total``, and replace the
+    embedded list with that union — pages first, then the embed's unseen
+    tail, so the stored thread stays oldest-first and a comment edited
+    between the two requests keeps its fresher paged copy — mutated in place
+    on ``issue_data``, using the same ``client``/``auth`` as the issue fetch
+    that produced it. Stopping on the union size rather than a raw count of
+    fetched items makes no assumption about WHERE the embed window sits: with
+    the real newest-anchored embed the walk issues exactly as many page
+    requests as one that starts inside the window, merely re-downloading up
+    to one embed's worth of already-embedded comments that dedup then drops.
+    Against an endpoint that honours ``startAt`` over a stable list it cannot
+    stop early with an unfetched gap; a comment DELETED mid-walk shifts
+    offsets and can slip one live comment past any offset-paginated walk (the
+    shortfall WARNING below surfaces that), and an endpoint that keeps
+    serving pages without ever growing the union is cut off once ``startAt``
+    passes ``total`` — marked incomplete — rather than looping forever.
 
     This is the single fetch-layer seam shared by both ingestion paths that
     call it right after their issue GET: ``JiraService.fetch_issue`` (webhook
@@ -463,9 +503,11 @@ def complete_issue_comments(
     much smaller (zero) budget there, so a 429 marks the issue incomplete
     immediately instead of sleeping for up to
     ``JIRA_COMMENT_RATE_LIMIT_RETRIES * JIRA_COMMENT_RETRY_AFTER_MAX`` seconds
-    — the marker plus a later backfill heal (``_needs_refetch``) recovers it
-    (Devin Review on #1283). The batch path (``JiraBackfill.fetch_issue``)
-    omits the override and keeps the generous default.
+    — the marker (persisted as the ``.incomplete`` sidecar by both save
+    paths, see ``_sync_incomplete_marker``) plus a later backfill heal
+    (``_needs_refetch``) recovers it (Devin Review on #1283). The batch path
+    (``JiraBackfill.fetch_issue``) omits the override and keeps the generous
+    default.
 
     If a page request itself fails (RequestError, a non-200 status other than
     a retryable 429, or a 429 that outlives its retries — legitimate
@@ -497,7 +539,24 @@ def complete_issue_comments(
         extra: list[dict[str, Any]] = []
         start_at = 0
         rate_limit_retries = 0
-        while len(_dedupe_comments_by_id(embedded + extra)) < total:
+        while len(_dedupe_comments_by_id(extra + embedded)) < total:
+            if start_at >= total:
+                # A conforming endpoint ends in an empty page (break below)
+                # or completes the union before startAt passes total (a page
+                # of live comments beyond the captured total only exists when
+                # additions already pushed the union over it). Reaching here
+                # means pages keep arriving without growing the union — a
+                # server/proxy ignoring startAt — and without this cut-off
+                # the union-based condition would loop forever.
+                logger.warning(
+                    "Jira issue %s: comment pagination reached startAt=%d >= comment.total=%d "
+                    "without completing — non-conforming pagination, giving up",
+                    issue_key,
+                    start_at,
+                    total,
+                )
+                incomplete = True
+                break
             try:
                 response = client.get(
                     f"{base_url}/issue/{issue_key}/comment",
@@ -553,7 +612,7 @@ def complete_issue_comments(
             start_at += len(page)
 
         if extra:
-            comment_field["comments"] = _dedupe_comments_by_id(embedded + extra)
+            comment_field["comments"] = _dedupe_comments_by_id(extra + embedded)
             fields["comment"] = comment_field
             issue_data["fields"] = fields
 
@@ -562,12 +621,18 @@ def complete_issue_comments(
 
     stored = len(comment_field.get("comments", embedded))
     if stored < total:
+        if incomplete:
+            cause = "pagination gave up early — see the preceding warning for the cause"
+        elif not issue_key:
+            cause = "pagination was never attempted: issue payload carries no key"
+        else:
+            cause = "comments were likely deleted mid-fetch, leaving total stale"
         logger.warning(
             "Jira issue %s: stored %d comments but Jira reports comment.total=%d after pagination completion (%s)",
             issue_key,
             stored,
             total,
-            "a page request failed" if incomplete else "comments were likely deleted mid-fetch, leaving total stale",
+            cause,
         )
 
 
@@ -1056,6 +1121,13 @@ class JiraService:
                     except OSError:
                         pass
                     raise
+                # Keep the sidecar marker in sync with this write's incomplete
+                # state, exactly like JiraBackfill.save_issue — without it a
+                # webhook refetch that failed mid-pagination (e.g. one 429
+                # under the zero in-request retry budget) would persist a
+                # truncated JSON that a later --skip-existing backfill can
+                # never see, so the issue would only heal on further activity.
+                _sync_incomplete_marker(file_path, issue_data)
                 logger.info(f"Saved issue {issue_key} to {file_path}")
 
                 # Trigger incremental Parquet transform FIRST for real-time rsync.
