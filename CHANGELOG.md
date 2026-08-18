@@ -14,6 +14,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 - **Agent profiles can now run on a schedule.** Each agent may hold up to 20 named schedules (`GET/POST /api/v1/agents/{slug}/schedules`, `PATCH/DELETE .../{schedule_id}`; `agnes agent schedule list|add|remove|enable|disable`) using the product's existing schedule grammar (`every Nm`/`every Nh`, `daily HH:MM[,HH:MM]`, `cron <5-field expr>`, all UTC). A new admin/scheduler-driven sweep (`POST /api/v1/agents/run-due`, scheduler row `agents:run-due` every 1m, gated on `SCHEDULER_AGENT_SCHEDULES`, default on) fires due schedules straight into the existing `agent_response` background job kind under the agent owner's identity — model pinning, token budgets, scope enforcement, memory notebooks, and `job.completed`/`job.failed` webhooks all apply unchanged, with no new execution engine. Concurrent sweep ticks can't double-fire a row (optimistic per-row claim), and a retried sweep within the same minute dedupes via `idempotency_key`. Schedules are stored in a new `agent_schedules` table — schema v120 (DuckDB `_v119_to_v120` + Alembic `0068_agent_schedules_v120`) — and die with their agent (delete cascade).
 
+## [0.83.49] - 2026-08-18
+
+### Fixed
+
+- **"Skip onboarding" now marks all six onboarding steps complete.** The panel sends the new `agent_created` flag and `PUT /api/chat/journey` accepts it, so the checklist reaches `6/6` and the card retires. "Start over onboarding" also resets the same flag. Previously the sixth step was neither sent by the panel nor accepted by the backend, leaving the checklist stuck at `5/6`.
+
 ## [0.83.48] - 2026-08-18
 
 ### Fixed

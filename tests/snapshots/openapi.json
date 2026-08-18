@@ -4711,6 +4711,17 @@
       "JourneyUpdateBody": {
         "description": "Partial update \u2014 every field optional; only the ones present change.",
         "properties": {
+          "agent_created": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Created"
+          },
           "catalog_discovered": {
             "anyOf": [
               {
