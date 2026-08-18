@@ -1600,6 +1600,7 @@ def break_glass_grant_admin(
 
     from src.db import SYSTEM_ADMIN_GROUP, get_system_db
     from src.repositories import use_pg
+    from src.user_identity import normalize_email
 
     if not yes:
         confirm = typer.confirm(
@@ -1627,13 +1628,17 @@ def break_glass_grant_admin(
             )
             raise typer.Exit(2)
 
-        existing = users.get_by_email(email)
+        # Case-insensitive read + normalized write: an operator typing the
+        # address the way a person writes it must reach the account an OAuth
+        # claim created, not mint a second one.
+        existing = users.get_by_email_ci(email)
         if existing is None:
             user_id = _uuid.uuid4().hex
+            normalized = normalize_email(email)
             users.create(
                 id=user_id,
-                email=email,
-                name=email.split("@", 1)[0],
+                email=normalized,
+                name=normalized.split("@", 1)[0],
             )
             typer.echo(f"Created user {email} (id={user_id[:8]}…)")
         else:

@@ -37,6 +37,44 @@ class TestInstanceConfig:
         mod._instance_config = None
 
 
+class TestAllowedDomains:
+    """A domain is case-insensitive by definition (DNS), and the providers that
+    consume this list compare against a claim they may have lower-cased —
+    Microsoft lower-cases the resolved address, Google passes the raw claim
+    through. An operator writing ``Acme.com`` would otherwise turn every
+    Microsoft sign-in into ``domain_not_allowed`` while Google kept working."""
+
+    def _load(self, tmp_path, monkeypatch, yaml_text):
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TESTING", "1")
+        monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-key-minimum-32-characters!!")
+        state_dir = tmp_path / "state"
+        state_dir.mkdir(exist_ok=True)
+        (state_dir / "instance.yaml").write_text(yaml_text)
+
+        import importlib
+
+        import app.instance_config as mod
+
+        mod._instance_config = None
+        importlib.reload(mod)
+        return mod
+
+    def test_domains_are_lower_cased(self, tmp_path, monkeypatch):
+        mod = self._load(tmp_path, monkeypatch, 'auth:\n  allowed_domain: "Acme.com, EXAMPLE.ORG"\n')
+        try:
+            assert mod.get_allowed_domains() == ["acme.com", "example.org"]
+        finally:
+            mod._instance_config = None
+
+    def test_unset_is_empty(self, tmp_path, monkeypatch):
+        mod = self._load(tmp_path, monkeypatch, "auth:\n  providers: [password]\n")
+        try:
+            assert mod.get_allowed_domains() == []
+        finally:
+            mod._instance_config = None
+
+
 class TestInstanceBrand:
     """Brand and workspace_dir resolution: env > YAML > default,
     workspace_dir derives from brand when not explicitly set."""

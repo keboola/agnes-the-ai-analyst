@@ -225,6 +225,58 @@ class TestEmailAuth:
         assert failures == 1, f"Expected exactly 1 failure, got {failures} (results: {results})"
 
 
+class TestEmailCaseInsensitiveSignIn:
+    """One identity, one account — on the way IN as well as at provisioning.
+
+    Rows created before normalization landed (or by an admin who typed the
+    address as the person writes it) store mixed case. ``get_by_email`` is an
+    exact match on both backends, so those users could sign in through OAuth —
+    which resolves case-insensitively — and be told "invalid email or password"
+    by the very same instance when they typed the address themselves.
+    """
+
+    def test_password_login_matches_stored_row_regardless_of_case(self, client):
+        r = client.post("/auth/password/login", json={"email": "PW@Test.com", "password": "testpass123"})
+        assert r.status_code == 200, r.text
+        assert "access_token" in r.json()
+
+    def test_token_endpoint_matches_stored_row_regardless_of_case(self, client):
+        r = client.post("/auth/token", json={"email": "PW@TEST.COM", "password": "testpass123"})
+        assert r.status_code == 200, r.text
+
+    def test_magic_link_is_issued_for_a_case_variant_address(self, client):
+        """The anti-enumeration response is identical either way, so assert on
+        the side effect: a token is minted on the stored row."""
+        from src.db import get_system_db
+
+        r = client.post("/auth/email/send-link", json={"email": "ML@Test.com"})
+        assert r.status_code == 200, r.text
+        conn = get_system_db()
+        try:
+            row = conn.execute("SELECT reset_token FROM users WHERE id = 'ml1'").fetchone()
+        finally:
+            conn.close()
+        assert row is not None and row[0], "no magic-link token minted for the case-variant address"
+
+    def test_magic_link_verifies_with_a_case_variant_address(self, client):
+        """End to end: the CAS that consumes the token has to fold case too,
+        or the link mints fine and then refuses to open."""
+        from datetime import datetime, timezone
+
+        from src.db import get_system_db
+
+        conn = get_system_db()
+        try:
+            conn.execute(
+                "UPDATE users SET reset_token = ?, reset_token_created = ? WHERE id = 'ml1'",
+                [hash_token("magic-abc"), datetime.now(timezone.utc)],
+            )
+        finally:
+            conn.close()
+        r = client.post("/auth/email/verify", json={"email": "ML@Test.com", "token": "magic-abc"})
+        assert r.status_code == 200, r.text
+
+
 class TestGoogleOAuth:
     def test_google_login_not_configured(self, client):
         """Without GOOGLE_CLIENT_ID, should redirect to login with error."""
@@ -289,6 +341,25 @@ class TestMicrosoftTenantValidation:
         monkeypatch.setattr(ms, "MICROSOFT_TENANT_ID", reserved)
         assert ms.is_available() is False
         assert any("multi-tenant" in w for w in ms.startup_warnings())
+
+    @pytest.mark.parametrize(
+        "guid",
+        [
+            "9188040d-6c67-4c5b-b112-36a304b66dad",  # "personal Microsoft accounts"
+            "9188040D-6C67-4C5B-B112-36A304B66DAD",  # same, uppercase
+            "f8cdef31-a31e-4b4a-93e4-5f571e91255a",  # the other well-known consumer tenant
+        ],
+    )
+    def test_well_known_consumer_tenant_guids_are_refused(self, guid):
+        """Refusing the reserved *names* is not enough. Microsoft publishes
+        GUIDs for the consumer tenants, and a discovery URL built from one is
+        functionally ``consumers`` — the exact configuration the name check
+        exists to prevent, reached by spelling it differently."""
+        from app.auth.providers import microsoft as ms
+
+        problem = ms.tenant_id_error(guid)
+        assert problem, f"{guid!r} must be refused"
+        assert "multi-tenant" in problem
 
     def test_guid_tenant_is_available(self, monkeypatch):
         from app.auth.providers import microsoft as ms

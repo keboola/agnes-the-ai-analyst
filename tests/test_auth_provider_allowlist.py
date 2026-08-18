@@ -63,14 +63,37 @@ class TestLockoutRescue:
     which the admin API's write-time guard never sees — cannot lock the
     instance out (Devin Review on PR #1288)."""
 
-    def test_all_named_providers_unconfigured_treated_as_unset(self, monkeypatch):
+    def test_all_named_providers_unconfigured_falls_back_to_local_sign_in(self, monkeypatch):
         monkeypatch.setenv("AGNES_AUTH_PROVIDERS", "keboola")
         from app.auth import provider_registry
         from app.auth.provider_registry import configured_allowlist, provider_allowed
 
         monkeypatch.setattr(provider_registry, "_provider_available", lambda name: False)
-        assert configured_allowlist() is None
+        assert configured_allowlist() == ["password", "email"]
         assert provider_allowed("password") is True
+
+    def test_rescue_does_not_re_enable_self_provisioning_providers(self, monkeypatch):
+        """The rescue must not be a way to widen who may sign in.
+
+        An operator who narrowed to a single OAuth provider and then mistyped
+        its configuration — ``MICROSOFT_TENANT_ID`` with the Application ID
+        pasted in place of the Directory ID, say, which is a GUID either way —
+        makes that provider unavailable. Rescuing to "all providers" would put
+        Google back on the login page, and with ``auth.allowed_domain`` unset
+        any Google account on earth then self-provisions an account. Password
+        and magic link both require an existing user row, so falling back to
+        those keeps the instance reachable without widening anything.
+        """
+        monkeypatch.setenv("AGNES_AUTH_PROVIDERS", "microsoft")
+        from app.auth import provider_registry
+        from app.auth.provider_registry import provider_allowed
+
+        monkeypatch.setattr(provider_registry, "_provider_available", lambda name: False)
+        assert provider_allowed("google") is False
+        assert provider_allowed("keboola") is False
+        assert provider_allowed("microsoft") is False
+        assert provider_allowed("password") is True
+        assert provider_allowed("email") is True
 
     def test_allowlist_stands_when_any_named_provider_is_configured(self, monkeypatch):
         monkeypatch.setenv("AGNES_AUTH_PROVIDERS", "keboola,google")

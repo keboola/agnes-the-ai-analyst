@@ -194,6 +194,27 @@ class TestUsersCRUD:
         )
         assert resp.status_code == 409
 
+    def test_create_user_stores_the_address_normalized(self, seeded_client):
+        """Admin-created rows are the main source of the case-variant duplicates
+        the OAuth path then has to reconcile — normalize on the way in."""
+        client, admin_token, _ = seeded_client
+        resp = client.post(
+            "/api/users",
+            json={"email": "  Mixed.Case@Acme.com  ", "name": "Mixed"},
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert resp.status_code == 201, resp.text
+        assert resp.json()["email"] == "mixed.case@acme.com"
+
+    def test_create_duplicate_user_is_refused_regardless_of_case(self, seeded_client):
+        client, admin_token, _ = seeded_client
+        resp = client.post(
+            "/api/users",
+            json={"email": "ADMIN@Acme.com", "name": "Duplicate"},
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert resp.status_code == 409, resp.text
+
     def test_delete_user(self, seeded_client):
         client, admin_token, _ = seeded_client
         resp = client.delete(

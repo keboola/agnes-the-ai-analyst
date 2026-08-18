@@ -61,9 +61,11 @@ class UserRepository:
         it, Google passes the raw ``email`` claim through — would otherwise get
         two accounts. Backs ``app.auth.provisioning.ensure_user``. Historic
         rows may already differ only in case: the OLDEST wins, so the answer is
-        deterministic and the original account keeps the identity."""
+        deterministic and the original account keeps the identity. ``created_at``
+        is not unique — rows written together tie — so ``id`` breaks the tie and
+        both engines land on the same row."""
         result = self.conn.execute(
-            "SELECT * FROM users WHERE lower(email) = lower(?) ORDER BY created_at NULLS LAST LIMIT 1",
+            "SELECT * FROM users WHERE lower(email) = lower(?) ORDER BY created_at NULLS LAST, id LIMIT 1",
             [email],
         ).fetchone()
         return self._row_to_dict(result)
@@ -225,7 +227,8 @@ class UserRepository:
 
     def consume_reset_token(self, *, email: str, token: str, cutoff, consume_id: str) -> bool:
         """Atomically consume a password-reset token: stamp it with ``consume_id``
-        iff it is the valid, unexpired token for an active ``email``. Returns True
+        iff it is the valid, unexpired token for an active ``email`` (matched
+        case-insensitively, like every other identity read). Returns True
         iff THIS call won the race (mirrors the magic-link CAS). Goes through the
         repo (not a raw connection) so it runs on the ACTIVE backend — a raw
         DuckDB cursor here silently failed on Postgres instances.
@@ -238,7 +241,7 @@ class UserRepository:
         try:
             self.conn.execute(
                 "UPDATE users SET reset_token = ?, reset_token_created = NULL "
-                "WHERE email = ? AND reset_token = ? AND reset_token_created IS NOT NULL "
+                "WHERE lower(email) = lower(?) AND reset_token = ? AND reset_token_created IS NOT NULL "
                 "AND reset_token_created >= ? AND active = TRUE",
                 [consume_id, email, token, cutoff],
             )
@@ -247,8 +250,16 @@ class UserRepository:
             if "conflict" in err or "transaction" in err:
                 return False
             raise
-        row = self.conn.execute("SELECT reset_token FROM users WHERE email = ?", [email]).fetchone()
-        return bool(row and row[0] == consume_id)
+        # Match on the stamp, not on "the row for this email": the address is
+        # matched case-insensitively (the sign-in paths resolve identity with
+        # get_by_email_ci, so the token was minted on whichever case-variant row
+        # is the account), and a bare per-email SELECT would read an arbitrary
+        # one of several variants and report a loss.
+        row = self.conn.execute(
+            "SELECT 1 FROM users WHERE lower(email) = lower(?) AND reset_token = ?",
+            [email, consume_id],
+        ).fetchone()
+        return bool(row)
 
     def count_admins(self, active_only: bool = True) -> int:
         """Count active users in the Admin system group."""

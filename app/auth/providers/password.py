@@ -237,7 +237,7 @@ async def password_login(
 ):
     """Login with email + password."""
     repo = users_repo()
-    user = repo.get_by_email(body.email)
+    user = repo.get_by_email_ci(body.email)
     if not user or not user.get("password_hash"):
         raise HTTPException(status_code=401, detail="Invalid email or password")
     if not bool(user.get("active", True)):
@@ -275,7 +275,7 @@ async def password_login_web(
 ):
     """Web form login — sets cookie and redirects to `next` (or /dashboard)."""
     repo = users_repo()
-    user = repo.get_by_email(email)
+    user = repo.get_by_email_ci(email)
     if not user or not user.get("password_hash"):
         return RedirectResponse(url="/login/password?error=invalid", status_code=302)
     if not bool(user.get("active", True)):
@@ -336,7 +336,7 @@ async def password_setup(
     switches to this JSON path and resumes at unbounded RPS.
     """
     repo = users_repo()
-    user = repo.get_by_email(request_body.email)
+    user = repo.get_by_email_ci(request_body.email)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
@@ -406,13 +406,13 @@ async def reset_request(
     addresses, anti-enumeration response shape masks which addresses
     landed, attacker burns SMTP / SendGrid quota + spams real users).
     """
-    # Match the rest of the codebase's case-sensitive lookup (password_login,
-    # email magic-link, admin create). Lowercasing here would silently fail
-    # for mixed-case emails the admin stored as-is.
+    # Strip only — case is folded by the lookup itself (get_by_email_ci), so a
+    # mixed-case row an admin stored as-is is still found when the person types
+    # their address in lower case.
     email = (email or "").strip()
     if email:
         repo = users_repo()
-        user = repo.get_by_email(email)
+        user = repo.get_by_email_ci(email)
         if user and bool(user.get("active", True)):
             token = secrets.token_urlsafe(32)
             repo.update(
@@ -483,7 +483,7 @@ async def reset_confirm(
     # re-rendered form, so validating the token here must not burn it.
     # The single-use atomic consumption still happens exactly once,
     # further down, only after the passwords pass validation.
-    user = repo.get_by_email(email)
+    user = repo.get_by_email_ci(email)
     token_valid = (
         bool(user)
         and bool(user.get("active", True))
@@ -543,7 +543,7 @@ async def reset_confirm(
         )
 
     # Won the race — fetch the user and apply the password change.
-    user = repo.get_by_email(email)
+    user = repo.get_by_email_ci(email)
     if not user:
         return _render_reset_form(
             request, email=email, token=token, error="Invalid or expired reset link.", reason=reason
@@ -596,13 +596,13 @@ async def setup_request(
     — same email-bombing surface (anti-enumeration response, sends mail
     on each request).
     """
-    # Match the rest of the codebase's case-sensitive lookup (password_login,
-    # email magic-link, admin create). Lowercasing here would silently fail
-    # for mixed-case emails the admin stored as-is.
+    # Strip only — case is folded by the lookup itself (get_by_email_ci), so a
+    # mixed-case row an admin stored as-is is still found when the person types
+    # their address in lower case.
     email = (email or "").strip()
     if email:
         repo = users_repo()
-        user = repo.get_by_email(email)
+        user = repo.get_by_email_ci(email)
         # Only issue setup token if user exists, has no password yet, and is active.
         if user and not user.get("password_hash") and bool(user.get("active", True)):
             token = secrets.token_urlsafe(32)
@@ -649,7 +649,7 @@ async def setup_confirm(
         )
 
     repo = users_repo()
-    user = repo.get_by_email(email)
+    user = repo.get_by_email_ci(email)
     if not user or user.get("setup_token") != hash_token(token):
         return _render_setup_form(request, email=email, token=token, name=name, error="Invalid or expired setup link.")
     if not _token_is_fresh(user.get("setup_token_created"), SETUP_TOKEN_TTL):

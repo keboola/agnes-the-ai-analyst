@@ -81,6 +81,33 @@ class TestEnsureUser:
         user = ensure_user("legacy.user@example.com", "L", source="test")
         assert user["id"] == legacy_id
 
+    def test_preexisting_case_variants_resolve_to_the_oldest(self, sysdb):
+        """Two case-variant rows already coexist — the oldest must win.
+
+        This is the population the case-insensitive lookup was written for: an
+        exact-match read that runs FIRST silently preserves the split, because
+        the arriving claim matches the newer duplicate byte-for-byte and the
+        case-insensitive read is never consulted. The documented contract is
+        "oldest wins", so it has to be the ONLY lookup.
+        """
+        import uuid
+
+        from app.auth.provisioning import ensure_user
+        from src.repositories import users_repo
+
+        repo = users_repo()
+        old_id = str(uuid.uuid4())
+        new_id = str(uuid.uuid4())
+        repo.create(id=old_id, email="dup@example.com", name="Old")
+        repo.create(id=new_id, email="Dup@Example.com", name="New")
+        sysdb.execute("UPDATE users SET created_at = ? WHERE id = ?", ["2025-01-01 00:00:00", old_id])
+        sysdb.execute("UPDATE users SET created_at = ? WHERE id = ?", ["2026-06-01 00:00:00", new_id])
+
+        # The claim matches the NEWER row exactly — an exact-first lookup
+        # returns it and the split survives.
+        user = ensure_user("Dup@Example.com", "New", source="test")
+        assert user["id"] == old_id
+
     def test_deactivated_user_raises(self, sysdb):
         from app.auth.provisioning import UserDeactivatedError, ensure_user
         from src.repositories import users_repo

@@ -5,12 +5,14 @@ comma-separated) narrows which login methods this instance offers. Unset =
 every available provider — byte-for-byte the pre-allowlist behavior. An
 explicitly empty (or all-unknown) list is a misconfiguration: rejected at
 the admin API, and treated here as unset with a loud error log so one
-overlay write can never lock every user out of the instance. The same
-fail-open applies at read time when the list names only *unconfigured*
+overlay write can never lock every user out of the instance. A narrower
+rescue applies at read time when the list names only *unconfigured*
 providers (e.g. ``keboola`` with no stack configured): an allowlist that
-would leave zero usable login methods is treated as unset, so the env /
-static-file path — which the admin API's lockout guard never sees — cannot
-lock the instance out either.
+would leave zero usable login methods falls back to password + magic link,
+so the env / static-file path — which the admin API's lockout guard never
+sees — cannot lock the instance out either. Deliberately NOT "treat as
+unset": that would re-offer the self-provisioning OAuth providers, turning
+one typo into a widening of who may sign in.
 """
 
 import importlib
@@ -40,6 +42,13 @@ _AVAILABILITY_PROBES: dict[str, str] = {
     "keboola": "app.auth.providers.keboola",
     "microsoft": "app.auth.providers.microsoft",
 }
+
+# What an unusable allowlist falls back to. Both require an existing user row
+# to authenticate anybody (password: ``password_hash``; email: the magic link
+# is only minted for a known address), so the fallback can never widen who may
+# sign in — unlike "treat as unset", which re-offers the self-provisioning
+# OAuth providers.
+_RESCUE_PROVIDERS: tuple[str, ...] = ("password", "email")
 
 # One-shot marker so the lockout rescue logs once per distinct configuration,
 # not on every request (same rationale as the parse cache above).
@@ -97,7 +106,7 @@ def configured_allowlist() -> Optional[list[str]]:
 
 
 def _rescue_if_unusable(cache_key: tuple, allowlist: Optional[list[str]]) -> Optional[list[str]]:
-    """Treat an allowlist naming only unconfigured providers as unset.
+    """Fall back to local sign-in when an allowlist names only unconfigured providers.
 
     ``auth.providers: [keboola]`` with no stack configured would render zero
     login buttons and 404 every ``/auth/*`` route — an unrecoverable lockout
@@ -106,7 +115,15 @@ def _rescue_if_unusable(cache_key: tuple, allowlist: Optional[list[str]]) -> Opt
     (NOT folded into the parse cache) because provider configuration can
     change at runtime via the settings overlay; the probes are cheap config
     reads and short-circuit on the first available provider. The error log is
-    once per distinct configuration, like the parse diagnostics."""
+    once per distinct configuration, like the parse diagnostics.
+
+    The rescue lands on ``_RESCUE_PROVIDERS`` rather than on "unset", because
+    "unset" means *every* provider and that turns a misconfiguration into a
+    widening: an operator who narrowed to one OAuth provider and then mistyped
+    its configuration would get Google back on the login page, and with
+    ``auth.allowed_domain`` unset any Google account self-provisions. Password
+    and magic link both need an existing user row, so they end the lockout
+    without admitting anyone new."""
     if allowlist is None or any(_provider_available(name) for name in allowlist):
         return allowlist
     global _LOCKOUT_RESCUE_LOGGED
@@ -115,11 +132,12 @@ def _rescue_if_unusable(cache_key: tuple, allowlist: Optional[list[str]]) -> Opt
         _LOCKOUT_RESCUE_LOGGED = state
         logger.error(
             "auth.providers names only unconfigured providers (%s) — no login method "
-            "would be usable; treating as unset (all providers) so the instance stays "
-            "reachable; fix the configuration",
+            "would be usable; falling back to %s (neither can self-provision an "
+            "account) so the instance stays reachable; fix the configuration",
             ", ".join(allowlist),
+            ", ".join(_RESCUE_PROVIDERS),
         )
-    return None
+    return list(_RESCUE_PROVIDERS)
 
 
 def _parse_allowlist(source: Optional[object]) -> Optional[list[str]]:

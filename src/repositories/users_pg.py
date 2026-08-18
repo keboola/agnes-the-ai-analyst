@@ -59,7 +59,7 @@ class UsersPgRepository:
             row = (
                 conn.execute(
                     sa.text(
-                        "SELECT * FROM users WHERE lower(email) = lower(:email) ORDER BY created_at NULLS LAST LIMIT 1"
+                        "SELECT * FROM users WHERE lower(email) = lower(:email) ORDER BY created_at NULLS LAST, id LIMIT 1"
                     ),
                     {"email": email},
                 )
@@ -222,17 +222,17 @@ class UsersPgRepository:
             conn.execute(
                 sa.text(
                     "UPDATE users SET reset_token = :cid, reset_token_created = NULL "
-                    "WHERE email = :email AND reset_token = :token "
+                    "WHERE lower(email) = lower(:email) AND reset_token = :token "
                     "AND reset_token_created IS NOT NULL AND reset_token_created >= :cutoff "
                     "AND active = TRUE"
                 ),
                 {"cid": consume_id, "email": email, "token": token, "cutoff": cutoff},
             )
             row = conn.execute(
-                sa.text("SELECT reset_token FROM users WHERE email = :email"),
-                {"email": email},
+                sa.text("SELECT 1 FROM users WHERE lower(email) = lower(:email) AND reset_token = :cid"),
+                {"email": email, "cid": consume_id},
             ).fetchone()
-        return bool(row and row[0] == consume_id)
+        return bool(row)
 
     def count_admins(self, active_only: bool = True) -> int:
         sql = """

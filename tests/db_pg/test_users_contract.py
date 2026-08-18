@@ -333,6 +333,24 @@ def test_consume_reset_token_valid_wins_and_stamps(users_repo):
     assert repo.get_by_id("user-1")["reset_token"] == "CONSUMED:abc"
 
 
+def test_consume_reset_token_matches_the_address_case_insensitively(users_repo):
+    """The sign-in paths resolve identity with ``get_by_email_ci``, so the token
+    is minted on whichever case variant is the account. A case-SENSITIVE CAS
+    would mint a working link and then refuse to open it."""
+    repo, _, _ = users_repo
+    now = datetime.now(timezone.utc)
+    _make_user(repo, id="user-mixed", email="Mixed.Case@Example.com")
+    repo.update("user-mixed", reset_token="rtok", reset_token_created=now)
+    won = repo.consume_reset_token(
+        email="mixed.case@example.com",
+        token="rtok",
+        cutoff=now - timedelta(hours=24),
+        consume_id="CONSUMED:abc",
+    )
+    assert won is True
+    assert repo.get_by_id("user-mixed")["reset_token"] == "CONSUMED:abc"
+
+
 def test_consume_reset_token_wrong_token_loses(users_repo):
     repo, _, _ = users_repo
     now = datetime.now(timezone.utc)
@@ -457,6 +475,25 @@ def test_get_by_email_ci_picks_the_oldest_when_case_variants_coexist(users_repo)
     row = repo.get_by_email_ci("DUP@EXAMPLE.COM")
     assert row is not None
     assert row["id"] == "user-old"
+
+
+def test_get_by_email_ci_tiebreaks_deterministically_on_identical_created_at(users_repo):
+    """``created_at`` is not unique. Rows written in the same transaction (or
+    backfilled with the same timestamp) tie, and a bare ``ORDER BY created_at``
+    then leaves the winner to whatever order the engine happens to return —
+    which need not agree between DuckDB and Postgres, or between two runs on
+    one engine. The id breaks the tie so one identity always resolves to one
+    account."""
+    repo, _, backend = users_repo
+    same = datetime(2025, 3, 1, tzinfo=timezone.utc)
+    _make_user(repo, id="user-b", email="Tie@example.com")
+    _make_user(repo, id="user-a", email="tie@example.com")
+    _make_user(repo, id="user-c", email="TIE@EXAMPLE.COM")
+    for uid in ("user-a", "user-b", "user-c"):
+        _set_created_at(repo, backend, uid, same)
+    row = repo.get_by_email_ci("tie@example.com")
+    assert row is not None
+    assert row["id"] == "user-a"
 
 
 # ---------------------------------------------------------------------------

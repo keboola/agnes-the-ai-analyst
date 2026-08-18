@@ -91,7 +91,7 @@ def _generate_and_deliver_magic_link(email: str, next_path: str = "") -> tuple[d
     transport is configured but delivery failed.
     """
     repo = users_repo()
-    user = repo.get_by_email(email)
+    user = repo.get_by_email_ci(email)
     if not user:
         return None, None, None
 
@@ -243,7 +243,7 @@ def _consume_token(email: str, token: str) -> dict:
     if not repo.consume_reset_token(email=email, token=hash_token(token), cutoff=cutoff, consume_id=consume_id):
         raise HTTPException(status_code=401, detail="Invalid or expired link")
 
-    user = repo.get_by_email(email)
+    user = repo.get_by_email_ci(email)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid link")
     return user
