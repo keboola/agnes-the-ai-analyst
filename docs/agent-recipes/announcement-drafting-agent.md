@@ -107,3 +107,9 @@ Also allowlist the channel for the Slack surface itself (default-deny):
 - **Scope is live-enforced**: narrowing the agent or revoking a grant takes
   effect on the next request; the agent can never exceed
   (owner grants ∩ agent scope).
+- **A binding is a shared surface, on purpose**: anyone in the bound,
+  admin-allowlisted channel who passes the Slack identity + CHAT gates can
+  drive the agent, and the turn runs with the AGENT's authority — not the
+  mentioning user's. That is what makes "anyone on the team asks it to
+  draft" work; it is also why you scope the agent narrowly and bind only
+  channels where that is intended.
