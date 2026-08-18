@@ -10,7 +10,7 @@ Use this when you need to test `/chat`, the onboarding rail/panel, or any UI tha
 ## Start the server
 
 ```bash
-cd /home/ubuntu/repos/agnes-the-ai-analyst
+cd <install-dir>   # your local checkout of this repository
 LOCAL_DEV_MODE=1 TESTING=1 AGNES_CHAT_ENABLED=true .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 9000
 ```
 
