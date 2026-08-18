@@ -6832,6 +6832,13 @@
     function apUseTableAsBase() {
         if (!_apTable) return;
         document.getElementById('apSql').value = 'SELECT * FROM ' + (_apTable.name || _apTable.id);
+        // A programmatic `.value` assignment does not fire `input`, so the
+        // textarea's oninput hook never runs. Without this call a compile block
+        // set by an earlier failure survives text the admin deliberately put
+        // there, and the save stays refused with no way out but typing an extra
+        // character — and for a deterministic failure (unreadable schema, a spec
+        // hiding every column) no builder interaction could ever clear it.
+        apSqlEdited();
     }
 
     // ── Builder tab (no-SQL policy editor, access-policy-builder-ux plan
@@ -6846,13 +6853,20 @@
         document.querySelectorAll('[data-ap-panel]').forEach(function(panel) {
             panel.style.display = (panel.getAttribute('data-ap-panel') === tab) ? '' : 'none';
         });
-        /* Opening the Advanced SQL tab means the admin is taking over the SQL.
-           Any pending or in-flight builder compile is now stale and must not
-           overwrite what the admin types. The compile block is not cleared here:
-           a previous failed compile still protects saving unchanged stale output
-           from the box. Typing in the box clears it (`apSqlEdited`). */
+        /* Opening the Advanced SQL tab means the admin is taking over the SQL,
+           but a queued compile must be RUN here, not discarded. Discarding it
+           loses any builder change made inside the 250ms debounce window: it
+           never reaches #apSql, no compile error is set, and the save then
+           stores a policy that silently omits the admin's last edit. Flushing
+           hands over a box that matches what the builder shows.
+
+           Letting an in-flight compile land is safe: the admin has not typed
+           yet, and their first keystroke cancels it (`apSqlEdited`), with
+           `_apCompileSeq` discarding any response that arrives afterwards. The
+           compile block is not cleared here either — a previous failed compile
+           still protects against saving unchanged stale output from the box. */
         if (tab === 'sql') {
-            _apCancelPendingCompile();
+            _apFlushPendingCompile();
         }
     }
 
@@ -7110,6 +7124,17 @@
     // that already carries a saved policy does not clobber it. Every new
     // schedule cancels any pending timer and aborts any in-flight request so
     // stale results can never overwrite the box.
+    // Run a debounced compile NOW instead of waiting out its timer. Used when
+    // handing the SQL box to the admin: cancelling would drop the pending
+    // change, and waiting would hand over a box that is briefly wrong.
+    function _apFlushPendingCompile() {
+        if (_apCompileTimer) {
+            clearTimeout(_apCompileTimer);
+            _apCompileTimer = null;
+            _apCompileNow();
+        }
+    }
+
     function _apScheduleCompile() {
         _apCancelPendingCompile();
         _apCompileTimer = setTimeout(_apCompileNow, 250);

@@ -663,7 +663,14 @@ def create_mock_extract(extracts_dir: Path, source_name: str, tables: list[dict]
 
 
 def write_test_parquet(path: str, data: list[dict]):
-    """Create a parquet file from list of dicts."""
+    """Create a parquet file from list of dicts.
+
+    NB: every value is written as a string. This deliberately does NOT match
+    ``create_mock_extract`` above, which preserves Python scalar types so a
+    fixture can produce a non-VARCHAR column. Fixtures that care about column
+    type — anything exercising type-aware behaviour such as policy redaction —
+    want that helper, not this one.
+    """
     conn = duckdb.connect()
     selects = []
     for row in data:
