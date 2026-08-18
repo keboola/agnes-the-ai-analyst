@@ -59,6 +59,13 @@ FOUNDATION_TOOL_NAMES: tuple[str, ...] = (
     # + `agnes admin semantic-model list/export`.
     "semantic_model_search",
     "semantic_model_get",
+    # Query-validation engine wiring (wave 3) — validate SQL against the
+    # caller's accessible semantic models before running it. Triple-surface
+    # with POST /api/semantic-models/validate-query + `agnes semantic-model
+    # validate-query`. Gated fail-closed: with zero accessible valid models
+    # the REST response carries `available: false` rather than a misleading
+    # all-clear (see the tool's own docstring).
+    "validate_semantic_query",
     "collections_reingest",
     "schema",
     "describe",
@@ -449,6 +456,58 @@ def register_foundation_tools(
             )
             r.raise_for_status()
             return {"slug": slug, "document": r.text}
+
+    @tool(read_only=True)
+    async def validate_semantic_query(
+        sql: str,
+        expected: list[dict] | None = None,
+        target_engine: str = "duckdb",
+    ) -> dict:
+        """Validate SQL against your accessible semantic models before running it.
+
+        Checks constraint violations (an ``error``-severity hit sets
+        ``valid: false``), whether the SQL's used metrics declare an
+        expression for ``target_engine``, and — when ``expected`` is given —
+        which of your expected datasets/metrics/relationships the query
+        actually hits. Best-effort text matching against declared document
+        content, not SQL parsing — see the wire response's own limits; a
+        name that is a common word, or referenced only through an unrelated
+        alias, can go undetected. Same RBAC tier as `semantic_model_search` /
+        `semantic_model_get` (a Data Package or direct model grant, not
+        admin-only). Mirrors ``POST /api/semantic-models/validate-query`` and
+        `agnes semantic-model validate-query`.
+
+        Args:
+            sql: SQL statement to validate.
+            expected: Optional list of ``{"type": "dataset"|"metric"|"relationship",
+                "name": str}`` objects you expect the query to hit — diffed
+                against what was actually detected.
+            target_engine: Engine the query will run on (default ``duckdb``).
+
+        Returns the validator's result dict — ``valid``, ``used_datasets``,
+        ``used_metrics``, ``matched_relationships``, ``violations``,
+        ``post_execution_checks`` (rules that cannot be checked before
+        running — never treated as a violation), ``sql_dialects``,
+        ``mixed_dialect_warning``, ``locally_executable``, ``summary``, plus
+        the ``matched_expected_objects``/``missing_expected_objects``/
+        ``unexpected_detected_objects`` trio when ``expected`` was passed.
+        When you have no accessible ``status='valid'`` semantic model, this
+        returns ``{"available": false, "error": "no_semantic_model",
+        "message": ...}`` instead of a misleading all-clear — check
+        ``available`` before trusting ``valid``.
+        """
+        payload: dict[str, Any] = {"sql": sql, "target_engine": target_engine}
+        if expected is not None:
+            payload["expected"] = expected
+        async with httpx.AsyncClient() as c:
+            r = await c.post(
+                f"{base_url}/api/semantic-models/validate-query",
+                json=payload,
+                headers=headers_fn(),
+                timeout=30,
+            )
+            r.raise_for_status()
+            return r.json()
 
     @tool(read_only=True)
     async def collection_file_read(collection_id: str, file_id: str) -> dict:

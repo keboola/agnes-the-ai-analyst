@@ -13,12 +13,15 @@ See ``docs/superpowers/specs/2026-08-13-open-semantic-layer-contract-design.md``
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from src.repositories import column_metadata_repo, glossary_repo, metric_repo
 from src.semantic.dialect import resolve_expression
+
+logger = logging.getLogger(__name__)
 
 # Vendor name under which Agnes rides its own concepts (glossary entries,
 # keywords, constraints — see Task 13) through Ossie's generic
@@ -72,32 +75,91 @@ def _table_binder():
     return lambda table_id: resolve_table_name(table_id, lookup)
 
 
-def _bind_metric_sql(fragment: str, table_id: str, binder) -> tuple[str, Optional[str]]:
-    """Compose runnable SQL for a metric bound to a registered table.
+def _keboola_lookups():
+    """``(table_lookup, column_lookup)`` for JOIN composition, or ``None`` when
+    no Keboola tables are registered. Same seam as :func:`_table_binder`:
+    Keboola-specific, imported lazily, and the finished JOIN needs Agnes's own
+    registry + column metadata — data the adapter deliberately never had, which
+    is why the JOIN is composed here rather than in the document."""
+    try:
+        from connectors.keboola.semantic_layer import table_lookup_from_registry
+        from src.repositories import column_metadata_repo, table_registry_repo
 
-    Returns ``(sql, table_name)`` — falling back to ``(fragment, None)``
-    whenever the binding cannot be made safely. Never drops the metric: the
-    legacy composer skipped these, and a projector that skipped them too would
-    silently write fewer rows than the path it replaces.
+        table_lookup = table_lookup_from_registry(table_registry_repo().list_by_source("keboola"))
+    except Exception:  # pragma: no cover - a registry read failure must not lose metrics
+        return None
+    if not table_lookup:
+        return None
+    col_repo = column_metadata_repo()
+    column_lookup = {
+        view: {c["column_name"] for c in col_repo.list_for_table(view)} for view in set(table_lookup.values())
+    }
+    return table_lookup, column_lookup
 
-    The two guards are `compose_sql`'s documented preconditions. A trailing
-    `--` comment would swallow the appended FROM clause, and a foreign-alias
-    reference needs a JOIN this path cannot compose.
+
+def _relationship_lookup_from_model(model: dict) -> dict:
+    """``tableId -> [relationship attrs]`` for one model, rebuilt from each
+    relationship's ``AGNES`` extension (which carries the raw tableIds, the
+    on-clause and the type). Mirrors the legacy
+    ``relationship_lookup_by_dataset``: a relationship is filed under BOTH its
+    ``from`` and ``to`` tableId, and ``resolve_relationship`` decides which side
+    the metric's dataset sits on."""
+    lookup: dict = {}
+    for rel in model.get("relationships") or []:
+        ext = _agnes_payload(rel)
+        from_id, to_id = ext.get("from_table"), ext.get("to_table")
+        if not (from_id and to_id):
+            continue
+        attrs = {"from": from_id, "to": to_id, "on": ext.get("on") or "", "type": ext.get("type") or ""}
+        lookup.setdefault(from_id, []).append(attrs)
+        lookup.setdefault(to_id, []).append(attrs)
+    return lookup
+
+
+def _bind_metric(
+    fragment: str, table_id: str, binder, kb_lookups, rel_lookup: dict
+) -> Optional[tuple[str, Optional[str], Optional[list]]]:
+    """Resolve one metric's SQL against its declared table binding.
+
+    Returns ``(sql, table_name, tables)`` or ``None`` (caller SKIPS). Four
+    outcomes, matching the legacy Keboola composer exactly:
+
+    - **No binding declared** (``table_id`` empty) → ``(fragment, None, None)``.
+      A plain upstream Ossie metric — e.g. from a git source — kept verbatim.
+    - **Simple binding honored** → ``(SELECT … FROM "view" AS t, view, None)``.
+    - **Foreign-alias binding resolvable via a relationship** →
+      ``(join_sql, primary_view, [primary_view, joined_view])``, composed by the
+      legacy ``try_join_composition`` (the one live-verified LEFT-JOIN case).
+    - **Binding declared but cannot be honored** (unregistered table, embedded
+      ``--`` comment, unresolvable foreign alias) → ``None``. The composer skips
+      these; keeping them as bare fragments would make the flat-table cutover
+      start surfacing unrunnable metrics.
     """
-    if binder is None or not table_id:
-        return fragment, None
+    if not table_id:
+        return fragment, None, None
+    if binder is None:
+        return None
     from connectors.keboola.semantic_layer import (
         compose_sql,
         has_embedded_sql_comment,
         references_foreign_alias,
+        try_join_composition,
     )
 
-    if has_embedded_sql_comment(fragment) or references_foreign_alias(fragment):
-        return fragment, None
+    if has_embedded_sql_comment(fragment):
+        return None
+    if references_foreign_alias(fragment):
+        if kb_lookups is None:
+            return None
+        table_lookup, column_lookup = kb_lookups
+        fields, _reason = try_join_composition(fragment, table_id, table_lookup, rel_lookup, column_lookup)
+        if fields is None:
+            return None
+        return fields["sql"], fields["table_name"], fields.get("tables")
     table_name = binder(table_id)
     if not table_name:
-        return fragment, None
-    return compose_sql(fragment, table_name), table_name
+        return None
+    return compose_sql(fragment, table_name), table_name, None
 
 
 def _constraints_for(metric_name: str, constraints: list) -> Optional[dict]:
@@ -135,11 +197,39 @@ def _scoped_id(source: str, source_ref: Optional[str], *parts: str) -> str:
     return "/".join([source, source_ref or "_", *parts])
 
 
+def _model_key(model: dict) -> str:
+    """The id component that identifies ONE model within a (source,
+    source_ref) — the upstream object's stable identifier when the document
+    carries one, its display name otherwise.
+
+    A model's ``name`` is a display name: neither unique nor stable. Keying
+    projected ids on it makes two like-named models collapse onto identical
+    ids, and since ``metric_repo().create`` upserts on id, the later model
+    silently OVERWRITES the earlier one — no prune, no skip, and
+    ``metrics_written`` still counts both. The retired Keboola writer keyed
+    on the immutable Metastore model UUID for exactly this reason, and the
+    adapter still carries it: ``custom_extensions[AGNES].metastore_id`` (see
+    ``connectors/keboola/semantic_ossie.py::_identity``, written for every
+    model, since only models with an ``id`` are composed at all).
+
+    A document from a source with no such identifier — a hand-authored or
+    git-hosted Ossie file — falls back to the name, and
+    :func:`project_document` reports a name collision there as an explicit
+    skip rather than overwriting.
+    """
+    raw = _agnes_payload(model).get("metastore_id")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    return model.get("name") or ""
+
+
 @dataclass
 class ProjectionReport:
     metrics_written: int = 0
     glossary_written: int = 0
     columns_written: int = 0
+    metrics_pruned: int = 0
+    glossary_pruned: int = 0
     skipped: list[dict] = field(default_factory=list)
 
 
@@ -205,13 +295,42 @@ def _glossary_entries(model: dict) -> list[dict]:
     return entries
 
 
-def project_document(document_json: dict, *, source: str, source_ref: Optional[str]) -> ProjectionReport:
+def project_document(
+    document_json: dict,
+    *,
+    source: str,
+    source_ref: Optional[str],
+    safe_prune: bool = False,
+    partial: bool = False,
+) -> ProjectionReport:
     """Project one Ossie document, then prune rows this (source, source_ref)
     previously wrote that the document no longer mentions.
 
     Never a global delete: pruning always reads and deletes within this
     document's own (source, source_ref) scope, so re-projecting a shrunk
     document cannot touch another source's — or another ref's — rows.
+
+    ``safe_prune`` adds a full-wipe guard on top of that scoping: when the
+    projection wrote ZERO metrics (resp. glossary terms) while in-scope rows
+    already exist, the prune is skipped and logged rather than deleting every
+    row. A document that legitimately shrinks to zero is indistinguishable
+    from a transient upstream that returned an empty-but-valid document, and
+    the second must not wipe an installation's whole metric registry in one
+    pass. Off by default (a git source emptying a model is a real delete
+    signal); the Keboola sync — whose upstream can 200 with nothing usable —
+    opts in. Mirrors the legacy ``_sync_one_source`` valve the cutover retired.
+
+    ``partial`` says "``document_json`` is NOT the complete picture for this
+    (source, source_ref)" — one of several composed documents failed
+    validation and was dropped before reaching here, so a model that belongs
+    to this scope is missing. Pruning at full scope against that incomplete
+    list would delete the dropped model's own previously-written rows, which
+    upstream never asked to have removed. The prune then NARROWS to the models
+    actually present in this call rather than being skipped outright: a model
+    still present that genuinely lost a metric upstream is reconciled in the
+    same pass, while the missing model is out of reach by construction. Off by
+    default, because the full scope is what reclaims a model deleted upstream
+    — a caller that knows its input is complete must keep it.
     """
     report = ProjectionReport()
 
@@ -226,11 +345,41 @@ def project_document(document_json: dict, *, source: str, source_ref: Optional[s
     # Resolved once per call, not per metric: a registry read per metric would
     # turn a routine sync of a few hundred metrics into a few hundred queries.
     binder = _table_binder()
+    kb_lookups = _keboola_lookups()
+
+    # One id prefix per model projected here. Used only when ``partial`` — see
+    # the docstring — to keep the prune off models this call never saw.
+    model_prefixes: set[str] = set()
+    seen_model_keys: set[str] = set()
 
     for model in document_json.get("semantic_model") or []:
         model_name = model.get("name") or ""
+        model_key = _model_key(model)
+        if model_key in seen_model_keys:
+            # Two models sharing an id component. With a stable upstream
+            # identifier this cannot happen; without one (a hand-authored
+            # document with two like-named models) every id would collide and
+            # the later model would silently overwrite the earlier — reported
+            # as a skip instead, because a silent overwrite is
+            # indistinguishable from "the second model imported fine".
+            logger.warning(
+                "Semantic projection (%s/%s): model %r reuses the id key %r of an earlier model in this "
+                "document; skipping it rather than overwriting the first model's rows.",
+                source,
+                source_ref,
+                model_name,
+                model_key,
+            )
+            report.skipped.append({"kind": "model", "name": model_name, "reason": "duplicate_model_key"})
+            continue
+        seen_model_keys.add(model_key)
+        model_prefixes.add(_scoped_id(source, source_ref, model_key) + "/")
+
         synonyms = _model_synonyms(model)
         constraints = _agnes_payload(model).get("constraints") or []
+        # Per model: its own relationships resolve its metrics' JOINs, never a
+        # merged pool (a relationship in one model must not satisfy another's).
+        rel_lookup = _relationship_lookup_from_model(model)
         # A dataset's grain describes the DATASET. It rides along as a note on
         # the metrics bound to it, never as `metric_definitions.grain`, which
         # would restate it as a fact about the metric's own time dimension.
@@ -247,20 +396,34 @@ def project_document(document_json: dict, *, source: str, source_ref: Optional[s
             if sql is None:
                 report.skipped.append({"kind": "metric", "name": metric_name, "reason": reason})
                 continue
+            # The bare aggregation fragment, before `_bind_metric` composes it
+            # into a runnable `SELECT ... FROM ...` (or a JOIN). The legacy
+            # composer stored this alongside the composed `sql` as
+            # `metric_definitions.expression`; kept here so the "Expression"
+            # block in catalog_semantics.html still has something to render.
+            fragment = sql
             table_id = _agnes_payload(metric).get("dataset") or ""
-            sql, table_name = _bind_metric_sql(sql, table_id, binder)
+            bound = _bind_metric(sql, table_id, binder, kb_lookups, rel_lookup)
+            if bound is None:
+                # A binding was declared but cannot be honored — skip, as the
+                # legacy composer does, rather than write an unrunnable row.
+                report.skipped.append({"kind": "metric", "name": metric_name, "reason": "unresolved_binding"})
+                continue
+            sql, table_name, tables = bound
             grain = grain_by_table.get(table_id)
             notes = [f"dataset grain: {grain}"] if grain else None
-            metric_id = _scoped_id(source, source_ref, model_name, metric_name)
+            metric_id = _scoped_id(source, source_ref, model_key, metric_name)
             metric_repo().create(
                 id=metric_id,
                 name=metric_name,
                 display_name=metric_name,
                 category=model_name or "semantic_model",
                 sql=sql,
+                expression=fragment,
                 description=metric.get("description"),
                 synonyms=synonyms,
                 table_name=table_name,
+                tables=tables,
                 notes=notes,
                 validation=_constraints_for(metric_name, constraints),
                 source=source,
@@ -270,6 +433,18 @@ def project_document(document_json: dict, *, source: str, source_ref: Optional[s
             report.metrics_written += 1
 
         for dataset in model.get("datasets") or []:
+            # Deliberately NOT resolved through the table binder to the Agnes
+            # view name (unlike the metric leg above). `column_metadata` is
+            # keyed `(table_id, column_name)` with a single `source` column —
+            # no source dimension — so writing under the view name collides
+            # with rows the profiler / import_proposal / admin already own
+            # there: Keboola fields frequently have `description=None`, so
+            # every sync would blank a previously-authored description and
+            # re-stamp `source='keboola_metastore'`, and `_prune_columns` then
+            # deletes it outright. Surfacing Keboola per-column descriptions
+            # under the view name is deferred pending an ownership-aware
+            # design for that key; for now this write is inert for Keboola
+            # (nothing reads the raw tableId) but harmless.
             table_id = dataset.get("source") or dataset.get("name") or ""
             field_names = written_columns_by_table.setdefault(table_id, set())
             for column in dataset.get("fields") or []:
@@ -290,7 +465,24 @@ def project_document(document_json: dict, *, source: str, source_ref: Optional[s
             term = entry.get("term")
             if not term:
                 continue
-            glossary_id = _scoped_id(source, source_ref, model_name, _slugify(term))
+            base_glossary_id = _scoped_id(source, source_ref, model_key, _slugify(term))
+            # Two distinct terms can slugify identically ("Revenue (net)" and
+            # "Revenue net" both -> "revenue_net"); without a dedup, the
+            # second silently overwrites the first while `glossary_written`
+            # counts both. Numeric-suffix on collision, first-seen order,
+            # scoped to this call — mirrors the deleted `assign_glossary_id`.
+            glossary_id = base_glossary_id
+            suffix = 2
+            while glossary_id in written_glossary_ids:
+                glossary_id = f"{base_glossary_id}-{suffix}"
+                suffix += 1
+            # refresh_fts=False: rebuilding the BM25 index once per glossary
+            # term makes a routine sync of N terms an O(N^2) full-index
+            # rebuild (DuckDB's `PRAGMA create_fts_index` is a full rebuild,
+            # not incremental). One rebuild after every write AND prune below
+            # instead. `GlossaryPgRepository.create` accepts the same kwarg as
+            # a no-op (Postgres computes `ts_rank` on the fly, no index to
+            # rebuild), so this is safe on either backend.
             glossary_repo().create(
                 id=glossary_id,
                 term=term,
@@ -298,39 +490,107 @@ def project_document(document_json: dict, *, source: str, source_ref: Optional[s
                 see_also=entry.get("see_also"),
                 source=source,
                 source_ref=source_ref,
+                refresh_fts=False,
             )
             written_glossary_ids.add(glossary_id)
             report.glossary_written += 1
 
-    _prune_metrics(source, source_ref, written_metric_ids)
-    _prune_glossary(source, source_ref, written_glossary_ids)
+    prune_prefixes = model_prefixes if partial else None
+    report.metrics_pruned = _prune_metrics(
+        source, source_ref, written_metric_ids, safe_prune=safe_prune, scope_prefixes=prune_prefixes
+    )
+    report.glossary_pruned = _prune_glossary(
+        source, source_ref, written_glossary_ids, safe_prune=safe_prune, scope_prefixes=prune_prefixes
+    )
+    # `_prune_columns` needs no narrowing: it only visits tables THIS call
+    # wrote to, so a dropped model's tables are out of its reach already.
     _prune_columns(source, written_columns_by_table)
+
+    if report.glossary_written or report.glossary_pruned:
+        glossary_repo().refresh_search_index()
 
     return report
 
 
-def _prune_metrics(source: str, source_ref: Optional[str], written: set[str]) -> None:
+def _in_prune_scope(row_id: str, scope_prefixes: Optional[set[str]]) -> bool:
+    """Whether an in-(source, source_ref) row is also inside the narrowed
+    prune scope. ``None`` means "no narrowing" — the whole (source,
+    source_ref), which is what reclaims a model deleted upstream. A set of id
+    prefixes restricts the prune to the models a partial projection actually
+    carried; see ``project_document``'s ``partial``."""
+    if scope_prefixes is None:
+        return True
+    return any(row_id.startswith(prefix) for prefix in scope_prefixes)
+
+
+def _prune_metrics(
+    source: str,
+    source_ref: Optional[str],
+    written: set[str],
+    *,
+    safe_prune: bool = False,
+    scope_prefixes: Optional[set[str]] = None,
+) -> int:
     repo = metric_repo()
     in_scope = {
         m["id"]
         for m in repo.list()
-        if (m.get("source") or "") == source and (m.get("source_ref") or "") == (source_ref or "")
+        if (m.get("source") or "") == source
+        and (m.get("source_ref") or "") == (source_ref or "")
+        and _in_prune_scope(m["id"], scope_prefixes)
     }
+    if safe_prune and not written and in_scope:
+        # Full-wipe guard: wrote nothing this pass while rows exist — a likely
+        # empty-but-valid upstream, not a genuine "all metrics deleted". Skip
+        # rather than delete every in-scope row (see project_document's
+        # ``safe_prune``).
+        logger.warning(
+            "Semantic projection (%s/%s): wrote zero metrics while %d in-scope rows exist; "
+            "skipping prune to avoid a full wipe. Existing rows retained.",
+            source,
+            source_ref,
+            len(in_scope),
+        )
+        return 0
+    pruned = 0
     for metric_id in in_scope - written:
         repo.delete(metric_id)
+        pruned += 1
+    return pruned
 
 
-def _prune_glossary(source: str, source_ref: Optional[str], written: set[str]) -> None:
+def _prune_glossary(
+    source: str,
+    source_ref: Optional[str],
+    written: set[str],
+    *,
+    safe_prune: bool = False,
+    scope_prefixes: Optional[set[str]] = None,
+) -> int:
     repo = glossary_repo()
     # No list_all(): list(limit=...) with a high ceiling is the established
     # pattern for "give me every row" reads elsewhere (app/web/router.py).
     in_scope = {
         g["id"]
         for g in repo.list(limit=100_000)
-        if (g.get("source") or "") == source and (g.get("source_ref") or "") == (source_ref or "")
+        if (g.get("source") or "") == source
+        and (g.get("source_ref") or "") == (source_ref or "")
+        and _in_prune_scope(g["id"], scope_prefixes)
     }
+    if safe_prune and not written and in_scope:
+        logger.warning(
+            "Semantic projection (%s/%s): wrote zero glossary terms while %d in-scope rows exist; "
+            "skipping prune to avoid a full wipe. Existing rows retained.",
+            source,
+            source_ref,
+            len(in_scope),
+        )
+        return 0
+    pruned = 0
     for glossary_id in in_scope - written:
         repo.delete(glossary_id)
+        pruned += 1
+    return pruned
 
 
 def _prune_columns(source: str, written_by_table: dict[str, set[str]]) -> None:

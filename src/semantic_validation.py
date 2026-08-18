@@ -44,9 +44,9 @@ LIMITATIONS (carried into every surface that wraps this module):
   removed, can produce false negatives; a name that happens to appear in a
   comment or a string literal can produce a false positive.
 - Constraint checking (``evaluate_constraints``) can only verify rules whose
-  ``type`` this module recognizes as checkable from the raw SQL text alone
-  (currently just ``"required_filter"``, checked as text presence — see
-  ``_STATICALLY_CHECKABLE_CONSTRAINT_TYPES``). Anything else — most business
+  ``constraint_type`` this module recognizes as checkable from the raw SQL
+  text alone (currently just ``"required_filter"``, checked as text presence —
+  see ``_STATICALLY_CHECKABLE_CONSTRAINT_TYPES``). Anything else — most business
   rules are about the query's *result*, not its text (e.g. a value-range rule
   like ``"value >= 0"``) — degrades to a ``post_execution_checks`` entry
   rather than a guess in either direction.
@@ -55,11 +55,17 @@ LIMITATIONS (carried into every surface that wraps this module):
   universally accepted baseline, any target engine; see ``check_dialects``);
   it says nothing about whether the composed SQL is otherwise valid.
 
-Constraint/expected-object payload shapes referenced above (``type``/``rule``
-on a constraint, ``{type, name}`` on an expected object) are this module's own
-provisional convention — the contract spec deliberately leaves constraints
-homeless in the core schema (they ride ``custom_extensions``); see the
-implementation report for the exact points still open for confirmation there.
+The expected-object payload shape referenced above (``{type, name}``) is this
+module's own provisional convention. The constraint payload is NOT: the core
+schema leaves constraints homeless (they ride ``custom_extensions``), so that
+shape belongs to Agnes, and its key for the rule kind is ``constraint_type``
+— what ``connectors/keboola/semantic_ossie.py`` composes, what
+``src/semantic/projection.py`` reads into
+``metric_definitions.validation.rules[]``, and what
+``agnes catalog --metrics --show`` renders from there. This module used to
+read ``type`` instead, its own provisional name for the same field, so no
+imported constraint was ever statically checkable; one name now spans the
+whole chain rather than each end accepting both.
 """
 
 from __future__ import annotations
@@ -75,7 +81,7 @@ from typing import Any
 # tags elsewhere in the codebase (e.g. metric_definitions.source values).
 AGNES_VENDOR_NAME = "agnes"
 
-# Constraint ``type`` values this module can check directly against the raw
+# Constraint ``constraint_type`` values this module can check against the raw
 # SQL text (a "requires this text to appear somewhere" rule). Everything else
 # needs the query's *result* to evaluate (e.g. a value-range rule) and always
 # degrades to a post_execution_checks entry -- never a guessed violation.
@@ -204,8 +210,9 @@ def extract_constraints(document: dict[str, Any]) -> list[dict[str, Any]]:
     non-JSON string ``data``, missing/wrong-typed ``constraints``).
 
     Each returned constraint is normalized to
-    ``{"name", "type", "rule", "severity", "metrics"}`` -- ``severity`` and
-    ``type`` are imported document text and are stored casefolded
+    ``{"name", "constraint_type", "rule", "severity", "metrics"}`` --
+    ``severity`` and ``constraint_type`` are imported document text and are
+    stored casefolded
     (``"ERROR"`` must drive ``valid=False`` exactly like ``"error"``, and
     ``"Required_Filter"`` must reach the static check); ``severity`` defaults
     to ``"warning"`` unless it reads as ``"error"``/``"warning"``, so a
@@ -261,7 +268,7 @@ def extract_constraints(document: dict[str, Any]) -> list[dict[str, Any]]:
                 metrics = [metrics]
             elif not isinstance(metrics, list):
                 metrics = []
-            # severity/type come from imported text and are compared (and
+            # severity/constraint_type come from imported text and are compared (and
             # stored) casefolded, like every other comparison over document
             # text in this module: an exact-case test would silently downgrade
             # an "ERROR" constraint to a warning -- it could then never set
@@ -271,13 +278,23 @@ def extract_constraints(document: dict[str, Any]) -> list[dict[str, Any]]:
             severity = severity.casefold() if isinstance(severity, str) else ""
             if severity not in ("error", "warning"):
                 severity = "warning"
-            constraint_type = item.get("type")
+            # `constraint_type`, not `type`: the AGNES constraint payload has
+            # no schema of its own, so its shape is fixed by the only producer
+            # (`connectors/keboola/semantic_ossie.py::_compose_constraint`) and
+            # the consumer that stores it into
+            # `metric_definitions.validation` (`src.semantic.projection
+            # ._constraints_for`) -- both `constraint_type`. Reading `type`
+            # here meant no Keboola-composed constraint was ever statically
+            # checkable: each degraded to `post_execution_checks` and the
+            # validator could never return `valid=False` for a real imported
+            # model. One key end to end beats each end accepting both.
+            constraint_type = item.get("constraint_type")
             if isinstance(constraint_type, str):
                 constraint_type = constraint_type.casefold()
             constraints.append(
                 {
                     "name": str(item["name"]),
-                    "type": constraint_type,
+                    "constraint_type": constraint_type,
                     "rule": item.get("rule"),
                     "severity": severity,
                     "metrics": [str(m) for m in metrics if m],
@@ -299,7 +316,7 @@ def evaluate_constraints(
     includes a constraint with an empty/absent ``metrics`` list: the
     provisional constraint convention has no model-wide scope, so such an
     entry is never evaluated (deliberate, not an oversight). A
-    constraint on a used metric whose ``type`` is not statically checkable
+    constraint on a used metric whose ``constraint_type`` is not statically checkable
     (see ``_STATICALLY_CHECKABLE_CONSTRAINT_TYPES``) degrades to a
     ``post_execution_checks`` entry, never a guessed violation. Only a
     checkable rule that actually fails becomes a ``violations`` entry;
@@ -322,7 +339,7 @@ def evaluate_constraints(
         if not applicable_metrics:
             continue
 
-        # ``severity``, like ``type`` below, may come from a hand-built
+        # ``severity``, like ``constraint_type`` below, may come from a hand-built
         # constraint and is compared casefolded downstream (``valid`` keys off
         # exactly "error") -- normalize it the same way extract_constraints
         # does, or a hand-built "ERROR" silently degrades to advisory.
@@ -333,16 +350,17 @@ def evaluate_constraints(
 
         entry = {
             "name": constraint.get("name"),
-            "type": constraint.get("type"),
+            "constraint_type": constraint.get("constraint_type"),
             "rule": constraint.get("rule"),
             "severity": severity,
             "metrics": applicable_metrics,
         }
 
-        # extract_constraints already stores ``type`` casefolded, but this is
-        # public API and callers may hand-build constraints -- casefold again
-        # so "Required_Filter" reaches the static check either way.
-        constraint_type = constraint.get("type")
+        # extract_constraints already stores ``constraint_type`` casefolded,
+        # but this is public API and callers may hand-build constraints --
+        # casefold again so "Required_Filter" reaches the static check either
+        # way.
+        constraint_type = constraint.get("constraint_type")
         if isinstance(constraint_type, str):
             constraint_type = constraint_type.casefold()
         # A non-string rule (imported documents are untrusted; a structured
