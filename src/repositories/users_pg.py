@@ -60,7 +60,7 @@ class UsersPgRepository:
                 conn.execute(
                     sa.text(
                         "SELECT * FROM users WHERE lower(email) = lower(:email) "
-                        "ORDER BY COALESCE(active, TRUE) DESC, created_at NULLS LAST, id LIMIT 1"
+                        "ORDER BY created_at NULLS LAST, id LIMIT 1"
                     ),
                     {"email": email},
                 )

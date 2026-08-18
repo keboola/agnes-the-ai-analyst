@@ -65,14 +65,18 @@ class UserRepository:
         is not unique — rows written together tie — so ``id`` breaks the tie and
         both engines land on the same row.
 
-        An ACTIVE row wins over an older deactivated one, though. Callers feed
-        this row straight into a deactivated gate, so a bare oldest-wins read
-        would let a stale disabled variant shadow the account the person
-        actually uses and refuse the sign-in outright. Offboarding still works:
-        when no variant is active the oldest comes back and the gate fires."""
+        The ordering deliberately does NOT prefer an active row. Callers feed
+        this row straight into a deactivated gate, and ranking active rows
+        first would mean an operator who disables the account they can see
+        silently hands the person the other, still-enabled variant — a
+        different account id with different group memberships. A stale disabled
+        variant shadowing the live account is the opposite failure, and it is
+        the safe one: a wrongly-refused sign-in is visible and fixable, a
+        bypassed deactivation is neither. Instances carrying such duplicates
+        want a reconciliation pass; a read-only report that lists them is the
+        queued follow-up."""
         result = self.conn.execute(
-            "SELECT * FROM users WHERE lower(email) = lower(?) "
-            "ORDER BY COALESCE(active, TRUE) DESC, created_at NULLS LAST, id LIMIT 1",
+            "SELECT * FROM users WHERE lower(email) = lower(?) ORDER BY created_at NULLS LAST, id LIMIT 1",
             [email],
         ).fetchone()
         return self._row_to_dict(result)

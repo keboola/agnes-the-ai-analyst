@@ -478,15 +478,14 @@ def test_get_by_email_ci_tiebreaks_deterministically_on_identical_created_at(use
     assert row["id"] == "user-a"
 
 
-def test_get_by_email_ci_prefers_an_active_row_over_an_older_deactivated_one(users_repo):
-    """Oldest wins, but an ACTIVE row wins over an older deactivated one.
+def test_get_by_email_ci_does_not_prefer_an_active_row(users_repo):
+    """Selection must not depend on the ``active`` flag.
 
-    ``ensure_user`` feeds this row straight into the deactivated gate. With two
-    case variants where the older is deactivated and the newer is the account
-    the person actually uses, a bare oldest-wins read refuses the sign-in
-    outright — the person is told their account is deactivated while their real
-    one is active. Offboarding still works: when NO variant is active, the
-    oldest is returned and the gate fires."""
+    Callers gate on the returned row's own ``active`` value, so ranking active
+    rows first would let a still-enabled duplicate serve a sign-in the operator
+    just disabled — offboarding bypassed by a hidden case variant. Oldest wins
+    regardless, which fails closed: the disabled row is returned and the
+    caller's gate refuses."""
     repo, _, backend = users_repo
     _make_user(repo, id="user-old", email="Dup@example.com")
     _make_user(repo, id="user-new", email="dup@example.com")
@@ -496,13 +495,8 @@ def test_get_by_email_ci_prefers_an_active_row_over_an_older_deactivated_one(use
 
     row = repo.get_by_email_ci("dup@example.com")
     assert row is not None
-    assert row["id"] == "user-new", "an older deactivated variant must not shadow the active account"
-
-    # Genuinely offboarded: every variant inactive → the oldest comes back and
-    # the caller's deactivated gate still refuses.
-    repo.update("user-new", active=False)
-    row = repo.get_by_email_ci("dup@example.com")
-    assert row is not None and row["id"] == "user-old"
+    assert row["id"] == "user-old", "a still-active duplicate must not outrank the deactivated oldest"
+    assert row["active"] is False
 
 
 # ---------------------------------------------------------------------------
