@@ -22,6 +22,8 @@ import pyarrow as pa
 import requests
 from kbcstorage.client import Client
 
+from connectors.keboola.storage_api import _s3_to_https
+
 from dataclasses import dataclass, field
 
 
@@ -652,6 +654,17 @@ class KeboolaClient:
                         if slice_url.startswith("gs://"):
                             # gs://bucket/path -> https://storage.googleapis.com/bucket/path
                             slice_url = slice_url.replace("gs://", "https://storage.googleapis.com/", 1)
+                        elif slice_url.startswith("s3://"):
+                            # Some AWS stacks list raw s3:// URIs in sliced
+                            # manifests (not presigned HTTPS) — presign with
+                            # the temporary federation credentials from the
+                            # ?federationToken=1 file detail, same as
+                            # storage_api.py's sliced path.
+                            slice_url = _s3_to_https(
+                                slice_url,
+                                file_data.get("credentials") or {},
+                                file_data.get("region"),
+                            )
 
                         logger.debug(f"Downloading slice {i + 1}/{len(slice_entries)}")
 
