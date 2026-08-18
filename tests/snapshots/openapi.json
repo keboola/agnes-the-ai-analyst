@@ -10886,7 +10886,7 @@
   "info": {
     "description": "Self-hosted AI harness: governed data access, skills marketplace, corporate memory, and agent workspaces",
     "title": "AI Harness",
-    "version": "0.83.19"
+    "version": "0.83.23"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -23706,7 +23706,7 @@
     },
     "/api/admin/registry/{table_id}/policy/compile": {
       "post": {
-        "description": "Turn a structured builder spec into the canonical policy SQL (plan\nTask 3) via ``src.access_policy_compile.compile_policy`` -- the ONLY\nplace that generator's anti-leak EXCLUDE-before-derive invariant is\nexercised over HTTP. Returns SQL only; nothing is persisted here -- an\nadmin who likes the result still saves it through the existing ``PUT\n/registry/{id}`` (``access_policy_sql``), unchanged, so the stored\nartifact stays SQL, never a structured spec.",
+        "description": "Turn a structured builder spec into the canonical policy SQL (plan\nTask 3) via ``src.access_policy_compile.compile_policy`` -- the ONLY\nplace that generator's anti-leak EXCLUDE-before-derive invariant is\nexercised over HTTP. Returns SQL only; nothing is persisted here -- an\nadmin who likes the result still saves it through the existing ``PUT\n/registry/{id}`` (``access_policy_sql``), unchanged, so the stored\nartifact stays SQL, never a structured spec.\n\nRead-only and, like ``policy_builder_columns`` above, deliberately not\ngated on ``access_policies.enabled``: it neither reads nor writes a\nstored policy. The flag gates ATTACHING one (``PUT /registry/{id}``\nwith a non-null ``access_policy_sql``).",
         "operationId": "policy_builder_compile_api_admin_registry__table_id__policy_compile_post",
         "parameters": [
           {
