@@ -3,7 +3,7 @@
 
 {% set page_hero_eyebrow = "MCP" %}
 {% set page_hero_title = "Connect your editor" %}
-{% set page_hero_subtitle = "Generate a token so Cursor, VS Code / Copilot, Claude Code, or any MCP-compatible editor can reach Agnes without a browser login." %}
+{% set page_hero_subtitle = "Generate a token so Cursor, VS Code / Copilot, Claude Code, or any MCP-compatible editor can reach " ~ (instance_brand or 'Agnes') ~ " without a browser login." %}
 
 {% block head_extra %}
 <style>

@@ -790,12 +790,19 @@ class TestRailChatHistory:
         assert "display: none" in css.split(".rail-getstarted.is-complete {", 1)[1].split("}", 1)[0]
 
     def test_onboarding_row_title_and_progress_are_js_driven(self, web_client, admin_cookie, monkeypatch):
-        """ "Set up Agnes" until the first step lands, "Continue setup" after —
-        and the ring's arc follows the same count."""
+        """ "Set up {brand}" until the first step lands, "Continue setup" after —
+        and the ring's arc follows the same count.
+
+        The product half of that title reads the brand seam (`brandShort()`,
+        fed by `data-brand-short` on `#railGetStarted`) rather than a literal:
+        the card is branded server-side and this function rewrites it, so a
+        literal here would replace an operator's brand with "Agnes" one frame
+        into the page. `tests/test_brand_prose_sweep.py` owns that invariant;
+        this line only pins that the flip itself is still JS-driven."""
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         js = web_client.get("/static/js/chat_onboarding.js").text
         body = js.split("function updateGetStartedIndicator(", 1)[1].split("\n}", 1)[0]
-        assert 'done > 0 ? "Continue setup" : "Set up Agnes"' in body
+        assert 'done > 0 ? "Continue setup" : `Set up ${brandShort()}`' in body
         assert "${done} of ${total} steps complete" in body
         assert "(done / total) * 100" in body
         assert "strokeDasharray" in body

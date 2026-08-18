@@ -17,7 +17,7 @@ from typing import Any, Optional
 import duckdb
 
 from connectors.bigquery.extractor import MaterializeBudgetError
-from connectors.snowflake.attach import build_remote_attach_url
+from connectors.snowflake.attach import attach_snowflake, build_remote_attach_url
 from src.duckdb_conn import _open_duckdb
 from src.identifier_validation import validate_identifier
 from src.orchestrator_security import is_attach_host_allowed
@@ -45,8 +45,7 @@ def _get_table_lock(table_id: str) -> threading.Lock:
         return _TABLE_LOCKS[table_id]
 
 
-def _escape_sql_string_literal(value: str) -> str:
-    return value.replace("'", "''")
+
 
 
 def _quote_ident(name: str) -> str:
@@ -160,10 +159,14 @@ def materialize_query(
     if not settings:
         raise ValueError("snowflake settings required")
 
-    required = ("account", "user", "password", "database", "warehouse")
+    required = ("account", "user", "database", "warehouse")
     missing = [k for k in required if not settings.get(k)]
     if missing:
         raise ValueError(f"snowflake settings incomplete: missing {', '.join(missing)}")
+
+    credential = settings.get("password") or settings.get("private_key")
+    if not credential:
+        raise ValueError("snowflake settings incomplete: missing password or private_key")
 
     url = build_remote_attach_url(
         settings["account"],
@@ -220,23 +223,14 @@ def materialize_query(
         conn.execute(f"INSTALL {_SF_EXTENSION} FROM community")
         conn.execute(f"LOAD {_SF_EXTENSION}")
 
-        secret_name = "sf_secret_materialize"
-        role_sql = ""
-        role = settings.get("role")
-        if role:
-            role_sql = f", ROLE '{_escape_sql_string_literal(role)}'"
-
-        conn.execute(
-            f"CREATE OR REPLACE SECRET {secret_name} ("
-            f"TYPE snowflake, "
-            f"ACCOUNT '{_escape_sql_string_literal(settings['account'])}', "
-            f"USER '{_escape_sql_string_literal(settings['user'])}', "
-            f"PASSWORD '{_escape_sql_string_literal(settings['password'])}', "
-            f"DATABASE '{_escape_sql_string_literal(settings['database'])}', "
-            f"WAREHOUSE '{_escape_sql_string_literal(settings['warehouse'])}'"
-            f"{role_sql})"
+        credential = settings.get("password") or settings.get("private_key")
+        attach_snowflake(
+            conn,
+            alias=_SF_ALIAS,
+            url=url,
+            token=credential,
+            passphrase=settings.get("private_key_passphrase"),
         )
-        conn.execute(f"ATTACH '' AS {_SF_ALIAS} (TYPE {_SF_EXTENSION}, SECRET {secret_name}, READ_ONLY)")
 
         safe_tmp = str(tmp_path).replace("'", "''")
         copy_sql = f"COPY ({sql}) TO '{safe_tmp}' (FORMAT PARQUET)"

@@ -35,6 +35,7 @@ from app.instance_config import (
     get_privacy_policy_url,
     get_workspace_dir_name,
     get_instance_logo_svg,
+    get_instance_favicon,
     get_instance_overview,
     get_instance_support,
     get_hidden_login_features,
@@ -62,6 +63,7 @@ from src.repositories import (
     profile_repo,
     recipes_repo,
     resource_grants_repo,
+    semantic_model_repo,
     store_entities_repo,
     store_lint_repo,
     store_submissions_repo,
@@ -1312,12 +1314,13 @@ async def how_it_works_page(
     for plugin in _accessible_plugins(user):
         skills.extend(_skills_for_plugin(plugin["marketplace_id"], plugin["name"]))
 
+    _brand = get_instance_brand()
     static_tools = [
-        {"name": "server_info", "description": "Check Agnes connectivity and your account email."},
+        {"name": "server_info", "description": f"Check {_brand} connectivity and your account email."},
         {"name": "catalog", "description": "List all tables available to you — name, query_mode, row count."},
         {"name": "schema", "description": "Show column names and types for a table."},
         {"name": "describe", "description": "Schema + sample rows for a table in one call."},
-        {"name": "query", "description": "Execute SQL against Agnes data (DuckDB or BigQuery dialect)."},
+        {"name": "query", "description": f"Execute SQL against {_brand} data (DuckDB or BigQuery dialect)."},
         {"name": "skills", "description": "List marketplace skills you can access — includes full SKILL.md body."},
     ]
 
@@ -3424,10 +3427,37 @@ async def library_page(
                         seen.setdefault(w, None)
             return " ".join(seen)
 
-        if _visible_metrics or _glossary_terms:
+        # Whether to offer the "Browse the semantic layer" link below — a
+        # readable-model check scoped to what THIS caller can reach, the same
+        # `_can_read_model` gate the /semantic-layer browse pages apply. It
+        # answers "does this caller have a semantic model to browse at all", so
+        # a caller who can read nothing gets neither the link nor a
+        # "0 metrics · 0 terms" footer pointing at an empty page. A model with
+        # no metrics/glossary projected yet (or a purely native, browse-only
+        # model) still counts — gating on the flat projection's counts would
+        # hide the one thing this UI exists to browse. Read in its own guard so
+        # a semantic_models failure leaves the metric/glossary footer already
+        # computed above intact instead of suppressing it.
+        _has_readable_model = False
+        try:
+            from app.api.semantic_models import _can_read_model
+
+            for _sm_row in semantic_model_repo().list_all():
+                if _can_read_model(user, _sm_row, conn):
+                    _has_readable_model = True
+                    break
+        except Exception as e:  # noqa: BLE001 - footer link is best-effort
+            logger.warning("/library: semantic-model existence check failed: %s", e)
+
+        if _visible_metrics or _glossary_terms or _has_readable_model:
             definitions_footer = {
                 "metric_count": len(_visible_metrics),
                 "glossary_count": len(_glossary_terms),
+                # Only THIS gates the "Browse the semantic layer" link: the
+                # metric/glossary links ride the flat projection above, but the
+                # browse page needs a readable document, so a caller with
+                # visible metrics yet no readable model must not be sent there.
+                "has_semantic_models": _has_readable_model,
                 "search": _index_words(
                     [m.get("display_name") for m in _visible_metrics]
                     + [m.get("name") for m in _visible_metrics]
@@ -3916,6 +3946,354 @@ async def catalog_semantics(
         glossary_count=glossary_count,
     )
     return templates.TemplateResponse(request, "catalog_semantics.html", ctx)
+
+
+# ---------------------------------------------------------------------------
+# Semantic layer browse UI (wave 4.2 of the 2026-08-14 UI/agent-parity
+# design) — read-only rendering of the stored Ossie document itself, three
+# levels: model list, model detail (one tab per object type), object detail.
+# Deliberately separate from /catalog/semantics (the flat metric_definitions
+# projection) and /admin/semantic-layer (the sync-ops view) — neither is
+# touched by this feature. RBAC tier matches the rest of the read surface in
+# app/api/semantic_models.py: any authenticated user, filtered through
+# `_can_read_model` (a Data Package grant or a direct `semantic_model` grant
+# — never admin-only). Editing is a later increment; nothing on any of the
+# three pages below offers a write affordance.
+# ---------------------------------------------------------------------------
+
+_SEMANTIC_LAYER_TABS = ("datasets", "metrics", "constraints", "relationships", "glossary")
+
+
+def _semantic_layer_tab_label(tab: str) -> str:
+    return {
+        "datasets": "Datasets",
+        "metrics": "Metrics",
+        "constraints": "Constraints",
+        "relationships": "Relationships",
+        "glossary": "Glossary",
+    }[tab]
+
+
+def _readable_model_by_slug(slug: str, user: dict, conn) -> Optional[dict]:
+    """Resolve a slug to the newest ``semantic_models`` row the CALLER CAN READ.
+
+    Slugs are unique only per ``(source, source_ref)`` (``upsert`` prunes only
+    within that scope), so two models can share one — a hand-authored
+    ``manual`` and an imported ``ossie_git``, say. The repo's ``get_by_slug``
+    returns the newest row OVERALL, which for this browse UI means a card the
+    caller can read could resolve to a *different* row: a 404 when they lack a
+    grant on the newest, or the wrong document when they can read both. Picking
+    the newest row THIS caller can read keeps the click on a model they were
+    actually shown (Devin #1398); RBAC stays applied to the row finally served.
+    The residual — a caller who can read two same-slug rows still reaches only
+    the newer from either card — needs a unique-per-row URL and is left with
+    the pre-existing export endpoint that shares the slug-only resolution.
+    """
+    from app.api.semantic_models import _can_read_model
+
+    candidates = [
+        r for r in semantic_model_repo().list_all() if r.get("slug") == slug and _can_read_model(user, r, conn)
+    ]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda r: str(r.get("updated_at") or ""), reverse=True)
+    return candidates[0]
+
+
+@router.get("/semantic-layer", response_class=HTMLResponse)
+async def semantic_layer_list(
+    request: Request,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Level 1 — every semantic model the caller can read, with its object
+    counts, SQL dialect(s) and validation status.
+
+    A ``status='invalid'`` row still lists (an invalid import must be
+    visible, not silent) and renders its stored ``validation_errors``
+    instead of object counts, since an invalid document's ``document_json``
+    may be stale or absent.
+    """
+    from app.api.semantic_models import _can_read_model
+    from app.web.semantic_layer_view import is_imported, model_dialects, model_of, object_counts, source_label
+
+    # One card per slug — the newest readable row, matching what the
+    # drill-down (`_readable_model_by_slug`) resolves to. Two models can share
+    # a slug (unique only per source/source_ref); listing both would render a
+    # second card that silently opens the first, since every card links to the
+    # same `/semantic-layer/{slug}` (Devin #1398). Deduping loses no
+    # reachability — the older row is unreachable from this UI either way — and
+    # removes the misleading card. Full disambiguation (both reachable) needs a
+    # unique-per-row URL, the follow-up noted on `_readable_model_by_slug`.
+    newest_by_slug: dict[str, dict] = {}
+    for row in semantic_model_repo().list_all():
+        if not _can_read_model(user, row, conn):
+            continue
+        current = newest_by_slug.get(row["slug"])
+        if current is None or str(row.get("updated_at") or "") > str(current.get("updated_at") or ""):
+            newest_by_slug[row["slug"]] = row
+
+    models = []
+    for row in newest_by_slug.values():
+        model = model_of(row)
+        models.append(
+            {
+                "slug": row["slug"],
+                "name": row.get("name") or model.get("name") or row["slug"],
+                "description": row.get("description") or model.get("description"),
+                "dialects": model_dialects(model),
+                "source": row.get("source"),
+                "source_label": source_label(row.get("source")),
+                # Through the shared helper, not a raw `!= 'manual'` in the
+                # template: `is_imported` treats a falsy source as NATIVE
+                # (`(source or "manual") != "manual"`), and the detail and object
+                # pages already route the decision through it. A raw comparison
+                # called an empty source imported and then labelled it
+                # "Imported from Native", contradicting the detail page for the
+                # same row.
+                "is_imported": is_imported(row.get("source")),
+                "status": row.get("status"),
+                "validation_errors": row.get("validation_errors") or [],
+                "counts": object_counts(model),
+            }
+        )
+
+    ctx = _build_context(request, user=user, models=models)
+    return templates.TemplateResponse(request, "semantic_layer_list.html", ctx)
+
+
+@router.get("/semantic-layer/{slug}", response_class=HTMLResponse)
+async def semantic_layer_detail(
+    slug: str,
+    request: Request,
+    tab: str = Query("datasets"),
+    q: str = Query(""),
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Level 2 — one model, one tab per object type (datasets default).
+
+    ``q`` is the cross-link prefilter carried from another tab (a metric
+    row links to its constraints with ``?tab=constraints&q=<metric name>``,
+    a dataset row links to its metrics with ``?tab=metrics&q=<dataset
+    name>``) — a plain case-insensitive substring match scoped to whichever
+    tab is active, not a new search endpoint.
+    """
+    from app.web.semantic_layer_view import (
+        agnes_extension_payload,
+        is_imported,
+        model_constraints,
+        model_glossary,
+        model_of,
+        object_counts,
+        source_label,
+    )
+
+    row = _readable_model_by_slug(slug, user, conn)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Semantic model '{slug}' not found")
+
+    active_tab = tab if tab in _SEMANTIC_LAYER_TABS else "datasets"
+    model = model_of(row)
+
+    datasets = [d for d in model.get("datasets") or [] if isinstance(d, dict)]
+    metrics = [m for m in model.get("metrics") or [] if isinstance(m, dict)]
+    constraints = model_constraints(model)
+    relationships = [r for r in model.get("relationships") or [] if isinstance(r, dict)]
+    glossary = model_glossary(model)
+
+    needle = q.strip().lower()
+    if needle:
+        if active_tab == "datasets":
+            datasets = [d for d in datasets if needle in str(d.get("name") or "").lower()]
+        elif active_tab == "metrics":
+            # A metric's Agnes payload binds it to a dataset by that dataset's
+            # source id, not its friendly name (the Keboola metastore adapter
+            # stores the raw tableId there — connectors/keboola/semantic_ossie.py).
+            # The per-dataset cross-link and the search box both pass the
+            # friendly `name`, so resolve name → source: a needle that names a
+            # dataset also matches every metric bound to that dataset's source.
+            # Read the binding through the view's `agnes_extension_payload`,
+            # which casefolds the vendor tag like the query validator, the
+            # projector and the rest of this browse module — so any casing of
+            # the `agnes`/`AGNES` tag resolves (Devin #1398).
+            def _metric_dataset(m: dict) -> str:
+                return str(agnes_extension_payload(m).get("dataset") or "").lower()
+
+            _needle_dataset_sources = {
+                str(d.get("source") or "").lower()
+                for d in datasets
+                if needle in str(d.get("name") or "").lower() or needle in str(d.get("source") or "").lower()
+            }
+            _needle_dataset_sources.discard("")
+            metrics = [
+                m
+                for m in metrics
+                if needle in str(m.get("name") or "").lower()
+                or needle in _metric_dataset(m)
+                or _metric_dataset(m) in _needle_dataset_sources
+            ]
+        elif active_tab == "constraints":
+            # Match the constraint's own name (the first, linked column) as well
+            # as the metrics it applies to. `metrics` rides the opaque Agnes
+            # custom_extensions payload the Ossie schema does not validate, so a
+            # non-string element must be coerced, not `" ".join`ed into a 500.
+            constraints = [
+                c
+                for c in constraints
+                if needle in str(c.get("name") or "").lower()
+                or needle in " ".join(str(m) for m in (c.get("metrics") or [])).lower()
+            ]
+        elif active_tab == "relationships":
+            relationships = [
+                r
+                for r in relationships
+                if needle in str(r.get("name") or "").lower()
+                or needle in str(r.get("from") or "").lower()
+                or needle in str(r.get("to") or "").lower()
+            ]
+        elif active_tab == "glossary":
+            glossary = [g for g in glossary if needle in str(g.get("term") or "").lower()]
+
+    # A relationship's from/to name a dataset, but the Ossie schema validates
+    # only that they are strings — and `model_of` may aggregate models whose
+    # relationships reference a dataset declared in a sibling. So resolve each
+    # side against the document's dataset names (case-insensitively, matching
+    # find_object) and let the template link only the resolvable ones; an
+    # undeclared side renders as plain text instead of a link that 404s, the
+    # same guard the object-detail page already applies (Devin #1398).
+    _dataset_names_cf = {
+        str(d.get("name") or "").casefold() for d in (model.get("datasets") or []) if isinstance(d, dict)
+    }
+    relationships = [
+        {
+            **r,
+            "from_linkable": str(r.get("from") or "").casefold() in _dataset_names_cf,
+            "to_linkable": str(r.get("to") or "").casefold() in _dataset_names_cf,
+        }
+        for r in relationships
+    ]
+
+    tabs = [
+        {
+            "key": t,
+            "label": _semantic_layer_tab_label(t),
+            "href": f"/semantic-layer/{slug}?tab={t}",
+            "active": t == active_tab,
+        }
+        for t in _SEMANTIC_LAYER_TABS
+    ]
+
+    ctx = _build_context(
+        request,
+        user=user,
+        slug=slug,
+        model_name=row.get("name") or model.get("name") or slug,
+        model_description=row.get("description") or model.get("description"),
+        source=row.get("source"),
+        source_label=source_label(row.get("source")),
+        is_imported=is_imported(row.get("source")),
+        status=row.get("status"),
+        validation_errors=row.get("validation_errors") or [],
+        active_tab=active_tab,
+        tabs=tabs,
+        q=q,
+        datasets=datasets,
+        metrics=metrics,
+        constraints=constraints,
+        relationships=relationships,
+        glossary=glossary,
+        counts=object_counts(model),
+    )
+    return templates.TemplateResponse(request, "semantic_layer_detail.html", ctx)
+
+
+@router.get("/semantic-layer/{slug}/{object_id:path}", response_class=HTMLResponse)
+async def semantic_layer_object(
+    slug: str,
+    object_id: str,
+    request: Request,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Level 3 — one object, rendering everything the flat projection drops:
+    a dataset's ``fields[]`` as a Name/Type/Role/Description table, the
+    ``ai_context`` block in five groups (keywords, synonyms, anti_keywords,
+    hints, warnings), a metric's SQL fragment(s) with their dialect, a
+    relationship with both sides linked.
+
+    ``object_id`` is ``"<type>:<name>"`` — a ``:path`` parameter, not a single
+    segment, so a ``name``/``term`` carrying a ``/`` (a glossary phrase like
+    "ARR/MRR") is captured whole instead of 404ing; ``partition(":")`` splits
+    on the FIRST colon, so a colon in the name survives too. ``type`` one of
+    dataset/metric/relationship/constraint/ glossary, ``name`` the object's
+    ``name`` (``term`` for glossary),
+    case-insensitively matched.
+    """
+    from app.web.semantic_layer_view import (
+        OBJECT_TYPE_LABELS,
+        OBJECT_TYPE_TAB,
+        ai_groups,
+        ai_instructions_and_examples,
+        dataset_field_rows,
+        find_object,
+        is_imported,
+        metric_expressions,
+        model_of,
+        source_label,
+    )
+
+    row = _readable_model_by_slug(slug, user, conn)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Semantic model '{slug}' not found")
+
+    object_type, _, object_name = object_id.partition(":")
+    if object_type not in OBJECT_TYPE_LABELS or not object_name:
+        raise HTTPException(status_code=404, detail=f"Unknown semantic object '{object_id}'")
+
+    model = model_of(row)
+    obj = find_object(model, object_type, object_name)
+    if obj is None:
+        raise HTTPException(status_code=404, detail=f"{object_type} '{object_name}' not found in '{slug}'")
+
+    # Relationships render the AI-context panel too (see `ai=` below), so their
+    # instructions/examples must be read alongside the five groups — otherwise a
+    # relationship carrying `ai_context.instructions` shows a panel that says
+    # "None declared." while its prose is silently dropped (Devin #1398).
+    instructions, examples = (
+        ai_instructions_and_examples(obj) if object_type in ("dataset", "metric", "relationship") else (None, [])
+    )
+
+    # Keyed case-insensitively to match find_object's resolution — otherwise a
+    # relationship spelling a dataset with different casing renders as unlinked
+    # text even though its target page resolves fine (Devin #1398).
+    datasets_by_name = {
+        str(d.get("name")).casefold(): d for d in model.get("datasets") or [] if isinstance(d, dict) and d.get("name")
+    }
+
+    ctx = _build_context(
+        request,
+        user=user,
+        slug=slug,
+        model_name=row.get("name") or model.get("name") or slug,
+        is_imported=is_imported(row.get("source")),
+        source_label=source_label(row.get("source")),
+        object_type=object_type,
+        object_type_label=OBJECT_TYPE_LABELS[object_type],
+        back_tab=OBJECT_TYPE_TAB[object_type],
+        obj=obj,
+        object_name=obj.get("name") or obj.get("term") or object_name,
+        fields=dataset_field_rows(obj) if object_type == "dataset" else None,
+        ai=ai_groups(obj) if object_type in ("dataset", "metric", "relationship") else None,
+        ai_instructions=instructions,
+        ai_examples=examples,
+        expressions=metric_expressions(obj) if object_type == "metric" else None,
+        from_dataset=datasets_by_name.get(str(obj.get("from") or "").casefold())
+        if object_type == "relationship"
+        else None,
+        to_dataset=datasets_by_name.get(str(obj.get("to") or "").casefold()) if object_type == "relationship" else None,
+    )
+    return templates.TemplateResponse(request, "semantic_layer_object.html", ctx)
 
 
 @router.get("/catalog/p/{slug}", response_class=HTMLResponse)
@@ -4716,6 +5094,12 @@ def _chrome_ctx(request: Request, user: Optional[dict]) -> dict:
         "instance_brand_short": get_instance_brand_short(),
         "workspace_dir": get_workspace_dir_name(),
         "instance_theme": get_instance_theme(),
+        # Resolved to a ready-to-use `<link rel="icon">` href (env/YAML
+        # value as-is for a data:/absolute URL, otherwise static_url()-
+        # wrapped) — see get_instance_favicon(). Set here, not duplicated in
+        # _build_context, same as instance_brand/instance_theme above: this
+        # dict is composed into _build_context's context too (#996).
+        "instance_favicon": get_instance_favicon(),
         "home_automode": {"show": get_home_automode_visibility()},
         "custom_scripts": get_custom_scripts(),
         # Set here too (not only in _build_context) so the Studio nav link
@@ -6760,9 +7144,9 @@ def _gib(n: int) -> str:
 
 
 # Connectors that produce tables WITHOUT keeping a `source_connections` row:
-# BigQuery is credentialed once at instance level, Jira arrives over webhooks,
-# and `local` is whatever an admin dropped in the extracts directory. They were
-# invisible on this page — the list asked the API for `?source_type=keboola`
+# BigQuery / Snowflake are credentialed once at instance level, Jira arrives over
+# webhooks, and `local` is whatever an admin dropped in the extracts directory.
+# They were invisible on this page — the list asked the API for `?source_type=keboola`
 # and the heading said "Keboola projects" — while the Add-data drawer happily
 # offered all four connectors. That is the inconsistency this table closes: a
 # connector that can be ADDED here must be VISIBLE here, so each of these gets
@@ -6774,6 +7158,18 @@ _DERIVED_SOURCES: dict[str, dict] = {
         "subtitle": "Live queries · service account in instance secrets",
         "settings_href": "/admin/datasource-credentials",
         "settings_label": "Instance secrets",
+    },
+    "snowflake": {
+        "name": "Snowflake",
+        "subtitle": "Live or materialized · SQL warehouse",
+        "settings_href": "/admin/server-config",
+        "settings_label": "Server config",
+    },
+    "databricks": {
+        "name": "Databricks",
+        "subtitle": "Live queries & materialized · Unity Catalog",
+        "settings_href": "/admin/server-config",
+        "settings_label": "Server config",
     },
     "jira": {
         "name": "Jira",
@@ -6889,7 +7285,11 @@ def _source_inventory() -> dict:
         if conns_per_type.get(stype):
             continue  # a real connection of this type owns the card
         own_tables = unlinked_by_type.pop(stype, [])
-        if not own_tables and not (stype == "bigquery" and _bigquery_credentialed()):
+        if not own_tables and not (
+            (stype == "bigquery" and _bigquery_credentialed()) or
+            (stype == "snowflake" and _snowflake_credentialed()) or
+            (stype == "databricks" and _databricks_credentialed())
+        ):
             continue
         did = f"derived:{stype}"
         by_conn[did] = own_tables
@@ -6988,16 +7388,48 @@ def _source_inventory() -> dict:
                 "terms": sem_terms.get(cid, 0),
             }
 
-        # ── Cost guard (BigQuery only). A remote source never syncs, so the
-        # cell in the sync slot has to be the thing that CAN go wrong with it:
-        # what a query is allowed to scan before the server refuses it. Both
-        # caps are read from live config, so an operator who raised one sees
-        # their number here rather than the documented default.
+        # ── Cost guard (BigQuery / Snowflake). A remote source never syncs,
+        # so the cell in the sync slot has to be the thing that CAN go wrong
+        # with it: what a query is allowed to scan before the server refuses
+        # it. Both caps are read from live config, so an operator who raised one
+        # sees their number here rather than the documented default.
         if stype == "bigquery":
             cells["cost"] = {
                 "scan": _gib(_bq_cap("bq_max_scan_bytes", 5_368_709_120)),
                 "materialize": _gib(_bq_cap("max_bytes_per_materialize", 10_737_418_240)),
             }
+        if stype == "snowflake":
+            has_materialized = any(t.get("query_mode") == "materialized" for t in own)
+            materialize_cap = _gib(_sf_cap("max_bytes_per_materialize", 10_737_418_240))
+            if has_materialized:
+                # Materialized rows sync, so show the sync cell and explain the
+                # cost guard in its title instead of replacing it.
+                cells["sync"]["title"] = (
+                    f"Live queries run on Snowflake directly (no local scan cap). "
+                    f"Materialized rows are refused above {materialize_cap}. Editable in server config."
+                )
+            else:
+                cells["cost"] = {
+                    "scan": "remote",
+                    "materialize": materialize_cap,
+                    "title": "Live queries run on Snowflake directly (no local scan cap). Materialized rows are refused above the materialize cap. Editable in server config.",
+                }
+
+        if stype == "databricks":
+            has_materialized = any(t.get("query_mode") == "materialized" for t in own)
+            remote_cap = _gib(_db_cap("max_bytes_per_remote_query", 1_073_741_824))
+            materialize_cap = _gib(_db_cap("max_bytes_per_materialize", 10_737_418_240))
+            if has_materialized:
+                cells["sync"]["title"] = (
+                    f"Databricks queries run on the SQL warehouse. "
+                    f"Remote results are capped at {remote_cap}; materialized rows are refused above {materialize_cap}. Editable in server config."
+                )
+            else:
+                cells["cost"] = {
+                    "scan": remote_cap,
+                    "materialize": materialize_cap,
+                    "title": "Databricks queries run on the SQL warehouse. Remote results are capped at the scan limit and materialized rows are refused above the materialize cap. Editable in server config.",
+                }
 
         # ── Feeds: packages holding this source's tables → groups granted →
         # people reached. The end of the chain the redesign cares about; a
@@ -7053,6 +7485,52 @@ def _bigquery_credentialed() -> bool:
         return bool(system_secrets_repo().has("BIGQUERY_SERVICE_ACCOUNT_JSON"))
     except Exception:
         return False
+
+
+def _snowflake_credentialed() -> bool:
+    """Whether this instance has Snowflake coordinates + password available.
+
+    The password may live in the env or in the vault, and the non-secret
+    coordinates must be set in instance.yaml / /admin/server-config.
+    """
+    try:
+        from connectors.snowflake.settings import resolve_snowflake_settings
+
+        return bool(resolve_snowflake_settings())
+    except Exception:
+        return False
+
+
+def _sf_cap(key: str, default: int) -> int:
+    """A Snowflake materialize cap from live config."""
+    try:
+        from app.instance_config import get_value
+
+        raw = get_value("data_source", "snowflake", key, default=default)
+        return int(raw) if raw is not None else default
+    except Exception:
+        return default
+
+
+def _databricks_credentialed() -> bool:
+    """Whether this instance has Databricks host + warehouse + token."""
+    try:
+        from connectors.databricks.semantic_layer import resolve_databricks_settings
+
+        return bool(resolve_databricks_settings())
+    except Exception:
+        return False
+
+
+def _db_cap(key: str, default: int) -> int:
+    """A Databricks cost cap from live config."""
+    try:
+        from app.instance_config import get_value
+
+        raw = get_value("data_source", "databricks", key, default=default)
+        return int(raw) if raw is not None else default
+    except Exception:
+        return default
 
 
 def _orphan_reason(connection_id: str) -> str:

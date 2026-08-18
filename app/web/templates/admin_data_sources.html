@@ -89,10 +89,13 @@
     display: inline-flex; align-items: center; justify-content: center;
     font-size: 12px; font-weight: 800; letter-spacing: 0.02em;
   }
-  .ds-src__logo--keboola  { background: var(--ds-kind-data-soft); color: var(--ds-kind-data); }
-  .ds-src__logo--bigquery { background: var(--ds-accent-info-bg); color: var(--ds-accent-info-ink); }
-  .ds-src__logo--jira     { background: var(--ds-kind-plugin-soft); color: var(--ds-kind-plugin); }
-  .ds-src__logo--local    { background: var(--ds-kind-file-soft); color: var(--ds-kind-file); }
+  .ds-src__logo--keboola    { background: var(--ds-kind-data-soft); color: var(--ds-kind-data); }
+  .ds-src__logo--bigquery    { background: var(--ds-accent-info-bg); color: var(--ds-accent-info-ink); }
+  .ds-src__logo--snowflake   { background: var(--ds-accent-info-bg); color: var(--ds-accent-info-ink); }
+  .ds-src__logo--databricks  { background: var(--ds-accent-info-bg); color: var(--ds-accent-info-ink); }
+  .ds-src__logo--jira        { background: var(--ds-kind-plugin-soft); color: var(--ds-kind-plugin); }
+  .ds-src__logo--local       { background: var(--ds-kind-file-soft); color: var(--ds-kind-file); }
+  .connector-logo { width: 60%; height: 60%; display: block; }
 
   .ds-src__id { min-width: 0; flex: 1 1 auto; }
   .ds-src__name {
@@ -386,6 +389,7 @@
   }
   .ds-srcopt .so-logo--kbc  { background: var(--ds-kind-data-soft, #e1f3f1); color: var(--ds-kind-data, #185a57); }
   .ds-srcopt .so-logo--bq   { background: var(--ds-accent-info-bg); color: var(--ds-accent-info-ink); }
+  .ds-srcopt .so-logo--sf   { background: var(--ds-accent-info-bg); color: var(--ds-accent-info-ink); }
   .ds-srcopt .so-logo--csv  { background: var(--ds-accent-warn-bg); color: var(--ds-accent-warn-ink); }
   .ds-srcopt .so-logo--jira { background: var(--ds-kind-plugin-soft, #f2e9fb); color: var(--ds-kind-plugin, #391c57); }
   .ds-srcopt .so-name { font-weight: 700; font-size: 13px; }
@@ -511,17 +515,17 @@
   .ds-wguide p:last-child { margin-bottom: 0; }
   .ds-wguide a { color: var(--ds-primary); }
 
-  .ds-bqcred { display: flex; align-items: center; gap: 8px; min-height: 26px; }
+  .ds-bqcred, .ds-sfcred { display: flex; align-items: center; gap: 8px; min-height: 26px; }
 
   /* ── Step 2 (BigQuery): manual rows editor ── */
-  .ds-bqrow { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
-  .ds-bqrow input {
+  .ds-bqrow, .ds-sfrow { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+  .ds-bqrow input, .ds-sfrow input, .ds-sfrow select {
     flex: 1; font: inherit; font-size: 13px; padding: 7px 10px;
     border: 1px solid var(--border, var(--ds-border)); border-radius: 8px;
     background: var(--surface, var(--ds-surface)); color: var(--ds-text-primary);
   }
-  .ds-bqrow .ds-table-status { flex: 0 0 auto; }
-  .ds-bqrow button { flex: 0 0 auto; }
+  .ds-bqrow .ds-table-status, .ds-sfrow .ds-table-status { flex: 0 0 auto; }
+  .ds-bqrow button, .ds-sfrow button { flex: 0 0 auto; }
 
   /* ── Pipeline strip — connected → synced → semantic → feeding whom, on
         every source card. Four (or three) cells reading across the whole
@@ -708,13 +712,16 @@
     color: var(--text-primary, var(--ds-text-primary)); margin-bottom: 4px;
   }
   .ds-field .field-hint { font-size: 11px; color: var(--text-secondary, var(--ds-text-secondary)); margin-top: 3px; }
-  .ds-field input {
+  .ds-field input, .ds-field textarea {
     width: 100%; box-sizing: border-box; padding: 8px 10px;
     border-radius: 8px; border: 1px solid var(--border, var(--ds-border));
     background: var(--surface, var(--ds-surface)); color: var(--text-primary, var(--ds-text-primary));
     font-size: 13px; font-family: inherit;
   }
-  .ds-field input:focus { outline: 2px solid var(--ds-primary, var(--ds-primary)); outline-offset: -1px; }
+  .ds-field input:focus, .ds-field textarea:focus { outline: 2px solid var(--ds-primary, var(--ds-primary)); outline-offset: -1px; }
+  /* The PEM box is the only textarea in a .ds-field; without this it renders
+     with browser-default font/border/width next to the styled inputs. */
+  .ds-field textarea { font-family: var(--ds-font-mono, monospace); font-size: 12px; resize: vertical; }
   .ds-field input[type="password"] { font-family: var(--font-mono, ui-monospace, monospace); }
 
   .ds-wizard-step { display: none; }
@@ -766,7 +773,7 @@
      eyebrow reading "Sources", which spent three lines of chrome saying the
      word the highlighted tab was already saying. #}
   {% set page_hero_title = "Data" %}
-  {% set page_hero_subtitle = "Where the tables come from — the Keboola and BigQuery projects Agnes pulls from, what it registered, and how those tables reach people. Looking to connect an MCP server instead? See <a href=\"/admin/mcp-sources\">MCP sources</a> — the tools an agent calls at runtime." %}
+  {% set page_hero_subtitle = "Where the tables come from — the Keboola and BigQuery projects " ~ (instance_brand or 'Agnes') ~ " pulls from, what it registered, and how those tables reach people. Looking to connect an MCP server instead? See <a href=\"/admin/mcp-sources\">MCP sources</a> — the tools an agent calls at runtime." %}
   {% set page_hero_plain = True %}
   {% include "_page_hero.html" %}
   {% include "_admin_tabs.html" %}
@@ -911,9 +918,19 @@
             <span class="so-sub">Buckets &amp; tables, synced copies</span>
           </button>
           <button type="button" class="ds-srcopt" data-wsrc="bigquery">
-            <span class="so-logo so-logo--bq">BQ</span>
+            <span class="so-logo so-logo--bq"><svg class="connector-logo" viewBox="0 0 24 24" fill="currentColor" role="img" aria-label="BigQuery"><rect x="3" y="3" width="8" height="8" rx="2"/><rect x="13" y="3" width="8" height="8" rx="2"/><rect x="3" y="13" width="8" height="8" rx="2"/><rect x="13" y="13" width="8" height="8" rx="2"/></svg></span>
             <span class="so-name">BigQuery</span>
             <span class="so-sub">Live queries, no copy</span>
+          </button>
+          <button type="button" class="ds-srcopt" data-wsrc="snowflake">
+            <span class="so-logo so-logo--sf"><svg class="connector-logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="Snowflake"><path d="M12 3v18M4.5 6l15 12M4.5 18l15-12"/></svg></span>
+            <span class="so-name">Snowflake</span>
+            <span class="so-sub">Live or materialized, SQL warehouse</span>
+          </button>
+          <button type="button" class="ds-srcopt" data-wsrc="databricks">
+            <span class="so-logo so-logo--dbx"><svg class="connector-logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" role="img" aria-label="Databricks"><path d="M12 2l8.7 5v10L12 22l-8.7-5V7L12 2z"/></svg></span>
+            <span class="so-name">Databricks</span>
+            <span class="so-sub">Live queries &amp; materialized · Unity Catalog</span>
           </button>
           <button type="button" class="ds-srcopt" data-wsrc="csv">
             <span class="so-logo so-logo--csv">⇪</span>
@@ -979,7 +996,7 @@
             <input type="checkbox" id="ds-new-semantic">
             <span>Also sync business metrics &amp; glossary (semantic layer)</span>
           </label>
-          <p>Keeps this project's metric definitions in Agnes so analysts and agents compute
+          <p>Keeps this project's metric definitions in {{ instance_brand or 'Agnes' }} so analysts and agents compute
              metrics one way. Keboola's Metastore requires a second token for this — a project
              <strong>owner</strong> token, separate from the storage token above.
              <strong>Optional:</strong> skip it and tables still work; you can set it any time
@@ -1010,6 +1027,80 @@
           </div>
         </div>
 
+        {# Snowflake — real: coordinates live in server-config, password/key-pair in
+           datasource-secrets; tables register as remote or materialized. #}
+        <div data-wsrcform="snowflake" hidden>
+          <div class="ds-field">
+            <label for="ds-sf-account">Account <span style="color:var(--ds-accent-danger-ink)">*</span></label>
+            <input type="text" id="ds-sf-account" placeholder="xy12345 or xy12345.eu-central-1" autocomplete="off" spellcheck="false">
+            <div class="field-hint">Snowflake account identifier, no <code>.snowflakecomputing.com</code> suffix.</div>
+          </div>
+          <div class="ds-field">
+            <label for="ds-sf-user">User <span style="color:var(--ds-accent-danger-ink)">*</span></label>
+            <input type="text" id="ds-sf-user" placeholder="service user name" autocomplete="off" spellcheck="false">
+          </div>
+          <div class="ds-field">
+            <label for="ds-sf-auth-type">Authentication <span style="color:var(--ds-accent-danger-ink)">*</span></label>
+            <select id="ds-sf-auth-type">
+              <option value="password" selected>Password</option>
+              <option value="key_pair">Key-pair</option>
+            </select>
+            <div class="field-hint">Choose how the wizard stores the Snowflake credential.</div>
+          </div>
+          <div id="ds-sf-auth-password">
+            <div class="ds-field">
+              <label for="ds-sf-password">Password <span style="color:var(--ds-accent-danger-ink)">*</span></label>
+              <input type="password" id="ds-sf-password" placeholder="paste password" autocomplete="off">
+              <div class="ds-sfcred" id="ds-sfcred-password"><span class="ds-loading" style="padding:4px 0;">Checking credential…</span></div>
+              <div class="field-hint">Stored write-only in the server vault as <code>SNOWFLAKE_PASSWORD</code>.</div>
+            </div>
+          </div>
+          <div id="ds-sf-auth-key" hidden>
+            <div class="ds-field">
+              <label for="ds-sf-private-key">Private key (PEM) <span style="color:var(--ds-accent-danger-ink)">*</span></label>
+              <textarea id="ds-sf-private-key" rows="5" placeholder="-----BEGIN PRIVATE KEY-----..." autocomplete="off" spellcheck="false"></textarea>
+              <div class="ds-sfcred" id="ds-sfcred-key"><span class="ds-loading" style="padding:4px 0;">Checking credential…</span></div>
+              <div class="field-hint">Stored write-only in the server vault as <code>SNOWFLAKE_PRIVATE_KEY</code>.</div>
+            </div>
+            <div class="ds-field">
+              <label for="ds-sf-key-passphrase">Key passphrase <span class="optional">(optional)</span></label>
+              <input type="password" id="ds-sf-key-passphrase" placeholder="passphrase for encrypted key" autocomplete="off">
+              <div class="field-hint">Stored separately as <code>SNOWFLAKE_PRIVATE_KEY_PASSPHRASE</code> when provided.</div>
+            </div>
+          </div>
+          <div class="ds-field">
+            <label for="ds-sf-database">Database <span style="color:var(--ds-accent-danger-ink)">*</span></label>
+            <input type="text" id="ds-sf-database" placeholder="default database for registered rows" autocomplete="off" spellcheck="false">
+          </div>
+          <div class="ds-field">
+            <label for="ds-sf-warehouse">Warehouse <span style="color:var(--ds-accent-danger-ink)">*</span></label>
+            <input type="text" id="ds-sf-warehouse" placeholder="compute warehouse" autocomplete="off" spellcheck="false">
+          </div>
+          <div class="ds-field">
+            <label for="ds-sf-role">Role <span class="optional">(optional)</span></label>
+            <input type="text" id="ds-sf-role" placeholder="e.g. ACCOUNTADMIN" autocomplete="off" spellcheck="false">
+          </div>
+          <div class="ds-wsl-opt">
+            <div class="ds-wsl-opt__head" style="cursor:default;">Live or materialized, cost-guarded</div>
+            <p style="margin-left:0;">Tables you add here can be <strong>live</strong> (remote, every query runs in Snowflake) or <strong>materialized</strong>
+               (a scheduled copy to parquet). For custom SQL, partitioning or semantic views, use
+               <a href="/admin/tables">Tables → Register new table</a>.</p>
+          </div>
+        </div>
+
+        {# Databricks — configured instance-side; tables register through
+           /admin/tables where the full SQL warehouse / metric-view editor lives. #}
+        <div data-wsrcform="databricks" hidden>
+          <div class="ds-wguide">
+            <h4>Databricks is configured on the instance.</h4>
+            <p>Set <strong>host, warehouse ID, catalog and token</strong> in
+               <a href="/admin/server-config">Server config</a> under <code>data_source.databricks</code>.</p>
+            <p>Then register tables and semantic views on
+               <a href="/admin/tables">Tables → Register new table</a> — the full editor
+               (live query, materialized, custom SQL with <code>MEASURE()</code>) lives there.</p>
+          </div>
+        </div>
+
         {# CSV / files — honest guidance: there is no CSV connector. Files
            enter through Library Collections (per-file ingestion); a live
            system's export belongs in a data package instead. #}
@@ -1017,7 +1108,7 @@
           <div class="ds-wguide">
             <h4>Files become searchable through the Library, not a connector.</h4>
             <p>Upload documents (PDF, Markdown, CSV, …) into a <strong>Collection</strong> in the
-               <a href="/library">Library</a> — Agnes ingests them per file and analysts search them with citations.
+               <a href="/library">Library</a> — {{ instance_brand or 'Agnes' }} ingests them per file and analysts search them with citations.
                A Collection is honest about being a snapshot: when the content changes, a person re-uploads.</p>
             <p>If the file is an <em>export of a live system</em>, that system is the source — connect it
                (Keboola or BigQuery) and let a data package carry the tables, or the copy starts drifting
@@ -1111,6 +1202,7 @@
 <script>
 const API_CONNECTIONS = "/api/admin/source-connections";
 const API_REGISTER_TABLE = "/api/admin/register-table";
+const API_SERVER_CONFIG = "/api/admin/server-config";
 
 function _esc(s) {
   return (s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -1208,14 +1300,26 @@ const DERIVED_SOURCES = {{ derived_sources | tojson }};
    always the registry's `source_type`: files register as `local` but the
    picker calls that pane `csv`. Naming the translation here keeps it out of
    the callers, where a mismatch silently hides every form in step 1. */
+const _SVG_LOGO = {
+  bigquery: `<svg class="connector-logo" viewBox="0 0 24 24" fill="currentColor" role="img" aria-label="BigQuery"><rect x="3" y="3" width="8" height="8" rx="2"/><rect x="13" y="3" width="8" height="8" rx="2"/><rect x="3" y="13" width="8" height="8" rx="2"/><rect x="13" y="13" width="8" height="8" rx="2"/></svg>`,
+  snowflake: `<svg class="connector-logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="Snowflake"><path d="M12 3v18M4.5 6l15 12M4.5 18l15-12"/></svg>`,
+  databricks: `<svg class="connector-logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" role="img" aria-label="Databricks"><path d="M12 2l8.7 5v10L12 22l-8.7-5V7L12 2z"/></svg>`,
+  local: `<svg class="connector-logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="Files"><path d="M12 16v-4M8 12l4-4 4 4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>`,
+};
+
 const CONNECTOR = {
-  keboola:  { abbr: "KB", cls: "keboola",  wizard: "keboola" },
-  bigquery: { abbr: "BQ", cls: "bigquery", wizard: "bigquery" },
-  jira:     { abbr: "JR", cls: "jira",     wizard: "jira" },
-  local:    { abbr: "FS", cls: "local",    wizard: "csv" },
+  keboola:    { abbr: "KB", cls: "keboola",   wizard: "keboola" },
+  bigquery:   { abbr: "BQ", cls: "bigquery",  wizard: "bigquery" },
+  snowflake:  { abbr: "SF", cls: "snowflake", wizard: "snowflake" },
+  databricks: { abbr: "DB", cls: "databricks", wizard: "databricks" },
+  jira:       { abbr: "JR", cls: "jira",      wizard: "jira" },
+  local:      { abbr: "FS", cls: "local",     wizard: "csv" },
 };
 function _connector(type) {
   return CONNECTOR[type] || { abbr: (type || "?").slice(0, 2).toUpperCase(), cls: "local", wizard: "keboola" };
+}
+function _connectorLogo(type) {
+  return _SVG_LOGO[type] || "";
 }
 
 function _relAge(minutes) {
@@ -1277,9 +1381,10 @@ function _pipelineStripHtml(row) {
   // is the cost guard. Jira arrives over webhooks and files are replaced by
   // hand, so both keep the freshness reading but say it in their own words.
   if (p.cost) {
+    const costTitle = p.cost.title || "Refused above these — a query over the scan cap returns remote_scan_too_large. Editable in server config.";
     cells.push(`
       <a class="ds-pipe__cell" href="/admin/server-config"
-         title="Refused above these — a query over the scan cap returns remote_scan_too_large. Editable in server config.">
+         title="${_esc(costTitle)}">
         <span class="ds-pipe__k">Cost guard</span>
         <span class="ds-pipe__v">${_esc(p.cost.scan)} scan · ${_esc(p.cost.materialize)} materialize</span>
       </a>`);
@@ -1291,8 +1396,9 @@ function _pipelineStripHtml(row) {
     if (s.errors) { syncTone = "is-err"; syncText = `${s.errors} failing`; }
     else if (s.last_sync) { syncTone = "is-ok"; syncText = `✓ ${_relAge(s.age_minutes)}`; }
     else { syncTone = "is-warn"; syncText = never; }
+    const syncTitle = s.title ? `title="${_esc(s.title)}"` : "";
     cells.push(`
-      <a class="ds-pipe__cell" href="/admin/sync">
+      <a class="ds-pipe__cell" href="/admin/sync" ${syncTitle}>
         <span class="ds-pipe__k">${label}</span>
         <span class="ds-pipe__v ${syncTone}">${syncText}</span>
       </a>`);
@@ -1432,7 +1538,7 @@ function _connectionCardHtml(row) {
   return `
 <article class="ds-src" id="ds-conn-${id}" data-id="${id}">
   <div class="ds-src__head" data-src-head="${id}">
-    <span class="ds-src__logo ds-src__logo--${c.cls}" aria-hidden="true">${c.abbr}</span>
+    <span class="ds-src__logo ds-src__logo--${c.cls}" aria-hidden="true">${_connectorLogo(row.source_type) || _esc(c.abbr)}</span>
     <div class="ds-src__id">
       <div class="ds-src__name">
         <span>${name}</span>
@@ -2279,8 +2385,10 @@ let _wizardConnId = null;
 let _wizardStep = 1;
 let _wizardMaxStep = 1;       // furthest step reached — what the strip lets you back into
 let _wizardDone = false;      // the receipt is up; the flow is no longer navigable
-let _wizardSource = "keboola"; // 'keboola' | 'bigquery' | 'csv' | 'jira'
+let _wizardSource = "keboola"; // 'keboola' | 'bigquery' | 'snowflake' | 'csv' | 'jira'
 let _bqCredStatus = null;      // cached /api/admin/datasource-secrets read
+let _sfCredStatus = null;      // cached Snowflake credential status {password, key}
+let _sfConfigLoaded = false;   // cached Snowflake config read for this wizard open
 let _wizardTables = [];       // [{id, name, bucket}] registered in step 2
 let _wizardBoard = null;      // {trays: [{id, name, tables: [table]}], out: [table]}
 let _wizardTrayIdSeq = 0;
@@ -2352,6 +2460,14 @@ function _setWizSource(src) {
     connectBtn.style.display = _wizardStep === 1 ? "" : "none";
     connectBtn.textContent = "Continue";
     _loadBqCredStatus();
+  } else if (src === "snowflake") {
+    connectBtn.style.display = _wizardStep === 1 ? "" : "none";
+    connectBtn.textContent = "Save & continue";
+    _loadSfConfigAndStatus();
+    _updateSfAuthUI();
+  } else if (src === "databricks") {
+    // Databricks is configured instance-side; tables register on /admin/tables.
+    connectBtn.style.display = "none";
   } else {
     // csv / jira are guidance, not forms — nothing to submit.
     connectBtn.style.display = "none";
@@ -2377,6 +2493,251 @@ async function _loadBqCredStatus() {
        <a href="/admin/datasource-credentials">Instance secrets</a> first — registering works, but nothing can query until it's there.</span>`;
 }
 
+function _updateSfAuthUI() {
+  const authType = document.getElementById("ds-sf-auth-type").value;
+  document.getElementById("ds-sf-auth-password").hidden = authType !== "password";
+  document.getElementById("ds-sf-auth-key").hidden = authType !== "key_pair";
+}
+
+/* POST /api/admin/server-config answers `restart_required: true` and resets
+   only the IN-PROCESS instance-config cache. This wizard is the first
+   server-config writer outside /admin/server-config (which has its own restart
+   banner), so without surfacing it a role-split deployment (api/gateway/worker
+   as separate processes) would register tables against a config the scheduler
+   has not read yet, with nothing telling the operator to bounce it. */
+let _sfRestartRequired = false;
+
+let _sfEnvNames = {
+  token_env: "SNOWFLAKE_PASSWORD",
+  private_key_env: "SNOWFLAKE_PRIVATE_KEY",
+  private_key_passphrase_env: "SNOWFLAKE_PRIVATE_KEY_PASSPHRASE",
+};
+
+function _defaultSfEnvNames() {
+  return {
+    token_env: "SNOWFLAKE_PASSWORD",
+    private_key_env: "SNOWFLAKE_PRIVATE_KEY",
+    private_key_passphrase_env: "SNOWFLAKE_PRIVATE_KEY_PASSPHRASE",
+  };
+}
+
+/* GET /api/admin/server-config redacts every key whose name matches
+   `_is_secret_key` — which includes `token_env`, `private_key_env` and
+   `private_key_passphrase_env`, because the KEY signals it points at a
+   credential (app/api/admin.py::_redact). Those fields hold env-var NAMES,
+   not values, but the read cannot tell us which: once the wizard has
+   persisted them, they come back as the `***` sentinel. Taking the value
+   straight through made the next save PUT the password to
+   /api/admin/datasource-secrets/*** — rejected, so a second pass through
+   the wizard could never store or rotate a credential. A name is only
+   accepted if it has the shape of one; anything else falls back. */
+const _ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/* Set when the config carried a credential variable name we had to discard as
+   unreadable. Falling back to the default is right for the overwhelmingly
+   common case (the operator never changed it), but we cannot TELL the default
+   from a custom name through the redaction — and a custom name is env-only by
+   design at every layer: `PUT /api/admin/datasource-secrets/{name}` refuses
+   anything outside `DATA_SOURCE_SECRET_NAMES`, and `datasource_secret()`
+   raises for the same set, so the vault never holds it. Storing under the
+   default there would report "vault" for a credential the backend never reads.
+   So say so rather than guess silently. */
+let _sfEnvNamesRedacted = false;
+
+/* Names a credential was actually stored under during this save, so the step-2
+   banner can say so once rather than warning on every page open. */
+let _sfStoredUnder = [];
+
+/* Shown only after a credential was actually stored, and only then, because
+   `token_env` comes back redacted on EVERY instance that has ever configured
+   Snowflake — a note rendered off `_sfEnvNamesRedacted` alone would fire for the
+   overwhelming majority that use the default names, which is noise that trains
+   operators to ignore it. Phrased as what happened rather than as a warning
+   about what might be wrong. */
+function _sfStoredUnderNote(names) {
+  return (
+    "Credential stored under " + names.join(" / ") + ". If this instance is configured to read a "
+    + "different variable name, that name cannot be shown here (the server redacts it) and cannot be "
+    + "stored either — set the credential in the environment under your own name instead."
+  );
+}
+
+function _sfEnvNameOr(fromConfig, fallback) {
+  if (_ENV_NAME_RE.test(fromConfig || "")) return fromConfig;
+  if (fromConfig) _sfEnvNamesRedacted = true;
+  return fallback;
+}
+
+async function _loadSfConfigAndStatus() {
+  const hostPassword = document.getElementById("ds-sfcred-password");
+  const hostKey = document.getElementById("ds-sfcred-key");
+  if (!_sfConfigLoaded) {
+    try {
+      const r = await fetch(API_SERVER_CONFIG, { credentials: "include" });
+      const data = r.ok ? await r.json() : { sections: {} };
+      const sf = (data.sections && data.sections.data_source && data.sections.data_source.snowflake) || {};
+      document.getElementById("ds-sf-account").value = sf.account || "";
+      document.getElementById("ds-sf-user").value = sf.user || "";
+      document.getElementById("ds-sf-database").value = sf.database || "";
+      document.getElementById("ds-sf-warehouse").value = sf.warehouse || "";
+      document.getElementById("ds-sf-role").value = sf.role || "";
+      const authType = sf.auth_type || "password";
+      document.getElementById("ds-sf-auth-type").value = authType;
+      _sfEnvNames = {
+        token_env: _sfEnvNameOr(sf.token_env, _sfEnvNames.token_env),
+        private_key_env: _sfEnvNameOr(sf.private_key_env, _sfEnvNames.private_key_env),
+        private_key_passphrase_env: _sfEnvNameOr(sf.private_key_passphrase_env, _sfEnvNames.private_key_passphrase_env),
+      };
+      _updateSfAuthUI();
+      _sfConfigLoaded = true;
+    } catch (e) {
+      // leave inputs empty and let the admin fill them in
+    }
+  }
+  if (!_sfCredStatus) {
+    try {
+      const r = await fetch("/api/admin/datasource-secrets", { credentials: "include" });
+      const data = r.ok ? await r.json() : { secrets: [] };
+      const secrets = data.secrets || [];
+      _sfCredStatus = {
+        password: secrets.find((s) => s.name === _sfEnvNames.token_env) || { source: "unset", has_value: false },
+        key: secrets.find((s) => s.name === _sfEnvNames.private_key_env) || { source: "unset", has_value: false },
+      };
+    } catch (e) {
+      _sfCredStatus = {
+        password: { source: "unset", has_value: false },
+        key: { source: "unset", has_value: false },
+      };
+    }
+  }
+  _renderSfCredStatus(hostPassword, "password");
+  _renderSfCredStatus(hostKey, "key");
+}
+
+function _renderSfCredStatus(host, kind) {
+  if (kind === undefined) kind = "password";
+  const inputId = kind === "password" ? "ds-sf-password" : "ds-sf-private-key";
+  if (!host) host = document.getElementById(kind === "password" ? "ds-sfcred-password" : "ds-sfcred-key");
+  const status = (_sfCredStatus && _sfCredStatus[kind]) || { source: "unset", has_value: false };
+  const hasInput = document.getElementById(inputId).value.trim().length > 0;
+  const label = kind === "password" ? "password" : "key-pair";
+  if (status.has_value || hasInput) {
+    const source = hasInput ? "ready to save" : status.source;
+    const cls = hasInput ? "badge-vault" : (status.source === "env" ? "badge-env" : "badge-vault");
+    host.innerHTML = `<span class="ds-badge ${cls}">${label} · ${_esc(source)}</span>`;
+  } else {
+    host.innerHTML = `<span class="ds-badge badge-unset">not set</span>
+       <span style="font-size:12px; color:var(--ds-accent-warn-ink);">Save a ${label} credential here first — registering works, but nothing can query until it's stored.</span>`;
+  }
+}
+
+async function _saveSnowflakeAndContinue() {
+  const err = document.getElementById("ds-wizard-error");
+  const account = document.getElementById("ds-sf-account").value.trim();
+  const user = document.getElementById("ds-sf-user").value.trim();
+  const database = document.getElementById("ds-sf-database").value.trim();
+  const warehouse = document.getElementById("ds-sf-warehouse").value.trim();
+  const role = document.getElementById("ds-sf-role").value.trim();
+  const authType = document.getElementById("ds-sf-auth-type").value;
+  const password = document.getElementById("ds-sf-password").value;
+  const privateKey = document.getElementById("ds-sf-private-key").value.trim();
+  const passphrase = document.getElementById("ds-sf-key-passphrase").value;
+  if (!account || !user || !database || !warehouse) {
+    err.textContent = "Account, user, database and warehouse are required.";
+    err.style.display = "block";
+    return;
+  }
+  if (authType === "password") {
+    if ((!_sfCredStatus || !_sfCredStatus.password || !_sfCredStatus.password.has_value) && !password) {
+      err.textContent = `Snowflake password is required. Paste it below or set ${_sfEnvNames.token_env} in Instance secrets.`;
+      err.style.display = "block";
+      return;
+    }
+  } else {
+    if ((!_sfCredStatus || !_sfCredStatus.key || !_sfCredStatus.key.has_value) && !privateKey) {
+      err.textContent = `Snowflake private key is required. Paste it below or set ${_sfEnvNames.private_key_env} in Instance secrets.`;
+      err.style.display = "block";
+      return;
+    }
+  }
+  /* Deliberately does NOT write token_env / private_key_env /
+     private_key_passphrase_env. Those keys come back from
+     GET /api/admin/server-config redacted (`_is_secret_key` matches
+     "token"/"private"), so the wizard cannot know which name is configured —
+     and writing its fallback back would REPLACE an operator's custom name with
+     the default, breaking every Snowflake query and sync until someone repaired
+     the config by hand. Before the shape guard the wizard POSTed the `***`
+     sentinel here, which `_strip_redacted_sentinels` dropped server-side, so the
+     write was a harmless no-op; a plausible-looking default is not.
+
+     Omitting them loses nothing: `resolve_snowflake_settings` defaults each name
+     to exactly what this wizard stores the credential under (SNOWFLAKE_PASSWORD
+     / SNOWFLAKE_PRIVATE_KEY / SNOWFLAKE_PRIVATE_KEY_PASSPHRASE), so a first-time
+     setup resolves identically and an instance with its own names keeps them.
+
+     `role` is omitted when blank for the same reason: POST deep-merges per leaf,
+     so a present-but-empty `role` would overwrite a stored one, and the prefill
+     is empty whenever the config read failed. */
+  const sf = { account, user, database, warehouse, auth_type: authType };
+  if (role) sf.role = role;
+  try {
+    const r = await fetch(API_SERVER_CONFIG, {
+      method: "POST", credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sections: { data_source: { snowflake: sf } } }),
+    });
+    if (!r.ok) throw new Error("server-config save failed");
+    const savedCfg = await r.json().catch(() => ({}));
+    _sfRestartRequired = !!savedCfg.restart_required;
+    const storedUnder = [];
+    if (!_sfCredStatus) _sfCredStatus = { password: { source: "unset", has_value: false }, key: { source: "unset", has_value: false } };
+    if (authType === "password" && password) {
+      const rp = await fetch(`/api/admin/datasource-secrets/${encodeURIComponent(_sfEnvNames.token_env)}`, {
+        method: "PUT", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: password }),
+      });
+      if (!rp.ok) throw new Error("password secret save failed");
+      storedUnder.push(_sfEnvNames.token_env);
+      _sfCredStatus.password = { source: "vault", has_value: true };
+      // Clear before redrawing: the badge reads "ready to save" off a
+      // non-empty input, so rendering first shows a stored credential as
+      // still pending.
+      document.getElementById("ds-sf-password").value = "";
+      _renderSfCredStatus(null, "password");
+    }
+    if (authType === "key_pair" && privateKey) {
+      const rk = await fetch(`/api/admin/datasource-secrets/${encodeURIComponent(_sfEnvNames.private_key_env)}`, {
+        method: "PUT", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: privateKey }),
+      });
+      if (!rk.ok) throw new Error("private key secret save failed");
+      storedUnder.push(_sfEnvNames.private_key_env);
+      _sfCredStatus.key = { source: "vault", has_value: true };
+      document.getElementById("ds-sf-private-key").value = "";
+      _renderSfCredStatus(null, "key");
+    }
+    if (authType === "key_pair" && passphrase) {
+      const rpp = await fetch(`/api/admin/datasource-secrets/${encodeURIComponent(_sfEnvNames.private_key_passphrase_env)}`, {
+        method: "PUT", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: passphrase }),
+      });
+      if (!rpp.ok) throw new Error("passphrase secret save failed");
+      storedUnder.push(_sfEnvNames.private_key_passphrase_env);
+      document.getElementById("ds-sf-key-passphrase").value = "";
+    }
+    _sfStoredUnder = storedUnder;
+    _sfConfigLoaded = true;
+    _setWizStep(2);
+    _renderSfRowsEditor();
+  } catch (e) {
+    err.textContent = "Could not save Snowflake settings: " + (e.message || e);
+    err.style.display = "block";
+  }
+}
+
 /* `connector` preselects step 1's picker. A card's "Add tables…" knows which
    connector it is, so landing the admin on Keboola's form when they pressed
    it on the BigQuery card would make them undo a choice they already made. */
@@ -2387,6 +2748,12 @@ function openWizard(connector) {
   _wizardPackages = [];
   _wizardShares = null;
   _bqCredStatus = null;
+  _sfCredStatus = null;
+  _sfRestartRequired = false;
+  _sfEnvNamesRedacted = false;
+  _sfStoredUnder = [];
+  _sfEnvNames = _defaultSfEnvNames();
+  _sfConfigLoaded = false;
   _wizardMaxStep = 1;
   _wizardDone = false;
   document.getElementById("ds-new-name").value = "";
@@ -2394,6 +2761,16 @@ function openWizard(connector) {
   document.getElementById("ds-new-token").value = "";
   document.getElementById("ds-new-semantic").checked = false;
   document.getElementById("ds-new-master").value = "";
+  document.getElementById("ds-sf-account").value = "";
+  document.getElementById("ds-sf-user").value = "";
+  document.getElementById("ds-sf-auth-type").value = "password";
+  _updateSfAuthUI();
+  document.getElementById("ds-sf-password").value = "";
+  document.getElementById("ds-sf-private-key").value = "";
+  document.getElementById("ds-sf-key-passphrase").value = "";
+  document.getElementById("ds-sf-database").value = "";
+  document.getElementById("ds-sf-warehouse").value = "";
+  document.getElementById("ds-sf-role").value = "";
   document.querySelector(".ds-wsl-opt__field").hidden = true;
   document.getElementById("ds-wizard-error").style.display = "none";
   const share = document.getElementById("ds-wizard-step-share");
@@ -2638,6 +3015,10 @@ async function _loadWizardTables(connId) {
 
 function finishWizard() {
   closeWizard();
+  if (_wizardSource === "snowflake") {
+    window.location.reload();
+    return;
+  }
   loadConnections();
 }
 
@@ -2733,9 +3114,114 @@ async function _registerBqRows() {
   return { ok: registered, failed };
 }
 
+/* ── Step 2 (Snowflake): manual rows editor ───────────────────────────────
+   Snowflake has no bucket browser exposed in the wizard — schemas are named.
+   Each filled row registers as LIVE (query_mode='remote') or a scheduled
+   MATERIALIZED copy; custom SQL and semantic views keep their full editor. */
+
+function _renderSfRowsEditor() {
+  const body = document.getElementById("ds-wizard-tables-body");
+  document.getElementById("ds-wizard-connected-banner").innerHTML =
+    "Name the Snowflake tables to register — schema and table, one per row."
+    + (_sfRestartRequired
+      ? ` <span style="display:block; margin-top:6px; color:var(--ds-accent-warn-ink);">`
+        + `Connection settings are saved, but only this process has re-read them.`
+        + ` Restart the instance so the scheduler and workers pick them up.</span>`
+      : "")
+    + (_sfStoredUnder.length
+      ? ` <span style="display:block; margin-top:6px; color:var(--ds-text-secondary);">`
+        + `${_esc(_sfStoredUnderNote(_sfStoredUnder))}</span>`
+      : "");
+  body.innerHTML = `
+    <div id="ds-sfrows">
+      ${_sfRowHtml()}${_sfRowHtml()}${_sfRowHtml()}
+    </div>
+    <button type="button" class="btn btn-secondary" id="ds-sfrow-add">＋ Add another table</button>
+    <div class="ds-browse-error" id="ds-sf-rows-error" style="display:block; margin-top:8px;"></div>`;
+  body.querySelector("#ds-sfrow-add").addEventListener("click", () => {
+    body.querySelector("#ds-sfrows").insertAdjacentHTML("beforeend", _sfRowHtml());
+  });
+}
+
+function _sfRowHtml() {
+  return `
+  <div class="ds-sfrow">
+    <input type="text" data-sf-schema placeholder="schema (e.g. PUBLIC)" autocomplete="off" spellcheck="false">
+    <input type="text" data-sf-table placeholder="table (e.g. ORDERS)" autocomplete="off" spellcheck="false">
+    <select data-sf-mode>
+      <option value="remote" selected>live</option>
+      <option value="materialized">materialized</option>
+    </select>
+    <span class="ds-table-status"></span>
+  </div>`;
+}
+
+async function _registerSfRows() {
+  const rows = [...document.querySelectorAll("#ds-sfrows .ds-sfrow")]
+    .map((row) => ({
+      row,
+      schema: row.querySelector("[data-sf-schema]").value.trim(),
+      table: row.querySelector("[data-sf-table]").value.trim(),
+      mode: row.querySelector("[data-sf-mode]").value,
+      statusEl: row.querySelector(".ds-table-status"),
+    }))
+    .filter((r) => r.schema || r.table);
+  const errEl = document.getElementById("ds-sf-rows-error");
+  errEl.textContent = "";
+  if (!rows.length) {
+    errEl.textContent = "Fill in at least one schema + table row.";
+    return { ok: [], failed: 0 };
+  }
+  const registered = [];
+  let failed = 0;
+  for (const r of rows) {
+    if (!r.schema || !r.table) {
+      r.statusEl.textContent = "✗ needs both schema and table";
+      r.statusEl.className = "ds-table-status fail";
+      failed++;
+      continue;
+    }
+    r.statusEl.textContent = "registering…";
+    r.statusEl.className = "ds-table-status";
+    let name = (r.schema + "_" + r.table).toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "");
+    if (!name) name = "sf_" + Math.random().toString(36).slice(2, 7);
+    if (/^\d/.test(name)) name = "_" + name;
+    try {
+      const resp = await fetch(API_REGISTER_TABLE, {
+        method: "POST", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name,
+          source_type: "snowflake",
+          bucket: r.schema,
+          source_table: r.table,
+          query_mode: r.mode,
+          description: "Added via the Add-data wizard",
+        }),
+      });
+      if (resp.ok || resp.status === 201 || resp.status === 409) {
+        r.statusEl.textContent = resp.status === 409 ? "already registered" : "✓ registered";
+        r.statusEl.className = "ds-table-status ok";
+        registered.push({ id: name, name: r.table, bucket: r.schema });
+      } else {
+        const b = await resp.json().catch(() => ({}));
+        r.statusEl.textContent = "✗ " + _esc(typeof b.detail === "string" ? b.detail : "failed");
+        r.statusEl.className = "ds-table-status fail";
+        failed++;
+      }
+    } catch (e) {
+      r.statusEl.textContent = "✗ request failed";
+      r.statusEl.className = "ds-table-status fail";
+      failed++;
+    }
+  }
+  return { ok: registered, failed };
+}
+
 // One entry point for step 2's "register whatever this source selected".
 async function _registerStepTwo() {
   if (_wizardSource === "bigquery") return _registerBqRows();
+  if (_wizardSource === "snowflake") return _registerSfRows();
   if (!_wizardConnId) return { ok: [], failed: 0 };
   // Step 2's own error line — the browse panel's sits on the page behind the
   // drawer, and `#ds-wizard-error` belongs to the connect step's pane.
@@ -3177,8 +3663,17 @@ document.getElementById("ds-wizard-connect-btn").addEventListener("click", () =>
     _renderBqRowsEditor();
     return;
   }
+  if (_wizardSource === "snowflake") {
+    _saveSnowflakeAndContinue();
+    return;
+  }
   connectAndValidate();
 });
+
+// Update the Snowflake credential status badges as the admin types.
+document.getElementById("ds-sf-auth-type").addEventListener("change", () => { _updateSfAuthUI(); _renderSfCredStatus(null, "password"); _renderSfCredStatus(null, "key"); });
+document.getElementById("ds-sf-password").addEventListener("input", () => _renderSfCredStatus(null, "password"));
+document.getElementById("ds-sf-private-key").addEventListener("input", () => _renderSfCredStatus(null, "key"));
 
 /* The steps strip as a back button. Nothing is re-fetched and nothing is
    re-rendered: every screen's state lives where it was left — the connect

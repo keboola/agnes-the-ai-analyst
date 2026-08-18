@@ -112,7 +112,7 @@ database:
   backend: duckdb
 YAML
     # Vendor-neutral per-instance branding (logo_svg / brand / subtitle /
-    # copyright / theme colours / custom_scripts) from the Terraform variables,
+    # copyright / favicon / theme colours / custom_scripts) from the Terraform variables,
     # pre-rendered to a base64'd top-level `instance:` + `theme:` YAML fragment.
     # Appended ONLY here, inside the "file absent" branch, so it seeds a fresh
     # instance without ever clobbering an operator's later edits or a migrated

@@ -195,6 +195,50 @@ def test_invite_requires_owner_and_invitee_chat_access(co_api):
     assert r.json()["is_co_session"] is True
 
 
+@pytest.fixture
+def co_api_case(e2e_env):
+    """Like ``co_api`` but also yields the invitee's own token, so a test can
+    check that the invited person can actually USE the session."""
+    conn = get_system_db()
+    owner_token, collab_token, _ = _setup_users_and_chat_grant(conn)
+
+    from app.chat.persistence import ChatRepository
+    from app.chat.types import Surface
+
+    repo = ChatRepository(conn)
+    s0 = repo.create_session(user_email="owner@example.com", surface=Surface.WEB)
+
+    from fastapi.testclient import TestClient
+
+    from app.main import create_app
+
+    app = create_app()
+    app.state.chat_repo = repo
+    client = TestClient(app)
+    yield client, s0.id, {"Authorization": f"Bearer {owner_token}"}, {"Authorization": f"Bearer {collab_token}"}
+    conn.close()
+
+
+def test_invite_by_case_variant_address_still_lets_the_invitee_in(co_api_case):
+    """The invite must be recorded under the invited ACCOUNT's address.
+
+    Resolving the invitee case-insensitively is only half the job: every
+    downstream authorization check compares participant rows to the account's
+    stored email with plain string equality, and compute_grant_intersection
+    resolves participants exactly and fails closed. Persisting the spelling the
+    inviter typed makes the invite appear to succeed and then 403 the invitee
+    on every read, join and leave.
+    """
+    client, s0, owner_hdr, collab_hdr = co_api_case
+    r = client.post(f"/api/chat/{s0}/invite", json={"invitee_email": "Collab@Example.COM"}, headers=owner_hdr)
+    assert r.status_code == 200, r.text
+    s1 = r.json()["session_id"]
+
+    # The invited person can actually open the session they were invited to.
+    assert client.post(f"/api/chat/{s1}/join-ticket", headers=collab_hdr).status_code == 200
+    assert client.get(f"/api/chat/{s1}/messages", headers=collab_hdr).status_code == 200
+
+
 def test_invite_rejects_non_owner(co_api_other):
     client, s0, other_hdr, invitee_email = co_api_other
     r = client.post(f"/api/chat/{s0}/invite", json={"invitee_email": invitee_email}, headers=other_hdr)

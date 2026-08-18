@@ -2,7 +2,7 @@
 
 {% block title %}Studio — {{ config.INSTANCE_NAME }}{% endblock %}
 
-{% set page_hero_eyebrow = "Agnes Studio" %}
+{% set page_hero_eyebrow = (instance_brand or 'Agnes') ~ " Studio" %}
 {% set page_hero_title = "Studio" %}
 {% set page_hero_subtitle = "Chat-assisted builders for data packages, connections, and content — describe what you need and the assistant grounds it in your live instance." %}
 

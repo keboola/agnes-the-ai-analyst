@@ -40,6 +40,7 @@ from src.repositories import (
     access_token_repo,
     agent_artifacts_repo,
     agent_memories_repo,
+    agent_schedules_repo,
     agent_webhooks_repo,
     agents_repo,
     audit_repo,
@@ -409,6 +410,11 @@ def _cascade_delete_agent_resources(agent_id: str) -> None:
     memory_count = len(agent_memories_repo().list_for_agent(agent_id))
     if memory_count:
         agent_memories_repo().delete_for_agent(agent_id)
+
+    # Schedules die with the agent (agent-schedules design, v119) — without
+    # this the rows sit orphaned forever, invisibly: the run-due sweep skips
+    # soft-deleted agents, so nothing ever surfaces the leak.
+    agent_schedules_repo().delete_for_agent(agent_id)
 
 
 @router.put("/{agent_id}/scope")
