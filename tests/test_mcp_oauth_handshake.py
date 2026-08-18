@@ -551,7 +551,7 @@ def test_create_app_keeps_streamable_mcp_on_localhost_http(seeded_app, monkeypat
     assert app.state.mcp_streamable_instance is not None
 
 
-def test_oauth_load_exposes_raw_not_hash_so_delete_and_revoke_work(seeded_app):
+def test_oauth_load_exposes_raw_not_hash_so_delete_and_revoke_work(seeded_app_fresh):
     """Double-hash guard (audit M4 / Devin #863).
 
     Codes/tokens are hashed at rest, but the provider's load_* methods must
@@ -568,7 +568,7 @@ def test_oauth_load_exposes_raw_not_hash_so_delete_and_revoke_work(seeded_app):
     from app.auth.mcp_oauth import AgnesMCPOAuthProvider
     from src.repositories import oauth_clients_repo
 
-    with seeded_app["client"]:
+    with seeded_app_fresh["client"]:
         repo = oauth_clients_repo()
         prov = AgnesMCPOAuthProvider()
         repo.upsert_client(

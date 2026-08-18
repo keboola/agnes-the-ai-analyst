@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Internal
+
+- **`seeded_app` (the ~9.7k-call-site E2E test fixture) now builds the FastAPI app once per test session instead of once per test.** `create_app()` measured ~343ms warm — the app object does not bind to a DATA_DIR, so rebuilding it per test bought no isolation. Per-test DATA_DIR, DB seed and TestClient are unchanged; a new `_shared_seeded_app` session fixture restores `app.state`/`app.dependency_overrides` to their pristine post-construction snapshot on every test's teardown so a test that mutates either (e.g. `app.state.chat_config`, since lifespan never runs under a bare `TestClient`) can't leak into the next test. Per-test `seeded_app` setup drops from ~380ms to ~100ms on a representative sample. The handful of tests that run the app's ASGI *lifespan* themselves (`with seeded_app["client"] as client:`, to exercise the streamable MCP session manager, whose SDK-imposed `run()`-once contract can't survive a shared instance) use a new function-scoped `seeded_app_fresh` fixture instead and keep paying the full per-test cost — everything else keeps the win.
+
 ## [0.83.53] - 2026-08-18
 
 ### Fixed
@@ -33,9 +37,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **The well-known consumer-tenant GUIDs are refused like the reserved names.** `MICROSOFT_TENANT_ID` rejected `common` / `organizations` / `consumers`, but Microsoft also publishes directory GUIDs for the consumer tenants — they pass the GUID shape check and produce a discovery URL functionally equivalent to `consumers`, i.e. the exact multi-tenant configuration the name check exists to prevent, reached by spelling it differently.
 - **Documentation correction: the Entra guest-UPN refusal is not a guard against B2B guests.** `docs/auth-microsoft-oauth.md` and the provider docstring presented the `#EXT#` UPN refusal as one of two narrower guards in place beyond `auth.allowed_domain`. It is only consulted when the `email` claim is absent, and Entra emits `email` for guest accounts by default — so a guest is resolved from that claim and the refusal never fires for the population it is named for. `auth.allowed_domain` is the only control on guests, and the docs now say so plainly. No behaviour change; the claim was the problem.
 - **The Microsoft OAuth callback no longer writes attacker-controlled text into the log verbatim.** authlib raises `OAuthError` built from the `error` / `error_description` query parameters *before* any state validation, so an unauthenticated `GET /auth/microsoft/callback?error_description=…` could inject CRLF-forged lines into the application log, or flood it. Logged with `%r` and length-capped now. Nothing leaked outward either way — the response is a constant error code.
-### Internal
-
-- **`seeded_app` (the ~9.7k-call-site E2E test fixture) now builds the FastAPI app once per test session instead of once per test.** `create_app()` measured ~343ms warm — the app object does not bind to a DATA_DIR, so rebuilding it per test bought no isolation. Per-test DATA_DIR, DB seed and TestClient are unchanged; a new `_shared_seeded_app` session fixture restores `app.state`/`app.dependency_overrides` to their pristine post-construction snapshot on every test's teardown so a test that mutates either (e.g. `app.state.chat_config`, since lifespan never runs under a bare `TestClient`) can't leak into the next test. Per-test `seeded_app` setup drops from ~380ms to ~100ms on a representative sample. The handful of tests that run the app's ASGI *lifespan* themselves (`with seeded_app["client"] as client:`, to exercise the streamable MCP session manager, whose SDK-imposed `run()`-once contract can't survive a shared instance) use a new function-scoped `seeded_app_fresh` fixture instead and keep paying the full per-test cost — everything else keeps the win.
 
 ## [0.83.52] - 2026-08-18
 
