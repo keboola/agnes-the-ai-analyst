@@ -92,6 +92,24 @@ _KNOB_CATALOGUE: list[dict[str, Any]] = [
         "default": "",
     },
     {
+        # Unset resolves the built-in `img/agnes-orb.png` through `static_url()`,
+        # so the value is the SERVED url (`/static/img/agnes-orb.png`) carrying a
+        # `?v=<mtime>` cache-buster. The default is declared as that url without
+        # the buster — a stable description of the knob rather than of one
+        # build's mtime — and `cache_busted` tells `_source_for` to compare with
+        # the suffix stripped. Without it the value would always differ from the
+        # default and a clean instance would report `source: "yaml"` for a
+        # favicon nobody configured, exactly the trap documented on
+        # `instance_theme` below. What the operator SETS is still the bare path
+        # (`instance.favicon: img/brand.png`); `yaml_path` is where they set it.
+        "key": "instance_favicon",
+        "cache_busted": True,
+        "resolver": "get_instance_favicon",
+        "env_var": "AGNES_INSTANCE_FAVICON",
+        "yaml_path": "instance.favicon",
+        "default": "/static/img/agnes-orb.png",
+    },
+    {
         # "paper" since Wave 0 (2026-08) — it is what get_instance_theme()
         # returns on an instance that configures nothing (the `redesign`
         # preset's implied default). This value is not cosmetic: `_source_for`
@@ -223,7 +241,21 @@ _KNOB_CATALOGUE: list[dict[str, Any]] = [
 ]
 
 
-def _source_for(env_var: Optional[str], resolver_name: str, current_value: Any, default: Any) -> str:
+def _strip_cache_buster(value: Any) -> Any:
+    """Drop a ``?v=<mtime>`` suffix so a static-asset knob can be compared to
+    the bare asset path its catalogue entry declares as the default."""
+    if isinstance(value, str) and "?v=" in value:
+        return value.split("?v=", 1)[0]
+    return value
+
+
+def _source_for(
+    env_var: Optional[str],
+    resolver_name: str,
+    current_value: Any,
+    default: Any,
+    cache_busted: bool = False,
+) -> str:
     """Determine which tier supplied current_value: env, yaml, or default.
 
     - ``env``: the env var is set and non-empty.
@@ -236,9 +268,17 @@ def _source_for(env_var: Optional[str], resolver_name: str, current_value: Any, 
     merged yaml just to detect the source would duplicate the load already
     done by the resolver. The heuristic is accurate for all scalar knobs
     (strings, ints, bools) that don't derive from other resolvers.
+
+    ``cache_busted`` covers the knobs whose resolver runs a static asset path
+    through ``static_url()``: the resolved value carries a ``?v=<mtime>``
+    suffix that no declarable default can match, so it is stripped from both
+    sides before comparing. Without that, such a knob would report ``yaml`` on
+    an instance that configured nothing.
     """
     if env_var and os.environ.get(env_var, "").strip():
         return "env"
+    if cache_busted:
+        current_value, default = _strip_cache_buster(current_value), _strip_cache_buster(default)
     if current_value != default:
         return "yaml"
     return "default"
@@ -261,7 +301,13 @@ def _build_knobs() -> list[dict[str, Any]]:
             logger.exception("config_surface: resolver %s raised", resolver_name)
             current_value = None
 
-        source = _source_for(entry["env_var"], resolver_name, current_value, entry["default"])
+        source = _source_for(
+            entry["env_var"],
+            resolver_name,
+            current_value,
+            entry["default"],
+            cache_busted=bool(entry.get("cache_busted")),
+        )
         out.append(
             {
                 "key": entry["key"],

@@ -73,6 +73,7 @@ Working on the Agnes codebase.
 - [`superpowers/specs/2026-08-15-agnes-desktop-agent-cockpit-prd.md`](superpowers/specs/2026-08-15-agnes-desktop-agent-cockpit-prd.md) — PRD: developer-first desktop cockpit, agent-as-code, inspectable runs, and managed local sandbox
 - [`superpowers/plans/2026-08-15-macos-desktop-mvp-v2.md`](superpowers/plans/2026-08-15-macos-desktop-mvp-v2.md) — implementation plan: CLI-backed Agent Runs cockpit, structured AG-UI inspection, and request-scoped process lifecycle
 - [`superpowers/specs/2026-07-21-agent-profiles-and-agent-api-design.md`](superpowers/specs/2026-07-21-agent-profiles-and-agent-api-design.md) — design: agent profiles + agent-as-API (sessions, memory, webhooks, budgets)
+- [`superpowers/specs/2026-08-17-agent-schedules-design.md`](superpowers/specs/2026-08-17-agent-schedules-design.md) — design: scheduled runs for agent profiles (cron-like cadences, run-due sweep, owner CRUD)
 - [`superpowers/specs/2026-07-21-data-apps-design.md`](superpowers/specs/2026-07-21-data-apps-design.md) — design: hosted data apps (push-to-deploy, apps-runner sidecar)
 - [`STORE_GUARDRAILS.md`](STORE_GUARDRAILS.md) — flea-market upload guardrails (static checks + LLM review)
 - [`corporate-memory-governance.md`](corporate-memory-governance.md) — knowledge-distribution governance design

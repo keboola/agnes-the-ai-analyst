@@ -774,7 +774,7 @@
      eyebrow reading "Sources", which spent three lines of chrome saying the
      word the highlighted tab was already saying. #}
   {% set page_hero_title = "Data" %}
-  {% set page_hero_subtitle = "Where the tables come from — the Keboola and BigQuery projects Agnes pulls from, what it registered, and how those tables reach people. Looking to connect an MCP server instead? See <a href=\"/admin/mcp-sources\">MCP sources</a> — the tools an agent calls at runtime." %}
+  {% set page_hero_subtitle = "Where the tables come from — the Keboola and BigQuery projects " ~ (instance_brand or 'Agnes') ~ " pulls from, what it registered, and how those tables reach people. Looking to connect an MCP server instead? See <a href=\"/admin/mcp-sources\">MCP sources</a> — the tools an agent calls at runtime." %}
   {% set page_hero_plain = True %}
   {% include "_page_hero.html" %}
   {% include "_admin_tabs.html" %}
@@ -997,7 +997,7 @@
             <input type="checkbox" id="ds-new-semantic">
             <span>Also sync business metrics &amp; glossary (semantic layer)</span>
           </label>
-          <p>Keeps this project's metric definitions in Agnes so analysts and agents compute
+          <p>Keeps this project's metric definitions in {{ instance_brand or 'Agnes' }} so analysts and agents compute
              metrics one way. Keboola's Metastore requires a second token for this — a project
              <strong>owner</strong> token, separate from the storage token above.
              <strong>Optional:</strong> skip it and tables still work; you can set it any time
@@ -1131,7 +1131,7 @@
           <div class="ds-wguide">
             <h4>Files become searchable through the Library, not a connector.</h4>
             <p>Upload documents (PDF, Markdown, CSV, …) into a <strong>Collection</strong> in the
-               <a href="/library">Library</a> — Agnes ingests them per file and analysts search them with citations.
+               <a href="/library">Library</a> — {{ instance_brand or 'Agnes' }} ingests them per file and analysts search them with citations.
                A Collection is honest about being a snapshot: when the content changes, a person re-uploads.</p>
             <p>If the file is an <em>export of a live system</em>, that system is the source — connect it
                (Keboola or BigQuery) and let a data package carry the tables, or the copy starts drifting

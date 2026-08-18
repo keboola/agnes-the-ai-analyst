@@ -121,6 +121,13 @@ _IDLE_TIMEOUT_MAX = 86400
 # full idle_timeout_s cycle to find out a wake silently failed.
 _DEPLOY_STALE_TIMEOUT_S = 600
 
+# Marker the reconcile scan leaves in `state_detail` on the FIRST sweep that
+# finds a `running` row's container dead, so `error` is only written once a
+# second sweep agrees. Written with state unchanged (`running`), which bumps
+# `updated_at` and therefore defers the confirming look by a whole start grace —
+# the spacing that keeps Docker's restart backoff from reading as a dead app.
+_RECONCILE_PENDING = "reconcile-pending"
+
 # Fallback values for keys instance.yaml's `data_apps:` block may omit —
 # mirrors the documented defaults in config/instance.yaml.example so an
 # operator who only sets `enabled: true` still gets a working feature.
@@ -1949,21 +1956,29 @@ async def reap_idle_data_apps(
         if not acquired:
             logger.info("reap-idle: skipping %s — another operation is in flight", row["slug"])
             continue
+        stopped = False
         try:
             await run_in_threadpool(_runner().stop, row["slug"], row.get("sleep_mode") or "recreate")
+            stopped = True
         except (RunnerUnavailable, RunnerError) as exc:
             detail = getattr(exc, "detail", None) or str(exc)
             repo.set_state(row["id"], "error", f"reap-idle stop failed: {detail}")
             logger.warning("reap-idle: runner stop failed for %s: %s", row["slug"], detail)
-            continue
         finally:
             # The state write must happen while still holding the lease —
             # releasing first (as a bare `finally: release_op_lease(...)`
             # would) opens a window where a concurrent deploy/wake grabs the
             # freed lease, starts a container, and then this sweep's
             # "sleeping" write lands after it and clobbers that state.
-            repo.set_state(row["id"], "sleeping")
-            reaped.append(row["slug"])
+            #
+            # Guarded on `stopped`, because `finally` also runs on the way out
+            # of the `except` arm: writing "sleeping" unconditionally there
+            # overwrote the `error` just recorded for a stop that FAILED, and
+            # reported the slug as reaped while its container was still live —
+            # the opposite of what this endpoint's docstring promises.
+            if stopped:
+                repo.set_state(row["id"], "sleeping")
+                reaped.append(row["slug"])
             release_op_lease(row["slug"], holder)
 
     recovered: list[str] = []
@@ -1991,11 +2006,149 @@ async def reap_idle_data_apps(
         logger.warning("reap-idle: %s stuck in deploying past %ds; marked error", row["slug"], _DEPLOY_STALE_TIMEOUT_S)
         timed_out.append(row["slug"])
 
+    # Reconcile `running` rows whose container is actually dead. A first-deploy
+    # crash loop is written to `running` (not `deploying`, see deploy_data_app),
+    # so the stale-deploying scan above never catches it: readiness reports
+    # ready:false forever and nothing flips the row. Bounded by the same start
+    # grace as the deploying scan (`updated_at` older than _DEPLOY_STALE_TIMEOUT_S)
+    # so a container that only just started is never second-guessed — a healthy
+    # running container still reports "running" here regardless of age, so only a
+    # genuinely dead ("stopped"/"absent") container is flipped to error.
+    #
+    # This works under the runtime's unbounded `unless-stopped` policy, which is
+    # what ships today: a crash-looping container alternates between Docker
+    # `running` and `restarting`, and the runner folds `restarting` into
+    # "stopped", so the loop is detected either way. The consequence is that a
+    # single transient restart also reads dead, which is why a dead reading has
+    # to be confirmed by a second sweep before `error` is written (below). The
+    # bounded `on-failure` policy that would let a doomed container settle
+    # instead of retrying forever is a separate change (#1406).
+    reconciled: list[str] = []
+    for row in repo.list(state="running", limit=100000):
+        updated_at = row.get("updated_at")
+        if updated_at is None:
+            continue
+        if updated_at.tzinfo is None:
+            updated_at = updated_at.replace(tzinfo=timezone.utc)
+        if (now - updated_at).total_seconds() <= _DEPLOY_STALE_TIMEOUT_S:
+            continue
+        # Probe WITHOUT the op lease. `updated_at` is only bumped by
+        # `set_state`/`record_deploy` — never by `touch_last_request` — so
+        # "stale `updated_at` while running" describes essentially every
+        # healthy long-lived app, not a suspicious one. Taking the lease for
+        # each of them would contend with a concurrent `POST /{slug}/deploy`
+        # or `/stop` on a perfectly healthy app, and `require_op_lease` gives
+        # up after a few 100 ms retries with 409 `operation_in_progress`. A
+        # live container answers "running" here and costs no lease at all.
+        try:
+            status = await run_in_threadpool(_runner().status, row["slug"])
+        except (RunnerUnavailable, RunnerError) as exc:
+            logger.warning("reap-idle: reconcile status check failed for %s: %s", row["slug"], exc)
+            continue
+        if status.get("container") not in ("stopped", "absent"):
+            # Alive. Drop a pending note from an earlier sweep so a single
+            # transient restart cannot accumulate towards an `error` later.
+            #
+            # Guarded exactly like the dead path below, and for the same reason:
+            # `row` came from a `repo.list(state="running")` snapshot taken
+            # before this loop began, so a stop or a second sweep may have moved
+            # the row to `sleeping`/`stopped` since — and the container is not
+            # removed until that stop completes, so the probe above can still
+            # report "running". An unguarded write would put `running` back over
+            # it, leaving the registry claiming a container that is gone and the
+            # proxy latching `error` on the next request. The lease is only taken
+            # when there is actually a note to clear, so a healthy app still
+            # costs no lease on the common path.
+            if _RECONCILE_PENDING in (row.get("state_detail") or ""):
+                acquired, holder = try_acquire_op_lease(row["slug"])
+                if not acquired:
+                    logger.info(
+                        "reap-idle: leaving %s's pending note for the next sweep — an operation is in flight",
+                        row["slug"],
+                    )
+                    continue
+                try:
+                    fresh = repo.get(row["id"])
+                    if (
+                        fresh is not None
+                        and fresh["state"] == "running"
+                        and _RECONCILE_PENDING in (fresh.get("state_detail") or "")
+                    ):
+                        repo.set_state(row["id"], "running", "")
+                        logger.info(
+                            "reap-idle: %s recovered before confirmation; cleared the pending note", row["slug"]
+                        )
+                finally:
+                    release_op_lease(row["slug"], holder)
+            continue
+
+        # It looks dead — now the lease is required before judging it, and
+        # only now. `deploy_data_app` holds the lease for the whole deploy
+        # while leaving the row in `running` with an arbitrarily old
+        # `updated_at` (it writes "running" again only once `redeploy_current`
+        # returns, up to `up_timeout()` = 600 s on a cold image pull), and the
+        # runner's `up()` removes the old container BEFORE creating the new
+        # one. So a mid-deploy app reports `absent` entirely legitimately, and
+        # flipping it to `error` would stick: the ingress proxy latches on
+        # `error` and never re-checks, leaving only a manual redeploy.
+        acquired, holder = try_acquire_op_lease(row["slug"])
+        if not acquired:
+            logger.info("reap-idle: skipping reconcile of %s — another operation is in flight", row["slug"])
+            continue
+        try:
+            try:
+                # Re-probe under the lease. A deploy or stop that finished
+                # between the probe above and this acquisition released the
+                # lease, so the container can be up again even though the row
+                # never left `running` — one more round-trip, paid only for an
+                # app that already looked dead.
+                status = await run_in_threadpool(_runner().status, row["slug"])
+            except (RunnerUnavailable, RunnerError) as exc:
+                logger.warning("reap-idle: reconcile status check failed for %s: %s", row["slug"], exc)
+                continue
+            container = status.get("container")
+            if container not in ("stopped", "absent"):
+                continue
+            # And re-read the row: `absent` is the correct container state for
+            # the `sleeping` row a concurrent stop just produced, not an error
+            # to record over it.
+            fresh = repo.get(row["id"])
+            if fresh is None or fresh["state"] != "running":
+                continue
+            # One dead reading is not proof. The runner folds Docker's
+            # `restarting` into "stopped", so a healthy app that exited once and
+            # is inside Docker's restart backoff (delay doubles up to ~1 min)
+            # reads dead — and both probes above are milliseconds apart, so the
+            # second one does not decorrelate that. Writing `error` there would
+            # latch a container that was about to come back on its own, and the
+            # ingress proxy never re-checks `error`.
+            #
+            # So the first sighting only records a note, leaving the row
+            # `running`. That write bumps `updated_at`, which puts the row back
+            # outside this scan's start grace — so the confirming look happens a
+            # grace period later (10 min, an order of magnitude past Docker's
+            # backoff cap) without needing any state of its own. A container that
+            # recovered reports "running" then and the note is cleared; one still
+            # dead is dead.
+            if _RECONCILE_PENDING not in (fresh.get("state_detail") or ""):
+                repo.set_state(row["id"], "running", f"{_RECONCILE_PENDING}: container {container}")
+                logger.info(
+                    "reap-idle: %s state=running but container %s; confirming on the next sweep",
+                    row["slug"],
+                    container,
+                )
+                continue
+            repo.set_state(row["id"], "error", f"container {container} while state=running")
+            logger.warning("reap-idle: %s state=running but container %s; marked error", row["slug"], container)
+            reconciled.append(row["slug"])
+        finally:
+            release_op_lease(row["slug"], holder)
+
     _audit(
         conn,
         user["id"],
         "data_app.reap_idle",
         "data_app:*",
-        {"reaped": reaped, "timed_out": timed_out, "recovered": recovered},
+        {"reaped": reaped, "timed_out": timed_out, "recovered": recovered, "reconciled": reconciled},
     )
-    return {"reaped": reaped, "timed_out": timed_out, "recovered": recovered}
+    return {"reaped": reaped, "timed_out": timed_out, "recovered": recovered, "reconciled": reconciled}
