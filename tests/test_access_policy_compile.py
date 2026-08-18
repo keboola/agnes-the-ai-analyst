@@ -172,6 +172,7 @@ def test_compiled_sql_passes_the_real_validator():
         {"name": "email", "type": "VARCHAR"},
         {"name": "national_id", "type": "VARCHAR"},
         {"name": "amount_eur", "type": "DOUBLE"},
+        {"name": "unit_price", "type": "DECIMAL(18,2)"},
         {"name": "tags", "type": "VARCHAR[]"},
         {"name": "nested", "type": "STRUCT(v VARCHAR, i BIGINT)"},
     ]
@@ -183,6 +184,7 @@ def test_compiled_sql_passes_the_real_validator():
             "email": {"choice": "unmask", "groups": ["Finance", "Legal"]},
             "national_id": "hide",
             "amount_eur": "nullify",
+            "unit_price": "nullify",
             "tags": {"choice": "unmask", "groups": ["Finance"]},
             "nested": {"choice": "unmask", "groups": ["Finance"]},
         },

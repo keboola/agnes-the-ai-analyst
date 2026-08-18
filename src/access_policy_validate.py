@@ -112,11 +112,13 @@ _PERMITTED_NODE_TYPES: tuple[type[exp.Expression], ...] = (
     exp.Paren,
     exp.Tuple,
     exp.DataType,
-    # NOTE: exp.ColumnDef is deliberately NOT listed here. A STRUCT type's field
-    # list does parse into ColumnDef nodes, but a flat entry would permit one
-    # anywhere in the body on the strength of an assumption about where it can
-    # appear. `_reject_disallowed_constructs` checks the position instead: under
-    # a DataType, permitted; anywhere else, refused.
+    # NOTE: neither exp.ColumnDef nor exp.DataTypeParam is listed here. Both
+    # do appear inside a type declaration -- a STRUCT's field list parses into
+    # ColumnDef, and DECIMAL(18,2) / TIMESTAMP(3) carry precision as
+    # DataTypeParam -- but a flat entry would permit one anywhere in the body on
+    # the strength of an assumption about where it can appear.
+    # `_reject_disallowed_constructs` checks the position instead: under a
+    # DataType, permitted; anywhere else, refused.
     # operators that are NOT exp.Func subclasses
     exp.Not,
     exp.Neg,
@@ -298,20 +300,22 @@ def _reject_disallowed_constructs(statement: exp.Select) -> None:
                     f"function not allowed in an access policy: {name or type(node).__name__}",
                 )
             continue
-        if isinstance(node, exp.ColumnDef):
+        if isinstance(node, (exp.ColumnDef, exp.DataTypeParam)):
             # A STRUCT type spells its fields as ColumnDef nodes:
             # ``CAST(NULL AS STRUCT(v VARCHAR, i BIGINT))`` parses to
-            # Cast → DataType → ColumnDef. That is a type declaration, not a
-            # DDL column definition, and the compiler emits exactly this shape
-            # for a hidden or nullified struct column — so refusing it made the
-            # builder hand an admin SQL the save then rejected, with no way out
-            # for such a column. Permitted ONLY under a DataType: a ColumnDef
-            # anywhere else is still an unrecognized construct.
+            # Cast → DataType → ColumnDef; a parameterized type does the same
+            # with DataTypeParam (DECIMAL(18,2), TIMESTAMP(3)). Both are type
+            # declarations, not DDL, and the compiler emits exactly these shapes
+            # for a hidden or nullified column of such a type — so refusing them
+            # made the builder hand an admin SQL the save then rejected, with no
+            # way out for that column. Permitted ONLY under a DataType: either
+            # node anywhere else is still an unrecognized construct.
             if _is_inside_data_type(node):
                 continue
             raise PolicyValidationError(
                 "policy_disallowed_construct",
-                "construct not allowed in an access policy: ColumnDef outside a type declaration",
+                f"construct not allowed in an access policy: {type(node).__name__} "
+                "outside a type declaration",
             )
         if not isinstance(node, _PERMITTED_NODE_TYPES):
             raise PolicyValidationError(
