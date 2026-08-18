@@ -1199,7 +1199,10 @@ async def enable_chat_tools(
     # tool but not its permissions would silently revoke analyst access.
     registry = tool_registry_repo()
     previous_tools = registry.list_for_source(spec["id"]) if was_enabled else []
-    previous_grants = {t["tool_id"]: registry.grants_for_tool(t["tool_id"]) for t in previous_tools}
+    # Snapshot full grant rows (group_id + allow_mutating), not bare group
+    # ids: a rollback that restored grants flagless would silently reset an
+    # admin's v120 mutating opt-in to read-only.
+    previous_grants = {t["tool_id"]: registry.grant_rows_for_tool(t["tool_id"]) for t in previous_tools}
 
     def _undo() -> bool:
         """Put back what was here. Never raises — it runs inside an exception
@@ -1237,8 +1240,8 @@ async def enable_chat_tools(
                     undo_registry.delete(r["tool_id"])
             for t in previous_tools:
                 undo_registry.upsert(**{k: t[k] for k in _TOOL_UPSERT_FIELDS if k in t})
-                for group_id in previous_grants.get(t["tool_id"], []):
-                    undo_registry.add_grant(t["tool_id"], group_id)
+                for grant in previous_grants.get(t["tool_id"], []):
+                    undo_registry.add_grant(t["tool_id"], grant["group_id"], allow_mutating=grant["allow_mutating"])
             return True
         except Exception:
             logger.warning("could not roll back a failed enable for %s", connection_id, exc_info=True)
