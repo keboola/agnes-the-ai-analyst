@@ -596,12 +596,14 @@ class ChatManager:
     ) -> ChatSession:
         if not self._config.enabled:
             raise RuntimeError("chat.enabled is false")
-        active = self._active_count_for_user(user_email)
-        if active >= self._config.concurrency_per_user:
-            raise ConcurrencyCapHit(
-                f"user {user_email} has {active} active sessions; cap = {self._config.concurrency_per_user}"
-            )
-        # De-dupe Slack DM / thread to existing live session.
+        # De-dupe Slack DM / thread to existing live session — BEFORE the
+        # concurrency cap, matching the producer twin's documented order
+        # (resolve_or_create_slack_session: "De-dupes FIRST — an existing
+        # DM/thread session must always be forwardable; returning it can
+        # never add to the cap"). Cap-first refused follow-up turns in
+        # threads the bot was already talking in, which channel→agent
+        # bindings made routine: every routed thread pools on the agent
+        # owner's cap, so a moderately busy bound channel hit it fast.
         # intentional: no await between SELECT and INSERT — Slack uniqueness without DB partial unique index
         if surface == Surface.SLACK_DM and slack_channel_id:
             existing = self._repo.get_slack_dm_session(slack_channel_id)
@@ -611,6 +613,11 @@ class ChatManager:
             existing = self._repo.get_slack_thread_session(slack_channel_id, slack_thread_ts)
             if existing is not None:
                 return existing
+        active = self._active_count_for_user(user_email)
+        if active >= self._config.concurrency_per_user:
+            raise ConcurrencyCapHit(
+                f"user {user_email} has {active} active sessions; cap = {self._config.concurrency_per_user}"
+            )
         created = self._repo.create_session(
             user_email=user_email,
             surface=surface,
