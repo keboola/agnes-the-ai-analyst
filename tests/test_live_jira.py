@@ -67,8 +67,8 @@ def test_jsd_public_rides_on_the_production_issue_payload():
     payloads production actually fetches.
 
     ``search/jql`` is used only to DISCOVER issue keys: its comment embed is
-    serialized independently of ``GET /issue`` (a newest-20 window vs an
-    oldest-first block of up to 100), so asserting on the search payload would
+    serialized independently of ``GET /issue`` (a newest-20 window vs a
+    newest-100 window), so asserting on the search payload would
     not guard the production path. Each issue is refetched with the exact
     shape ``JiraService.fetch_issue`` and the backfill use, and one page of
     ``GET /issue/{key}/comment`` — the endpoint ``complete_issue_comments``

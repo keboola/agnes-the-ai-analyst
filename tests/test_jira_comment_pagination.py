@@ -1,11 +1,12 @@
 """Tests for Jira comment-pagination completion (issue #1257).
 
-Jira's issue endpoint embeds ``fields.comment.comments`` capped at 100,
-oldest-first. An issue with more than 100 comments therefore arrives missing
-its NEWEST comments unless the fetch layer pages through the comment
-endpoint for the remainder — and because every later full-refetch
-(``fields=*all``) re-hits the same 100-comment cap, the gap never heals on
-its own.
+Jira's issue endpoint embeds ``fields.comment.comments`` capped at 100. The
+embedded window is the NEWEST 100 (``fields.comment.startAt == total - 100``),
+so an issue over the cap arrives missing its OLDEST comments, and because every
+later full-refetch (``fields=*all``) re-hits the same cap, the gap never heals
+on its own. These tests exercise the completion step against synthetic payloads;
+see ``complete_issue_comments`` for the known gap in which oldest comments the
+paging actually reaches.
 
 Covers both ingestion paths that share the ``complete_issue_comments`` fetch
 seam: the batch/full extract (``JiraBackfill.fetch_issue``) and the webhook
