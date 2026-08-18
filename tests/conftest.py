@@ -662,8 +662,48 @@ def write_test_parquet(path: str, data: list[dict]):
     conn.close()
 
 
+@pytest.fixture(scope="session")
+def _shared_seeded_app():
+    """Build the FastAPI app ONCE for the whole test session and hand it to
+    every ``seeded_app`` user.
+
+    ``create_app()`` measured ~343ms warm — ~90 ``include_router`` calls plus
+    middleware setup — against a ~380ms total ``seeded_app`` fixture cost, so
+    rebuilding it per test (9.7k call sites across the suite) was ~90% waste:
+    the app object itself does not bind to a DATA_DIR. Every DB access goes
+    through ``get_system_db()`` / the ``*_repo()`` factories, which read
+    ``os.environ["DATA_DIR"]`` at CALL time and reopen on path change (see
+    ``src/db.py``), so per-test isolation is unaffected by which app instance
+    served the request — only by which DATA_DIR was active when the request
+    ran, which ``e2e_env`` still sets per-test via ``monkeypatch``.
+
+    ``load_instance_config(strict=True)`` runs once here, at whatever
+    DATA_DIR is active for the first caller — but the per-test
+    ``_reset_module_caches`` autouse fixture nulls
+    ``app.instance_config._instance_config`` before every test regardless,
+    so every test's first ``get_value()`` call re-reads from ITS OWN
+    DATA_DIR/state/instance.yaml at request time. Boot-time refusal on a
+    corrupt overlay (``InstanceConfigUnreadable``) is exercised by tests that
+    call ``create_app()`` directly, not through this fixture, so that
+    behaviour still gets a fresh app.
+
+    Two attributes DO get mutated post-construction by a couple of tests —
+    ``app.state.chat_config`` (lifespan never runs under a bare
+    ``TestClient(app)``, so tests set it by hand: test_web_admin_nav.py,
+    test_web_chat_empty_state.py) and, defensively, ``app.dependency_overrides``
+    (no current seeded_app test uses it, but the pattern exists elsewhere in
+    this file). ``seeded_app`` snapshots ``app.state`` right after
+    construction and restores both on every test's teardown — see below.
+    """
+    from app.main import create_app
+
+    app = create_app()
+    pristine_state = dict(app.state._state)
+    return app, pristine_state
+
+
 @pytest.fixture
-def seeded_app(e2e_env):
+def seeded_app(e2e_env, _shared_seeded_app):
     """FastAPI TestClient with seeded users + JWT tokens for all four legacy
     role tokens (admin, km_admin, analyst, viewer).
 
@@ -672,11 +712,17 @@ def seeded_app(e2e_env):
     Tokens for km_admin and viewer are kept so role-gating regression tests
     that still reference them keep passing — gate semantics still match
     where it matters (admin bypass, dataset_permissions checks).
+
+    The FastAPI app object is session-shared (``_shared_seeded_app``) — only
+    the DB seed, DATA_DIR and TestClient below are fresh per test. Teardown
+    restores ``app.state`` to its pristine post-``create_app()`` snapshot and
+    clears ``app.dependency_overrides``, so a test that mutates either (e.g.
+    setting ``app.state.chat_config`` because lifespan never runs under a
+    bare ``TestClient``) cannot leak into the next test.
     """
     from fastapi.testclient import TestClient
 
     from app.auth.jwt import create_access_token
-    from app.main import create_app
     from src.db import SYSTEM_ADMIN_GROUP, get_system_db
     from src.repositories.user_group_members import UserGroupMembersRepository
     from src.repositories.users import UserRepository
@@ -696,14 +742,14 @@ def seeded_app(e2e_env):
     )
     conn.close()
 
-    app = create_app()
+    app, pristine_state = _shared_seeded_app
     client = TestClient(app)
     admin_token = create_access_token("admin1", "admin@test.com")
     km_admin_token = create_access_token("km_admin1", "km@test.com")
     analyst_token = create_access_token("analyst1", "analyst@test.com")
     viewer_token = create_access_token("viewer1", "viewer@test.com")
 
-    return {
+    yield {
         "client": client,
         "admin_token": admin_token,
         "km_admin_token": km_admin_token,
@@ -711,6 +757,15 @@ def seeded_app(e2e_env):
         "viewer_token": viewer_token,
         "env": e2e_env,
     }
+
+    # Undo any per-test mutation of the shared app so the next test sees the
+    # same object `create_app()` produced. `app.state` is backed by a plain
+    # dict (starlette.datastructures.State._state) — clear + refill rather
+    # than reassign so any closure that already captured `app.state` still
+    # sees the restored values.
+    app.state._state.clear()
+    app.state._state.update(pristine_state)
+    app.dependency_overrides.clear()
 
 
 @pytest.fixture
