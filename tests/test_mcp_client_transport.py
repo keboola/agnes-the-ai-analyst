@@ -297,22 +297,57 @@ def test_stdio_pool_key_is_salted_with_the_user_for_per_user_sources(monkeypatch
     assert pool.salts == [expected]
 
 
-def test_the_http_transport_symbol_survives_the_sdk_rename():
-    """`connectors/mcp/client.py` is reached at import time from `app.main`, so
-    an ImportError here is not one failing test — it errors out every test that
-    builds the app, which is what a whole CI run looked like when the SDK
-    dropped the old `streamablehttp_client` alias in favour of
-    `streamable_http_client`.
+def test_installed_mcp_sdk_still_speaks_the_api_this_repo_calls():
+    """The `mcp` range in pyproject must resolve an SDK this code can call.
 
-    Pinned as a behaviour, not a spelling: whichever name the installed SDK
-    exports, the module must bind a usable callable, so this keeps passing
-    across the rename in either direction."""
+    Both halves below broke at once when an unbounded `mcp>=1.28.1` resolved
+    the 2.x SDK in CI, and both are import-time or first-call failures rather
+    than one wrong answer: `connectors/mcp/client.py` is reached from
+    `app.main`, so a missing symbol errors out every test that builds the app,
+    and a signature change surfaces only when a real MCP server is dialled --
+    in production, past every mock in this file.
+    """
+    import importlib
     import inspect
+
+    # Five modules import FastMCP from here (app/api/mcp_streamable.py,
+    # app/api/mcp_http.py, app/api/mcp/foundation_tools.py,
+    # app/api/mcp/tools_generator.py, cli/mcp/server.py). 2.x moved it.
+    importlib.import_module("mcp.server.fastmcp")
 
     from connectors.mcp import client as mcp_client
 
-    fn = mcp_client.streamablehttp_client
-    assert callable(fn)
-    # The transport is an async context manager factory in both spellings —
-    # a plain re-export of something else would satisfy `callable` alone.
-    assert inspect.isasyncgenfunction(fn) or hasattr(fn, "__wrapped__") or inspect.isfunction(fn)
+    params = inspect.signature(mcp_client.streamablehttp_client).parameters
+    assert "url" in params
+    # `_open_session` calls this as `streamablehttp_client(url, headers=...)`.
+    assert "headers" in params, (
+        "the bound streamable-HTTP transport no longer accepts `headers=` -- "
+        "the callsite in connectors/mcp/client.py would raise TypeError and "
+        "send no auth header; migrate the callsite, do not re-alias the symbol"
+    )
+
+
+def test_the_renamed_transport_is_not_a_drop_in_for_the_old_one():
+    """Guards against 'fixing' the rename by aliasing the new name to the old.
+
+    That looks like a one-line import fix and passes every mocked test in this
+    file, because they all monkeypatch the symbol away. It is not a fix: the
+    new entry point takes an `http_client: httpx.AsyncClient` where the old one
+    takes `headers`, so the alias turns every HTTP MCP connection into a
+    `TypeError` and the resolved bearer/basic header is never sent.
+    """
+    import inspect
+
+    sh = pytest.importorskip("mcp.client.streamable_http")
+    new = getattr(sh, "streamable_http_client", None)
+    if new is None:  # pragma: no cover - SDK predates the rename
+        pytest.skip("installed SDK has only the old spelling")
+
+    new_params = inspect.signature(new).parameters
+    old_params = inspect.signature(sh.streamablehttp_client).parameters
+
+    assert "headers" in old_params
+    assert "headers" not in new_params, (
+        "the two spellings now take the same arguments -- if that is real, "
+        "this guard and the `mcp<2` cap can both be revisited together"
+    )

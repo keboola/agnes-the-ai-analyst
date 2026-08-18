@@ -38,18 +38,15 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
 
-# `streamablehttp_client` is the OLD spelling. The SDK renamed it to
-# `streamable_http_client`, shipped both names for a while, and a later release
-# dropped the alias — at which point every import of this module raised
-# `ImportError` and, because `app.main` reaches it at import time, the whole
-# test suite errored out rather than failing one case. The new name is tried
-# first so this keeps working as the alias disappears, and the fallback keeps
-# it working on an installed SDK old enough to have only the old spelling.
-# `mcp>=1.28.1` in pyproject spans both, so neither branch is dead.
-try:
-    from mcp.client.streamable_http import streamable_http_client as streamablehttp_client
-except ImportError:  # pragma: no cover - depends on the installed SDK version
-    from mcp.client.streamable_http import streamablehttp_client
+# Deliberately the OLD spelling, and deliberately NOT aliased to the SDK's
+# newer `streamable_http_client`. The rename is not a rename — the new entry
+# point takes `http_client: httpx.AsyncClient` where this one takes `headers`,
+# so aliasing it makes the callsite below raise `TypeError` on every HTTP MCP
+# connection and drop the resolved auth headers on the floor. Speaking the new
+# API is a migration (build the client, carry the headers on it, re-check the
+# yield arity), not an import swap; until that happens `mcp<2` in pyproject is
+# what keeps this callable, and `test_mcp_client_transport.py` guards both ends.
+from mcp.client.streamable_http import streamablehttp_client
 
 logger = logging.getLogger(__name__)
 
