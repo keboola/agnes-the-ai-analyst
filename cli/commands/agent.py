@@ -271,6 +271,25 @@ def scope_set(
         raise typer.Exit(2)
 
     row = _resolve_agent(slug)
+    # Replace-not-merge has a sharper edge for slack_channel items than for
+    # plugins/tables: dropping one silently unbinds a live Slack integration
+    # (mentions revert to the generic agent-less profile with no error). Warn
+    # when this PUT would do that; still proceed — the contract is replace.
+    kept = {v for v in slack_channel}
+    detail = api_get(f"/api/v1/agents/{row['id']}").json() if not slack_channel else None
+    if detail is not None:
+        dropped = [
+            i["item_id"]
+            for i in detail.get("scope", [])
+            if i.get("item_type") == "slack_channel" and i["item_id"] not in kept
+        ]
+        if dropped:
+            typer.echo(
+                f"Warning: this replaces the FULL scope set and will UNBIND Slack channel(s) "
+                f"{', '.join(dropped)} — mentions there revert to the generic profile. "
+                f"Re-include --slack-channel <id> to keep a binding.",
+                err=True,
+            )
     resp = api_put(f"/api/v1/agents/{row['id']}/scope", json={"items": items})
     if resp.status_code != 200:
         _fail(resp)
