@@ -61,9 +61,22 @@ class UserRepository:
         it, Google passes the raw ``email`` claim through — would otherwise get
         two accounts. Backs ``app.auth.provisioning.ensure_user``. Historic
         rows may already differ only in case: the OLDEST wins, so the answer is
-        deterministic and the original account keeps the identity."""
+        deterministic and the original account keeps the identity. ``created_at``
+        is not unique — rows written together tie — so ``id`` breaks the tie and
+        both engines land on the same row.
+
+        The ordering deliberately does NOT prefer an active row. Callers feed
+        this row straight into a deactivated gate, and ranking active rows
+        first would mean an operator who disables the account they can see
+        silently hands the person the other, still-enabled variant — a
+        different account id with different group memberships. A stale disabled
+        variant shadowing the live account is the opposite failure, and it is
+        the safe one: a wrongly-refused sign-in is visible and fixable, a
+        bypassed deactivation is neither. Instances carrying such duplicates
+        want a reconciliation pass; a read-only report that lists them is the
+        queued follow-up."""
         result = self.conn.execute(
-            "SELECT * FROM users WHERE lower(email) = lower(?) ORDER BY created_at NULLS LAST LIMIT 1",
+            "SELECT * FROM users WHERE lower(email) = lower(?) ORDER BY created_at NULLS LAST, id LIMIT 1",
             [email],
         ).fetchone()
         return self._row_to_dict(result)
