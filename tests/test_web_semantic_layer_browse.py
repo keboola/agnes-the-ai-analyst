@@ -216,6 +216,24 @@ class TestModelList:
         assert r.status_code == 200
         assert "Imported from Keboola" in r.text
 
+    def test_a_model_with_no_source_is_native_on_the_list_too(self, seeded_app):
+        """`is_imported` treats a falsy source as NATIVE (`(source or "manual")
+        != "manual"`) and the detail/object pages route the badge through it.
+        The list card compared `m.source != 'manual'` directly, so an empty
+        source read as imported and `source_label(None)` rendered "Native" —
+        the same row said "Imported from Native" on the list and plain "Native"
+        on its own page."""
+        _seed_model(id="manual/_/nosrc", slug="nosrc_retail", source="")
+        c = seeded_app["client"]
+        r = c.get("/semantic-layer", headers=_auth(seeded_app["admin_token"]))
+        assert r.status_code == 200, r.text
+        assert "nosrc_retail" in r.text
+        assert "Imported from" not in r.text, "a model with no source is badged as imported"
+        # ...and the detail page it contradicted still agrees.
+        d = c.get("/semantic-layer/nosrc_retail", headers=_auth(seeded_app["admin_token"]))
+        assert d.status_code == 200, d.text
+        assert "Imported from" not in d.text
+
     def test_invalid_model_renders_stored_errors_not_silently(self, seeded_app):
         _seed_model(
             id="manual/_/broken",

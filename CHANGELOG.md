@@ -20,6 +20,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+- **A semantic model with no stored `source` is native on the browse list too.** The model card decided the "Imported from …" badge with a raw `source != 'manual'` comparison while every other surface routes it through the shared `is_imported()` helper, which treats a falsy source as native. A row with an empty source therefore read as imported on the list and rendered "Imported from Native" (the label helper's fallback), contradicting the detail page for the same row, which said plain "Native". The list route passes `is_imported` and the template branches on it.
 - **The semantic-layer projector now matches the Agnes `custom_extensions` vendor tag case-insensitively**, like the query validator and the browse UI already do. A hand-authored document spelling the tag `agnes` (rather than the canonical `AGNES` the Keboola adapter emits) previously browsed and validated fine but was silently dropped from the flat `metric_definitions` / `glossary_terms` / constraint projections; any casing now projects.
 
 ## [0.83.52] - 2026-08-18

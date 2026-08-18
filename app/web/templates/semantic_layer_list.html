@@ -79,7 +79,7 @@
     <a class="slb-card{% if m.status == 'invalid' %} slb-card--invalid{% endif %}" href="/semantic-layer/{{ m.slug }}">
         <div class="slb-card__head">
             <span class="slb-card__name">{{ m.name }}</span>
-            {% if m.source != 'manual' %}
+            {% if m.is_imported %}
             <span class="badge">Imported from {{ m.source_label }}</span>
             {% endif %}
         </div>

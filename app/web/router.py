@@ -4015,7 +4015,7 @@ async def semantic_layer_list(
     may be stale or absent.
     """
     from app.api.semantic_models import _can_read_model
-    from app.web.semantic_layer_view import model_dialects, model_of, object_counts, source_label
+    from app.web.semantic_layer_view import is_imported, model_dialects, model_of, object_counts, source_label
 
     # One card per slug — the newest readable row, matching what the
     # drill-down (`_readable_model_by_slug`) resolves to. Two models can share
@@ -4044,6 +4044,14 @@ async def semantic_layer_list(
                 "dialects": model_dialects(model),
                 "source": row.get("source"),
                 "source_label": source_label(row.get("source")),
+                # Through the shared helper, not a raw `!= 'manual'` in the
+                # template: `is_imported` treats a falsy source as NATIVE
+                # (`(source or "manual") != "manual"`), and the detail and object
+                # pages already route the decision through it. A raw comparison
+                # called an empty source imported and then labelled it
+                # "Imported from Native", contradicting the detail page for the
+                # same row.
+                "is_imported": is_imported(row.get("source")),
                 "status": row.get("status"),
                 "validation_errors": row.get("validation_errors") or [],
                 "counts": object_counts(model),
