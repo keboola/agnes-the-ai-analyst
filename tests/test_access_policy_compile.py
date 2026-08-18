@@ -170,16 +170,28 @@ def test_compiled_sql_passes_the_real_validator():
         "table": "invoices",
         "row_rules": [{"column": "cost_center", "op": "in_caller_groups"}],
         "row_combine": "and",
-        "column_masks": {"email": "hash", "national_id": "hide"},
+        "column_masks": {
+            "email": {"choice": "unmask", "groups": ["Finance", "Legal"]},
+            "national_id": "hide",
+            "amount_eur": "nullify",
+        },
     }
     out = compile_policy(spec, COLS)
-    # The builder's own output must never be rejected by the gate every save runs.
+    # The builder's own output must never be rejected by the gate every save runs,
+    # including the remote transpile path.
     validate_policy_sql(
         out.sql,
         table_id="invoices",
         table_name="invoices",
         mapping_table_names=set(),
         for_remote=False,
+    )
+    validate_policy_sql(
+        out.sql,
+        table_id="invoices",
+        table_name="invoices",
+        mapping_table_names=set(),
+        for_remote=True,
     )
 
 
@@ -270,3 +282,28 @@ def test_masked_columns_preserve_input_order():
         '"national_id", CAST(NULL AS DOUBLE) AS "amount_eur"'
     )
     assert proj == expected
+
+
+def test_composite_text_types_do_not_use_string_redaction():
+    """Arrays/structs containing VARCHAR must keep the composite type, not '*****'."""
+    cols = [
+        {"name": "tags", "type": "VARCHAR[]"},
+        {"name": "nested", "type": "STRUCT(v VARCHAR, i BIGINT)"},
+        {"name": "amount_eur", "type": "VARCHAR"},
+    ]
+    spec = {
+        "table": "invoices",
+        "row_rules": [],
+        "row_combine": "and",
+        "column_masks": {
+            "tags": {"choice": "unmask", "groups": ["Finance"]},
+            "nested": {"choice": "unmask", "groups": ["Finance"]},
+            "amount_eur": {"choice": "unmask", "groups": ["Finance"]},
+        },
+    }
+    out = compile_policy(spec, cols)
+    # VARCHAR[] and STRUCT must fall back to a type-preserving NULL.
+    assert "ELSE CAST(NULL AS VARCHAR[])" in out.sql
+    assert "ELSE CAST(NULL AS STRUCT(v VARCHAR, i BIGINT))" in out.sql
+    # Plain VARCHAR still gets the fixed redaction string.
+    assert "ELSE '*****'" in out.sql

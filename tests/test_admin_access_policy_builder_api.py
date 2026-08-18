@@ -44,18 +44,18 @@ def policy_builder_table(seeded_app, mock_extract_factory):
                 "name": "policy_builder_invoices",
                 "data": [
                     {
-                        "invoice_id": "1",
+                        "invoice_id": 1,
                         "cost_center": "Finance",
                         "email": "a@example.com",
                         "national_id": "111",
-                        "amount_eur": "100",
+                        "amount_eur": 100.0,
                     },
                     {
-                        "invoice_id": "2",
+                        "invoice_id": 2,
                         "cost_center": "Ops",
                         "email": "b@example.com",
                         "national_id": "222",
-                        "amount_eur": "200",
+                        "amount_eur": 200.0,
                     },
                 ],
             }
@@ -125,9 +125,9 @@ def policy_builder_table_with_profile(policy_builder_table):
                 },
                 {
                     "name": "amount_eur",
-                    "type": "VARCHAR",
+                    "type": "DOUBLE",
                     "type_category": "NUMERIC",
-                    "sample_values": ["100", "200"],
+                    "sample_values": [100.0, 200.0],
                     "unique_count": 2,
                     "alerts": [],
                 },
@@ -355,3 +355,80 @@ class TestPolicyBuilderCompile:
             )
             assert resp.status_code == 422, resp.text
             assert resp.json()["detail"].startswith("policy_compile_invalid_spec:"), resp.text
+
+    def test_compile_endpoint_unmask_supports_multi_group_allowlist(self, policy_builder_table):
+        c = policy_builder_table["client"]
+        token = policy_builder_table["admin_token"]
+
+        resp = c.post(
+            "/api/admin/registry/policy_builder_invoices/policy/compile",
+            json={
+                "row_rules": [],
+                "column_masks": {
+                    "email": {"choice": "unmask", "groups": ["Finance", "Legal"]},
+                    "amount_eur": {"choice": "unmask", "groups": ["Finance"]},
+                },
+            },
+            headers=_auth(token),
+        )
+        assert resp.status_code == 200, resp.text
+        sql = resp.json()["sql"]
+        # multi-group condition is ORed
+        assert "list_contains($user_groups, 'Finance') OR list_contains($user_groups, 'Legal')" in sql
+        # text-like column gets the fixed redaction string, numeric a cast NULL
+        assert "ELSE '*****'" in sql
+        assert "ELSE CAST(NULL AS" in sql
+        # the projection is explicit and preserves the original column order
+        assert "SELECT *" not in sql
+        assert "EXCLUDE" not in sql
+
+    def test_compile_endpoint_schema_unavailable_returns_422(self, seeded_app):
+        """DESCRIBE on a registered-but-not-materialized table returns an empty
+        schema; the endpoint must fail closed with a clear message instead of
+        pretending the table has no columns."""
+        from src.db import get_system_db
+        from src.repositories.table_registry import TableRegistryRepository
+
+        conn = get_system_db()
+        try:
+            TableRegistryRepository(conn).register(
+                id="ghost_tbl",
+                name="ghost_tbl",
+                source_type="keboola",
+                query_mode="local",
+                server_only=True,
+            )
+        finally:
+            conn.close()
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/registry/ghost_tbl/policy/compile",
+            json={"row_rules": [], "column_masks": {"email": "hide"}},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 422, resp.text
+        assert "policy_builder_schema_unavailable" in resp.json()["detail"], resp.text
+
+    def test_compile_endpoint_hiding_all_columns_returns_422(self, policy_builder_table):
+        """A spec that would project no columns must not fall back to SELECT *."""
+        c = policy_builder_table["client"]
+        token = policy_builder_table["admin_token"]
+
+        resp = c.post(
+            "/api/admin/registry/policy_builder_invoices/policy/compile",
+            json={
+                "row_rules": [],
+                "column_masks": {
+                    "invoice_id": "hide",
+                    "cost_center": "hide",
+                    "email": "hide",
+                    "national_id": "hide",
+                    "amount_eur": "hide",
+                },
+            },
+            headers=_auth(token),
+        )
+        assert resp.status_code == 422, resp.text
+        assert "select no columns" in resp.json()["detail"], resp.text

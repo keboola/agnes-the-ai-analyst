@@ -105,8 +105,18 @@ def _normalize_columns(columns: Sequence[Any]) -> list[tuple[str, str]]:
 def _is_text_type(col_type: str) -> bool:
     if not col_type:
         return False
-    upper = col_type.upper()
-    return any(keyword in upper for keyword in _TEXT_TYPE_KEYWORDS)
+    # Anchor on the whole base type name: composite types such as `VARCHAR[]`,
+    # `STRUCT(x VARCHAR)` or `MAP(VARCHAR, VARCHAR)` merely mention a text
+    # keyword and must NOT take the string-redaction fallback (its CASE branches
+    # would then have incompatible types).
+    upper = col_type.strip().upper()
+    # Arrays, generic collections, and struct/map/list containers are never
+    # plain scalar text even when their inner type is text.
+    if "[" in upper or "<" in upper or upper.startswith(("STRUCT", "MAP", "LIST", "ARRAY")):
+        return False
+    # Strip optional length/size suffixes like `VARCHAR(255)` before matching.
+    base = upper.split("(", 1)[0].strip()
+    return base in _TEXT_TYPE_KEYWORDS
 
 
 def _unmask_condition(groups: list[str]) -> str:

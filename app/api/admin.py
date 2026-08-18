@@ -5849,7 +5849,14 @@ async def policy_builder_compile(
         raise HTTPException(status_code=404, detail="Table not found")
 
     name = row.get("name") or table_id
-    columns = [{"name": c[0], "type": c[1]} for c in _policy_builder_describe(name)]
+    describe_rows = _policy_builder_describe(name)
+    if not describe_rows:
+        raise HTTPException(
+            status_code=422,
+            detail="policy_builder_schema_unavailable: the table schema could not be read; "
+            "ensure the table is materialized or remote before building a policy.",
+        )
+    columns = [{"name": c[0], "type": c[1]} for c in describe_rows]
 
     from src.access_policy_compile import compile_policy
 

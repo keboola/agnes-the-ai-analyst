@@ -6716,6 +6716,7 @@
         previewEl.style.display = 'none';
         previewEl.innerHTML = '';
         _apHideSaveError();
+        _apCompileError = null;
         document.getElementById('apClearBtn').style.display = table.access_policy_sql ? '' : 'none';
         var mappingToggle = document.getElementById('apMappingToggle');
         if (mappingToggle) mappingToggle.checked = !!table.policy_mapping;
@@ -6848,6 +6849,7 @@
     let _apColumns = [];
     let _apMaskState = {};
     let _apCompileTimer = null;
+    let _apCompileError = null;
 
     // Task A (access-policy-builder-ux Slice 2) — the row-rule repeater's
     // state. Every op here is one the compiler (src/access_policy_compile.py)
@@ -7076,6 +7078,7 @@
     async function _apCompileNow() {
         if (!_apTable) return;
         var spec = { row_rules: _apAssembleRowRules(), row_combine: _apRowCombine, column_masks: _apMaskState };
+        _apCompileError = null;
         try {
             var r = await fetch('/api/admin/registry/' + encodeURIComponent(_apTable.id) + '/policy/compile', {
                 method: 'POST',
@@ -7083,17 +7086,21 @@
                 body: JSON.stringify(spec),
             });
             if (!r.ok) {
-                // compile is a convenience; leave #apSql as-is on error —
-                // but drop the warnings, which described an older spec.
+                var d = await r.json().catch(function() { return {}; });
+                _apCompileError = typeof d.detail === 'string' ? d.detail : ('HTTP ' + r.status);
+                _apShowSaveError(_apCompileError);
                 _apRenderCompileWarnings([]);
                 return;
             }
             var body = await r.json();
             document.getElementById('apSql').value = body.sql || '';
             _apRenderCompileWarnings(body.warnings);
+            _apHideSaveError();
         } catch (err) {
             // Network hiccup — leave #apSql unchanged; the Advanced SQL tab
             // still works standalone.
+            _apCompileError = 'Network error: ' + err.message;
+            _apShowSaveError(_apCompileError);
             _apRenderCompileWarnings([]);
         }
     }
@@ -7133,6 +7140,10 @@
 
     async function apSavePolicy() {
         if (!_apTable) return;
+        if (_apCompileError) {
+            _apShowSaveError('Fix the builder error before saving: ' + _apCompileError);
+            return;
+        }
         var sql = document.getElementById('apSql').value.trim();
         var note = document.getElementById('apNote').value.trim();
         _apHideSaveError();

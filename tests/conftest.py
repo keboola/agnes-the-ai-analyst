@@ -623,10 +623,22 @@ def create_mock_extract(extracts_dir: Path, source_name: str, tables: list[dict]
         if rows_data and query_mode == "local":
             # Write actual parquet file
             pq_path = str(data_dir / f"{name}.parquet")
-            # Build SQL from data
+            # Build SQL from data, preserving Python scalar types.
             selects = []
             for row in rows_data:
-                vals = ", ".join(f"'{v}' AS {k}" for k, v in row.items())
+                parts = []
+                for k, v in row.items():
+                    if isinstance(v, bool):
+                        parts.append(f"CAST('{v}' AS BOOLEAN) AS {k}")
+                    elif isinstance(v, int):
+                        parts.append(f"CAST('{v}' AS BIGINT) AS {k}")
+                    elif isinstance(v, float):
+                        parts.append(f"CAST('{v}' AS DOUBLE) AS {k}")
+                    elif v is None:
+                        parts.append(f"NULL AS {k}")
+                    else:
+                        parts.append(f"'{v}' AS {k}")
+                vals = ", ".join(parts)
                 selects.append(f"SELECT {vals}")
             union_sql = " UNION ALL ".join(selects)
             conn.execute(f"COPY ({union_sql}) TO '{pq_path}' (FORMAT PARQUET)")
