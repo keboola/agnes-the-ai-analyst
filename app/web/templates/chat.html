@@ -1,6 +1,6 @@
 {% extends 'base_ds.html' %}
 {% import "macros/_icon.html" as ico %}
-{% from "macros/_knowledge_layer.html" import knowledge_layer_banner, knowledge_hub_label %}
+{% from "macros/_knowledge_layer.html" import knowledge_layer_banner, knowledge_hub_label with context %}
 
 {# Cloud chat page. Extends the canonical Agnes design-system base so
    the Agnes top nav, footer, and shared design tokens (colors, type,
@@ -14,7 +14,7 @@
    page scrolls a few pixels — annoying because the chat-thread already
    owns the inner scroll. See chat.css for the offset math. #}
 
-{% block title %}Chat — {{ config.INSTANCE_NAME or 'Agnes' }}{% endblock %}
+{% block title %}Chat — {{ config.INSTANCE_NAME or (instance_brand or 'Agnes') }}{% endblock %}
 
 {% block body_attrs %}class="chat-page-body" data-user-email="{{ current_user.email }}" data-initial-session="{{ initial_session_id or '' }}"{% endblock %}
 
@@ -218,7 +218,7 @@
           </li>
         </ul>
       </span>
-      <textarea id="chat-input" class="cloud-chat-input" placeholder="Ask Agnes anything... (try: summarize revenue trends)" rows="1"></textarea>
+      <textarea id="chat-input" class="cloud-chat-input" placeholder="Ask {{ instance_brand_short or 'Agnes' }} anything... (try: summarize revenue trends)" rows="1"></textarea>
       <div class="cloud-chat-form-actions">
         <button type="button" id="cancel-btn"
                 class="btn btn-danger cloud-chat-stop-btn" hidden>Stop</button>
@@ -254,7 +254,7 @@
           <button type="button" class="cloud-chat-upload-close" data-close-upload aria-label="Close">&#x2715;</button>
         </div>
         <p class="cloud-chat-upload-desc">
-          CSV, Parquet, or Excel files land in your chat workspace so Agnes can read them in the next session.
+          CSV, Parquet, or Excel files land in your chat workspace so {{ instance_brand_short or 'Agnes' }} can read them in the next session.
           Optionally register the file as a queryable table (workspace-local, no admin required).
           Max 20 MB.
         </p>
@@ -372,7 +372,7 @@
         </div>
         <p class="cloud-chat-upload-desc">
           PDF, images (PNG/JPEG/WebP/SVG/GIF), or plain text files land in your workspace
-          so Agnes can read them in the next session. Max 20 MB.
+          so {{ instance_brand_short or 'Agnes' }} can read them in the next session. Max 20 MB.
         </p>
         <div id="chat-media-drop" class="cloud-chat-drop-zone" role="button" tabindex="0"
              aria-label="Drop an image or document here, or click to browse">
@@ -446,7 +446,7 @@
           <div id="rdb-actions-empty" class="rdb-actions-empty" hidden>
             <p class="rdb-actions-empty-title">No suggested actions yet</p>
             <p class="rdb-panel-note">
-              Ask Agnes anything above, or add more relevant sources and
+              Ask {{ instance_brand_short or 'Agnes' }} anything above, or add more relevant sources and
               capabilities to <a href="/library?stack=in_stack">your Stack</a>.
             </p>
           </div>
@@ -465,9 +465,10 @@
          param), not below the composer: under the input is where the reader's
          context lives, and the hero is already the "what is this" block. It
          stays a quiet text link so "Connect your tools" remains the one
-         action up there. Brand-templated here because the macro is imported
-         without context. #}
-      {{ knowledge_layer_banner(orient_label='See how ' ~ (instance_brand_short or 'Agnes') ~ ' works') }}
+         action up there. The macro's own defaults (headline_1, orient_label)
+         already read instance_brand off this template's context (imported
+         `with context`), so no explicit args are needed here. #}
+      {{ knowledge_layer_banner() }}
     </div>
 
     {# Shared footer partial, pinned to the very bottom of the empty state.
