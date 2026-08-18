@@ -21,6 +21,7 @@ import duckdb
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
 from app.switches import SWITCHES
+from connectors.snowflake.settings import SF_TOKEN_ENV
 from src.identifier_validation import (
     is_safe_identifier as _is_safe_identifier,
     is_safe_quoted_identifier as _is_safe_quoted_identifier,
@@ -986,6 +987,73 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
                         "to the endpoint (pin it with AGNES_REMOTE_ATTACH_HOST_ALLOWLIST). "
                         "Without it, remote rows still work — every statement runs on "
                         "the SQL warehouse instead."
+                    ),
+                },
+            },
+        },
+        "snowflake": {
+            "kind": "object",
+            "hint": (
+                "Snowflake connection (query_mode='remote' rows resolved locally by the "
+                "DuckDB snowflake extension + query_mode='materialized' rows written to "
+                "parquet on the scheduler tick). The password comes from the env var named "
+                "by token_env / the vault secret of the same name, never from YAML."
+            ),
+            "fields": {
+                "account": {
+                    "kind": "string",
+                    "hint": (
+                        "Snowflake account identifier, e.g. xy12345 or "
+                        "xy12345.eu-central-1. The `.snowflakecomputing.com` suffix is "
+                        "appended when absent; give the bare identifier, no scheme or path. "
+                        "The resulting host must pass AGNES_REMOTE_ATTACH_HOST_ALLOWLIST — "
+                        "otherwise the credential is never sent and the row errors."
+                    ),
+                },
+                "user": {
+                    "kind": "string",
+                    "hint": (
+                        "Snowflake user the ATTACH authenticates as. Its default role "
+                        "applies unless `role` overrides it."
+                    ),
+                },
+                "database": {
+                    "kind": "string",
+                    "hint": (
+                        "Default database registered rows resolve `bucket` against (a "
+                        "dotted bucket 'database.schema' overrides it per row)."
+                    ),
+                },
+                "warehouse": {
+                    "kind": "string",
+                    "hint": (
+                        "Warehouse that runs materialize statements and live remote "
+                        "queries. Sized and billed on the Snowflake side — Agnes does not "
+                        "resume or suspend it."
+                    ),
+                },
+                "role": {
+                    "kind": "string",
+                    "hint": ("Optional Snowflake role to assume. Empty = the user's default role."),
+                },
+                "token_env": {
+                    "kind": "string",
+                    "default": SF_TOKEN_ENV,
+                    "hint": (
+                        "Name of the environment variable holding the Snowflake password "
+                        "(the name, never the password itself). Falls back to the vault "
+                        "secret of the same name when the env var is unset. Default "
+                        "SNOWFLAKE_PASSWORD."
+                    ),
+                },
+                "max_bytes_per_materialize": {
+                    "kind": "int",
+                    "default": 10737418240,
+                    "hint": (
+                        "Cost guardrail for query_mode='materialized' Snowflake rows. "
+                        "Caps the written parquet size in bytes (no dry-run primitive "
+                        "exists, unlike BigQuery) — an oversized result is rejected, never "
+                        "published. 0 disables. Default 10737418240 = 10 GiB."
                     ),
                 },
             },

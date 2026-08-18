@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- **The Snowflake connector's settings are editable in `/admin/server-config`.** `data_source.snowflake.*` was documented in `config/instance.yaml.example` but had no entry in the admin panel's known-fields registry, so — alone among the connectors — its knobs were invisible in the UI and could only be set by hand-editing YAML. The panel now renders `account`, `user`, `database`, `warehouse`, `role`, `token_env` and `max_bytes_per_materialize` with operator-facing hints, including what the 10 GiB materialize cap does and that `0` disables it. The password stays out of the registry exactly as the Databricks token does: only `token_env` — the *name* of the env var (or vault secret) holding it — is configurable.
+
 ### Fixed
 
 - **The Snowflake materializer publishes its parquet through the shared protocol.** It swapped the finished file into place with a bare `os.replace` off a fixed `<table_id>.parquet.tmp`, which skipped both guarantees `src/parquet_publish.py` exists to provide: without the `chmod 0644` the DuckDB `COPY`'s own umask decided the served file's mode — 0600 under a restrictive umask (0077, seen in some container/systemd units), so `agnes pull` could no longer read it (incident #203) — and the process-independent temp name let two concurrent writers replace each other's in-flight file while the loser's cleanup deleted the winner's temp (#1274). It now uses `atomic_publish_temp_path` + `atomic_publish_finalize` like every other connector, and unlinks its own temp when the `COPY` itself fails so a per-process name cannot strand one.
