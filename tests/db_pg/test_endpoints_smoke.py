@@ -2729,6 +2729,8 @@ class TestSemanticLayerSmoke:
         "GET /api/semantic-models/search",
         "GET /api/semantic-models/{slug}.yaml",
         "POST /api/semantic-models/validate-query",
+        "GET /api/semantic-models/context",
+        "GET /api/semantic-models/schema",
     }
 
     def test_model_crud_and_export(self, seeded_app_both):
@@ -2765,6 +2767,22 @@ class TestSemanticLayerSmoke:
         )
         assert validated.status_code == 200
         assert validated.json()["available"] is True
+
+        context = c.get(
+            "/api/semantic-models/context",
+            params={"selections": '[{"semantic_type": "dataset"}]'},
+            headers=h,
+        )
+        assert context.status_code == 200
+        assert context.json()["results"][0]["objects"]
+
+        schema = c.get(
+            "/api/semantic-models/schema",
+            params={"semantic_types": ["dataset"]},
+            headers=h,
+        )
+        assert schema.status_code == 200
+        assert "Dataset" in schema.json()["$defs"]
 
         assert c.delete(f"/api/admin/semantic-models/{model_id}", headers=h).status_code == 204
 

@@ -1,27 +1,31 @@
-"""`agnes semantic-model validate-query` — validate SQL against the caller's
-accessible semantic models before running it (query-validation engine
-wiring, parity spec §5).
+"""`agnes semantic-model` — non-admin, read-tier commands over the semantic
+layer: validate a query before running it, and the agent read-parity tools
+`context` / `schema` (parity spec §4/§5).
 
-CLI counterpart to ``POST /api/semantic-models/validate-query`` and the MCP
-``validate_semantic_query`` foundation tool — same request/response shape
-across all three surfaces. Not to be confused with
-``agnes admin semantic-model validate``, which schema-checks a *document*
-locally against the vendored Ossie spec; this validates a *query* against
-whatever valid semantic models the caller can already read (mirrors the
-non-admin ``/api/semantic-models/search`` + ``export`` RBAC tier — a Data
+CLI counterpart to ``POST /api/semantic-models/validate-query`` + the MCP
+``validate_semantic_query`` foundation tool, and to
+``GET /api/semantic-models/context`` / ``GET /api/semantic-models/schema`` +
+the MCP ``get_semantic_context`` / ``get_semantic_schema`` foundation tools —
+same request/response shape across all three surfaces. Not to be confused
+with ``agnes admin semantic-model validate``, which schema-checks a
+*document* locally against the vendored Ossie spec; every command here reads
+against whatever valid semantic models the caller can already read (mirrors
+the non-admin ``/api/semantic-models/search`` + ``export`` RBAC tier — a Data
 Package or direct model grant, not admin-only).
 """
 
 from __future__ import annotations
 
 import json
-from typing import Optional
+from typing import List, Optional
 
 import typer
 
-from cli.client import api_post
+from cli.client import api_get, api_post
 
-semantic_model_app = typer.Typer(help="Validate SQL against the semantic layer")
+semantic_model_app = typer.Typer(help="Read the semantic layer: validate queries, browse context, inspect schema")
+
+_SEMANTIC_TYPES = ("dataset", "metric", "relationship")
 
 
 @semantic_model_app.command("validate-query")
@@ -98,3 +102,89 @@ def validate_query(
         typer.echo("Unexpected detected objects:")
         for obj in body["unexpected_detected_objects"]:
             typer.echo(f"  {obj.get('type')}: {obj.get('name')}")
+
+
+def _fail(resp) -> None:
+    try:
+        detail = resp.json().get("detail")
+    except Exception:
+        detail = None
+    typer.echo(f"Error ({resp.status_code}): {detail or resp.text}", err=True)
+    raise typer.Exit(1)
+
+
+@semantic_model_app.command("context")
+def context(
+    semantic_type: str = typer.Argument(..., help=f"One of: {', '.join(_SEMANTIC_TYPES)}"),
+    id: Optional[List[str]] = typer.Option(  # noqa: A002 - CLI flag name, not shadowing intentionally
+        None, "--id", help="Specific object id/name — repeatable. Omit for every object of this type (compact)."
+    ),
+    model: Optional[List[str]] = typer.Option(
+        None, "--model", help="Restrict to this model id/slug — repeatable. Omit for every accessible model."
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Emit raw JSON"),
+):
+    """Look up datasets/metrics/relationships from your accessible semantic models.
+
+    Omitting `--id` returns every object of `semantic_type` COMPACTLY (name +
+    a short summary); passing one or more `--id` returns the FULL attributes
+    of just those objects. Mirrors `GET /api/semantic-models/context` and the
+    MCP `get_semantic_context` foundation tool.
+    """
+    selections = [{"semantic_type": semantic_type, "ids": id or None}]
+    params: dict = {"selections": json.dumps(selections)}
+    if model:
+        params["model_ids"] = model
+
+    resp = api_get("/api/semantic-models/context", params=params)
+    if resp.status_code != 200:
+        _fail(resp)
+
+    body = resp.json()
+    if as_json:
+        typer.echo(json.dumps(body, indent=2, default=str))
+        return
+
+    if body.get("unknown_types"):
+        typer.echo(f"Unknown semantic type(s): {', '.join(body['unknown_types'])}", err=True)
+
+    for entry in body.get("results", []):
+        objects = entry.get("objects", [])
+        typer.echo(f"{entry.get('semantic_type')} ({entry.get('mode')}): {len(objects)} object(s)")
+        for obj in objects:
+            if entry.get("mode") == "compact":
+                typer.echo(f"  {obj.get('name')} [{obj.get('model')}] — {obj.get('summary') or '(no summary)'}")
+            else:
+                typer.echo(f"  {obj.get('name')} [{obj.get('model')}]")
+                typer.echo(
+                    f"    {json.dumps({k: v for k, v in obj.items() if k not in ('name', 'model')}, default=str)}"
+                )
+
+
+@semantic_model_app.command("schema")
+def schema(
+    semantic_type: List[str] = typer.Argument(..., help=f"One or more of: {', '.join(_SEMANTIC_TYPES)}"),
+    as_json: bool = typer.Option(False, "--json", help="Emit raw JSON"),
+):
+    """Show the vendored Apache Ossie JSON Schema for one or more object types.
+
+    Served straight from the schema every semantic-model document is
+    validated against — never a hand-written copy. Mirrors
+    `GET /api/semantic-models/schema` and the MCP `get_semantic_schema`
+    foundation tool.
+    """
+    resp = api_get("/api/semantic-models/schema", params={"semantic_types": semantic_type})
+    if resp.status_code != 200:
+        _fail(resp)
+
+    body = resp.json()
+    if as_json:
+        typer.echo(json.dumps(body, indent=2, default=str))
+        return
+
+    if body.get("unknown_types"):
+        typer.echo(f"Unknown semantic type(s): {', '.join(body['unknown_types'])}", err=True)
+    for type_name, ref in body.get("types", {}).items():
+        def_name = ref.get("$ref", "").rsplit("/", 1)[-1]
+        typer.echo(f"=== {type_name} ({def_name}) ===")
+        typer.echo(json.dumps(body["$defs"].get(def_name, {}), indent=2, default=str))

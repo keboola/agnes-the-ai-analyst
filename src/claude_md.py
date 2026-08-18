@@ -8,8 +8,9 @@ default for every call to render_claude_md().
 Override content is a Jinja2 template (autoescape=False, StrictUndefined).
 Available placeholders: instance.{name,subtitle}, server.{url,hostname},
 sync_interval, data_source.type, tables (list), metrics.{count,categories},
-marketplaces (RBAC-filtered list), user.{id,email,name,is_admin,groups},
-now, today.
+semantic_layer.has_models (True iff the calling user can read >=1 valid
+semantic model), marketplaces (RBAC-filtered list),
+user.{id,email,name,is_admin,groups}, now, today.
 
 See also: surfaced as the "Agent Workspace Prompt" admin editor at
 /admin/workspace-prompt.
@@ -136,6 +137,26 @@ def _metrics_summary(conn: duckdb.DuckDBPyConnection, *, user: dict) -> dict[str
     }
 
 
+def _has_semantic_layer(conn: duckdb.DuckDBPyConnection, *, user: dict[str, Any]) -> bool:
+    """True iff the calling user can read at least one ``status='valid'``
+    semantic model — same RBAC tier as ``GET /api/semantic-models/search``
+    (``app/api/semantic_models.py::_can_read_model``: admin, a grant on the
+    model itself, or a grant on a Data Package it's linked to).
+
+    Gates the "Semantic layer" CLAUDE.md section: a user with zero
+    accessible models gets no section telling them to prefer a layer they
+    cannot actually read.
+    """
+    from app.api.semantic_models import _can_read_model
+    from src.repositories import semantic_model_repo
+
+    try:
+        rows = semantic_model_repo().list_all()
+    except _missing_table_excs():
+        return False
+    return any(row.get("status") == "valid" and _can_read_model(user, row, conn) for row in rows)
+
+
 def _marketplaces_for_user(conn: duckdb.DuckDBPyConnection, user: dict[str, Any]) -> list[dict[str, Any]]:
     """Return marketplaces with the plugins the user is allowed to see.
 
@@ -213,6 +234,7 @@ def build_claude_md_context(
         "data_source": {"type": get_data_source_type()},
         "tables": _list_tables(conn, user=user),
         "metrics": _metrics_summary(conn, user=user),
+        "semantic_layer": {"has_models": _has_semantic_layer(conn, user=user)},
         "marketplaces": _marketplaces_for_user(conn, user),
         "user": {
             "id": user.get("id", ""),

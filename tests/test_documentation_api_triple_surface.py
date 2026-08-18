@@ -90,6 +90,11 @@ _COHORT: dict[str, tuple[str, str]] = {
     # non-admin `semantic-model` group (distinct from `admin semantic-model
     # validate`, which schema-checks a document, not a query).
     "/api/semantic-models/validate-query": ("semantic-model validate-query", "validate_semantic_query"),
+    # Agent read-parity tools (wave 4) — typed context lookup + JSON Schema
+    # introspection over the caller's accessible semantic models. Same RBAC
+    # tier as search/export/validate-query.
+    "/api/semantic-models/context": ("semantic-model context", "get_semantic_context"),
+    "/api/semantic-models/schema": ("semantic-model schema", "get_semantic_schema"),
     # Contributed-skill triple-surface (GET list + DELETE; POST contribute is _EXEMPT below).
     "/api/admin/contributed-skills": ("admin skill list", "list_contributed_skills"),
     "/api/admin/contributed-skills/{name}": ("admin skill delete", "delete_contributed_skill"),

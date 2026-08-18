@@ -35,6 +35,19 @@ class ValidationResult:
     parsed: Optional[Dict[str, Any]] = None
 
 
+def get_schema_defs() -> Dict[str, Any]:
+    """The vendored schema's ``$defs`` bag (``Dataset``, ``Metric``,
+    ``Relationship``, ...).
+
+    The single read point for anything that needs to introspect the schema
+    itself rather than validate a document against it -- e.g.
+    ``src.semantic_context.get_semantic_schema``. Returns the module-level
+    parsed schema directly (not a copy): callers must treat it as read-only,
+    same contract as every other in-process constant this module exposes.
+    """
+    return _SCHEMA["$defs"]
+
+
 def validate_document(text: str) -> ValidationResult:
     """Parse and schema-check one Ossie document.
 

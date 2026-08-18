@@ -1156,6 +1156,8 @@ so comments and key order survive.
 - /api/semantic-models/search
 - /api/semantic-models/{slug}.yaml
 - /api/semantic-models/validate-query
+- /api/semantic-models/context
+- /api/semantic-models/schema
 
 `POST /api/admin/semantic-models` validates the pasted document against the
 vendored Ossie schema (422 with the schema errors on failure) and stores it
@@ -1192,6 +1194,21 @@ rather than a misleading all-clear. CLI: `agnes semantic-model
 validate-query "<SQL>" [--expect JSON] [--target-engine duckdb] [--json]`
 (distinct from `agnes admin semantic-model validate`, which schema-checks a
 document, not a query). MCP: `validate_semantic_query`.
+
+`GET /api/semantic-models/context` and `GET /api/semantic-models/schema` are
+the agent read-parity tools (same RBAC tier as search/export/validate-query).
+`context` takes a JSON-encoded `selections` query param — a list of
+`{"semantic_type": "dataset"|"metric"|"relationship", "ids": [...]?}` objects
+— plus an optional repeatable `model_ids` to restrict which accessible
+models are searched; absent/empty `ids` returns every object of that type
+COMPACTLY (name + a short summary), explicit `ids` return the FULL object.
+`schema` takes a repeatable `semantic_types` query param and returns the
+matching slice of the vendored Apache Ossie JSON Schema (`$defs` + a
+`$ref`-keyed `types` map) — never a hand-written copy, and not gated on any
+model existing (it reflects the schema every model is validated against).
+CLI: `agnes semantic-model context <type> [--id ...] [--model ...] [--json]`
+and `agnes semantic-model schema <type> [<type> ...] [--json]`. MCP:
+`get_semantic_context`, `get_semantic_schema`.
 
 ### `/api/admin/run-*` — Background job triggers
 

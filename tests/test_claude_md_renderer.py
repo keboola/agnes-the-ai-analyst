@@ -418,6 +418,91 @@ def test_metrics_summary_no_table_metric_always_visible(conn):
     assert ctx["metrics"]["categories"] == ["misc"]
 
 
+def _seed_semantic_model(conn, *, slug: str = "retail", status: str = "valid") -> dict:
+    from src.repositories import semantic_model_repo
+
+    return semantic_model_repo().upsert(
+        id=f"manual/_/{slug}",
+        slug=slug,
+        name=slug,
+        description=None,
+        document="version: '0.2.0.dev0'\nsemantic_model:\n  - name: " + slug + "\n",
+        document_json={"semantic_model": [{"name": slug, "datasets": [{"name": "orders", "source": "db.orders"}]}]},
+        spec_version="0.2.0.dev0",
+        content_hash=f"hash-{slug}",
+        source="manual",
+        source_ref=None,
+        status=status,
+        validation_errors=None,
+        validated_at=None,
+    )
+
+
+def _admin_user(conn, *, user_id: str = "u-admin", email: str = "admin@example.com") -> dict:
+    """Seed a real Admin-group member — `is_user_admin` (app/auth/access.py)
+    checks DB group membership, not the `is_admin` field on the passed-in
+    user dict, so a synthetic `{"is_admin": True}` dict alone is not enough
+    (same pattern as `test_render_tables_admin_sees_all` above)."""
+    _make_user(conn, user_id=user_id, email=email)
+    admin_gid = conn.execute("SELECT id FROM user_groups WHERE name='Admin'").fetchone()[0]
+    _add_member(conn, user_id=user_id, group_id=admin_gid)
+    return {"id": user_id, "email": email, "name": "Admin", "is_admin": True, "groups": []}
+
+
+class TestSemanticLayerSection:
+    """`semantic_layer.has_models` — CLAUDE.md section gate (parity spec §4)."""
+
+    def test_absent_without_any_semantic_model(self, conn):
+        ctx = build_claude_md_context(conn, user=_admin_user(conn), server_url="https://example.com")
+        assert ctx["semantic_layer"]["has_models"] is False
+
+    def test_present_for_admin_when_a_valid_model_exists(self, conn):
+        _seed_semantic_model(conn)
+        ctx = build_claude_md_context(conn, user=_admin_user(conn), server_url="https://example.com")
+        assert ctx["semantic_layer"]["has_models"] is True
+
+    def test_absent_for_non_admin_with_no_grant(self, conn):
+        """RBAC matches GET /api/semantic-models/search: a model with no
+        linked package/direct grant is invisible to a non-admin."""
+        _seed_semantic_model(conn)
+        _make_user(conn, user_id="ua", email="alice@example.com")
+        user = {"id": "ua", "email": "alice@example.com", "name": "Alice", "is_admin": False, "groups": []}
+        ctx = build_claude_md_context(conn, user=user, server_url="https://example.com")
+        assert ctx["semantic_layer"]["has_models"] is False
+
+    def test_present_for_non_admin_via_direct_model_grant(self, conn):
+        from src.repositories import resource_grants_repo, semantic_model_repo, user_groups_repo
+        from src.repositories.user_group_members import UserGroupMembersRepository
+
+        row = _seed_semantic_model(conn)
+        _make_user(conn, user_id="ua", email="alice@example.com")
+        gid = _make_group(conn, name="Semantic Readers")
+        UserGroupMembersRepository(conn).add_member("ua", gid, source="test")
+        resource_grants_repo().create(
+            group_id=gid, resource_type="semantic_model", resource_id=row["id"], assigned_by="test"
+        )
+        user = {"id": "ua", "email": "alice@example.com", "name": "Alice", "is_admin": False, "groups": []}
+        ctx = build_claude_md_context(conn, user=user, server_url="https://example.com")
+        assert ctx["semantic_layer"]["has_models"] is True
+        assert semantic_model_repo().get(row["id"]) is not None  # sanity: repo() reads the same seeded row
+        assert user_groups_repo().get(gid) is not None
+
+    def test_invalid_status_model_does_not_count(self, conn):
+        _seed_semantic_model(conn, status="invalid")
+        ctx = build_claude_md_context(conn, user=_admin_user(conn), server_url="https://example.com")
+        assert ctx["semantic_layer"]["has_models"] is False
+
+    def test_rendered_section_present_with_models(self, conn):
+        _seed_semantic_model(conn)
+        out = render_claude_md(conn, user=_admin_user(conn), server_url="https://example.com")
+        assert "## Semantic layer" in out
+        assert "agnes semantic-model context" in out
+
+    def test_rendered_section_absent_without_models(self, conn):
+        out = render_claude_md(conn, user=_admin_user(conn), server_url="https://example.com")
+        assert "## Semantic layer" not in out
+
+
 def test_metrics_summary_degrades_when_table_registry_missing(conn, monkeypatch):
     """A half-migrated DB (metric_definitions present, table_registry not yet
     created) must degrade to an empty summary for a non-admin caller, not
