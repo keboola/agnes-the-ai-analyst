@@ -480,6 +480,64 @@ def test_scope_put_success(mgmt_client):
     assert {"item_type": "table", "item_id": "t1"} in stored
 
 
+def test_scope_put_accepts_slack_channel_binding(mgmt_client):
+    from src.repositories import agents_repo
+
+    created = mgmt_client.post("/api/v1/agents", json={"name": "R", "slug": "router-1"}).json()
+    r = mgmt_client.put(
+        f"/api/v1/agents/{created['id']}/scope",
+        json={"items": [{"item_type": "slack_channel", "item_id": "C123"}]},
+    )
+    assert r.status_code == 200
+    hit = agents_repo().agent_for_scope_item("slack_channel", "C123")
+    assert hit is not None and hit["id"] == created["id"]
+
+
+def test_scope_put_slack_channel_conflict_409(mgmt_client):
+    """One agent per channel: binding a channel already held by another
+    non-deleted agent is refused with a pointer at the holder."""
+    a1 = mgmt_client.post("/api/v1/agents", json={"name": "R1", "slug": "router-a"}).json()
+    a2 = mgmt_client.post("/api/v1/agents", json={"name": "R2", "slug": "router-b"}).json()
+    ok = mgmt_client.put(
+        f"/api/v1/agents/{a1['id']}/scope",
+        json={"items": [{"item_type": "slack_channel", "item_id": "C777"}]},
+    )
+    assert ok.status_code == 200
+    conflict = mgmt_client.put(
+        f"/api/v1/agents/{a2['id']}/scope",
+        json={"items": [{"item_type": "slack_channel", "item_id": "C777"}]},
+    )
+    assert conflict.status_code == 409
+    detail = conflict.json()["detail"]
+    assert detail["code"] == "slack_channel_taken"
+    assert "router-a" in detail["message"]
+
+
+def test_scope_put_slack_channel_re_put_same_agent_is_idempotent(mgmt_client):
+    a1 = mgmt_client.post("/api/v1/agents", json={"name": "R", "slug": "router-idem"}).json()
+    for _ in range(2):
+        r = mgmt_client.put(
+            f"/api/v1/agents/{a1['id']}/scope",
+            json={"items": [{"item_type": "slack_channel", "item_id": "C555"}]},
+        )
+        assert r.status_code == 200
+
+
+def test_scope_put_slack_channel_freed_by_soft_delete(mgmt_client):
+    """Deleting the holder frees the channel for rebinding."""
+    a1 = mgmt_client.post("/api/v1/agents", json={"name": "R1", "slug": "router-del"}).json()
+    a2 = mgmt_client.post("/api/v1/agents", json={"name": "R2", "slug": "router-new"}).json()
+    assert mgmt_client.put(
+        f"/api/v1/agents/{a1['id']}/scope",
+        json={"items": [{"item_type": "slack_channel", "item_id": "C888"}]},
+    ).status_code == 200
+    assert mgmt_client.delete(f"/api/v1/agents/{a1['id']}").status_code in (200, 204)
+    assert mgmt_client.put(
+        f"/api/v1/agents/{a2['id']}/scope",
+        json={"items": [{"item_type": "slack_channel", "item_id": "C888"}]},
+    ).status_code == 200
+
+
 def test_scope_put_dedupes_duplicate_items(mgmt_client):
     """A duplicated (item_type, item_id) pair in one request must not 500 on
     the composite PK — it collapses to a single row."""
