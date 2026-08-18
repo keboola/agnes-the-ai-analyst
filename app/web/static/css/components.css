@@ -199,3 +199,14 @@
     transition: opacity .08s ease, transform .08s ease;
 }
 .ds-tip.is-visible { opacity: 1; transform: translateY(0); }
+
+/* Status badge modifiers — the .badge--* family design-tokens.css documents
+   as consuming the one status accent vocabulary (--ds-accent-{info,warn,
+   success,danger}-*). A plain .badge stays neutral; these tint it so an
+   `invalid` model or an `error`-severity constraint reads red, a warning
+   amber, an informational chip blue. Retinting any status is a one-token edit
+   (system.md: "One status vocabulary, five surfaces"). */
+.badge--info    { background: var(--ds-accent-info-bg);    color: var(--ds-accent-info-ink); }
+.badge--warn    { background: var(--ds-accent-warn-bg);    color: var(--ds-accent-warn-ink); }
+.badge--success { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); }
+.badge--danger  { background: var(--ds-accent-danger-bg);  color: var(--ds-accent-danger-ink); }

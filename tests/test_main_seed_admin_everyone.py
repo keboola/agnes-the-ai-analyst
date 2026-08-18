@@ -17,7 +17,6 @@ from __future__ import annotations
 import uuid
 
 import duckdb
-import pytest
 
 from src.db import (
     SYSTEM_ADMIN_GROUP,
@@ -26,12 +25,19 @@ from src.db import (
 )
 from src.repositories.user_group_members import UserGroupMembersRepository
 from src.repositories.users import UserRepository
+from src.user_identity import normalize_email
 
 
 def _run_seed_admin_block(conn, email: str) -> str:
-    """Replicate the seed_admin block from ``app.main`` lifespan."""
+    """Replicate the seed_admin block from ``app.main`` lifespan.
+
+    Kept in step with the real block — see
+    ``test_seed_admin_block_resolves_identity_case_insensitively``, which pins
+    the source itself so this replica cannot quietly drift away from it.
+    """
     repo = UserRepository(conn)
-    existing = repo.get_by_email(email)
+    email = normalize_email(email)
+    existing = repo.get_by_email_ci(email)
     if not existing:
         user_id = str(uuid.uuid4())
         repo.create(id=user_id, email=email, name="Admin", password_hash=None)
@@ -106,3 +112,24 @@ def test_seed_admin_is_idempotent_on_re_run():
         ).fetchone()[0]
     assert counts[SYSTEM_ADMIN_GROUP] == 1, "Admin membership must not duplicate"
     assert counts[SYSTEM_EVERYONE_GROUP] == 1, "Everyone membership must not duplicate"
+
+
+def test_seed_admin_block_resolves_identity_case_insensitively():
+    """Pin the real lifespan block, not just the replica above.
+
+    Seeding is an account-CREATING path. With a mixed-case
+    ``SEED_ADMIN_EMAIL`` over an existing normalized row, an exact-match
+    existence check mints a SECOND account and puts Admin + Everyone on it —
+    while every auth door resolves the OLDEST match, i.e. the row the person
+    actually signs in as, which has neither. A static read of the source is
+    the honest gate here: the block lives inline in ``lifespan`` and cannot be
+    called without standing up the whole app.
+    """
+    import pathlib
+
+    src = (pathlib.Path(__file__).resolve().parents[1] / "app" / "main.py").read_text()
+    start = src.index("seed_email = ")
+    block = src[start : src.index("added_by=\"app.main:seed_admin\"", start)]
+    assert "normalize_email(" in block, "seed_email must be normalized on write"
+    assert "get_by_email_ci(seed_email)" in block, "the existence check must fold case"
+    assert "get_by_email(seed_email)" not in block, "exact-match existence check would duplicate the account"
