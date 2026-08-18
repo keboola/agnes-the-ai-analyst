@@ -10,11 +10,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
-## [0.83.52] - 2026-08-18
+## [0.83.54] - 2026-08-18
 
 ### Changed
 
-- **Table access policy builder masks columns with group-based unmask and fixed redaction values.** The no-SQL builder (`/admin/tables` access-policy modal) now compiles `unmask` masks with a multi-select group allowlist: members see the original value, everyone else sees `'*****'` for `VARCHAR`/TEXT-like columns and a type-preserving `NULL` for all other types. The generated policy SQL uses an explicit, fixed column projection instead of `SELECT *`, so any source column added after the policy is saved is omitted (deny-by-omission) and any removed source column causes the policy to fail closed at execution time. No new feature flag or page is required; the existing `access_policies` switch controls the feature.
+- **Table access policy builder masks columns with group-based unmask and fixed redaction values.** The no-SQL builder (`/admin/tables` access-policy modal) now compiles `unmask` masks with a multi-select group allowlist: members see the original value, everyone else sees `'*****'` for `VARCHAR`/TEXT-like columns and a type-preserving `NULL` for all other types. The generated policy SQL uses an explicit, fixed column projection instead of `SELECT *`, so any source column added after the policy is saved is omitted (deny-by-omission) and any removed source column causes the policy to fail closed at execution time. No new feature flag or page is required; the existing `access_policies` switch controls the feature. Review hardening: a `STRUCT` column's `CAST(NULL AS STRUCT(...))` fallback is no longer refused by the save-time validator — a struct type spells its fields as `ColumnDef` nodes, which the node allowlist rejected, so the builder handed the admin SQL the PUT then refused (`policy_disallowed_construct`), a dead end for such a column and a regression for `nullify` on one. `ColumnDef` is permitted under a `DataType` only. A failed compile no longer blocks saving hand-written SQL: the block exists to stop a save of stale builder output, and a deterministic failure (an unreadable schema, or a spec hiding every column) fails the same way on every retry, so it locked the Advanced SQL tab with no way out — editing the SQL box clears it. And `GET /registry/{id}/policy/columns` now reports `schema_available`, so a table whose `DESCRIBE` failed (the ordinary outcome for a remote row, whose external catalog is not attached on that connection) is explained instead of shown as "No columns found".
 
 ## [0.83.51] - 2026-08-18
 

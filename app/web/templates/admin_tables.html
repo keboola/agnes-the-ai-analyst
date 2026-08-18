@@ -4214,6 +4214,7 @@
                 <div class="form-group" data-ap-panel="sql" id="apSqlPanel" style="display:none;">
                     <label class="form-label" for="apSql">Policy SQL</label>
                     <textarea class="form-textarea" id="apSql" rows="8"
+                              oninput="apSqlEdited()"
                               placeholder="SELECT * FROM &lt;table&gt; WHERE ..."></textarea>
                     <div class="form-hint">
                         Plain SQL, DuckDB dialect. Reference the caller's identity with
@@ -6717,6 +6718,7 @@
         previewEl.innerHTML = '';
         _apHideSaveError();
         _apCompileError = null;
+        _apSchemaAvailable = true;
         document.getElementById('apClearBtn').style.display = table.access_policy_sql ? '' : 'none';
         var mappingToggle = document.getElementById('apMappingToggle');
         if (mappingToggle) mappingToggle.checked = !!table.policy_mapping;
@@ -6850,6 +6852,7 @@
     let _apMaskState = {};
     let _apCompileTimer = null;
     let _apCompileError = null;
+    let _apSchemaAvailable = true;
 
     // Task A (access-policy-builder-ux Slice 2) — the row-rule repeater's
     // state. Every op here is one the compiler (src/access_policy_compile.py)
@@ -6882,6 +6885,13 @@
             }
             var body = await r.json();
             _apColumns = body.columns || [];
+            // `schema_available: false` means the DESCRIBE failed rather than
+            // the table having no columns — the ordinary outcome for a remote
+            // row, whose external catalog is not ATTACHed on the connection
+            // that read uses. Without it the empty list reads as "this table
+            // has nothing in it", and the real reason only appears once a
+            // compile is attempted.
+            _apSchemaAvailable = body.schema_available !== false;
             _apRenderColList();
         } catch (err) {
             list.innerHTML = '<div class="form-hint form-hint--danger" style="margin:0;">Network error: '
@@ -6892,7 +6902,12 @@
     function _apRenderColList() {
         var list = document.getElementById('apColList');
         if (!_apColumns.length) {
-            list.innerHTML = '<div class="form-hint" style="margin:0; padding:10px;">No columns found.</div>';
+            list.innerHTML = _apSchemaAvailable
+                ? '<div class="form-hint" style="margin:0; padding:10px;">No columns found.</div>'
+                : '<div class="form-hint form-hint--danger" style="margin:0; padding:10px;">'
+                  + 'This table\'s schema could not be read, so the builder cannot list its columns. '
+                  + 'A remote table is only describable here once its source is attached; a materialized '
+                  + 'one, once it has been synced. Write the policy on the Advanced SQL tab instead.</div>';
             return;
         }
         var disabled = !_apTable || !_apIsEligible(_apTable);
@@ -7138,10 +7153,30 @@
         el.textContent = '';
     }
 
+    /* Hand-editing the SQL box clears the compile block.
+       The block exists to stop a SAVE of stale builder output — the box still
+       holds the previous compile (or the saved policy) after a failed compile,
+       and saving that would silently disagree with what the builder shows. It
+       must not become a lock on the Advanced SQL tab, which the comments here
+       describe as a standalone escape hatch: a deterministic failure
+       (`policy_builder_schema_unavailable` for a table whose schema cannot be
+       read, or a spec that hides every column) fails the same way on every
+       retry, so no amount of builder interaction can clear it and the admin
+       could not save even SQL they typed themselves.
+
+       Once they have typed in the box, its contents are theirs rather than
+       stale output, so the guard has nothing left to protect. */
+    function apSqlEdited() {
+        if (!_apCompileError) return;
+        _apCompileError = null;
+        _apHideSaveError();
+    }
+
     async function apSavePolicy() {
         if (!_apTable) return;
         if (_apCompileError) {
-            _apShowSaveError('Fix the builder error before saving: ' + _apCompileError);
+            _apShowSaveError('Fix the builder error before saving, or edit the SQL directly on the '
+                + 'Advanced SQL tab: ' + _apCompileError);
             return;
         }
         var sql = document.getElementById('apSql').value.trim();

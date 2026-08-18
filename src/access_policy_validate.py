@@ -293,11 +293,36 @@ def _reject_disallowed_constructs(statement: exp.Select) -> None:
                     f"function not allowed in an access policy: {name or type(node).__name__}",
                 )
             continue
+        if isinstance(node, exp.ColumnDef):
+            # A STRUCT type spells its fields as ColumnDef nodes:
+            # ``CAST(NULL AS STRUCT(v VARCHAR, i BIGINT))`` parses to
+            # Cast → DataType → ColumnDef. That is a type declaration, not a
+            # DDL column definition, and the compiler emits exactly this shape
+            # for a hidden or nullified struct column — so refusing it made the
+            # builder hand an admin SQL the save then rejected, with no way out
+            # for such a column. Permitted ONLY under a DataType: a ColumnDef
+            # anywhere else is still an unrecognized construct.
+            if _is_inside_data_type(node):
+                continue
+            raise PolicyValidationError(
+                "policy_disallowed_construct",
+                "construct not allowed in an access policy: ColumnDef outside a type declaration",
+            )
         if not isinstance(node, _PERMITTED_NODE_TYPES):
             raise PolicyValidationError(
                 "policy_disallowed_construct",
                 f"construct not allowed in an access policy: {type(node).__name__}",
             )
+
+
+def _is_inside_data_type(node: exp.Expression) -> bool:
+    """Whether ``node`` sits anywhere under an ``exp.DataType``."""
+    parent = node.parent
+    while parent is not None:
+        if isinstance(parent, exp.DataType):
+            return True
+        parent = parent.parent
+    return False
 
 
 def _reject_bad_table_references(statement: exp.Select, *, table_name: str, mapping_table_names: set[str]) -> None:

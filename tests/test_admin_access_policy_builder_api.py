@@ -213,6 +213,50 @@ class TestPolicyBuilderColumns:
         assert resp.status_code == 200, resp.text
         assert resp.json()["eligible"] is False
 
+    def test_columns_endpoint_says_when_the_schema_could_not_be_read(self, seeded_app):
+        """An empty column list has two very different causes and the builder
+        has to tell them apart.
+
+        `_policy_builder_describe` runs on a fresh read-only analytics
+        connection where a `query_mode='remote'` view's external catalog is not
+        re-ATTACHed, so a failed DESCRIBE is the ordinary outcome for exactly
+        the remote rows a policy is most often written for. Reporting that as
+        "No columns found" sends the admin looking for a data problem, and the
+        real reason only surfaced once a compile was attempted and 422'd.
+        """
+        from src.db import get_system_db
+        from src.repositories.table_registry import TableRegistryRepository
+
+        conn = get_system_db()
+        try:
+            TableRegistryRepository(conn).register(
+                id="undescribable_tbl",
+                name="undescribable_tbl",
+                source_type="bigquery",
+                query_mode="remote",
+            )
+        finally:
+            conn.close()
+
+        c = seeded_app["client"]
+        resp = c.get(
+            "/api/admin/registry/undescribable_tbl/policy/columns",
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["columns"] == []
+        assert body["schema_available"] is False, "an unreadable schema is reported as an empty table"
+
+    def test_columns_endpoint_reports_a_readable_schema_as_available(self, policy_builder_table):
+        c = policy_builder_table["client"]
+        resp = c.get(
+            "/api/admin/registry/policy_builder_invoices/policy/columns",
+            headers=_auth(policy_builder_table["admin_token"]),
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["schema_available"] is True
+
     def test_columns_endpoint_lists_mapping_tables(self, policy_builder_table):
         from src.repositories import table_registry_repo
 

@@ -307,3 +307,69 @@ def test_composite_text_types_do_not_use_string_redaction():
     assert "ELSE CAST(NULL AS STRUCT(v VARCHAR, i BIGINT))" in out.sql
     # Plain VARCHAR still gets the fixed redaction string.
     assert "ELSE '*****'" in out.sql
+
+
+# ── The compiler's output for a composite column must survive the save gate ──
+
+_STRUCT_COLS = [
+    {"name": "invoice_id", "type": "BIGINT"},
+    {"name": "cost_center", "type": "VARCHAR"},
+    {"name": "tags", "type": "VARCHAR[]"},
+    {"name": "attrs", "type": "MAP(VARCHAR, VARCHAR)"},
+    {"name": "payer", "type": "STRUCT(name VARCHAR, id BIGINT)"},
+]
+
+
+def test_composite_column_masks_pass_the_real_validator():
+    """`CAST(NULL AS <type>)` is the fallback for every non-text column, and for
+    a STRUCT that type spells its fields as `ColumnDef` nodes — which the save
+    gate's node allowlist rejected, so the builder handed the admin SQL the PUT
+    then refused with `policy_disallowed_construct`. A fail-closed dead end for
+    struct columns, and a regression for `nullify` on one (previously a bare
+    `NULL AS col`, which carries no type node at all).
+
+    Verified against the real validator rather than by inspecting the string:
+    `MAP(...)` and `VARCHAR[]` never introduced the extra node, only STRUCT did,
+    which is exactly the kind of distinction a string assertion misses.
+    """
+    from src.access_policy_validate import validate_policy_sql
+
+    spec = {
+        "table": "invoices",
+        "row_rules": [{"column": "cost_center", "op": "in_caller_groups"}],
+        "row_combine": "and",
+        "column_masks": {
+            "tags": "hide",
+            "attrs": "nullify",
+            "payer": {"choice": "unmask", "groups": ["Finance"]},
+        },
+    }
+    out = compile_policy(spec, _STRUCT_COLS)
+    for for_remote in (False, True):
+        validate_policy_sql(
+            out.sql,
+            table_id="invoices",
+            table_name="invoices",
+            mapping_table_names=set(),
+            for_remote=for_remote,
+        )
+
+
+def test_a_column_definition_outside_a_type_is_still_refused():
+    """The allowlist was widened for `ColumnDef` under a `DataType` only — a
+    `ColumnDef` anywhere else is still an unrecognized construct, so the
+    widening cannot be read as "DDL is allowed now"."""
+    import sqlglot
+    from sqlglot import exp
+
+    from src.access_policy_validate import _is_inside_data_type
+
+    tree = sqlglot.parse_one('SELECT CAST(NULL AS STRUCT(name VARCHAR)) AS payer FROM "invoices"', read="duckdb")
+    defs = list(tree.find_all(exp.ColumnDef))
+    assert defs, "the STRUCT type no longer parses into a ColumnDef — the allowlist note is stale"
+    assert all(_is_inside_data_type(d) for d in defs)
+
+    ddl = sqlglot.parse_one("CREATE TABLE t (a VARCHAR)", read="duckdb")
+    stray = list(ddl.find_all(exp.ColumnDef))
+    assert stray, "expected a ColumnDef in a CREATE TABLE"
+    assert not any(_is_inside_data_type(d) for d in stray)
