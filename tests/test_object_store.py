@@ -10,6 +10,7 @@ clear ``RuntimeError``, never a bare ``ImportError``.
 
 from __future__ import annotations
 
+import hashlib
 from unittest.mock import MagicMock
 
 import pytest
@@ -21,6 +22,7 @@ from app.instance_config import (
 )
 from src.object_store import (
     S3ObjectStore,
+    hash_file_md5,
     object_store,
     reset_object_store_cache,
 )
@@ -263,6 +265,48 @@ def test_s3_object_store_missing_boto3_raises_clean_runtime_error(monkeypatch):
     monkeypatch.setattr(object_store_mod, "boto3", None)
     with pytest.raises(RuntimeError, match="distribution.*extra"):
         S3ObjectStore(bucket="b", prefix="p")
+
+
+# --- hash_file_md5() (issue #1360) ---------------------------------------
+
+
+def test_hash_file_md5_matches_hashlib_reference(tmp_path):
+    path = tmp_path / "orders.parquet"
+    data = b"orders-parquet-bytes" * 100
+    path.write_bytes(data)
+
+    assert hash_file_md5(path) == hashlib.md5(data).hexdigest()
+
+
+def test_hash_file_md5_correct_across_multiple_chunk_boundaries(tmp_path):
+    """A small `chunk_size` forces several `.read()` calls — the loop must
+    reassemble them into the same digest as one whole-file hash, not just
+    happen to work for a file smaller than the default chunk."""
+    path = tmp_path / "orders.parquet"
+    data = bytes(range(256)) * 50  # 12800 bytes, well over a 64-byte chunk
+    path.write_bytes(data)
+
+    assert hash_file_md5(path, chunk_size=64) == hashlib.md5(data).hexdigest()
+
+
+def test_hash_file_md5_empty_file(tmp_path):
+    path = tmp_path / "empty.parquet"
+    path.write_bytes(b"")
+
+    assert hash_file_md5(path) == hashlib.md5(b"").hexdigest()
+
+
+def test_hash_file_md5_matches_the_same_chunking_cli_pull_uses(tmp_path):
+    """`cli/lib/pull.py::_file_md5` hashes what `agnes pull` verifies
+    against; this is the object-store side of the same content-md5
+    convention (`app/api/sync.py::_file_hash` too) — a byte-for-byte-equal
+    file must hash identically regardless of which one computed it."""
+    from cli.lib.pull import _file_md5
+
+    path = tmp_path / "orders.parquet"
+    path.write_bytes(b"orders-parquet-bytes-for-cross-check" * 1000)
+
+    assert hash_file_md5(path) == _file_md5(path)
 
 
 # --- object_store() factory ----------------------------------------------

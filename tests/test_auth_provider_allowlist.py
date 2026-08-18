@@ -32,7 +32,12 @@ class TestRegistry:
         monkeypatch.delenv("AGNES_AUTH_PROVIDERS", raising=False)
         from app.auth.provider_registry import provider_allowed
 
-        assert all(provider_allowed(p) for p in ("google", "email", "password", "keboola"))
+        assert all(provider_allowed(p) for p in ("google", "email", "password", "keboola", "microsoft"))
+
+    def test_microsoft_is_known(self):
+        from app.auth.provider_registry import KNOWN_PROVIDERS
+
+        assert "microsoft" in KNOWN_PROVIDERS
 
     def test_set_narrows(self, monkeypatch):
         monkeypatch.setenv("AGNES_AUTH_PROVIDERS", "google")
@@ -109,6 +114,12 @@ class TestEndpointGating:
         assert client.get("/login/email").status_code == 404
         assert client.post("/auth/email/send-link/web", data={"email": "a@b.c"}).status_code == 404
         assert client.post("/auth/email/send-link", json={"email": "a@b.c"}).status_code == 404
+
+    def test_microsoft_endpoints_404_when_excluded(self, make_client):
+        # Symmetric to the keboola/password cases: excluding `microsoft` must
+        # 404 its login door even though the router is always registered.
+        client = make_client("email")
+        assert client.get("/auth/microsoft/login", follow_redirects=False).status_code == 404
 
     def test_password_endpoints_live_when_unset(self, make_client):
         client = make_client(None)

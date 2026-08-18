@@ -948,6 +948,13 @@ async def login_page(request: Request):
             providers.append({"name": "keboola", "display_name": "Keboola", "icon": "keboola"})
     except Exception:
         pass
+    try:
+        from app.auth.providers.microsoft import is_available as microsoft_available
+
+        if microsoft_available() and provider_allowed("microsoft"):
+            providers.append({"name": "microsoft", "display_name": "Microsoft", "icon": "microsoft"})
+    except Exception:
+        pass
 
     # Convert to login_buttons format expected by template
     login_buttons = []
@@ -979,6 +986,13 @@ async def login_page(request: Request):
                 _url += f"?next={quote(next_path, safe='')}"
             login_buttons.append(
                 {"url": _url, "text": "Sign in with Keboola", "css_class": "btn-primary", "icon_html": ""}
+            )
+        elif p["name"] == "microsoft":
+            _url = "/auth/microsoft/login"
+            if next_path:
+                _url += f"?next={quote(next_path, safe='')}"
+            login_buttons.append(
+                {"url": _url, "text": "Sign in with Microsoft", "css_class": "btn-primary", "icon_html": ""}
             )
 
     keboola_expected_project = ""
@@ -8371,6 +8385,7 @@ def _chats_rows(request: Request, user: dict) -> tuple[list[dict], dict[str, int
         "web": "Web",
         "slack_dm": "Slack DM",
         "slack_thread": "Slack thread",
+        "teams_dm": "Teams DM",
         "api": "API",
     }
 

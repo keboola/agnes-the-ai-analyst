@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional
 import duckdb
 
 from connectors.bigquery.auth import BQMetadataAuthError, get_metadata_token
+from src.parquet_publish import atomic_publish_finalize, atomic_publish_temp_path
 from src.sql_ident import quote_ident
 
 
@@ -590,7 +591,9 @@ def _persist_materialized_inner_view(
                 # and only creates a master view when an inner object
                 # exists by the same name. read_parquet() is hot per-call,
                 # so the master view path goes through the same disk.
-                ext_conn.execute(f"CREATE OR REPLACE VIEW {quote_ident(table_id)} AS SELECT * FROM read_parquet('{safe_path}')")
+                ext_conn.execute(
+                    f"CREATE OR REPLACE VIEW {quote_ident(table_id)} AS SELECT * FROM read_parquet('{safe_path}')"
+                )
                 ext_conn.execute("COMMIT")
             except Exception:
                 try:
@@ -1001,7 +1004,16 @@ def materialize_query(
     data_dir.mkdir(parents=True, exist_ok=True)
 
     parquet_path = data_dir / f"{table_id}.parquet"
-    tmp_path = data_dir / f"{table_id}.parquet.tmp"
+    # Published atomically (#1359) via `atomic_publish_temp_path` +
+    # `atomic_publish_finalize` — the manual two-step form, since the
+    # retry-on-timeout / lock-guarded structure below spans too much control
+    # flow to nest inside `atomic_publish`'s single `with` block. Per-process
+    # naming replaces the previous shared `<id>.parquet.tmp` name (harmless
+    # here in practice — the locks below already serialize materializes of
+    # the same table_id — but removes the residual race outright rather than
+    # relying solely on that locking); the final commit chmods 0644, which a
+    # restrictive umask needs (#203).
+    tmp_path = atomic_publish_temp_path(parquet_path)
     lock_path = data_dir / f"{table_id}.parquet.lock"
 
     proc_lock = _get_table_lock(table_id)
@@ -1012,9 +1024,6 @@ def materialize_query(
         if file_lock is None:
             raise MaterializeInFlightError(table_id, layer="file")
         try:
-            if tmp_path.exists():
-                tmp_path.unlink()
-
             # Build the wrapped SQL once — both the cost guardrail dry-run and
             # the COPY operate on `sql` (the inner BQ SQL); only the COPY needs
             # the DuckDB-side bigquery_query() envelope.
@@ -1108,7 +1117,7 @@ def materialize_query(
             parquet_hash = h.hexdigest()
 
             size_bytes = tmp_path.stat().st_size
-            os.replace(tmp_path, parquet_path)
+            atomic_publish_finalize(tmp_path, parquet_path)
 
             rows = int(rows)
 
