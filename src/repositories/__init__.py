@@ -157,6 +157,8 @@ __all__ = [
     "agent_artifacts_repo",
     # Agent memories (v102, agent-api V1c)
     "agent_memories_repo",
+    # Agent schedules (v119, agent schedules)
+    "agent_schedules_repo",
 ]
 
 
@@ -545,6 +547,11 @@ _REGISTRY: dict[str, dict[str, tuple[str, str]]] = {
         DUCKDB: ("src.repositories.agent_memories", "AgentMemoriesRepository"),
         PG: ("src.repositories.agent_memories_pg", "AgentMemoriesPgRepository"),
     },
+    # Agent schedules (v119, agent schedules)
+    "agent_schedules": {
+        DUCKDB: ("src.repositories.agent_schedules", "AgentSchedulesRepository"),
+        PG: ("src.repositories.agent_schedules_pg", "AgentSchedulesPgRepository"),
+    },
 }
 
 
@@ -877,3 +884,8 @@ def agent_artifacts_repo() -> Any:
 # Agent memories (v102, agent-api V1c)
 def agent_memories_repo() -> Any:
     return _build("agent_memories")
+
+
+# Agent schedules (v119, agent schedules)
+def agent_schedules_repo() -> Any:
+    return _build("agent_schedules")
