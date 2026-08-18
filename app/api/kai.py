@@ -250,15 +250,24 @@ def _create_session_and_credential(user_email: str) -> tuple[str, str]:
     `SWEEP_EXEMPT_SCOPES` (`src/repositories/ticket.py`) keeps
     `revoke_session` off long-lived credentials, in both backends.
 
-    The converse is NOT closed: a turn's rotation revokes the `main`/`mcp`
-    scopes for the id, which are exactly the scopes a live native sandbox on
-    the same row holds, so an engine turn can still strip a concurrent web-chat
-    sandbox's egress tickets. It needs the same conversation open in both
-    runtimes at once. Fixing it properly means not sharing the row — a
-    separate id space for engine-backed sessions, with its own RBAC anchor and
-    purge target — which is a design decision rather than a patch, and is
-    recorded here rather than half-done. Both directions found by Devin Review
-    on this PR.
+    The converse — an engine turn stripping a live native sandbox's egress
+    tickets — was real while both sides minted the same broker scopes, and is
+    now closed by construction rather than by policy: a turn touches
+    `{llm, kai_mcp}` (`_EGRESS_SCOPES` values) and a native web-chat sandbox
+    holds `{main, mcp, data_apps}` (`app/chat/manager.py`). The sets are
+    disjoint with the tool switch on or off, so neither runtime's rotation can
+    reach the other's tickets. Nothing here revokes the literal `mcp` scope;
+    the only `"mcp"` left in this module is the engine-facing dict KEY.
+
+    That disjointness is a side effect of confining the tool ticket to
+    `kai_mcp`, not an independent guarantee — reusing a native scope here would
+    silently restore the collision, which is why `_EGRESS_SCOPES` says so at its
+    definition. What remains is narrower than a ticket collision: the row is
+    still shared, so it is still an ordinary conversation in the caller's
+    history, and a separate id space with its own RBAC anchor and purge target
+    is still the cleaner shape. Found by Devin Review; the collision's
+    disappearance verified on-branch by ZdenekSrotyr, whose reading was right
+    where an earlier version of this note (and my reply defending it) was not.
     """
     session = chat_session_repo().create_session(
         user_email=user_email,
@@ -410,12 +419,15 @@ def _rotate_egress_tickets(session_id: str, scopes: Dict[str, str]) -> Dict[str,
     # is `{llm, mcp}` and it keeps using the credential baked into the session
     # JWT. A scope-blind sweep here 401s every subsequent turn.
     # Revoke exactly what this turn re-mints, not every scope the map knows.
-    # With the tool switch off `scopes` has no `mcp`, and sweeping it anyway
-    # both retired a ticket nothing was going to replace and — because this
-    # chat row shares its ticket namespace with a native sandbox on the same id
-    # — deleted a concurrent web-chat sandbox's MCP ticket for no reason. A
-    # previously-issued kai `mcp` ticket is then not proactively retired here,
-    # which costs nothing: it carries a short TTL and `/api/kai/mcp` refuses
+    # With the tool switch off `scopes` has no `mcp` key, so sweeping the whole
+    # map retired a ticket nothing was going to replace — pointless work, and
+    # the reason to align the two. (An earlier version of this comment also
+    # claimed the sweep deleted a concurrent web-chat sandbox's MCP ticket.
+    # That was true when the engine minted the native `mcp` scope; confining
+    # the tool ticket to `kai_mcp` in this same PR made the two sets disjoint,
+    # so the collision was already gone by the time this was written — noted by
+    # ZdenekSrotyr.) A previously-issued `kai_mcp` ticket is not proactively
+    # retired here, which costs nothing: short TTL, and `/api/kai/mcp` refuses
     # outright while the switch is off. Found by Copilot on this PR.
     ticket_repo().revoke_session_scopes(session_id, list(scopes.values()))
     return {
