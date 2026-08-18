@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- **A failed admin seed at boot is now loud.** `SEED_ADMIN_EMAIL` provisioning ("bootstrap the admin user" is step 6/9 in `docs/ONBOARDING.md`) swallowed every failure into a bare `logger.warning` with no traceback — a fresh instance with no working way in was invisible short of reading container logs on the VM. The failure is now logged at ERROR with the full exception, and recorded to `audit_log` (`action=startup.seed_admin_failed`) so it is durable and visible from `/admin/activity` even to an operator who only found the broken instance later. Still `except Exception` (never `BaseException`) — a hard crash here would take down an instance that may still be reachable by other means.
+
 ## [0.83.57] - 2026-08-18
 
 ### Fixed
