@@ -1282,23 +1282,28 @@ def init(
             f"  Files    : {len(override_result.created)} created, "
             f"{len(override_result.overwritten)} overwritten from template"
         )
-    # `parquets_total` is the count of materialized rows in the manifest;
-    # `tables_updated` is the count of those actually fetched this run.
-    # The catalog can carry many more remote-only rows that aren't part
-    # of `parquets_total` at all — surface that explicitly so analysts
-    # who see "0 synced (0 total)" after the default `--skip-materialize`
-    # don't conclude the server returned an empty catalog. Issue #257.
-    # Gated on parquets_total > 0 so an instance with no materialized
-    # tables at all doesn't print a "skipped" note about nothing.
-    if skip_materialize and result.parquets_total > 0:
+    # Two different numbers, and reading one as the other is how this line
+    # went wrong before: `parquets_total` counts the non-remote tables this run
+    # CONSIDERED (the skip branch in `cli/lib/pull.py` `continue`s before that
+    # counter), while `materialized_skipped` counts the rows left alone.
+    # Reporting `parquets_total` as "skipped" told an analyst with three
+    # ordinary tables and no materialized ones that three rows were skipped,
+    # and gating the note on it hid the note entirely on the instance the note
+    # exists for — everything materialized, so the count is zero and the fall-
+    # through printed the bare "0/0" that issue #257 set out to prevent.
+    #
+    # The fetched count is stated honestly rather than hardcoded to zero: with
+    # `--skip-materialize` an instance can still have ordinary tables to pull.
+    fetched = f"{result.tables_updated}/{result.parquets_total} local table(s) fetched"
+    if skip_materialize and result.materialized_skipped > 0:
         typer.echo(
-            f"  Tables   : 0 fetched locally — {result.parquets_total} "
+            f"  Tables   : {fetched} — {result.materialized_skipped} "
             f"materialized row(s) skipped by default. Fetch them on demand "
             f"with `agnes pull`, or re-run `agnes init --materialize` for "
             f"the full first pull. Catalog still serves all registered tables."
         )
     else:
-        typer.echo(f"  Tables   : {result.tables_updated}/{result.parquets_total} local materialized rows fetched")
+        typer.echo(f"  Tables   : {fetched}")
     typer.echo(f"  Rules    : {result.rules_count}")
     typer.echo(f"  Workspace: {workspace}")
     typer.echo("")

@@ -19,7 +19,7 @@
 2. Create virtual environment and install dependencies:
    ```bash
    python3 -m venv .venv && source .venv/bin/activate
-   uv pip install ".[dev]"
+   uv pip install ".[dev,server]"
    ```
 
 3. Configure your instance:
