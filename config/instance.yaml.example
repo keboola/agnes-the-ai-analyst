@@ -361,6 +361,16 @@ auth:
 # Customize colors, fonts, and shape to match your brand.
 # All values are optional - defaults provide a clean blue theme.
 # See docs/theme-reference.html for a visual guide.
+#
+# Recolors BOTH the legacy chrome AND the design-system ("paper"/"navy"/
+# "dark") surfaces from this one block — no forking, no custom CSS. Known
+# color keys also set the matching --ds-* token (primary -> --ds-primary,
+# background -> --ds-bg, surface -> --ds-surface, border -> --ds-border,
+# text_primary -> --ds-text-primary, text_secondary -> --ds-text-secondary,
+# success/warning/error -> --ds-accent-{success,warn,danger}-ink). See
+# THEME_CSS_VAR_MAP in app/instance_config.py for the full mapping;
+# font_primary/radius stay legacy-only (no single --ds-* equivalent) and
+# font_url isn't a CSS variable at all.
 theme:
   # primary: "#0073D1"              # Main brand color (buttons, links, accents)
   # primary_dark: "#005BA3"         # Hover/active state of primary
