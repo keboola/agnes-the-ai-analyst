@@ -401,29 +401,43 @@ async def _handle_mention(app, event: dict) -> None:
         else:
             routed_session_user = owner_row["email"]
 
-    # The identity the session row (and everything keyed off it) belongs to.
-    session_user = routed_session_user if bound_agent is not None else user_email
-
-    # 6. Thread session: reuse or create; reject if owned by someone else.
-    # Routed threads belong to the agent's owner, so any gated channel
-    # member may continue them (the shared-surface trust model — a reviewer
-    # asking the bound agent for a revision is the driving use case); an
-    # agent-less thread still belongs to whoever started it.
+    # 6. Thread session: reuse or create. The dedupe is per (channel,
+    # thread_ts) regardless of user, so which identity a mention runs as is
+    # decided by the EXISTING row first and the binding second — a binding
+    # governs NEW threads only:
+    #   - existing SERVICE thread (agent_id set — only routing creates these
+    #     on the Slack surface): shared; any gated member continues it, even
+    #     after the channel is unbound (the session keeps its stored agent).
+    #   - existing HUMAN thread (no agent_id — e.g. started before the
+    #     channel was bound): belongs to its starter, exactly as pre-binding;
+    #     the mention runs unrouted so the starter's thread keeps working.
+    #   - no existing thread: the binding routes it (owner-owned session).
     mgr = app.state.chat_manager
     from app.chat.types import Surface
 
     existing = repo.get_slack_thread_session(channel, thread_ts)
-    if existing is not None and existing.user_email != session_user:
-        # Resolved through the factory (not a raw query on the DuckDB-typed
-        # conn) so the owner's slack_user_id is read from whichever backend
-        # is active.
+    existing_agent_id = getattr(existing, "agent_id", None) if existing is not None else None
+    service_thread = existing_agent_id is not None
+    if existing is not None and bound_agent is not None and existing_agent_id != bound_agent["id"]:
+        # Pre-binding human thread, or a thread routed to a previously-bound
+        # agent: this mention does not run the currently-bound agent.
+        bound_agent = None
+        routed_session_user = None
+
+    # The identity the session row (and everything keyed off it) belongs to.
+    session_user = routed_session_user if bound_agent is not None else user_email
+
+    if existing is not None and not service_thread and existing.user_email != user_email:
+        # Human thread owned by someone else. Resolved through the factory
+        # (not a raw query on the DuckDB-typed conn) so the owner's
+        # slack_user_id is read from whichever backend is active.
         owner_row = users_repo().get_by_email(existing.user_email)
         owner_slack_id = owner_row.get("slack_user_id") if owner_row else None
         owner_ref = f"<@{owner_slack_id}>" if owner_slack_id else "another user"
         await send_ephemeral_to_user(channel, slack_user_id, f"This thread belongs to {owner_ref}.")
         return
 
-    if bound_agent is not None:
+    if bound_agent is not None or service_thread:
         # Instant acknowledgement on the mentioning message, before the
         # (seconds-long) session spawn — but AFTER every gate that can still
         # refuse the mention (allowlist, identity, CHAT grant, thread
@@ -444,12 +458,12 @@ async def _handle_mention(app, event: dict) -> None:
     # times out on startup leaves a zero-message session behind and the
     # retry must still carry the header. A pre-binding session with real
     # messages gets none (dedupe wins over the binding).
-    if bound_agent is not None and (existing is None or (existing.message_count or 0) == 0):
+    if (bound_agent is not None or service_thread) and (existing is None or (existing.message_count or 0) == 0):
         clean = (
             f"[slack context: channel={channel} thread_ts={thread_ts} "
             f"message_ts={event['ts']} sender=<@{slack_user_id}>]\n{clean}"
         )
-    elif bound_agent is not None:
+    elif bound_agent is not None or service_thread:
         # Follow-up turn on a shared routed thread: the session belongs to
         # the agent's owner, so without attribution the agent cannot tell
         # WHO is asking (the reviewer requesting a revision vs. the author).
@@ -468,13 +482,27 @@ async def _handle_mention(app, event: dict) -> None:
             agent_id=bound_agent["id"] if bound_agent else None,
         )
         return
-    session = await mgr.create_session(
-        user_email=session_user,
-        surface=Surface.SLACK_THREAD,
-        slack_channel_id=channel,
-        slack_thread_ts=thread_ts,
-        agent_id=bound_agent["id"] if bound_agent else None,
-    )
+    from app.chat.manager import ConcurrencyCapHit
+
+    try:
+        session = await mgr.create_session(
+            user_email=session_user,
+            surface=Surface.SLACK_THREAD,
+            slack_channel_id=channel,
+            slack_thread_ts=thread_ts,
+            agent_id=bound_agent["id"] if bound_agent else None,
+        )
+    except ConcurrencyCapHit:
+        # Routed sessions pool on the AGENT OWNER's concurrency cap, so a
+        # busy bound channel can hit it through no fault of the mentioner —
+        # a silent drop (background log only) reads as the bot ignoring
+        # people. Say so instead.
+        await send_ephemeral_to_user(
+            channel,
+            slack_user_id,
+            "The agent is at capacity right now — please try again in a few minutes.",
+        )
+        return
 
     # 8. Attach (NOT awaited — keep the 3s ack budget). wave-2F task 7: skip
     # entirely when a different, still-live gateway already owns this
@@ -493,7 +521,7 @@ async def _handle_mention(app, event: dict) -> None:
             channel=channel,
             thread_ts=thread_ts,
             chat_id=session.id,
-            owner=session_user,
+            owner=session.user_email,
             web_base=getattr(app.state, "public_url", ""),
         )
         _schedule(mgr.attach(session.id, sink))
@@ -513,7 +541,7 @@ async def _handle_mention(app, event: dict) -> None:
             channel=channel,
             thread_ts=thread_ts,
             chat_id=session.id,
-            owner=session_user,
+            owner=session.user_email,
             web_base=getattr(app.state, "public_url", ""),
         )
         _schedule(mgr.attach(session.id, sink))
