@@ -375,17 +375,45 @@ async def _handle_mention(app, event: dict) -> None:
     from src.repositories import agents_repo
 
     bound_agent = None
+    routed_session_user: Optional[str] = None
     try:
         bound_agent = agents_repo().agent_for_scope_item("slack_channel", channel)
     except Exception:
         logger.exception("slack_channel binding lookup failed for %s — continuing unrouted", channel)
+    if bound_agent is not None:
+        # A routed session runs AS THE AGENT'S OWNER end to end — session
+        # row, sandbox workspace, rails, personal override, and brokered
+        # authority all resolve from one identity, exactly like the agent's
+        # API/scheduled runs. The mentioner's identity gates participation
+        # (allowlist + binding + CHAT above) and rides along as sender
+        # attribution; it must NOT shape the workspace, or the same bound
+        # agent would present different rails per invoker and pick up an
+        # arbitrary channel member's personal CLAUDE.local.md as standing
+        # instructions (Devin Review on this PR).
+        owner_row = users_repo().get_by_id(str(bound_agent["owner_user_id"]))
+        if owner_row is None or not owner_row.get("email"):
+            logger.warning(
+                "slack_channel binding for %s points at agent %s with no resolvable owner — continuing unrouted",
+                channel,
+                bound_agent.get("id"),
+            )
+            bound_agent = None
+        else:
+            routed_session_user = owner_row["email"]
+
+    # The identity the session row (and everything keyed off it) belongs to.
+    session_user = routed_session_user if bound_agent is not None else user_email
 
     # 6. Thread session: reuse or create; reject if owned by someone else.
+    # Routed threads belong to the agent's owner, so any gated channel
+    # member may continue them (the shared-surface trust model — a reviewer
+    # asking the bound agent for a revision is the driving use case); an
+    # agent-less thread still belongs to whoever started it.
     mgr = app.state.chat_manager
     from app.chat.types import Surface
 
     existing = repo.get_slack_thread_session(channel, thread_ts)
-    if existing is not None and existing.user_email != user_email:
+    if existing is not None and existing.user_email != session_user:
         # Resolved through the factory (not a raw query on the DuckDB-typed
         # conn) so the owner's slack_user_id is read from whichever backend
         # is active.
@@ -421,13 +449,18 @@ async def _handle_mention(app, event: dict) -> None:
             f"[slack context: channel={channel} thread_ts={thread_ts} "
             f"message_ts={event['ts']} sender=<@{slack_user_id}>]\n{clean}"
         )
+    elif bound_agent is not None:
+        # Follow-up turn on a shared routed thread: the session belongs to
+        # the agent's owner, so without attribution the agent cannot tell
+        # WHO is asking (the reviewer requesting a revision vs. the author).
+        clean = f"[slack sender=<@{slack_user_id}>]\n{clean}"
 
     if mgr is None:
         # api-role replica (no ChatManager in this process): thin-producer
         # forward — see _handle_dm's twin branch and _produce_slack_message.
         await _produce_slack_message(
             app,
-            user_email=user_email,
+            user_email=session_user,
             surface=Surface.SLACK_THREAD,
             channel=channel,
             thread_ts=thread_ts,
@@ -436,7 +469,7 @@ async def _handle_mention(app, event: dict) -> None:
         )
         return
     session = await mgr.create_session(
-        user_email=user_email,
+        user_email=session_user,
         surface=Surface.SLACK_THREAD,
         slack_channel_id=channel,
         slack_thread_ts=thread_ts,
@@ -460,7 +493,7 @@ async def _handle_mention(app, event: dict) -> None:
             channel=channel,
             thread_ts=thread_ts,
             chat_id=session.id,
-            owner=user_email,
+            owner=session_user,
             web_base=getattr(app.state, "public_url", ""),
         )
         _schedule(mgr.attach(session.id, sink))
@@ -480,7 +513,7 @@ async def _handle_mention(app, event: dict) -> None:
             channel=channel,
             thread_ts=thread_ts,
             chat_id=session.id,
-            owner=user_email,
+            owner=session_user,
             web_base=getattr(app.state, "public_url", ""),
         )
         _schedule(mgr.attach(session.id, sink))
