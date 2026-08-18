@@ -69,12 +69,16 @@ class _RepoStub:
         from app.chat.types import ChatSession, Surface
         from datetime import datetime
 
+        # Mirrors the REAL projection (app/chat/persistence.py): message_count
+        # is DERIVED from chat_messages (the column is inert), and agent_id
+        # rides along — the mention router branches on both.
         row = self._conn.execute(
-            "SELECT id, user_email, surface, slack_channel_id, slack_thread_ts, "
-            "title, started_at, last_message_at, message_count, archived "
-            "FROM chat_sessions "
-            "WHERE surface = 'slack_thread' "
-            "AND slack_channel_id = ? AND slack_thread_ts = ? AND archived = FALSE",
+            "SELECT s.id, s.user_email, s.surface, s.slack_channel_id, s.slack_thread_ts, "
+            "s.title, s.started_at, MAX(m.created_at), COUNT(m.id), s.archived, s.agent_id "
+            "FROM chat_sessions s LEFT JOIN chat_messages m ON m.session_id = s.id "
+            "WHERE s.surface = 'slack_thread' "
+            "AND s.slack_channel_id = ? AND s.slack_thread_ts = ? AND s.archived = FALSE "
+            "GROUP BY ALL",
             [slack_channel_id, slack_thread_ts],
         ).fetchone()
         if not row:
@@ -88,8 +92,9 @@ class _RepoStub:
             title=row[5],
             started_at=row[6] or datetime.now(),
             last_message_at=row[7],
-            message_count=row[8] or 0,
+            message_count=int(row[8]) if row[8] is not None else 0,
             archived=bool(row[9]),
+            agent_id=row[10],
         )
 
 
@@ -979,8 +984,12 @@ def test_mention_routed_existing_thread_with_messages_gets_no_second_header(monk
     _seed_channel_bound_agent(conn, owner=uid, slug="router-2")
     conn.execute(
         "INSERT INTO chat_sessions(id, user_email, surface, slack_channel_id, "
-        "slack_thread_ts, title, started_at, message_count) VALUES "
-        "('s_bound', 'u@x', 'slack_thread', 'C_OK', '9.7', NULL, current_timestamp, 1)"
+        "slack_thread_ts, title, started_at, agent_id) VALUES "
+        "('s_bound', 'u@x', 'slack_thread', 'C_OK', '9.7', NULL, current_timestamp, 'ag_router-2')"
+    )
+    # message_count is DERIVED from chat_messages, not the column — seed a row.
+    conn.execute(
+        "INSERT INTO chat_messages(id, session_id, role, content) VALUES ('m_bound1', 's_bound', 'user', 'hi')"
     )
     mgr = _FakeMgr()
     app = _FakeApp(conn=conn, mgr=mgr)
@@ -1012,8 +1021,8 @@ def test_mention_routed_zero_message_session_still_gets_header(monkeypatch):
     _seed_channel_bound_agent(conn, owner=uid, slug="router-4")
     conn.execute(
         "INSERT INTO chat_sessions(id, user_email, surface, slack_channel_id, "
-        "slack_thread_ts, title, started_at, message_count) VALUES "
-        "('s_stalled', 'u@x', 'slack_thread', 'C_OK', '9.9', NULL, current_timestamp, 0)"
+        "slack_thread_ts, title, started_at, agent_id) VALUES "
+        "('s_stalled', 'u@x', 'slack_thread', 'C_OK', '9.9', NULL, current_timestamp, 'ag_router-4')"
     )
     mgr = _FakeMgr()
     app = _FakeApp(conn=conn, mgr=mgr)
@@ -1118,8 +1127,11 @@ def test_mention_routed_thread_continued_by_second_gated_user(monkeypatch):
     _seed_channel_bound_agent(conn, owner="uid_boss3", slug="router-shared")
     conn.execute(
         "INSERT INTO chat_sessions(id, user_email, surface, slack_channel_id, "
-        "slack_thread_ts, title, started_at, message_count, agent_id) VALUES "
-        "('s_shared', 'boss3@x', 'slack_thread', 'C_OK', '9.11', NULL, current_timestamp, 1, 'ag_router-shared')"
+        "slack_thread_ts, title, started_at, agent_id) VALUES "
+        "('s_shared', 'boss3@x', 'slack_thread', 'C_OK', '9.11', NULL, current_timestamp, 'ag_router-shared')"
+    )
+    conn.execute(
+        "INSERT INTO chat_messages(id, session_id, role, content) VALUES ('m_shared1', 's_shared', 'user', 'hi')"
     )
     mgr = _FakeMgr()
     app = _FakeApp(conn=conn, mgr=mgr)
@@ -1127,6 +1139,111 @@ def test_mention_routed_thread_continued_by_second_gated_user(monkeypatch):
         ev._handle_mention(app, {"channel": "C_OK", "ts": "9.11", "user": "U_SECOND", "text": "<@U07BOT> shorten it"})
     )
     assert mgr.sent and mgr.sent[0][1] == "[slack sender=<@U_SECOND>]\nshorten it"
+
+
+def test_mention_prebinding_human_thread_keeps_working_for_its_starter(monkeypatch):
+    """A binding governs NEW threads only: a thread started before the
+    channel was bound still belongs to its human starter, runs unrouted (no
+    header, no ack), and is NOT hijacked or bricked by the binding (Devin
+    Review on this PR)."""
+    import asyncio
+    import services.slack_bot.events as ev
+
+    monkeypatch.setattr(ev, "send_ephemeral_to_user", lambda *a, **k: None)
+    reactions = []
+
+    async def _fake_react(channel, ts, emoji):
+        reactions.append((channel, ts, emoji))
+
+    monkeypatch.setattr(ev, "add_reaction", _fake_react)
+    conn = get_system_db()
+    _ensure_schema(conn)
+    _seed_bound_chat_user(conn)  # starter u@x / U_OK
+    _allow_channel(conn)
+    conn.execute("INSERT INTO users(id, email, name) VALUES ('uid_boss4', 'boss4@x', 'Boss') ON CONFLICT DO NOTHING")
+    _seed_channel_bound_agent(conn, owner="uid_boss4", slug="router-late")
+    conn.execute(
+        "INSERT INTO chat_sessions(id, user_email, surface, slack_channel_id, "
+        "slack_thread_ts, title, started_at) VALUES "
+        "('s_prebind', 'u@x', 'slack_thread', 'C_OK', '9.12', NULL, current_timestamp)"
+    )
+    conn.execute(
+        "INSERT INTO chat_messages(id, session_id, role, content) VALUES ('m_prebind1', 's_prebind', 'user', 'hi')"
+    )
+    mgr = _FakeMgr()
+    app = _FakeApp(conn=conn, mgr=mgr)
+    asyncio.run(ev._handle_mention(app, {"channel": "C_OK", "ts": "9.12", "user": "U_OK", "text": "<@U07BOT> continue"}))
+    # Unrouted: plain text, no header/prefix, no ack; the starter is served.
+    assert mgr.sent and mgr.sent[0][1] == "continue"
+    assert reactions == []
+
+
+def test_mention_service_thread_survives_unbinding(monkeypatch):
+    """Unbinding a channel stops NEW routed threads; an existing service
+    thread (agent_id set) stays continuable by gated members — the session
+    keeps its stored agent (Devin Review on this PR)."""
+    import asyncio
+    import services.slack_bot.events as ev
+
+    monkeypatch.setattr(ev, "send_ephemeral_to_user", lambda *a, **k: None)
+
+    async def _fake_react(channel, ts, emoji):
+        return None
+
+    monkeypatch.setattr(ev, "add_reaction", _fake_react)
+    conn = get_system_db()
+    _ensure_schema(conn)
+    _seed_bound_chat_user(conn)
+    _allow_channel(conn)
+    # NO binding for C_OK in this test — but a service thread exists.
+    conn.execute("INSERT INTO users(id, email, name) VALUES ('uid_boss5', 'boss5@x', 'Boss') ON CONFLICT DO NOTHING")
+    conn.execute(
+        "INSERT INTO chat_sessions(id, user_email, surface, slack_channel_id, "
+        "slack_thread_ts, title, started_at, agent_id) VALUES "
+        "('s_unbound', 'boss5@x', 'slack_thread', 'C_OK', '9.13', NULL, current_timestamp, 'ag_gone')"
+    )
+    conn.execute(
+        "INSERT INTO chat_messages(id, session_id, role, content) VALUES ('m_unbound1', 's_unbound', 'user', 'hi')"
+    )
+    mgr = _FakeMgr()
+    app = _FakeApp(conn=conn, mgr=mgr)
+    asyncio.run(ev._handle_mention(app, {"channel": "C_OK", "ts": "9.13", "user": "U_OK", "text": "<@U07BOT> tweak it"}))
+    assert mgr.sent and mgr.sent[0][1] == "[slack sender=<@U_OK>]\ntweak it"
+
+
+def test_mention_cap_hit_gets_ephemeral_not_silence(monkeypatch):
+    """Routed sessions pool on the agent owner's concurrency cap; hitting it
+    must answer the mentioner, not silently drop the mention."""
+    import asyncio
+    import services.slack_bot.events as ev
+    from app.chat.manager import ConcurrencyCapHit
+
+    posts = []
+
+    async def _fake_ep(ch, u, txt):
+        posts.append(txt)
+
+    monkeypatch.setattr(ev, "send_ephemeral_to_user", _fake_ep)
+
+    async def _fake_react(channel, ts, emoji):
+        return None
+
+    monkeypatch.setattr(ev, "add_reaction", _fake_react)
+    conn = get_system_db()
+    _ensure_schema(conn)
+    uid = _seed_bound_chat_user(conn)
+    _allow_channel(conn)
+    _seed_channel_bound_agent(conn, owner=uid, slug="router-cap")
+
+    class _CapMgr(_FakeMgr):
+        async def create_session(self, **kw):
+            raise ConcurrencyCapHit("cap")
+
+    mgr = _CapMgr()
+    app = _FakeApp(conn=conn, mgr=mgr)
+    asyncio.run(ev._handle_mention(app, {"channel": "C_OK", "ts": "9.14", "user": "U_OK", "text": "<@U07BOT> busy"}))
+    assert posts and "at capacity" in posts[-1]
+    assert mgr.sent == []
 
 
 def test_mention_attach_not_awaited_returns_under_budget(monkeypatch):

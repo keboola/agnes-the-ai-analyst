@@ -275,9 +275,9 @@ def scope_set(
     # plugins/tables: dropping one silently unbinds a live Slack integration
     # (mentions revert to the generic agent-less profile with no error). Warn
     # when this PUT would do that; still proceed — the contract is replace.
-    kept = {v for v in slack_channel}
-    detail = api_get(f"/api/v1/agents/{row['id']}").json() if not slack_channel else None
-    if detail is not None:
+    kept = set(slack_channel)
+    detail = api_get(f"/api/v1/agents/{row['id']}").json()
+    if isinstance(detail, dict):
         dropped = [
             i["item_id"]
             for i in detail.get("scope", [])
