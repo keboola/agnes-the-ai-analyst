@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Optional
 
 from src.duckdb_conn import _open_duckdb
+from src.parquet_publish import atomic_publish
 from src.repositories import table_registry_repo
 from src.sql_ident import quote_ident
 
@@ -105,25 +106,32 @@ def ingest_tabular(
     table_id = f"{source_name}_{base}_{fid_suffix}" if fid_suffix else f"{source_name}_{base}"
     parquet_path = data_dir / f"{table_id}.parquet"
 
-    con = _open_duckdb(":memory:")
-    try:
-        reader = _reader_expr(ext, storage_path)
-        if reader is None:  # xlsx/xls
-            try:
-                con.execute("INSTALL excel; LOAD excel;")
-                safe = str(storage_path).replace("'", "''")
-                reader = f"read_xlsx('{safe}')"
-            except Exception as exc:  # pragma: no cover - env-dependent
-                raise UnsupportedTabular(f"xlsx needs the DuckDB excel extension (unavailable): {exc}") from exc
-        safe_pq = str(parquet_path).replace("'", "''")
-        con.execute(f"COPY (SELECT * FROM {reader}) TO '{safe_pq}' (FORMAT PARQUET)")
-        rows = con.execute(f"SELECT COUNT(*) FROM read_parquet('{safe_pq}')").fetchone()[0]
-    finally:
-        con.close()
+    # Published atomically (#1359): a direct COPY onto `parquet_path` let a
+    # reader (the orchestrator's hasher, the master views, `agnes pull`)
+    # observe a half-written file. Raising `EmptyExtraction` from INSIDE the
+    # `atomic_publish` block is deliberate too — it aborts the publish (the
+    # temp is cleaned up, `parquet_path` is never touched) instead of the old
+    # write-then-unlink dance, which had its own brief window where a 0-row
+    # parquet was visible at the served path.
+    with atomic_publish(parquet_path) as tmp_pq:
+        con = _open_duckdb(":memory:")
+        try:
+            reader = _reader_expr(ext, storage_path)
+            if reader is None:  # xlsx/xls
+                try:
+                    con.execute("INSTALL excel; LOAD excel;")
+                    safe = str(storage_path).replace("'", "''")
+                    reader = f"read_xlsx('{safe}')"
+                except Exception as exc:  # pragma: no cover - env-dependent
+                    raise UnsupportedTabular(f"xlsx needs the DuckDB excel extension (unavailable): {exc}") from exc
+            safe_tmp_pq = str(tmp_pq).replace("'", "''")
+            con.execute(f"COPY (SELECT * FROM {reader}) TO '{safe_tmp_pq}' (FORMAT PARQUET)")
+            rows = con.execute(f"SELECT COUNT(*) FROM read_parquet('{safe_tmp_pq}')").fetchone()[0]
+        finally:
+            con.close()
 
-    if rows == 0:
-        parquet_path.unlink(missing_ok=True)  # don't leave an orphan parquet
-        raise EmptyExtraction(f"extraction produced empty table (0 rows) from {filename!r}")
+        if rows == 0:
+            raise EmptyExtraction(f"extraction produced empty table (0 rows) from {filename!r}")
 
     size_bytes = parquet_path.stat().st_size
 

@@ -282,6 +282,9 @@ values. Never commit `.env`.
 
 | Variable | Description |
 |----------|-------------|
+| `MICROSOFT_TENANT_ID` | Microsoft Entra ID directory (tenant) ID — a GUID or a verified domain. Multi-tenant endpoints (`common` / `organizations` / `consumers`) are refused; see [`auth-microsoft-oauth.md`](auth-microsoft-oauth.md) |
+| `MICROSOFT_CLIENT_ID` | Microsoft Entra ID application (client) ID |
+| `MICROSOFT_CLIENT_SECRET` | Microsoft Entra ID client secret value. All three are required for Microsoft sign-in and are read at process start |
 | `SMTP_HOST` | SMTP relay host for magic link emails |
 | `SMTP_PORT` | SMTP port (587 for STARTTLS, 465 for SSL) |
 | `SMTP_USER` | SMTP username |

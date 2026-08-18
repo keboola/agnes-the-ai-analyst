@@ -52,6 +52,22 @@ class UsersPgRepository:
             row = conn.execute(sa.text("SELECT * FROM users WHERE email = :email"), {"email": email}).mappings().first()
         return dict(row) if row else None
 
+    def get_by_email_ci(self, email: str) -> Optional[Dict[str, Any]]:
+        """PG sibling of the DuckDB ``get_by_email_ci`` — case-insensitive
+        identity lookup, oldest row wins."""
+        with self._engine.connect() as conn:
+            row = (
+                conn.execute(
+                    sa.text(
+                        "SELECT * FROM users WHERE lower(email) = lower(:email) ORDER BY created_at NULLS LAST LIMIT 1"
+                    ),
+                    {"email": email},
+                )
+                .mappings()
+                .first()
+            )
+        return dict(row) if row else None
+
     def get_by_email_prefix(self, local_part: str) -> Optional[Dict[str, Any]]:
         """PG sibling of the DuckDB ``get_by_email_prefix``."""
         escaped = local_part.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")

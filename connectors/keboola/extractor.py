@@ -15,6 +15,7 @@ from src.identifier_validation import (
     validate_identifier,
     validate_quoted_identifier,
 )
+from src.parquet_publish import atomic_publish, atomic_publish_finalize, atomic_publish_temp_path
 from src.sql_ident import quote_ident
 
 logger = logging.getLogger(__name__)
@@ -271,7 +272,12 @@ def _retype_parquet_streaming(tmp_parquet: Path, target_schema) -> None:
     column degrades per-value instead of wholesale.
 
     Raises on failure — the caller degrades to the native (untyped)
-    parquet. Cleans up its own partial ``.typed`` sibling on the way out.
+    parquet. Published atomically (#1359) via `atomic_publish` — note *dest*
+    here is `tmp_parquet` itself (not yet the served `parquet_path`; the
+    caller commits that separately), which is a perfectly ordinary use of
+    the primitive: it guarantees no reader of *dest* ever sees a torn write,
+    regardless of whether *dest* happens to be a "final" path or, as here,
+    the caller's own intermediate one.
     """
     import pyarrow.parquet as pq  # footer-only read, never data
 
@@ -300,10 +306,8 @@ def _retype_parquet_streaming(tmp_parquet: Path, target_schema) -> None:
         else:
             select_parts.append(q)
 
-    typed_tmp = f"{tmp_parquet}.typed"
     safe_src = str(tmp_parquet).replace("'", "''")
-    safe_dst = typed_tmp.replace("'", "''")
-    try:
+    with atomic_publish(tmp_parquet) as typed_tmp:
         conn = _open_consolidation_conn()
         try:
             # Override the consolidation default: the materialized parquet's
@@ -329,6 +333,7 @@ def _retype_parquet_streaming(tmp_parquet: Path, target_schema) -> None:
             # bound this COPY OOMs on exactly the tables the consolidation
             # bound above just rescued, one step later.
             row_group_rows = _row_group_rows_for(tmp_parquet)
+            safe_dst = str(typed_tmp).replace("'", "''")
             conn.execute(
                 f"COPY (SELECT {', '.join(select_parts)} FROM read_parquet('{safe_src}')) "
                 f"TO '{safe_dst}' (FORMAT PARQUET, COMPRESSION SNAPPY, "
@@ -336,12 +341,7 @@ def _retype_parquet_streaming(tmp_parquet: Path, target_schema) -> None:
             )
         finally:
             conn.close()
-        _warn_on_coerced_nulls(tmp_parquet, typed_tmp, casts)
-        os.replace(typed_tmp, tmp_parquet)
-    except BaseException:
-        if os.path.exists(typed_tmp):
-            os.remove(typed_tmp)
-        raise
+        _warn_on_coerced_nulls(tmp_parquet, str(typed_tmp), casts)
 
 
 def materialize_query(
@@ -475,9 +475,15 @@ def materialize_query(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     parquet_path = output_dir / f"{table_id}.parquet"
-    tmp_parquet = output_dir / f"{table_id}.parquet.tmp"
-    if tmp_parquet.exists():
-        tmp_parquet.unlink()
+    # Published atomically (#1359) via `atomic_publish_temp_path` +
+    # `atomic_publish_finalize` — the manual two-step form, since this
+    # function's several branches (slice consolidation, empty placeholder,
+    # CSV path, one retry) all write into the same temp before the single
+    # commit at the end, too spread out to nest inside `atomic_publish`'s
+    # `with` block. Per-process naming replaces the previous shared
+    # `<id>.parquet.tmp` name, which raced two writers (#1274); the final
+    # commit chmods 0644, which a restrictive umask needs (#203).
+    tmp_parquet = atomic_publish_temp_path(parquet_path)
 
     # Per-call temp dir for the intermediate file (CSV or parquet) —
     # separates concurrent exports cleanly without the os.chdir() race
@@ -665,8 +671,8 @@ def materialize_query(
                     # `CSV Error on Line: N` — pinning removes the guesswork.
                     safe_csv = str(csv_path).replace("'", "''")
                     safe_tmp = str(tmp_parquet).replace("'", "''")
+                    conv = _open_consolidation_conn()
                     try:
-                        conv = _open_consolidation_conn()
                         conv.execute(
                             f"COPY (SELECT * FROM read_csv('{safe_csv}', "
                             f"all_varchar=true, max_line_size=67108864, "
@@ -674,11 +680,18 @@ def materialize_query(
                             f"TO '{safe_tmp}' (FORMAT PARQUET, "
                             f"ROW_GROUP_SIZE_BYTES '{_ROW_GROUP_TARGET_BYTES_SQL}')"
                         )
+                    finally:
                         conv.close()
-                    except Exception:
-                        if tmp_parquet.exists():
-                            tmp_parquet.unlink()
-                        raise
+    except BaseException:
+        # Cleanup belongs on the failure path only — see
+        # `src.parquet_publish`'s module docstring for why (not a `finally`,
+        # `BaseException` not `Exception`). Every branch above writes only
+        # into `tmp_parquet`, never `parquet_path` directly, so this is the
+        # one cleanup point every failure path needs, replacing the
+        # per-branch `except Exception: tmp_parquet.unlink(); raise` this
+        # used to duplicate.
+        tmp_parquet.unlink(missing_ok=True)
+        raise
     finally:
         warn_if_scratch_survived(_tmp_ctx.name)
 
@@ -700,7 +713,7 @@ def materialize_query(
     md5 = h.hexdigest()
     size = tmp_parquet.stat().st_size
 
-    os.replace(tmp_parquet, parquet_path)
+    atomic_publish_finalize(tmp_parquet, parquet_path)
 
     if row_count == 0:
         logger.warning(
@@ -1203,7 +1216,15 @@ def _register_local_meta(
 
 
 def _extract_via_extension(conn: duckdb.DuckDBPyConnection, tc: Dict[str, Any], pq_path: str) -> None:
-    """Extract a table using the DuckDB Keboola extension."""
+    """Extract a table using the DuckDB Keboola extension.
+
+    Backs ``sync_strategy='full_refresh'``, the primary Keboola sync path —
+    published atomically (#1359) via `src.parquet_publish.atomic_publish` so
+    a reader (the orchestrator's hasher, the master views, `agnes pull`) can
+    never observe a half-written ``pq_path``; a direct ``COPY ... TO
+    '<pq_path>'`` here used to leave exactly that window open, on the most
+    central connector, for however long the COPY takes.
+    """
     from connectors.keboola.storage_api import normalize_source_table
 
     bucket = tc.get("bucket", "")
@@ -1215,12 +1236,13 @@ def _extract_via_extension(conn: duckdb.DuckDBPyConnection, tc: Dict[str, Any], 
     # quoted-identifier check that accepts Keboola's `in.c-foo` form.
     if not (is_safe_quoted_identifier(bucket) and is_safe_quoted_identifier(source_table)):
         raise ValueError(f"unsafe bucket/source_table: {bucket!r}/{source_table!r}")
-    safe_pq_lit = pq_path.replace("'", "''")
     # `kbc` is the ATTACH alias and stays bare; bucket/source_table are identifiers.
-    conn.execute(
-        f"COPY (SELECT * FROM kbc.{quote_ident(bucket)}.{quote_ident(source_table)}) "
-        f"TO '{safe_pq_lit}' (FORMAT PARQUET)"
-    )
+    with atomic_publish(Path(pq_path)) as tmp_dest:
+        safe_tmp_lit = str(tmp_dest).replace("'", "''")
+        conn.execute(
+            f"COPY (SELECT * FROM kbc.{quote_ident(bucket)}.{quote_ident(source_table)}) "
+            f"TO '{safe_tmp_lit}' (FORMAT PARQUET)"
+        )
 
 
 def _legacy_worker(tc_pq, keboola_url: str, keboola_token: str):
@@ -1330,10 +1352,13 @@ def _extract_via_legacy(
             if not csv_path.exists() or csv_path.stat().st_size == 0:
                 # Storage API succeeded but produced no rows. Emit an empty
                 # parquet rather than crashing — same defensive behavior as
-                # `materialize_query`.
-                _open_consolidation_conn().execute(
-                    f"COPY (SELECT 1 AS _empty WHERE FALSE) TO '{pq_path}' (FORMAT PARQUET)"
-                ).close()
+                # `materialize_query`. Published atomically (#1359) — this used
+                # to COPY straight onto the live `pq_path`.
+                with atomic_publish(Path(pq_path)) as tmp_dest:
+                    safe_tmp_lit = str(tmp_dest).replace("'", "''")
+                    _open_consolidation_conn().execute(
+                        f"COPY (SELECT 1 AS _empty WHERE FALSE) TO '{safe_tmp_lit}' (FORMAT PARQUET)"
+                    ).close()
                 return
 
             # v27 typed-parquet path: use csv_to_parquet with PyArrow schema
