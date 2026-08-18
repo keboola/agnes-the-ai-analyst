@@ -19,6 +19,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 - `ticket_repo().revoke_session_scopes(session_id, scopes)` (both backends) revokes a session's tickets in the named scopes only. The existing `revoke_session` is scope-blind, which is wrong for a caller holding a long-lived credential in one scope while rotating short-lived egress tickets in others: sweeping the whole session would delete the credential the caller just authenticated with, and the embedded engine has no way to be handed a replacement — its ticket-response schema is `{llm, mcp}` and it keeps using the credential baked into its session JWT, so a scope-blind revoke would `401` every turn after the first. An empty scope list deletes nothing rather than degrading to "match everything".
 
+## [0.83.37] - 2026-08-17
+
+### Internal
+
+- **Groundwork for a Microsoft Teams chat surface.** `Surface.TEAMS_DM` and a Bot Framework Connector JWT/JWKS verifier (`services/teams_bot/sigverify.py`) land ahead of the webhook route and router registration that will actually reach them. Teams' auth model is a bearer JWT verified against Microsoft's rotating JWKS rather than Slack's symmetric HMAC signing secret, so verification needed its own module rather than reusing `services/slack_bot/sigverify.py`. Nothing is wired to an endpoint yet — first increment of the Teams bot MVP.
+
 ## [0.83.36] - 2026-08-17
 
 ### Added
