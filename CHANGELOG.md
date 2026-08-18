@@ -10,6 +10,22 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.83.55] - 2026-08-18
+
+### Added
+
+- **Databricks is now configurable from the `/admin/data-sources` "Add data" wizard.** The step-1 form collects host, warehouse ID, catalog and token, saves the non-secret coordinates to `data_source.databricks` via `/admin/server-config`, and stores the workspace PAT write-only in the datasource vault. Tables still register through `Tables → Register new table`, where the full SQL-warehouse / metric-view editor lives.
+
+### Changed
+
+- **The Databricks SQL-warehouse / semantic-layer path resolves its token from the configured `token_env`** (default `DATABRICKS_TOKEN`) through env then the datasource vault, so a token stored through the admin UI works without a server restart. **Note for an instance that sets a custom `data_source.databricks.token_env`:** that name is env-only by design (`PUT /api/admin/datasource-secrets/{name}` and `datasource_secret()` both refuse anything outside the datasource allow-list), and the resolver no longer falls back to a vault-stored `DATABRICKS_TOKEN` when the custom name is unset — the same honesty the Snowflake `token_env` handling adopted in 0.83.45. Set the credential in the environment under your own name, or clear `token_env` to use the default.
+
+### Fixed
+
+- **The Databricks wizard reads and writes the credential under the name the backend actually looks at.** It read and wrote a hardcoded `DATABRICKS_TOKEN` while `resolve_databricks_settings` reads the env var named by `token_env`, so on an instance with a custom name the badge went green over a credential nothing could use. Both paths go through the resolved name now, shape-guarded by the same helper the Snowflake pane uses (extracted to one `_envNameOr`, since the redaction is a property of `_is_secret_key` rather than of a connector), and after storing one the wizard says which name it landed under.
+- **A saved Databricks connection change reports that a restart is needed.** `POST /api/admin/server-config` always answers `restart_required` and resets only the calling process's config cache; this save discarded it and navigated straight to `/admin/tables`, so on a role-split deployment the scheduler kept the old warehouse while freshly registered tables failed with nothing saying why. The save now holds the wizard open with the notice (the same wording the Snowflake step-2 banner uses) and the next click on the same button navigates.
+- **The Databricks credential-status row is styled like its siblings.** `.ds-dbxcred` was on the element and in no stylesheet rule, so the badge and its warning text stacked instead of aligning and the row collapsed to zero height while the async status load was in flight — the same defect already fixed for the Snowflake pane.
+
 ## [0.83.52] - 2026-08-18
 
 ### Added
@@ -34,7 +50,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **Snowflake is now configurable from the `/admin/data-sources` "Add data" wizard** with password or key-pair authentication. The source picker exposes a Snowflake tile (with an inline SVG logo), the step-1 form collects account, user, database, warehouse and optional role, saves non-secret coordinates to `data_source.snowflake` via `/admin/server-config`, and stores the credential write-only in the datasource vault (`SNOWFLAKE_PASSWORD`, `SNOWFLAKE_PRIVATE_KEY`, or `SNOWFLAKE_PRIVATE_KEY_PASSPHRASE`). Step 2 registers schema/table rows as `remote` (live) or `materialized`. A Snowflake derived-source card also appears on `/admin/data-sources` once configured.
 - **Snowflake remote-attach credentials are now resolved from datasource secrets (env or vault) at query time**, so key-pair credentials stored through the admin UI work for live queries. The orchestrator and query path resolve the key passphrase from `data_source.snowflake.private_key_passphrase_env` so custom env names are honored.
 - **Small inline SVG logos now appear on the connector picker and source cards** for BigQuery, Snowflake, and Databricks.
-- **Databricks now appears in the `/admin/data-sources` connector picker and as a derived source card** with cost/sync cells; tables still register through `Tables → Register new table` where the SQL warehouse / metric-view editor lives. The Databricks step-1 form now collects host, warehouse ID, catalog and token in the Add-data wizard, saves the non-secret coordinates to `data_source.databricks` via `/admin/server-config` and stores the workspace PAT write-only as `DATABRICKS_TOKEN` in datasource secrets. The Databricks SQL-warehouse / semantic-layer path resolves the token from the configured `token_env` (default `DATABRICKS_TOKEN`) through env then datasource vault, so UI-stored tokens work without a server restart. **Note for an instance that sets a custom `data_source.databricks.token_env`:** that name is env-only by design (`PUT /api/admin/datasource-secrets/{name}` and `datasource_secret()` both refuse anything outside the datasource allow-list), and the resolver no longer falls back to a vault-stored `DATABRICKS_TOKEN` when the custom name is unset — the same honesty the Snowflake `token_env` handling adopted in 0.83.45. Set the credential in the environment under your own name, or clear `token_env` to use the default. The wizard reads that name too, so its badge reports the credential the backend actually looks at, and after storing one it says which name it landed under. It also surfaces the `restart_required` the config save reports instead of navigating away from it, and its credential-status row is styled like the BigQuery and Snowflake ones.
+- **Databricks now appears in the `/admin/data-sources` connector picker and as a derived source card** with cost/sync cells; tables still register through `Tables → Register new table` where the SQL warehouse / metric-view editor lives.
 - **Snowflake wizard in `/admin/data-sources` now styles its credential-status row, live-updates the password/private-key badge while typing, clears credential inputs after they are saved, and prefixes the generated registered-table name with the schema to avoid cross-schema collisions.**
 
 ### Fixed
