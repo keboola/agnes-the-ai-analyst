@@ -27,26 +27,39 @@ DUPLICATE_REPORT_COLUMNS = (
 
 _DUPLICATE_SELECT = ", ".join(DUPLICATE_REPORT_COLUMNS) + ", (password_hash IS NOT NULL) AS has_password"
 
-# Grouped on the address as a PERSON writes it: case folded AND trimmed. The
-# sign-in doors normalize their input with strip + lower (`normalize_email`), so
-# a stored ` ann@x` and a stored `ann@x` are the same address to a human and
-# collide in the same way — but see `_group_case_variants` for the twist.
-_DUPLICATE_SQL = f"""
-    SELECT {_DUPLICATE_SELECT} FROM users
-    WHERE lower(trim(email)) IN (
-        SELECT lower(trim(email)) FROM users GROUP BY lower(trim(email)) HAVING COUNT(*) > 1
-    )
-    ORDER BY lower(trim(email)), created_at NULLS LAST, id
-"""
+# The fold that decides what counts as "the same address" is done in Python, not
+# SQL, and the row set is deliberately unfiltered.
+#
+# The obvious shape — GROUP BY lower(trim(email)) HAVING COUNT(*) > 1 — is
+# subtly wrong, because SQL `trim()` strips spaces ONLY. A pair padded with a
+# tab or a newline lands in two group keys of one row each, `HAVING` drops both,
+# and the collision is never reported: exactly the unreachable-row class this
+# report exists for, silently missing. Python's `str.strip()` covers all
+# whitespace, so folding there makes the two backends agree by construction
+# rather than by matching two dialects' idea of `trim` — the property that
+# failed here once already.
+#
+# The cost is reading the users table whole. This is an operator diagnostic run
+# by hand against an org-sized table, so that is the right trade for a fold that
+# cannot drift.
+_DUPLICATE_SQL = f"SELECT {_DUPLICATE_SELECT} FROM users"
+
+
+def _order_key(row: Dict[str, Any]):
+    """``ORDER BY created_at NULLS LAST, id`` — the get_by_email_ci tie-break,
+    in Python. The ``0`` stands in for a missing timestamp and is only ever
+    compared against another ``0``: the leading flag differs first whenever one
+    side is NULL, so a datetime is never compared with an int."""
+    ts = row.get("created_at")
+    return (ts is None, ts if ts is not None else 0, str(row.get("id") or ""))
 
 
 def _group_case_variants(rows) -> List[Dict[str, Any]]:
-    """Fold an email-ordered row stream into duplicate groups.
+    """Fold a stream of user rows into duplicate groups.
 
-    Shared by the DuckDB and Postgres repositories: both run the same SQL and
-    both must return byte-identical structure, so the grouping lives in one
-    place rather than being reimplemented twice and drifting. Expects rows
-    pre-sorted by ``lower(trim(email))`` then the get_by_email_ci tie-break.
+    Shared by the DuckDB and Postgres repositories, and it does the whole job —
+    folding, ordering and the >1 filter — so the two backends cannot disagree
+    about which rows collide. Takes rows in any order.
 
     ``resolved_id`` is the row a sign-in actually lands on, and that is NOT
     simply the first row of the group. ``get_by_email_ci`` matches
@@ -57,13 +70,15 @@ def _group_case_variants(rows) -> List[Dict[str, Any]]:
     A group where every row is padded has ``resolved_id = None``: nobody can
     sign in to that address.
     """
-    groups: List[Dict[str, Any]] = []
+    by_address: Dict[str, List[Dict[str, Any]]] = {}
     for row in rows:
-        folded = (row.get("email") or "").strip().lower()
-        if groups and groups[-1]["email"] == folded:
-            groups[-1]["users"].append(row)
-        else:
-            groups.append({"email": folded, "users": [row]})
+        by_address.setdefault((row.get("email") or "").strip().lower(), []).append(row)
+
+    groups: List[Dict[str, Any]] = [
+        {"email": folded, "users": sorted(rows_, key=_order_key)}
+        for folded, rows_ in sorted(by_address.items())
+        if len(rows_) > 1
+    ]
     for g in groups:
         g["count"] = len(g["users"])
         for u in g["users"]:

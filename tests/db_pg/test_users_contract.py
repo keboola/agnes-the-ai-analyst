@@ -819,3 +819,40 @@ def test_a_group_of_only_padded_rows_resolves_to_nobody(users_repo):
     g = repo.list_case_variant_duplicates()[0]
     assert g["resolved_id"] is None
     assert all(u["unreachable_by_sign_in"] for u in g["users"])
+
+
+def test_tab_padded_duplicates_are_reported_like_space_padded_ones(users_repo):
+    """SQL `trim()` strips spaces only, on both engines. Folding in SQL would
+    therefore put a tab-padded pair in two single-row groups, `HAVING COUNT(*) >
+    1` would drop both, and the collision would never be reported — the
+    unreachable-row class this report exists for, missing precisely when the
+    padding is least visible. The fold lives in Python so all whitespace counts.
+    """
+    repo, _, _ = users_repo
+    _make_user(repo, id="user-tab", email="\tws@example.com")
+    _make_user(repo, id="user-nl", email="ws@example.com\n")
+    _make_user(repo, id="user-clean", email="ws@example.com")
+
+    groups = repo.list_case_variant_duplicates()
+    assert len(groups) == 1
+    g = groups[0]
+    assert g["email"] == "ws@example.com"
+    assert {u["id"] for u in g["users"]} == {"user-tab", "user-nl", "user-clean"}
+    assert g["resolved_id"] == "user-clean", "only the unpadded row is reachable"
+    assert {u["id"] for u in g["users"] if u["unreachable_by_sign_in"]} == {"user-tab", "user-nl"}
+
+
+def test_grouping_survives_rows_whose_folded_addresses_interleave(users_repo):
+    """The fold no longer depends on SQL ordering putting colliding rows next to
+    each other, so a third address sorting between two variants cannot split a
+    group in half."""
+    repo, _, _ = users_repo
+    _make_user(repo, id="user-a1", email="\tmid@example.com")
+    _make_user(repo, id="user-b", email="mia@example.com")
+    _make_user(repo, id="user-b2", email="MIA@example.com")
+    _make_user(repo, id="user-a2", email="mid@example.com")
+
+    groups = {g["email"]: g for g in repo.list_case_variant_duplicates()}
+    assert set(groups) == {"mia@example.com", "mid@example.com"}
+    assert {u["id"] for u in groups["mid@example.com"]["users"]} == {"user-a1", "user-a2"}
+    assert {u["id"] for u in groups["mia@example.com"]["users"]} == {"user-b", "user-b2"}
