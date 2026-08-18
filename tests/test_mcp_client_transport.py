@@ -295,3 +295,83 @@ def test_stdio_pool_key_is_salted_with_the_user_for_per_user_sources(monkeypatch
 
     asyncio.run(_drive())
     assert pool.salts == [expected]
+
+
+def test_installed_mcp_sdk_still_speaks_the_api_this_repo_calls():
+    """The `mcp` range in pyproject must resolve an SDK this code can call.
+
+    Both halves below broke at once when an unbounded `mcp>=1.28.1` resolved
+    the 2.x SDK in CI, and both are import-time or first-call failures rather
+    than one wrong answer: `connectors/mcp/client.py` is reached from
+    `app.main`, so a missing symbol errors out every test that builds the app,
+    and a signature change surfaces only when a real MCP server is dialled --
+    in production, past every mock in this file.
+    """
+    import importlib
+    import inspect
+
+    # Five modules import FastMCP from here (app/api/mcp_streamable.py,
+    # app/api/mcp_http.py, app/api/mcp/foundation_tools.py,
+    # app/api/mcp/tools_generator.py, cli/mcp/server.py). 2.x moved it.
+    importlib.import_module("mcp.server.fastmcp")
+
+    from connectors.mcp import client as mcp_client
+
+    params = inspect.signature(mcp_client.streamablehttp_client).parameters
+    assert "url" in params
+    # `_open_session` calls this as `streamablehttp_client(url, headers=...)`.
+    assert "headers" in params, (
+        "the bound streamable-HTTP transport no longer accepts `headers=` -- "
+        "the callsite in connectors/mcp/client.py would raise TypeError and "
+        "send no auth header; migrate the callsite, do not re-alias the symbol"
+    )
+
+
+def test_the_renamed_transport_is_not_a_drop_in_for_the_old_one():
+    """Guards against 'fixing' the rename by aliasing the new name to the old.
+
+    That looks like a one-line import fix and passes every mocked test in this
+    file, because they all monkeypatch the symbol away. It is not a fix: the
+    new entry point takes an `http_client: httpx.AsyncClient` where the old one
+    takes `headers`, so the alias turns every HTTP MCP connection into a
+    `TypeError` and the resolved bearer/basic header is never sent.
+    """
+    import inspect
+
+    sh = pytest.importorskip("mcp.client.streamable_http")
+    new = getattr(sh, "streamable_http_client", None)
+    if new is None:  # pragma: no cover - SDK predates the rename
+        pytest.skip("installed SDK has only the old spelling")
+
+    new_params = inspect.signature(new).parameters
+    old_params = inspect.signature(sh.streamablehttp_client).parameters
+
+    assert "headers" in old_params
+    assert "headers" not in new_params, (
+        "the two spellings now take the same arguments -- if that is real, "
+        "this guard and the `mcp<2` cap can both be revisited together"
+    )
+
+
+def test_the_mcp_install_hint_carries_the_same_bound_as_pyproject():
+    """`agnes mcp` catches the FastMCP ImportError and tells the reader what to
+    install. That hint has to carry pyproject's bound, or it resolves the very
+    SDK whose missing module raised the error being reported — sending the
+    reader straight back to the same message.
+
+    Pinned against pyproject rather than a literal so the two cannot drift:
+    they did, the moment the cap was added.
+    """
+    import pathlib
+    import re
+    import tomllib
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    pyproject = tomllib.loads((root / "pyproject.toml").read_text())
+    spec = next(d for d in pyproject["project"]["dependencies"] if re.match(r"^mcp\b", d))
+
+    hint = (root / "cli" / "commands" / "mcp.py").read_text()
+    assert f"uv pip install '{spec}'" in hint, (
+        f"the install hint in cli/commands/mcp.py must offer {spec!r} -- "
+        "pyproject's bound is what makes the resulting install usable"
+    )
