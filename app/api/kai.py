@@ -80,7 +80,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.api.broker import _require_scope, require_broker_ticket
-from app.auth.dependencies import get_current_user
+from app.auth.dependencies import get_current_user, reject_keboola_header_credential
 from app.chat.types import Surface
 from src.repositories import audit_repo, chat_session_repo, ticket_repo
 
@@ -268,7 +268,21 @@ def _create_session_and_credential(user_email: str) -> tuple[str, str]:
 _NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache"}
 
 
-@router.post("/sessions", response_model=KaiSessionResponse)
+@router.post(
+    "/sessions",
+    response_model=KaiSessionResponse,
+    # Same guard every other credential-minting surface carries
+    # (`app/api/data_apps.py`, `app/api/cowork_bundle.py`): an
+    # `X-StorageApi-Token` header credential must not be exchangeable for a
+    # durable follow-on credential. This route mints two — the engine's session
+    # JWT and the `kai_session` broker credential behind it, which then mints
+    # egress tickets and spends the instance's LLM budget — so it belongs in
+    # that set, and `keboola_token_header`'s own description already promises
+    # "credential-minting endpoints stay blocked". Route-level so the handler's
+    # `Depends(get_current_user)` still populates `user` (FastAPI dedupes the
+    # two calls). Found by Devin Review on this PR.
+    dependencies=[Depends(reject_keboola_header_credential)],
+)
 async def create_kai_session(response: Response, user: dict = Depends(get_current_user)) -> KaiSessionResponse:
     """Create a chat session and mint the engine session token for it.
 
