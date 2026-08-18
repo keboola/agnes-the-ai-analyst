@@ -73,6 +73,31 @@ async def _run_logged(
                 logger.exception("best-effort Slack failure notice failed")
 
 
+
+#: enforce_sender_limits raises bare RuntimeError with these reason strings —
+#: on a routed thread the limits key on the AGENT OWNER, so a channel member
+#: who tripped nothing themselves needs to be told what happened (the in-band
+#: sink error frame covers only the locally-attached path; the cross-gateway
+#: forward and the api-replica producer have no local sink).
+_SENDER_LIMIT_MESSAGES = {
+    "daily_budget_exhausted": "The agent's daily spend cap is reached — try again tomorrow.",
+    "max_session_tokens_exhausted": "This thread hit its session token cap — start a new thread.",
+    "rate_limit_exceeded": "The agent is receiving too many messages right now — try again in a few minutes.",
+}
+
+
+async def _send_or_explain_limit(mgr_send, channel: str, slack_user_id: str) -> None:
+    """Run one send coroutine; answer a known sender-limit refusal with an
+    ephemeral instead of letting it vanish into the background-task log."""
+    try:
+        await mgr_send
+    except RuntimeError as exc:
+        msg = _SENDER_LIMIT_MESSAGES.get(str(exc))
+        if msg is None:
+            raise
+        await send_ephemeral_to_user(channel, slack_user_id, msg)
+
+
 async def dispatch_event(app, event: dict[str, Any]) -> None:
     etype = event.get("type")
     if etype == "message":
@@ -500,14 +525,18 @@ async def _handle_mention(app, event: dict) -> None:
     if mgr is None:
         # api-role replica (no ChatManager in this process): thin-producer
         # forward — see _handle_dm's twin branch and _produce_slack_message.
-        await _produce_slack_message(
-            app,
-            user_email=session_user,
-            surface=Surface.SLACK_THREAD,
-            channel=channel,
-            thread_ts=thread_ts,
-            text=clean,
-            agent_id=bound_agent["id"] if bound_agent else None,
+        await _send_or_explain_limit(
+            _produce_slack_message(
+                app,
+                user_email=session_user,
+                surface=Surface.SLACK_THREAD,
+                channel=channel,
+                thread_ts=thread_ts,
+                text=clean,
+                agent_id=bound_agent["id"] if bound_agent else None,
+            ),
+            channel,
+            slack_user_id,
         )
         return
     from app.chat.manager import ConcurrencyCapHit
@@ -538,10 +567,14 @@ async def _handle_mention(app, event: dict) -> None:
     # here would otherwise trigger a cross-gateway takeover; slack_origin
     # rides the forwarded envelope so the OWNER re-establishes the sink.
     if await _owned_by_other_gateway(session.id):
-        await mgr.send_user_message(
-            session.id,
-            clean,
-            slack_origin={"channel": channel, "thread_ts": thread_ts},
+        await _send_or_explain_limit(
+            mgr.send_user_message(
+                session.id,
+                clean,
+                slack_origin={"channel": channel, "thread_ts": thread_ts},
+            ),
+            channel,
+            slack_user_id,
         )
         return
     if not _is_attached(mgr, session.id):
@@ -576,4 +609,7 @@ async def _handle_mention(app, event: dict) -> None:
 
     # 9. Inject the user turn. send_user_message(chat_id, text) — no sender_email
     #    (per-sender attribution arrives with Phase 5a's multi-sink refactor).
-    await mgr.send_user_message(session.id, clean)
+    #    A sender-limit refusal (keyed on the session owner — the AGENT owner
+    #    for routed threads) is answered with an ephemeral; the attached sink
+    #    also posts the in-band error frame to the thread.
+    await _send_or_explain_limit(mgr.send_user_message(session.id, clean), channel, slack_user_id)
