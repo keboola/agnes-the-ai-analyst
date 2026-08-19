@@ -160,6 +160,26 @@ def test_tpl_engine_requires_public_origin():
     assert guard < closed_port_guard < url_use
 
 
+def test_engine_caps_are_per_vm_fields():
+    # The engine's resource ceilings must be per-VM TF fields (like
+    # app_mem_limit), NOT .env hand-edits: the startup script rewrites .env
+    # from scratch every boot, so a hand-raised ceiling silently drops back
+    # to the default on reboot.
+    vbody = (MODULE / "variables.tf").read_text()
+    for name in ("kai_agent_mem_limit", "kai_agent_cpus", "kai_agent_pg_mem_limit"):
+        decls = re.findall(name + r"\s*=\s*optional\(string,", vbody)
+        assert len(decls) == 2, f"{name}: expected on prod+dev object types, got {len(decls)}"
+    mbody = (MODULE / "main.tf").read_text()
+    assert re.search(r"kai_agent_mem_limit\s*=\s*each\.value\.kai_agent_mem_limit", mbody)
+    tbody = TPL.read_text()
+    for line in (
+        "KAI_AGENT_MEM_LIMIT=${kai_agent_mem_limit}",
+        "KAI_AGENT_CPUS=${kai_agent_cpus}",
+        "KAI_AGENT_PG_MEM_LIMIT=${kai_agent_pg_mem_limit}",
+    ):
+        assert line in tbody, line
+
+
 def test_kai_agent_env_rejects_multiline_values():
     body = (MODULE / "variables.tf").read_text()
     # The map becomes KEY=VALUE lines in the engine's env_file; an embedded

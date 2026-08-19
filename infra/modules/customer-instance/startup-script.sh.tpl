@@ -870,8 +870,11 @@ services:
     env_file: /opt/agnes/kai-agent/.env
     # Bounded like the app/scheduler containers (heavy work happens in the
     # remote E2B sandbox, not here), and hardened like the data-app
-    # containers: caps are ceilings, not reservations, and the defaults are
-    # overridable via /opt/agnes/.env without a template change.
+    # containers: caps are ceilings, not reservations. The values come from
+    # the per-VM kai_agent_mem_limit / kai_agent_cpus / kai_agent_pg_mem_limit
+    # TF fields via /opt/agnes/.env — NOT from hand-edits of that file, which
+    # every boot rewrites from scratch (the same reason app_mem_limit is a TF
+    # field). The :-defaults below are a belt-and-braces fallback only.
     mem_limit: $${KAI_AGENT_MEM_LIMIT:-2g}
     cpus: $${KAI_AGENT_CPUS:-1.0}
     pids_limit: 512
@@ -973,6 +976,9 @@ LLM_DISPATCHER_API_KEY=$DISPATCHER_KEY
 KAI_HOST_JWT_SECRET=$KAI_HOST_JWT_SECRET
 KAI_AGENT_IMAGE=${kai_agent_image}
 KAI_AGENT_PG_PASSWORD=$KAI_AGENT_PG_PASSWORD
+KAI_AGENT_MEM_LIMIT=${kai_agent_mem_limit}
+KAI_AGENT_CPUS=${kai_agent_cpus}
+KAI_AGENT_PG_MEM_LIMIT=${kai_agent_pg_mem_limit}
 %{ endif ~}
 COMPOSE_FILE=$COMPOSE_FILE_VALUE
 %{ if data_apps_enabled ~}
