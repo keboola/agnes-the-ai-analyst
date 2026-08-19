@@ -353,17 +353,23 @@ if [ -n "$DATA_APPS_RUNTIME_IMAGE" ]; then
     esac
 fi
 
-# Retry the optional kai-agent engine on EVERY tick, not only when drift is
-# detected: an engine that failed at boot (bad image, failed migrate) would
-# otherwise stay down until something unrelated about the machine changed,
-# because the drift-gated recreate below never fires on a no-change tick.
+# Retry the optional kai-agent engine on EVERY tick it is found down, not
+# only when drift is detected: an engine that failed at boot (bad image,
+# failed migrate) would otherwise stay down until something unrelated about
+# the machine changed, because the drift-gated recreate below never fires on
+# a no-change tick. Gated on the engine NOT already running — an
+# unconditional `up -d kai-agent` would re-run the one-shot migrator (its
+# service_completed_successfully dependency) every 5 minutes forever, a
+# needless container start + DB connection per tick on a healthy box.
 # Targeted at the engine service so this cannot recreate app services and
-# bypass the sync-defer guard below — compose starts the engine's own
-# dependencies (its postgres + one-shot migrate) with it, and is a no-op
-# when the engine is already up. Tolerant, same posture as the pull above.
+# bypass the sync-defer guard below; compose brings the engine's own
+# dependencies (its postgres + one-shot migrate) with it. Tolerant, same
+# posture as the pull above.
 if [[ ":$COMPOSE_FILE:" == *":docker-compose.kai-agent.yml:"* ]]; then
-    docker compose ${PROFILE_ARGS[@]+"${PROFILE_ARGS[@]}"} up -d kai-agent >/dev/null 2>&1 \
-        || logger -t agnes-auto-upgrade "WARN: kai-agent engine sidecar failed to start; retrying next tick"
+    if [ -z "$(docker compose ${PROFILE_ARGS[@]+"${PROFILE_ARGS[@]}"} ps -q --status running kai-agent 2>/dev/null)" ]; then
+        docker compose ${PROFILE_ARGS[@]+"${PROFILE_ARGS[@]}"} up -d kai-agent >/dev/null 2>&1 \
+            || logger -t agnes-auto-upgrade "WARN: kai-agent engine sidecar failed to start; retrying next tick"
+    fi
 fi
 
 # ---------------------------------------------------------------------------
