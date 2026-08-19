@@ -4,6 +4,7 @@ Mirrors ``src/repositories/session_processor_state.py``. PG ``TIMESTAMP
 WITH TIME ZONE`` preserves UTC offsets across the round-trip, so we no
 longer need the strip-tz step the DuckDB impl carries.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -54,8 +55,15 @@ class SessionProcessorStatePgRepository:
         username: str,
         items_count: int,
         file_hash: str,
+        read_at: datetime | None = None,
     ) -> None:
-        now = datetime.now(UTC)
+        """UPSERT — overwrites previous state row for (processor, session).
+
+        *read_at* should be the moment the file hash was observed; when the
+        processor runs for a long time or appends to the jsonl mid-run, this
+        preserves the correct mtime/ordering relationship for the next scan.
+        """
+        processed_at = read_at if read_at is not None else datetime.now(UTC)
         with self._engine.begin() as conn:
             conn.execute(
                 sa.text(
@@ -69,8 +77,12 @@ class SessionProcessorStatePgRepository:
                             username = EXCLUDED.username"""
                 ),
                 {
-                    "p": processor_name, "s": session_file, "u": username,
-                    "now": now, "ic": items_count, "h": file_hash,
+                    "p": processor_name,
+                    "s": session_file,
+                    "u": username,
+                    "now": processed_at,
+                    "ic": items_count,
+                    "h": file_hash,
                 },
             )
 
@@ -98,10 +110,7 @@ class SessionProcessorStatePgRepository:
         or None if the processor has no state rows."""
         with self._engine.connect() as conn:
             row = conn.execute(
-                sa.text(
-                    "SELECT MAX(processed_at) FROM session_processor_state "
-                    "WHERE processor_name = :p"
-                ),
+                sa.text("SELECT MAX(processed_at) FROM session_processor_state WHERE processor_name = :p"),
                 {"p": processor_name},
             ).first()
         return row[0] if row else None
@@ -125,10 +134,7 @@ class SessionProcessorStatePgRepository:
         """The set of session_file values this processor has a state row for."""
         with self._engine.connect() as conn:
             rows = conn.execute(
-                sa.text(
-                    "SELECT session_file FROM session_processor_state "
-                    "WHERE processor_name = :p"
-                ),
+                sa.text("SELECT session_file FROM session_processor_state WHERE processor_name = :p"),
                 {"p": processor_name},
             ).all()
         return {r[0] for r in rows}
@@ -154,10 +160,7 @@ class SessionProcessorStatePgRepository:
                 stmt,
                 {"p": processor_name, "files": list(session_files)},
             ).all()
-        return {
-            r[0]: {"processed_at": r[1], "items_extracted": r[2]}
-            for r in rows
-        }
+        return {r[0]: {"processed_at": r[1], "items_extracted": r[2]} for r in rows}
 
     def scan_unprocessed_for(
         self,

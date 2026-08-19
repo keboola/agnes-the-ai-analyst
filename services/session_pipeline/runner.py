@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -22,7 +23,6 @@ import duckdb
 
 from services.session_pipeline.contract import ProcessorResult, SessionProcessor
 from services.session_pipeline.lib import compute_file_hash
-
 from src.repositories import (
     session_processor_state_repo,
     users_repo,
@@ -223,7 +223,7 @@ def run_processor(
         session_key = f"{dir_name}/{jsonl_path.name}"
         try:
             file_hash = compute_file_hash(jsonl_path)
-        except Exception as e:
+        except OSError as e:
             logger.warning(
                 "Cannot hash %s for processor=%s: %s",
                 session_key,
@@ -233,6 +233,12 @@ def run_processor(
             stats["errors"] += 1
             stats["errors_detail"].append({"session": session_key, "error": str(e)})
             continue
+
+        # Record the content-observation time now, before the (potentially slow)
+        # processor runs. Any append after this moment must be visible on the
+        # next tick; storing the completion time would make live-appended
+        # sessions look already-up-to-date and skip them forever.
+        read_at = datetime.now(UTC)
 
         # Hash-aware skip: scan_unprocessed_for returns every candidate; we
         # do the authoritative is_processed check here so the runner is the
@@ -294,6 +300,7 @@ def run_processor(
             username=canonical_username,
             items_count=result.items_count,
             file_hash=file_hash,
+            read_at=read_at,
         )
         stats["processed"] += 1
         stats["items_extracted"] += result.items_count
