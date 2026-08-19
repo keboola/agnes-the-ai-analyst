@@ -111,3 +111,75 @@ def test_missing_credentials_reports_what_is_missing(client, monkeypatch, tmp_pa
 
     with pytest.raises(StorageApiError, match="credentials"):
         client.download_file_slices(info, tmp_path / "slices")
+
+
+def test_legacy_sdk_client_signs_s3_slices(monkeypatch, tmp_path):
+    """The legacy client is the download path for incremental + partitioned
+    syncs, and it had the same gap: it rewrote `gs://` only, then handed the
+    raw `s3://` URI to `requests`. It must now go through the same signing
+    helper as the Storage API client.
+    """
+    # `connectors/keboola/client.py` imports the Keboola SDK at module level,
+    # and that lives in the [server] extra. Stub it rather than skipping, so
+    # this test actually runs in a plain dev env instead of quietly passing.
+    import sys
+    import types
+
+    if "kbcstorage" not in sys.modules:
+
+        class _StubSdkClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+        sdk = types.ModuleType("kbcstorage")
+        sdk_client = types.ModuleType("kbcstorage.client")
+        sdk_client.Client = _StubSdkClient
+        sdk.client = sdk_client
+        monkeypatch.setitem(sys.modules, "kbcstorage", sdk)
+        monkeypatch.setitem(sys.modules, "kbcstorage.client", sdk_client)
+
+    from connectors.keboola import client as legacy
+
+    fetched: list[dict] = []
+
+    class _Resp:
+        def __init__(self, payload=None, content=b""):
+            self._payload = payload
+            self.content = content
+            self.headers: dict[str, str] = {}
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    def fake_get(url, headers=None, **kw):
+        if "/jobs/" in url:
+            return _Resp({"status": "success", "results": {"file": {"id": 42}}})
+        if "/files/" in url:
+            return _Resp(dict(FILE_INFO))
+        if "manifest" in url:
+            return _Resp({"entries": [{"url": SLICE_URL}]})
+        fetched.append({"url": url, "headers": dict(headers or {})})
+        return _Resp(content=b"a,b\n")
+
+    monkeypatch.setattr(legacy.requests, "post", lambda *a, **kw: _Resp({"id": "job-1"}))
+    monkeypatch.setattr(legacy.requests, "get", fake_get)
+    monkeypatch.setattr(legacy.time, "sleep", lambda *_: None)
+
+    c = legacy.KeboolaClient(token="tok", url="https://connection.example.com")
+    monkeypatch.setattr(c, "get_table_metadata", lambda _tid: {"columns": ["a", "b"]})
+
+    out = tmp_path / "out.csv"
+    c._export_table_with_filters("in.c-demo.SALES", out, [])
+
+    assert fetched, "no slice was fetched"
+    slice_call = fetched[-1]
+    assert not slice_call["url"].startswith("s3://"), "raw s3:// URI reached requests"
+    assert slice_call["url"].startswith(f"https://example-export-bucket.s3.{FILE_INFO['region']}.amazonaws.com/")
+    assert KEY in slice_call["url"]
+    # SigV4 in headers, never presigned into the query string.
+    assert "Authorization" in slice_call["headers"]
+    assert "AWS4-HMAC-SHA256" in slice_call["headers"]["Authorization"]
+    assert "X-Amz-Signature" not in slice_call["url"]
