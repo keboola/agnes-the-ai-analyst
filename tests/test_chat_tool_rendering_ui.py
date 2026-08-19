@@ -470,23 +470,63 @@ def test_system_note_styles_exist():
 # ── Long-message collapse: a cap for extremes, not for ordinary answers ──────
 
 
+def _collapse_threshold_px() -> str:
+    """The one number both surfaces must agree on, as it appears in chat.js."""
+    m = re.search(r"COLLAPSE_THRESHOLD_PX = (\d+)", _read(CHAT_JS))
+    assert m, "COLLAPSE_THRESHOLD_PX must stay a plain literal"
+    return m.group(1)
+
+
 def test_collapse_threshold_and_css_clamp_agree():
     """The threshold that DECIDES to collapse is a JS constant; the max-height
     that DOES the clamping is a CSS literal. Two hardcoded pixel values that
     must stay the same number — drift means a body is judged at one height and
     cut at another (raising only the JS side would still clamp a 2500px answer
-    down to 480px, i.e. exactly the bug the raise was meant to remove)."""
-    js_match = re.search(r"COLLAPSE_THRESHOLD_PX = (\d+)", _read(CHAT_JS))
-    assert js_match, "COLLAPSE_THRESHOLD_PX must stay a plain literal"
-    css_match = re.search(
+    down to 480px, i.e. exactly the bug the raise was meant to remove).
+
+    EVERY clamp for that selector is checked, not just the first one in the
+    file: chat.css already carries per-breakpoint max-height overrides for other
+    elements, so a later `@media` block re-clamping .msg-body would diverge from
+    the constant while a first-match-only guard kept passing."""
+    threshold = _collapse_threshold_px()
+    clamps = re.findall(
         r"\.msg-bubble\.is-collapsible \.msg-body \{[^}]*?max-height: (\d+)px",
         _read(CHAT_CSS),
     )
-    assert css_match, "the collapsible clamp must keep a literal max-height"
-    assert js_match.group(1) == css_match.group(1), (
-        f"chat.js collapses over {js_match.group(1)}px but chat.css clamps at "
-        f"{css_match.group(1)}px"
+    assert clamps, "the collapsible clamp must keep a literal max-height"
+    assert set(clamps) == {threshold}, (
+        f"chat.js collapses over {threshold}px but chat.css clamps at {sorted(set(clamps))}px"
     )
+
+
+def test_collapse_threshold_is_actually_consumed_by_the_collapse_decision():
+    """Both numbers can agree while the constant is dead: hardcoding the
+    comparison inline (`if (body.scrollHeight <= 480) return;`) leaves the
+    declaration and the CSS literal untouched, so a pure agreement guard stays
+    green while the runtime regresses to exactly the reported bug. Pin that the
+    decision reads the constant, and that no bare pixel literal is compared
+    against the measured height."""
+    js = _read(CHAT_JS)
+    body = js[js.index("function maybeMakeCollapsible") : js.index("function enhanceCodeBlocks")]
+    assert "COLLAPSE_THRESHOLD_PX" in body, "the collapse decision must read the constant, not a literal"
+    stray = re.search(r"scrollHeight\s*[<>]=?\s*\d", body)
+    assert not stray, f"scrollHeight compared against a literal: {stray.group(0)!r}"
+
+
+def test_every_finish_path_offers_the_collapse():
+    """maybeMakeCollapsible is what puts the cap on a finished turn, and there
+    are three ways a turn finishes: the normal completed answer, an orphan whose
+    assistant_message never came, and a reload rendering history. Only the
+    orphan path was pinned (test_reset_finalizes_an_orphan_bubble), so dropping
+    the call from the normal path — the one every real answer takes — would ship
+    silently green."""
+    js = _read(CHAT_JS)
+    for fn, end in (
+        ("function finalizeAssistantMessage", "function _toolCallId"),
+        ("function renderMessage", "function enhanceTables"),
+    ):
+        body = js[js.index(fn) : js.index(end)]
+        assert "maybeMakeCollapsible(" in body, f"{fn} must offer the collapse"
 
 
 def test_collapse_cap_clears_an_ordinary_long_answer():
@@ -495,6 +535,4 @@ def test_collapse_cap_clears_an_ordinary_long_answer():
     real answer. The cap is kept for genuine extremes only, so its floor must
     stay far above an ordinary answer's height."""
     threshold = int(re.search(r"COLLAPSE_THRESHOLD_PX = (\d+)", _read(CHAT_JS)).group(1))
-    assert threshold >= 2000, (
-        f"COLLAPSE_THRESHOLD_PX={threshold}px collapses ordinary answers; the cap is for extremes"
-    )
+    assert threshold >= 2000, f"COLLAPSE_THRESHOLD_PX={threshold}px collapses ordinary answers; the cap is for extremes"
