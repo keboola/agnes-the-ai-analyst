@@ -18438,7 +18438,7 @@
     },
     "/api/admin/keboola/test-connection": {
       "post": {
-        "description": "Verify the Keboola Storage API token by listing buckets.\n\nDeclared as a plain ``def`` (not ``async``) so FastAPI runs it in the\ndefault threadpool executor \u2014 the underlying KeboolaClient does\nsynchronous file I/O on init and synchronous HTTP on buckets.list(),\nneither of which is safe to call on the async event-loop thread.\n\nReturns 200 with ``{ok, stack_url, bucket_count, elapsed_ms}`` on success.\n\nError responses:\n- 400 ``not_configured`` \u2014 token or URL not set\n- 400 ``invalid_token`` \u2014 Keboola returned 401\n- 502 ``keboola_upstream_error`` \u2014 other API error",
+        "description": "Verify the Keboola Storage API token by listing buckets.\n\nDeclared as a plain ``def`` (not ``async``) so FastAPI runs it in the\ndefault threadpool executor \u2014 the underlying KeboolaClient does\nsynchronous file I/O on init and synchronous HTTP on buckets.list(),\nneither of which is safe to call on the async event-loop thread.\n\nReturns 200 with ``{ok, scope, stack_url, bucket_count, elapsed_ms}`` on\nsuccess. Every response \u2014 success or error \u2014 carries ``scope: \"instance\"``\nnaming the layer this probe checks (instance-level config, never the\nper-project ``source_connections`` registry).\n\nError responses:\n- 400 ``not_configured`` \u2014 token or URL not set. ``hint`` additionally\n  points at ``/admin/data-sources`` when the registry has a keboola\n  connection, so \"not configured here\" doesn't read as \"Keboola is\n  broken\" on an instance whose real projects live there.\n- 400 ``invalid_token`` \u2014 Keboola returned 401\n- 502 ``keboola_upstream_error`` \u2014 other API error",
         "operationId": "test_connection_api_admin_keboola_test_connection_post",
         "parameters": [
           {
@@ -25832,7 +25832,7 @@
         ]
       },
       "post": {
-        "description": "Patch instance.yaml from the /admin/server-config editor.\n\nAccepts a partial patch keyed by section. Validates sections, refuses\ndanger-zone edits without explicit confirmation, deep-merges into the\ncurrent overlay, writes the file, and emits one audit entry per save\nwith a sanitized diff. Returns ``restart_required=true`` so the UI can\nshow the restart banner \u2014 hot-reload is a separate issue (see #91 Out\nof scope).",
+        "description": "Patch instance.yaml from the /admin/server-config editor.\n\nAccepts a partial patch keyed by section. Validates sections, refuses\ndanger-zone edits without explicit confirmation, deep-merges into the\ncurrent overlay, writes the file, and emits one audit entry per save\nwith a sanitized diff. Returns ``restart_required`` computed from the\nsections actually touched (``true`` only when at least one has effect\n``restart``/``deploy`` \u2014 see ``_SECTION_BASELINE_EFFECT``/\n``_effect_for_section`` above) plus ``sections_effect``, a\n``{section: \"live\"|\"restart\"|\"deploy\"}`` map so the UI can say which\nsection forced it.",
         "operationId": "update_server_config_api_admin_server_config_post",
         "parameters": [
           {

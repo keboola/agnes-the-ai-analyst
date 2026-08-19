@@ -3,7 +3,7 @@
 
 {% block title %}Table Management - {{ config.INSTANCE_NAME }}{% endblock %}
 
-{% block body_attrs %}data-source-type="{{ data_source_type }}" data-connected-source-types="{{ (connected_source_types or []) | join(',') }}"{% endblock %}
+{% block body_attrs %}data-source-type="{{ data_source_type }}" data-connected-sources="{{ (connected_sources or []) | join(',') }}"{% endblock %}
 
 {% block head_extra %}
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -1989,13 +1989,21 @@
                         </button>
                     </div>
                     <div class="ds-drawer__body">
-                        {# Banner: shown when Keboola is not the configured data source.
-                           Discover buttons are hidden in that case (see guard below), so
-                           the operator would hit a silent dead-end without this warning. #}
-                        {% if data_source_type != 'keboola' %}
+                        {# Banner: shown when Keboola is not reachable by ANY
+                           route — neither a registered source_connections row
+                           nor the legacy data_source.type scalar names it.
+                           `connected_sources` is the one signal for that (see
+                           `_connected_source_types`-successor in
+                           app/web/router.py); the scalar alone used to fire
+                           this on every non-Keboola-typed instance even when a
+                           Keboola project was connected through the registry.
+                           Discover buttons are hidden in that case (see guard
+                           below), so the operator would hit a silent
+                           dead-end without this warning. #}
+                        {% if 'keboola' not in (connected_sources or []) %}
                         <div class="alert-v2 alert-warning-v2" style="font-size:13px;">
                             <svg style="flex-shrink:0; margin-top:1px; color:var(--warning);" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-                            <span>Keboola is not connected — <strong>Discover</strong> won't work. Set your token in <a href="/admin/server-config#cfg-s-data_source" style="color:inherit; text-decoration:underline;">Instance settings</a>.</span>
+                            <span>Keboola is not connected — <strong>Discover</strong> won't work. <a href="/admin/data-sources" style="color:inherit; text-decoration:underline;">Connect a Keboola project</a>, or fill in Bucket / Source Table by hand.</span>
                         </div>
                         {% endif %}
                         {# Three sync-mode radios:
@@ -2034,6 +2042,24 @@
                             </div>
                         </div>
 
+                        {# Per-project picker (#347 follow-up): populated client-side from
+                           GET /api/admin/source-connections?source_type=keboola, so it needs
+                           no new server context here. Hidden by default and shown by
+                           _populateKbProjectPicker() only when that call returns at least
+                           one connection — on a single-source instance with none the form
+                           behaves exactly as before (legacy instance-level Keboola). When
+                           the legacy scalar ALSO names Keboola, an explicit
+                           "Instance-level Keboola (legacy)" option is added so both routes
+                           stay reachable side by side. Discover / List tables / Use table as
+                           base all read the current selection (see
+                           _kbSelectedConnectionId()) and the chosen id rides along in the
+                           register payload so the table isn't provenance-less. #}
+                        <div class="form-group" id="kbProjectPickerGroup" style="display:none;">
+                            <label class="form-label" for="kbProjectSelect">Keboola project</label>
+                            <select class="form-select" id="kbProjectSelect"></select>
+                            <div class="form-hint">Discover, List tables and Use table as base run against this project.</div>
+                        </div>
+
                         <div class="form-group">
                             <label class="form-label" for="kbViewName">View name (analyst-visible)</label>
                             <input type="text" class="form-input" id="kbViewName"
@@ -2068,7 +2094,7 @@
                             <label class="form-label" for="kbBucket">
                                 Bucket
                                 <button type="button" class="btn btn-secondary btn-sm"
-                                        {% if data_source_type == 'keboola' %}onclick="discoverKeboolaBuckets('kbBucketList')"{% else %}disabled data-tooltip="Keboola not connected — set token in Instance settings"{% endif %}
+                                        {% if 'keboola' in (connected_sources or []) %}onclick="discoverKeboolaBuckets('kbBucketList')"{% else %}disabled data-tooltip="Keboola not connected — connect a project in Data sources"{% endif %}
                                         style="float:right; margin-top:-3px;">Discover</button>
                             </label>
                             <input type="text" class="form-input" id="kbBucket"
@@ -2079,7 +2105,7 @@
                             <label class="form-label" for="kbSourceTable">
                                 Source Table
                                 <button type="button" class="btn btn-secondary btn-sm"
-                                        {% if data_source_type == 'keboola' %}onclick="discoverKeboolaTables('kbBucket', 'kbTableList')"{% else %}disabled data-tooltip="Keboola not connected — set token in Instance settings"{% endif %}
+                                        {% if 'keboola' in (connected_sources or []) %}onclick="discoverKeboolaTables('kbBucket', 'kbTableList')"{% else %}disabled data-tooltip="Keboola not connected — connect a project in Data sources"{% endif %}
                                         style="float:right; margin-top:-3px;">List tables</button>
                             </label>
                             <input type="text" class="form-input" id="kbSourceTable"
@@ -2090,8 +2116,8 @@
                             <label class="form-label" for="kbSourceQuery">
                                 SQL
                                 <button type="button" class="btn btn-secondary btn-sm"
-                                        {% if data_source_type == 'keboola' %}onclick="prefillFromKeboolaTable('kbSourceQuery')"
-                                        title="Prefill SELECT * FROM kbc.bucket.table so you only edit the WHERE / projection"{% else %}disabled data-tooltip="Keboola not connected — set token in Instance settings"{% endif %}
+                                        {% if 'keboola' in (connected_sources or []) %}onclick="prefillFromKeboolaTable('kbSourceQuery')"
+                                        title="Prefill SELECT * FROM kbc.bucket.table so you only edit the WHERE / projection"{% else %}disabled data-tooltip="Keboola not connected — connect a project in Data sources"{% endif %}
                                         style="float:right; margin-top:-3px;">
                                     Use table as base
                                 </button>
@@ -2263,7 +2289,12 @@
                         </button>
                     </div>
                     <div class="ds-drawer__body">
-                        {% if data_source_type != 'databricks' and 'databricks' not in (connected_source_types or []) %}
+                        {# `connected_sources` already unions the registry with the legacy
+                           scalar (when it names a real source), so the belt-and-braces
+                           `data_source_type != 'databricks' and` half of this used to be
+                           redundant — and, on a registry-only-connected instance, wrong
+                           (it kept the banner up even though Databricks WAS connected). #}
+                        {% if 'databricks' not in (connected_sources or []) %}
                         <div class="alert-v2 alert-warning-v2" style="font-size:13px;">
                             <svg style="flex-shrink:0; margin-top:1px; color:var(--warning);" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
                             <span>Databricks is not connected — set host/token/catalog in <a href="/admin/server-config#cfg-s-data_source" style="color:inherit; text-decoration:underline;">Instance settings</a> before this table can sync.</span>
@@ -2547,16 +2578,28 @@
                         </button>
                     </div>
                     <div class="modal-body">
-                        {% if data_source_type != 'keboola' %}
+                        {# Same instance-level signal as the Register banner
+                           above — `connected_sources`, not the legacy scalar
+                           alone (see that banner's comment for why). #}
+                        {% if 'keboola' not in (connected_sources or []) %}
                         <div class="alert-v2 alert-warning-v2" style="font-size:13px;">
                             <svg style="flex-shrink:0; margin-top:1px; color:var(--warning);" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-                            <span>Keboola is not connected — <strong>Discover</strong> won't work. Set your token in <a href="/admin/server-config#cfg-s-data_source" style="color:inherit; text-decoration:underline;">Instance settings</a>.</span>
+                            <span>Keboola is not connected — <strong>Discover</strong> won't work. <a href="/admin/data-sources" style="color:inherit; text-decoration:underline;">Connect a Keboola project</a>, or fill in Bucket / Source Table by hand.</span>
                         </div>
                         {% endif %}
                         <div class="form-group">
                             <label class="form-label" for="editKbTableId">Table ID</label>
                             <input type="text" class="form-input" id="editKbTableId" readonly>
                             <div class="form-hint">Slugified id, immutable.</div>
+                        </div>
+
+                        {# Per-project picker — mirror of the Register modal's (see its
+                           comment for the populate/normalize contract). Preselected to
+                           the row's own connection_id, when it has one, on open. #}
+                        <div class="form-group" id="editKbProjectPickerGroup" style="display:none;">
+                            <label class="form-label" for="editKbProjectSelect">Keboola project</label>
+                            <select class="form-select" id="editKbProjectSelect"></select>
+                            <div class="form-hint">Discover, List tables and Use table as base run against this project. Not sent on save — it only steers where these buttons look.</div>
                         </div>
 
                         {# Three sync-mode radios (mirror of Register). #}
@@ -2601,7 +2644,7 @@
                             <label class="form-label" for="editKbBucket">
                                 Bucket
                                 <button type="button" class="btn btn-secondary btn-sm"
-                                        {% if data_source_type == 'keboola' %}onclick="discoverKeboolaBuckets('editKbBucketList')"{% else %}disabled data-tooltip="Keboola not connected — set token in Instance settings"{% endif %}
+                                        {% if 'keboola' in (connected_sources or []) %}onclick="discoverKeboolaBuckets('editKbBucketList')"{% else %}disabled data-tooltip="Keboola not connected — connect a project in Data sources"{% endif %}
                                         style="float:right; margin-top:-3px;">Discover</button>
                             </label>
                             <input type="text" class="form-input" id="editKbBucket"
@@ -2612,7 +2655,7 @@
                             <label class="form-label" for="editKbSourceTable">
                                 Source Table
                                 <button type="button" class="btn btn-secondary btn-sm"
-                                        {% if data_source_type == 'keboola' %}onclick="discoverKeboolaTables('editKbBucket', 'editKbTableList')"{% else %}disabled data-tooltip="Keboola not connected — set token in Instance settings"{% endif %}
+                                        {% if 'keboola' in (connected_sources or []) %}onclick="discoverKeboolaTables('editKbBucket', 'editKbTableList')"{% else %}disabled data-tooltip="Keboola not connected — connect a project in Data sources"{% endif %}
                                         style="float:right; margin-top:-3px;">List tables</button>
                             </label>
                             <input type="text" class="form-input" id="editKbSourceTable"
@@ -2623,8 +2666,8 @@
                             <label class="form-label" for="editKbSourceQuery">
                                 SQL
                                 <button type="button" class="btn btn-secondary btn-sm"
-                                        {% if data_source_type == 'keboola' %}onclick="prefillFromKeboolaTable('editKbSourceQuery')"
-                                        title="Prefill SELECT * FROM kbc.bucket.table so you only edit the WHERE / projection"{% else %}disabled data-tooltip="Keboola not connected — set token in Instance settings"{% endif %}
+                                        {% if 'keboola' in (connected_sources or []) %}onclick="prefillFromKeboolaTable('editKbSourceQuery')"
+                                        title="Prefill SELECT * FROM kbc.bucket.table so you only edit the WHERE / projection"{% else %}disabled data-tooltip="Keboola not connected — connect a project in Data sources"{% endif %}
                                         style="float:right; margin-top:-3px;">
                                     Use table as base
                                 </button>
@@ -3726,7 +3769,7 @@
         const list = document.getElementById('bulk-assign-list');
         if (!_bulkAssignTables.length) {
           list.innerHTML = '<div style="padding:12px; color:#5f6368;">'
-            + 'No tables registered yet — register some via the connector tabs first.</div>';
+            + 'No tables registered yet — use "+ Register new table" above.</div>';
           return;
         }
         list.innerHTML = _bulkAssignTables.map(function(t) {
@@ -4289,7 +4332,7 @@
     // here only to choose which register modal to open; otherwise the
     // page is package-centric and source_type is just an inline tag.
     function _dbxIsOnlyConnectedSource() {
-        var active = CONNECTED_SOURCE_TYPES.filter(Boolean);
+        var active = CONNECTED_SOURCES.filter(Boolean);
         return active.length === 1 && active[0] === 'databricks';
     }
 
@@ -4477,10 +4520,14 @@
     // type. Lives on <body> after C3 (previously on the now-removed
     // #registerModal).
     var DATA_SOURCE_TYPE = document.body.dataset.sourceType || 'keboola';
-    // Source types with at least one connection in the source-connection
-    // registry (see _connected_source_types in app/web/router.py). The legacy
-    // scalar above names ONE default type and cannot answer "is X connected?".
-    var CONNECTED_SOURCE_TYPES = (document.body.dataset.connectedSourceTypes || '')
+    // Every source type actually reachable — unions the source-connection
+    // registry, the legacy scalar above (only when it names a real source),
+    // and instance-side bq/snowflake/databricks credential probes (see
+    // `connected_sources` in app/web/router.py). The scalar alone names ONE
+    // default type and cannot answer "is X connected?" — it kept "Keboola is
+    // not connected" on the screen for instances that had a Keboola project
+    // connected through the registry (#347).
+    var CONNECTED_SOURCES = (document.body.dataset.connectedSources || '')
         .split(',').map(function (s) { return s.trim(); }).filter(Boolean);
 
     // The end of each table's chain: which package carries it and how many
@@ -4590,6 +4637,7 @@
         // structured builder so it shows an empty editor, not stale rows.
         _rebuildWhereFiltersBuilder('kbWhereFiltersBuilder');
         onKbSyncModeChange();  // apply default visibility
+        _populateKbProjectPicker('kb');
         var btn = document.getElementById('registerKeboolaSubmitBtn');
         btn.disabled = false;
         btn.textContent = 'Register';
@@ -4768,6 +4816,12 @@
         // defaults false; the backend validator rejects true + remote.
         var serverOnlyEl = document.getElementById('kbServerOnly');
         var serverOnly = !!(serverOnlyEl && serverOnlyEl.checked);
+        // Pins the row to the project the operator discovered/registered
+        // from (see the picker in the modal above) — null when the picker
+        // is hidden or the "Instance-level Keboola (legacy)" option is
+        // selected, which is what the backend already treats as "use the
+        // default connection for this source_type" (unchanged behaviour).
+        var connectionId = _kbSelectedConnectionId('kb');
 
         if (mode === 'direct') {
             var strategy = _getKbStrategy();
@@ -4780,6 +4834,7 @@
                 primary_key: primaryKey,
                 sync_strategy: strategy,
                 server_only: serverOnly,
+                connection_id: connectionId,
                 sync_schedule: (document.getElementById('kbSyncSchedule').value || '').trim() || null,
                 description: (document.getElementById('kbDescription').value || '').trim() || null,
                 folder: (document.getElementById('kbFolder').value || '').trim() || null,
@@ -4806,6 +4861,7 @@
             query_mode: 'materialized',
             primary_key: primaryKey,
             server_only: serverOnly,
+            connection_id: connectionId,
             sync_schedule: (document.getElementById('kbSyncSchedule').value || '').trim() || null,
             description: (document.getElementById('kbDescription').value || '').trim() || null,
             folder: (document.getElementById('kbFolder').value || '').trim() || null,
@@ -4904,16 +4960,78 @@
             });
     }
 
-    // Discovery shims — the existing /api/admin/discover-tables endpoint
-    // already routes by the instance's data_source.type (returning Keboola
-    // tables when the instance is Keboola-typed); the source=keboola query
-    // param is informational. Hidden behind `data_source_type == 'keboola'`
-    // because on a BQ-typed instance the endpoint would return BQ-shaped
-    // data (wrong shape, confusing); operators fall back to manual entry
-    // for cross-source registration. Future work: extend the endpoint to
-    // accept an explicit ?source= override so secondary-source registration
-    // works in both directions and we can remove this guard.
-    {% if data_source_type == 'keboola' %}
+    // Discovery shims. Two backends, picked per project selection:
+    //   - a registry connection (see _kbSelectedConnectionId) hits
+    //     GET /api/admin/source-connections/{id}/tables — scoped to that
+    //     project's own token, shape {buckets: [{id, tables: [...]}, ...]}.
+    //   - no selection (legacy / no picker) falls back to the existing
+    //     /api/admin/discover-tables?source=keboola, which routes by the
+    //     instance's data_source.type and ignores ?source — shape
+    //     {tables: [...]}, flat.
+    // Which registry connection (if any) the Discover/List/Use-as-base
+    // buttons — and the register payload — should use for this modal.
+    // `prefix` is 'kb' (Register) or 'editKb' (Edit). Returns null when the
+    // picker isn't shown (no registry connections — legacy single-source
+    // behaviour) or the operator explicitly chose the "Instance-level
+    // Keboola (legacy)" option (empty-string sentinel value). Defined
+    // unconditionally: both modals — and manual entry within them — work on
+    // every instance regardless of whether Keboola is reachable at all.
+    function _kbSelectedConnectionId(prefix) {
+        var group = document.getElementById(prefix + 'ProjectPickerGroup');
+        if (!group || group.style.display === 'none') return null;
+        var select = document.getElementById(prefix + 'ProjectSelect');
+        return (select && select.value) ? select.value : null;
+    }
+
+    // Populates + shows the per-project picker from the registry, so the
+    // Register/Edit modals need no new server-rendered context for it.
+    // Hidden (and the form falls back to the legacy instance-level path)
+    // when the registry has zero Keboola connections — today's behaviour
+    // on a single-source instance, unchanged. `preselectId` re-selects a
+    // row's own connection when re-opening Edit on it. Also unconditional —
+    // called from the modal-open handlers, which run on every instance.
+    async function _populateKbProjectPicker(prefix, preselectId) {
+        var group = document.getElementById(prefix + 'ProjectPickerGroup');
+        var select = document.getElementById(prefix + 'ProjectSelect');
+        if (!group || !select) return;
+        select.innerHTML = '';
+        var rows = [];
+        try {
+            var r = await fetch('/api/admin/source-connections?source_type=keboola', { credentials: 'include' });
+            if (r.ok) rows = await r.json();
+        } catch (e) {
+            rows = [];
+        }
+        if (!Array.isArray(rows) || !rows.length) {
+            group.style.display = 'none';
+            return;
+        }
+        rows.forEach(function(c) {
+            var o = document.createElement('option');
+            o.value = c.id;
+            o.textContent = c.name || c.id;
+            select.appendChild(o);
+        });
+        // The legacy scalar's ONE surviving meaning outside "which register
+        // modal to open by default": the /api/admin/discover-tables legacy
+        // path routes by it, not by the registry, so it alone decides
+        // whether that fallback is actually reachable as an option here.
+        if (DATA_SOURCE_TYPE === 'keboola') {
+            var legacy = document.createElement('option');
+            legacy.value = '';
+            legacy.textContent = 'Instance-level Keboola (legacy)';
+            select.appendChild(legacy);
+        }
+        if (preselectId) select.value = preselectId;
+        group.style.display = '';
+    }
+
+    // Emitted whenever Keboola is reachable by EITHER route — gating this
+    // whole block on the legacy scalar alone meant a registry-connected,
+    // non-keboola-typed instance never got these functions defined at all
+    // (#347), so the enabled Discover button their tooltip promised had no
+    // onclick to call.
+    {% if 'keboola' in (connected_sources or []) %}
     // After a discover call repopulates a <datalist>, nudge the browser to
     // open its native suggestion popup so the freshly loaded options are
     // visible without the user having to click back into the input. Focus
@@ -4930,11 +5048,47 @@
         inputEl.dispatchEvent(new Event('input', { bubbles: true }));
     }
 
+    // Normalizes both discover response shapes into a flat table list:
+    //   legacy {tables: [...]}                       — already flat.
+    //   scoped {buckets: [{id, tables: [...]}, ...]}  — per-connection
+    //          listing nests tables under their own bucket.
+    function _kbTablesForBucket(data, bucket) {
+        if (Array.isArray(data.tables)) return data.tables;
+        if (Array.isArray(data.buckets)) {
+            var match = data.buckets.find(function(b) { return b.id === bucket; });
+            if (match) return match.tables || [];
+            // Bucket not found by id — flatten every bucket's tables and let
+            // the caller's own bucket-id filter narrow it back down.
+            var all = [];
+            data.buckets.forEach(function(b) { all = all.concat(b.tables || []); });
+            return all;
+        }
+        return [];
+    }
+
+    // Error message that names WHICH project failed, not just why — with
+    // one project the two were the same sentence; with several, "no token
+    // available" is meaningless without saying for whom.
+    function _kbErrorMessage(detail, connId) {
+        var msg = (detail && (detail.detail || detail.error)) || 'Keboola discovery failed';
+        if (msg && typeof msg === 'object') msg = JSON.stringify(msg);
+        if (!connId) return msg;
+        var select = document.getElementById('kbProjectSelect') || document.getElementById('editKbProjectSelect');
+        var opt = select ? select.querySelector('option[value="' + connId + '"]') : null;
+        var label = opt ? opt.textContent : connId;
+        return 'Project "' + label + '": ' + msg;
+    }
+
     function discoverKeboolaBuckets(datalistId) {
-        fetch('/api/admin/discover-tables?source=keboola')
+        var prefix = datalistId.indexOf('editKb') === 0 ? 'editKb' : 'kb';
+        var connId = _kbSelectedConnectionId(prefix);
+        var url = connId
+            ? '/api/admin/source-connections/' + encodeURIComponent(connId) + '/tables'
+            : '/api/admin/discover-tables?source=keboola';
+        fetch(url)
             .then(function(r) {
                 if (!r.ok) return r.json().then(function(d) {
-                    throw new Error(d.detail || d.error || 'Keboola discovery failed');
+                    throw new Error(_kbErrorMessage(d, connId));
                 });
                 return r.json();
             })
@@ -4975,10 +5129,15 @@
             showToast('Fill bucket first', 'error');
             return;
         }
-        fetch('/api/admin/discover-tables?source=keboola&bucket=' + encodeURIComponent(bucket))
+        var prefix = tablesDatalistId.indexOf('editKb') === 0 ? 'editKb' : 'kb';
+        var connId = _kbSelectedConnectionId(prefix);
+        var url = connId
+            ? '/api/admin/source-connections/' + encodeURIComponent(connId) + '/tables'
+            : '/api/admin/discover-tables?source=keboola&bucket=' + encodeURIComponent(bucket);
+        fetch(url)
             .then(function(r) {
                 if (!r.ok) return r.json().then(function(d) {
-                    throw new Error(d.detail || d.error || 'Keboola table discovery failed');
+                    throw new Error(_kbErrorMessage(d, connId));
                 });
                 return r.json();
             })
@@ -4986,8 +5145,8 @@
                 var dl = document.getElementById(tablesDatalistId);
                 if (!dl) return;
                 dl.innerHTML = '';
-                var tables = data.tables || [];
-                // Filter to the selected bucket if endpoint didn't.
+                var tables = _kbTablesForBucket(data, bucket);
+                // Filter to the selected bucket if the source didn't.
                 tables.filter(function(t) {
                     var b = t.bucket_id || (t.bucket && t.bucket.id);
                     return !bucket || !b || b === bucket;
@@ -5006,7 +5165,7 @@
                 showToast('' + err.message, 'error');
             });
     }
-    {% endif %}{# data_source_type == 'keboola' — discover helpers #}
+    {% endif %}{# 'keboola' in (connected_sources or []) — discover helpers #}
 
     // ── Keboola edit-modal sync-mode helpers (always needed — radio buttons
     //    are rendered for all instance types) ───────────────────────────────
@@ -5073,6 +5232,12 @@
         //   - query_mode='materialized' + custom SQL  → 'custom'
         table = table || {};
         document.getElementById('editKbTableId').value = table.id || '';
+        // Preselect the row's own project so Discover/List/Use-as-base look
+        // at the project this table actually came from, not whichever the
+        // picker happened to default to. Informational only — saving does
+        // not change a row's connection_id (the PUT schema has no field for
+        // that today).
+        _populateKbProjectPicker('editKb', table.connection_id || null);
         var bucket = table.bucket || '';
         var sourceTable = table.source_table || '';
         var sourceQuery = table.source_query || '';
@@ -5284,12 +5449,14 @@
         })();
     }
 
-    // prefillFromKeboolaTable is already inside the outer Phase F2
-    // guard (the data_source_type keboola Jinja `if` above) — it only
-    // fires from a button inside the Keboola Edit modal that itself
-    // only renders when data_source_type == 'keboola'. The redundant
-    // nested guard was dropped during the rebase onto main; main
-    // never had it.
+    // prefillFromKeboolaTable is defined here, OUTSIDE the discover-helpers
+    // Jinja guard above ('keboola' in connected_sources) — it must exist
+    // whenever the Register or Edit modal is open, on ANY instance, because
+    // Edit is per-row and not gated by the instance's connectedness. What
+    // IS gated is the button's onclick attribute that calls it (see the
+    // Register/Edit button guards above) — a disconnected instance never
+    // wires up the onclick, so this definition existing unconditionally is
+    // harmless dead code for it, not a live call path.
     async function prefillFromKeboolaTable(textareaId) {
         // Edit-modal callers may pass an editKbBucket / editKbSourceTable
         // pair instead of the Register modal's kbBucket / kbSourceTable.
@@ -8125,11 +8292,13 @@
     function renderConnectorNotice(tables) {
         var host = document.getElementById('adminTablesConnectorNotice');
         if (!host) return;
-        // Connected is what the registry says. Keying this on DATA_SOURCE_TYPE
-        // alone claimed "Keboola is not connected" on instances with Keboola
-        // projects connected — listed, by name, on the adjacent Sources tab.
-        if (DATA_SOURCE_TYPE === 'keboola'
-            || CONNECTED_SOURCE_TYPES.indexOf('keboola') !== -1) {
+        // Connected is what CONNECTED_SOURCES says — it already unions the
+        // registry with the legacy scalar (when the scalar names a real
+        // source), so checking DATA_SOURCE_TYPE too here was redundant.
+        // Keying this on DATA_SOURCE_TYPE alone claimed "Keboola is not
+        // connected" on instances with Keboola projects connected — listed,
+        // by name, on the adjacent Sources tab.
+        if (CONNECTED_SOURCES.indexOf('keboola') !== -1) {
             host.hidden = true; host.innerHTML = ''; return;
         }
         var n = tables.filter(function(t) {

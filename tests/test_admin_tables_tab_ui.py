@@ -271,7 +271,10 @@ def test_databricks_only_instance_keeps_the_full_register_menu_reachable(seeded_
         html = r.text
         # Precondition: this IS the configuration that arms the shortcut.
         assert 'data-source-type="databricks"' in html
-        assert 'data-connected-source-types="databricks"' in html
+        # Renamed with the connectedness rewrite: one `connected_sources`
+        # union (registry ∪ real scalar ∪ credential probes) replaced the
+        # registry-only `connected_source_types` body attr.
+        assert 'data-connected-sources="databricks"' in html
 
         # The second segment of the split button, and the handler it calls.
         assert 'id="registerNewTableMoreBtn"' in html
