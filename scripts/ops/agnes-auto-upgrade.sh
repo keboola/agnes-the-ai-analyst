@@ -229,8 +229,21 @@ CONFIG_AFTER=$(hash_config_files)
 # gcp-logging overlay that just landed THIS tick is reflected immediately,
 # not on the next one.
 #
+# Sourced by absolute path, and its absence ends the tick rather than
+# being worked around. Two situations produce an absent resolver: the
+# fetch loop above could not reach GitHub on the tick that first delivers
+# it (an instance upgrading from a build that predates this file), or a
+# harness relocated the tree. Neither is worth improvising through —
+# every overlay decision below, TLS included, comes from this file, so a
+# partial run would recreate the stack from a half-known overlay set.
+# Skipping costs one tick; the timer comes back in five minutes.
+RESOLVER="/opt/agnes/scripts/ops/agnes-compose-file.sh"
+if [ ! -f "$RESOLVER" ]; then
+  logger -t agnes-auto-upgrade "ERROR: $RESOLVER missing (fetch failed?) — skipping this tick; the stack is left exactly as it is"
+  exit 0
+fi
 # shellcheck source=./agnes-compose-file.sh
-. ./scripts/ops/agnes-compose-file.sh
+. "$RESOLVER"
 RESOLVED_COMPOSE_FILE=$(agnes_resolve_compose_file /opt/agnes "$STATE_DIR")
 
 # Backward compatibility: an operator-set COMPOSE_FILE in .env (e.g. the
