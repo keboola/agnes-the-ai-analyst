@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.83.88] - 2026-08-19
+
 ### Added
 
 - **Keboola tables can now be registered as live (`query_mode='remote'`) from
