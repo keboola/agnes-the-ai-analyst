@@ -6,6 +6,89 @@ from typing import Any, Optional, List, Dict
 import duckdb
 
 
+# The report projects these columns and no others. `users` also carries
+# `password_hash`, `setup_token` and `reset_token`: a `SELECT *` here would put
+# password hashes and live one-time-link tokens into `--json`, which an operator
+# reconciling accounts is likely to redirect to a file or paste into a ticket.
+# `last_pull_at` and `has_password` earn their place — they are how you tell
+# which duplicate is the one actually in use.
+DUPLICATE_REPORT_COLUMNS = (
+    "id",
+    "email",
+    "name",
+    "active",
+    "created_at",
+    "updated_at",
+    "deactivated_at",
+    "deactivated_by",
+    "onboarded",
+    "last_pull_at",
+)
+
+_DUPLICATE_SELECT = ", ".join(DUPLICATE_REPORT_COLUMNS) + ", (password_hash IS NOT NULL) AS has_password"
+
+# The fold that decides what counts as "the same address" is done in Python, not
+# SQL, and the row set is deliberately unfiltered.
+#
+# The obvious shape — GROUP BY lower(trim(email)) HAVING COUNT(*) > 1 — is
+# subtly wrong, because SQL `trim()` strips spaces ONLY. A pair padded with a
+# tab or a newline lands in two group keys of one row each, `HAVING` drops both,
+# and the collision is never reported: exactly the unreachable-row class this
+# report exists for, silently missing. Python's `str.strip()` covers all
+# whitespace, so folding there makes the two backends agree by construction
+# rather than by matching two dialects' idea of `trim` — the property that
+# failed here once already.
+#
+# The cost is reading the users table whole. This is an operator diagnostic run
+# by hand against an org-sized table, so that is the right trade for a fold that
+# cannot drift.
+_DUPLICATE_SQL = f"SELECT {_DUPLICATE_SELECT} FROM users"
+
+
+def _order_key(row: Dict[str, Any]):
+    """``ORDER BY created_at NULLS LAST, id`` — the get_by_email_ci tie-break,
+    in Python. The ``0`` stands in for a missing timestamp and is only ever
+    compared against another ``0``: the leading flag differs first whenever one
+    side is NULL, so a datetime is never compared with an int."""
+    ts = row.get("created_at")
+    return (ts is None, ts if ts is not None else 0, str(row.get("id") or ""))
+
+
+def _group_case_variants(rows) -> List[Dict[str, Any]]:
+    """Fold a stream of user rows into duplicate groups.
+
+    Shared by the DuckDB and Postgres repositories, and it does the whole job —
+    folding, ordering and the >1 filter — so the two backends cannot disagree
+    about which rows collide. Takes rows in any order.
+
+    ``resolved_id`` is the row a sign-in actually lands on, and that is NOT
+    simply the first row of the group. ``get_by_email_ci`` matches
+    ``lower(email)`` without trimming, so a stored address carrying whitespace
+    matches nothing at all — the caller strips its *input*, not the column. Such
+    a row is reachable by no door, which is why it is grouped here (it is the
+    same address to a person) and flagged rather than treated as the winner.
+    A group where every row is padded has ``resolved_id = None``: nobody can
+    sign in to that address.
+    """
+    by_address: Dict[str, List[Dict[str, Any]]] = {}
+    for row in rows:
+        by_address.setdefault((row.get("email") or "").strip().lower(), []).append(row)
+
+    groups: List[Dict[str, Any]] = [
+        {"email": folded, "users": sorted(rows_, key=_order_key)}
+        for folded, rows_ in sorted(by_address.items())
+        if len(rows_) > 1
+    ]
+    for g in groups:
+        g["count"] = len(g["users"])
+        for u in g["users"]:
+            # The exact predicate get_by_email_ci runs, evaluated per row.
+            u["unreachable_by_sign_in"] = (u.get("email") or "").lower() != g["email"]
+        reachable = [u for u in g["users"] if not u["unreachable_by_sign_in"]]
+        g["resolved_id"] = reachable[0]["id"] if reachable else None
+    return groups
+
+
 class UserRepository:
     def __init__(self, conn: duckdb.DuckDBPyConnection):
         self.conn = conn
@@ -94,6 +177,33 @@ class UserRepository:
             [email],
         ).fetchall()
         return [d for d in (self._row_to_dict(r) for r in rows) if d is not None]
+
+    def list_case_variant_duplicates(self) -> List[Dict[str, Any]]:
+        """Every address held by more than one account, grouped.
+
+        The reconciliation report queued by :meth:`get_by_email_ci`. That
+        method has to pick ONE row when case variants coexist, and it picks the
+        oldest — deterministic, but it means a person can own a second account
+        that no sign-in will ever resolve to, and an operator who deactivates
+        the row they can see may not have disabled the identity at all. Nothing
+        surfaces that today; ``users`` is UNIQUE on ``email``, so the collision
+        is invisible to every constraint and every list view sorted by address.
+
+        Returns one entry per colliding address::
+
+            {"email": <folded address>, "count": N, "resolved_id": <id>,
+             "users": [<full row>, ...]}
+
+        ``users`` is ordered exactly as :meth:`get_by_email_ci` orders, so
+        ``users[0]`` is the row that sign-in resolves to and ``resolved_id``
+        names it without the caller re-deriving the tie-break. Groups come back
+        ordered by folded address so two runs — and two backends — agree.
+
+        Read-only by design: which row to keep is a judgement call (group
+        memberships, PATs and sessions hang off the id), so this reports and
+        the operator merges."""
+        rows = self.conn.execute(_DUPLICATE_SQL).fetchall()
+        return _group_case_variants(d for d in (self._row_to_dict(r) for r in rows) if d is not None)
 
     def get_by_email_prefix(self, local_part: str) -> Optional[Dict[str, Any]]:
         """Resolve the single user whose email's local part (before ``@``)

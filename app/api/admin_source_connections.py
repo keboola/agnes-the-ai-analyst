@@ -40,7 +40,6 @@ from app.keboola_identity import project_identity
 from app.secrets_vault import VaultKeyNotConfiguredError, can_store_secrets
 from connectors.keboola.semantic_layer import MasterTokenRequiredError, require_master_token
 from connectors.keboola.storage_api import KeboolaStorageClient, StorageApiError, is_upstream_client_error
-from connectors.mcp.client import exc_summary
 from src.keboola_chat_tools import (
     build_stdio_spec,
     merge_env,
@@ -1079,6 +1078,10 @@ async def enable_chat_tools(
     400 if the connection isn't ``source_type='keboola'`` or has no resolvable
     token; 404 if the connection doesn't exist; 409 if the vault key is unset.
     """
+    # Local import: connectors.mcp.client (and the ``mcp`` SDK it pulls in)
+    # is ~180ms at import time — only worth paying on the error path below.
+    from connectors.mcp.client import exc_summary
+
     row = source_connections_repo().get(connection_id)
     if row is None:
         raise HTTPException(status_code=404, detail="connection_not_found")

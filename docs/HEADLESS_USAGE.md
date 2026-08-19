@@ -37,7 +37,14 @@ agnes query "SELECT 1"
     # target explicitly is what turns the refusal into a scaffold.
     AGNES_LOCAL_DIR: ${{ github.workspace }}/agnes-data
   run: |
-    uv tool install "$AGNES_SERVER/cli/wheel/agnes.whl"
+    # Download via the unversioned /cli/download endpoint (-OJ honours
+    # Content-Disposition, saving the real PEP-427 filename) rather than a
+    # version-pinned /cli/wheel/<name> URL — the pinned form 404s if the
+    # server upgrades between when this workflow was authored and when it
+    # runs.
+    curl -fsSL -OJ "$AGNES_SERVER/cli/download"
+    WHEEL=$(ls agnes_the_ai_analyst-*.whl)
+    uv tool install "$WHEEL"
     agnes pull
 ```
 
