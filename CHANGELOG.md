@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Removed
+
+- **The never-routed My Workspace template is gone.** `app/web/templates/workspace.html` shipped in the paper-theme redesign (#1104) without any `app.web.router` handler rendering it and never gained one; the Library (`/library?stack=in_stack`, the #1088 /stack retirement) covers the same browse-your-resources ground, and the template's tab vocabulary ("In Workspace / Available / Required") predates the current "In stack" wording. Deleted along with its standalone markup test (`tests/test_web_workspace_sort_dropdown.py`) and the paper-skin `.ws-select` override that existed only for it.
+
 ## [0.83.90] - 2026-08-19
 
 ### Added
