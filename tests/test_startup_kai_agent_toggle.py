@@ -60,10 +60,12 @@ def test_main_tf_forwards_per_vm_toggle_into_templatefile():
 def test_main_tf_grants_secret_access_conditionally():
     body = (MODULE / "main.tf").read_text()
     # secretAccessor only when some instance enables the engine, and secrets
-    # already granted via runtime_secret_env are subtracted — the same
-    # (project, secret, role, member) binding declared twice errors the apply.
+    # already granted via runtime_secret_env OR runtime_secrets are
+    # subtracted — the same (project, secret, role, member) binding declared
+    # twice errors the apply.
     assert re.search(r"kai_agent_any_enabled\s*=\s*anytrue", body)
-    assert "setsubtract" in body and "toset(keys(var.runtime_secret_env))" in body
+    assert "setsubtract" in body
+    assert "setunion(toset(keys(var.runtime_secret_env)), toset(var.runtime_secrets))" in body
     assert re.search(r'"vm_kai_agent"\s*\{', body)
     # The VM must wait on the grant, or the boot-time fetch can 403 on IAM lag.
     assert "google_secret_manager_secret_iam_member.vm_kai_agent," in body
@@ -91,13 +93,55 @@ def test_tpl_env_block_guarded_by_toggle():
 
 def test_tpl_kai_blocks_are_toggle_gated():
     body = TPL.read_text()
-    # Two positive `if kai_agent_enabled` blocks (the 4c setup block and the
-    # .env keys), only positive guards, so a default instance renders none of
-    # it — in particular it never pulls the engine image.
-    assert body.count("%{ if kai_agent_enabled ~}") == 2
+    # Four positive `if kai_agent_enabled` blocks (the 4c setup block, the
+    # .env keys, the overlay strip before the strict base up, and the
+    # tolerant engine up after it), only positive guards, so a default
+    # instance renders none of it — in particular it never pulls the engine
+    # image.
+    assert body.count("%{ if kai_agent_enabled ~}") == 4
     assert "!kai_agent_enabled" not in body
     # The password prep must precede its use in the .env heredoc.
     assert body.index("KAI_AGENT_PG_PASSWORD=$(openssl") < body.index("KAI_AGENT_PG_PASSWORD=$KAI_AGENT_PG_PASSWORD")
+
+
+def test_tpl_engine_failure_cannot_gate_the_machine():
+    body = TPL.read_text()
+    # The engine's one-shot migrate is a hard start condition for the engine
+    # SERVICE only. Boot pulls + starts the base stack STRICTLY with the
+    # overlay stripped, then brings the engine up tolerantly — a broken
+    # engine image or failed migration must not abort the script before the
+    # auto-upgrade cron and watchdog sections.
+    strip = body.index('export COMPOSE_FILE="$${COMPOSE_FILE%:docker-compose.kai-agent.yml}"')
+    strict_up = body.index("if docker compose $COMPOSE_PROFILES_ARG up -d; then")
+    restore = body.index('export COMPOSE_FILE="$KAI_FULL_COMPOSE_FILE"')
+    cron = body.index("--- 6. Auto-upgrade via cron")
+    assert strip < strict_up < restore < cron
+    # The tolerant block warns instead of exiting.
+    assert "WARN: kai-agent engine sidecar failed to pull or start" in body
+    # The strip only works while the overlay is appended LAST — keep it last.
+    assert body.index("COMPOSE_FILE_VALUE=\"$COMPOSE_FILE_VALUE:docker-compose.kai-agent.yml\"") < strip
+
+
+def test_tpl_engine_requires_public_origin():
+    body = TPL.read_text()
+    # An enabled engine on a VM whose SERVER_URL could not be resolved must
+    # fail the boot loudly, not configure HOST_BROKER_LLM_URL as the
+    # meaningless "/api/broker/anthropic".
+    guard = body.index("ERROR: kai_agent_enabled requires a resolvable public origin")
+    assert guard < body.index("HOST_BROKER_LLM_URL=$SERVER_URL/api/broker/anthropic")
+
+
+def test_tpl_engine_services_are_bounded():
+    body = TPL.read_text()
+    # Caps + hardening, same posture as the app/scheduler caps and the
+    # data-app container hardening: overridable ceilings via .env, and
+    # no-new-privileges on every engine service.
+    assert "mem_limit: $${KAI_AGENT_MEM_LIMIT:-2g}" in body
+    assert "cpus: $${KAI_AGENT_CPUS:-1.0}" in body
+    assert "mem_limit: $${KAI_AGENT_PG_MEM_LIMIT:-1g}" in body
+    assert "pids_limit: 512" in body
+    kai_yaml = body[body.index("<<'KAIYAML'") : body.index("\nKAIYAML")]
+    assert kai_yaml.count("no-new-privileges:true") == 3
 
 
 def test_tpl_engine_env_derivation():
