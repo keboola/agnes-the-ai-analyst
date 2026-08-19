@@ -2,9 +2,13 @@
 
 Captures the rendered output of ``resolve_lines`` against a known
 fixture in ``tests/snapshots/install_prompt_default.txt``. The fixture
-was generated post-A1.2 (manifest-driven, bundled-seed-backed) and any
-unintended drift surfaces as a single diff instead of breaking dozens
-of substring assertions.
+holds the THIN default prompt (install CLI → ``agnes onboard`` → restart →
+confirm); any unintended drift surfaces as a single diff instead of
+breaking dozens of substring assertions.
+
+The render is deterministic and input-free by construction now — the
+renderer no longer reads the connector manifest or the plugin grants — so
+this snapshot is a pure function of the module's own text.
 
 To regenerate the fixture intentionally::
 
@@ -37,11 +41,8 @@ def test_install_prompt_matches_snapshot():
     """Render with deterministic inputs and compare against the fixture
     line-by-line so a diff narrows the regression to one section.
     """
-    from src import connectors_manifest as cm
-
     from app.web.setup_instructions import resolve_lines
 
-    cm.invalidate_cache()
     rendered = "\n".join(
         resolve_lines(
             "agnes-X.Y.Z-py3-none-any.whl",

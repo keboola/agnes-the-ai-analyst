@@ -60,9 +60,15 @@ class SessionProcessorStateRepository:
         username: str,
         items_count: int,
         file_hash: str,
+        read_at: datetime | None = None,
     ) -> None:
-        """UPSERT — overwrites previous state row for (processor, session)."""
-        now = datetime.now(UTC)
+        """UPSERT — overwrites previous state row for (processor, session).
+
+        *read_at* should be the moment the file hash was observed; when the
+        processor runs for a long time or appends to the jsonl mid-run, this
+        preserves the correct mtime/ordering relationship for the next scan.
+        """
+        processed_at = read_at if read_at is not None else datetime.now(UTC)
         self.conn.execute(
             """INSERT INTO session_processor_state
                 (processor_name, session_file, username, processed_at, items_extracted, file_hash)
@@ -72,7 +78,7 @@ class SessionProcessorStateRepository:
                     items_extracted = excluded.items_extracted,
                     file_hash = excluded.file_hash,
                     username = excluded.username""",
-            [processor_name, session_file, username, now, items_count, file_hash],
+            [processor_name, session_file, username, processed_at, items_count, file_hash],
         )
 
     def delete_for_processors(self, processor_names: list[str]) -> int:
@@ -150,10 +156,7 @@ class SessionProcessorStateRepository:
                   AND session_file IN ({placeholders})""",
             [processor_name, *session_files],
         ).fetchall()
-        return {
-            r[0]: {"processed_at": r[1], "items_extracted": r[2]}
-            for r in rows
-        }
+        return {r[0]: {"processed_at": r[1], "items_extracted": r[2]} for r in rows}
 
     def scan_unprocessed_for(
         self,

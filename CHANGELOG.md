@@ -18,6 +18,39 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **On the two-step connectors the new field-level validation never fired: BigQuery and Snowflake showed the toast but never the red box.** `/api/admin/register-table/precheck` runs *identical* Pydantic validation to `/register-table` (its own docstring says so), and the BQ/Snowflake confirm step is reachable only once that precheck has returned 200 — so a 422 on a required field always landed in step 1, where nothing mapped it back onto a field, and `BQ_REGISTER_FIELD_MAP` / `SF_REGISTER_FIELD_MAP` in step 2 were unreachable for exactly the errors they exist to place. The single-POST connectors (Keboola, Databricks) were unaffected, which is why the gap was invisible. The precheck failure path now pins the field marks too.
 - **`Use as base` inside a register drawer waited on a dialog the operator could not see.** `confirmModal`/`promptModal` render a `.modal-backdrop` fixed at z-index 1000, but the register drawers on `/admin/tables` are `.ds-drawer` at 1200 and the prefill buttons sit *inside* them — so the dialog the flow then `await`s painted behind the very panel that opened it, leaving a button that looked dead while the promise hung. Raised page-scoped to 1250: clear of the drawer, still under the toast (1300).
 
+## [0.83.86] - 2026-08-19
+
+### Added
+
+- **`agnes onboard` — one idempotent command that installs and verifies an analyst workspace end to end.** Workspace-directory gate (refuses home/system dirs, asks for `--accept-dir` on a folder with unrelated content, never creates or changes directories on your behalf), `agnes init` on a fresh workspace or the `agnes update` convergence on an initialized one, catalog smoke test, `git`/`claude` preflight with per-OS install hints, marketplace bootstrap, diagnostics, and a summary listing the instance's connectors plus a `NEXT:` block. `--json` emits the whole run report as one object. Only the init step is fatal; every other failure is reported and the run continues. Safe to re-run.
+- **`agnes connector` as a hidden alias of `agnes connectors`** — same commands, singular spelling.
+- **`docs/DEPLOYMENT.md` documents the three `CADDY_TLS` modes** — cert-file (corporate PKI), Let's Encrypt auto-issue, and Caddy self-signed — including the Let's Encrypt bring-up prerequisites and a switch-over verification checklist, and that the install prompt drops its TLS-trust step automatically once the served chain terminates in a publicly trusted root.
+
+### Changed
+
+- **The Claude Code install prompt is now a thin stub: install the CLI, run `agnes onboard --workspace .`, restart Claude Code, confirm.** Workspace setup, first data pull, marketplace plugins, diagnostics and connector setup are orchestrated by the CLI (which reports its own outcome) instead of being an English program the agent had to interpret. The TLS trust block still renders automatically for instances serving a self-signed / private-CA cert.
+- **Connector setup is post-install and conversational.** `agnes onboard` lists what the instance offers and the user asks for one when they want it (or runs `agnes connectors list` / `agnes connectors show <slug>`). The install prompt no longer carries connector tiles, and rendering it no longer reads the seed's connector manifest — a broken seed can no longer break the prompt.
+- **The install prompt is caller-independent.** Plugin grants are resolved by `agnes onboard` from the live marketplace manifest rather than baked in at render time. `resolve_lines()` / `render_setup_instructions()` keep their signatures; `plugin_install_names` and `connector_manifest` are accepted and ignored.
+- **`docs/seed-repo-contract.md`: `{marketplace_block}`, `{connector_tiles}` and `{ca_bundle_finale_bullet}` are retired** from the seed install-prompt placeholder set.
+
+### Fixed
+
+- **`agnes onboard --workspace X` now runs every step in X.** The workspace gate and the `init`/`update` convergence honored the flag, but the marketplace bootstrap and the diagnose step did not: `refresh_marketplace` has no workspace parameter and its `target="project"` means "the current directory", and `_step_diagnose` shelled out without a `cwd`. So an operator who ran the command from anywhere other than the workspace bootstrapped the marketplace into the wrong tree and got a health report describing the wrong directory — both steps reporting success, which is what made it invisible. The workspace is now threaded into both.
+
+## [0.83.85] - 2026-08-19
+
+### Changed
+
+- **`cli/skills/agnes-table-registration.md` no longer recommends `agnes admin discover-and-register --source-type=bigquery`.** Bulk discovery is Keboola-only; the skill now points to `agnes admin register-table` for BigQuery, Databricks, and Snowflake with concrete examples.
+
+### Fixed
+
+- **Session pipeline no longer skips a jsonl that is appended while `process_session` is running or while its hash is being computed.** `services/session_pipeline/runner.py` records `read_at = datetime.now(UTC)` before `compute_file_hash(jsonl_path)` and passes it to `SessionProcessorStateRepository.mark_processed(..., read_at=read_at)`. Both DuckDB and Postgres repositories accept the new optional `read_at` and store it as `processed_at`. This closes the mtime-vs-`processed_at` race where a slow hash or processor appends to the file mid-run, the file mtime ends up older than `processed_at`, and the next tick drops the file without re-checking the hash.
+- **The Databricks `/admin/data-sources` wizard rejects malformed workspace hosts client-side and surfaces clearer errors.** It now parses the host with `new URL`, rejects missing hostname, userinfo, path, query strings such as the `?o=...` copied from the browser, and fragments, then reconstructs a bare `https://hostname[:port]`. Save failures also display the server's `detail`/`message` instead of a generic "save failed" string.
+
+### Internal
+
+- **`.test_durations` regenerated on CI hardware — 1,189 more tests now carry a measured duration (19,180 → 20,369).** pytest-split balances the 8 shards off this file, and a test with no entry is assigned blind, which is how one shard ran 24.5 minutes while another finished in 8. Two latent defects surfaced today precisely because adding test files reshuffles those boundaries (a module-level sample cache cleared by a class-scoped fixture, and a ~5%-per-run flake in the Snowflake pasted-key path), so this refresh ships in a PR that gives the new split a full CI round rather than merging a generated file unverified — the automated weekly PR that produced it had no checks run against it at all.
 ## [0.83.84] - 2026-08-19
 
 ### Added

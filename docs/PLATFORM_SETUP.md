@@ -173,7 +173,7 @@ agnes admin ask "show me error rates per tool over the last 30 days"
 
 - `docs/QUICKSTART.md` — first 30-minute experience
 - `docs/DEPLOYMENT.md` — Docker / Caddy / release trains
-- `docs/ONBOARDING.md` — analyst onboarding flow
+- `docs/ONBOARDING.md` — new-instance deployment, ending with the first-analyst flow
 - `docs/HEADLESS_USAGE.md` — non-interactive / CI flows
 - `docs/HOWTO/` — task-oriented analyst cookbook
 - `docs/RBAC.md` — full access-control reference

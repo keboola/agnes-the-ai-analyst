@@ -29,6 +29,7 @@ from cli.commands.auth import auth_app
 from cli.commands.chat import chat_app
 from cli.commands.init import init_app
 from cli.commands.mark_private import mark_private_app
+from cli.commands.onboard import onboard_app
 from cli.commands.onboarded import onboarded_app
 from cli.commands.pull import pull_app
 from cli.commands.push import push_app
@@ -126,6 +127,12 @@ _MAINTENANCE_COMMANDS = frozenset(
         "push",
         "refresh-marketplace",
         "init",
+        # `agnes onboard` composes init / update / refresh-marketplace and
+        # takes the same `update.lock`. Left off this list, an out-of-date CLI
+        # would spawn the detached updater from `_root` first, that child would
+        # take the lock, and onboard's own convergence step would silently
+        # no-op on a held lock.
+        "onboard",
         # `agnes global` converges the same artifacts `agnes update` does and
         # now holds the same `update.lock`. Left off this list, an out-of-date
         # CLI would spawn the detached updater from `_root` first, that child
@@ -296,6 +303,7 @@ app.add_typer(attachment_app, name="attachment")
 app.add_typer(auth_app, name="auth")
 app.add_typer(chat_app, name="chat")
 app.add_typer(init_app, name="init")
+app.add_typer(onboard_app, name="onboard")
 app.add_typer(onboarded_app, name="onboarded")
 app.add_typer(pull_app, name="pull")
 app.add_typer(push_app, name="push")
@@ -338,6 +346,10 @@ app.add_typer(mcp_app, name="mcp")
 app.add_typer(docs_app, name="docs")
 app.add_typer(collections_app, name="collections")
 app.add_typer(connectors_app, name="connectors")
+# Hidden verb alias: `agnes connector` resolves to the SAME Typer as
+# `agnes connectors` (the thin-install-prompt design names the singular).
+# One implementation, two spellings — no divergence possible.
+app.add_typer(connectors_app, name="connector", hidden=True)
 app.add_typer(data_apps_app, name="app")
 app.add_typer(search_app, name="search")
 app.add_typer(config_app, name="config")

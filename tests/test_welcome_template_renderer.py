@@ -40,17 +40,18 @@ def _user(email="alice@example.com"):
 
 def test_returns_default_script_when_no_override(conn):
     """When no override is set, render_agent_prompt_banner returns the live
-    unified setup script (not an empty string). Every caller — admin or
-    non-admin — sees `agnes init` (the workspace-rails delivery
-    mechanism). Whether the marketplace block appears depends on the
-    caller's plugin grants in `resource_grants`, NOT on `is_admin`.
+    thin setup prompt (not an empty string). Every caller — admin or
+    non-admin — sees the same four steps: the prompt has no per-caller
+    branch left, because `agnes onboard` resolves plugins and connectors at
+    run time off the live manifest.
     """
     out = render_agent_prompt_banner(conn, user=_user(), server_url="https://example.com")
-    # Must be non-empty — the default IS the setup script
+    # Must be non-empty — the default IS the setup prompt
     assert out != ""
-    # Unified layout: `agnes init` is mandatory.
-    assert "agnes init" in out
-    # Legacy admin-only auth verbs are gone — `agnes init` subsumes them.
+    # Thin layout: `agnes onboard` is the one orchestration call.
+    assert "agnes onboard" in out
+    # Superseded verbs are gone — `agnes onboard` subsumes them.
+    assert "agnes init" not in out
     assert "agnes auth import-token" not in out
     assert "agnes auth whoami" not in out
     # No legacy verb anywhere in the rendered default
@@ -60,17 +61,18 @@ def test_returns_default_script_when_no_override(conn):
 
 def test_compute_default_returns_setup_script(conn):
     """compute_default_agent_prompt returns a non-empty string with the
-    unified setup-script markers, including the {server_url} placeholder
-    and the agnes init line.
+    thin setup-prompt markers, including the {server_url} placeholder and
+    the `agnes onboard` line.
     """
     out = compute_default_agent_prompt(conn, user=_user(), server_url="https://example.com")
     assert out != ""
     # {server_url} placeholder must survive (not replaced by Jinja2)
     assert "{server_url}" in out
-    # Unified layout: install + init are always present.
-    assert "agnes init" in out
+    # Thin layout: install + onboard are always present.
+    assert "agnes onboard" in out
     assert "uv tool install" in out
-    # Admin-only auth verbs replaced by `agnes init`.
+    # Superseded verbs replaced by `agnes onboard`.
+    assert "agnes init" not in out
     assert "agnes auth import-token" not in out
     assert "agnes auth whoami" not in out
     # No legacy verb anywhere in the rendered default
@@ -244,8 +246,8 @@ def test_render_failure_falls_back_to_default_not_exception(conn):
     out = render_agent_prompt_banner(conn, user=_user(), server_url="https://example.com")
     # Must not raise — falls back to the live default script (non-empty)
     assert out != ""
-    # Unified layout: `agnes init` is the bootstrap step regardless of role.
-    assert "agnes init" in out
+    # Thin layout: `agnes onboard` is the bootstrap step regardless of role.
+    assert "agnes onboard" in out
     assert "uv tool install" in out
 
 
