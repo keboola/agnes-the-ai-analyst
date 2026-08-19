@@ -373,6 +373,22 @@ def sweep_stale_attachment_staging(directory: Path, max_age_s: int = STALE_STAGI
             continue
 
 
+#: Webhook events meaning THE ISSUE ITSELF was deleted — the only ones for which
+#: every stored row should be removed. Matched by name rather than by a
+#: ``"deleted" in webhookEvent`` substring, which also caught `comment_deleted`,
+#: `attachment_deleted` and `worklog_deleted` and tombstoned the WHOLE issue on
+#: what is really an ordinary content change (Devin on #1435).
+#:
+#: An allowlist of spellings rather than one equality, because the two failure
+#: directions are not symmetric. Tombstoning too eagerly costs the issue's rows
+#: until its next webhook event rebuilds them — `save_issue` replaces the stored
+#: JSON wholesale, so the `_deleted_at` marker does not survive a later event.
+#: MISSING a real issue deletion is permanent: deletion webhooks fire once, the
+#: consistency check skips nothing to re-delete, and the ghost row stays forever.
+#: So when in doubt this errs toward tombstoning.
+_ISSUE_DELETED_EVENTS = frozenset({"jira:issue_deleted", "issue_deleted"})
+
+
 def _incomplete_marker_path(json_path: Path) -> Path:
     """Sidecar marker path for an issue JSON's ``_comments_incomplete`` state.
 
@@ -1464,8 +1480,11 @@ class JiraService:
         webhook_event = event_data.get("webhookEvent", "unknown")
         logger.info(f"Processing webhook event: {webhook_event} for issue {issue_key}")
 
-        # Handle deletion events
-        if "deleted" in webhook_event.lower():
+        # Handle deletion of the ISSUE. A sub-entity deletion
+        # (`comment_deleted`, `attachment_deleted`, ...) is an ordinary content
+        # change: fall through to the refetch below, which is precisely what
+        # drops the deleted comment from the stored thread.
+        if webhook_event.lower() in _ISSUE_DELETED_EVENTS:
             return self._handle_deletion(issue_key)
 
         # Fetch fresh data from API (webhook payload may not have all fields).

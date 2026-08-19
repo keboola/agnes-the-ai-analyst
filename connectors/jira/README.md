@@ -118,8 +118,12 @@ worth knowing when reading the fallback path in `service.py`:
   `transform_changelog` returns `None` for an absent key and the incremental
   transform preserves the issue's stored history instead of wiping it.
 
-Do **not** subscribe `*_deleted` comment/attachment events: any `webhookEvent`
-whose name contains "deleted" is routed to whole-issue tombstoning.
+Only an ISSUE deletion (`jira:issue_deleted` / `issue_deleted`) removes stored
+rows. A sub-entity deletion — `comment_deleted`, `attachment_deleted`,
+`worklog_deleted` — is handled as an ordinary content change: the issue is
+refetched, which is what drops the deleted comment from the stored thread. Until
+0.83.88 these were matched by a `"deleted" in webhookEvent` substring and each
+one tombstoned the *whole* issue.
 
 ### 2. Webhook Receiver
 
