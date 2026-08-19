@@ -159,6 +159,44 @@ class TestAuthLogin:
         assert config_file.exists(), "config.yaml must be written when --server is passed"
         assert yaml.safe_load(config_file.read_text()).get("server") == "https://agnes.example.com"
 
+    def test_login_does_not_persist_server_when_login_fails(self, tmp_path, monkeypatch):
+        """A --server that never signed in must not become the saved default.
+
+        `agnes auth import-token` persists before verifying; here a typo'd host
+        would otherwise stick around as the server every later command resolves.
+        """
+        monkeypatch.delenv("AGNES_SERVER", raising=False)
+        with patch(
+            "cli.lib.loopback.capture_code_via_browser",
+            side_effect=TimeoutError("no callback"),
+        ):
+            result = runner.invoke(
+                app,
+                ["auth", "login", "--server", "https://typo.example.com", "--no-browser"],
+            )
+        assert result.exit_code == 1
+        assert not (tmp_path / "config" / "config.yaml").exists()
+        # The failed run still points its own fallback hint at the right host.
+        assert "https://typo.example.com/me/profile#tokens" in result.output
+
+    def test_login_password_persists_server_after_success(self, tmp_path, monkeypatch):
+        """The --password path persists too — one behavior on both doors."""
+        monkeypatch.delenv("AGNES_SERVER", raising=False)
+        resp = _make_response(200, {"access_token": "tokP", "email": "bob@example.com"})
+        with patch("cli.commands.auth.api_post", return_value=resp):
+            with patch("cli.commands.auth.save_token"):
+                result = runner.invoke(
+                    app,
+                    ["auth", "login", "--password", "--server", "https://pw.example.com"],
+                    input="bob@example.com\nhunter2\n",
+                )
+        assert result.exit_code == 0, result.output
+
+        import yaml
+
+        cfg = yaml.safe_load((tmp_path / "config" / "config.yaml").read_text())
+        assert cfg.get("server") == "https://pw.example.com"
+
     def test_login_accepts_server_from_saved_config(self, tmp_path, monkeypatch):
         """A server already in config.yaml is enough — the gate must not
         demand --server on every login."""

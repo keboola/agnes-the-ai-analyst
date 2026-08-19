@@ -75,9 +75,10 @@ def _require_server(explicit: str | None) -> str:
     Both login paths (browser loopback and ``--password``) run through here
     BEFORE anything else, so neither can fall back to `get_server_url()`'s
     ``http://localhost:8000`` default and send the user to a server that
-    isn't there. When ``--server`` is given it is also persisted, so the next
-    command — and this command's own manual-fallback hint — resolve the same
-    host instead of dropping back to the default.
+    isn't there. Exporting ``AGNES_SERVER`` keeps the rest of this process —
+    including the manual-fallback hint on failure — on the resolved host;
+    writing it to the config is `_persist_server`'s job, once the sign-in has
+    actually worked.
     """
     import os
 
@@ -90,10 +91,21 @@ def _require_server(explicit: str | None) -> str:
             err=True,
         )
         raise typer.Exit(1)
-    if explicit:
-        save_config({"server": resolved})
     os.environ["AGNES_SERVER"] = resolved
     return resolved
+
+
+def _persist_server(explicit: str | None, resolved: str) -> None:
+    """Save an explicitly-passed ``--server`` — only after a successful login.
+
+    Without this the URL lived in ``AGNES_SERVER`` for one process only, so
+    the next command (and `agnes pull`, and `whoami`) resolved back to the
+    localhost default until `agnes init` seeded the config. Deliberately
+    AFTER the token lands, unlike `agnes auth import-token`: a typo'd host
+    that failed to sign in must not become the persisted default.
+    """
+    if explicit:
+        save_config({"server": resolved})
 
 
 def _login_with_password() -> None:
@@ -167,6 +179,7 @@ def login(
         except Exception as e:
             typer.echo(f"Connection error: {e}", err=True)
             raise typer.Exit(1)
+        _persist_server(server, server_url)
         return
 
     from cli.lib.loopback import capture_code_via_browser
@@ -211,6 +224,7 @@ def login(
 
     data = resp.json()
     save_token(data["token"], data["email"])
+    _persist_server(server, server_url)
     expires = data.get("expires_at") or "never"
     typer.echo(f"Logged in as {data['email']} (token valid until {expires}).")
 
