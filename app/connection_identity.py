@@ -40,7 +40,15 @@ CONNECTION_IDENTITY_LEAVES: Dict[str, frozenset[str]] = {
             "private_key_env",
         }
     ),
-    "bigquery": frozenset({"project", "billing_project", "location"}),
+    # `location` is deliberately absent. It is not a coordinate a registration
+    # resolves against — the project/dataset in the row still name the same
+    # thing — and a wrong region fails loudly at query time with BigQuery's own
+    # location-mismatch error rather than silently serving stale data, which is
+    # the failure this guard exists for. Keeping it here also produced a
+    # standing false positive: the setup form pre-fills `us`, so an instance
+    # that never set a region was told every BigQuery table would break on a
+    # save that changed nothing about which project it talks to.
+    "bigquery": frozenset({"project", "billing_project"}),
     "databricks": frozenset({"host", "warehouse_id", "catalog", "token_env"}),
     "keboola": frozenset({"stack_url", "token_env"}),
 }

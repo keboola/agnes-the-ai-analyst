@@ -186,15 +186,23 @@ function toggleSourceFields() {
     document.getElementById('bigquery-fields').style.display = src === 'bigquery' ? 'block' : 'none';
 }
 
+/* A dead setup token has to be cleared, not just reported: every later step
+   keeps failing while it sits in sessionStorage. Extracted so the data-source
+   step — which posts through saveConnectionConfig rather than apiCall — cannot
+   quietly lose the handling. */
+function handleExpiredSetupSession() {
+    token = '';
+    sessionStorage.removeItem('setup_token');
+    showStatus('Session expired. Please refresh the page and start over.', 'error');
+    return new Error('Session expired');
+}
+
 async function apiCall(url, body) {
     const headers = { 'Content-Type': 'application/json' };
     if (token) headers['Authorization'] = 'Bearer ' + token;
     const resp = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) });
     if (resp.status === 401) {
-        token = '';
-        sessionStorage.removeItem('setup_token');
-        showStatus('Session expired. Please refresh the page and start over.', 'error');
-        throw new Error('Session expired');
+        throw handleExpiredSetupSession();
     }
     const data = await resp.json();
     if (!resp.ok) throw new Error(window.apiDetailText(data.detail, 'Request failed'));
@@ -247,6 +255,7 @@ async function configureSource(e) {
             '/api/admin/configure', body,
             { headers: token ? { Authorization: 'Bearer ' + token } : {} }
         );
+        if (saved.status === 401) throw handleExpiredSetupSession();
         if (saved.cancelled) {
             showStatus('Cancelled — the data source was left unchanged.', '');
             return false;

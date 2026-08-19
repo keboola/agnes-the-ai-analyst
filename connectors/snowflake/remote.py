@@ -94,6 +94,16 @@ def fetch_schema(
         # function exists to prevent. With allow_empty=False at the endpoint the
         # mismatch surfaces as an error naming the schema and table, which is
         # what an operator needs to spot the wrong case.
+        #
+        # This reads Snowflake's own INFORMATION_SCHEMA through the ATTACH
+        # rather than the extension's `snowflake_query(...)` pass-through the
+        # semantic-layer adapter uses. Verified against a live Snowflake
+        # 2026-08-19: the `comment` column is present, and `data_type` comes
+        # back as Snowflake's own type names (`TEXT`, `DATE`, `NUMBER`) — this
+        # is not a DuckDB catalog projection with DuckDB's mapped names. If a
+        # future extension release changes either, this query fails loudly
+        # (missing column) or reports the wrong type names; the pass-through is
+        # the fallback.
         rows = conn.execute(
             f"SELECT column_name, data_type, is_nullable, comment "
             f"FROM {SF_ALIAS}.information_schema.columns "

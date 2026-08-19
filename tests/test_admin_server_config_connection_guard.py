@@ -184,11 +184,15 @@ class TestIdentityChanges:
             {"field": "token_env", "before": "KEBOOLA_STORAGE_TOKEN", "after": "OTHER_TOKEN"}
         ]
 
-    def test_bigquery_location_has_no_default_so_setting_it_counts(self):
-        """`location` unset is not the same as `us` — the region-scoped metadata
-        path is skipped entirely when it is blank."""
-        assert identity_changes("bigquery", {}, {"location": "us"}) == [
-            {"field": "location", "before": "", "after": "us"}
+    def test_bigquery_location_is_not_connection_identity(self):
+        """A region is not a coordinate a registration resolves against, and a
+        wrong one fails loudly at query time rather than silently. Guarding it
+        also produced a standing false positive: the setup form pre-fills `us`,
+        so an instance that never set a region was told every BigQuery table
+        would break on a save that changed no project."""
+        assert identity_changes("bigquery", {}, {"location": "us"}) == []
+        assert identity_changes("bigquery", {"project": "a"}, {"project": "b", "location": "eu"}) == [
+            {"field": "project", "before": "a", "after": "b"}
         ]
 
     def test_unknown_source_has_no_identity(self):
@@ -253,6 +257,21 @@ class TestConfigureWizardIsGuardedToo:
         assert detail["affected_tables"] >= 1
         assert {"field": "project", "before": "proj-before", "after": "proj-after"} in detail["changes"]
         assert yaml.safe_load(bigquery_overlay.read_text())["data_source"]["bigquery"]["project"] == "proj-before"
+
+    def test_wizard_resave_with_only_a_region_is_not_a_repoint(self, seeded_app, bigquery_overlay, registered_bq_table):
+        """The setup form pre-fills `us`, so re-confirming an existing project
+        must not claim every registered table is about to break."""
+        c = seeded_app["client"]
+        resp = c.post(
+            "/api/admin/configure",
+            json={
+                "data_source": "bigquery",
+                "bigquery_project": "proj-before",
+                "bigquery_location": "us",
+            },
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        assert resp.status_code == 200, resp.text
 
     def test_wizard_repoint_applies_when_confirmed(
         self, seeded_app, bigquery_overlay, registered_bq_table
