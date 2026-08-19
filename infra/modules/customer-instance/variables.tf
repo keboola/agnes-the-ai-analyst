@@ -121,6 +121,14 @@ variable "prod_instance" {
     # of the shared-secret pair come from one Secret Manager secret, so they
     # cannot drift. Requires the module-level kai_agent_* variables.
     kai_agent_enabled = optional(bool, false)
+    # Engine container resource ceilings, written to /opt/agnes/.env like
+    # app_mem_limit above — per-VM TF fields and not .env hand-edits, because
+    # the startup script rewrites .env from scratch on every boot and a
+    # hand-raised ceiling would silently drop back to the default. Heavy work
+    # happens in the remote E2B sandbox, so the engine itself stays small.
+    kai_agent_mem_limit    = optional(string, "2g")
+    kai_agent_cpus         = optional(string, "1.0")
+    kai_agent_pg_mem_limit = optional(string, "1g")
 
     # --- Vendor-neutral per-instance branding (all OPTIONAL) ---
     # Written into the VM's /data/state/instance.yaml on FIRST boot only. The
@@ -284,6 +292,11 @@ variable "dev_instances" {
     # Per-VM embedded kai-agent turn engine — see prod_instance for the
     # rationale. Same "must be on the type" rule as the fields above.
     kai_agent_enabled = optional(bool, false)
+    # Engine resource ceilings — see prod_instance; same defaults, same
+    # "must be on the type" rule.
+    kai_agent_mem_limit    = optional(string, "2g")
+    kai_agent_cpus         = optional(string, "1.0")
+    kai_agent_pg_mem_limit = optional(string, "1g")
     # See prod_instance for the rationale; same default.
     upgrade_schedule = optional(string, "*/5 * * * *")
 
