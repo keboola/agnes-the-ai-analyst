@@ -106,6 +106,21 @@ Real-time sync of Jira support tickets for AI-powered analysis.
 - Attachment: created
 - Issue link: created
 
+Every event is handled by refetching the issue from the API, so the body's own
+contents matter only when that refetch fails. Two facts about those bodies are
+worth knowing when reading the fallback path in `service.py`:
+
+- Since **January 2018**, Cloud `jira:issue_*` bodies carry **no comment objects
+  at all**. Only `comment_created` / `comment_updated` embed an issue, and
+  without `expand`. So the fallback's comment update is confined to those two
+  events even before any completeness check runs.
+- The embedded body carries no `changelog` key either. That is why
+  `transform_changelog` returns `None` for an absent key and the incremental
+  transform preserves the issue's stored history instead of wiping it.
+
+Do **not** subscribe `*_deleted` comment/attachment events: any `webhookEvent`
+whose name contains "deleted" is routed to whole-issue tombstoning.
+
 ### 2. Webhook Receiver
 
 **File:** `connectors/jira/webhook.py`
@@ -536,6 +551,43 @@ SELECT count(*) FROM comments WHERE public_visibility IS FALSE;
 SELECT strftime(created_at, '%Y-%m') AS month, count(*) AS unknown
 FROM comments WHERE public_visibility IS NULL GROUP BY 1 ORDER BY 1;
 ```
+
+#### What `NULL` means, per deployment kind
+
+`jsdPublic` is a **platform** field on Jira Cloud, not a JSM-licensed one.
+Licensing gates the *value*, never the key's presence — Atlassian's v2/v3
+OpenAPI schema documents it as defaulting to `true` "when the site doesn't use
+Jira Service Desk", and that was confirmed live in August 2026 against two
+JSM-unlicensed public Cloud instances, which serialized a boolean on every
+comment sampled (including thread heads from 2003 and 2006).
+
+| Deployment | `public_visibility` behaviour |
+|---|---|
+| Jira Cloud, JSM licensed | `true`/`false` as observed. `NULL` means: a mistyped or explicitly-null flag, a row written before this column existed and not yet re-transformed, or a comment version written from a flagless webhook-fallback embed and not yet refetched. |
+| Jira Cloud, no JSM license | The flag is still serialized on every comment; values are uniformly `true` (the platform default — the column is well-defined but there is no internal/public distinction to make). `NULL` as above, and rare. |
+| Jira Data Center / Server | Out of scope by construction. The field does not exist there, and neither does the `/rest/api/3` surface this connector hardcodes — a DC-pointed install fails every fetch long before this column matters. |
+
+#### Carry-forward: an unflagged comment never nulls an observed value
+
+The incremental comments write is an issue-scoped delete-then-insert, so a
+comment arriving without a boolean `jsdPublic` would not merely fail to add
+information — it would REPLACE a stored value with `NULL`. The write layer
+(`incremental_transform._carry_forward_public_visibility`) therefore fills a
+`NULL` from the stored row when, and only when, that row is **the same comment
+version**: same `(issue_key, comment_id)` and an identical `updated_at`. An
+incoming boolean always wins; a differing `updated_at` means the comment was
+edited — and a visibility flip rides exactly such an edit — so the value stays
+honestly `NULL` until the next successful refetch rather than serving a possibly
+pre-flip boolean as observed. Each incremental write logs how many values it
+carried and how many stayed `NULL`, so a silent never-carry regression is
+visible in the logs rather than only in the data.
+
+**Durability caveat.** Carry-forward is a *parquet-layer* repair: it fills the
+row being written, and does not write anything back into the cached raw JSON. If
+a comment version was saved from a flagless webhook-fallback embed, a full batch
+re-transform (4b) rebuilds that month from the raw JSON and re-`NULL`s those
+rows, because the flag is genuinely not in the cache. Refetch the affected issues
+first (see *Historical Backfill*) if you need a rebuild to keep them.
 
 Rows written before this column existed read as `NULL` (the extract views use
 `union_by_name=true`, so adding the column is non-breaking). To fill them in,

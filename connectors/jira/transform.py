@@ -587,13 +587,25 @@ def transform_issue(raw_issue: dict) -> dict:
 # coerce it by content. A plain `bool()` reads any non-empty string as truthy
 # and would silently flip a public comment to internal.
 #
+# `jsdPublic` is a Jira CLOUD PLATFORM field, not a JSM-licensed one. Live
+# verification (2026-08-19) found it serialized as a boolean on 100% of comments
+# on two JSM-UNLICENSED Cloud sites as well as a licensed one, and Atlassian's
+# v2/v3 OpenAPI schema says as much: it "defaults to true ... when the site
+# doesn't use Jira Service Desk". Licensing gates the VALUE (`false` occurs only
+# in service-desk projects), never the key's presence. Jira Data Center/Server
+# lacks the field entirely — and cannot run this connector at all, which
+# hardcodes `/rest/api/3`. So a NULL here is an anomaly worth a WARNING on every
+# deployment this code can reach.
+#
 # Reports of `jsdPublic` being wrong (JSDCLOUD-7997, -8275, -6050) concern
 # WEBHOOK payloads and WRITE attempts. This connector reads GET refetches on
 # every path but one: `process_webhook_event`'s fetch-failure fallback
-# (service.py) can transform the webhook body's own comments when the refetch
-# fails AND the embedded thread self-reports complete — narrow and healed by
-# the next successful refetch, but it means "only reads GET responses" would
-# overstate the guarantee.
+# (service.py) transforms the webhook body's own comments when the refetch fails
+# and the embedded thread is length-complete. Whether Cloud webhook bodies
+# serialize the flag is the one shape nobody has sampled — which is why the
+# incremental write layer no longer depends on the answer: it carries a stored
+# same-version value forward rather than letting an unflagged comment null one
+# (`incremental_transform._carry_forward_public_visibility`).
 
 
 def _comment_public_visibility(comment: dict) -> bool | None:
@@ -689,13 +701,20 @@ def transform_comments(
 
     if unresolved and warn_unresolved:
         # Counted, not defaulted — the operator needs to see the size of the gap
-        # rather than have it disappear into a plausible-looking `true`. Worded
-        # as "resolved", not "written": whether these records land in parquet is
-        # the caller's decision (the incremental path may preserve instead), and
-        # "no boolean jsdPublic" covers all three unresolved shapes — absent,
+        # rather than have it disappear into a plausible-looking `true`. On every
+        # deployment this connector can run against, `jsdPublic` is a platform
+        # field present on every comment, so a non-zero count here is a genuine
+        # anomaly and this is the only signal of it.
+        #
+        # Worded as what ARRIVED, not as what is stored: this count is taken
+        # before the incremental write layer gets a chance to carry a stored
+        # same-version value forward (`incremental_transform._comment_records`),
+        # so the number of rows that actually end up NULL may be lower. "No
+        # boolean jsdPublic" covers all three unresolved shapes — absent,
         # explicit null, and mistyped.
         logger.warning(
-            "Jira issue %s: %d of %d comments carry no boolean jsdPublic — public_visibility resolved as NULL",
+            "Jira issue %s: %d of %d comments arrived without a boolean jsdPublic — public_visibility is NULL "
+            "here; the incremental write layer may still carry a stored same-version value forward",
             issue_key,
             unresolved,
             len(comments),
@@ -741,10 +760,33 @@ def transform_attachments(raw_issue: dict, attachments_dir: Path | None = None) 
     return records
 
 
-def transform_changelog(raw_issue: dict) -> list[dict]:
-    """Extract and transform changelog entries from an issue."""
+def transform_changelog(raw_issue: dict) -> list[dict] | None:
+    """Extract and transform changelog entries from an issue.
+
+    Returns:
+      - list[dict]: fresh records to upsert. May be empty — ``{"histories": []}``
+        is a successful fetch confirming the issue has no history right now.
+      - None: the ``changelog`` key was absent entirely, so this payload carries
+        no fresh history AT ALL. Callers that upsert onto an issue-scoped
+        delete-then-insert store MUST treat ``None`` as "skip the upsert, preserve
+        existing rows" — the identical contract ``transform_remote_links``
+        carries, and for the identical reason.
+
+    The key shape is set by the writers: ``JiraService.fetch_issue`` and the
+    backfill both request ``expand=renderedFields,changelog``, so a successful
+    fetch always carries the key. The one writer that does not is
+    ``process_webhook_event``'s fetch-failure fallback, whose payload is the
+    event body Jira embedded — and Jira has never embedded a changelog there. So
+    every such save wrote zero changelog rows over the issue's stored history,
+    deleting it, on a path that runs precisely when a refetch has already failed.
+    """
     issue_key = raw_issue.get("key")
-    changelog = raw_issue.get("changelog", {})
+    # Absent and explicit-null both mean "no fresh data", mirroring
+    # `transform_remote_links` — absent is the writers' contract, explicit null
+    # the defensive case where a JSON edit stored one.
+    changelog = raw_issue.get("changelog")
+    if changelog is None:
+        return None
     histories = changelog.get("histories", [])
 
     records = []
@@ -1058,7 +1100,15 @@ def transform_all(
                     )
                 attachments_by_month[month_key].append(att_record)
 
-            changelog_by_month[month_key].extend(transform_changelog(raw_issue))
+            changelog_records = transform_changelog(raw_issue)
+            if changelog_records is not None:
+                changelog_by_month[month_key].extend(changelog_records)
+            # else: same story as `_remote_links` below — the payload carries no
+            # changelog overlay. A rebuild has nothing to preserve, so the issue
+            # simply contributes no changelog rows. The guard is not cosmetic:
+            # `extend(None)` raises, and the per-file handler below is a blind
+            # `except`, so an unguarded version would drop EVERY table's rows for
+            # that issue while the run still reported success.
             issuelinks_by_month[month_key].extend(transform_issuelinks(raw_issue))
             rl_records = transform_remote_links(raw_issue)
             if rl_records is not None:

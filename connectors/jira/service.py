@@ -249,7 +249,7 @@ def organization_detail_fields() -> list[tuple[str, str]]:
     return out
 
 
-def trigger_incremental_transform(issue_key: str, deleted: bool = False) -> bool:
+def trigger_incremental_transform(issue_key: str, deleted: bool = False, warn_unresolved: bool = True) -> bool:
     """
     Trigger incremental Parquet transform for a single issue.
 
@@ -259,6 +259,10 @@ def trigger_incremental_transform(issue_key: str, deleted: bool = False) -> bool
     Args:
         issue_key: Jira issue key (e.g., "SUPPORT-1234")
         deleted: If True, remove issue from Parquet files
+        warn_unresolved: Forwarded to the comments transform. ``False`` silences
+            the missing-``jsdPublic`` WARNING for a RE-transform of an issue this
+            same request already transformed — see ``save_issue``'s
+            post-attachment-download call, the only place that passes it.
 
     Returns:
         True if transform succeeded, False otherwise
@@ -290,6 +294,7 @@ def trigger_incremental_transform(issue_key: str, deleted: bool = False) -> bool
             # `update_meta`, which derives the extract dir as `output_dir.parent`
             # and assumes the `<source>/data` shape.
             deleted=deleted,
+            warn_unresolved=warn_unresolved,
         )
 
         if success:
@@ -427,11 +432,22 @@ def _dedupe_comments_by_id(comments: list[dict[str, Any]]) -> list[dict[str, Any
 def _embedded_comments_are_complete(issue_data: dict[str, Any]) -> bool:
     """Does this payload demonstrably carry the issue's whole comment thread?
 
-    Only true when a ``fields.comment`` object is present AND the embedded
-    list is at least as long as the ``total`` it reports. A payload with no
-    comment field at all is NOT evidence that the issue has no comments —
-    treating it as such would let an issue-scoped delete-then-insert erase a
-    stored thread — so it answers False as well.
+    Structural only: a ``fields.comment`` object is present AND the embedded list
+    is at least as long as the ``total`` it reports. A payload with no comment
+    field at all is NOT evidence that the issue has no comments — treating it as
+    such would let an issue-scoped delete-then-insert erase a stored thread — so
+    it answers False as well.
+
+    v0.83.70 also required a boolean ``jsdPublic`` on every embedded comment, so
+    that this predicate's one caller (the webhook fetch-failure fallback) could
+    not replace an observed ``public_visibility`` with NULL. That requirement is
+    **superseded**, not refuted: value-protection now lives at the write layer,
+    where ``incremental_transform._carry_forward_public_visibility`` carries a
+    stored same-version value forward on EVERY incremental write path instead of
+    this one path declining to act. Webhook-body ``jsdPublic`` serialization is
+    still unsampled — the carry-forward is what makes the answer stop mattering.
+    Keeping the flag check here would only buy a deferred update, and cost one on
+    every flagless embed.
     """
     fields = issue_data.get("fields") or {}
     comment_field = fields.get("comment")
@@ -444,23 +460,7 @@ def _embedded_comments_are_complete(issue_data: dict[str, Any]) -> bool:
     if not isinstance(total, int):
         # No count to check against: a list of unknown completeness.
         return False
-    if len(comments) < total:
-        return False
-    # Length is not the only kind of incompleteness. This payload's one caller
-    # is the webhook fetch-failure fallback, whose write is an issue-scoped
-    # delete-then-insert -- so a comment here that carries no boolean
-    # `jsdPublic` does not merely fail to add information, it REPLACES an
-    # already-observed `public_visibility` with NULL until the next successful
-    # refetch. The flag is present on 100% of comments across every GET shape
-    # measured for this column, but webhook bodies were not among those shapes,
-    # and webhook serialization is exactly what the known Atlassian reports
-    # (JSDCLOUD-7997, -8275, -6050) concern. Rather than assume, answer False
-    # and let the existing `_comments_incomplete` marker preserve the stored
-    # rows: this path only runs when a refetch has already failed, so the cost
-    # of being conservative is one deferred update on a rare path, and the cost
-    # of being wrong is silent data loss on a column whose entire design
-    # principle is that NULL means "not observed".
-    return all(isinstance(c.get("jsdPublic"), bool) for c in comments if isinstance(c, dict))
+    return len(comments) >= total
 
 
 def complete_issue_comments(
@@ -1201,8 +1201,16 @@ class JiraService:
                     # an unlocked transform here could publish a stale snapshot
                     # over a concurrent poll_sla read-modify-write that holds
                     # this lock across its own write+transform (Devin on #1297).
+                    #
+                    # `warn_unresolved=False`: this is the SECOND transform of
+                    # the same payload in the same request. The first already
+                    # reported any missing-`jsdPublic` gap, and logging it twice
+                    # doubled the count an operator uses to size the anomaly —
+                    # for attachment-bearing events only, which is worse than a
+                    # uniform overcount. Same suppression the batch path's
+                    # throwaway grouping pass uses.
                     with issue_json_lock(issues_dir, issue_key):
-                        trigger_incremental_transform(issue_key, deleted=False)
+                        trigger_incremental_transform(issue_key, deleted=False, warn_unresolved=False)
             except Exception as att_err:
                 logger.warning(f"Attachment download failed for {issue_key}: {att_err}")
 
@@ -1478,8 +1486,18 @@ class JiraService:
                 # its `fields.comment.comments` is whatever Jira chose to embed,
                 # and the comments upsert is an issue-scoped delete-then-insert.
                 # Treat it as authoritative for comments ONLY when it demonstrably
-                # carries the whole thread; otherwise mark it incomplete so the
-                # incremental transform preserves the stored rows.
+                # carries the whole THREAD; otherwise mark it incomplete so the
+                # incremental transform preserves the stored rows. Per-comment
+                # field gaps are not this check's business — the write layer
+                # carries a stored same-version `public_visibility` forward, so a
+                # flagless embed costs nothing here (see
+                # `incremental_transform._carry_forward_public_visibility`).
+                #
+                # Worth knowing when reading this path: since January 2018 Cloud
+                # `jira:issue_*` bodies carry no comment objects at all, so for
+                # the highest-volume events the structural checks below already
+                # answer False. Only `comment_created`/`comment_updated` embeds
+                # reach the length test with a real thread.
                 if not _embedded_comments_are_complete(issue_data):
                     logger.info(
                         "Webhook fallback payload for %s does not carry a complete comment "

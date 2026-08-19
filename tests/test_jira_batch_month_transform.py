@@ -263,6 +263,28 @@ def test_an_absent_remote_links_overlay_preserves_only_that_issues_rows(tree) ->
     assert "PROJ-701" in links["issue_key"].tolist(), "preserved rows were wiped"
 
 
+def test_an_absent_changelog_overlay_preserves_only_that_issues_rows(tree) -> None:
+    """Sibling of the remote_links rule, for the other table whose overlay can go
+    missing. Both are decided PER ISSUE against the same shared `existing` frame,
+    so the batch path has to keep them per-issue too — flattening either to a
+    per-batch decision would wipe the whole month's history for one absent key."""
+    raw, out = tree
+    keys = ["PROJ-801", "PROJ-802"]
+    for k in keys:
+        _write_raw(raw, _raw_issue(k, rich=True))
+    jira_incremental.transform_issues(keys, raw_dir=raw, output_dir=out)
+    assert len(_rows(out, "changelog")) == 2
+
+    # One issue comes back as a webhook-fallback body, which carries no changelog.
+    absent = _raw_issue("PROJ-801", rich=True)
+    del absent["changelog"]
+    _write_raw(raw, absent)
+    jira_incremental.transform_issues(keys, raw_dir=raw, output_dir=out)
+
+    changelog = _rows(out, "changelog")
+    assert sorted(changelog["issue_key"].tolist()) == keys, "preserved changelog rows were wiped"
+
+
 # --------------------------------------------------------------------------------
 # Lock discipline.
 # --------------------------------------------------------------------------------
