@@ -19,7 +19,14 @@ SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,38}[a-z0-9]$")
 # `GET /apps/detail/{slug}` web route — its own sub-paths (e.g.
 # `/apps/detail/style.css`) would be swallowed by that route instead of
 # reaching the proxy. Add any future literal `/apps/<segment>` route here.
-RESERVED_SLUGS = frozenset({"detail"})
+#
+# "git" is reserved for a different and worse reason: it is not a route but a
+# directory. Every app's bare repo lives at `${DATA_DIR}/apps/git/<slug>.git`
+# (`src.data_apps.git_repos.repo_path`), while an app's own config directory is
+# `${DATA_DIR}/apps/<slug>` — so for slug "git" those two are the same path, and
+# `_rmtree_config_dir` deleting "this app's config" would take every other
+# app's git history with it.
+RESERVED_SLUGS = frozenset({"detail", "git"})
 LIVE_BRANCH = "agnes-live"
 NETWORK = "agnes-apps"
 AGNES_INTERNAL_URL = "http://app:8000"
