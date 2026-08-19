@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.83.87] - 2026-08-19
+
 ### Fixed
 
 - **Discover/List tables on the Register-table drawer gave no sign of life, and its toasts rendered invisibly.** The Keboola Discover/List-tables buttons and the BigQuery Discover/List-tables buttons fired their fetch with no loading state — a slow or hung request looked identical to a dead button. They now disable and relabel ("Discovering…" / "Listing…") for the duration of the call. Separately, the result/error toast (`.toast`, z-index 200) rendered *behind* the register drawer and every other modal on the page (`.ds-drawer` / legacy `.modal-overlay`, z-index 1200 / 1000) — so a "Loaded N buckets" success or a discovery/registration error fired while completely hidden behind the very panel the operator was looking at. Toast z-index raised above both.
