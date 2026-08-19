@@ -34,6 +34,7 @@ from app.instance_config import (
     get_instance_copyright,
     get_privacy_policy_url,
     get_workspace_dir_name,
+    get_workspace_launcher_word,
     get_instance_logo_svg,
     get_instance_favicon,
     get_instance_overview,
@@ -5093,6 +5094,7 @@ def _chrome_ctx(request: Request, user: Optional[dict]) -> dict:
         "instance_brand": get_instance_brand(),
         "instance_brand_short": get_instance_brand_short(),
         "workspace_dir": get_workspace_dir_name(),
+        "workspace_launcher_word": get_workspace_launcher_word(),
         "instance_theme": get_instance_theme(),
         # Resolved to a ready-to-use `<link rel="icon">` href (env/YAML
         # value as-is for a data:/absolute URL, otherwise static_url()-

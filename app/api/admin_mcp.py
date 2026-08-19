@@ -51,8 +51,18 @@ from app.secrets_vault import (
     can_store_secrets,
 )
 from connectors.mcp import classifier as mcp_classifier
-from connectors.mcp import extractor as mcp_extractor
-from connectors.mcp.client import exc_summary as _exc_summary
+
+# ``connectors.mcp.extractor`` (pulls in pandas) and ``connectors.mcp.client``
+# (pulls in the full ``mcp`` SDK) are import-time heavy — ~280ms / ~190ms
+# respectively — and only ever touched inside the four connector-action
+# handlers below (introspect/classify/test/materialize + OAuth register), so
+# they're imported locally at each call site instead of here. Both are always
+# imported as the MODULE (dotted access, e.g. ``mcp_extractor.introspect_
+# source_async(...)``), never as unpacked names, so this is exactly as
+# monkeypatch-friendly as the former top-level import — a test that does
+# ``from connectors.mcp import extractor as mcp_extractor; monkeypatch.
+# setattr(mcp_extractor, "_materialize_one_tool", ...)`` still patches the
+# same cached module object ``sys.modules`` hands back here.
 from src.repositories import (
     audit_repo,
     mcp_sources_repo,
@@ -1240,6 +1250,7 @@ async def register_oauth_client(
 
     import httpx
 
+    from connectors.mcp.client import exc_summary as _exc_summary
     from src.net.ssrf_safe_client import SSRFRejected
     from src.repositories import mcp_source_oauth_clients_repo
 
@@ -1610,6 +1621,9 @@ async def introspect_mcp_source(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Live-connect to the source and list its tools verbatim."""
+    from connectors.mcp import extractor as mcp_extractor
+    from connectors.mcp.client import exc_summary as _exc_summary
+
     src_repo = mcp_sources_repo()
     src = src_repo.get(source_id)
     if not src:
@@ -1645,6 +1659,8 @@ async def classify_mcp_source(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Introspect + run heuristic classifier; return per-tool proposals."""
+    from connectors.mcp.client import exc_summary as _exc_summary
+
     src_repo = mcp_sources_repo()
     src = src_repo.get(source_id)
     if not src:
@@ -1693,6 +1709,9 @@ async def test_mcp_source(
 ):
     """Lightweight connectivity probe. Returns ``{ok, tool_count, error}``;
     HTTP 200 even on connect failure so the UI can render the diagnostic."""
+    from connectors.mcp import extractor as mcp_extractor
+    from connectors.mcp.client import exc_summary as _exc_summary
+
     src_repo = mcp_sources_repo()
     src = src_repo.get(source_id)
     if not src:
@@ -1738,6 +1757,8 @@ async def materialize_mcp_source(
     Returns the extractor's summary dict (source_name, extract_duckdb path,
     tables, errors). Use the SyncOrchestrator's next rebuild to attach.
     """
+    from connectors.mcp import extractor as mcp_extractor
+
     src_repo = mcp_sources_repo()
     src = src_repo.get(source_id)
     if not src:

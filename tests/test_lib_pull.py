@@ -948,3 +948,78 @@ def test_run_pull_direct_table_is_queryable_in_the_same_pull(tmp_path, monkeypat
         )
     finally:
         conn.close()
+
+
+class TestMaterializedSkippedCount:
+    """`materialized_skipped` is printed by `agnes init` as "N materialized
+    row(s) skipped by default -- re-run with --materialize". So it must count
+    exactly the rows such a re-run WOULD fetch: a row outside the analyst's
+    stack, or one the server never distributes, is not one of them, and
+    counting it sends the analyst after data they cannot have.
+    """
+
+    @staticmethod
+    def _manifest(tables, *, typed=None):
+        m = {"tables": tables}
+        if typed is not None:
+            m["direct_tables"] = [{"name": n} for n in typed]
+        return m
+
+    def _run(self, monkeypatch, tmp_path, manifest):
+        canned = {"/api/sync/manifest": manifest, "/api/memory/bundle": {"mandatory": [], "approved": []}}
+
+        def _api_get(path, *args, **kwargs):
+            resp = MagicMock()
+            resp.status_code = 200
+            resp.json.return_value = canned.get(path, {})
+            resp.iter_bytes = lambda chunk_size=65536: iter([b""])
+            resp.raise_for_status = lambda: None
+            return resp
+
+        monkeypatch.setattr("cli.lib.pull.api_get", _api_get, raising=False)
+        return run_pull("http://server", "tok", tmp_path, skip_materialize=True)
+
+    def test_counts_a_materialized_row_the_analyst_could_fetch(self, monkeypatch, tmp_path):
+        result = self._run(
+            monkeypatch,
+            tmp_path,
+            self._manifest({"mat": {"query_mode": "materialized", "hash": "h"}}),
+        )
+        assert result.materialized_skipped == 1
+
+    def test_does_not_count_a_row_outside_the_analyst_stack(self, monkeypatch, tmp_path):
+        """Typed sections present makes the stack the unit of access. A
+        materialized row the stack omits is never downloaded, with or without
+        --materialize, so it is not "skipped by default"."""
+        result = self._run(
+            monkeypatch,
+            tmp_path,
+            self._manifest(
+                {
+                    "in_stack": {"query_mode": "materialized", "hash": "h"},
+                    "out_of_stack": {"query_mode": "materialized", "hash": "h"},
+                },
+                typed=["in_stack"],
+            ),
+        )
+        assert result.materialized_skipped == 1, "only the in-stack row is fetchable"
+
+    def test_does_not_count_a_server_only_row(self, monkeypatch, tmp_path):
+        """`server_only` parquets are never shipped to laptops (#607), so
+        `--materialize` would not fetch this one either."""
+        result = self._run(
+            monkeypatch,
+            tmp_path,
+            self._manifest({"mat": {"query_mode": "materialized", "hash": "h", "server_only": True}}),
+        )
+        assert result.materialized_skipped == 0
+
+    def test_an_ordinary_table_is_never_counted_as_skipped(self, monkeypatch, tmp_path):
+        """The counter used to be `parquets_total`, which counts tables that
+        WERE considered — so a plain local table read as a skipped one."""
+        result = self._run(
+            monkeypatch,
+            tmp_path,
+            self._manifest({"plain": {"query_mode": "local", "hash": "h"}}),
+        )
+        assert result.materialized_skipped == 0

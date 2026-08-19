@@ -514,7 +514,12 @@ data_source:
 # Without SMTP, magic links are shown directly in browser (development mode).
 # For production, configure any SMTP relay (Gmail, Mailgun, SendGrid SMTP, etc.)
 email:
+  # Sender address. `SMTP_FROM` (or the legacy `EMAIL_FROM_ADDRESS`) wins if
+  # set; this value is the fallback.
   from_address: "noreply@example.com"
+  # NOT IMPLEMENTED — the SMTP transport sends a bare address with no display
+  # name, so this key is inert. Left in place because removing it would silently
+  # drop it from existing instance.yaml files on the next template diff.
   from_name: "AI Harness"
   smtp_host: "${SMTP_HOST}"          # e.g., "smtp.gmail.com"
   smtp_port: 587                     # 587 for STARTTLS, 465 for SSL

@@ -1,9 +1,10 @@
 """Tests for Jira comment-pagination completion (issue #1257).
 
-Jira's issue endpoint embeds ``fields.comment.comments`` capped at 100,
-oldest-first. An issue with more than 100 comments therefore arrives missing
-its NEWEST comments unless the fetch layer pages through the comment
-endpoint for the remainder — and because every later full-refetch
+Jira's issue endpoint embeds ``fields.comment.comments`` capped at 100, and
+the window is the NEWEST 100 (the payload's own ``fields.comment.startAt`` is
+``total - 100``). An issue with more than 100 comments therefore arrives
+missing its OLDEST comments unless the fetch layer pages through the comment
+endpoint from the thread head — and because every later full-refetch
 (``fields=*all``) re-hits the same 100-comment cap, the gap never heals on
 its own.
 
@@ -12,6 +13,7 @@ seam: the batch/full extract (``JiraBackfill.fetch_issue``) and the webhook
 full-refetch (``JiraService.fetch_issue``).
 """
 
+import re
 from unittest.mock import MagicMock, patch
 
 import httpx
@@ -23,28 +25,58 @@ BASE_URL = "https://mycompany.atlassian.net/rest/api/3"
 AUTH = ("bot@mycompany.com", "test-token")
 
 
-def _comment(comment_id: str) -> dict:
-    return {
+def _comment(comment_id: str, *, jsd_public: bool | None = True) -> dict:
+    """A comment as Jira serializes one.
+
+    ``jsdPublic`` is part of that shape — present on every comment across every
+    fetch shape measured for the `public_visibility` column — and this fixture
+    predates the column, so it used to omit it. That mattered once
+    `_embedded_comments_are_complete` started requiring the flag: a fixture
+    without it models a payload Jira does not actually send. Pass
+    ``jsd_public=None`` to model one that lacks it deliberately.
+
+    Timestamps are distinct and id-ordered (cN -> N seconds past midnight) so
+    any order-sensitivity in the code under test is observable — identical
+    timestamps would hide a reordering from every assertion.
+    """
+    digits = re.search(r"(\d+)$", comment_id)
+    n = int(digits.group(1)) if digits else 0
+    created = f"2026-01-01T{n // 3600:02d}:{n % 3600 // 60:02d}:{n % 60:02d}.000+0000"
+    comment = {
         "id": comment_id,
         "author": {"emailAddress": f"{comment_id}@example.com", "displayName": comment_id},
         "updateAuthor": {"emailAddress": f"{comment_id}@example.com", "displayName": comment_id},
         "body": {"type": "doc", "content": []},
-        "created": "2026-01-01T00:00:00.000+0000",
-        "updated": "2026-01-01T00:00:00.000+0000",
+        "created": created,
+        "updated": created,
     }
+    if jsd_public is not None:
+        comment["jsdPublic"] = jsd_public
+    return comment
 
 
 def _issue_with_comments(total: int, embedded: int, issue_key: str = "PROJ-1") -> dict:
+    """Issue payload whose embed carries the NEWEST ``embedded`` of ``total``
+    comments — the window Jira actually embeds (``startAt = total - embedded``,
+    comment ids ``c{total-embedded}`` .. ``c{total-1}``)."""
+    start_at = max(0, total - embedded)
     return {
         "key": issue_key,
         "id": "10001",
         "fields": {
             "comment": {
                 "total": total,
-                "comments": [_comment(f"c{i}") for i in range(embedded)],
+                "startAt": start_at,
+                "comments": [_comment(f"c{i}") for i in range(start_at, total)],
             }
         },
     }
+
+
+def _comment_page(start: int, stop: int) -> list[dict]:
+    """One page of ``GET /issue/{key}/comment`` — ids ``c{start}``..``c{stop-1}``,
+    the oldest-first order the paged endpoint serves."""
+    return [_comment(f"c{i}") for i in range(start, stop)]
 
 
 def _mock_client(pages: list[list[dict]] | None = None, status_code: int = 200) -> MagicMock:
@@ -66,19 +98,22 @@ def _mock_client(pages: list[list[dict]] | None = None, status_code: int = 200) 
 class TestCompleteIssueComments:
     """Unit tests for the shared fetch-layer completion helper."""
 
-    def test_pages_through_remaining_comments(self):
-        """total=124, 100 embedded -> ONE paginated call fetches the remaining 24."""
+    def test_pages_from_the_thread_head(self):
+        """total=124, embed carries the newest 100 (c24..c123) -> ONE paginated
+        call at startAt=0 recovers the oldest 24 (c0..c23), and the merged
+        thread is stored oldest-first."""
         issue_data = _issue_with_comments(total=124, embedded=100)
-        extra_page = [_comment(f"extra{i}") for i in range(24)]
-        client = _mock_client([extra_page])
+        client = _mock_client([_comment_page(0, 100)])
 
         complete_issue_comments(issue_data, BASE_URL, AUTH, client)
 
         comments = issue_data["fields"]["comment"]["comments"]
-        assert len(comments) == 124
+        assert [c["id"] for c in comments] == [f"c{i}" for i in range(124)]
+        created = [c["created"] for c in comments]
+        assert created == sorted(created), "merged thread must stay chronological"
         client.get.assert_called_once()
         _, kwargs = client.get.call_args
-        assert kwargs["params"]["startAt"] == 100
+        assert kwargs["params"]["startAt"] == 0
         assert kwargs["params"]["maxResults"] == 100
 
     def test_under_cap_issues_no_extra_http_call(self):
@@ -94,8 +129,7 @@ class TestCompleteIssueComments:
     def test_transform_stores_full_comment_set_and_comment_count(self):
         """After completion, transform_issue/transform_comments see the full set."""
         issue_data = _issue_with_comments(total=124, embedded=100)
-        extra_page = [_comment(f"extra{i}") for i in range(24)]
-        client = _mock_client([extra_page])
+        client = _mock_client([_comment_page(0, 100)])
 
         complete_issue_comments(issue_data, BASE_URL, AUTH, client)
 
@@ -103,23 +137,38 @@ class TestCompleteIssueComments:
         assert len(transform_comments(issue_data)) == 124
 
     def test_pages_multiple_times_when_gap_exceeds_one_page(self):
-        """total=250, 100 embedded -> two paginated calls (100 + 50)."""
+        """total=250, embed carries the newest 100 (c150..c249) -> two paginated
+        calls (c0..c99, then c100..c199 overlapping the embed's head)."""
         issue_data = _issue_with_comments(total=250, embedded=100)
-        page1 = [_comment(f"p1-{i}") for i in range(100)]
-        page2 = [_comment(f"p2-{i}") for i in range(50)]
-        client = _mock_client([page1, page2])
+        client = _mock_client([_comment_page(0, 100), _comment_page(100, 200)])
 
         complete_issue_comments(issue_data, BASE_URL, AUTH, client)
 
-        assert len(issue_data["fields"]["comment"]["comments"]) == 250
+        comments = issue_data["fields"]["comment"]["comments"]
+        assert [c["id"] for c in comments] == [f"c{i}" for i in range(250)]
         assert client.get.call_count == 2
         first_call_start_at = client.get.call_args_list[0].kwargs["params"]["startAt"]
         second_call_start_at = client.get.call_args_list[1].kwargs["params"]["startAt"]
-        assert first_call_start_at == 100
-        assert second_call_start_at == 200
+        assert first_call_start_at == 0
+        assert second_call_start_at == 100
+
+    def test_short_page_advances_start_at_by_page_length(self):
+        """The next offset is the count of items actually received, not a
+        fixed page-size stride — a server that clamps maxResults (or any
+        short page) must not make the walk skip comments."""
+        issue_data = _issue_with_comments(total=250, embedded=100)  # embeds c150..c249
+        client = _mock_client([_comment_page(0, 50), _comment_page(50, 150)])
+
+        complete_issue_comments(issue_data, BASE_URL, AUTH, client)
+
+        comments = issue_data["fields"]["comment"]["comments"]
+        assert [c["id"] for c in comments] == [f"c{i}" for i in range(250)]
+        offsets = [call.kwargs["params"]["startAt"] for call in client.get.call_args_list]
+        assert offsets == [0, 50], "a 50-item page must advance startAt by 50, not by the page size"
 
     def test_logs_warning_when_still_short_after_completion(self, caplog):
-        """A page-fetch failure leaves stored < total -> WARNING, not an exception."""
+        """A page-fetch failure leaves stored < total -> WARNING, not an exception,
+        and the shortfall is attributed to the failed pagination."""
         issue_data = _issue_with_comments(total=124, embedded=100)
         failing_response = MagicMock()
         failing_response.status_code = 500
@@ -130,12 +179,43 @@ class TestCompleteIssueComments:
             complete_issue_comments(issue_data, BASE_URL, AUTH, client)
 
         assert len(issue_data["fields"]["comment"]["comments"]) == 100
-        assert any("comment.total" in record.message for record in caplog.records)
+        shortfall = [r.message for r in caplog.records if "comment.total" in r.message]
+        assert shortfall and "gave up early" in shortfall[0]
+
+    def test_shortfall_after_stale_total_is_attributed_to_deletion(self, caplog):
+        """An empty page with no failure means total was stale — the WARNING
+        must say so, not blame the pagination."""
+        issue_data = _issue_with_comments(total=124, embedded=100)
+        empty_response = MagicMock()
+        empty_response.status_code = 200
+        empty_response.json.return_value = {"comments": []}
+        client = MagicMock()
+        client.get.side_effect = [empty_response]
+
+        with caplog.at_level("WARNING"):
+            complete_issue_comments(issue_data, BASE_URL, AUTH, client)
+
+        shortfall = [r.message for r in caplog.records if "comment.total" in r.message]
+        assert shortfall and "deleted mid-fetch" in shortfall[0]
+        assert issue_data.get("_comments_incomplete") is True
+
+    def test_shortfall_with_no_issue_key_is_attributed_to_skipped_pagination(self, caplog):
+        """A payload without a key never paginates — the WARNING must not
+        claim anything happened mid-fetch when no fetch was attempted."""
+        issue_data = _issue_with_comments(total=124, embedded=100)
+        del issue_data["key"]
+        client = _mock_client([])
+
+        with caplog.at_level("WARNING"):
+            complete_issue_comments(issue_data, BASE_URL, AUTH, client)
+
+        client.get.assert_not_called()
+        shortfall = [r.message for r in caplog.records if "comment.total" in r.message]
+        assert shortfall and "never attempted" in shortfall[0]
 
     def test_no_warning_when_completion_succeeds(self, caplog):
         issue_data = _issue_with_comments(total=124, embedded=100)
-        extra_page = [_comment(f"extra{i}") for i in range(24)]
-        client = _mock_client([extra_page])
+        client = _mock_client([_comment_page(0, 100)])
 
         with caplog.at_level("WARNING"):
             complete_issue_comments(issue_data, BASE_URL, AUTH, client)
@@ -176,8 +256,7 @@ class TestPaginationFailureMarksIncomplete:
 
     def test_successful_completion_sets_no_marker(self):
         issue_data = _issue_with_comments(total=124, embedded=100)
-        extra_page = [_comment(f"extra{i}") for i in range(24)]
-        client = _mock_client([extra_page])
+        client = _mock_client([_comment_page(0, 100)])
 
         complete_issue_comments(issue_data, BASE_URL, AUTH, client)
 
@@ -191,10 +270,13 @@ class TestPaginationFailureMarksIncomplete:
 
         assert "_comments_incomplete" not in issue_data
 
-    def test_stale_total_empty_page_sets_no_marker(self):
-        """An empty page means the endpoint has no more comments — the fetched
-        set IS complete relative to the endpoint; ``total`` was stale (e.g.
-        comments deleted between the two requests). That is not a failure."""
+    def test_any_shortfall_marks_incomplete_even_without_a_page_failure(self):
+        """An empty page ends the walk without being a page failure, but it
+        cannot prove completeness: a mid-walk deletion shifts offsets and can
+        hide a LIVE comment below startAt. Any stored < total therefore marks
+        the issue incomplete — the incremental transform preserves the stored
+        rows and the sidecar schedules a refetch whose consistent snapshot
+        either recovers the skipped comment or propagates the real deletion."""
         issue_data = _issue_with_comments(total=124, embedded=100)
         empty_response = MagicMock()
         empty_response.status_code = 200
@@ -204,18 +286,39 @@ class TestPaginationFailureMarksIncomplete:
 
         complete_issue_comments(issue_data, BASE_URL, AUTH, client)
 
-        assert "_comments_incomplete" not in issue_data
+        assert issue_data.get("_comments_incomplete") is True
+
+    def test_mid_walk_deletion_that_skips_a_live_comment_marks_incomplete(self):
+        """The concrete race: total=250, embed carries c150..c249; page 0
+        returns c0..c99, then 50 old comments are deleted so the page at
+        startAt=100 serves c150..c249 — live comments c100..c149 are never
+        fetched, startAt=200 comes back empty. The short merged list must NOT
+        be publishable as complete."""
+        issue_data = _issue_with_comments(total=250, embedded=100)
+        # page 0 (pre-deletion), page at startAt=100 (post-deletion, offsets
+        # shifted: serves what is now items 100..199 = c150..c249), then empty.
+        client = _mock_client([_comment_page(0, 100), _comment_page(150, 250), []])
+
+        complete_issue_comments(issue_data, BASE_URL, AUTH, client)
+
+        assert issue_data.get("_comments_incomplete") is True, (
+            "a union stuck below total after an empty page means comments may "
+            "have been skipped by offset shift — publishing the short list "
+            "would silently drop live rows via the delete-then-insert"
+        )
 
 
 class TestPaginationDeduplicatesByCommentId:
-    """The embed and GET /issue/{key}/comment are two separate requests; on
-    ordering drift or deletions between them, ``startAt = len(embedded)`` can
-    re-serve comments already embedded. Concatenation must de-duplicate by
-    comment id (first occurrence wins, order preserved)."""
+    """The paged walk starts at the thread head while the embed carries the
+    newest comments, so the two overlap by design — the same id arrives from
+    both requests. Concatenation must de-duplicate by comment id, keep the
+    merged thread oldest-first (pages first, embed's unseen tail after), and
+    on a duplicate id keep the paged copy — it was fetched after the embed,
+    so it is the fresher one."""
 
-    def test_overlapping_page_produces_no_duplicate_ids(self):
-        issue_data = _issue_with_comments(total=4, embedded=2)  # embeds c0, c1
-        overlap_page = [_comment("c1"), _comment("c2"), _comment("c3")]
+    def test_overlapping_page_produces_no_duplicate_ids_and_stays_chronological(self):
+        issue_data = _issue_with_comments(total=4, embedded=2)  # embeds c2, c3
+        overlap_page = [_comment("c0"), _comment("c1"), _comment("c2")]
         client = _mock_client([overlap_page])
 
         complete_issue_comments(issue_data, BASE_URL, AUTH, client)
@@ -224,19 +327,65 @@ class TestPaginationDeduplicatesByCommentId:
         ids = [c["id"] for c in comments]
         assert ids == ["c0", "c1", "c2", "c3"]
 
-    def test_first_occurrence_wins_on_duplicate_id(self):
-        issue_data = _issue_with_comments(total=3, embedded=2)  # embeds c0, c1
-        embedded_c1 = issue_data["fields"]["comment"]["comments"][1]
+    def test_paged_copy_wins_on_duplicate_id(self):
+        issue_data = _issue_with_comments(total=3, embedded=2)  # embeds c1, c2
+        embedded_c1 = issue_data["fields"]["comment"]["comments"][0]
         embedded_c1["body"] = {"type": "doc", "content": [], "marker": "embedded"}
         paged_c1 = _comment("c1")
         paged_c1["body"] = {"type": "doc", "content": [], "marker": "paged"}
-        client = _mock_client([[paged_c1, _comment("c2")]])
+        client = _mock_client([[_comment("c0"), paged_c1]])
 
         complete_issue_comments(issue_data, BASE_URL, AUTH, client)
 
         comments = issue_data["fields"]["comment"]["comments"]
         c1 = next(c for c in comments if c["id"] == "c1")
-        assert c1["body"].get("marker") == "embedded"
+        assert c1["body"].get("marker") == "paged", (
+            "the paged copy is fetched after the embed — a comment edited "
+            "between the two requests must keep its fresher body"
+        )
+
+
+class TestPaginationIsWindowPositionAgnostic:
+    """The loop stops when the id-deduplicated union of embed + pages reaches
+    ``total`` — never on a raw count of fetched items, which silently
+    under-fetches when the count includes duplicates of the embed — so
+    completion holds regardless of where Jira anchors the embed window."""
+
+    def test_oldest_window_embed_still_completes(self):
+        """If Jira ever anchored the embed at the thread head instead, page 0
+        duplicates the embed entirely — the union condition keeps paging until
+        the newest comments arrive rather than stopping on fetched-item count."""
+        issue_data = _issue_with_comments(total=124, embedded=100)
+        issue_data["fields"]["comment"]["startAt"] = 0
+        issue_data["fields"]["comment"]["comments"] = _comment_page(0, 100)
+        client = _mock_client([_comment_page(0, 100), _comment_page(100, 124)])
+
+        complete_issue_comments(issue_data, BASE_URL, AUTH, client)
+
+        ids = [c["id"] for c in issue_data["fields"]["comment"]["comments"]]
+        assert ids == [f"c{i}" for i in range(124)]
+        offsets = [call.kwargs["params"]["startAt"] for call in client.get.call_args_list]
+        assert offsets == [0, 100], "the walk must advance through the endpoint, not re-request page 0"
+
+    def test_endpoint_that_ignores_start_at_terminates_and_marks_incomplete(self, caplog):
+        """The union-based stop condition has no intrinsic progress guarantee:
+        a server/proxy that serves the SAME non-empty page for every startAt
+        would freeze the union below total forever. The walk must cut itself
+        off once startAt passes total — bounded requests, marked incomplete —
+        instead of looping unboundedly inside a webhook request."""
+        issue_data = _issue_with_comments(total=250, embedded=100)
+        same_page = MagicMock()
+        same_page.status_code = 200
+        same_page.json.return_value = {"comments": _comment_page(0, 100)}
+        client = MagicMock()
+        client.get.return_value = same_page  # identical page for EVERY offset
+
+        with caplog.at_level("WARNING"):
+            complete_issue_comments(issue_data, BASE_URL, AUTH, client)
+
+        assert client.get.call_count == 3, "startAt 0/100/200, then the guard fires at 300 >= 250"
+        assert issue_data.get("_comments_incomplete") is True
+        assert any("non-conforming pagination" in r.message for r in caplog.records)
 
 
 class TestServiceFetchIssuePaginates:
@@ -893,6 +1042,106 @@ class TestNeedsRefetchSidecarMarker:
 
         assert not (backfill.issues_dir / "PROJ-6.json.incomplete").exists()
 
+    def test_backfill_marker_failure_does_not_fail_the_saved_issue(self, tmp_path):
+        """Sibling of the webhook-path guard: the JSON is already written, so
+        an OSError from the marker sync must not make save_issue report the
+        issue as failed."""
+        backfill = self._make_backfill(tmp_path)
+        backfill.issues_dir.mkdir(parents=True, exist_ok=True)
+        issue = _issue_with_comments(total=3, embedded=3, issue_key="PROJ-7")
+
+        with patch(
+            "connectors.jira.scripts.backfill._sync_incomplete_marker",
+            side_effect=OSError("permission denied"),
+        ):
+            saved = backfill.save_issue(issue)
+
+        assert saved is not None
+        assert (backfill.issues_dir / "PROJ-7.json").exists()
+
+
+class TestWebhookSaveIssueSyncsSidecarMarker:
+    """``JiraService.save_issue`` (the webhook path) must keep the sidecar
+    marker in sync exactly like ``JiraBackfill.save_issue`` does — both save
+    paths write the SAME ``issues/{key}.json`` files, and ``_needs_refetch``
+    is a stat on the sidecar only. Without this, a webhook refetch that
+    failed mid-pagination (one 429 under the zero in-request retry budget)
+    persists a truncated JSON that every ``--skip-existing`` backfill skips
+    forever, and a webhook save could also leave a stale sidecar behind after
+    healing an issue the backfill had marked."""
+
+    def _make_service(self, tmp_path):
+        from connectors.jira import service as svc
+
+        svc.Config.JIRA_DOMAIN = "mycompany.atlassian.net"
+        svc.Config.JIRA_EMAIL = "bot@mycompany.com"
+        svc.Config.JIRA_API_TOKEN = "test-token-xyz"
+        svc.Config.JIRA_DATA_DIR = tmp_path
+        svc._jira_service = None
+        return svc.JiraService()
+
+    def _save(self, service, issue):
+        with (
+            patch("connectors.jira.service.trigger_incremental_transform", return_value=True),
+            patch.object(service, "fetch_remote_links", return_value=[]),
+            patch.object(service, "fetch_refresh_fields", return_value=None),
+            patch.object(service, "download_all_attachments", return_value=[]),
+        ):
+            return service.save_issue(issue)
+
+    def test_incomplete_issue_writes_sidecar(self, tmp_path):
+        service = self._make_service(tmp_path)
+        issue = _issue_with_comments(total=190, embedded=124, issue_key="PROJ-900")
+        issue["_comments_incomplete"] = True
+
+        saved = self._save(service, issue)
+
+        assert saved is not None
+        assert (tmp_path / "issues" / "PROJ-900.json.incomplete").exists(), (
+            "a webhook save of an incomplete fetch must be visible to the "
+            "backfill's --skip-existing stat, or the issue only heals on "
+            "further webhook activity"
+        )
+
+    def test_complete_issue_clears_stale_sidecar(self, tmp_path):
+        service = self._make_service(tmp_path)
+        issues_dir = tmp_path / "issues"
+        issues_dir.mkdir(parents=True, exist_ok=True)
+        (issues_dir / "PROJ-901.json.incomplete").touch()
+
+        healed = _issue_with_comments(total=3, embedded=3, issue_key="PROJ-901")
+        saved = self._save(service, healed)
+
+        assert saved is not None
+        assert not (issues_dir / "PROJ-901.json.incomplete").exists(), (
+            "a complete webhook save must clear the marker, or the next "
+            "--skip-existing backfill refetches a healed issue forever"
+        )
+
+    def test_marker_failure_does_not_abort_the_publish(self, tmp_path):
+        """The marker only schedules a heal — best-effort bookkeeping. An
+        OSError from it (e.g. a marker file owned by the backfill's OS user
+        that the webhook process cannot touch) must not abort the save or
+        skip the parquet transform: the JSON is already replaced."""
+        service = self._make_service(tmp_path)
+        issue = _issue_with_comments(total=3, embedded=3, issue_key="PROJ-902")
+
+        with (
+            patch("connectors.jira.service.trigger_incremental_transform", return_value=True) as transform,
+            patch.object(service, "fetch_remote_links", return_value=[]),
+            patch.object(service, "fetch_refresh_fields", return_value=None),
+            patch.object(service, "download_all_attachments", return_value=[]),
+            patch(
+                "connectors.jira.service._sync_incomplete_marker",
+                side_effect=OSError("permission denied"),
+            ),
+        ):
+            saved = service.save_issue(issue)
+
+        assert saved is not None, "a marker failure must not turn a successful save into a failure"
+        transform.assert_called_once()
+        assert (tmp_path / "issues" / "PROJ-902.json").exists()
+
 
 class TestDryRunCountsMatchRealSkipDecision:
     """``--dry-run``'s "already downloaded" counters must use the same
@@ -978,6 +1227,28 @@ class TestWebhookFallbackPayloadIsNotAuthoritative:
         payload = self._run_fallback(tmp_path, embedded)
 
         assert "_comments_incomplete" not in payload
+
+    def test_complete_thread_whose_comments_lack_the_visibility_flag_is_marked(self, tmp_path):
+        """Length is not the only kind of incompleteness once a column is read
+        off each comment. The write here is an issue-scoped delete-then-insert,
+        so a comment with no boolean `jsdPublic` replaces an already-observed
+        `public_visibility` with NULL. Preserving the stored rows and healing on
+        the next successful refetch is the safe direction — the same call this
+        class already makes for a short thread."""
+        embedded = {
+            "key": "PROJ-703",
+            "id": "10003",
+            "fields": {
+                "comment": {
+                    "total": 2,
+                    "comments": [_comment("c0"), _comment("c1", jsd_public=None)],
+                }
+            },
+        }
+
+        payload = self._run_fallback(tmp_path, embedded)
+
+        assert payload.get("_comments_incomplete") is True
 
     def test_payload_without_comment_field_is_marked_incomplete(self, tmp_path):
         embedded = {"key": "PROJ-702", "id": "10002", "fields": {"summary": "no comment field"}}
