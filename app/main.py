@@ -995,6 +995,30 @@ async def lifespan(app):
         except Exception:
             logger.exception("ducklake readyz-check registration failed at startup (non-fatal)")
 
+        # Community extensions that `query_mode='remote'` rows need must be on
+        # disk before the first query: the query path LOADs without INSTALL (so
+        # a read-only query never reaches the network), and DuckDB's extension
+        # directory does not survive a container recreate. Without this, every
+        # restart left remote rows answering `Catalog "<alias>" does not exist`
+        # until someone re-saved the registration by hand — the ATTACH is
+        # skipped silently, so nothing in the response said why.
+        try:
+            from src.remote_extension_prewarm import prewarm_from_env
+
+            _prewarm = prewarm_from_env()
+            if _prewarm["installed"] or _prewarm["failed"] or _prewarm["refused"]:
+                logger.info(
+                    "remote-attach extension prewarm: installed=%s failed=%s refused=%s",
+                    _prewarm["installed"],
+                    _prewarm["failed"],
+                    _prewarm["refused"],
+                )
+        except Exception:
+            logger.exception(
+                "remote-attach extension prewarm failed at startup (non-fatal; remote "
+                "rows may answer 'Catalog does not exist' until their extension installs)"
+            )
+
         try:
             from src.analytics_backend import analytics_backend
 

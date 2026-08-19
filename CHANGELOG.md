@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- **A `query_mode='remote'` table no longer breaks on every restart.** The query path LOADs the DuckDB extension a remote row needs without INSTALLing it — deliberately, so a read-only query never reaches the network — but DuckDB installs community extensions into a directory a container recreate wipes. So after any restart (a nightly auto-upgrade is enough) the LOAD failed, the ATTACH was **skipped silently**, and every query against that row answered `Catalog "sf" does not exist` with nothing to say why; re-saving the registration by hand appeared to fix it, because that path runs the connector's own ATTACH, which does INSTALL. Startup now installs what the extracts' `_remote_attach` rows ask for, before the first query. Built-ins are skipped, an extension outside the allowlist is refused (the extract is connector-supplied input and does not get to choose what gets installed), and any failure is logged and stepped over rather than blocking the process — a network blip degrades to the old behaviour instead of a boot loop.
+
 ## [0.83.73] - 2026-08-19
 
 ### Fixed
