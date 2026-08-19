@@ -399,6 +399,7 @@ from app.api.me import router as me_router
 from app.api.me_stats import router as me_stats_router
 from app.api.admin import router as admin_router
 from app.api.admin_bigquery_test import router as admin_bigquery_test_router
+from app.api.admin_doctor import router as admin_doctor_router
 from app.api.admin_keboola_test import router as admin_keboola_test_router
 from app.api.attachments import router as attachments_router
 from app.api.jira_webhooks import router as jira_webhooks_router
@@ -994,6 +995,30 @@ async def lifespan(app):
             _register_ducklake_readyz_check()
         except Exception:
             logger.exception("ducklake readyz-check registration failed at startup (non-fatal)")
+
+        # Community extensions that `query_mode='remote'` rows need must be on
+        # disk before the first query: the query path LOADs without INSTALL (so
+        # a read-only query never reaches the network), and DuckDB's extension
+        # directory does not survive a container recreate. Without this, every
+        # restart left remote rows answering `Catalog "<alias>" does not exist`
+        # until someone re-saved the registration by hand — the ATTACH is
+        # skipped silently, so nothing in the response said why.
+        try:
+            from src.remote_extension_prewarm import prewarm_from_env
+
+            _prewarm = prewarm_from_env()
+            if _prewarm["installed"] or _prewarm["failed"] or _prewarm["refused"]:
+                logger.info(
+                    "remote-attach extension prewarm: installed=%s failed=%s refused=%s",
+                    _prewarm["installed"],
+                    _prewarm["failed"],
+                    _prewarm["refused"],
+                )
+        except Exception:
+            logger.exception(
+                "remote-attach extension prewarm failed at startup (non-fatal; remote "
+                "rows may answer 'Catalog does not exist' until their extension installs)"
+            )
 
         try:
             from src.analytics_backend import analytics_backend
@@ -2037,16 +2062,18 @@ def create_app() -> FastAPI:
             response.headers["X-Agnes-Min-Version"] = MIN_COMPAT_CLI_VERSION
             response.headers["X-Agnes-Accepts"] = SERVER_CAPABILITIES
         # Server-rendered HTML must not be heuristically cached by the browser.
-        # The setup hero (/home, /setup, /install) bakes build-pinned values
-        # into the markup at render time — most importantly the current wheel
-        # filename, served from the version-pinned `/cli/wheel/{name}` endpoint
-        # that 404s for any name but the wheel currently on disk. Without an
-        # explicit directive a browser reuses the cached document, so after a
-        # redeploy a user is handed a stale page whose baked wheel URL now 404s
-        # (the new build replaced the wheel). `no-store` forces a fresh render
-        # on every load. Scoped to text/html so JSON APIs and the
-        # immutable-cached static / marketplace-image assets are untouched; an
-        # explicit Cache-Control set by a route still wins.
+        # The setup hero (/home, /setup, /install) bakes render-time values
+        # into the markup — RBAC-filtered plugin grants, the live connector
+        # manifest, the operator's instance brand/host. (The install prompt's
+        # CLI step used to also bake a version-pinned `/cli/wheel/{name}` URL
+        # that 404s the moment the server upgrades between render and
+        # execution; it now downloads via the unversioned `/cli/download`
+        # endpoint instead, which is immune to that race — but the page as a
+        # whole still isn't safe to cache.) Without an explicit directive a
+        # browser reuses a stale cached document across a redeploy. `no-store`
+        # forces a fresh render on every load. Scoped to text/html so JSON
+        # APIs and the immutable-cached static / marketplace-image assets are
+        # untouched; an explicit Cache-Control set by a route still wins.
         ctype = response.headers.get("content-type", "")
         if ctype.startswith("text/html") and "cache-control" not in response.headers:
             response.headers["Cache-Control"] = "no-store"
@@ -2564,6 +2591,7 @@ def create_app() -> FastAPI:
     app.include_router(telegram_router)
     app.include_router(admin_router)
     app.include_router(admin_bigquery_test_router)
+    app.include_router(admin_doctor_router)
     app.include_router(admin_keboola_test_router)
     app.include_router(access_router)
     app.include_router(me_access_router)

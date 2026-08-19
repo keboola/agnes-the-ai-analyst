@@ -50,6 +50,8 @@ _SAFE_ACCOUNT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 _SAFE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 _private_key_write_lock = threading.Lock()
+_key_dir_lock = threading.Lock()
+_key_dir: Path | None = None
 
 
 def _normalize_key_text(text: str) -> str:
@@ -115,22 +117,24 @@ def _try_decode_base64_key(text: str) -> bytes:
 
 def _snowflake_key_dir() -> Path:
     """Return a per-process, user-private directory for temporary PEM key files."""
-    parent = Path(tempfile.gettempdir()) / "agnes-snowflake-keys"
-    d = parent / f"pid-{os.getpid()}"
-    parent.mkdir(parents=True, exist_ok=True)
-    try:
-        parent.chmod(0o700)
-    except OSError:
-        pass
-    d.mkdir(parents=True, exist_ok=True)
-    d.chmod(0o700)
-    return d
+    global _key_dir
+    if _key_dir is not None:
+        return _key_dir
+    with _key_dir_lock:
+        if _key_dir is not None:
+            return _key_dir
+        d = Path(tempfile.mkdtemp(prefix="agnes-snowflake-keys."))
+        try:
+            d.chmod(0o700)
+        except OSError:
+            pass
+        _key_dir = d
+    return _key_dir
 
 
 def _cleanup_snowflake_key_dir() -> None:
-    d = Path(tempfile.gettempdir()) / "agnes-snowflake-keys" / f"pid-{os.getpid()}"
-    if d.exists():
-        shutil.rmtree(d, ignore_errors=True)
+    if _key_dir is not None and _key_dir.exists():
+        shutil.rmtree(_key_dir, ignore_errors=True)
 
 
 atexit.register(_cleanup_snowflake_key_dir)
@@ -144,7 +148,10 @@ def _safe_key_path_part(s: str) -> str:
 def _private_key_file_path(private_key_pem: str, account: str, user: str, secret_name: str) -> Path:
     """Return a deterministic, per-process file path for a normalized PEM key."""
     digest = hashlib.sha256(f"{account}:{user}:{secret_name}:{private_key_pem}".encode()).hexdigest()[:24]
-    return _snowflake_key_dir() / f"{_safe_key_path_part(secret_name)}-{_safe_key_path_part(account)}-{_safe_key_path_part(user)}-{digest}.pem"
+    return (
+        _snowflake_key_dir()
+        / f"{_safe_key_path_part(secret_name)}-{_safe_key_path_part(account)}-{_safe_key_path_part(user)}-{digest}.pem"
+    )
 
 
 def _write_private_key_pem(pem: str, path: Path) -> None:
@@ -251,22 +258,28 @@ def install_snowflake_adbc_driver(*, missing_ok: bool = True) -> None:
         )
 
     target = ext_dir / source.name
-    ext_dir.mkdir(parents=True, exist_ok=True)
     tmp_target = ext_dir / f".{source.name}.{os.getpid()}.tmp"
     try:
+        ext_dir.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, tmp_target)
         os.replace(tmp_target, target)
         logger.info("Copied ADBC Snowflake driver to %s", target)
     except OSError as exc:
         if tmp_target.is_file():
             tmp_target.unlink(missing_ok=True)
-        logger.warning(
-            "Could not stage ADBC Snowflake driver to %s: %s. "
-            "DuckDB may still find the driver via LD_LIBRARY_PATH or system paths.",
-            target,
-            exc,
-        )
-        return
+        if missing_ok:
+            logger.warning(
+                "Could not stage ADBC Snowflake driver to %s: %s. "
+                "DuckDB may still find the driver via LD_LIBRARY_PATH or system paths.",
+                target,
+                exc,
+            )
+            return
+        raise RuntimeError(
+            f"Could not stage ADBC Snowflake driver to {target}: {exc}. "
+            "Install it with scripts/install-adbc-driver.sh "
+            "or 'uv pip install --python .venv/bin/python adbc-driver-snowflake'."
+        ) from exc
 
 
 def _is_safe_segment(value: str, name: str) -> str:

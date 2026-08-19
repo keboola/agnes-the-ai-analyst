@@ -100,6 +100,58 @@ _INIT_COMPLETE_FILE = ".claude/init-complete"
 _CA_ENV_VARS = ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "GIT_SSL_CAINFO")
 
 
+# Directories `agnes init` refuses to use as a workspace, exact match after
+# path resolution. Initializing into any of these scatters `.claude/`,
+# `.agnes/`, `AGNES_WORKSPACE.md` and marketplace clones across a directory
+# that already has unrelated meaning ($HOME, filesystem roots, system
+# paths). The refusal lives here — in code, with an actionable hint — so
+# the install prompt only needs one line about it instead of a prose
+# decision tree the setup agent had to interpret.
+_UNSAFE_WORKSPACE_PATHS = (
+    "/",
+    "/tmp",
+    "/etc",
+    "/usr",
+    "/var",
+    "/opt",
+    "/root",
+    "/bin",
+    "/sbin",
+    "/boot",
+    "/sys",
+    "/proc",
+)
+
+
+def _unsafe_workspace_reason(workspace: Path) -> Optional[str]:
+    """Return a short reason when ``workspace`` is an unsafe init target,
+    ``None`` when it is fine.
+
+    Exact matches only — a subdirectory of $HOME (the documented default
+    ``~/Desktop/<brand>``) is a normal workspace. Comparison happens on
+    resolved paths so macOS' ``/tmp`` → ``/private/tmp`` symlink (and any
+    similar alias) cannot dodge the list.
+    """
+    try:
+        home = Path.home().resolve()
+    except (OSError, RuntimeError):  # no resolvable home — skip that check
+        home = None
+    if home is not None and workspace == home:
+        return "your home directory"
+    # Filesystem root, covering Windows drive roots (C:\) as well.
+    if workspace == Path(workspace.anchor):
+        return "a filesystem root"
+    unsafe_resolved = set()
+    for p in _UNSAFE_WORKSPACE_PATHS:
+        try:
+            unsafe_resolved.add(Path(p).resolve())
+        except OSError:
+            continue
+    if workspace in unsafe_resolved:
+        return "a system directory"
+    return None
+
+
 def _chmod_workspace_hooks(workspace: Path) -> None:
     """Set execute bit on every `.sh` under `<workspace>/.claude/hooks/`.
 
@@ -405,14 +457,16 @@ def init(
     ),
     workspace_str: Optional[str] = typer.Option(None, "--workspace", help="Target dir (default: cwd)"),
     skip_materialize: bool = typer.Option(
-        False,
-        "--skip-materialize",
+        True,
+        "--skip-materialize/--materialize",
         help=(
-            "Skip materialized-mode tables on the first pull. The first "
-            "init can otherwise spend tens of minutes silently downloading "
-            "a single multi-GB scheduled-query parquet. Materialized rows "
-            "are still discoverable via `agnes catalog`; rerun `agnes pull` "
-            "without this flag once you actually need them locally."
+            "Skip materialized-mode tables on the first pull (default: on). "
+            "The first init can otherwise spend tens of minutes silently "
+            "downloading a single multi-GB scheduled-query parquet while "
+            "every lighter table waits behind it. Materialized rows are "
+            "still discoverable via `agnes catalog`; fetch them on demand "
+            "with a later `agnes pull` (no flag needed there), or force "
+            "them into this first pull with --materialize."
         ),
     ),
     no_shortcut: bool = typer.Option(
@@ -428,6 +482,33 @@ def init(
 ):
     """Bootstrap workspace: auth, CLAUDE.md, hooks, first pull, AGNES_WORKSPACE.md."""
     workspace = Path(workspace_str).resolve() if workspace_str else Path.cwd()
+
+    # ------------------------------------------------------------------
+    # Unsafe-workspace guard — FIRST, before the bundle exchange (which
+    # consumes a one-use setup token) and before any network call or
+    # filesystem write, so a refusal has zero side effects.
+    # ------------------------------------------------------------------
+    unsafe_reason = _unsafe_workspace_reason(workspace)
+    if unsafe_reason is not None:
+        typer.echo(
+            render_error(
+                0,
+                {
+                    "detail": {
+                        "kind": "unsafe_workspace",
+                        "hint": (
+                            f"{workspace} is {unsafe_reason} — initializing here "
+                            "would scatter .claude/, .agnes/ and workspace files "
+                            "across it. Create a dedicated workspace folder "
+                            "(e.g. ~/Desktop/Agnes), cd into it, and re-run "
+                            "`agnes init` from there."
+                        ),
+                    }
+                },
+            ),
+            err=True,
+        )
+        raise typer.Exit(code=1)
 
     # ------------------------------------------------------------------
     # Bundle flow (M4): when --bundle is provided, exchange the embedded
@@ -776,7 +857,12 @@ def init(
                     {
                         "detail": {
                             "kind": "partial_state",
-                            "hint": "Workspace already initialized. Re-run with --force to redo.",
+                            "hint": (
+                                "Workspace already initialized. Run `agnes update` "
+                                "to converge the CLI, workspace, plugins and data "
+                                "off your saved credential, or re-run with --force "
+                                "to redo from scratch."
+                            ),
                         }
                     },
                 ),
@@ -1280,20 +1366,28 @@ def init(
             f"  Files    : {len(override_result.created)} created, "
             f"{len(override_result.overwritten)} overwritten from template"
         )
-    # `parquets_total` is the count of materialized rows in the manifest;
-    # `tables_updated` is the count of those actually fetched this run.
-    # The catalog can carry many more remote-only rows that aren't part
-    # of `parquets_total` at all — surface that explicitly so analysts
-    # who see "0 synced (0 total)" after `--skip-materialize` don't
-    # conclude the server returned an empty catalog. Issue #257.
-    if skip_materialize:
+    # Two different numbers, and reading one as the other is how this line
+    # went wrong before: `parquets_total` counts the non-remote tables this run
+    # CONSIDERED (the skip branch in `cli/lib/pull.py` `continue`s before that
+    # counter), while `materialized_skipped` counts the rows left alone.
+    # Reporting `parquets_total` as "skipped" told an analyst with three
+    # ordinary tables and no materialized ones that three rows were skipped,
+    # and gating the note on it hid the note entirely on the instance the note
+    # exists for — everything materialized, so the count is zero and the fall-
+    # through printed the bare "0/0" that issue #257 set out to prevent.
+    #
+    # The fetched count is stated honestly rather than hardcoded to zero: with
+    # `--skip-materialize` an instance can still have ordinary tables to pull.
+    fetched = f"{result.tables_updated}/{result.parquets_total} local table(s) fetched"
+    if skip_materialize and result.materialized_skipped > 0:
         typer.echo(
-            f"  Tables   : 0 fetched locally — {result.parquets_total} "
-            f"materialized row(s) skipped (re-run without --skip-materialize "
-            f"to download). Catalog still serves all registered tables."
+            f"  Tables   : {fetched} — {result.materialized_skipped} "
+            f"materialized row(s) skipped by default. Fetch them on demand "
+            f"with `agnes pull`, or re-run `agnes init --materialize` for "
+            f"the full first pull. Catalog still serves all registered tables."
         )
     else:
-        typer.echo(f"  Tables   : {result.tables_updated}/{result.parquets_total} local materialized rows fetched")
+        typer.echo(f"  Tables   : {fetched}")
     typer.echo(f"  Rules    : {result.rules_count}")
     typer.echo(f"  Workspace: {workspace}")
     typer.echo("")

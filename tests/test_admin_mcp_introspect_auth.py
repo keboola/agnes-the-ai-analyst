@@ -18,8 +18,8 @@ from cryptography.fernet import Fernet
 
 pytest.importorskip("mcp", reason="mcp SDK not installed")
 
-from app.api.admin_mcp import _exc_summary
 from app.secrets_vault import _reset_ephemeral_key_for_tests
+from connectors.mcp.client import exc_summary as _exc_summary
 from src.db import get_system_db
 from src.repositories import per_user_secrets_repo
 from src.repositories.mcp_sources import MCPSourceRepository

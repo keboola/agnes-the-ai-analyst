@@ -172,6 +172,7 @@
                     'keboola_oauth_not_master': "Keboola sign-in was refused: the session Keboola issued did not verify as a master token, which is unexpected for an interactive login. Please report this to your " ~ (instance_brand or "Agnes") ~ " administrator.",
                     'keboola_project_mismatch': "Your Keboola session belongs to a different project than this instance. Retry and pick project " ~ (keboola_expected_project or "configured for this instance") ~ " on the Keboola sign-in screen.",
                     'email_not_configured': "Email link sign-in is not available on this server (no mail delivery configured).",
+                    'email_send_failed': "We couldn't send the sign-in email. Please try again later or contact your " ~ (instance_brand or "Agnes") ~ " administrator.",
                 } %}
                 {% if _err and _err_messages.get(_err) %}
                 {# Inline error banner — canonical `.flash flash-error`

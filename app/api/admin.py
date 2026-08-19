@@ -491,8 +491,11 @@ def _validate_materialize_section(sections: Dict[str, Dict[str, Any]]) -> None:
 #   3. Writes to DATA_DIR/state/instance.yaml (the writable overlay).
 #   4. Writes one audit_log entry tagged `instance_config.update` containing
 #      a sanitized diff (secret-looking keys are masked).
-# Hot-reload is OUT OF SCOPE for #91 — the response carries
-# `restart_required=True` so the UI can show the banner.
+# Most sections hot-reload on their own (`reset_cache()` below drops the
+# in-process instance.yaml cache, and most consumers read it fresh per
+# call) — the response's `restart_required`/`sections_effect` say honestly
+# which of the sections just saved still need a restart. See
+# `_SECTION_BASELINE_EFFECT` / `_effect_for_section` below.
 
 # Sections an admin can mutate.
 #
@@ -531,6 +534,104 @@ _EDITABLE_SECTIONS: tuple[str, ...] = tuple(
 # the audit entry can flag the change as high-risk and the UI can surface
 # the right warning copy.
 _DANGER_SECTIONS: tuple[str, ...] = ("auth", "server")
+
+
+# --- Honest restart_required ------------------------------------------------
+#
+# What POST /api/admin/server-config's response tells the operator about a
+# save: whether SOMETHING they touched needs a restart before it applies.
+# Historically this was a hardcoded `True` for every save, even though most
+# sections are re-read per request (`reset_cache()` above drops the
+# in-process instance.yaml cache on every save, so any consumer that calls
+# `get_value`/`load_instance_config()` fresh sees the new value immediately).
+#
+# Per-section baseline: the effect of the keys in a section that are NOT
+# covered by any `Switch` (`app.switches.SWITCHES`) whose `config_keys[0]`
+# is that section. This is deliberately a per-SECTION verdict, not per-key —
+# a section like `auth` has some genuinely live leaves (the two Keboola
+# switches below) but is still reported as `restart` overall, because most
+# of its OTHER keys (client_id/client_secret/allowed_domain/...) feed OAuth
+# provider client objects built once at startup. Evidence per entry (audit,
+# 2026-08; see also `_effect_for_section` below for how a touched switch can
+# still push a "live" baseline up to `restart`/`deploy`, never down):
+_SECTION_BASELINE_EFFECT: dict[str, str] = {
+    # --- live: every consumer found reads the section fresh per call/run;
+    # no module-level or app.state object caches the pre-save value past
+    # the `reset_cache()` every save triggers.
+    "instance": "live",  # get_experience()/get_instance_brand()/get_instance_favicon()/get_home_route() are thin get_value() wrappers, called per render
+    "theme": "live",  # get_theme_css_overrides() re-reads per render
+    "ai": "live",  # every consumer (app/api/memory.py, services/corporate_memory/collector.py, services/session_processors/verification.py, src/knowledge_digests.py) calls load_instance_config().get("ai") fresh per invocation; no LLM client is cached at boot
+    "materialize": "live",  # connectors/bigquery/extractor.py::_get_lock_ttl_seconds() re-reads get_value("materialize", "lock_ttl_seconds") on every lock acquire/sweep, not just at import
+    "marketplace": "live",  # its one known key (curators_url) is read fresh per page render in app/web/router.py
+    "connectors": "live",  # GET /api/connectors/params reads the overlay fresh per request (its own docstring: "editable at runtime")
+    "studio": "live",  # matches its switch — no other known key under this section
+    "guardrails": "live",  # matches its switch
+    "library": "live",  # matches its switch
+    "features": "live",  # matches its switch
+    "mcp": "live",  # matches all five switches under it
+    "access_policies": "live",  # matches its switch
+    # --- restart: something under the section is built once at boot and
+    # never rebuilt from a later save.
+    "chat": "restart",  # app.state.chat_config is built once in create_app() (matches both switches under it)
+    "auth": "restart",  # OAuth provider client objects (app/auth/providers/*) are constructed once at startup and never rebuilt — a minority of this section's keys (the two Keboola switches) ARE read live, but most (client_id/client_secret/allowed_domain/...) are not
+    "server": "restart",  # partial and conservative: get_public_url() is read fresh at most call sites, but app.state.public_url is snapshotted ONCE at startup for the Slack Socket-Mode dispatcher (app/main.py — it has no inbound request to derive a host from); no live per-request reader was found for server.host/server.hostname
+    "email": "restart",  # conservative: the actual SMTP send path (app/auth/providers/email.py, password.py) reads SMTP_HOST/SMTP_USER/SMTP_PASSWORD straight from os.environ, never from get_value("email", ...) — a save here was not observed to change behavior at all, live or restart; "restart" is the non-overclaiming answer
+    "telegram": "restart",  # services/telegram_bot/bot.py reads instance.yaml ONCE at module import, in a separate process — restarting the API alone does not refresh it
+    "data_source": "restart",  # cross-process: THIS process reads it live (resolved per call; reset_cache() explicitly clears connectors.bigquery.access.get_bq_access's cache), but reset_cache() drops only the in-process overlay — under a role-split deployment (api/gateway/worker as separate processes, a documented mode) the scheduler and workers keep extracting against the pre-save coordinates until they are bounced, so a connection-settings save must not be reported as fully live; same reasoning as telegram above
+    "jira": "restart",  # connectors/jira/service.py's _JiraConfig snapshots JIRA_* env vars at class-body eval (import time); no instance.yaml wiring was found for this section at all
+    "corporate_memory": "restart",  # partial: most keys (distribution_mode/approval_mode/sources.*) are read fresh via get_corporate_memory_config() per page render, but corporate_memory.confidence is applied ONCE at startup via services/corporate_memory/confidence.configure() (app/main.py) — conservative for the whole section, same reasoning as auth
+    "openmetadata": "live",  # src/catalog_export.py reads instance config fresh at each invocation (a standalone job, not a long-lived cached client)
+}
+
+#: Rank used to pick the "strongest" effect among a section's baseline and
+#: any switch actually touched by a given patch. Higher = more conservative;
+#: `deploy` outranks `restart` outranks `live` so a save is never reported
+#: as less disruptive than the truth.
+_EFFECT_RANK: dict[str, int] = {"live": 0, "restart": 1, "deploy": 2}
+
+
+def _switch_touched_by_patch(switch, patch: Dict[str, Any]) -> bool:
+    """True if `patch` (a single section's patch dict) sets the leaf this
+    switch's `config_keys[1:]` path points at.
+
+    Used to narrow "sections whose keys map to switches" down to the
+    switches actually in THIS request, so an untouched switch's effect can't
+    push (or fail to push) the verdict for a key the operator didn't save.
+    """
+    node: Any = patch
+    for key in switch.config_keys[1:]:
+        if not isinstance(node, dict) or key not in node:
+            return False
+        node = node[key]
+    return True
+
+
+def _effect_for_section(section: str, patch: Dict[str, Any]) -> str:
+    """The strongest effect among `section`'s non-switch baseline and every
+    switch under it that THIS patch actually touches.
+
+    A section with no baseline entry (a new section added without updating
+    `_SECTION_BASELINE_EFFECT`) defaults to `"restart"` — the conservative
+    choice for an unclassified section, per the same reasoning as `email`/
+    `server`/etc. above.
+    """
+    effects = [_SECTION_BASELINE_EFFECT.get(section, "restart")]
+    for switch in SWITCHES:
+        if switch.editable and switch.config_keys and switch.config_keys[0] == section:
+            if _switch_touched_by_patch(switch, patch):
+                effects.append(switch.effect)
+    return max(effects, key=lambda e: _EFFECT_RANK.get(e, _EFFECT_RANK["restart"]))
+
+
+# Every editable section must have an explicit baseline OR full switch
+# coverage explaining it — this assertion turns "I added a new editable
+# section and forgot to classify it" into a loud import-time error instead
+# of a silent fall-through to the conservative default above.
+_UNCLASSIFIED_SECTIONS = sorted(section for section in _EDITABLE_SECTIONS if section not in _SECTION_BASELINE_EFFECT)
+assert not _UNCLASSIFIED_SECTIONS, (
+    f"section(s) {_UNCLASSIFIED_SECTIONS} have no entry in _SECTION_BASELINE_EFFECT — "
+    "classify them (see the comment above) before making them admin-editable"
+)
 
 
 # Known-but-optional config fields per section. The /admin/server-config UI
@@ -2238,9 +2339,12 @@ async def update_server_config(
     Accepts a partial patch keyed by section. Validates sections, refuses
     danger-zone edits without explicit confirmation, deep-merges into the
     current overlay, writes the file, and emits one audit entry per save
-    with a sanitized diff. Returns ``restart_required=true`` so the UI can
-    show the restart banner — hot-reload is a separate issue (see #91 Out
-    of scope).
+    with a sanitized diff. Returns ``restart_required`` computed from the
+    sections actually touched (``true`` only when at least one has effect
+    ``restart``/``deploy`` — see ``_SECTION_BASELINE_EFFECT``/
+    ``_effect_for_section`` above) plus ``sections_effect``, a
+    ``{section: "live"|"restart"|"deploy"}`` map so the UI can say which
+    section forced it.
     """
     import yaml
 
@@ -2412,9 +2516,16 @@ async def update_server_config(
         },
     )
 
+    # Honest per-section effect (see `_effect_for_section` above) instead of
+    # the hardcoded `restart_required=True` this endpoint used to return
+    # unconditionally.
+    sections_effect = {section: _effect_for_section(section, patch) for section, patch in request.sections.items()}
+    restart_required = any(effect != "live" for effect in sections_effect.values())
+
     return {
         "status": "ok",
-        "restart_required": True,
+        "restart_required": restart_required,
+        "sections_effect": sections_effect,
         "sections_updated": sorted(request.sections.keys()),
         "diff_count": len(diff),
     }
@@ -3435,21 +3546,26 @@ def _validate_source_type_configured(source_type: Optional[str]) -> None:
 
     A source_type is considered configured when:
 
+    - a named ``source_connections`` row of that type exists — the registry
+      is the source of truth (spec 2026-06-12); a connection added via
+      /admin/data-sources lets that type register regardless of the legacy
+      ``data_source.type``, OR
     - it matches the instance's primary ``data_source.type``, OR
     - a non-empty ``data_source.<source_type>`` block exists in the
-      effective `instance.yaml` (multi-source instances), OR
+      effective `instance.yaml` (legacy first-boot seed), OR
     - it's in the small allowlist of types that don't sit under
       `data_source.*` at all (Jira, local — see
       ``_SOURCE_TYPES_INDEPENDENT_OF_DATA_SOURCE``).
 
-    Special case: when the configured primary is ``'local'`` (the default
-    when an instance is freshly bootstrapped and no `data_source.type` has
-    been set yet), the validator stays permissive — refusing registrations
-    here would block the first-time-setup workflow where the operator
-    registers a few tables against a not-yet-fully-configured instance.
-    The misconfiguration that this validator targets is the *explicit
-    mismatch*: `type=bigquery` instance + `source_type=keboola` payload
-    with no `data_source.keboola.*` block. That case still 422s.
+    Special case: when the configured primary is ``'local'`` (or its
+    documented alias ``'csv'`` — the default when an instance is freshly
+    bootstrapped and no `data_source.type` has been set yet), the validator
+    stays permissive — refusing registrations here would block the
+    first-time-setup workflow where the operator registers a few tables
+    against a not-yet-fully-configured instance. The misconfiguration that
+    this validator targets is the *explicit mismatch*: `type=bigquery`
+    instance + `source_type=keboola` payload with no keboola connection and
+    no `data_source.keboola.*` block. That case still 422s.
 
     A bare/None source_type is tolerated for backward compat with legacy
     CLI scripts; the route resolves it later against
@@ -3466,21 +3582,32 @@ def _validate_source_type_configured(source_type: Optional[str]) -> None:
     if source_type == configured_primary:
         return
 
-    # Multi-source: accept if a non-empty `data_source.<source_type>` block
-    # exists. Empty dict / None / "" all count as "not configured".
+    # Registry is the source of truth (spec 2026-06-12): a configured
+    # `source_connections` row of this type means the row can sync, regardless
+    # of the legacy `data_source.type`. Checked before the instance.yaml
+    # fallbacks below — a keboola connection added via /admin/data-sources must
+    # let keboola tables register even on a bigquery-primary instance.
+    from src.repositories import source_connections_repo
+
+    if source_connections_repo().list(source_type=source_type):
+        return
+
+    # Legacy fallback (instance.yaml is a first-boot seed, not the authority):
+    # accept if a non-empty `data_source.<source_type>` block exists. Empty
+    # dict / None / "" all count as "not configured".
     secondary_block = get_value("data_source", source_type, default=None)
     if secondary_block:
         # Truthy non-empty dict / mapping / scalar — treat as configured.
         return
 
-    # Bootstrap-friendliness: a primary of 'local' means the instance hasn't
-    # been pointed at a real source yet (or has been deliberately set to
-    # local-only). Don't gate registrations in that state — the operator is
-    # likely in the middle of first-time setup and will fill in the config
-    # next. The check still fires when primary is an actual source type
-    # (bigquery / keboola) and the requested source_type doesn't match
-    # AND has no secondary block.
-    if configured_primary == "local":
+    # Bootstrap-friendliness: a primary of 'local' (or its documented alias
+    # 'csv') means the instance hasn't been pointed at a real source yet (or
+    # has been deliberately set to local-only). Don't gate registrations in
+    # that state — the operator is likely in the middle of first-time setup
+    # and will fill in the config next. The check still fires when primary is
+    # an actual source type (bigquery / keboola) and the requested source_type
+    # doesn't match AND has no connection or secondary block.
+    if configured_primary in ("local", "csv"):
         return
 
     raise HTTPException(
@@ -6197,8 +6324,17 @@ async def configure_instance(
         if request.allowed_domain:
             overlay.setdefault("auth", {})["allowed_domain"] = request.allowed_domain
 
-        # data_source is fully owned by this endpoint — replace wholesale.
-        overlay["data_source"] = {"type": request.data_source}
+        # data_source.type is fully owned by this endpoint, but the REST of
+        # the data_source block is not — an instance can already carry
+        # sibling connection coordinates (data_source.snowflake/databricks/
+        # ...) saved through /admin/server-config, and re-running first-time
+        # setup must not silently drop them. Merge `type` into whatever is
+        # already there instead of replacing the block wholesale.
+        existing_data_source = overlay.get("data_source")
+        if not isinstance(existing_data_source, dict):
+            existing_data_source = {}
+        existing_data_source["type"] = request.data_source
+        overlay["data_source"] = existing_data_source
         if request.data_source == "keboola":
             overlay["data_source"]["keboola"] = {
                 "stack_url": request.keboola_url,

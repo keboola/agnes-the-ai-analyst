@@ -139,6 +139,15 @@ _CONFIG_DEFAULTS = {
     "default_mem_limit": "1g",
     "default_cpus": 1.0,
     "max_apps_per_user": 3,
+    # Container-hardening posture — instance-wide, never per-app-overridable
+    # (an app author choosing their own sandbox escape hatch would defeat the
+    # point). `cap_drop: ALL` / `no-new-privileges` are unconditional and have
+    # no knob; only these two are configurable. `container_read_only` is off
+    # by default because the read-only rootfs needs a tmpfs list verified
+    # against the shipped nginx+supervisord runtime image — see
+    # `src/data_apps/spec.py::build_container_spec`.
+    "container_read_only": False,
+    "container_pids_limit": 512,
 }
 
 # `POST /api/data-apps` quota-check-then-create serialization. Short TTL —
@@ -461,7 +470,20 @@ def _rmtree_config_dir(slug: str) -> None:
     JWT in plaintext, so it's removed as hygiene on both a full app delete
     (``delete_data_app``) and a single draft delete/cascade
     (``_teardown_draft``). Shared so the two call sites can't drift."""
-    config_dir = os.path.join(os.environ.get("DATA_DIR", "/data"), "apps", slug)
+    apps_dir = os.path.join(os.environ.get("DATA_DIR", "/data"), "apps")
+    config_dir = os.path.join(apps_dir, slug)
+    # `${DATA_DIR}/apps/git` is the shared bare-repo store, not any one app's
+    # config directory (`src.data_apps.git_repos.repo_path`). "git" is refused at
+    # create time (`RESERVED_SLUGS`), but a row written before that guard existed
+    # would still reach this line, and deleting one app must never be able to
+    # destroy every app's git history.
+    if os.path.realpath(config_dir) == os.path.realpath(os.path.join(apps_dir, "git")):
+        logger.error(
+            "refusing to remove the shared bare-repo store for slug %r; "
+            "remove the app's row by hand if it really is stale",
+            slug,
+        )
+        return
     try:
         shutil.rmtree(config_dir, ignore_errors=False)
     except FileNotFoundError:
@@ -2015,14 +2037,19 @@ async def reap_idle_data_apps(
     # running container still reports "running" here regardless of age, so only a
     # genuinely dead ("stopped"/"absent") container is flipped to error.
     #
-    # This works under the runtime's unbounded `unless-stopped` policy, which is
-    # what ships today: a crash-looping container alternates between Docker
-    # `running` and `restarting`, and the runner folds `restarting` into
-    # "stopped", so the loop is detected either way. The consequence is that a
-    # single transient restart also reads dead, which is why a dead reading has
-    # to be confirmed by a second sweep before `error` is written (below). The
-    # bounded `on-failure` policy that would let a doomed container settle
-    # instead of retrying forever is a separate change (#1406).
+    # This works under the runtime's bounded `on-failure` policy
+    # (`MaximumRetryCount: 3`, see `services/apps_runner/api.py::up`), which is
+    # what ships today: while the daemon is still spending that retry budget a
+    # crash-looping container alternates between Docker `running` and
+    # `restarting`, and the runner folds `restarting` into "stopped", so the
+    # loop is caught mid-flight; once the budget is exhausted the doomed
+    # container settles as `exited` and reads "stopped" for good. A single
+    # transient restart also reads dead either way, which is why a dead reading
+    # still has to be confirmed by a second sweep before `error` is written
+    # (below). The bounded policy also means Docker does not bring a container
+    # back after a daemon or host restart, so a previously-live app settles as
+    # `exited` after a reboot, is reconciled to `error` here, and needs an
+    # explicit redeploy — the ingress proxy wakes only `sleeping` rows.
     reconciled: list[str] = []
     for row in repo.list(state="running", limit=100000):
         updated_at = row.get("updated_at")

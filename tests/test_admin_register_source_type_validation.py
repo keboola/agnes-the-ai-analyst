@@ -7,6 +7,7 @@ E2E sub-agent finding 2026-05-01: instance configured with
 POSTs `{source_type: 'keboola'}` → returns 201, row lands in registry but
 never syncs. No upfront validation surfaces the misconfig.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -26,12 +27,17 @@ def bq_only_instance(monkeypatch):
         },
     }
     monkeypatch.setattr(
-        "app.instance_config.load_instance_config", lambda: fake_cfg, raising=False,
+        "app.instance_config.load_instance_config",
+        lambda: fake_cfg,
+        raising=False,
     )
     monkeypatch.setattr(
-        "config.loader.load_instance_config", lambda: fake_cfg, raising=False,
+        "config.loader.load_instance_config",
+        lambda: fake_cfg,
+        raising=False,
     )
     from app.instance_config import reset_cache
+
     reset_cache()
     yield fake_cfg
     reset_cache()
@@ -51,12 +57,17 @@ def keboola_only_instance(monkeypatch):
         },
     }
     monkeypatch.setattr(
-        "app.instance_config.load_instance_config", lambda: fake_cfg, raising=False,
+        "app.instance_config.load_instance_config",
+        lambda: fake_cfg,
+        raising=False,
     )
     monkeypatch.setattr(
-        "config.loader.load_instance_config", lambda: fake_cfg, raising=False,
+        "config.loader.load_instance_config",
+        lambda: fake_cfg,
+        raising=False,
     )
     from app.instance_config import reset_cache
+
     reset_cache()
     yield fake_cfg
     reset_cache()
@@ -115,16 +126,21 @@ def test_register_matching_source_type_succeeds(seeded_app, bq_only_instance):
     """Sanity: BQ row on a BQ instance still works — the new validation
     only refuses MISmatches."""
     from unittest.mock import MagicMock
-    import pytest as _pt
 
     # Stub the BQ rebuild to keep test offline.
     from connectors.bigquery import extractor as _bq
+
     _orig = _bq.rebuild_from_registry
-    _bq.rebuild_from_registry = MagicMock(return_value={
-        "project_id": "my-test-project", "tables_registered": 1,
-        "errors": [], "skipped": False,
-    })
+    _bq.rebuild_from_registry = MagicMock(
+        return_value={
+            "project_id": "my-test-project",
+            "tables_registered": 1,
+            "errors": [],
+            "skipped": False,
+        }
+    )
     from src import orchestrator as _orch
+
     _orig_orch = _orch.SyncOrchestrator
     _orch.SyncOrchestrator = lambda *a, **kw: MagicMock()
     try:
@@ -181,6 +197,101 @@ def test_register_omitted_source_type_passes_through(seeded_app, bq_only_instanc
         json={
             "name": "legacy_caller",
             # source_type omitted entirely
+            "query_mode": "local",
+        },
+        headers=_auth(token),
+    )
+    assert r.status_code == 201, r.json()
+
+
+# --------------------------------------------------------------------------
+# `csv` alias + named-source-connections registry (spec 2026-06-12).
+#
+# `csv` is a documented alias for `local` (config/instance.yaml.example,
+# admin.py server-config hint). The validator's bootstrap-friendly escape
+# only matched the literal `"local"`, so a `csv`-primary instance wrongly
+# 422'd secondary-source registrations that a `local` primary accepts.
+#
+# And the registry (`source_connections`) — not `instance.yaml` — is the
+# source of truth for what's configured (spec decision). A configured
+# connection of a type must let that type register regardless of the legacy
+# `data_source.type`.
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+def csv_instance(monkeypatch):
+    """Instance whose primary `data_source.type` is the `csv` alias for local."""
+    fake_cfg = {"data_source": {"type": "csv"}}
+    monkeypatch.setattr(
+        "app.instance_config.load_instance_config",
+        lambda: fake_cfg,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "config.loader.load_instance_config",
+        lambda: fake_cfg,
+        raising=False,
+    )
+    from app.instance_config import reset_cache
+
+    reset_cache()
+    yield fake_cfg
+    reset_cache()
+
+
+def _create_keboola_connection(c, token, *, name="kbc-conn"):
+    """Register a keboola source-connection via the admin API (offline)."""
+    r = c.post(
+        "/api/admin/source-connections",
+        json={
+            "name": name,
+            "source_type": "keboola",
+            "config": {"stack_url": "https://connection.example.com"},
+            "token_env": "KEBOOLA_STORAGE_TOKEN",
+        },
+        headers=_auth(token),
+    )
+    assert r.status_code == 201, r.json()
+    return r.json()["id"]
+
+
+def test_register_keboola_on_csv_instance_allowed(seeded_app, csv_instance):
+    """`csv` is an alias for `local`, so a csv-primary instance must be as
+    bootstrap-permissive as a `local` one. Regression: csv wrongly 422'd a
+    keboola registration that `local` accepts."""
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+
+    r = c.post(
+        "/api/admin/register-table",
+        json={
+            "name": "kbc_on_csv",
+            "source_type": "keboola",
+            "bucket": "in.c-main",
+            "source_table": "events",
+            "query_mode": "local",
+        },
+        headers=_auth(token),
+    )
+    assert r.status_code == 201, r.json()
+
+
+def test_register_keboola_allowed_when_connection_exists(seeded_app, bq_only_instance):
+    """Registry is the source of truth: a keboola source-connection lets a
+    keboola table register even on a bq-primary instance, regardless of the
+    legacy `data_source.type`."""
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    _create_keboola_connection(c, token)
+
+    r = c.post(
+        "/api/admin/register-table",
+        json={
+            "name": "kbc_via_conn",
+            "source_type": "keboola",
+            "bucket": "in.c-main",
+            "source_table": "events",
             "query_mode": "local",
         },
         headers=_auth(token),

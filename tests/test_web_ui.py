@@ -317,17 +317,17 @@ class TestClaudeSetupPreview:
         assert 'class="placeholder-token"' not in body
         assert "{token}" not in body
         assert "eyJ" not in body
-        # Setup payload text substituted with real server URL. The wheel URL
-        # must be under /cli/wheel/ (uv tool install rejects a bare .whl alias
-        # because it validates the PEP 427 filename in the URL before fetch).
-        assert "/cli/wheel/" in body
+        # Setup payload text substituted with real server URL. Step 1
+        # downloads via the unversioned /cli/download endpoint (immune to a
+        # mid-session server version roll), not a filename-pinned
+        # /cli/wheel/<name> URL.
+        assert "/cli/download" in body
+        assert "/cli/wheel/" not in body
         assert "/cli/agnes.whl" not in body
-        # Unified always-on layout (Fix B + Fix C in 2026-05-10 init-report
-        # response): preflight + marketplace + Atlassian MCP all unconditional.
-        # Step 1 install, step 2 mkdir/cd, step 3 init, step 4 catalog,
-        # step 5 preflight, step 6 marketplace, step 7 diagnose.
+        # Unified always-on layout (minimal form): step 1 install,
+        # step 2 init, step 3 catalog, step 4 marketplace, step 5 diagnose.
         assert "1) Install the CLI" in body
-        assert "7) Run diagnostics" in body
+        assert "5) Run diagnostics" in body
         assert "agnes diagnose" in body
         # `agnes init` is now the mandatory bootstrap step.
         assert "agnes init" in body
@@ -364,8 +364,11 @@ class TestClaudeSetupPreview:
         # marketplace add` — the latter is an internal step described in a
         # comment block, never an action line to run.
         assert "agnes refresh-marketplace --bootstrap" in clipboard
-        # Atlassian MCP registration is always-on now.
-        assert "claude mcp add --transport sse atlassian" in clipboard
+        # Connector bodies are fetched on demand, never inlined into the
+        # clipboard payload (the Atlassian MCP registration lives inside
+        # the fetched SKILL.md body).
+        assert "agnes connectors show connector-atlassian" in clipboard
+        assert "claude mcp add --transport sse atlassian" not in clipboard
         # Legacy admin-only auth verbs are gone from the generated prompt.
         assert "agnes auth import-token" not in clipboard
         # `agnes auth whoami` was the old admin step 3; subsumed by
