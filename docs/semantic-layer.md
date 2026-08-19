@@ -142,6 +142,12 @@ is the fully qualified `DB.SCHEMA.VIEW`, because the importer keys storage on
 the model name and two same-named views in different schemas would otherwise
 overwrite each other.
 
+`DESCRIBE SEMANTIC VIEW` also emits an `EXTENSION` row that the SQL reference
+does not document (name `CA`, Cortex Analyst). It is the only place the declared
+time dimensions and every relationship's `join_type` appear at all, so it is
+parsed for those two and carried whole in the model's `custom_extensions`. A
+malformed payload costs its annotations and nothing else.
+
 **Every expression is tagged `SNOWFLAKE`, which makes it readable but not
 runnable here.** `src/semantic/dialect.py` prefers `DUCKDB` then `ANSI_SQL` and
 reports anything else as unusable *with its reason* — so an imported Snowflake
