@@ -37,6 +37,15 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
+
+# Deliberately the OLD spelling, and deliberately NOT aliased to the SDK's
+# newer `streamable_http_client`. The rename is not a rename — the new entry
+# point takes `http_client: httpx.AsyncClient` where this one takes `headers`,
+# so aliasing it makes the callsite below raise `TypeError` on every HTTP MCP
+# connection and drop the resolved auth headers on the floor. Speaking the new
+# API is a migration (build the client, carry the headers on it, re-check the
+# yield arity), not an import swap; until that happens `mcp<2` in pyproject is
+# what keeps this callable, and `test_mcp_client_transport.py` guards both ends.
 from mcp.client.streamable_http import streamablehttp_client
 
 logger = logging.getLogger(__name__)

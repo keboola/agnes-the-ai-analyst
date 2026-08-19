@@ -5812,13 +5812,20 @@ async def preview_table_policy(
     }
 
 
-def _policy_builder_describe(name: str) -> list:
+def _policy_builder_describe(name: str) -> Optional[list]:
     """``DESCRIBE {name}`` on the read-only analytics connection -- the
     same query ``preview_table_policy`` already runs (line ~5054),
     factored out here because both new builder endpoints below need it:
     Task 2's columns list wants types too, Task 3's compile just wants the
     names. Never trusts a caller-supplied name -- every caller resolves
     ``name`` from the registry row first, never from the URL/body.
+
+    ``None`` when the DESCRIBE itself failed, which is NOT the same as a table
+    with no columns: this runs on a fresh read-only analytics connection where a
+    ``query_mode='remote'`` view's external catalog is not re-ATTACHed, so a
+    failure here is the ordinary outcome for exactly the remote rows a policy is
+    most often written for. Callers that report "no columns" to a human must be
+    able to tell the two apart.
     """
     from src.db import get_analytics_db_readonly
     from src.sql_ident import quote_ident
@@ -5828,7 +5835,8 @@ def _policy_builder_describe(name: str) -> list:
         try:
             return analytics_conn.execute(f"DESCRIBE {quote_ident(name)}").fetchall()
         except Exception:
-            return []
+            logger.info("policy builder: DESCRIBE %s failed; schema unavailable", name, exc_info=True)
+            return None
     finally:
         analytics_conn.close()
 
@@ -5894,7 +5902,12 @@ async def policy_builder_columns(
     name = row.get("name") or table_id
     eligible = row.get("query_mode") == "remote" or bool(row.get("server_only"))
 
-    base_rows = _policy_builder_describe(name)
+    # `None` = the DESCRIBE failed (see the helper): the builder needs that
+    # distinction to explain an empty list, instead of showing "No columns
+    # found" for a table whose schema simply cannot be read from here and only
+    # surfacing the real reason once a compile is attempted.
+    described = _policy_builder_describe(name)
+    base_rows = described or []
 
     # A profile may be keyed by the registry id or the table name depending
     # on when/how it was saved (mirrors `catalog.py::get_table_profile`'s own
@@ -5919,7 +5932,12 @@ async def policy_builder_columns(
 
     mapping_tables = [r["name"] for r in table_registry_repo().list_all() if r.get("policy_mapping") and r.get("name")]
 
-    return {"columns": columns, "mapping_tables": mapping_tables, "eligible": eligible}
+    return {
+        "columns": columns,
+        "mapping_tables": mapping_tables,
+        "eligible": eligible,
+        "schema_available": described is not None,
+    }
 
 
 class PolicyCompileRequest(BaseModel):
@@ -5960,7 +5978,14 @@ async def policy_builder_compile(
         raise HTTPException(status_code=404, detail="Table not found")
 
     name = row.get("name") or table_id
-    columns = [c[0] for c in _policy_builder_describe(name)]
+    describe_rows = _policy_builder_describe(name)
+    if not describe_rows:
+        raise HTTPException(
+            status_code=422,
+            detail="policy_builder_schema_unavailable: the table schema could not be read; "
+            "ensure the table is materialized or remote before building a policy.",
+        )
+    columns = [{"name": c[0], "type": c[1]} for c in describe_rows]
 
     from src.access_policy_compile import compile_policy
 

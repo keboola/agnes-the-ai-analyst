@@ -4257,6 +4257,7 @@
                 <div class="form-group" data-ap-panel="sql" id="apSqlPanel" style="display:none;">
                     <label class="form-label" for="apSql">Policy SQL</label>
                     <textarea class="form-textarea" id="apSql" rows="8"
+                              oninput="apSqlEdited()"
                               placeholder="SELECT * FROM &lt;table&gt; WHERE ..."></textarea>
                     <div class="form-hint">
                         Plain SQL, DuckDB dialect. Reference the caller's identity with
@@ -6883,6 +6884,9 @@
         previewEl.style.display = 'none';
         previewEl.innerHTML = '';
         _apHideSaveError();
+        _apCancelPendingCompile();
+        _apCompileError = null;
+        _apSchemaAvailable = true;
         document.getElementById('apClearBtn').style.display = table.access_policy_sql ? '' : 'none';
         var mappingToggle = document.getElementById('apMappingToggle');
         if (mappingToggle) mappingToggle.checked = !!table.policy_mapping;
@@ -6995,6 +6999,13 @@
     function apUseTableAsBase() {
         if (!_apTable) return;
         document.getElementById('apSql').value = 'SELECT * FROM ' + (_apTable.name || _apTable.id);
+        // A programmatic `.value` assignment does not fire `input`, so the
+        // textarea's oninput hook never runs. Without this call a compile block
+        // set by an earlier failure survives text the admin deliberately put
+        // there, and the save stays refused with no way out but typing an extra
+        // character — and for a deterministic failure (unreadable schema, a spec
+        // hiding every column) no builder interaction could ever clear it.
+        apSqlEdited();
     }
 
     // ── Builder tab (no-SQL policy editor, access-policy-builder-ux plan
@@ -7009,12 +7020,31 @@
         document.querySelectorAll('[data-ap-panel]').forEach(function(panel) {
             panel.style.display = (panel.getAttribute('data-ap-panel') === tab) ? '' : 'none';
         });
+        /* Opening the Advanced SQL tab means the admin is taking over the SQL,
+           but a queued compile must be RUN here, not discarded. Discarding it
+           loses any builder change made inside the 250ms debounce window: it
+           never reaches #apSql, no compile error is set, and the save then
+           stores a policy that silently omits the admin's last edit. Flushing
+           hands over a box that matches what the builder shows.
+
+           Letting an in-flight compile land is safe: the admin has not typed
+           yet, and their first keystroke cancels it (`apSqlEdited`), with
+           `_apCompileSeq` discarding any response that arrives afterwards. The
+           compile block is not cleared here either — a previous failed compile
+           still protects against saving unchanged stale output from the box. */
+        if (tab === 'sql') {
+            _apFlushPendingCompile();
+        }
     }
 
-    var _AP_MASK_LABELS = { show: 'Show', hide: 'Hide', nullify: 'Nullify', hash: 'Pseudonymize', unmask: 'Unmask for group' };
+    var _AP_MASK_LABELS = { show: 'Show', hide: 'Hide', nullify: 'Nullify', hash: 'Pseudonymize', unmask: 'Unmask for groups' };
     let _apColumns = [];
     let _apMaskState = {};
     let _apCompileTimer = null;
+    let _apCompileAbort = null;
+    let _apCompileError = null;
+    let _apSchemaAvailable = true;
+    let _apCompileSeq = 0;
 
     // Task A (access-policy-builder-ux Slice 2) — the row-rule repeater's
     // state. Every op here is one the compiler (src/access_policy_compile.py)
@@ -7047,6 +7077,13 @@
             }
             var body = await r.json();
             _apColumns = body.columns || [];
+            // `schema_available: false` means the DESCRIBE failed rather than
+            // the table having no columns — the ordinary outcome for a remote
+            // row, whose external catalog is not ATTACHed on the connection
+            // that read uses. Without it the empty list reads as "this table
+            // has nothing in it", and the real reason only appears once a
+            // compile is attempted.
+            _apSchemaAvailable = body.schema_available !== false;
             _apRenderColList();
         } catch (err) {
             list.innerHTML = '<div class="form-hint form-hint--danger" style="margin:0;">Network error: '
@@ -7057,7 +7094,12 @@
     function _apRenderColList() {
         var list = document.getElementById('apColList');
         if (!_apColumns.length) {
-            list.innerHTML = '<div class="form-hint" style="margin:0; padding:10px;">No columns found.</div>';
+            list.innerHTML = _apSchemaAvailable
+                ? '<div class="form-hint" style="margin:0; padding:10px;">No columns found.</div>'
+                : '<div class="form-hint form-hint--danger" style="margin:0; padding:10px;">'
+                  + 'This table\'s schema could not be read, so the builder cannot list its columns. '
+                  + 'A remote table is only describable here once its source is attached; a materialized '
+                  + 'one, once it has been synced. Write the policy on the Advanced SQL tab instead.</div>';
             return;
         }
         var disabled = !_apTable || !_apIsEligible(_apTable);
@@ -7074,9 +7116,9 @@
                 return '<option value="' + m + '"' + (m === maskChoice ? ' selected' : '') + '>' + _AP_MASK_LABELS[m] + '</option>';
             }).join('');
             var groupInput = (maskChoice === 'unmask')
-                ? '<input type="text" class="form-input ap-unmask-group" placeholder="group name" '
+                ? '<input type="text" class="form-input ap-unmask-group" placeholder="group names, comma-separated" '
                   + (disabled ? 'disabled ' : '')
-                  + 'value="' + escapeHtmlAttr((maskEntry && maskEntry.group) || '') + '" '
+                  + 'value="' + escapeHtmlAttr((maskEntry && Array.isArray(maskEntry.groups) ? maskEntry.groups.join(', ') : '')) + '" '
                   + 'oninput="_apOnUnmaskGroupChange(' + colArg + ', this.value)">'
                 : '';
             return ''
@@ -7101,7 +7143,15 @@
             delete _apMaskState[colName];
         } else if (maskValue === 'unmask') {
             var prev = _apMaskState[colName];
-            _apMaskState[colName] = { choice: 'unmask', group: (prev && prev.group) || '' };
+            var prevGroups = [];
+            if (prev && typeof prev === 'object') {
+                if (Array.isArray(prev.groups)) {
+                    prevGroups = prev.groups;
+                } else if (prev.group) {
+                    prevGroups = [prev.group];
+                }
+            }
+            _apMaskState[colName] = { choice: 'unmask', groups: prevGroups };
         } else {
             _apMaskState[colName] = maskValue;
         }
@@ -7109,10 +7159,10 @@
         _apScheduleCompile();
     }
 
-    function _apOnUnmaskGroupChange(colName, group) {
+    function _apOnUnmaskGroupChange(colName, groupValue) {
         var entry = _apMaskState[colName];
         if (entry && typeof entry === 'object') {
-            entry.group = group;
+            entry.groups = groupValue.split(',').map(function(g) { return g.trim(); }).filter(Boolean);
         }
         _apScheduleCompile();
     }
@@ -7223,37 +7273,76 @@
             });
     }
 
+    function _apCancelPendingCompile() {
+        if (_apCompileTimer) {
+            clearTimeout(_apCompileTimer);
+            _apCompileTimer = null;
+        }
+        if (_apCompileAbort) {
+            _apCompileAbort.abort();
+            _apCompileAbort = null;
+        }
+        _apCompileSeq++;
+    }
+
     // Debounced (~250ms) compile — assembles the spec from the mask state
     // and POSTs it to Task 3's endpoint, dropping the returned SQL into
     // #apSql. Never fires on modal open, so opening the builder on a table
-    // that already carries a saved policy does not clobber it.
+    // that already carries a saved policy does not clobber it. Every new
+    // schedule cancels any pending timer and aborts any in-flight request so
+    // stale results can never overwrite the box.
+    // Run a debounced compile NOW instead of waiting out its timer. Used when
+    // handing the SQL box to the admin: cancelling would drop the pending
+    // change, and waiting would hand over a box that is briefly wrong.
+    function _apFlushPendingCompile() {
+        if (_apCompileTimer) {
+            clearTimeout(_apCompileTimer);
+            _apCompileTimer = null;
+            _apCompileNow();
+        }
+    }
+
     function _apScheduleCompile() {
-        if (_apCompileTimer) clearTimeout(_apCompileTimer);
+        _apCancelPendingCompile();
         _apCompileTimer = setTimeout(_apCompileNow, 250);
     }
 
     async function _apCompileNow() {
         if (!_apTable) return;
-        var spec = { row_rules: _apAssembleRowRules(), row_combine: _apRowCombine, column_masks: _apMaskState };
+        const mySeq = _apCompileSeq;
+        const abort = new AbortController();
+        _apCompileAbort = abort;
+        _apCompileError = null;
         try {
+            var spec = { row_rules: _apAssembleRowRules(), row_combine: _apRowCombine, column_masks: _apMaskState };
             var r = await fetch('/api/admin/registry/' + encodeURIComponent(_apTable.id) + '/policy/compile', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(spec),
+                signal: abort.signal,
             });
+            if (mySeq !== _apCompileSeq) return;
             if (!r.ok) {
-                // compile is a convenience; leave #apSql as-is on error —
-                // but drop the warnings, which described an older spec.
+                var d = await r.json().catch(function() { return {}; });
+                _apCompileError = typeof d.detail === 'string' ? d.detail : ('HTTP ' + r.status);
+                _apShowSaveError(_apCompileError);
                 _apRenderCompileWarnings([]);
                 return;
             }
             var body = await r.json();
+            if (mySeq !== _apCompileSeq) return;
             document.getElementById('apSql').value = body.sql || '';
             _apRenderCompileWarnings(body.warnings);
+            _apHideSaveError();
         } catch (err) {
-            // Network hiccup — leave #apSql unchanged; the Advanced SQL tab
-            // still works standalone.
+            if (err.name === 'AbortError' || mySeq !== _apCompileSeq) return;
+            // Network hiccup — leave #apSql unchanged. The admin can still
+            // switch to Advanced SQL and save hand-written SQL.
+            _apCompileError = 'Network error: ' + err.message;
+            _apShowSaveError(_apCompileError);
             _apRenderCompileWarnings([]);
+        } finally {
+            if (_apCompileAbort === abort) _apCompileAbort = null;
         }
     }
 
@@ -7290,8 +7379,35 @@
         el.textContent = '';
     }
 
+    /* Hand-editing the SQL box clears the compile block.
+       The block exists to stop a SAVE of stale builder output — the box still
+       holds the previous compile (or the saved policy) after a failed compile,
+       and saving that would silently disagree with what the builder shows. It
+       must not become a lock on the Advanced SQL tab, which the comments here
+       describe as a standalone escape hatch: a deterministic failure
+       (`policy_builder_schema_unavailable` for a table whose schema cannot be
+       read, or a spec that hides every column) fails the same way on every
+       retry, so no amount of builder interaction can clear it and the admin
+       could not save even SQL they typed themselves.
+
+       Once they have typed in the box, its contents are theirs rather than
+       stale output, so the guard has nothing left to protect. */
+    function apSqlEdited() {
+        // The admin is taking over the SQL; any queued or in-flight builder
+        // compile is now stale and must not overwrite their edits.
+        _apCancelPendingCompile();
+        if (!_apCompileError) return;
+        _apCompileError = null;
+        _apHideSaveError();
+    }
+
     async function apSavePolicy() {
         if (!_apTable) return;
+        if (_apCompileError) {
+            _apShowSaveError('Fix the builder error before saving, or edit the SQL directly on the '
+                + 'Advanced SQL tab: ' + _apCompileError);
+            return;
+        }
         var sql = document.getElementById('apSql').value.trim();
         var note = document.getElementById('apNote').value.trim();
         _apHideSaveError();

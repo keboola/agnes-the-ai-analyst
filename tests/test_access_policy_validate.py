@@ -207,3 +207,29 @@ class TestRuleSixRemoteTranspile:
             result = _validate(HAPPY_PATH_SQL, for_remote=True)
         assert result is None
         assert not any("list_contains" in record.getMessage() for record in caplog.records)
+
+
+def test_exotic_duckdb_types_survive_the_cast_null_redaction_path():
+    """`_masked_fallback` interpolates the DESCRIBE type verbatim into
+    `CAST(NULL AS <type>)`, which raised the question of whether an exotic type
+    — an inline `ENUM('a','b')` or a `UNION(...)` — would fail the validator and
+    make such a column unmaskable through the builder.
+
+    It does not, on either half: DuckDB binds both casts, and the positional
+    `ColumnDef`/`DataTypeParam` rule accepts them because they appear under a
+    `DataType`. Locked here so the question does not have to be re-litigated
+    from the type list, and so a future narrowing of that rule fails loudly
+    instead of quietly making a column unmaskable.
+
+    (Reachability is a separate matter: a parquet-backed extract turns an ENUM
+    into VARCHAR on write, so these types only arrive from an attached source.)
+    """
+    for type_sql in (
+        "ENUM('ok', 'bad')",
+        "UNION(a INTEGER, b VARCHAR)",
+        "STRUCT(a INTEGER, b VARCHAR)",
+        "MAP(VARCHAR, INTEGER)",
+        "DECIMAL(18,2)",
+        "VARCHAR[]",
+    ):
+        _validate(f"SELECT id, CAST(NULL AS {type_sql}) AS masked FROM {TABLE_NAME}")

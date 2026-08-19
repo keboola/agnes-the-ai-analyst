@@ -305,12 +305,19 @@ class _IssuePayload:
     remote_links: list[dict] | None
 
 
-def _build_issue_payload(issue_key: str, raw_dir: Path, attachments_dir: Path) -> _IssuePayload | None:
+def _build_issue_payload(
+    issue_key: str, raw_dir: Path, attachments_dir: Path, *, warn_unresolved: bool = True
+) -> _IssuePayload | None:
     """Read one issue's JSON and transform it. ``None`` if it cannot be used.
 
     Pure with respect to the parquet tree: no locks taken, nothing written. The
     batch path calls this *inside* the month lock so a webhook landing mid-run is
     either already visible here or still blocked on the lock and applies after us.
+
+    ``warn_unresolved=False`` silences the missing-``jsdPublic`` WARNING in
+    ``transform_comments`` — passed only by the throwaway grouping pass in
+    ``transform_issues``, whose payloads are discarded and rebuilt under the
+    month lock; without it the same gap logged twice per issue per poll cycle.
     """
     if not is_valid_issue_key(issue_key):
         logger.error(f"Refusing transform for malformed issue key: {issue_key!r}")
@@ -350,7 +357,7 @@ def _build_issue_payload(issue_key: str, raw_dir: Path, attachments_dir: Path) -
         # separate `comments_incomplete` flag below — keeping them as two fields
         # rather than a None-means-incomplete list means the reader never has to
         # reconstruct which of two Optionals is live.
-        comments=transform_comments(raw_issue, preserve_on_incomplete=False) or [],
+        comments=transform_comments(raw_issue, preserve_on_incomplete=False, warn_unresolved=warn_unresolved) or [],
         # The marker check directly, NOT `transform_comments(raw_issue) is None`:
         # same answer, but that spelling ran the entire comment transform a
         # second time just for the None-ness — 4x per ticket per poll cycle
@@ -536,11 +543,12 @@ def transform_issues(
     # built here are deliberately DISCARDED: the authoritative ones are rebuilt
     # under the month lock below, which is what keeps a concurrent webhook safe.
     # Re-reading a handful of KB of JSON is far cheaper than the rewrites this
-    # avoids.
+    # avoids. `warn_unresolved=False`: the authoritative rebuild logs any
+    # missing-jsdPublic gap once; warning here too doubled every line.
     by_month: dict[str, list[str]] = {}
     for issue_key in issue_keys:
         try:
-            payload = _build_issue_payload(issue_key, raw_dir, attachments_dir)
+            payload = _build_issue_payload(issue_key, raw_dir, attachments_dir, warn_unresolved=False)
         except Exception as e:
             logger.error(f"Error transforming {issue_key}: {e}", exc_info=True)
             continue
