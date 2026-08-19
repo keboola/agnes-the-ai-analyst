@@ -77,7 +77,6 @@ from src.repositories import (
     user_store_installs_repo,
     users_repo,
 )
-from src.connectors_manifest import load_manifest
 from src.semantic.keboola_sources import KEBOOLA_SEMANTIC_LAYER_SOURCES
 from app.api.me_debug import (
     require_debug_auth_enabled,
@@ -833,30 +832,19 @@ def _build_context(
         _script_text = render_agent_prompt_banner(conn, user=user, server_url=ctx_server_url)
         setup_instructions_lines = _script_text.split("\n")
     else:
-        # No DB connection — use the unauthenticated default (no override possible,
-        # no marketplace plugins).
+        # No DB connection — use the unauthenticated default (no override
+        # possible). The thin prompt has no per-caller inputs left: plugins
+        # and connectors are resolved by `agnes onboard` at run time, so the
+        # anonymous render is identical to the signed-in default.
         from app.web.setup_instructions import resolve_lines
-        from app.api.cli_artifacts import _find_wheel
-
-        _wheel = _find_wheel()
-        _wheel_filename = _wheel.name if _wheel else "agnes.whl"
 
         server_host = request.url.netloc
         ca_pem = _read_agnes_ca_pem()
 
-        # Connector manifest sourced from the seed (operator IWT clone first,
-        # bundled snapshot in the wheel as fallback). Operator GWS OAuth /
-        # Atlassian base URL etc. now live in `<workspace>/.claude/agnes/.env`
-        # written by `agnes init`; the seed-resident SKILL.md bodies read those
-        # at install time. Renderer just needs the metadata to build tiles.
-        _connector_manifest = load_manifest()
-
         setup_instructions_lines = resolve_lines(
-            _wheel_filename,
-            plugin_install_names=[],
+            "agnes.whl",
             server_host=server_host,
             ca_pem=ca_pem,
-            connector_manifest=_connector_manifest,
             instance_brand=get_instance_brand(),
             workspace_dir=get_workspace_dir_name(),
             custom_preamble=get_instance_custom_preamble(),

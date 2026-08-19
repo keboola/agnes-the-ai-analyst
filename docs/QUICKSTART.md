@@ -74,14 +74,31 @@ Open the project in Claude Code. The CLAUDE.md file will guide the AI assistant 
 
 ### Analyst Setup
 
-1. Visit your instance URL (e.g., https://data.yourcompany.com)
-2. Sign in with your company email
-3. Access data through the API or download parquets for local analysis
+The instance home page walks a new analyst through it; there is nothing to configure by hand.
+
+1. Visit your instance URL (e.g., https://data.example.com) and sign in with your company email.
+2. Follow the guided steps on `/home`: install Claude Code, create the workspace folder, open a terminal in it, save your login token to `~/.agnes/token`, and launch Claude Code there.
+3. The last step hands you the install prompt — paste it into Claude Code. The prompt is thin: it installs the `agnes` CLI, then runs `agnes onboard --workspace .`.
+4. Restart Claude Code when `agnes onboard` says so, and confirm what it reported.
+
+`agnes onboard` is the whole setup, run as one deterministic command instead of a
+list of instructions for the agent to follow: it checks the workspace directory,
+runs `agnes init` (auth from the saved token, workspace files, Claude Code hooks,
+first `agnes pull`), smoke-tests the catalog, checks `git` and `claude` are on
+`PATH`, registers the Agnes marketplace, runs `agnes diagnose`, and prints a
+summary with a `NEXT:` block. It is idempotent — re-run it any time a workspace
+looks broken. `--json` emits the same report machine-readably.
+
+Connecting tools (Jira, Asana, Google Workspace, …) is **not** part of first-run
+setup any more. Once the workspace is up, just ask for it in Claude Code ("set up
+Jira") and the connector skill walks you through it. `agnes connectors list` shows
+what this instance offers, `agnes connectors show <slug>` prints one connector's
+setup instructions.
 
 ### Analysis Workflow
 
-1. Sync latest data: `curl -X POST https://data.yourcompany.com/api/sync/trigger`
-2. Open Claude Code in your project directory
+1. Sync latest data: `curl -X POST https://data.example.com/api/sync/trigger`
+2. Open Claude Code in your workspace directory
 3. Ask Claude to analyze your data using DuckDB
 
 ## Hackathon
