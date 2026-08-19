@@ -41,6 +41,7 @@ def _seed_tool(
     exposed_name: str = "lookup",
     grant_to_analyst: bool = True,
     mutating: bool = False,
+    allow_mutating: bool = False,
     rate_limit_pm=None,
     pii_fields=None,
     analyst_id: str = "analyst1",
@@ -65,7 +66,7 @@ def _seed_tool(
     )
     grp = groups.create(name=f"grp-{tool_id}", description=None)
     if grant_to_analyst:
-        tools.add_grant(tool_id, grp["id"])
+        tools.add_grant(tool_id, grp["id"], allow_mutating=allow_mutating)
         members.add_member(analyst_id, grp["id"], source="system_seed")
     conn.close()
 
@@ -361,10 +362,114 @@ def test_enforce_passthrough_access_shared_by_rest_and_transports(seeded_app):
         enforce_passthrough_access(tool, "nobody")
     # Admin short-circuits grant.
     enforce_passthrough_access(tool, "admin1")
-    # Mutating tool blocks the granted non-admin.
+    # Mutating tool blocks the granted non-admin (plain grant = read-only).
     tool["mutating"] = True
     with pytest.raises(MutatingNotAllowed):
         enforce_passthrough_access(tool, "analyst1")
+
+
+# ── mutating opt-in grant (tool_grants.allow_mutating, v120) ────────────────
+
+
+def test_mutating_tool_passes_with_allow_mutating_grant(seeded_app):
+    """A group grant carrying allow_mutating=TRUE opens a mutating tool to a
+    non-admin member — the reserved `mutating_grant` evolution."""
+    _seed_tool(
+        tool_id="up.mut_ok",
+        exposed_name="mut_ok",
+        mutating=True,
+        grant_to_analyst=True,
+        allow_mutating=True,
+    )
+    fn = _closure("mut_ok", caller_id_fn=lambda: "analyst1")
+    with _patch_upstream(text="wrote") as mock:
+        out = asyncio.run(fn())
+    assert out == "wrote"
+    mock.assert_awaited_once()
+
+
+def test_mutating_tool_still_blocked_on_plain_grant(seeded_app):
+    """The default stays read-only: a plain grant does not open a mutating
+    tool, and the upstream is never dialed."""
+    _seed_tool(
+        tool_id="up.mut_ro",
+        exposed_name="mut_ro",
+        mutating=True,
+        grant_to_analyst=True,
+        allow_mutating=False,
+    )
+    fn = _closure("mut_ro", caller_id_fn=lambda: "analyst1")
+    with _patch_upstream(text="LEAK") as mock:
+        with pytest.raises(RuntimeError, match="mutating"):
+            asyncio.run(fn())
+    mock.assert_not_called()
+
+
+def _agent_principal_for(owner_user_id: str, *, connections_mode: str = "all"):
+    """A live AgentPrincipal whose agent row really exists (connection-scope
+    gate reads agent_scope through the agents table)."""
+    from app.auth.session_principal import AgentPrincipal
+    from src.repositories import agents_repo
+
+    agent_id = f"agent-{owner_user_id}-{connections_mode}"
+    if agents_repo().get_by_id(agent_id) is None:
+        agents_repo().create(
+            id=agent_id,
+            owner_user_id=owner_user_id,
+            name="t",
+            slug=agent_id,
+            connections_mode=connections_mode,
+        )
+    return AgentPrincipal(
+        session_id="sess-t",
+        agent_id=agent_id,
+        owner_user_id=owner_user_id,
+        owner_email=f"{owner_user_id}@example.com",
+        intersection={},
+    )
+
+
+def test_agent_principal_rides_owner_mutating_grant(seeded_app):
+    """An AgentPrincipal resolves to its OWNER's groups: the owner's
+    allow_mutating grant is the agent's ceiling — and suffices."""
+    from app.api.mcp_policy import enforce_passthrough_access
+
+    _seed_tool(
+        tool_id="up.mut_agent",
+        exposed_name="mut_agent",
+        mutating=True,
+        grant_to_analyst=True,
+        allow_mutating=True,
+    )
+    conn = get_system_db()
+    tool = ToolRegistryRepository(conn).get("up.mut_agent")
+    conn.close()
+    enforce_passthrough_access(tool, _agent_principal_for("analyst1"))
+
+
+def test_agent_principal_blocked_without_owner_mutating_grant(seeded_app):
+    """Owner has only a plain (read-only) grant → the agent is blocked, and
+    an admin-owned agent gets no admin short-circuit (is_admin pinned False)."""
+    from app.api.mcp_policy import MutatingNotAllowed, enforce_passthrough_access
+
+    _seed_tool(
+        tool_id="up.mut_agent_ro",
+        exposed_name="mut_agent_ro",
+        mutating=True,
+        grant_to_analyst=True,
+        allow_mutating=False,
+    )
+    conn = get_system_db()
+    tool = ToolRegistryRepository(conn).get("up.mut_agent_ro")
+    conn.close()
+    with pytest.raises(MutatingNotAllowed):
+        enforce_passthrough_access(tool, _agent_principal_for("analyst1"))
+    # Admin-owned agent: owner's groups have no grant at all → GrantDenied
+    # before the mutating gate is even reached; the point is it does NOT pass.
+    from app.api.mcp_policy import GrantDenied
+
+    with pytest.raises((GrantDenied, MutatingNotAllowed)):
+        enforce_passthrough_access(tool, _agent_principal_for("admin1"))
 
 
 def test_enforce_source_url_runtime_policy_shared_by_rest_and_transports(monkeypatch):

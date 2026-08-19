@@ -617,7 +617,9 @@ class TestAFailedReRunPutsEverythingBack(TestChatToolsEndpoint):
         assert before, "enable registered nothing — fixture is broken"
         granted_id = before[0]["tool_id"]
         everyone = user_groups_repo().get_by_name("Everyone")
-        tool_registry_repo().add_grant(granted_id, everyone["id"])
+        # Opt the grant into the mutating surface (v120) so the restore path
+        # is proven to carry the flag, not just the bare group id.
+        tool_registry_repo().add_grant(granted_id, everyone["id"], allow_mutating=True)
 
         # This run's upstream offers a NEW tool first, then the registry dies
         # on the second write: one half-written addition, zero reconcile.
@@ -663,6 +665,9 @@ class TestAFailedReRunPutsEverythingBack(TestChatToolsEndpoint):
         assert tool_registry_repo().grants_for_tool(granted_id) == [everyone["id"]], (
             "the rollback resurrected the tool but silently dropped its grant"
         )
+        assert tool_registry_repo().grant_rows_for_tool(granted_id) == [
+            {"group_id": everyone["id"], "allow_mutating": True}
+        ], "the rollback restored the grant but silently reset its mutating opt-in to read-only"
 
 
 class TestAResyncKeepsTheAdminsPerToolCuration(TestChatToolsEndpoint):
@@ -1935,6 +1940,27 @@ class TestBulkSourceGrant(TestChatToolsEndpoint):
 
         repo = tool_registry_repo()
         assert all(gid in repo.grants_for_tool(t["tool_id"]) for t in repo.list_for_source(source_id))
+
+    def test_bulk_grant_refuses_allow_mutating(self, seeded_app):
+        """The source-wide grant is read-only by design; a request that asks
+        for write access across a whole server must be refused loudly, not
+        silently accepted with nothing opened."""
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        _, source_id = self._enabled_source(c, token, "kbc-bulk-mutrefuse")
+        gid = self._group()
+
+        resp = c.post(
+            f"{self.GRANTS}/{source_id}/grants",
+            json={"group_id": gid, "allow_mutating": True},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 400, resp.text
+        assert resp.json()["detail"]["error"] == "allow_mutating_not_supported_here"
+        # Nothing was granted by the refused call.
+        from src.repositories import tool_registry_repo
+
+        repo = tool_registry_repo()
+        assert all(gid not in repo.grants_for_tool(t["tool_id"]) for t in repo.list_for_source(source_id))
 
     def test_grant_is_idempotent_and_says_what_changed(self, seeded_app):
         """ "granted 0 of 37" and "granted 37 of 37" both read as success

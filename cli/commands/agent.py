@@ -243,27 +243,58 @@ def scope_set(
     table: list[str] = typer.Option([], "--table", help="Table id to grant (repeatable)"),
     connection: list[str] = typer.Option([], "--connection", help="Connection id to grant (repeatable)"),
     memory_domain: list[str] = typer.Option([], "--memory-domain", help="Memory domain id to grant (repeatable)"),
+    slack_channel: list[str] = typer.Option(
+        [],
+        "--slack-channel",
+        help="Slack channel id whose @mentions route to this agent (repeatable; "
+        "one agent per channel — the server 409s on a channel bound elsewhere)",
+    ),
     as_json: bool = typer.Option(False, "--json"),
 ):
     """Replace an agent's resource scope grants.
 
     Every item passed here is a `(item_type, item_id)` pair PUT in a single
     call — the server replaces the full grant set, it does not merge. At
-    least one of the four repeatable options is required.
+    least one of the repeatable options is required.
     """
     items: list[dict] = []
     items += [{"item_type": "plugin", "item_id": v} for v in plugin]
     items += [{"item_type": "table", "item_id": v} for v in table]
     items += [{"item_type": "connection", "item_id": v} for v in connection]
     items += [{"item_type": "memory_domain", "item_id": v} for v in memory_domain]
+    items += [{"item_type": "slack_channel", "item_id": v} for v in slack_channel]
     if not items:
         typer.echo(
-            "Error: at least one of --plugin/--table/--connection/--memory-domain is required.",
+            "Error: at least one of --plugin/--table/--connection/--memory-domain/--slack-channel is required.",
             err=True,
         )
         raise typer.Exit(2)
 
     row = _resolve_agent(slug)
+    # Replace-not-merge has a sharper edge for slack_channel items than for
+    # plugins/tables: dropping one silently unbinds a live Slack integration
+    # (mentions revert to the generic agent-less profile with no error). Warn
+    # when this PUT would do that; still proceed — the contract is replace.
+    kept = set(slack_channel)
+    # Purely advisory — a proxy 502/HTML body or transient 500 here must not
+    # abort the PUT the user actually asked for.
+    try:
+        detail = api_get(f"/api/v1/agents/{row['id']}").json()
+    except Exception:
+        detail = None
+    if isinstance(detail, dict):
+        dropped = [
+            i["item_id"]
+            for i in detail.get("scope", [])
+            if i.get("item_type") == "slack_channel" and i["item_id"] not in kept
+        ]
+        if dropped:
+            typer.echo(
+                f"Warning: this replaces the FULL scope set and will UNBIND Slack channel(s) "
+                f"{', '.join(dropped)} — mentions there revert to the generic profile. "
+                f"Re-include --slack-channel <id> to keep a binding.",
+                err=True,
+            )
     resp = api_put(f"/api/v1/agents/{row['id']}/scope", json={"items": items})
     if resp.status_code != 200:
         _fail(resp)
