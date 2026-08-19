@@ -1,4 +1,4 @@
-{tls_trust_block}Set up the {instance_brand} CLI on this machine.
+Set up the {{ instance.name }} CLI on this machine.
 
 Server: {server_url}
 
@@ -22,9 +22,25 @@ Before you start, confirm the login token file is in place:
    ~/.config/agnes/token.json already exists: an earlier run already
    saved the credential, so just continue.
 
-{install_cli_block}
+1) Install the CLI:
+   TMPDIR_WHEEL=$(mktemp -d -t agnes_cli.XXXXXX)
+   (cd "$TMPDIR_WHEEL" && curl -fsSL -OJ {server_url}/cli/download)
+   WHEEL=$(ls "$TMPDIR_WHEEL"/*.whl 2>/dev/null | head -n1)
+   [ -n "$WHEEL" ] || { echo "error: wheel download failed (no .whl in $TMPDIR_WHEEL)" >&2; exit 1; }
+   uv tool install --force "$WHEEL"
 
-2) Set up the {instance_brand} workspace in the current directory:
+   If uv is not installed yet, install it from the official instructions at
+   https://docs.astral.sh/uv/ — on Windows `winget install --id=astral-sh.uv`,
+   on macOS `brew install uv`. If you use the shell installer instead,
+   download it to a file and show it to me before running it.
+
+   If `agnes --version` fails after install because ~/.local/bin is not on PATH:
+     export PATH="$HOME/.local/bin:$PATH"
+     RC="$HOME/.zshrc"  # or ~/.bashrc / ~/.bash_profile
+     grep -qF '$HOME/.local/bin' "$RC" 2>/dev/null \
+       || echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$RC"
+
+2) Set up the {{ instance.name }} workspace in the current directory:
 
    agnes onboard --server-url "{server_url}" --workspace .
 
@@ -32,7 +48,7 @@ Before you start, confirm the login token file is in place:
    and asks before adopting a directory that already holds unrelated files.
    Relay its instructions to the user and follow them — re-run with
    `--accept-dir` only once the user has explicitly agreed to this directory
-   (the install guide suggested ~/Desktop/{workspace_dir}).
+   (the install guide suggested a workspace folder such as ~/Desktop/Agnes).
    Don't pick or create a folder on your own.
 
    From there `agnes onboard` converges the rest in one run — workspace init,
@@ -43,7 +59,7 @@ Before you start, confirm the login token file is in place:
    Tell me to type `/exit` (or close the Claude Code session entirely), then run `claude` again from this same directory.
 
 4) Confirm:
-   Tell me "{instance_brand} workspace is ready" and recap what `agnes onboard`
+   Tell me "{{ instance.name }} workspace is ready" and recap what `agnes onboard`
    reported:
    - what it installed versus what was already present
    - the diagnose status it finished on

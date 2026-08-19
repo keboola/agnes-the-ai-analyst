@@ -24,28 +24,30 @@ from __future__ import annotations
 
 import re
 
-# Placeholders `docs/seed-repo-contract.md` §5 declares live. Anything else
-# in the template is either a typo or a block that was retired with the fat
-# prompt — both render as literal text.
-_LIVE_PLACEHOLDERS = frozenset(
-    {
-        "{server_url}",
-        "{wheel_filename}",
-        "{server_host}",
-        "{workspace_dir}",
-        "{instance_brand}",
-        "{tls_trust_block}",
-        "{install_cli_block}",
-    }
-)
+# The ONE single-brace placeholder that is substituted on the forked /
+# git-bound prompt path (`app/web/router.py::setup_page` + the JS clipboard
+# renderer replace `{server_url}` at click/preview time). Everything else a
+# fork needs comes from the Jinja context (`{{ instance.name }}`,
+# `{{ server.url }}`, … — see `src/welcome_template.py::build_context`),
+# which the sandboxed render resolves; bare single-brace names pass through
+# Jinja untouched and land literally in the analyst's prompt.
+_LIVE_PLACEHOLDERS = frozenset({"{server_url}"})
 
-# Retired with the blocks they injected when the prompt went thin
-# (2026-08-19). Pinned explicitly — the generic scan above would catch them
-# too, but naming them keeps the failure message actionable.
+# Names that must never (re)appear: the fat-prompt blocks retired when the
+# prompt went thin (2026-08-19), plus names the built-in renderer substitutes
+# ONLY into its own generated lines — a template referencing them renders
+# them literally. Pinned explicitly — the generic scan below would catch
+# them too, but naming them keeps the failure message actionable.
 _RETIRED_PLACEHOLDERS = (
     "{marketplace_block}",
     "{connector_tiles}",
     "{ca_bundle_finale_bullet}",
+    "{tls_trust_block}",
+    "{install_cli_block}",
+    "{instance_brand}",
+    "{workspace_dir}",
+    "{wheel_filename}",
+    "{server_host}",
     # The access token is delivered out-of-band to `~/.agnes/token`; a
     # template referencing it would write the literal string `{token}` into
     # every analyst's token file.
@@ -86,7 +88,8 @@ def test_mirrors_the_thin_prompt_shape():
     old English program whose steps `agnes onboard` now owns."""
     text = _template_text()
 
-    assert "{install_cli_block}" in text
+    assert "1) Install the CLI:" in text
+    assert "/cli/download" in text
     assert "agnes onboard --server-url" in text
     assert "--accept-dir" in text
     assert "3) Restart Claude Code" in text
@@ -107,6 +110,7 @@ def test_mirrors_the_thin_prompt_shape():
 
 def test_stays_short():
     """Same ceiling logic as `tests/test_setup_instructions.py::
-    test_prompt_stays_short`, minus the ~20 lines step 1 contributes through
-    `{install_cli_block}` — a re-grown section shows up here first."""
-    assert len(_template_text().splitlines()) < 60
+    test_prompt_stays_short` — step 1 is inlined here (nothing substitutes
+    `{install_cli_block}` on the fork path), so the ceiling matches the
+    built-in prompt's. A re-grown section shows up here first."""
+    assert len(_template_text().splitlines()) <= 75
