@@ -4943,6 +4943,18 @@
         };
 
         if (mode === 'custom') {
+            // TODO(keboola-custom-mode): this branch cannot succeed as written.
+            // `RegisterTableRequest._check_mode_query_coherence` refuses SQL in
+            // `source_query` for a Keboola materialized row (it wants a JSON
+            // filter spec — columns/whereFilters/changedSince), and
+            // `connectors/keboola/extractor.py` refuses it again at sync time.
+            // So "Custom SQL" 422s on every submit no matter what is typed.
+            // Fixing it is a semantics decision, not a payload tweak — either
+            // this textarea takes a filter spec (and the radio's label and help
+            // text are wrong), or a Keboola row with custom SQL belongs under a
+            // different query_mode. Left offering the mode rather than silently
+            // removing an operator-visible capability; the error it produces is
+            // at least readable now.
             var sourceQueryEl = document.getElementById('kbSourceQuery');
             var sourceQuery = (sourceQueryEl.value || '').trim();
             if (!sourceQuery) {
