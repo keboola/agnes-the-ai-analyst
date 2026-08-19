@@ -30,6 +30,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 - **Hosted data-app containers are now sandbox-hardened.** Every data-app container gets `cap_drop: ALL`, `no-new-privileges` and a `pids_limit` (default 512, `data_apps.container_pids_limit`) — an internet-facing web server running user/AI-authored code needs none of the Linux capabilities Docker grants by default, must gain none through a setuid binary, and must not be able to fork-bomb the host. Instance-wide and never per-app overridable; never applied to the chat-sandbox path, which legitimately needs broader write access for agent-authored code. A read-only root filesystem is available as `data_apps.container_read_only` but ships **off**: a read-only rootfs needs a tmpfs allowlist verified against the shipped runtime image, and that image's own nginx + supervisord write outside the `/tmp` + `/app` tmpfs the spec builder supplies (at least `/var/run/nginx.pid`, `/var/log/{nginx,supervisor}`, `/var/cache/nginx`, `/var/run/supervisor.sock`), so enabling it unverified would very likely crash-loop every hosted app. The knob is there for an operator who has booted their runtime image with it and extended that list from the real failures — `tests/test_data_apps_e2e_docker.py`, the one test with a real daemon and the real image, is where that verification belongs. With it off no tmpfs is mounted at all, so the default filesystem behavior is unchanged.
 
+
 ## [0.83.79] - 2026-08-19
 
 ### Added
