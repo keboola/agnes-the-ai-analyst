@@ -10,6 +10,17 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.83.91] - 2026-08-19
+
+### Changed
+
+- **The default workspace prompt's "Remote Queries" section is vendor-neutral.** The decision tree, snapshot discipline, and the engine-shared failure modes stay for every instance, while BigQuery-specific guidance (BQ SQL flavor for `--where`, bytes-scanned cost discipline, `bq_query_timeout_ms` / `cross_project_forbidden` / `bq_path_not_registered` failure rows, the personal-GCP-auth warning) renders only when the instance's primary data source is BigQuery or a BigQuery-backed table is visible to the calling user. Instances with Databricks `query_mode='remote'` tables get a Databricks SQL flavor block instead. Previously every instance — Keboola-, Snowflake-, or local-backed — told its agent about BigQuery dialects and error codes it does not have.
+- The workspace-prompt render context exposes `data_source.source_types` (sorted distinct `source_type` values of the tables visible to the calling user) and each `tables` row now carries `source_type`, so admin-authored overrides can gate engine-specific sections the same way the default does.
+
+### Fixed
+
+- The shipped default workspace-prompt template no longer trips the `/admin/prompts` stale-override banner when saved as an override: its stale-docs bullet mentioned a legacy CLI spelling that the legacy-string scanner flags.
+
 ## [0.83.90] - 2026-08-19
 
 ### Added
