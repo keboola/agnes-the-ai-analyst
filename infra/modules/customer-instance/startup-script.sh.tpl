@@ -92,7 +92,7 @@ if [ -b "$DATA_DEV" ]; then
     # keeps both app and DB ownership correct across reboots and also
     # self-heals disks damaged by the old blanket chown.
     find "$DATA_MNT" -mindepth 1 -maxdepth 1 \
-        ! -name postgres ! -name dispatcher-postgres \
+        ! -name postgres ! -name dispatcher-postgres ! -name kai-agent-postgres \
         -exec chown -R 999:999 {} +
     chown 999:999 "$DATA_MNT"
 fi
@@ -702,6 +702,136 @@ DOCKER_GID=$(stat -c '%g' /var/run/docker.sock 2>/dev/null || echo 999)
 DATA_APPS_RUNTIME_IMAGE="${data_apps_runtime_image}"
 APPS_RUNNER_IMAGE_PREFIX="$${DATA_APPS_RUNTIME_IMAGE%:*}"
 %{ endif ~}
+%{ if kai_agent_enabled ~}
+# --- 4c. Opt-in embedded kai-agent turn engine ---
+# Runs the kai-agent turn engine (an external Claude-Agent-SDK engine that
+# embeds in Agnes through its jwt host adapter; the Agnes half of the contract
+# lives in app/api/kai.py) as extra compose services: the engine, its own
+# Postgres, and a one-shot schema migrate between them. The overlay rides the
+# existing lifecycle for free, exactly like the dispatcher's: agnes-auto-
+# upgrade honors COMPOSE_FILE from .env (pull + up include the overlay), and
+# agnes-state-applier only targets named services with --no-deps.
+KAI_DIR="$APP_DIR/kai-agent"
+mkdir -p "$KAI_DIR"
+
+# Both fetches fail LOUDLY (same posture as the dispatcher's): an enabled
+# engine without the shared JWT secret cannot authenticate a single session,
+# and without the E2B key it cannot spawn a sandbox.
+KAI_HOST_JWT_SECRET=$(gcloud secrets versions access latest --secret=${kai_agent_jwt_secret})
+KAI_E2B_API_KEY=$(gcloud secrets versions access latest --secret=${kai_agent_e2b_key_secret})
+
+# Engine Postgres password — same durability dance as the dispatcher ledger's:
+# the data dir on the persistent DATA disk honors POSTGRES_PASSWORD on first
+# initdb only, while .env lives on the wipeable BOOT disk. Precedence:
+# existing keyfile on the data disk > value already in .env (adopted into the
+# keyfile so it survives the NEXT recreate) > mint fresh.
+# --- kai-agent-pg-password begin (extracted + executed by tests/test_startup_kai_agent_toggle.py) ---
+# The keyfile must NOT live inside $DATA_MNT/kai-agent-postgres — that
+# directory is bind-mounted as the container's PGDATA, and postgres:16-alpine's
+# initdb aborts on first boot if PGDATA contains anything but "lost+found".
+KAI_AGENT_PG_PASSWORD_FILE="$DATA_MNT/state/kai-agent-pg-password"
+KAI_AGENT_PG_PASSWORD=""
+if [ -f "$KAI_AGENT_PG_PASSWORD_FILE" ]; then
+    KAI_AGENT_PG_PASSWORD=$(tr -d '[:space:]' < "$KAI_AGENT_PG_PASSWORD_FILE" || true)
+fi
+if [ -z "$KAI_AGENT_PG_PASSWORD" ] && [ -f "$APP_DIR/.env" ]; then
+    KAI_AGENT_PG_PASSWORD=$(grep -E '^KAI_AGENT_PG_PASSWORD=' "$APP_DIR/.env" | head -1 | cut -d= -f2- | tr -d '"' || true)
+fi
+if [ -z "$KAI_AGENT_PG_PASSWORD" ]; then
+    KAI_AGENT_PG_PASSWORD=$(openssl rand -hex 24)
+fi
+
+mkdir -p "$DATA_MNT/state"
+(umask 077; printf '%s\n' "$KAI_AGENT_PG_PASSWORD" > "$KAI_AGENT_PG_PASSWORD_FILE")
+chmod 600 "$KAI_AGENT_PG_PASSWORD_FILE"
+
+mkdir -p "$DATA_MNT/kai-agent-postgres"
+# --- kai-agent-pg-password end ---
+# Outside the extracted test block: chown needs root, which the block's test
+# harness doesn't have (same note as the dispatcher's; this dir is excluded
+# from the blanket data-disk chown in section 2).
+chown -R 70:70 "$DATA_MNT/kai-agent-postgres"
+
+# Artifact Registry images authenticate through the VM SA via gcloud's docker
+# credential helper — configured for the image's own registry host only, and
+# persisted in root's docker config so the agnes-auto-upgrade pulls keep
+# working. Any other private registry needs pre-authenticated pull access on
+# the VM (not provided here).
+KAI_AGENT_IMAGE_HOST="${kai_agent_image}"
+KAI_AGENT_IMAGE_HOST="$${KAI_AGENT_IMAGE_HOST%%/*}"
+case "$KAI_AGENT_IMAGE_HOST" in
+    *pkg.dev) gcloud auth configure-docker "$KAI_AGENT_IMAGE_HOST" --quiet ;;
+esac
+
+# The engine's env. Derived URLs split by who calls them: the E2B sandbox
+# egresses to the LLM broker from the public internet, so that URL must be
+# the deployment's public origin (SERVER_URL — a domain-less plain-HTTP VM
+# only works if its :8000 is reachable from the sandbox, so give the instance
+# a domain); the ticket + workspace fetches are made by the engine's own
+# server and ride compose DNS to the app, avoiding a TLS hairpin.
+# HOST_JWT_ISSUER/AUDIENCE mirror the app-side defaults in app/api/kai.py.
+# The caller's kai_agent_env is appended AFTER these lines: env_file gives
+# later duplicate keys precedence, so the map can override any derived value.
+cat > "$KAI_DIR/.env" <<KAIENVEOF
+HOST_MODULE=jwt
+HOST_JWT_SECRET=$KAI_HOST_JWT_SECRET
+HOST_JWT_ISSUER=agnes
+HOST_JWT_AUDIENCE=kai-agent
+HOST_BROKER_LLM_URL=$SERVER_URL/api/broker/anthropic
+HOST_BROKER_TICKET_URL=http://app:8000/api/kai/tickets
+HOST_WORKSPACE_URL=http://app:8000/api/kai/workspace
+POSTGRES_URL=postgresql://kai:$KAI_AGENT_PG_PASSWORD@kai-agent-pg:5432/kai_agent
+E2B_API_KEY=$KAI_E2B_API_KEY
+KAIENVEOF
+echo "${kai_agent_env_b64}" | base64 -d >> "$KAI_DIR/.env"
+chmod 600 "$KAI_DIR/.env"
+
+# Quoted heredoc: the $${...} below are resolved by docker compose from
+# /opt/agnes/.env at `compose up` time, not by this shell. The one-shot
+# migrate runs from the engine's app dir inside the image because its
+# migrator resolves the ./drizzle folder relative to the cwd; the engine
+# waits on it via service_completed_successfully (the migrator is
+# idempotent, so the auto-upgrade tick re-running it is harmless).
+cat > "$APP_DIR/docker-compose.kai-agent.yml" <<'KAIYAML'
+services:
+  kai-agent:
+    image: $${KAI_AGENT_IMAGE}
+    restart: always
+    env_file: /opt/agnes/kai-agent/.env
+    ports:
+      - "127.0.0.1:3001:3000" # host-side testing via SSH tunnel; the app uses compose DNS
+    depends_on:
+      kai-agent-pg:
+        condition: service_healthy
+      kai-agent-migrate:
+        condition: service_completed_successfully
+  kai-agent-migrate:
+    image: $${KAI_AGENT_IMAGE}
+    restart: "no"
+    working_dir: /app/apps/kai-agent
+    command: ["node", "dist/db/migrate.js"]
+    env_file: /opt/agnes/kai-agent/.env
+    depends_on:
+      kai-agent-pg:
+        condition: service_healthy
+  kai-agent-pg:
+    image: postgres:16-alpine
+    restart: always
+    environment:
+      POSTGRES_USER: kai
+      POSTGRES_PASSWORD: $${KAI_AGENT_PG_PASSWORD}
+      POSTGRES_DB: kai_agent
+    volumes:
+      - /data/kai-agent-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kai"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+KAIYAML
+
+COMPOSE_FILE_VALUE="$COMPOSE_FILE_VALUE:docker-compose.kai-agent.yml"
+%{ endif ~}
 cat > "$APP_DIR/.env" <<ENVEOF
 JWT_SECRET_KEY=$JWT_KEY
 SESSION_SECRET=$SESSION_KEY
@@ -746,6 +876,11 @@ DISPATCHER_IMAGE=${dispatcher_image}
 DISPATCHER_PG_PASSWORD=$DISPATCHER_PG_PASSWORD
 LLM_DISPATCHER_URL=http://dispatcher:8600
 LLM_DISPATCHER_API_KEY=$DISPATCHER_KEY
+%{ endif ~}
+%{ if kai_agent_enabled ~}
+KAI_HOST_JWT_SECRET=$KAI_HOST_JWT_SECRET
+KAI_AGENT_IMAGE=${kai_agent_image}
+KAI_AGENT_PG_PASSWORD=$KAI_AGENT_PG_PASSWORD
 %{ endif ~}
 COMPOSE_FILE=$COMPOSE_FILE_VALUE
 %{ if data_apps_enabled ~}

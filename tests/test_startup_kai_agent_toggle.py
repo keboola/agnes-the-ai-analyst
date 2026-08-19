@@ -1,0 +1,228 @@
+"""Static + functional contract for the embedded kai-agent engine's
+Terraform → startup plumbing.
+
+Mirrors ``test_startup_data_apps_toggle.py`` (the per-VM toggle contract) and
+``test_startup_dispatcher_pg_password.py`` (the executable pg-password block).
+Pins the three-part infra contract so a rename or dropped template argument
+can't silently break durable enablement:
+
+* ``variables.tf`` carries ``kai_agent_enabled`` as a PER-VM field
+  (``optional(bool, false)``) on both prod_instance and dev_instances — like
+  ``dispatcher_enabled``, so enabling it targets one VM, never all of them —
+  plus the instance-wide ``kai_agent_image`` / ``kai_agent_jwt_secret`` /
+  ``kai_agent_e2b_key_secret`` / ``kai_agent_env`` variables;
+* ``main.tf`` forwards ``each.value.kai_agent_enabled`` (per-VM) + the
+  module-wide config into ``templatefile(...)``, and grants secretAccessor
+  only when some instance enables the engine;
+* ``startup-script.sh.tpl`` — ONLY when ``kai_agent_enabled`` — fetches the
+  shared JWT secret + E2B key (loudly), mints/persists the engine Postgres
+  password, writes the engine env + compose overlay, and emits
+  ``KAI_HOST_JWT_SECRET`` (the app-side half of the shared-secret pair) into
+  the app ``.env``. Disabled instances render a byte-identical ``.env``.
+"""
+
+import re
+import shutil
+import stat
+import subprocess
+from pathlib import Path
+
+MODULE = Path("infra/modules/customer-instance")
+TPL = MODULE / "startup-script.sh.tpl"
+
+BEGIN = "# --- kai-agent-pg-password begin"
+END = "# --- kai-agent-pg-password end"
+
+
+def test_kai_agent_enabled_is_per_vm_field():
+    body = (MODULE / "variables.tf").read_text()
+    # Per-VM field on BOTH instance object types (like dispatcher_enabled), so
+    # a dev-first enable can't flip prod. Exactly two declarations, optional.
+    decls = re.findall(r"kai_agent_enabled\s*=\s*optional\(bool,\s*false\)", body)
+    assert len(decls) == 2, f"expected kai_agent_enabled optional on prod+dev object types, got {len(decls)}"
+    # NOT a module-global variable (that would enable every VM at once).
+    assert not re.search(r'variable\s+"kai_agent_enabled"\s*\{', body)
+    # Engine image + secrets + env map stay instance-wide variables.
+    for name in ("kai_agent_image", "kai_agent_jwt_secret", "kai_agent_e2b_key_secret", "kai_agent_env"):
+        assert re.search(r'variable\s+"' + name + r'"\s*\{', body), name
+
+
+def test_main_tf_forwards_per_vm_toggle_into_templatefile():
+    body = (MODULE / "main.tf").read_text()
+    # Per-VM: read off each.value, mirroring dispatcher_enabled.
+    assert re.search(r"kai_agent_enabled\s*=\s*each\.value\.kai_agent_enabled", body)
+    assert not re.search(r"kai_agent_enabled\s*=\s*var\.kai_agent_enabled", body)
+    assert re.search(r"kai_agent_image\s*=\s*var\.kai_agent_image", body)
+    assert re.search(r"kai_agent_jwt_secret\s*=\s*var\.kai_agent_jwt_secret", body)
+    assert re.search(r"kai_agent_e2b_key_secret\s*=\s*var\.kai_agent_e2b_key_secret", body)
+
+
+def test_main_tf_grants_secret_access_conditionally():
+    body = (MODULE / "main.tf").read_text()
+    # secretAccessor only when some instance enables the engine, and secrets
+    # already granted via runtime_secret_env are subtracted — the same
+    # (project, secret, role, member) binding declared twice errors the apply.
+    assert re.search(r"kai_agent_any_enabled\s*=\s*anytrue", body)
+    assert "setsubtract" in body and "toset(keys(var.runtime_secret_env))" in body
+    assert re.search(r'"vm_kai_agent"\s*\{', body)
+    # The VM must wait on the grant, or the boot-time fetch can 403 on IAM lag.
+    assert "google_secret_manager_secret_iam_member.vm_kai_agent," in body
+
+
+def test_tpl_env_block_guarded_by_toggle():
+    body = TPL.read_text()
+    # The app-side half of the shared secret + the compose-expanded values,
+    # all inside `if kai_agent_enabled` blocks.
+    for key in (
+        "KAI_HOST_JWT_SECRET=$KAI_HOST_JWT_SECRET",
+        "KAI_AGENT_PG_PASSWORD=$KAI_AGENT_PG_PASSWORD",
+    ):
+        assert key in body, key
+    # Secret fetches fail LOUDLY (no ||-fallback) — an enabled engine without
+    # them cannot serve a turn, so a visible boot failure beats a silent one.
+    assert "KAI_HOST_JWT_SECRET=$(gcloud secrets versions access latest --secret=${kai_agent_jwt_secret})" in body
+    assert "KAI_E2B_API_KEY=$(gcloud secrets versions access latest --secret=${kai_agent_e2b_key_secret})" in body
+    # The engine Postgres data dir must be excluded from the blanket data-disk
+    # chown (postgres runs as uid 70, the app as 999).
+    assert "! -name kai-agent-postgres" in body
+    # The overlay joins COMPOSE_FILE so auto-upgrade pulls + ups it too.
+    assert "COMPOSE_FILE_VALUE=\"$COMPOSE_FILE_VALUE:docker-compose.kai-agent.yml\"" in body
+
+
+def test_tpl_kai_blocks_are_toggle_gated():
+    body = TPL.read_text()
+    # Two positive `if kai_agent_enabled` blocks (the 4c setup block and the
+    # .env keys), only positive guards, so a default instance renders none of
+    # it — in particular it never pulls the engine image.
+    assert body.count("%{ if kai_agent_enabled ~}") == 2
+    assert "!kai_agent_enabled" not in body
+    # The password prep must precede its use in the .env heredoc.
+    assert body.index("KAI_AGENT_PG_PASSWORD=$(openssl") < body.index("KAI_AGENT_PG_PASSWORD=$KAI_AGENT_PG_PASSWORD")
+
+
+def test_tpl_engine_env_derivation():
+    body = TPL.read_text()
+    # Sandbox-facing broker URL rides the PUBLIC origin; server-to-server
+    # fetches ride compose DNS to the app (no TLS hairpin). Issuer/audience
+    # mirror the app-side defaults in app/api/kai.py.
+    assert "HOST_BROKER_LLM_URL=$SERVER_URL/api/broker/anthropic" in body
+    assert "HOST_BROKER_TICKET_URL=http://app:8000/api/kai/tickets" in body
+    assert "HOST_WORKSPACE_URL=http://app:8000/api/kai/workspace" in body
+    assert "HOST_JWT_ISSUER=agnes\n" in body
+    assert "HOST_JWT_AUDIENCE=kai-agent\n" in body
+    # Caller env is appended AFTER the derived lines (env_file last-wins).
+    assert body.index("E2B_API_KEY=$KAI_E2B_API_KEY") < body.index('echo "${kai_agent_env_b64}" | base64 -d')
+    # The one-shot migrate runs from the engine's app dir (its migrator
+    # resolves ./drizzle relative to the cwd) and gates the engine start.
+    assert "working_dir: /app/apps/kai-agent" in body
+    assert 'command: ["node", "dist/db/migrate.js"]' in body
+    assert "condition: service_completed_successfully" in body
+
+
+# --- functional: the marker-delimited pg-password block, executed verbatim ---
+
+
+def _password_block() -> str:
+    tpl = TPL.read_text()
+    m = re.search(re.escape(BEGIN) + r".*?\n(.*?)" + re.escape(END), tpl, re.DOTALL)
+    assert m, (
+        "startup-script.sh.tpl must contain the marker-delimited "
+        f"kai-agent-pg-password block ({BEGIN!r} ... {END!r}) — the "
+        "functional tests below execute it"
+    )
+    block = m.group(1)
+    assert "${" not in block and "%{" not in block, (
+        "kai-agent-pg-password block must not use Terraform interpolation "
+        "('${' / '%{'); keep it plain bash so tests execute the shipped code "
+        "verbatim"
+    )
+    return block
+
+
+def _run_block(
+    tmp_path: Path, env_content: str | None = None, keyfile_content: str | None = None
+) -> tuple[str, Path, Path]:
+    """Execute the template's kai-agent-pg-password block against a sandbox.
+
+    Returns (captured KAI_AGENT_PG_PASSWORD value, keyfile path, .env path).
+    """
+    bash = shutil.which("bash")
+    assert bash, "bash required"
+    app_dir = tmp_path / "app"
+    data_mnt = tmp_path / "data"
+    app_dir.mkdir(exist_ok=True)
+    data_mnt.mkdir(exist_ok=True)
+    if env_content is not None:
+        (app_dir / ".env").write_text(env_content)
+    keyfile = data_mnt / "state" / "kai-agent-pg-password"
+    if keyfile_content is not None:
+        keyfile.parent.mkdir(parents=True, exist_ok=True)
+        keyfile.write_text(keyfile_content)
+    script = (
+        "set -euo pipefail\n"
+        f'APP_DIR="{app_dir}"\n'
+        f'DATA_MNT="{data_mnt}"\n' + _password_block() + '\nprintf "%s" "$KAI_AGENT_PG_PASSWORD"\n'
+    )
+    proc = subprocess.run([bash, "-c", script], capture_output=True, text=True)
+    assert proc.returncode == 0, f"kai-agent-pg-password block failed: {proc.stderr}"
+    return proc.stdout, keyfile, app_dir / ".env"
+
+
+def test_fresh_boot_mints_password_and_persists_it(tmp_path):
+    password, keyfile, _ = _run_block(tmp_path)
+    assert password, "a password must be minted"
+    assert keyfile.read_text().strip() == password
+    mode = stat.S_IMODE(keyfile.stat().st_mode)
+    assert mode == 0o600, f"keyfile must be 0600, got {oct(mode)}"
+
+
+def test_keyfile_is_not_inside_the_postgres_data_dir(tmp_path):
+    """postgres:16-alpine's initdb aborts on first boot if PGDATA (bind-mounted
+    from $DATA_MNT/kai-agent-postgres) contains anything but "lost+found" —
+    the keyfile must live outside that directory or the engine DB never
+    starts on a fresh machine."""
+    _, keyfile, _ = _run_block(tmp_path)
+    pgdata = tmp_path / "data" / "kai-agent-postgres"
+    assert pgdata not in keyfile.parents and keyfile != pgdata, (
+        f"keyfile {keyfile} must not live inside the Postgres data dir {pgdata}"
+    )
+
+
+def test_reboot_preserves_existing_keyfile(tmp_path):
+    """A VM reboot (data disk persists) must not re-mint the password —
+    doing so would desync it from the already-initialized engine database."""
+    existing = "existing-hex-password"
+    password, keyfile, _ = _run_block(tmp_path, keyfile_content=existing + "\n")
+    assert password == existing
+    assert keyfile.read_text().strip() == existing
+
+
+def test_hand_added_env_password_is_adopted_into_keyfile(tmp_path):
+    """A password already present in .env (e.g. hand-provisioned before the
+    module rollout) is adopted into the durable keyfile rather than being
+    clobbered by a fresh mint."""
+    existing = "legacy-env-password"
+    env = f"JWT_SECRET_KEY=x\nKAI_AGENT_PG_PASSWORD={existing}\nDATA_DIR=/data\n"
+    password, keyfile, _ = _run_block(tmp_path, env_content=env)
+    assert password == existing
+    assert keyfile.read_text().strip() == existing
+
+
+def test_keyfile_wins_over_env(tmp_path):
+    """VM recreate: the boot disk's .env is freshly templated (or stale) —
+    the persistent-disk keyfile paired with the surviving engine DB must
+    take precedence, or the engine can no longer authenticate to it."""
+    file_password = "data-disk-password"
+    env_password = "stale-boot-disk-password"
+    password, _, _ = _run_block(
+        tmp_path,
+        env_content=f"KAI_AGENT_PG_PASSWORD={env_password}\n",
+        keyfile_content=file_password + "\n",
+    )
+    assert password == file_password
+
+
+def test_two_runs_are_stable(tmp_path):
+    first, keyfile, _ = _run_block(tmp_path)
+    second, _, _ = _run_block(tmp_path, keyfile_content=keyfile.read_text())
+    assert first == second
