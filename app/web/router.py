@@ -7043,6 +7043,25 @@ def _connected_sources() -> list[str]:
     than a 500 — an unreadable registry, an unreadable legacy scalar, or a
     throwing credential probe must never break a page that is only asking
     this question.
+
+    KNOWN OMISSION — Keboola is the one connector with an instance-level
+    credential probe that this union does NOT call. `_keboola_credentialed()`
+    exists in this module and the `/admin/data-sources` cards already use it,
+    so an instance whose Keboola lives only in `data_source.keboola.*` +
+    `KEBOOLA_STORAGE_TOKEN` — no registry row, and a legacy scalar naming some
+    other source — still reads "Keboola is not connected" on `/admin/tables`.
+    Adding the probe here is deliberately NOT done, because this one list
+    drives two different decisions and only one of them would become correct:
+
+    TODO: split the signal before adding it. The banner copy asks "should we
+    tell the admin Keboola is unreachable?" (answer: no, it is credentialed),
+    while the Discover / List-tables / Use-as-base buttons the same flag
+    enables ask "is there a usable discover route for it?" — and
+    `GET /api/admin/discover-tables` routes on the legacy
+    `get_data_source_type()` scalar alone, so on such an instance it answers
+    `{"tables": [], "error": "Discovery not implemented for source_type=..."}`.
+    Probing Keboola here without a separate "usable discover route" flag would
+    only trade a wrong banner for three buttons that silently return nothing.
     """
     types = set(_connected_source_types())
 

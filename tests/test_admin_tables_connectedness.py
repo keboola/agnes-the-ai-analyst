@@ -238,19 +238,43 @@ class TestOneConnectednessSignal:
         assert "Databricks is not connected" in section
 
     def test_body_attrs_and_js_var_use_connected_sources(self, seeded_app, monkeypatch):
-        """Structural check on the 4 JS consumers named in the bug report:
-        body dataset attr, CONNECTED_SOURCES var, _dbxIsOnlyConnectedSource,
-        renderConnectorNotice. The legacy plural-scalar name must be gone."""
+        """Structural check on the JS consumers named in the bug report: body
+        dataset attr, CONNECTED_SOURCES var, renderConnectorNotice.
+
+        Every *connectedness* claim reads the union. The register-split-button
+        shortcut (`_dbxIsOnlyConnectedSource`) is the one consumer that does
+        NOT: it asks the narrower "is Databricks the only source somebody
+        registered here", so it keeps reading the registry-only
+        CONNECTED_SOURCE_TYPES — see
+        `test_dbx_shortcut_reads_registry_only_source_types` below.
+        """
         _inject_ctx(monkeypatch, connected_sources=["keboola"])
         c = seeded_app["client"]
         html = c.get("/admin/tables", headers=_auth(seeded_app["admin_token"])).text
 
         assert "data-connected-sources=" in html
-        assert "data-connected-source-types=" not in html
         assert "var CONNECTED_SOURCES = " in html
-        assert "CONNECTED_SOURCE_TYPES" not in html
-        assert "CONNECTED_SOURCES.filter(Boolean)" in html
         assert "CONNECTED_SOURCES.indexOf('keboola')" in html
+
+    def test_dbx_shortcut_reads_registry_only_source_types(self, seeded_app, monkeypatch):
+        """The one-click "register a Databricks table" shortcut must not be
+        disarmed by an unrelated credential.
+
+        Pointing `_dbxIsOnlyConnectedSource` at the CONNECTED_SOURCES union
+        broke it for every Databricks instance that also had, say, a BigQuery
+        service account in the vault: the union then holds two entries and the
+        `length === 1` test never fires. The registry-only list answers the
+        question the shortcut actually asks.
+        """
+        _inject_ctx(monkeypatch, connected_sources=["bigquery", "databricks"])
+        c = seeded_app["client"]
+        html = c.get("/admin/tables", headers=_auth(seeded_app["admin_token"])).text
+
+        assert "data-connected-source-types=" in html
+        assert "var CONNECTED_SOURCE_TYPES = " in html
+        shortcut = html.split("function _dbxIsOnlyConnectedSource(", 1)[1].split("}", 1)[0]
+        assert "CONNECTED_SOURCE_TYPES.filter(Boolean)" in shortcut
+        assert "CONNECTED_SOURCES." not in shortcut
 
 
 class TestPerProjectDiscover:

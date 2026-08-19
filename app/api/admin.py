@@ -551,7 +551,6 @@ _SECTION_BASELINE_EFFECT: dict[str, str] = {
     # the `reset_cache()` every save triggers.
     "instance": "live",  # get_experience()/get_instance_brand()/get_instance_favicon()/get_home_route() are thin get_value() wrappers, called per render
     "theme": "live",  # get_theme_css_overrides() re-reads per render
-    "data_source": "live",  # resolved per call; reset_cache() explicitly clears connectors.bigquery.access.get_bq_access's cache
     "ai": "live",  # every consumer (app/api/memory.py, services/corporate_memory/collector.py, services/session_processors/verification.py, src/knowledge_digests.py) calls load_instance_config().get("ai") fresh per invocation; no LLM client is cached at boot
     "materialize": "live",  # connectors/bigquery/extractor.py::_get_lock_ttl_seconds() re-reads get_value("materialize", "lock_ttl_seconds") on every lock acquire/sweep, not just at import
     "marketplace": "live",  # its one known key (curators_url) is read fresh per page render in app/web/router.py
@@ -569,6 +568,7 @@ _SECTION_BASELINE_EFFECT: dict[str, str] = {
     "server": "restart",  # partial and conservative: get_public_url() is read fresh at most call sites, but app.state.public_url is snapshotted ONCE at startup for the Slack Socket-Mode dispatcher (app/main.py — it has no inbound request to derive a host from); no live per-request reader was found for server.host/server.hostname
     "email": "restart",  # conservative: the actual SMTP send path (app/auth/providers/email.py, password.py) reads SMTP_HOST/SMTP_USER/SMTP_PASSWORD straight from os.environ, never from get_value("email", ...) — a save here was not observed to change behavior at all, live or restart; "restart" is the non-overclaiming answer
     "telegram": "restart",  # services/telegram_bot/bot.py reads instance.yaml ONCE at module import, in a separate process — restarting the API alone does not refresh it
+    "data_source": "restart",  # cross-process: THIS process reads it live (resolved per call; reset_cache() explicitly clears connectors.bigquery.access.get_bq_access's cache), but reset_cache() drops only the in-process overlay — under a role-split deployment (api/gateway/worker as separate processes, a documented mode) the scheduler and workers keep extracting against the pre-save coordinates until they are bounced, so a connection-settings save must not be reported as fully live; same reasoning as telegram above
     "jira": "restart",  # connectors/jira/service.py's _JiraConfig snapshots JIRA_* env vars at class-body eval (import time); no instance.yaml wiring was found for this section at all
     "corporate_memory": "restart",  # partial: most keys (distribution_mode/approval_mode/sources.*) are read fresh via get_corporate_memory_config() per page render, but corporate_memory.confidence is applied ONCE at startup via services/corporate_memory/confidence.configure() (app/main.py) — conservative for the whole section, same reasoning as auth
     "openmetadata": "live",  # src/catalog_export.py reads instance config fresh at each invocation (a standalone job, not a long-lived cached client)

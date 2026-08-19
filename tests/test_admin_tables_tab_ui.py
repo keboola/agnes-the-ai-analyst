@@ -271,10 +271,13 @@ def test_databricks_only_instance_keeps_the_full_register_menu_reachable(seeded_
         html = r.text
         # Precondition: this IS the configuration that arms the shortcut.
         assert 'data-source-type="databricks"' in html
-        # Renamed with the connectedness rewrite: one `connected_sources`
-        # union (registry ∪ real scalar ∪ credential probes) replaced the
-        # registry-only `connected_source_types` body attr.
+        # Two body attrs, two questions. The connectedness rewrite added the
+        # `connected_sources` union (registry ∪ real scalar ∪ credential
+        # probes) for "is X reachable"; the registry-only
+        # `connected_source_types` stayed, because it is what arms this
+        # shortcut — a stray BigQuery credential must not disarm it.
         assert 'data-connected-sources="databricks"' in html
+        assert 'data-connected-source-types="databricks"' in html
 
         # The second segment of the split button, and the handler it calls.
         assert 'id="registerNewTableMoreBtn"' in html

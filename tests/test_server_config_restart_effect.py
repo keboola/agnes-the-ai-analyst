@@ -32,7 +32,17 @@ def _auth(token: str) -> dict:
 
 
 class TestServerConfigRestartRequiredHonesty:
-    def test_data_source_only_patch_is_live_not_restart(self, seeded_app, tmp_path, monkeypatch):
+    def test_data_source_only_patch_requires_a_restart_for_the_other_processes(self, seeded_app, tmp_path, monkeypatch):
+        """`reset_cache()` makes a data_source save live in THIS process only.
+
+        Under a role-split deployment (api/gateway/worker as separate
+        processes) the scheduler and workers keep extracting against the
+        pre-save connection coordinates until they are bounced, so the
+        section's baseline is `restart` -- the same cross-process reasoning
+        that classifies `telegram`. Reporting it as `live` also made the
+        Snowflake wizard's own restart warning
+        (`_sfRestartRequired` in admin_data_sources.html) unreachable.
+        """
         monkeypatch.setenv("DATA_DIR", str(tmp_path))
         (tmp_path / "state").mkdir(parents=True, exist_ok=True)
         c = seeded_app["client"]
@@ -44,8 +54,8 @@ class TestServerConfigRestartRequiredHonesty:
         )
         assert resp.status_code == 200, resp.text
         data = resp.json()
-        assert data["restart_required"] is False, data
-        assert data["sections_effect"] == {"data_source": "live"}
+        assert data["restart_required"] is True, data
+        assert data["sections_effect"] == {"data_source": "restart"}
 
     def test_instance_and_theme_patches_are_both_live(self, seeded_app, tmp_path, monkeypatch):
         monkeypatch.setenv("DATA_DIR", str(tmp_path))

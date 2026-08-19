@@ -3,7 +3,7 @@
 
 {% block title %}Table Management - {{ config.INSTANCE_NAME }}{% endblock %}
 
-{% block body_attrs %}data-source-type="{{ data_source_type }}" data-connected-sources="{{ (connected_sources or []) | join(',') }}"{% endblock %}
+{% block body_attrs %}data-source-type="{{ data_source_type }}" data-connected-sources="{{ (connected_sources or []) | join(',') }}" data-connected-source-types="{{ (connected_source_types or []) | join(',') }}"{% endblock %}
 
 {% block head_extra %}
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -4331,8 +4331,11 @@
     // Replaces the per-connector tab nav. The user picks the connector
     // here only to choose which register modal to open; otherwise the
     // page is package-centric and source_type is just an inline tag.
+    // Reads CONNECTED_SOURCE_TYPES (registry rows only), NOT the wider
+    // CONNECTED_SOURCES union the connectedness banners use — see that var's
+    // note further down for why the two questions stay apart.
     function _dbxIsOnlyConnectedSource() {
-        var active = CONNECTED_SOURCES.filter(Boolean);
+        var active = CONNECTED_SOURCE_TYPES.filter(Boolean);
         return active.length === 1 && active[0] === 'databricks';
     }
 
@@ -4528,6 +4531,15 @@
     // not connected" on the screen for instances that had a Keboola project
     // connected through the registry (#347).
     var CONNECTED_SOURCES = (document.body.dataset.connectedSources || '')
+        .split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+    // The NARROWER question, deliberately kept separate: which source types own
+    // a row in the `source_connections` registry (`_connected_source_types` in
+    // app/web/router.py). Only the register-split-button shortcut above reads
+    // it. "Is this the ONE source somebody deliberately set up here?" is not
+    // the same question as "is X reachable?", and answering it from the union
+    // above disarmed the shortcut on a Databricks instance that merely also had
+    // a BigQuery service account in the vault.
+    var CONNECTED_SOURCE_TYPES = (document.body.dataset.connectedSourceTypes || '')
         .split(',').map(function (s) { return s.trim(); }).filter(Boolean);
 
     // The end of each table's chain: which package carries it and how many
@@ -5057,11 +5069,13 @@
         if (Array.isArray(data.buckets)) {
             var match = data.buckets.find(function(b) { return b.id === bucket; });
             if (match) return match.tables || [];
-            // Bucket not found by id — flatten every bucket's tables and let
-            // the caller's own bucket-id filter narrow it back down.
-            var all = [];
-            data.buckets.forEach(function(b) { all = all.concat(b.tables || []); });
-            return all;
+            // Bucket not found by id — an unknown bucket genuinely has no
+            // tables. This used to flatten EVERY bucket's tables and lean on
+            // the caller's filter to narrow them back down, but that filter
+            // passes any row carrying no bucket id of its own
+            // (`!b || b === bucket`), so a mistyped bucket offered the whole
+            // project's table list as suggestions for it.
+            return [];
         }
         return [];
     }
