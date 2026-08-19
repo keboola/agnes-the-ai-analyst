@@ -777,6 +777,26 @@ esac
 # an unprovisioned machine — the base stack, TLS, cron and watchdog proceed
 # untouched; a reboot or VM recreate retries with a fresh derivation.
 KAI_AGENT_MATERIALIZE=1
+if [ -z "$SERVER_URL" ] && [ -z "$DOMAIN" ]; then
+    # The transient case the skip below exists for: the earlier tolerant
+    # metadata read may have raced the network coming up. Retry it briefly
+    # here, so a mere blip recovers in-place instead of costing the engine
+    # until the next reboot (a skipped boot tears the engine down and drops
+    # the overlay from COMPOSE_FILE, so the tick cannot re-materialize it).
+    # A persistent failure still skips — deliberately louder than broken.
+    # Scoped to the engine: the app's own SERVER_URL line for this boot is
+    # already decided, an accepted pre-existing degradation on such a boot.
+    for _kai_ip_try in 1 2 3; do
+        sleep 5
+        KAI_EXTERNAL_IP=$(curl -sf -H "Metadata-Flavor: Google" \
+            "http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip" \
+            2>/dev/null || true)
+        if [ -n "$KAI_EXTERNAL_IP" ]; then
+            SERVER_URL="http://$KAI_EXTERNAL_IP:8000"
+            break
+        fi
+    done
+fi
 if [ -z "$SERVER_URL" ]; then
     echo "WARN: kai-agent engine SKIPPED this boot — no resolvable public origin (set a domain on the instance, or the GCE metadata read failed); reboot or recreate to retry" >&2
     KAI_AGENT_MATERIALIZE=0
@@ -1071,12 +1091,19 @@ fi
 %{ if kai_agent_enabled ~}
 # Now the engine, tolerantly: the base stack (incl. Caddy/TLS) is up, and the
 # sections below (auto-upgrade cron, watchdog) must install regardless of the
-# engine's fate. On failure the .env keeps the FULL list, so the next
-# auto-upgrade tick (and any operator `docker compose up -d`) retries the
-# engine with no state to repair.
-export COMPOSE_FILE="$KAI_FULL_COMPOSE_FILE"
-if ! docker compose $COMPOSE_PROFILES_ARG pull || ! docker compose $COMPOSE_PROFILES_ARG up -d; then
-    echo "WARN: kai-agent engine sidecar failed to pull or start; base stack is up — fix the engine image/migration and re-run docker compose up -d (or wait for the auto-upgrade tick)" >&2
+# engine's fate. TARGETED at the engine services — a full-list pull/up here
+# would fetch and start the whole stack a second time on every boot, and an
+# unrelated base-stack failure would be reported as an engine problem.
+# Gated on materialization: a skipped boot has no overlay to bring up. On
+# failure the .env keeps the FULL list, so the next auto-upgrade tick (and
+# any operator `docker compose up -d`) retries the engine with no state to
+# repair.
+if [ "$KAI_AGENT_MATERIALIZE" = "1" ]; then
+    export COMPOSE_FILE="$KAI_FULL_COMPOSE_FILE"
+    if ! docker compose $COMPOSE_PROFILES_ARG pull kai-agent kai-agent-migrate kai-agent-pg \
+        || ! docker compose $COMPOSE_PROFILES_ARG up -d kai-agent; then
+        echo "WARN: kai-agent engine sidecar failed to pull or start; base stack is up — fix the engine image/migration and re-run docker compose up -d (or wait for the auto-upgrade tick)" >&2
+    fi
 fi
 %{ endif ~}
 
