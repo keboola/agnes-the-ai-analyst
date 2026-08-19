@@ -284,7 +284,19 @@ def _create_session_and_credential(user_email: str) -> tuple[str, str]:
 
     `/api/broker/anthropic` now performs the session-existence check itself for
     `llm`-scoped tickets — the fix this note previously called honest and then
-    declined to make. That closes the deletion hole independently of whether a
+    declined to make.
+
+    Both checks ask "does the row exist", so they distinguish the two
+    user-facing deletes and it is worth being explicit about which: PERMANENT
+    delete (`hard_delete_session`) removes the row and stops the engine —
+    minting and spending both. ARCHIVE does not: it is
+    `UPDATE chat_sessions SET archived = TRUE`, the row survives, and an
+    engine-backed conversation therefore stays fully live after archiving. That
+    is the intended asymmetry rather than an oversight — archive is a
+    reversible state the Chats page can undo, so it must not destroy the
+    ability to continue the conversation — but it does mean the two menu items
+    differ far more for an engine-backed row than for a native one, where
+    archiving at least stops the running sandbox. Found by Devin Review. That closes the deletion hole independently of whether a
     chat manager exists, which also means the blind sweep is no longer load
     bearing for it. The sweep is still blind, and the one interrupted turn is
     still the accepted cost; what changed is that the reason is now the cheaper
@@ -975,6 +987,18 @@ def _editor_prompt_overrides_a_git_template() -> bool:
     own instructions in place rather than blank them. Found by Devin Review on
     this PR, against reasoning of mine that was wrong in both directions before
     it.
+
+    One divergence from the native surface REMAINS in this configuration, and
+    it is not this route's to fix: the native path calls ``build_zip(conn)``
+    with no ``user``/``server_url`` (``app/main.py``'s
+    ``_fetch_local_template_zip``), so the overlay is inserted verbatim —
+    unrendered Jinja. ``build_zip`` justifies that by saying the cloud-chat
+    fetch "re-renders CLAUDE.md itself via render_claude_md", which is true in
+    DEFAULT mode and false in OVERRIDE mode, where ``run_init`` deliberately
+    skips that write. So a native sandbox can get raw ``{{ … }}`` where this
+    route ships the rendered document. Shipping raw template syntax to the
+    engine to match would be the wrong direction, so this route renders and the
+    native defect is recorded for its own change. Found by Devin Review.
     """
     try:
         from src.initial_workspace import resolve_prompt

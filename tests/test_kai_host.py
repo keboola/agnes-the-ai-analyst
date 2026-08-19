@@ -1025,7 +1025,16 @@ def test_both_sandboxes_render_the_workspace_prompt_through_one_helper():
         "app/main.py must delegate its _render_workspace_prompt to the shared helper"
     )
     assert "render_sandbox_workspace_prompt" in kai_src
-    assert "render_claude_md" not in kai_src, "kai must not render the prompt itself — that is the drift this guards"
+    # A CALL or an import, not a mention: this module's docstrings discuss
+    # `render_claude_md` to explain what the native path does differently, and a
+    # bare substring check turned that prose into a failure. What the guard
+    # actually cares about is kai rendering the prompt itself.
+    assert "render_claude_md(" not in kai_src, (
+        "kai must not call render_claude_md itself — that is the drift this guards"
+    )
+    assert "import render_claude_md" not in kai_src, (
+        "kai must not import render_claude_md — it goes through the shared helper"
+    )
 
 
 def test_a_git_template_keeps_its_own_instructions_verbatim(seeded_app, kai_env, monkeypatch, tmp_path):

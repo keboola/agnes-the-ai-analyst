@@ -1573,6 +1573,18 @@ the engine exposes nothing.
   — otherwise a conversation straddling midnight would rewrite the whole
   sandbox tree over a date string.
 
+**Archiving is not deleting, for an engine-backed conversation.** Every gate on
+these routes — the session credential's own check and the `llm`-ticket check on
+`/api/broker/anthropic` — asks whether the `chat_sessions` row still exists.
+Permanent delete removes it, and the engine stops: no new tickets, and any
+outstanding one is refused. Archive only sets `archived = TRUE`, so the row
+survives and the conversation stays fully live; the engine can keep taking turns
+and spending LLM budget against it. That is deliberate — archive is reversible
+and must not destroy the ability to resume — but it is a wider gap between the
+two menu items than it is for a native conversation, where archiving at least
+stops the running sandbox. An operator who wants the engine to stop needs the
+permanent delete.
+
 The LLM upstream needs no new route: the engine's in-sandbox relay speaks plain
 pass-through, which is exactly what `/api/broker/anthropic/{subpath}` already
 is. Point the engine's `HOST_BROKER_LLM_URL` at it and the `llm` ticket
