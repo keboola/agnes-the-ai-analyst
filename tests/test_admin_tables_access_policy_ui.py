@@ -357,3 +357,94 @@ def test_preview_only_diffs_samples_the_server_says_are_comparable(seeded_app):
     body = r.text
     assert "base_sample_comparable" in body
     assert "ap-preview-note" in body
+
+
+def test_a_failed_compile_does_not_lock_the_advanced_sql_tab(seeded_app):
+    """The compile-error block exists to stop a SAVE of stale builder output:
+    after a failed compile `#apSql` still holds the previous compile (or the
+    saved policy), and saving that would silently disagree with what the
+    builder shows.
+
+    It must not become a lock on the tab the surrounding comments describe as a
+    standalone escape hatch. A deterministic failure —
+    `policy_builder_schema_unavailable` for a table whose schema cannot be read,
+    or a spec that hides every column — fails identically on every retry, so no
+    builder interaction can clear the flag and the admin could not save even SQL
+    they typed themselves. Hand-editing the box takes ownership of its contents,
+    which is what clears it."""
+    c = seeded_app["client"]
+    r = c.get("/admin/tables", headers=_auth(seeded_app["admin_token"]))
+    body = r.text
+    assert 'oninput="apSqlEdited()"' in body, "the SQL box does not report a manual edit"
+    fn = body[body.index("function apSqlEdited") : body.index("async function apSavePolicy")]
+    assert "_apCompileError = null" in fn
+    assert "_apHideSaveError()" in fn
+    # ...and the message names the way out, rather than only the blocked action.
+    save = body[body.index("async function apSavePolicy") :]
+    save = save[: save.index("var sql = document.getElementById('apSql')")]
+    assert "Advanced SQL tab" in save
+
+
+def test_an_unreadable_schema_is_not_reported_as_an_empty_table(seeded_app):
+    """`GET .../policy/columns` answers 200 with an empty list both when a table
+    genuinely has no columns and when the DESCRIBE failed — the ordinary outcome
+    for a remote row, whose external catalog is not attached on the connection
+    that read uses. "No columns found" sends the admin looking for a data
+    problem; the endpoint now says which it was."""
+    c = seeded_app["client"]
+    r = c.get("/admin/tables", headers=_auth(seeded_app["admin_token"]))
+    body = r.text
+    assert "body.schema_available !== false" in body
+    render = body[body.index("function _apRenderColList") :]
+    render = render[: render.index("var disabled = ")]
+    assert "_apSchemaAvailable" in render
+    assert "Advanced SQL tab" in render, "the empty state does not point at the way to write the policy"
+
+
+def test_the_one_click_starter_sql_clears_the_compile_block_like_typing_does(seeded_app):
+    """`apUseTableAsBase()` writes `#apSql` programmatically, and a programmatic
+    `.value` assignment does not fire `input` — so the textarea's `oninput` hook
+    never runs.
+
+    Without an explicit call the compile block set by an earlier failure outlives
+    text the admin deliberately put in the box, and the save keeps being refused
+    until they type one extra character. For the deterministic failures the
+    escape hatch exists for (unreadable schema, a spec hiding every column) no
+    builder interaction can clear the flag at all, so the button would hand the
+    admin starter SQL they cannot save."""
+    c = seeded_app["client"]
+    body = c.get("/admin/tables", headers=_auth(seeded_app["admin_token"])).text
+
+    fn = body[body.index("function apUseTableAsBase") :]
+    fn = fn[: fn.index("function apSwitchTab")]
+    assert "apSqlEdited();" in fn, (
+        "apUseTableAsBase replaces the SQL box without reporting the edit -- "
+        "a stale compile block would survive and keep refusing the save"
+    )
+
+
+def test_opening_the_sql_tab_runs_a_queued_compile_instead_of_dropping_it(seeded_app):
+    """The compile is debounced ~250ms and `#apSql` is written only by
+    `_apCompileNow`. Cancelling the timer when the Advanced SQL tab opens throws
+    away any builder change made inside that window: it never reaches the box,
+    no compile error is set to block the save, and the admin then stores a
+    policy that silently omits their last edit.
+
+    Flushing runs it instead, so the box handed over matches what the builder
+    shows. The in-flight request is deliberately left to land — the admin has
+    not typed yet, and their first keystroke cancels it through `apSqlEdited`,
+    with `_apCompileSeq` discarding a superseded response."""
+    c = seeded_app["client"]
+    body = c.get("/admin/tables", headers=_auth(seeded_app["admin_token"])).text
+
+    tab = body[body.index("function apSwitchTab") :]
+    tab = tab[: tab.index("var _AP_MASK_LABELS")]
+    assert "_apFlushPendingCompile();" in tab, "switching to the SQL tab must flush the queued compile, not discard it"
+    assert "_apCancelPendingCompile();" not in tab, (
+        "cancelling here drops a builder change made inside the debounce window"
+    )
+
+    flush = body[body.index("function _apFlushPendingCompile") :]
+    flush = flush[: flush.index("function _apScheduleCompile")]
+    assert "clearTimeout(_apCompileTimer)" in flush
+    assert "_apCompileNow();" in flush, "the queued compile must actually run"
