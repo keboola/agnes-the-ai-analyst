@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- **"Forgot Password?" on the login page now asks for the email address.** The control was a hidden-email POST wired by script to the sign-in form's email field, so clicking it before typing an email submitted an empty address — and the reset endpoint rendered the "Check your email" confirmation anyway, telling the user a mail was on its way when nothing was (or could have been) sent. The link now opens a dedicated request page (`GET /auth/password/reset` renders an email form instead of redirecting to the login page), and a reset request with an empty email re-renders that form with an inline "Enter your email address." error instead of the false confirmation. Anti-enumeration behavior for non-empty addresses is unchanged.
+
 ## [0.83.76] - 2026-08-19
 
 ### Removed
