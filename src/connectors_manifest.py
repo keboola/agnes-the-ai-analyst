@@ -41,8 +41,7 @@ from pathlib import Path
 from typing import Optional
 
 from src.initial_workspace import (
-    bundled_seed_path,
-    get_initial_workspace_dir,
+    bundled_seed_path,  # noqa: F401 — re-exported for the seed-scanning tests
     is_configured,
     list_seed_files,
 )
@@ -170,9 +169,10 @@ def _validate(slug: str, raw: dict) -> Optional[ConnectorEntry]:
     ):
         if not isinstance(value, expected_type):
             logger.warning(
-                "connectors_manifest: %s connector.%s missing or wrong type "
-                "(got %r) — skipped",
-                slug, field, type(value).__name__,
+                "connectors_manifest: %s connector.%s missing or wrong type (got %r) — skipped",
+                slug,
+                field,
+                type(value).__name__,
             )
             return None
 
@@ -181,8 +181,7 @@ def _validate(slug: str, raw: dict) -> Optional[ConnectorEntry]:
     summary_clean = _strip_html(short_summary)[:_MAX_SUMMARY_LEN]
     if not display_clean or not summary_clean:
         logger.warning(
-            "connectors_manifest: %s display_name or short_summary empty "
-            "after sanitization — skipped",
+            "connectors_manifest: %s display_name or short_summary empty after sanitization — skipped",
             slug,
         )
         return None
@@ -224,6 +223,7 @@ def _source_signature() -> str:
     if is_configured():
         try:
             from app.api.initial_workspace import _read_section
+
             sha = _read_section().get("last_commit_sha") or ""
             return f"iwt:{sha}" if sha else "iwt:unsynced"
         except Exception:
@@ -266,10 +266,7 @@ def load_manifest() -> list[ConnectorEntry]:
     """
     # Find connector SKILL.md files via the seed-resolution helper.
     all_files = list_seed_files(_CONNECTOR_SKILLS_ROOT)
-    connector_files = [
-        p for p in all_files
-        if p.parent.name.startswith("connector-") and p.name == "SKILL.md"
-    ]
+    connector_files = [p for p in all_files if p.parent.name.startswith("connector-") and p.name == "SKILL.md"]
 
     cache_key = (_source_signature(), _hash_paths(connector_files))
     with _cache_lock:
@@ -313,3 +310,38 @@ def invalidate_cache() -> None:
     """
     with _cache_lock:
         _cache.clear()
+
+
+def load_connector_body(slug: str) -> Optional[tuple[str, str]]:
+    """Read the post-frontmatter body of a connector skill's SKILL.md.
+
+    Sourced from the operator's Initial Workspace Template clone
+    (preferred) or the bundled snapshot in the wheel (fallback), same
+    two-tier resolution as :func:`src.initial_workspace.resolve_seed_file`.
+
+    Returns ``(body, source)`` where ``source`` is ``"iwt"`` or
+    ``"bundled"``; ``None`` when neither tier has the file. Callers MUST
+    validate ``slug`` against :func:`load_manifest` first — this function
+    resolves a path from its argument and the manifest is the registry
+    gate that keeps arbitrary seed paths unreachable.
+    """
+    from src.initial_workspace import resolve_seed_file
+
+    rel_path = f"workspace/.claude/skills/{slug}/SKILL.md"
+    result = resolve_seed_file(rel_path)
+    if result is None:
+        return None
+    content, source = result
+
+    # Strip YAML frontmatter — the prompt body starts after the closing `---`.
+    stripped = content.lstrip()
+    if not stripped.startswith("---"):
+        return (content, source)
+    body = stripped[3:]
+    end_match = re.search(r"^---\s*$", body, re.MULTILINE)
+    if not end_match:
+        # Malformed frontmatter — return the raw content rather than
+        # silently emitting an empty body. The manifest validator already
+        # logged the issue; double-failure here would lose context.
+        return (content, source)
+    return (body[end_match.end() :].lstrip("\n"), source)

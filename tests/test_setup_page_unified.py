@@ -51,9 +51,9 @@ def test_setup_page_renders_unified_layout(client):
     assert "agnes init" in text
     # Legacy admin-only login verbs are gone from the rendered prompt.
     assert "agnes auth import-token" not in text
-    # Always-on layout (preflight + marketplace + MCP + connectors block all
-    # unconditional; skills step deleted in #242): Confirm = step 9.
-    assert "10) Confirm:" in text
+    # Always-on layout (marketplace + connectors unconditional; preflight
+    # folded into the marketplace header): Confirm = step 8.
+    assert "8) Confirm:" in text
 
 
 def test_setup_page_ignores_role_query_param(client):
@@ -114,13 +114,15 @@ def test_setup_page_renders_marketplace_for_user_with_grants(client, monkeypatch
     # Non-empty stack → "install plugins" header variant.
     assert "Register the Agnes Claude Code marketplace and install plugins" in text
     assert "agnes refresh-marketplace --bootstrap" in text
-    # Layout shift: Confirm is now step 9 (preflight + marketplace + MCP +
-    # connectors all always-on; skills step deleted in #242).
-    assert "10) Confirm:" in text
-    # Pre-flight is in the rendered prompt at step 4.
-    assert "Make sure git and claude are installed" in text
-    # Atlassian MCP registration is at step 6.
-    assert "claude mcp add --transport sse atlassian" in text
+    # Layout shift: Confirm is step 8 (marketplace + connectors always-on;
+    # preflight folded into the marketplace header).
+    assert "8) Confirm:" in text
+    # Pre-flight is folded into the marketplace step's header.
+    assert "Needs git and claude on PATH" in text
+    # Connector bodies (incl. the Atlassian MCP registration) are fetched
+    # on demand, never inlined into the page.
+    assert "agnes connectors show connector-atlassian" in text
+    assert "claude mcp add --transport sse atlassian" not in text
 
 
 def test_install_legacy_path_redirects_to_setup(client):

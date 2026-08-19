@@ -174,14 +174,12 @@ class TestInstanceBrand:
             )
         )
         assert "Set up the Foundry AI CLI on this machine." in joined
-        # Step 2 is the user-centric decision tree (#442); brand +
-        # workspace_dir thread through the 2a "pick a workspace folder
-        # (e.g. ~/Desktop/{workspace_dir})" copy, the 2c "default" hint,
-        # and the manual-mkdir example. The default-path mention now
-        # renders as `~/Desktop/...` (tilde), not `$HOME/Desktop/...`.
+        # Brand + workspace_dir thread through step 2's suggested-folder
+        # copy (the decision tree itself moved into the CLI's
+        # unsafe_workspace guard). The default-path mention renders as
+        # `~/Desktop/...` (tilde), not `$HOME/Desktop/...`.
         assert "~/Desktop/FoundryAI" in joined
-        assert "mkdir -p ~/Desktop/FoundryAI && cd ~/Desktop/FoundryAI" in joined
-        assert "Bootstrap your Foundry AI workspace" in joined
+        assert "Set up the Foundry AI workspace in the current directory." in joined
         assert "Foundry AI workspace is ready" in joined
         # No raw placeholders survive substitution.
         assert "{instance_brand}" not in joined
@@ -196,12 +194,10 @@ class TestInstanceBrand:
 
         joined = "\n".join(resolve_lines("agnes.whl"))
         assert "Set up the Agnes CLI on this machine." in joined
-        # Step 2 is the user-centric decision tree (#442); default path
-        # renders as `~/Desktop/Agnes` (tilde) inside the 2c "default"
-        # branch + the manual-mkdir example.
+        # Default path renders as `~/Desktop/Agnes` (tilde) inside step 2's
+        # suggested-folder copy.
         assert "~/Desktop/Agnes" in joined
-        assert "mkdir -p ~/Desktop/Agnes && cd ~/Desktop/Agnes" in joined
-        assert "Bootstrap your Agnes workspace" in joined
+        assert "Set up the Agnes workspace in the current directory." in joined
         assert "Agnes workspace is ready" in joined
         mod._instance_config = None
 
