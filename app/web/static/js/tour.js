@@ -108,7 +108,7 @@ export const TOURS = {
       desc: 'Your Library is everything available to you. Your stack is the smaller set your chat agent actually draws on — that\'s what keeps answers fast and on topic. Click Add on a row and it joins your stack.',
       points: [
         'It counts from your very next question — no reload, no waiting.',
-        'The Scope control above ("Yours") filters the list down to what I\'m using right now.',
+        'The Scope control above ("In stack") filters the list down to what I\'m using right now.',
         'Items your admin marked required are always on and can\'t be removed.',
       ],
     },

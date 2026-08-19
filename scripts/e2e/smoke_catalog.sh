@@ -38,12 +38,14 @@ agent-browser --session "$SESSION" screenshot "$ARTIFACTS_DIR/catalog-landing.pn
 
 # /catalog is a 302 into /library?scope=available since the Catalog/
 # Marketplace fold — the smoke's job is now: the redirect lands on a fully
-# rendered Library with the Scope segment applied, and its section
-# disclosures actually work. (This script's previous life asserted
+# rendered Library with the "Not in stack yet" filter applied (the chip is
+# the visible proof — the acquisition question demoted off the Scope
+# segment into the Filter menu when the segment went two-state), and its
+# section disclosures actually work. (This script's previous life asserted
 # catalog_unified.html's kind tabs; that template is gone.)
-echo "→ snapshot landing — the folded Library, scope pre-applied"
+echo "→ snapshot landing — the folded Library, availability filter pre-applied"
 SNAPSHOT="$(agent-browser --session "$SESSION" snapshot -i)"
-for NEEDLE in "Available to add" Plugins Recipes; do
+for NEEDLE in "Not in stack yet" Plugins Recipes; do
   if ! grep -qi "$NEEDLE" <<<"$SNAPSHOT"; then
     echo "::error::'${NEEDLE}' missing from the folded /catalog landing (library scope view)."
     echo "$SNAPSHOT" | head -40

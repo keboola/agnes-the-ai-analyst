@@ -1899,7 +1899,8 @@ async def catalog(
     (spec 2026-08-12) and never got round to closing here.
 
     The one thing this page had that the list did not is the "what could I
-    add" question, which is now the Library's Scope segment.
+    add" question, which is now the Library's "Not in stack yet" filter —
+    the `?scope=available` this sends arrives with that toggle applied.
 
     302, not 308, so a reversal is not cached permanently — same reasoning as
     the /corporate-memory, /apps and /stack retirements. The route stays
@@ -3196,6 +3197,11 @@ async def library_page(
     # included: a locked membership IS a membership (its tier is filterable on
     # its own Optional/Required category).
     library_in_stack_count = sum(1 for c in items if c.get("stack_state") == "in_stack")
+    # What the Filter menu's "Not in stack yet" toggle can act on — strictly
+    # the rows whose Add control would do something (stack_state 'available');
+    # rows with no stack membership at all (files, apps) are neither in nor
+    # addable. Zero means the toggle doesn't render: no dead filters.
+    library_available_count = sum(1 for c in items if c.get("stack_state") == "available")
 
     # Tags are multi-valued per row, so they need their own tally.
     tag_counts: dict = {}
@@ -3358,6 +3364,7 @@ async def library_page(
         library_origins=library_origins,
         library_requirements=library_requirements,
         library_in_stack_count=library_in_stack_count,
+        library_available_count=library_available_count,
         library_stack_toggle=library_stack_toggle,
         library_owners=library_owners,
         library_tags=library_tags,
@@ -3381,11 +3388,13 @@ async def library_page(
         library_stack_only=request.query_params.get("stack") == "in_stack",
         # Scope preset — `/library?scope=mine|available`. This is where the
         # retired Catalog and Marketplace browse pages land: they were the
-        # "what could I add" and "what have I got" halves of one list, so each
-        # redirect arrives with that half already selected. Validated against
-        # the segment's own values, so what reaches the page's JS is one of
-        # ours and never caller text; anything else falls back to `all`, which
-        # is what the Library opens on.
+        # "what could I add" and "what have I got" halves of one list. The
+        # page's JS maps `mine` onto the In stack segment and `available`
+        # onto the Filter menu's "Not in stack yet" toggle (the acquisition
+        # question was demoted off the bar when the segment went two-state).
+        # Validated against the two legal values, so what reaches the page's
+        # JS is one of ours and never caller text; anything else falls back
+        # to `all`, which is what the Library opens on.
         library_scope=(
             request.query_params.get("scope") if request.query_params.get("scope") in ("mine", "available") else ""
         ),
@@ -5668,10 +5677,10 @@ async def marketplace_listing(
     have" — over store entities and curated plugins the Library already lists
     in full (`store_entities_repo().list(visibility_status=['approved'])`, plus
     every granted `marketplace_plugin`). That is the same list under a second
-    roof, and the tab pair is the same question the Library's Scope segment now
-    asks of one list.
-
-    `?tab=my` maps to Scope=Yours so an old link lands where it meant to.
+    roof, and the tab pair is the same question the Library now asks of one
+    list: `?tab=my` maps to `scope=mine` (the In stack segment) and the
+    default browse tab to `scope=available` (the "Not in stack yet" filter),
+    so an old link lands where it meant to.
 
     302 and the route stays registered, per the /corporate-memory, /apps and
     /stack retirements. Every detail and sub-route is untouched —
@@ -7031,9 +7040,9 @@ def _source_inventory() -> dict:
             continue  # a real connection of this type owns the card
         own_tables = unlinked_by_type.pop(stype, [])
         if not own_tables and not (
-            (stype == "bigquery" and _bigquery_credentialed()) or
-            (stype == "snowflake" and _snowflake_credentialed()) or
-            (stype == "databricks" and _databricks_credentialed())
+            (stype == "bigquery" and _bigquery_credentialed())
+            or (stype == "snowflake" and _snowflake_credentialed())
+            or (stype == "databricks" and _databricks_credentialed())
         ):
             continue
         did = f"derived:{stype}"

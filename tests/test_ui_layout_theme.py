@@ -380,7 +380,7 @@ class TestRailOptIn:
         # Order on the bar: Scope · Filter · Sort. Scope answers "whose is
         # this" before Filter narrows within it and Sort orders the result, so
         # it reads first — and the Stack question ("what can the default agent
-        # use?") is its `Yours` segment.
+        # use?") is its `In stack` segment.
         positions = [
             text.index('id="lib-scope"'),
             text.index('id="lib-filter-btn"'),
@@ -389,25 +389,34 @@ class TestRailOptIn:
         assert positions == sorted(positions), "scope must lead the bar, before Filter and Sort"
 
     def test_scope_is_a_segment_not_a_binary_toggle(self, web_client, admin_cookie, monkeypatch):
-        """Scope is All / Yours / Available to add, on the bar.
+        """Scope is All / In stack, on the bar; the acquisition question lives
+        in the Filter menu.
 
-        This used to pin an "In stack only" pressed-state toggle wired as an
-        engine facet with `control`. That control asked a binary of a
-        three-answer question, and the answer it could not give — "what is
-        NOT mine yet" — is exactly what the Marketplace and the Catalog were
-        separate browse pages for. Folding those two into this list (see
-        REDIRECTED_UNDER_RAIL) is what makes the third segment necessary, and
-        having it is what makes the fold honest.
+        The fold first shipped a three-way segment (All / Yours / Available
+        to add), but "Available to add" framed the Library as a shop and gave
+        the acquisition question toolbar rank that belongs to the app's one
+        structural concept — the Stack. So the segment is two-state and says
+        the word it teaches, and "what could I add" demoted to a "Not in
+        stack yet" toggle in the Filter menu: every acquirable row already
+        sits in All wearing its own Add pill, so nothing is hidden by the
+        demotion (see REDIRECTED_UNDER_RAIL — the retired browse pages'
+        `?scope=available` links arrive with that toggle applied).
         """
         text = web_client.get("/library", cookies=admin_cookie).text
         assert 'id="lib-scope"' in text, "the scope segment must be on the bar"
-        for value in ("all", "mine", "available"):
+        for value in ("all", "in_stack"):
             assert f'data-seg="{value}"' in text, value
+        for retired in ("mine", "available"):
+            assert f'data-seg="{retired}"' not in text, f"the {retired} segment stays retired"
         # Driven by the shared engine's own segmented control, not page-local
-        # click handlers — so Clear all and reset keep working.
-        assert "segments: { container: '#lib-scope', name: 'seg', attr: 'data-scope' }" in text
-        # The control it replaced is gone, not merely hidden: two controls for
-        # one question is the mistake the marketplace shelves already made.
+        # click handlers — so Clear all and reset keep working. Slices on the
+        # row's strict Stack membership, the same attribute the demoted
+        # availability toggle reads the other value of.
+        assert "segments: { container: '#lib-scope', name: 'seg', attr: 'data-stack' }" in text
+        assert 'data-facet="availability"' in text, "the demoted acquisition filter must exist"
+        # The control the segment replaced is gone, not merely hidden: two
+        # controls for one question is the mistake the marketplace shelves
+        # already made.
         assert 'id="lib-stack-toggle"' not in text
 
     def test_rail_has_no_studio_or_marketplace_entry(self, web_client, admin_cookie, monkeypatch):
@@ -2047,10 +2056,11 @@ class TestRedesignedPageContracts:
 
         Its Browse and My Stack tabs were "everything there is" and "what I
         have" over store entities and curated plugins the Library already
-        lists — the same pair the Library's Scope segment now asks of one
-        list. `?tab=my` maps to Scope=Yours so an old link lands where it
-        meant to. The store itself is untouched: every detail, edit and
-        submission route under /marketplace still renders.
+        lists — the same pair the Library now asks of one list: `?tab=my`
+        maps to `scope=mine` (the In stack segment) and the browse tab to
+        `scope=available` (the "Not in stack yet" filter), so an old link
+        lands where it meant to. The store itself is untouched: every
+        detail, edit and submission route under /marketplace still renders.
         """
         resp = web_client.get("/marketplace", cookies=admin_cookie, follow_redirects=False)
         assert resp.status_code == 302

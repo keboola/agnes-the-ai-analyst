@@ -157,7 +157,7 @@ def test_files_of_every_format_share_one_files_section(seeded_app):
 
 
 # ---------------------------------------------------------------------------
-# Stack: the Scope segment (All · Yours · Available to add)
+# Stack: the Scope segment (All · In stack) + the demoted availability filter
 # ---------------------------------------------------------------------------
 
 
@@ -166,10 +166,13 @@ def _add_to_stack(seeded_app, collection_id: str, token: str):
 
 
 def test_stack_filter_is_the_scope_segment(seeded_app):
-    """The Catalog/Marketplace fold replaced the "In stack only" toggle with
-    the three-way Scope segment (All · Yours · Available to add): "things I
-    could add" became a state of the one list, and a binary toggle could only
-    say two of the three answers. Same placement rule survives — a SEGMENT on
+    """The Scope segment is two-state — All · In stack — because the Stack is
+    the one structural concept the toolbar exists to teach, and it says the
+    word it teaches while carrying the in-Stack count. The acquisition
+    question the fold's three-way segment carried ("Available to add") is
+    demoted to the Filter menu's "Not in stack yet" toggle: every acquirable
+    row already sits in All wearing its own Add pill, so the demotion hides
+    nothing. The placement rule survives for the Stack itself — a SEGMENT on
     the bar, not a row inside the Filter menu, because the condition is
     consequential enough that it must not need a click to discover."""
     tok = seeded_app["admin_token"]
@@ -179,17 +182,25 @@ def test_stack_filter_is_the_scope_segment(seeded_app):
 
     text = seeded_app["client"].get("/library", headers=_auth(tok)).text
     assert 'id="lib-scope"' in text
-    for seg in ("all", "mine", "available"):
+    for seg in ("all", "in_stack"):
         assert f'data-seg="{seg}"' in text
+    for retired in ("mine", "available"):
+        assert f'data-seg="{retired}"' not in text, f"the {retired} segment stays retired"
     assert 'id="lib-stack-toggle"' not in text, "the retired toggle must not return"
     assert "fbar-menu__toggle" not in text, "retired in-menu toggle markup"
-    # Row attributes both axes slice on: the scope segment reads data-scope,
-    # the ?stack=in_stack deep link still slices on data-stack. Both fixture
-    # rows are the admin's OWN, so both carry scope "mine" — an "available"
-    # row would need a granted-but-not-owned resource, which the segment
-    # markup assertion above already covers without the heavier fixture.
-    assert 'data-scope="mine"' in text
+    # The segment carries the unfiltered in-Stack tally, kept truthful by
+    # refreshStackCount after an in-place membership change.
+    assert "data-stack-count" in text
+    # Both controls slice on the row's strict Stack membership: the segment
+    # keeps `in_stack` rows, the availability toggle keeps `available` ones —
+    # one attribute, no ownership-blended data-scope projection to drift.
     assert 'data-stack="in_stack"' in text
+    assert 'data-stack="available"' in text
+    assert 'data-scope="' not in text, "the retired scope projection must not return"
+    # The demoted acquisition filter: one toggle checkbox in the menu, with
+    # its tally (the fixture leaves one row addable).
+    assert 'data-facet="availability"' in text
+    assert "Not in stack yet" in text
 
 
 def test_stack_deep_link_arrives_with_the_toggle_applied(seeded_app):
@@ -211,9 +222,10 @@ def test_stack_deep_link_arrives_with_the_toggle_applied(seeded_app):
 
 
 # (test_stack_toggle_shows_the_matching_item_count was retired with the
-# toggle itself: the Scope segment that replaced it carries no per-option
-# tallies — three counts on a three-way segment is a dashboard, not a
-# control — and `fbar-toggle__n` no longer renders anywhere.)
+# toggle; the count came back when the segment went two-state — one tally on
+# the one state that teaches the Stack is a control, not the dashboard that
+# three counts on a three-way segment would have been. The main segment test
+# above pins `data-stack-count`; `fbar-toggle__n` still renders nowhere.)
 
 
 def test_stack_toggle_keeps_locked_admin_required_items(seeded_app):
