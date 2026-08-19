@@ -3351,15 +3351,21 @@ async function _registerBqRows() {
   return { ok: registered, failed };
 }
 
-/* ── Step 2 (Snowflake): manual rows editor ───────────────────────────────
-   Snowflake has no bucket browser exposed in the wizard — schemas are named.
-   Each filled row registers as LIVE (query_mode='remote') or a scheduled
-   MATERIALIZED copy; custom SQL and semantic views keep their full editor. */
+/* ── Step 2 (Snowflake): schema/table picker + manual fallback ─────────────
+   Was manual-entry only: two free-text inputs, nothing checked against the
+   account, and the registry id composed as `schema + "_" + table` — so a name
+   pasted with its schema prefix already attached silently produced a doubled
+   id pointing at a table that does not exist, which then cannot heal (only a
+   re-save re-runs the remote-extract build). The picker below lists what the
+   configured user can actually see; the manual rows stay for anything the
+   listing cannot reach. Either path registers LIVE (query_mode='remote') or a
+   scheduled MATERIALIZED copy; custom SQL and semantic views keep their full
+   editor. */
 
 function _renderSfRowsEditor() {
   const body = document.getElementById("ds-wizard-tables-body");
   document.getElementById("ds-wizard-connected-banner").innerHTML =
-    "Name the Snowflake tables to register — schema and table, one per row."
+    "Pick the Snowflake tables to register — or name one by hand if it is not listed."
     + (_sfRestartRequired
       ? ` <span style="display:block; margin-top:6px; color:var(--ds-accent-warn-ink);">`
         + `Connection settings are saved, but only this process has re-read them.`
@@ -3370,14 +3376,129 @@ function _renderSfRowsEditor() {
         + `${_esc(_storedUnderNote(_sfStoredUnder))}</span>`
       : "");
   body.innerHTML = `
-    <div id="ds-sfrows">
-      ${_sfRowHtml()}${_sfRowHtml()}${_sfRowHtml()}
+    <div class="ds-browse-actions" style="margin-bottom:10px; align-items:center;">
+      <button type="button" class="btn btn-secondary" id="ds-sf-browse">Reload tables</button>
+      <label style="display:inline-flex; align-items:center; gap:6px;">
+        <span style="color:var(--ds-text-secondary);">register selected as</span>
+        <select id="ds-sf-picker-mode">
+          <option value="remote" selected>live</option>
+          <option value="materialized">materialized</option>
+        </select>
+      </label>
+      <span class="ds-browse-error" id="ds-sf-browse-error"></span>
     </div>
-    <button type="button" class="btn btn-secondary" id="ds-sfrow-add">＋ Add another table</button>
+    <div id="ds-sf-picker"></div>
+    <div style="margin-top:14px;">
+      <div style="color:var(--ds-text-secondary); margin-bottom:6px;">
+        Not listed — or listing unavailable? Name a table by hand:
+      </div>
+      <div id="ds-sfrows">
+        ${_sfRowHtml()}
+      </div>
+      <button type="button" class="btn btn-secondary" id="ds-sfrow-add">＋ Add another table</button>
+    </div>
     <div class="ds-browse-error" id="ds-sf-rows-error" style="display:block; margin-top:8px;"></div>`;
   body.querySelector("#ds-sfrow-add").addEventListener("click", () => {
     body.querySelector("#ds-sfrows").insertAdjacentHTML("beforeend", _sfRowHtml());
   });
+  body.querySelector("#ds-sf-browse").addEventListener("click", _loadSfCatalog);
+  // Auto-load, mirroring the Keboola step (which lists tables as soon as the
+  // connection tests OK) — a picker nobody thinks to click does not stop anyone
+  // from mistyping a name. Failure degrades to the manual rows below.
+  _loadSfCatalog();
+}
+
+/* ── Snowflake table picker ───────────────────────────────────────────────
+   Renders with the SAME classes + `data-bucket-group` hooks the Keboola picker
+   uses, inside the same `#ds-wizard-tables-body` root, so the delegated
+   expand / select-all / filter / count handlers above apply unchanged. One
+   schema = one group. */
+
+async function _loadSfCatalog() {
+  const host = document.getElementById("ds-sf-picker");
+  const errEl = document.getElementById("ds-sf-browse-error");
+  const btn = document.getElementById("ds-sf-browse");
+  if (!host) return;
+  errEl.textContent = "";
+  host.innerHTML = `<div class="ds-empty">Listing tables in the configured Snowflake account…</div>`;
+  if (btn) btn.disabled = true;
+  try {
+    const r = await fetch("/api/admin/data-sources/snowflake/tables", { credentials: "include" });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      host.innerHTML = "";
+      // Both keys, because the endpoint answers a misconfiguration under
+      // `detail` while other admin endpoints use `message`; kept inline rather
+      // than shared so this step does not depend on a helper landing first.
+      errEl.textContent = (typeof body.detail === "string" && body.detail)
+        || (typeof body.message === "string" && body.message)
+        || "listing failed";
+      return;
+    }
+    const schemas = body.schemas || [];
+    if (!schemas.length) {
+      host.innerHTML = `<div class="ds-empty">No tables visible to the configured Snowflake user.</div>`;
+      return;
+    }
+    host.innerHTML = _sfPickerHtml(schemas, body.database || "");
+    _syncPicker(_pickerRoot(host));
+  } catch (e) {
+    host.innerHTML = "";
+    errEl.textContent = "could not reach the server";
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+function _sfPickerHtml(schemas, database) {
+  const total = schemas.reduce((n, s) => n + (s.tables || []).length, 0);
+  const openByDefault = schemas.length === 1;
+  const groups = schemas.map((sc, si) => {
+    const tables = sc.tables || [];
+    const rows = tables.map((t, ti) => `
+      <div class="ds-table-row" data-search="${_esc((t.name || "").toLowerCase())}">
+        <label>
+          <input type="checkbox" class="ds-table-checkbox"
+                 data-sf-pick data-sf-pick-schema="${_esc(sc.name)}" data-sf-pick-table="${_esc(t.name)}">
+          <span class="ds-table-name">${_esc(t.name)}</span>
+        </label>
+        <span class="ds-table-rows">${_esc(t.table_type === "VIEW" ? "view" : "")}</span>
+        <span class="ds-table-status" id="ds-sfstatus-${si}-${ti}"></span>
+      </div>`).join("");
+    const panelId = `ds-sfsch-${si}`;
+    const count = tables.length;
+    return `
+      <div class="ds-bucket-group${openByDefault ? " is-open" : ""}"
+           data-bucket-group data-user-open="${openByDefault ? "1" : "0"}"
+           data-search="${_esc((sc.name || "").toLowerCase())}">
+        <div class="ds-bucket-hd">
+          <input type="checkbox" class="ds-bucket-check"
+                 aria-label="Select all ${count} table${count === 1 ? "" : "s"} in ${_esc(sc.name)}">
+          <button type="button" class="ds-bucket-toggle" aria-expanded="${openByDefault}" aria-controls="${panelId}">
+            <span class="ds-bucket-caret" aria-hidden="true">▶</span>
+            <span class="ds-bucket-title">${_esc(sc.name)}</span>
+            <span class="ds-bucket-meta" data-bucket-meta>${count} table${count === 1 ? "" : "s"}</span>
+          </button>
+        </div>
+        <div class="ds-bucket-tables" id="${panelId}"${openByDefault ? "" : " hidden"}>
+          ${rows || '<div class="ds-empty">No tables in this schema.</div>'}
+        </div>
+      </div>`;
+  }).join("");
+  return `
+    <div class="ds-picker-bar">
+      <input type="search" class="ds-picker-search" data-picker-search
+             placeholder="Filter schemas and tables…" aria-label="Filter schemas and tables"
+             autocomplete="off" spellcheck="false">
+      <span class="ds-picker-count" data-picker-count aria-live="polite">0 of ${total} selected</span>
+      <button type="button" class="ds-picker-link" data-picker-all>Select all</button>
+      <button type="button" class="ds-picker-link" data-picker-none disabled>Clear</button>
+      <button type="button" class="ds-picker-link" data-picker-expand>${openByDefault ? "Collapse all" : "Expand all"}</button>
+    </div>
+    ${groups}
+    <div style="color:var(--ds-text-secondary); margin-top:6px;">
+      Database <code>${_esc(database)}</code>
+    </div>`;
 }
 
 function _sfRowHtml() {
@@ -3394,7 +3515,19 @@ function _sfRowHtml() {
 }
 
 async function _registerSfRows() {
-  const rows = [...document.querySelectorAll("#ds-sfrows .ds-sfrow")]
+  // Two sources of truth, same shape downstream: boxes ticked in the picker
+  // (real names, so the doubled-prefix / typo class of bug cannot happen) and
+  // any hand-written rows. Picker entries come first so a schema+table named in
+  // both is registered once, from the picker.
+  const pickerMode = (document.getElementById("ds-sf-picker-mode") || {}).value || "remote";
+  const picked = [...document.querySelectorAll("#ds-sf-picker [data-sf-pick]:checked")].map((box) => ({
+    row: box.closest(".ds-table-row"),
+    schema: box.dataset.sfPickSchema || "",
+    table: box.dataset.sfPickTable || "",
+    mode: pickerMode,
+    statusEl: box.closest(".ds-table-row").querySelector(".ds-table-status"),
+  }));
+  const manual = [...document.querySelectorAll("#ds-sfrows .ds-sfrow")]
     .map((row) => ({
       row,
       schema: row.querySelector("[data-sf-schema]").value.trim(),
@@ -3403,10 +3536,17 @@ async function _registerSfRows() {
       statusEl: row.querySelector(".ds-table-status"),
     }))
     .filter((r) => r.schema || r.table);
+  const seen = new Set();
+  const rows = [...picked, ...manual].filter((r) => {
+    const key = `${r.schema.toUpperCase()}.${r.table.toUpperCase()}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
   const errEl = document.getElementById("ds-sf-rows-error");
   errEl.textContent = "";
   if (!rows.length) {
-    errEl.textContent = "Fill in at least one schema + table row.";
+    errEl.textContent = "Pick at least one table above, or fill in a schema + table row.";
     return { ok: [], failed: 0 };
   }
   const registered = [];
