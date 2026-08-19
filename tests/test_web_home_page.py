@@ -495,14 +495,13 @@ def test_home_hides_email_admin_button_when_gws_configured(fresh_db, monkeypatch
 # `test_home_renders_connector_prompts_from_shared_module` was dropped here
 # alongside the removal of the /home `<details data-section="connectors">`
 # block. The test pinned source-of-truth parity between the home tile
-# `<code id="*-prompt">` blocks and `app/web/connector_prompts.py`. With the
-# tiles gone, the only surface left for those strings is the install-hero's
-# Step 4 clipboard payload (rendered via `_claude_setup_instructions.jinja`
-# from `setup_instructions_lines`, which is built in
-# `app/web/setup_instructions.py::_connectors_block` calling the same
-# `connector_prompts.py` functions). One surface, no drift risk → the
-# parity test is redundant. If a second surface ever re-renders these
-# prompts, restore a parity test scoped to that new consumer.
+# `<code id="*-prompt">` blocks and the shared connector-prompt module.
+# /home renders no connector prompt at all any more: the install prompt
+# went thin, so the only surface that serves a wizard body is
+# `GET /api/connectors/{slug}/prompt`, pulled up after setup when the user
+# asks for that connector — and that endpoint has its own tests. No second
+# surface, no drift risk → the parity test is redundant. If one ever
+# reappears, restore a parity test scoped to that new consumer.
 
 
 # ── Setup section header + Overview + Usage modes ────────────────────────
