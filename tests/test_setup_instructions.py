@@ -217,7 +217,13 @@ def test_preamble_opens_with_brand_server_and_token_guard():
     # called `agnes`. Say once that the three name one system — an agent
     # given three unfamiliar names and no relation between them has to treat
     # the mismatch as a red flag.
-    assert "own deployment of Agnes, served" in joined
+    #
+    # Unbranded instance: brand IS "Agnes", so there is no third name and the
+    # "own deployment of Agnes" clause would render as the tautology "Agnes is
+    # this organization's own deployment of Agnes". It is dropped; the server
+    # and the binary name are still stated.
+    assert "own deployment of Agnes" not in joined
+    assert "Agnes is served from {server_url}" in joined
     assert "installs is named `agnes`" in joined
     # Token handling stated as a fact, not as an instruction to conceal:
     # the steps use the file path, so nothing needs to display its contents.
@@ -228,6 +234,27 @@ def test_preamble_opens_with_brand_server_and_token_guard():
     assert "step 4 of the install guide at {server_url}" in joined
     # Idempotence promise (one line, not a paragraph).
     assert "idempotent" in joined
+
+
+def test_preamble_names_brand_host_and_binary_as_one_system_when_branded():
+    """A rebranded instance is the case the coherence sentence exists for.
+
+    The prompt then carries three names an agent cannot relate on its own —
+    the operator's product name, the instance's own hostname, and a binary
+    called `agnes` — and an unexplained mismatch between them is the
+    look-alike-domain signal that stalled a real install. Assert the
+    sentence is present and names all three.
+    """
+    from app.web.setup_instructions import render_setup_instructions
+
+    rendered = render_setup_instructions(
+        server_url="https://analyst-acme.example.net",
+        token="",
+        instance_brand="Foundry AI",
+    )
+    assert "Foundry AI is this organization's own deployment of Agnes, served" in rendered
+    assert "https://analyst-acme.example.net" in rendered
+    assert "installs is named `agnes`" in rendered
 
 
 def test_preamble_asserts_no_consent_on_the_assistants_behalf():
