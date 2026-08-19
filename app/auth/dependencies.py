@@ -364,17 +364,39 @@ def _attach_admin_flag(user: dict, conn: duckdb.DuckDBPyConnection) -> None:
     after the v13 migration. Computing the flag once per request here
     keeps every consumer in sync with ``app.auth.access.is_user_admin``
     (the same call all server-side admin gates use).
+
+    ``is_admin`` is EFFECTIVE authority, so it honors the elevation consent
+    gate: an admin who paused their own elevation gets ``False`` here, because
+    ``require_admin`` refuses that request (403 ``admin_elevation_paused``)
+    and chrome gated on the raw membership sent them straight into it — the
+    rail kept an Admin row that only ever produced an error page. The
+    middleware stamps the pause before authentication (see app/main.py), so
+    the flag is resolvable at this point.
+
+    ``is_admin_paused`` carries the difference — in the Admin group, but
+    paused — so chrome can say *why* the admin surfaces are gone and link to
+    the switch (on /me/profile, deliberately outside admin-gated UI, so a
+    paused admin is never stranded). Enforcement paths keep calling
+    ``is_user_admin`` / ``require_admin`` directly; this pair is for
+    rendering.
     """
     from app.auth.access import is_user_admin
+    from app.auth.elevation import elevation_paused
 
     user_id = user.get("id")
     if user_id:
         try:
-            user["is_admin"] = is_user_admin(user_id, conn)
+            in_admin_group = is_user_admin(user_id, conn)
         except Exception:
-            user["is_admin"] = False
+            in_admin_group = False
+        # Subject-scoped: the pause is this person pausing their own god-mode
+        # (an unstamped caller still honors it — reduction is always safe).
+        paused = bool(in_admin_group) and elevation_paused(str(user_id))
+        user["is_admin"] = bool(in_admin_group) and not paused
+        user["is_admin_paused"] = paused
     else:
         user["is_admin"] = False
+        user["is_admin_paused"] = False
 
 
 def get_optional_user(

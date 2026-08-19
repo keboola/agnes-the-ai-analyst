@@ -506,6 +506,20 @@
             <span class="rail-i-label">Admin</span>
         </a>
     </div>
+    {% elif session.user.is_admin_paused %}
+    {# Elevation is paused for this browser, so `is_admin` is False and the row
+       above is correctly gone — every /admin page would 403
+       (`admin_elevation_paused`). Silence would read as a bug though ("where
+       did Admin go?"), so the slot says what happened and links to the switch.
+       /me/profile is deliberately NOT admin-gated, which is what keeps this
+       from being a dead end: pausing can always be undone. #}
+    <div class="rail-admin">
+        <a class="rail-i rail-i--muted" href="/me/profile#admin-mode"
+           title="Admin mode is paused for this browser — you're running on your explicit grants. Click to resume.">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="5" y="10.5" width="14" height="9" rx="2" stroke="currentColor" stroke-width="1.5"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5" stroke="currentColor" stroke-width="1.5"/></svg>
+            <span class="rail-i-label">Admin paused</span>
+        </a>
+    </div>
     {% endif %}{# /session.user.is_admin #}
 
     {# "How {brand} works" is no longer a row here — it is a `.rail-meta` row in
