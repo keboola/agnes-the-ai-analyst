@@ -413,7 +413,23 @@ def _embedded_comments_are_complete(issue_data: dict[str, Any]) -> bool:
     if not isinstance(total, int):
         # No count to check against: a list of unknown completeness.
         return False
-    return len(comments) >= total
+    if len(comments) < total:
+        return False
+    # Length is not the only kind of incompleteness. This payload's one caller
+    # is the webhook fetch-failure fallback, whose write is an issue-scoped
+    # delete-then-insert -- so a comment here that carries no boolean
+    # `jsdPublic` does not merely fail to add information, it REPLACES an
+    # already-observed `public_visibility` with NULL until the next successful
+    # refetch. The flag is present on 100% of comments across every GET shape
+    # measured for this column, but webhook bodies were not among those shapes,
+    # and webhook serialization is exactly what the known Atlassian reports
+    # (JSDCLOUD-7997, -8275, -6050) concern. Rather than assume, answer False
+    # and let the existing `_comments_incomplete` marker preserve the stored
+    # rows: this path only runs when a refetch has already failed, so the cost
+    # of being conservative is one deferred update on a rare path, and the cost
+    # of being wrong is silent data loss on a column whose entire design
+    # principle is that NULL means "not observed".
+    return all(isinstance(c.get("jsdPublic"), bool) for c in comments if isinstance(c, dict))
 
 
 def complete_issue_comments(
@@ -425,11 +441,21 @@ def complete_issue_comments(
 ) -> None:
     """Fill in comments Jira's issue payload truncated at its embed page size.
 
-    ``GET /issue/{key}`` embeds ``fields.comment.comments`` capped at 100,
-    oldest-first — an issue with more than 100 comments arrives missing its
-    NEWEST comments. Because every later full-refetch (``fields=*all``)
-    re-hits the same cap, the gap never heals on its own; it only widens as
-    more comments are added.
+    ``GET /issue/{key}`` embeds ``fields.comment.comments`` capped at 100, and
+    the window is the NEWEST 100 — the payload's own ``fields.comment.startAt``
+    is ``total - 100`` (verified live: 24/122, 22/122, 6/106 on three
+    >100-comment issues). An issue over the cap therefore arrives missing its
+    OLDEST comments, and because every later full-refetch (``fields=*all``)
+    re-hits the same cap, the gap never heals on its own.
+
+    KNOWN BUG, deliberately not fixed here: the loop below starts at
+    ``startAt = len(embedded)`` — 100, which is *past* the window's head — so
+    it re-walks comments the embed already carries and never reaches the
+    oldest ``total - 100``. Those comments are fetched by no path and get no
+    row at all. Fixing it means paging from ``startAt=0`` up to the embed's own
+    ``startAt`` instead. Tracked separately; the docstring is corrected here
+    because the original said "oldest-first", which is what makes
+    ``startAt = len(embedded)`` look right.
 
     ``fields.comment.total`` carries the true count. When it exceeds what's
     embedded, page through ``GET /issue/{key}/comment`` (``startAt``,
