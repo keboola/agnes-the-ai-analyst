@@ -11,6 +11,7 @@ in the rendered HTML for a `data_source_type='bigquery'` deployment.
 """
 
 import pytest
+from pydantic import ValidationError
 
 
 def _auth(token):
@@ -145,8 +146,8 @@ def test_edit_modal_has_bq_parity_fields(seeded_app, bq_instance):
     # Edit modal has the same Discover / List tables / Use-as-base buttons
     # as Register so the operator can re-pick the source from autocomplete
     # without dropping the row.
-    assert "discoverBqDatasets('editBqDatasetList')" in html
-    assert "discoverBqTables('editBqDataset', 'editBqTableList')" in html
+    assert "discoverBqDatasets(this, 'editBqDatasetList')" in html
+    assert "discoverBqTables(this, 'editBqDataset', 'editBqTableList')" in html
     assert "prefillFromTable('editBqSourceQuery')" in html
     assert 'id="editBqDatasetList"' in html
     assert 'id="editBqTableList"' in html
@@ -281,8 +282,8 @@ def test_keboola_edit_modal_parity(seeded_app, monkeypatch):
         assert 'id="editKbSourceQuery"' in html
         assert 'id="editKbSyncSchedule"' in html
         # Discover/List/Use-as-base buttons mirror Register.
-        assert "discoverKeboolaBuckets('editKbBucketList')" in html
-        assert "discoverKeboolaTables('editKbBucket', 'editKbTableList')" in html
+        assert "discoverKeboolaBuckets(this, 'editKbBucketList')" in html
+        assert "discoverKeboolaTables(this, 'editKbBucket', 'editKbTableList')" in html
         assert "prefillFromKeboolaTable('editKbSourceQuery')" in html
         # v26: Strategy dropdown re-added inside Direct-extract panel
         assert 'id="editKbStrategy"' in html
@@ -446,5 +447,193 @@ def test_admin_tables_keboola_branch_unchanged(seeded_app, monkeypatch):
         assert 'id="registerModal"' not in html
         assert 'id="kbBucket"' in html
         assert 'id="kbViewName"' in html
+    finally:
+        reset_cache()
+
+
+def test_precheck_failure_pins_field_errors_for_two_step_connectors(seeded_app, bq_instance):
+    """A 422 on a required field can only surface at PRECHECK for the
+    two-step connectors, so the field marks have to be applied there.
+
+    `register_table_precheck` runs "identical Pydantic validation to
+    register-table" (its own docstring), and the BQ / Snowflake confirm step
+    is reachable only after that precheck returned 200. Wiring
+    `_applyFieldErrors` solely into `_confirmRegister{BigQuery,Snowflake}Table`
+    therefore left `BQ_REGISTER_FIELD_MAP` / `SF_REGISTER_FIELD_MAP`
+    unreachable for validation errors — the operator got the readable toast
+    but never the red box that the rest of this feature promises, while the
+    single-POST connectors (Keboola, Databricks) did.
+    """
+    c = seeded_app["client"]
+    html = c.get("/admin/tables", headers=_auth(seeded_app["admin_token"])).text
+
+    for fn, field_map in (
+        ("function _registerBigQueryTable(", "BQ_REGISTER_FIELD_MAP"),
+        ("function _registerSnowflakeTable(", "SF_REGISTER_FIELD_MAP"),
+    ):
+        start = html.index(fn)
+        end = html.index("\n    function ", start + len(fn))
+        body = html[start:end]
+        assert "'/api/admin/register-table/precheck'" in body, (
+            f"{fn} no longer calls precheck — this guard has nothing to check"
+        )
+        assert f"_applyFieldErrors(d && d.detail, {field_map})" in body, (
+            f"{fn}: a precheck 422 must pin the field marks too, not just toast — "
+            "the confirm step that carries the field map is unreachable until "
+            "precheck has already passed validation"
+        )
+
+
+def test_nested_confirm_prompt_dialog_outranks_the_register_drawer(seeded_app, bq_instance):
+    """`Use as base` inside a register drawer awaits an invisible dialog.
+
+    modal.js's confirmModal / promptModal render a `.modal-backdrop` fixed at
+    z-index 1000 (style-custom.css), but the register drawers here are
+    `.ds-drawer` at 1200 (css/drawer.css) and `prefillFromTable` /
+    `prefillFromKeboolaTable` are invoked from buttons *inside* them — so the
+    dialog the flow then awaits painted behind the panel that opened it and
+    the button looked dead. The page-scoped override must clear the drawer
+    and stay under the toast.
+    """
+    import re
+    from pathlib import Path
+
+    c = seeded_app["client"]
+    html = c.get("/admin/tables", headers=_auth(seeded_app["admin_token"])).text
+
+    def _z(css: str, selector: str) -> int:
+        parts = css.split(selector + " {", 1)
+        assert len(parts) == 2, f"no `{selector} {{` rule found — this guard has nothing to compare"
+        m = re.search(r"z-index:\s*(\d+)", parts[1].split("}", 1)[0])
+        assert m, f"{selector} lost its z-index — this guard has nothing to compare"
+        return int(m.group(1))
+
+    drawer_z = _z(Path("app/web/static/css/drawer.css").read_text(encoding="utf-8"), ".ds-drawer")
+    backdrop_z = _z(html, ".modal-backdrop")
+    toast_z = _z(html, ".toast")
+
+    assert backdrop_z > drawer_z, (
+        f".modal-backdrop ({backdrop_z}) must outrank .ds-drawer ({drawer_z}) — "
+        "confirmModal/promptModal are opened from inside the register drawers"
+    )
+    assert backdrop_z < toast_z, f".modal-backdrop ({backdrop_z}) must stay under .toast ({toast_z})"
+
+
+def test_keboola_whole_table_payload_is_not_rejected_by_the_register_validator(seeded_app, monkeypatch):
+    """The Keboola drawer's DEFAULT mode must post a payload the server accepts.
+
+    `_buildKeboolaPayload` / `_buildKeboolaEditPayload` synthesized
+    ``SELECT * FROM kbc."<bucket>"."<table>"`` into ``source_query`` for the
+    whole-table branch, but a Keboola *materialized* row exports through the
+    Storage API, whose filter is a JSON spec — so
+    ``RegisterTableRequest._check_mode_query_coherence`` refuses a
+    source_query starting with SELECT/WITH ("must be a JSON filter spec …,
+    not SQL"), and `connectors/keboola/extractor.py` raises on the same shape
+    at sync time. "Whole table (extension)" is the pre-checked radio, so every
+    default Keboola registration 422d; before `_apiErrorMessage` landed the
+    operator saw that as the literal string "[object Object]", which is how a
+    dead register path stayed invisible.
+
+    Both halves are pinned: the model must still reject the synthesized SQL
+    (so this is not silently "fixed" by relaxing the server), and neither
+    payload builder may produce it.
+    """
+    from app.api.admin import RegisterTableRequest
+
+    with pytest.raises(ValidationError) as exc:
+        RegisterTableRequest(
+            name="orders",
+            source_type="keboola",
+            query_mode="materialized",
+            bucket="in.c-sales",
+            source_table="orders",
+            source_query='SELECT * FROM kbc."in.c-sales"."orders"',
+        )
+    assert "JSON filter spec" in str(exc.value)
+
+    c = seeded_app["client"]
+    html = c.get("/admin/tables", headers=_auth(seeded_app["admin_token"])).text
+
+    for fn in ("function _buildKeboolaPayload(", "function _buildKeboolaEditPayload("):
+        start = html.index(fn)
+        end = html.index("\n    function ", start + len(fn))
+        body = html[start:end]
+        # Anchored on the assignment, not the bare string: the surrounding
+        # comments legitimately name the payload this guard forbids.
+        assert "source_query: 'SELECT * FROM kbc." not in body, (
+            f"{fn} still synthesizes SQL into source_query for the whole-table "
+            "branch — the server rejects exactly that payload, so the drawer's "
+            "default mode cannot register anything"
+        )
+
+
+def test_keboola_edit_back_to_whole_table_clears_the_stored_source_query(seeded_app, monkeypatch):
+    """Switching a Keboola row back to "Whole table" must CLEAR source_query.
+
+    `update_table` overlays `request.model_dump(exclude_unset=True)` onto the
+    stored row, so an *omitted* `source_query` means "keep the existing value",
+    not "clear it". A row edited from custom back to whole table would then
+    keep exporting the old filter spec while the drawer claimed a full-table
+    copy — and a row still carrying the legacy synthesized
+    ``SELECT * FROM kbc."b"."t"`` would wedge every PUT on the merged-record
+    guard (`app/api/admin.py`, "must be a JSON filter spec"), unfixable from
+    this drawer, because neither branch could clear the field. An explicit
+    ``null`` is accepted by `UpdateTableRequest` and persists as NULL; an empty
+    string is rejected outright.
+    """
+    fake_cfg = {"data_source": {"type": "keboola", "keboola": {}}}
+    monkeypatch.setattr(
+        "app.instance_config.load_instance_config",
+        lambda: fake_cfg,
+        raising=False,
+    )
+    from app.instance_config import reset_cache
+
+    reset_cache()
+    try:
+        c = seeded_app["client"]
+        auth = _auth(seeded_app["admin_token"])
+
+        r = c.post(
+            "/api/admin/register-table",
+            headers=auth,
+            json={
+                "name": "orders_filtered",
+                "source_type": "keboola",
+                "query_mode": "materialized",
+                "bucket": "in.c-sales",
+                "source_table": "orders",
+                "source_query": '{"columns": ["id", "created_at"]}',
+            },
+        )
+        assert r.status_code == 201, r.text
+        table_id = r.json()["id"]
+
+        # Exactly what _buildKeboolaEditPayload's whole-table branch posts.
+        r = c.put(
+            f"/api/admin/registry/{table_id}",
+            headers=auth,
+            json={
+                "query_mode": "materialized",
+                "bucket": "in.c-sales",
+                "source_table": "orders",
+                "source_query": None,
+            },
+        )
+        assert r.status_code == 200, r.text
+
+        rows = c.get("/api/admin/registry", headers=auth).json()
+        row = next(t for t in (rows if isinstance(rows, list) else rows["tables"]) if t["id"] == table_id)
+        assert not (row.get("source_query") or "").strip(), (
+            f"switching back to whole-table left the previous filter spec on the row — got {row.get('source_query')!r}"
+        )
+
+        html = c.get("/admin/tables", headers=auth).text
+        start = html.index("function _buildKeboolaEditPayload(")
+        end = html.index("\n    function ", start)
+        assert "source_query: null," in html[start:end], (
+            "_buildKeboolaEditPayload's whole-table branch must send an EXPLICIT null; "
+            "omitting the key makes the PUT keep the stored value"
+        )
     finally:
         reset_cache()
