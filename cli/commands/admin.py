@@ -1,16 +1,15 @@
 """Admin commands — agnes admin."""
 
 import json
-from typing import Optional
 
 import typer
 
-from cli.client import api_get, api_post, api_delete, api_put
+from cli.client import api_delete, api_get, api_post, api_put
 from cli.commands.admin_activity import activity_app
 from cli.commands.admin_analytics import analytics_app as admin_analytics_app
-from cli.commands.admin_connection import admin_connection_app
 from cli.commands.admin_ask import app as admin_ask_app
 from cli.commands.admin_autodoc import autodoc_tables
+from cli.commands.admin_connection import admin_connection_app
 from cli.commands.admin_data_package import admin_data_package_app
 from cli.commands.admin_data_semantics import admin_data_semantics_app
 from cli.commands.admin_digest import admin_digest_app
@@ -18,18 +17,17 @@ from cli.commands.admin_doctor import doctor_app as admin_doctor_app
 from cli.commands.admin_jobs import admin_jobs_app
 from cli.commands.admin_mcp import mcp_app as admin_mcp_app
 from cli.commands.admin_memory_domain import admin_memory_domain_app
+from cli.commands.admin_metrics import admin_metrics_app
+from cli.commands.admin_news import admin_news_app
 from cli.commands.admin_semantic_layer import admin_semantic_layer_app
 from cli.commands.admin_semantic_model import admin_semantic_model_app
 from cli.commands.admin_semantic_source import admin_semantic_source_app
-from cli.commands.admin_skills import admin_skills_app
-from cli.commands.admin_metrics import admin_metrics_app
-from cli.commands.db import db_app as admin_db_app
-from cli.commands.admin_news import admin_news_app
 from cli.commands.admin_sessions import sessions_app as admin_sessions_app
+from cli.commands.admin_skills import admin_skills_app
 from cli.commands.admin_store import admin_store_app
 from cli.commands.admin_usage import app as admin_usage_app
+from cli.commands.db import db_app as admin_db_app
 from cli.commands.memory_admin import memory_admin_app
-
 from src.repositories import (
     column_metadata_repo,
     user_group_members_repo,
@@ -140,13 +138,18 @@ def remove_user(user_id: str = typer.Argument(..., help="User ID to remove")):
 @admin_app.command("register-table")
 def register_table(
     name: str = typer.Argument(..., help="Table display name (DuckDB view name for BQ)"),
-    source_type: str = typer.Option("keboola", help="Source type: keboola | bigquery | jira | local | databricks"),
+    source_type: str = typer.Option(
+        "keboola", help="Source type: keboola | bigquery | jira | local | databricks | snowflake"
+    ),
     bucket: str = typer.Option(
         "",
         help="Source bucket (Keboola), dataset (BigQuery), or schema (Databricks; 'catalog.schema' overrides the default catalog)",
     ),
-    source_table: str = typer.Option("", help="Source table name in the bucket/dataset"),
-    query_mode: str = typer.Option("local", help="Query mode: local | remote | materialized"),
+    source_table: str = typer.Option("", help="Source table name in the bucket/dataset/schema"),
+    query_mode: str | None = typer.Option(
+        None,
+        help="Query mode: local | remote | materialized (default: local for keboola/jira/local, materialized for databricks/snowflake, remote for bigquery)",
+    ),
     query: str = typer.Option(
         "",
         "--query",
@@ -243,6 +246,14 @@ def register_table(
     """
     from pathlib import Path
 
+    if query_mode is None:
+        if source_type == "bigquery":
+            query_mode = "remote"
+        elif source_type in ("databricks", "snowflake"):
+            query_mode = "materialized"
+        else:
+            query_mode = "local"
+
     # Resolve --query @file.sql shorthand.
     source_query = ""
     if query:
@@ -263,7 +274,7 @@ def register_table(
     # --query is still required — BQ has no analogous "full table" semantic
     # at the registry layer (the path is a SELECT against
     # `<project>.<dataset>.<table>`, which the admin must spell out).
-    if query_mode == "materialized" and not source_query and source_type not in ("keboola", "databricks"):
+    if query_mode == "materialized" and not source_query and source_type not in ("keboola", "databricks", "snowflake"):
         typer.echo(
             "Error: --query-mode materialized requires --query (literal SQL or @path.sql) for source_type="
             + source_type,
@@ -434,15 +445,25 @@ def register_table(
 
 @admin_app.command("discover-and-register")
 def discover_and_register(
-    source_type: str = typer.Option("keboola", help="Source type"),
+    source_type: str = typer.Option("keboola", help="Source type: keboola"),
     token: str = typer.Option(None, help="Keboola Storage API token"),
     url: str = typer.Option(None, help="Keboola stack URL"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be registered"),
     as_json: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
-    """Discover all tables from source and register them."""
-    import httpx
+    """Discover all tables from a Keboola source and register them."""
     import os
+
+    import httpx
+
+    if source_type != "keboola":
+        typer.echo(
+            f"Discovery is not implemented for source_type='{source_type}'. "
+            "Only Keboola Storage API discovery is supported; "
+            "register individual tables with `agnes admin register-table`.",
+            err=True,
+        )
+        raise typer.Exit(2)
 
     kbc_token = token or os.environ.get("KEBOOLA_STORAGE_TOKEN", "")
     kbc_url = url or os.environ.get("KEBOOLA_STACK_URL", "")
@@ -492,8 +513,6 @@ def discover_and_register(
         # — same effective semantics the old 'local' mode gave, but via
         # the Storage API instead of the DuckDB extension. See
         # connectors/keboola/storage_api.py + the v25→v26 migration.
-        # Other connectors keep their per-source default.
-        default_mode = "materialized" if source_type == "keboola" else "local"
         resp = api_post(
             "/api/admin/register-table",
             json={
@@ -501,13 +520,13 @@ def discover_and_register(
                 "source_type": source_type,
                 "bucket": bucket_id,
                 "source_table": name,
-                "query_mode": default_mode,
+                "query_mode": "materialized",
                 "description": f"Auto-discovered from {source_type}",
             },
         )
 
-        # 200 (BQ synchronous materialize), 201 (legacy non-BQ insert),
-        # and 202 (BQ background materialize) are all success — mirrors
+        # 200 (synchronous materialize), 201 (legacy non-BQ insert),
+        # and 202 (background materialize) are all success — mirrors
         # the matrix in the single-table register-table command. Pre-fix
         # this only accepted 201, so every successful BQ row counted as
         # an error (review NIT 6 in #119).
@@ -675,7 +694,7 @@ def update_table(
         "--source-type",
         help="Change source type. Rare — most edits keep this fixed.",
     ),
-    server_only: Optional[bool] = typer.Option(
+    server_only: bool | None = typer.Option(
         None,
         "--server-only/--no-server-only",
         help=(
@@ -702,7 +721,7 @@ def update_table(
         "--policy-note",
         help="Why this access policy exists. Required whenever --policy sets a non-empty body.",
     ),
-    policy_mapping: Optional[bool] = typer.Option(
+    policy_mapping: bool | None = typer.Option(
         None,
         "--policy-mapping/--no-policy-mapping",
         help=(

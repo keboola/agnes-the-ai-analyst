@@ -118,5 +118,9 @@ RUN useradd --system --uid 999 --create-home --shell /usr/sbin/nologin agnes && 
     chown -R agnes:agnes /app
 USER agnes
 
+# Pre-stage the ADBC Snowflake driver in DuckDB's extension directory so the
+# ``snowflake`` community extension can load without a runtime network fetch.
+RUN /app/scripts/install-adbc-driver.sh /app
+
 EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*"]

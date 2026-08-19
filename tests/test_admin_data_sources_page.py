@@ -835,11 +835,13 @@ class TestSnowflakeWizardCredentialNames:
         stored, and says which name it went under."""
         src = self._template()
         render = src[src.index("function _renderSfCredStatus") : src.index("async function _saveSnowflakeAndContinue")]
-        assert "_sfStoredUnderNote" not in render, "the note is back on the badge, where it fires unconditionally"
+        assert "_storedUnderNote" not in render, "the note is back on the badge, where it fires unconditionally"
         save = src[src.index("async function _saveSnowflakeAndContinue") : src.index("function openWizard")]
         assert save.count("storedUnder.push(") == 3, "a stored credential is not recorded for every kind"
         banner = src[src.index("function _renderSfRowsEditor") :]
-        assert "_sfStoredUnderNote(_sfStoredUnder)" in banner
+        # Renamed from `_sfStoredUnderNote` when the Databricks pane started
+        # sharing it — the text was never Snowflake-specific.
+        assert "_storedUnderNote(_sfStoredUnder)" in banner
         assert "_sfStoredUnder = [];" in src[src.index("function openWizard") :]
 
     def test_a_server_config_save_surfaces_restart_required(self):
@@ -866,3 +868,79 @@ class TestSnowflakeWizardCredentialNames:
             )
             render = src.index(f'_renderSfCredStatus(null, "{kind}");', src.index("_saveSnowflakeAndContinue"))
             assert clear < render, f"{input_id} is cleared after the badge is redrawn"
+
+
+class TestDatabricksWizardCredentialAndRestartNotice:
+    """The Databricks pane is the newest arrival in the Add-data wizard and
+    repeated three defects the Snowflake pane had already been fixed for: an
+    unstyled credential-status row, a `restart_required` flag thrown away, and
+    a credential written under a hardcoded name the backend may not read.
+
+    Source-level assertions, like the Snowflake class above: this is inline
+    template JS with no module boundary to import."""
+
+    def _template(self):
+        from pathlib import Path
+
+        import app.web.router as web_router
+
+        return (Path(web_router.__file__).parent / "templates" / "admin_data_sources.html").read_text()
+
+    def test_the_credential_badge_row_is_styled_like_its_siblings(self):
+        """`.ds-dbxcred` was on the div and in no stylesheet rule, so the badge
+        and its warning text stacked instead of aligning and the row collapsed
+        to zero height while the async status load was in flight."""
+        src = self._template()
+        rule = next((ln for ln in src.splitlines() if ".ds-bqcred" in ln and "display: flex" in ln), "")
+        assert rule, "the credential-status row rule is gone"
+        assert ".ds-dbxcred" in rule, "the Databricks badge row is not styled like the BigQuery/Snowflake rows"
+
+    def test_the_credential_is_read_and_written_under_the_configured_name(self):
+        """`resolve_databricks_settings` reads the env var named by
+        `data_source.databricks.token_env`, so a wizard that always writes
+        `DATABRICKS_TOKEN` can report a stored credential the backend never
+        looks at. Both the status lookup and the PUT go through the resolved
+        name now, and the name is shape-guarded because the config read redacts
+        it."""
+        src = self._template()
+        assert "_envNameOr(dbx.token_env, _DBX_TOKEN_ENV_DEFAULT)" in src
+        assert "s.name === _dbxTokenEnv" in src
+        assert "datasource-secrets/${encodeURIComponent(_dbxTokenEnv)}" in src
+        # The hardcoded constant must not be the thing either path reaches for.
+        assert "s.name === _DBX_TOKEN_ENV_DEFAULT" not in src
+        assert "encodeURIComponent(_DBX_TOKEN_ENV_DEFAULT)" not in src
+
+    def test_the_env_name_guard_is_one_helper_for_both_connectors(self):
+        """The redaction is a property of `_is_secret_key`, not of a connector —
+        two copies of the same shape check would drift."""
+        src = self._template()
+        assert "function _envNameOr(" in src
+        assert src.count("const _ENV_NAME_RE") == 1
+        # The Snowflake wrapper keeps its own redaction flag but delegates.
+        sf = src[src.index("function _sfEnvNameOr(") : src.index("async function _loadSfConfigAndStatus")]
+        assert "_envNameOr(fromConfig, fallback)" in sf
+
+    def test_a_saved_connection_change_reports_that_a_restart_is_needed(self):
+        """`POST /api/admin/server-config` always answers `restart_required`
+        and only resets the calling process's config cache. The Snowflake path
+        carries that onto its step-2 banner; the Databricks path has no step 2 —
+        it closes the wizard and navigates — so an ignored flag means the
+        operator is never told, and on a role-split deployment the scheduler
+        keeps the old warehouse while freshly registered tables fail."""
+        src = self._template()
+        save = src[src.index("async function _saveDatabricksAndContinue") : src.index("function openWizard")]
+        assert "savedCfg.restart_required" in save, "the restart signal is discarded again"
+        # The unconditional navigate is what swallowed it.
+        assert save.count('window.location.href = "/admin/tables"') == 1, (
+            "the save must not navigate away when it has something to report"
+        )
+        assert "_dbxSaveDone = true" in save
+
+    def test_the_held_open_save_can_still_reach_the_tables_page(self):
+        """Holding the wizard open must not strand the operator: the same
+        primary button navigates on the next click."""
+        src = self._template()
+        handler = src[src.index('if (_wizardSource === "databricks") {') :]
+        handler = handler[: handler.index("connectAndValidate();")]
+        assert "if (_dbxSaveDone) {" in handler
+        assert 'window.location.href = "/admin/tables"' in handler
