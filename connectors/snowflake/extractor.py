@@ -102,30 +102,59 @@ def _persist_materialized_inner_view(
     rows: int,
     size_bytes: int,
 ) -> None:
-    """Register the parquet and ``_meta`` row in the local ``extract.duckdb``."""
-    safe_path = str(parquet_path).replace("'", "''")
-    extract_db_path.parent.mkdir(parents=True, exist_ok=True)
+    """Register the parquet and ``_meta`` row in the local ``extract.duckdb``.
 
-    conn = _open_duckdb(str(extract_db_path), read_only=False)
+    Fail-soft, like the BigQuery and Databricks equivalents. The parquet is the
+    canonical artifact and is already durably published by the time this runs, so
+    a registration failure must not be reported as a failed table: the caller
+    (``_run_materialized_pass``) turns any exception from ``materialize_query``
+    into ``sync_state.set_error``, which would flag a published, queryable table
+    as broken.
+
+    The failure this actually hits in production is a known race, not corruption:
+    ``rebuild()`` holds this file ATTACHed in the same uvicorn process, so a
+    materialize landing mid-rebuild cannot open it as a second write handle and
+    DuckDB answers ``Unique file handle conflict: Cannot attach "extract" —
+    already attached by database "snowflake"``. The master view still appears —
+    ``src/orchestrator.py``'s filesystem-fallback pass builds it from
+    ``data/*.parquet`` precisely for this case — so the right response is a loud
+    log and a healthy row, which is what the sibling connectors already do.
+    """
+    safe_path = str(parquet_path).replace("'", "''")
     try:
-        _ensure_meta_table(conn)
-        conn.execute("BEGIN")
+        extract_db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = _open_duckdb(str(extract_db_path), read_only=False)
         try:
-            conn.execute("DELETE FROM _meta WHERE table_name = ?", [table_id])
-            conn.execute(
-                "INSERT INTO _meta VALUES (?, ?, ?, ?, current_timestamp, 'materialized')",
-                [table_id, "", rows, size_bytes],
-            )
-            conn.execute(f"CREATE OR REPLACE VIEW {quote_ident(table_id)} AS SELECT * FROM read_parquet('{safe_path}')")
-            conn.execute("COMMIT")
-        except Exception:
+            _ensure_meta_table(conn)
+            conn.execute("BEGIN")
             try:
-                conn.execute("ROLLBACK")
+                conn.execute("DELETE FROM _meta WHERE table_name = ?", [table_id])
+                conn.execute(
+                    "INSERT INTO _meta VALUES (?, ?, ?, ?, current_timestamp, 'materialized')",
+                    [table_id, "", rows, size_bytes],
+                )
+                conn.execute(
+                    f"CREATE OR REPLACE VIEW {quote_ident(table_id)} AS SELECT * FROM read_parquet('{safe_path}')"
+                )
+                conn.execute("COMMIT")
             except Exception:
-                pass
-            raise
-    finally:
-        conn.close()
+                try:
+                    conn.execute("ROLLBACK")
+                except Exception:
+                    pass
+                raise
+        finally:
+            conn.close()
+    except Exception as exc:
+        logger.warning(
+            "materialize: could not register %s in %s (%s) — the parquet at %s is published and "
+            "canonical, and the orchestrator's filesystem fallback creates the master view; "
+            "this row is NOT a failure",
+            table_id,
+            extract_db_path,
+            exc,
+            parquet_path,
+        )
 
 
 def materialize_query(

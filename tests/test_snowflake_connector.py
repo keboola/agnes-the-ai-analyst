@@ -1,6 +1,7 @@
 """Tests for the Snowflake connector: attach, extract, settings, admin registration, sync dispatch, and query guardrail."""
 
 import base64
+import logging
 import os
 import re
 from pathlib import Path
@@ -1041,6 +1042,51 @@ def test_fixing_a_bad_snowflake_name_clears_the_recorded_failure(seeded_app, sno
     row = next(t for t in c.get("/api/admin/registry", headers=_auth(token)).json()["tables"] if t["id"] == "orders_fix")
     assert row["last_sync_status"] != "error", row
     assert not (row["last_sync_error"] or ""), row
+
+
+def test_materialized_registration_failure_leaves_the_row_healthy(tmp_path, caplog, monkeypatch):
+    """Registering the parquet in ``extract.duckdb`` is best-effort — the parquet
+    is the canonical artifact and the row must not be reported as failed.
+
+    ``rebuild()`` holds ``extract.duckdb`` ATTACHed in the same uvicorn process,
+    so a materialize landing mid-rebuild cannot open it as a second write
+    handle: DuckDB answers ``Unique file handle conflict: Cannot attach
+    "extract" — already attached by database "snowflake"``. That race is known
+    and already mitigated — ``src/orchestrator.py``'s filesystem-fallback pass
+    builds the master view straight from ``data/*.parquet`` — so letting the
+    exception escape turns a published, perfectly queryable table into a red
+    ``error`` row. Seen live: 18,284 rows present, `SELECT COUNT(*)` fine,
+    status "error" with that Binder Error as the reason.
+
+    BigQuery (``_persist_materialized_inner_view``) and Databricks
+    (``_register_materialized_parquet``) both swallow-and-warn here. Snowflake
+    was the outlier.
+    """
+    import duckdb as _duckdb
+
+    from connectors.snowflake import extractor as sfe
+
+    def _conflict(*a, **k):
+        raise _duckdb.Error(
+            'Binder Error: Unique file handle conflict: Cannot attach "extract" - the database '
+            'file "/data/extracts/snowflake/extract.duckdb" is already attached by database "snowflake"'
+        )
+
+    monkeypatch.setattr(sfe, "_open_duckdb", _conflict)
+
+    parquet = tmp_path / "data" / "gold_bi_demand.parquet"
+    parquet.parent.mkdir(parents=True)
+    parquet.write_bytes(b"not-really-a-parquet")
+
+    with caplog.at_level(logging.WARNING):
+        # Must not raise — the caller records sync_state from its return value.
+        sfe._persist_materialized_inner_view(
+            tmp_path / "extract.duckdb", "gold_bi_demand", parquet, 18284, 221_800
+        )
+
+    assert "gold_bi_demand" in caplog.text
+    # The log has to say the parquet is fine, or an operator reads it as data loss.
+    assert "parquet" in caplog.text.lower()
 
 
 def test_admin_register_snowflake_custom_sql_foreign_catalog_refused(seeded_app, snowflake_instance):
