@@ -1105,3 +1105,34 @@ def test_dry_run_warns_on_optional_connector_missing_body(monkeypatch):
     assert summary["ok"] is True
     assert summary["errors"] == []
     assert any("connector-opt" in w for w in summary["warnings"]), summary["warnings"]
+
+
+def test_dry_run_warns_on_unwired_template_placeholder(monkeypatch):
+    """A synced install-prompt template referencing a placeholder nothing
+    substitutes on the git-bound path (only {server_url} + Jinja context
+    are replaced) must surface a warning to the operator."""
+    from app.api import initial_workspace as api
+    from src import initial_workspace as iw
+
+    def fake_resolve(rel):
+        if rel == "install-prompt/template.md.tmpl":
+            return ("Install via {install_cli_block} at {server_url}", "iwt")
+        return None
+
+    monkeypatch.setattr("src.connectors_manifest.load_manifest", lambda: [])
+    monkeypatch.setattr(iw, "resolve_seed_file", fake_resolve)
+    summary = api._compute_render_dry_run()
+    assert summary["ok"] is True
+    assert any("{install_cli_block}" in w for w in summary["warnings"]), summary["warnings"]
+    # {server_url} alone is fine — no warning names it as unwired.
+    assert not any("only {server_url}" in w and "{install_cli_block}" not in w for w in summary["warnings"])
+
+
+def test_dry_run_accepts_bundled_template(monkeypatch):
+    """The shipped bundled template must pass its own dry-run clean."""
+    from app.api import initial_workspace as api
+
+    monkeypatch.setattr("src.connectors_manifest.load_manifest", lambda: [])
+    summary = api._compute_render_dry_run()
+    assert summary["ok"] is True
+    assert not any("render literally" in w for w in summary["warnings"]), summary["warnings"]
