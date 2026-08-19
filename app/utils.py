@@ -199,7 +199,32 @@ def resolve_local_partition_dir(table_id: str, source_type: str | None = None) -
 LOCAL_PARQUET_READ_EXPR = "read_parquet(?, union_by_name=true, hive_partitioning=true)"
 
 
-def resolve_local_parquet_glob(table_id: str, source_type: str | None = None) -> str | None:
+def _physical_key_candidates(table_id: str, registry_name: str | None) -> list[str]:
+    """Filename keys a table's data may be stored under, best first.
+
+    The write side keys the parquet filename by registry ``name``
+    (`app/api/sync.py::_run_materialized_pass`; the extractors' `tc["name"]`),
+    while the read surfaces receive the registry ``id`` off the request path.
+    The register handler derives the id by slugifying the name (lower +
+    spaces→underscores), so the two routinely differ — and then the id-keyed
+    lookup misses a healthy, fully-synced table, which the read surfaces
+    reported as a pending or failing first sync. Name first (it is what the
+    sync writes), id second (rows where the two coincide, and any legacy
+    id-keyed parquet).
+    """
+    out: list[str] = []
+    for key in (registry_name, table_id):
+        if key and key not in out:
+            out.append(key)
+    return out
+
+
+def resolve_local_parquet_glob(
+    table_id: str,
+    source_type: str | None = None,
+    *,
+    registry_name: str | None = None,
+) -> str | None:
     """A `read_parquet` target for a table, single-file OR partitioned.
 
     The partitioned sync writes `data/<table_id>/<partition>.parquet` — a
@@ -208,6 +233,11 @@ def resolve_local_parquet_glob(table_id: str, source_type: str | None = None) ->
     "no parquet means nothing has landed yet" therefore reported a pending or
     failing first sync for a table whose every sync had succeeded
     (Devin Review on #1189).
+
+    ``registry_name`` is the row's display ``name`` — the key the write side
+    actually files the parquet under (see :func:`_physical_key_candidates`).
+    Callers that have the registry row loaded should always pass it; omitted,
+    the lookup is by ``table_id`` alone, exactly as before it existed.
 
     Returns the single file path, a flat `<dir>/*.parquet` glob for the
     per-period layout, a recursive `<dir>/**/*.parquet` glob for the nested hive
@@ -224,6 +254,16 @@ def resolve_local_parquet_glob(table_id: str, source_type: str | None = None) ->
     unresolved here published a size hint for a table that `/api/v2/schema` and
     `/api/v2/scan` then 404-ed on — an agent reading the catalog concluded the
     table was queryable when it was not (Devin Review on #1198).
+    """
+    for key in _physical_key_candidates(table_id, registry_name):
+        target = _resolve_local_parquet_glob_one(key, source_type)
+        if target is not None:
+            return target
+    return None
+
+
+def _resolve_local_parquet_glob_one(table_id: str, source_type: str | None) -> str | None:
+    """:func:`resolve_local_parquet_glob` for ONE filename key — see there.
 
     #1339: a table can ALSO have both a flat `<table_id>.parquet` file and a
     sibling `<table_id>/` partition directory at once — the sibling of the
