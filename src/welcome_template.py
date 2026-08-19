@@ -2,10 +2,10 @@
 
 The prompt is admin-editable at /admin/agent-prompt.  When no override is
 set, the default content is the live output of
-``app.web.setup_instructions.resolve_lines()`` — the full bash bootstrap
-script (TLS trust, CLI install, login, marketplace, skills).  When an
-override is saved it replaces the default everywhere: both the /setup page
-display and the dashboard clipboard CTA.
+``app.web.setup_instructions.resolve_lines()`` — the thin bootstrap prompt
+(optional TLS trust block, CLI install, ``agnes onboard``, restart,
+confirm).  When an override is saved it replaces the default everywhere:
+both the /setup page display and the dashboard clipboard CTA.
 
 Override content is a Jinja2 template (autoescape=False, StrictUndefined).
 Available placeholders: instance.{name,subtitle}, server.{url,hostname},
@@ -124,58 +124,26 @@ def compute_default_agent_prompt(
 ) -> str:
     """Return the live default setup script from setup_instructions.resolve_lines().
 
-    This is the unified bash bootstrap prompt that /setup shows when no
-    admin override is set. The returned string is bash (not HTML) —
+    This is the thin bootstrap prompt that /setup shows when no admin
+    override is set. The returned string is bash + prose (not HTML) —
     callers must NOT pass it through _sanitize_banner_html.
 
-    ``conn`` and ``user`` are forwarded to resolve the RBAC-filtered plugin
-    install list. The same RBAC pass runs for everyone (admin and
-    non-admin alike): users with no plugin grants get the no-marketplace
-    layout (Confirm = step 6); users with grants get the marketplace + plugins
-    block inserted (Confirm = step 8). Anonymous visitors / no conn fall
-    through to the no-marketplace layout.
+    ``conn`` and ``user`` are accepted (and kept in the signature) because
+    every caller passes them and the override-resolution seam above needs
+    them; the default prompt itself is caller-independent now. The
+    per-caller plugin-grant resolution that used to feed the marketplace
+    block is gone: ``agnes onboard`` installs plugins off the LIVE
+    marketplace manifest, which is strictly fresher than a render-time
+    snapshot, and the connector tiles moved into a post-install
+    conversation.
 
-    ``server_url`` is used to derive the server host for the marketplace
-    block.
+    ``server_url`` is used to derive the server host and, together with the
+    served TLS cert, decides whether the step-0 trust block renders.
     """
     try:
-        from app.web.setup_instructions import resolve_lines
-        from app.api.cli_artifacts import _find_wheel
-
-        _wheel = _find_wheel()
-        _wheel_filename = _wheel.name if _wheel else "agnes.whl"
-
-        # The install commands emitted in the marketplace block must match
-        # exactly what /marketplace.zip + /marketplace.git/ serve. That's
-        # the `resolve_user_marketplace` view: admin grants minus the
-        # user's opt-outs, plus their Store installs (skills + agents
-        # rolled up into the synth `flea` plugin, plugin-
-        # typed entities standalone). `resolve_allowed_plugins` was the
-        # pre-store admin-only feed and would emit installs for plugins
-        # the user has opted out of, while skipping the bundle entirely.
-        #
-        # Dedup by manifest_name handles the documented case where two
-        # upstream marketplaces ship a plugin with the same name (see
-        # CLAUDE.md "Same-named plugins ... collide in the catalog by
-        # design"). The synth marketplace.json carries one entry per
-        # name; a second `claude plugin install <name>@agnes` would be
-        # a no-op anyway.
-        plugin_install_names: list[str] = []
-        if user and conn is not None:
-            try:
-                from src import marketplace_filter
-
-                seen: set[str] = set()
-                for p in marketplace_filter.resolve_user_marketplace(conn, user):
-                    name = p["manifest_name"]
-                    if name in seen:
-                        continue
-                    seen.add(name)
-                    plugin_install_names.append(name)
-            except Exception:
-                logger.exception("compute_default_agent_prompt: marketplace plugin resolution failed")
-
         from urllib.parse import urlparse as _urlparse
+
+        from app.web.setup_instructions import resolve_lines
 
         parsed = _urlparse(server_url)
         server_host = parsed.netloc or parsed.hostname or ""
@@ -188,24 +156,6 @@ def compute_default_agent_prompt(
         except Exception:
             pass
 
-        # Connector manifest sourced from the seed (operator Initial Workspace
-        # Template clone wins, bundled snapshot in the wheel is the fallback).
-        # Operator-side config (GWS OAuth, Atlassian base URL) now flows into
-        # `<workspace>/.claude/agnes/.env` via `agnes init`; the seed-resident
-        # SKILL.md bodies read those at install time. Renderer just needs the
-        # metadata.
-        connector_manifest = None
-        try:
-            from src.connectors_manifest import load_manifest
-
-            connector_manifest = load_manifest()
-        except Exception:
-            logger.exception(
-                "compute_default_agent_prompt: connector manifest load failed; "
-                "rendering install prompt without connector tiles"
-            )
-            connector_manifest = []  # explicit empty — skip the connector block
-
         from app.instance_config import (
             get_instance_brand,
             get_instance_custom_preamble,
@@ -213,11 +163,9 @@ def compute_default_agent_prompt(
         )
 
         lines = resolve_lines(
-            _wheel_filename,
-            plugin_install_names=plugin_install_names,
+            "agnes.whl",
             server_host=server_host,
             ca_pem=ca_pem,
-            connector_manifest=connector_manifest,
             instance_brand=get_instance_brand(),
             workspace_dir=get_workspace_dir_name(),
             custom_preamble=get_instance_custom_preamble(),
@@ -248,7 +196,7 @@ def render_agent_prompt_banner(
 
     When no override is set:
       - Returns the live default from compute_default_agent_prompt() — the
-        full bash bootstrap script.  This is bash, not HTML, so no
+        thin bootstrap prompt.  This is bash + prose, not HTML, so no
         sanitization is applied.
 
     Render failures on the override path are swallowed (logged) and fall back
@@ -299,11 +247,10 @@ def render_agent_prompt_banner(
             logger.exception("Agent-prompt banner render failed (unexpected)")
             # Fall through to default
 
-    # No override (or broken override) — return live default bash script.
-    # Same unified flow for everyone; admin-vs-analyst is no longer a
-    # layout branch. The marketplace block is gated by the caller's
-    # plugin grants in `resource_grants`, which `compute_default_agent_prompt`
-    # resolves unconditionally.
+    # No override (or broken override) — return the live default prompt.
+    # Same flow for everyone: the thin prompt has no per-caller branches
+    # left (plugin grants are resolved by `agnes onboard` off the live
+    # marketplace manifest, not baked in at render time).
     return compute_default_agent_prompt(
         conn,
         user=user,
