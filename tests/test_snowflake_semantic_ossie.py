@@ -61,6 +61,19 @@ def _rows():
         _row("RELATIONSHIP", "ORDERS_TO_CUSTOMERS", None, "REF_TABLE", "CUSTOMERS"),
         _row("RELATIONSHIP", "ORDERS_TO_CUSTOMERS", None, "REF_KEY", "ID"),
         _row("CUSTOM_INSTRUCTIONS", None, None, "AI_SQL_GENERATION", "Always filter to shipped orders"),
+        # `EXTENSION` is NOT in the documented object_kind list but a live
+        # account emits it (name "CA", Cortex Analyst). It is the only place
+        # join_type and the declared time dimensions appear at all.
+        _row(
+            "EXTENSION",
+            "CA",
+            None,
+            "VALUE",
+            (
+                '{"tables": [{"name": "ORDERS", "time_dimensions": [{"name": "ORDER_DATE"}]}], '
+                '"relationships": [{"name": "ORDERS_TO_CUSTOMERS", "join_type": "inner"}]}'
+            ),
+        ),
     ]
 
 
@@ -213,3 +226,44 @@ def test_adapter_raises_when_snowflake_is_not_configured(monkeypatch):
     )
     with pytest.raises(RuntimeError, match="not configured"):
         SnowflakeSemanticAdapter().extract({})
+
+
+def test_declared_time_dimensions_set_the_temporal_role_flag():
+    # Snowflake's own declaration is authoritative and covers what datatype
+    # cannot: a year-grain Integer is a time dimension too.
+    datasets = {d["name"]: d for d in _model(compose_document(VIEW, _rows()))["datasets"]}
+    fields = {f["name"]: f for f in datasets["ORDERS"]["fields"]}
+    assert fields["ORDER_DATE"]["dimension"] == {"is_time": True}
+    assert "dimension" not in fields["AMOUNT"]
+
+
+def test_join_type_survives_because_nothing_else_in_describe_carries_it():
+    rel = _model(compose_document(VIEW, _rows()))["relationships"][0]
+    assert json.loads(rel["custom_extensions"][0]["data"])["join_type"] == "inner"
+
+
+def test_the_extension_payload_is_carried_whole():
+    model = _model(compose_document(VIEW, _rows()))
+    payload = json.loads(model["custom_extensions"][0]["data"])
+    assert payload["extensions"]["CA"]["relationships"][0]["join_type"] == "inner"
+
+
+def test_a_malformed_extension_payload_does_not_sink_the_document():
+    rows = [r for r in _rows() if r["object_kind"] != "EXTENSION"]
+    rows.append(_row("EXTENSION", "CA", None, "VALUE", "{not json"))
+    text = compose_document(VIEW, rows)
+    assert validate_document(text).ok
+    # ...and the fields it would have annotated are still composed.
+    datasets = {d["name"]: d for d in _model(text)["datasets"]}
+    assert "ORDER_DATE" in {f["name"] for f in datasets["ORDERS"]["fields"]}
+
+
+def test_public_access_is_not_restated_on_every_single_field():
+    # A live view emitted ACCESS_MODIFIER=PUBLIC on all 61 fields. Recording
+    # the default on every one buries the PRIVATE ones that actually matter.
+    datasets = {d["name"]: d for d in _model(compose_document(VIEW, _rows()))["datasets"]}
+    fields = {f["name"]: f for f in datasets["ORDERS"]["fields"]}
+    rows = _rows() + [_row("FACT", "AMOUNT", "ORDERS", "ACCESS_MODIFIER", "PUBLIC")]
+    public = {f["name"]: f for f in _model(compose_document(VIEW, rows))["datasets"][0]["fields"]}
+    assert "access_modifier" not in json.loads(public["AMOUNT"]["custom_extensions"][0]["data"])
+    assert json.loads(fields["AMOUNT"]["custom_extensions"][0]["data"])["object_kind"] == "FACT"
