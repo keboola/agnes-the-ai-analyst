@@ -4852,6 +4852,30 @@
         "title": "JourneyUpdateBody",
         "type": "object"
       },
+      "KaiSessionResponse": {
+        "description": "What a client needs to start talking to the engine: the token to send\nas ``Authorization: Bearer``, and the chat id to send as ``body.id`` so\nthe engine's chat row and our ``chat_sessions`` row share a key.",
+        "properties": {
+          "chat_id": {
+            "title": "Chat Id",
+            "type": "string"
+          },
+          "expires_at": {
+            "title": "Expires At",
+            "type": "integer"
+          },
+          "token": {
+            "title": "Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "chat_id",
+          "token",
+          "expires_at"
+        ],
+        "title": "KaiSessionResponse",
+        "type": "object"
+      },
       "KnobEntry": {
         "properties": {
           "current_value": {
@@ -30640,7 +30664,7 @@
     },
     "/api/broker/anthropic": {
       "post": {
-        "description": "Inject the real Anthropic API key server-side and forward to the\npinned Anthropic API \u2014 the sandbox's dummy key is discarded, and the\ntarget host is never taken from the agent-supplied request.\n\nRegistered for both the bare path and any sub-path: the Anthropic SDK\nappends ``/v1/messages`` (etc.) to its base URL, so the real request\narrives at ``/api/broker/anthropic/v1/messages``. The sub-path is\nrecomputed from ``request.url.path`` and forwarded to the pinned host \u2014\nthe agent-supplied request still cannot choose the target host (Devin\nreview on #849). When LLM_DISPATCHER_URL is set, POST /v1/messages is\ninstead forwarded to that dispatcher with LLM_DISPATCHER_API_KEY\n(token-arbitrage PoC); all other subpaths keep the pinned Anthropic\nupstream.",
+        "description": "Inject the real Anthropic API key server-side and forward to the\npinned Anthropic API \u2014 the sandbox's dummy key is discarded, and the\ntarget host is never taken from the agent-supplied request.\n\nRegistered for both the bare path and any sub-path: the Anthropic SDK\nappends ``/v1/messages`` (etc.) to its base URL, so the real request\narrives at ``/api/broker/anthropic/v1/messages``. The sub-path is\nrecomputed from ``request.url.path`` and forwarded to the pinned host \u2014\nthe agent-supplied request still cannot choose the target host (Devin\nreview on #849). When LLM_DISPATCHER_URL is set, POST /v1/messages is\ninstead forwarded to that dispatcher with LLM_DISPATCHER_API_KEY\n(token-arbitrage PoC); all other subpaths keep the pinned Anthropic\nupstream.\n\nAccepts `llm` alongside `main`: the embedded turn engine's egress ticket\n(`app/api/kai.py`) is minted in that narrower scope precisely so it cannot\nalso authenticate `agnes-api`, which requires `main` and replays the whole\nnon-admin `/api/*` surface. Found by Devin Review on #1235.",
         "operationId": "anthropic_proxy_bare_api_broker_anthropic_post",
         "responses": {
           "200": {
@@ -30666,7 +30690,7 @@
     },
     "/api/broker/anthropic/{subpath}": {
       "post": {
-        "description": "Inject the real Anthropic API key server-side and forward to the\npinned Anthropic API \u2014 the sandbox's dummy key is discarded, and the\ntarget host is never taken from the agent-supplied request.\n\nRegistered for both the bare path and any sub-path: the Anthropic SDK\nappends ``/v1/messages`` (etc.) to its base URL, so the real request\narrives at ``/api/broker/anthropic/v1/messages``. The sub-path is\nrecomputed from ``request.url.path`` and forwarded to the pinned host \u2014\nthe agent-supplied request still cannot choose the target host (Devin\nreview on #849). When LLM_DISPATCHER_URL is set, POST /v1/messages is\ninstead forwarded to that dispatcher with LLM_DISPATCHER_API_KEY\n(token-arbitrage PoC); all other subpaths keep the pinned Anthropic\nupstream.",
+        "description": "Inject the real Anthropic API key server-side and forward to the\npinned Anthropic API \u2014 the sandbox's dummy key is discarded, and the\ntarget host is never taken from the agent-supplied request.\n\nRegistered for both the bare path and any sub-path: the Anthropic SDK\nappends ``/v1/messages`` (etc.) to its base URL, so the real request\narrives at ``/api/broker/anthropic/v1/messages``. The sub-path is\nrecomputed from ``request.url.path`` and forwarded to the pinned host \u2014\nthe agent-supplied request still cannot choose the target host (Devin\nreview on #849). When LLM_DISPATCHER_URL is set, POST /v1/messages is\ninstead forwarded to that dispatcher with LLM_DISPATCHER_API_KEY\n(token-arbitrage PoC); all other subpaths keep the pinned Anthropic\nupstream.\n\nAccepts `llm` alongside `main`: the embedded turn engine's egress ticket\n(`app/api/kai.py`) is minted in that narrower scope precisely so it cannot\nalso authenticate `agnes-api`, which requires `main` and replays the whole\nnon-admin `/api/*` surface. Found by Devin Review on #1235.",
         "operationId": "anthropic_proxy_subpath_api_broker_anthropic__subpath__post",
         "responses": {
           "200": {
@@ -35182,6 +35206,152 @@
         "summary": "Get Job",
         "tags": [
           "jobs"
+        ]
+      }
+    },
+    "/api/kai/mcp": {
+      "post": {
+        "description": "Forward the engine sandbox's MCP request to Agnes's own MCP server,\nunder the ticket's real identity.\n\nScope-gated on ``kai_mcp``: neither an ``llm``-scoped ticket nor the native\nsandbox's ``mcp`` can reach the tool surface, mirroring `_require_scope` on\nevery other broker route. ``kai_mcp`` and not ``mcp`` because that native\nscope also authenticates ``/api/broker/agnes-mcp``.\n\nThe response streams chunk by chunk. A Streamable-HTTP server answers\neither as JSON or as an SSE stream, and a tool that takes a while to\nproduce its result must not be buffered whole \u2014 the same mistake the\nAnthropic proxy had to fix for token deltas, and here it additionally\ncollides with the engine relay's time-to-headers bound (see\n`_mcp_internal_base` for why this is a real HTTP hop and not an in-process\nASGI dispatch).",
+        "operationId": "kai_mcp_api_kai_mcp_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          }
+        },
+        "summary": "Kai Mcp",
+        "tags": [
+          "kai"
+        ]
+      }
+    },
+    "/api/kai/sessions": {
+      "post": {
+        "description": "Create a chat session and mint the engine session token for it.\n\nAuthenticated as an ordinary user: the caller can only ever mint a token\nfor **themselves**, because every identity claim is taken from the\nresolved ``user`` and none from the request body. There is no request body\nat all \u2014 that is the point. A body-supplied ``sub`` would make this an\nimpersonation endpoint.\n\n``async def`` + ``to_thread`` rather than a plain ``def``: the repo calls\nare synchronous DuckDB/PG work that must not run on the single uvicorn\nevent loop (Tier 1, PR #188), and a sync route body would also run inside\nthe threadpool where the dev debug-toolbar's profiler cannot stop itself\n(\"Failed to stop profiling \u2026 same thread\" \u2192 500 in local dev). Every other\nroute in this family is async for the same reason.",
+        "operationId": "create_kai_session_api_kai_sessions_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KaiSessionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Kai Session",
+        "tags": [
+          "kai"
+        ]
+      }
+    },
+    "/api/kai/tickets": {
+      "post": {
+        "description": "Mint this turn's scope-split broker tickets for the engine's relay.\n\nCalled once per turn by the engine's server (never by the sandbox), which\npushes the result into the sandbox over stdin. The engine requires ``llm``\nand treats every other key as optional host data, so an instance that\nbrokers no MCP upstream simply omits it \u2014 here that means\n``KAI_BROKER_MCP_ENABLED`` unset.\n\nMinting retires the session's previous egress tickets, so one live set\nexists per chat and a stale turn's ticket cannot be replayed \u2014 mirroring\nthe engine's own contract (\"minting retires the chat's previous set\").",
+        "operationId": "issue_kai_tickets_api_kai_tickets_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Issue Kai Tickets Api Kai Tickets Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          }
+        },
+        "summary": "Issue Kai Tickets",
+        "tags": [
+          "kai"
+        ]
+      }
+    },
+    "/api/kai/workspace": {
+      "get": {
+        "description": "Serve this caller's workspace tree as one gzipped tarball.\n\nClosed contract: exactly ``200`` with the archive, or ``204`` for \"this\ncaller has no workspace\". Any other status fails the engine's turn, so\nthere is no partial answer \u2014 an unreadable template falls back to the\nbundled tree rather than erroring.\n\nAuthenticated by the session credential, not a broker ticket: the engine's\n*server* fetches this once per SDK process spawn, and the sandbox never\nsees it.\n\nThe payload is per-session, because the ``CLAUDE.md`` inside it is the\nRBAC-filtered Workspace Prompt. It stays byte-stable for a given session\nand configuration \u2014 the session, not merely the caller, because the\nrendered document carries a date and is therefore pinned to\n``started_at``. That stability is what the engine's re-fetch on every SDK\nrespawn relies on.",
+        "operationId": "kai_workspace_api_kai_workspace_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/gzip": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "gzipped tar archive of the caller's workspace tree"
+          },
+          "204": {
+            "description": "this deployment ships no workspace payload"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          }
+        },
+        "summary": "Kai Workspace",
+        "tags": [
+          "kai"
         ]
       }
     },

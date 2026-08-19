@@ -246,6 +246,28 @@ SWITCHES: tuple[Switch, ...] = (
         ),
     ),
     Switch(
+        name="kai_broker_mcp_enabled",
+        config_keys=("kai", "broker_mcp_enabled"),
+        env_var="KAI_BROKER_MCP_ENABLED",
+        kind="bool",
+        default=False,
+        effect="live",
+        category="operations",
+        editable=False,
+        lock_reason=(
+            "Only meaningful on an instance that embeds the kai-agent turn engine, which is "
+            "itself gated on the KAI_HOST_JWT_SECRET deployment secret — so the dependency this "
+            "switch rides on is not something the admin UI can satisfy."
+        ),
+        description=(
+            "Let the embedded kai-agent engine's sandbox reach this instance's own MCP server, by "
+            "issuing the `kai_mcp` ticket scope alongside the `llm` one. Off by default: the engine "
+            "then registers no host MCP server and runs on its built-in tools only. Turning it on "
+            "gives the agent the caller's own tool surface — the tools that caller could invoke "
+            "themselves, under their own stack and grants, never an admin's."
+        ),
+    ),
+    Switch(
         name="mcp_source_url_strict",
         config_keys=("mcp", "source_url_strict"),
         env_var="AGNES_MCP_SOURCE_URL_STRICT",
