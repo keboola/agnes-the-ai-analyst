@@ -118,6 +118,14 @@ def test_tpl_engine_failure_cannot_gate_the_machine():
     assert strip < strict_up < restore < cron
     # The tolerant block warns instead of exiting.
     assert "WARN: kai-agent engine sidecar failed to pull or start" in body
+    # ...and is TARGETED at the engine services + gated on materialization: a
+    # full-list pull/up would fetch and start the whole stack a second time
+    # on every boot and blame the engine for unrelated base-stack failures,
+    # and a skipped boot has no overlay to bring up.
+    assert "pull kai-agent kai-agent-migrate kai-agent-pg" in body
+    tolerant_up = body.index("up -d kai-agent", restore)
+    assert restore < tolerant_up < cron
+    assert body.rindex('if [ "$KAI_AGENT_MATERIALIZE" = "1" ]; then') < restore
     # The strip only works while the overlay is appended LAST — keep it last.
     assert body.index("COMPOSE_FILE_VALUE=\"$COMPOSE_FILE_VALUE:docker-compose.kai-agent.yml\"") < strip
 
@@ -135,6 +143,11 @@ def test_tpl_engine_requires_public_origin():
     gate = body.index('if [ "$KAI_AGENT_MATERIALIZE" = "1" ]; then')
     url_use = body.index("HOST_BROKER_LLM_URL=$SERVER_URL/api/broker/anthropic")
     assert guard < gate < url_use
+    # The transient case is retried in-place BEFORE concluding skip — a
+    # skipped boot costs the engine until reboot (teardown + overlay drop),
+    # so a mere metadata blip must get a second chance.
+    retry = body.index("for _kai_ip_try in 1 2 3")
+    assert retry < guard
     # The whole materialization (env, overlay, COMPOSE_FILE append) sits
     # inside the gate, so a skipped boot references no overlay.
     assert gate < body.index('COMPOSE_FILE_VALUE="$COMPOSE_FILE_VALUE:docker-compose.kai-agent.yml"')
