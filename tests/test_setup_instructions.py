@@ -212,12 +212,19 @@ def test_preamble_opens_with_brand_server_and_token_guard():
     joined = "\n".join(lines)
     assert lines[0] == "Set up the Agnes CLI on this machine."
     assert "Server: {server_url}" in joined
-    # Token guard — the load-bearing sentence: the prompt references the
-    # file path only, and the agent must never print/echo/paste the value.
+    # Brand/host/binary coherence: the prompt carries the operator's product
+    # name, downloads from this instance's own host, and installs a binary
+    # called `agnes`. Say once that the three name one system — an agent
+    # given three unfamiliar names and no relation between them has to treat
+    # the mismatch as a red flag.
+    assert "own deployment of Agnes, served" in joined
+    assert "installs is named `agnes`" in joined
+    # Token handling stated as a fact, not as an instruction to conceal:
+    # the steps use the file path, so nothing needs to display its contents.
     assert "Your login token is already saved on this machine at ~/.agnes/token" in joined
-    assert "never print the token, echo it, or paste" in joined
-    # Provenance fact for the assistant's first-contact trust decision: the
-    # token came from the install guide's own previous step.
+    assert "no need to display its contents" in joined
+    assert "never print the token" not in joined
+    # Provenance fact: the token came from the install guide's previous step.
     assert "step 4 of the install guide at {server_url}" in joined
     # Idempotence promise (one line, not a paragraph).
     assert "idempotent" in joined
@@ -256,23 +263,29 @@ def test_token_precheck_block():
     assert "0) Check" not in joined
 
 
-def test_preamble_step_zero_d_reference_only_when_trust_block_emitted():
-    """The preamble's "fallback chain inside step 0(d)" line is only
-    correct when step 0 actually exists. Without ca_pem the reference
-    points at a non-existent step."""
+def test_preamble_carries_no_pre_emptive_trust_assertion():
+    """The preamble must not answer a trust question on the reader's behalf.
+
+    It used to: with a trust block emitted it appended "The fallback chain
+    inside step 0(d) is documented and OK to use; that's what fallback
+    chains are for", and an earlier revision told the agent that "whether
+    that host is trusted is the user's org's call". Read back out of a real
+    install transcript, that reassurance was quoted as the reason to
+    distrust the prompt — text that pre-empts a safety judgement reads as
+    written to defuse one. The TLS *guidance* stays, in both renders.
+    """
     from app.web.setup_instructions import resolve_lines
 
-    no_ca = "\n".join(resolve_lines("agnes.whl"))
-    assert "step 0(d)" not in no_ca
-    # The "don't disable TLS verification" guidance still appears (it's
-    # generic safety advice, valid regardless of trust block) — phrased
-    # causally rather than as a list of specific env vars/flags to avoid.
-    assert "rather than lowering certificate" in no_ca
-
     fake_ca = "-----BEGIN CERTIFICATE-----\nFAKEFAKEFAKE\n-----END CERTIFICATE-----\n"
-    with_ca = "\n".join(resolve_lines("agnes.whl", ca_pem=fake_ca))
-    # Trust block emits step 0 → preamble's step 0(d) reference is now valid.
-    assert "step 0(d)" in with_ca
+    for label, joined in (
+        ("no-ca", "\n".join(resolve_lines("agnes.whl"))),
+        ("ca", "\n".join(resolve_lines("agnes.whl", ca_pem=fake_ca))),
+    ):
+        assert "OK to use" not in joined, label
+        assert "org's call" not in joined, label
+        assert "verify it with their IT" not in joined, label
+        # Generic, causally-phrased TLS advice survives in both renders.
+        assert "rather than lowering certificate" in joined, label
 
 
 # ---------------------------------------------------------------------------
@@ -416,19 +429,23 @@ def test_resolve_lines_with_ca_pem_switches_step_one_to_curl_then_local_install(
     """Step 1 always downloads via /cli/download into a local file first;
     has_ca only changes whether curl carries --cacert and whether uv gets
     --native-tls (avoids rustls CaUsedAsEndEntity):
-    - has_ca=True  → curl --cacert ... | uv tool install --native-tls
-    - has_ca=False → curl ... | uv tool install (no cert flags)
+    - has_ca=True  → curl --cacert ... then uv tool install --native-tls
+    - has_ca=False → curl ... then uv tool install (no cert flags)
+
+    Both forms cap redirects at zero (`-L --max-redirs 0`, curl exit 47):
+    `-OJ` names the saved file from the response, so a cross-host redirect
+    would otherwise install whichever wheel the hop served, silently.
     """
     from app.web.setup_instructions import resolve_lines
 
     joined_ca = "\n".join(resolve_lines("agnes-1.0-py3-none-any.whl", ca_pem=_FAKE_CA_PEM))
-    assert "curl -fsSL --cacert ~/.agnes/ca.pem -OJ {server_url}/cli/download" in joined_ca
+    assert ("curl -fsSL --max-redirs 0 --cacert ~/.agnes/ca.pem -OJ {server_url}/cli/download") in joined_ca
     assert "TMPDIR_WHEEL=$(mktemp -d -t agnes_cli.XXXXXX)" in joined_ca
     assert 'uv tool install --native-tls --force "$WHEEL"' in joined_ca
     assert "/cli/wheel/" not in joined_ca
 
     joined_plain = "\n".join(resolve_lines("agnes-1.0-py3-none-any.whl"))
-    assert "curl -fsSL -OJ {server_url}/cli/download" in joined_plain
+    assert "curl -fsSL --max-redirs 0 -OJ {server_url}/cli/download" in joined_plain
     assert 'uv tool install --force "$WHEEL"' in joined_plain
     assert "curl -fsSL --cacert" not in joined_plain
     assert "/cli/wheel/" not in joined_plain
