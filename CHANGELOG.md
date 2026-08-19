@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- **The install guide now names the launcher `agnes init` actually creates.** The page that tells a new analyst to "type one word" to open their workspace derived that word by lowercasing the workspace folder name, while the CLI derives it by stripping the name to alphanumerics and then dodging collisions. The two agreed only by luck. On a **stock instance** they didn't: brand `Agnes` gives folder `Agnes`, whose launcher would shadow the `agnes` CLI, so the CLI installs `agnesai` (#783) — and the page said `agnes`, an instruction that looks like it worked (the data CLI exists and prints its help) while never opening the workspace. The same split hit any operator whose explicit `AGNES_WORKSPACE_DIR_NAME` was not already alphanumeric: `"My Team AI"` was documented as `my team ai` against a `myteamai` on disk. Both derivations now come from one place (`src/launcher_word.py`, in `src/` because `cli/` imports from it and never the reverse), covered by a test that walks folder names through the server and the CLI and asserts they land on the same word. The folder keeps whatever formatting the operator chose — only the *command* is sanitized. Beyond this fix, the CLI still skips a shortcut whose name is taken by another executable on the analyst's own PATH; that check reads the client machine and no server-rendered page can predict it.
+
 ## [0.83.70] - 2026-08-18
 
 ### Internal

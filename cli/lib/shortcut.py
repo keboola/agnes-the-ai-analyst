@@ -55,95 +55,25 @@ from pathlib import Path
 
 import typer
 
+from src.launcher_word import RESERVED_COMMANDS, SHELL_BUILTINS, launcher_word, sanitized_word
+
+# Both derivations live in `src/launcher_word.py` so the server's install guide
+# names the same word this module installs. Kept under the original private
+# names so the rest of the file (and its tests) read unchanged.
+_SHELL_BUILTINS = SHELL_BUILTINS
+_RESERVED_COMMANDS = RESERVED_COMMANDS
+_sanitized_word = sanitized_word
+_launcher_word = launcher_word
+
 # POSIX built-ins / common commands that must not be shadowed by the launcher.
 # Sourced from the POSIX spec plus a handful of universally-present utilities.
-_SHELL_BUILTINS: frozenset[str] = frozenset(
-    {
-        "alias",
-        "bg",
-        "break",
-        "builtin",
-        "cd",
-        "command",
-        "continue",
-        "echo",
-        "eval",
-        "exec",
-        "exit",
-        "export",
-        "false",
-        "fc",
-        "fg",
-        "getopts",
-        "hash",
-        "jobs",
-        "kill",
-        "let",
-        "local",
-        "logout",
-        "printf",
-        "pwd",
-        "read",
-        "readonly",
-        "return",
-        "set",
-        "shift",
-        "source",
-        "test",
-        "times",
-        "trap",
-        "true",
-        "type",
-        "ulimit",
-        "umask",
-        "unalias",
-        "unset",
-        "wait",
-    }
-)
 
 # Commands the Agnes toolchain itself depends on. A launcher with one of these
 # names shadows the real binary — e.g. a workspace named "Agnes" produced a
 # `function agnes`, hijacking every `agnes` CLI call into a Claude chat
 # session (#783); a `claude` launcher would even call itself recursively.
-_RESERVED_COMMANDS: frozenset[str] = frozenset(
-    {
-        "agnes",
-        "claude",
-    }
-)
 
 _OWNERSHIP_TOKEN = ">>> agnes launcher:"
-
-
-def _sanitized_word(workspace_name: str) -> str:
-    """Workspace folder name stripped to lowercase alphanumerics.
-
-    Mirrors the server's ``get_workspace_dir_name`` sanitization
-    (``re.sub(r'[^A-Za-z0-9]', '', ...)``).  This raw word — before any
-    collision suffix — is also the name the IWT contract uses for the
-    ``bin/<word>`` launcher script.
-    """
-    return re.sub(r"[^A-Za-z0-9]", "", workspace_name).lower()
-
-
-def _launcher_word(workspace_name: str) -> str:
-    """Derive a shell-safe launcher word from the workspace folder name.
-
-    Sanitizes via ``_sanitized_word`` so a folder name with spaces, dots or
-    parentheses can never produce an invalid script name.  Clean names
-    (e.g. ``MyTeamAI`` → ``myteamai``) are unaffected, so the
-    ``bin/<word>`` IWT convention still resolves.  Returns ``""`` when the
-    name has no alphanumeric characters at all (caller skips + warns).
-
-    Appends ``"ai"`` when the sanitized word collides with a POSIX shell
-    built-in (workspace ``"Test"`` → ``"testai"``) or with a command the
-    toolchain depends on (workspace ``"Agnes"`` → ``"agnesai"``, #783).
-    """
-    word = _sanitized_word(workspace_name)
-    if word in _SHELL_BUILTINS or word in _RESERVED_COMMANDS:
-        word = word + "ai"
-    return word
 
 
 # The open/close sentinels embed the workspace word so each legacy rc block
