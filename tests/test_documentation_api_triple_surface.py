@@ -594,6 +594,17 @@ _KEBOOLA_LOGIN_PROJECTS_REASON = (
 
 _EXEMPT: dict[str, str] = {
     "/api/auth/keboola/projects": _KEBOOLA_LOGIN_PROJECTS_REASON,
+    "/api/admin/doctor/new-instance": (
+        "deployment-gate doctor (post-deploy smoke checks) — CLI-reachable via "
+        "`agnes admin doctor --new-instance` and called by "
+        "scripts/ops/post-deploy-smoke-test.sh, but deliberately never "
+        "MCP-exposed per the 'operator security-posture diagnostics' standing "
+        "exemption in CONTRIBUTING.md: the response enumerates the instance's "
+        "auth-configuration posture (which login doors exist, whether "
+        "bootstrap is still open, email transport state) — one-call "
+        "reconnaissance in a prompt-injected agent session, not an agent "
+        "affordance"
+    ),
     "/api/admin/mcp-tools/{tool_id}/projection-map": (
         "names which of a lister tool's columns carry an app's id, URL and "
         "name. The decision is only makeable against the column list a fetch "
@@ -602,6 +613,18 @@ _EXEMPT: dict[str, str] = {
         "what one emitted — so a CLI flag or MCP tool would be choosing column "
         "names blind. If a surface ever exposes the fetched columns, this "
         "should follow it there rather than stay REST-only"
+    ),
+    "/api/connectors/{slug}/prompt": (
+        "connector setup prompt for the analyst-laptop install flow — "
+        "consumed by `agnes connectors show <slug>` (REST+CLI). Deliberately "
+        "NOT an MCP tool on either transport: on the server-side foundation "
+        "tools (app/api/mcp/foundation_tools.py) it would be a footgun — the "
+        "prompt walks through storing credentials in the LOCAL OS keychain "
+        "and registering local MCP servers, meaningless inside the chat "
+        "sandbox; and the stdio server (cli/mcp/server.py) runs on the "
+        "analyst's machine only because the agnes CLI is installed, so "
+        "`agnes connectors show` is already present in that exact venue — a "
+        "tool there would duplicate the CLI surface without adding reach"
     ),
     "/api/me/display-name": (
         "self-service display-name edit (issue #1036) — UI-only affordance on "

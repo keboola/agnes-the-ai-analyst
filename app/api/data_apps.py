@@ -461,7 +461,20 @@ def _rmtree_config_dir(slug: str) -> None:
     JWT in plaintext, so it's removed as hygiene on both a full app delete
     (``delete_data_app``) and a single draft delete/cascade
     (``_teardown_draft``). Shared so the two call sites can't drift."""
-    config_dir = os.path.join(os.environ.get("DATA_DIR", "/data"), "apps", slug)
+    apps_dir = os.path.join(os.environ.get("DATA_DIR", "/data"), "apps")
+    config_dir = os.path.join(apps_dir, slug)
+    # `${DATA_DIR}/apps/git` is the shared bare-repo store, not any one app's
+    # config directory (`src.data_apps.git_repos.repo_path`). "git" is refused at
+    # create time (`RESERVED_SLUGS`), but a row written before that guard existed
+    # would still reach this line, and deleting one app must never be able to
+    # destroy every app's git history.
+    if os.path.realpath(config_dir) == os.path.realpath(os.path.join(apps_dir, "git")):
+        logger.error(
+            "refusing to remove the shared bare-repo store for slug %r; "
+            "remove the app's row by hand if it really is stale",
+            slug,
+        )
+        return
     try:
         shutil.rmtree(config_dir, ignore_errors=False)
     except FileNotFoundError:

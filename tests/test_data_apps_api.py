@@ -517,6 +517,31 @@ class TestCrud:
         assert r.status_code == 400
         assert r.json()["detail"] == "reserved_slug"
 
+    def test_git_slug_rejected(self, client_as_user):
+        """A data app named "git" would make ``_rmtree_config_dir`` delete
+        ``${DATA_DIR}/apps/git`` — which is not that app's config directory but
+        the *shared* store every app's bare repo lives in
+        (``src.data_apps.git_repos.repo_path`` → ``apps/git/<slug>.git``). One
+        `DELETE /api/data-apps/git` would take every other hosted app's git
+        history with it. `SLUG_RE` accepts "git", so the create-time guard is
+        what has to stop it."""
+        r = client_as_user.post("/api/data-apps", json={"slug": "git", "name": "x"})
+        assert r.status_code == 400
+        assert r.json()["detail"] == "reserved_slug"
+
+    def test_rmtree_config_dir_refuses_the_shared_repo_root(self, tmp_path, monkeypatch):
+        """Belt and braces for the check above: even if a "git"-slugged row
+        reached the database some other way (a pre-existing row from before the
+        guard, a direct insert), the delete path itself must refuse to remove
+        the shared repo root."""
+        from app.api.data_apps import _rmtree_config_dir
+
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        repo_root = tmp_path / "apps" / "git"
+        (repo_root / "other-app.git").mkdir(parents=True)
+        _rmtree_config_dir("git")
+        assert (repo_root / "other-app.git").exists(), "the shared bare-repo store was deleted"
+
     def test_duplicate_slug_conflict(self, client_as_user):
         r1 = client_as_user.post("/api/data-apps", json={"slug": "dupe", "name": "One"})
         assert r1.status_code == 201

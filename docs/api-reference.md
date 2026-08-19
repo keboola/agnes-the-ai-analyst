@@ -1024,6 +1024,20 @@ synced IWT clone for the bind-git file picker.
 
 - /api/admin/bigquery/test-connection
 
+### `/api/admin/doctor` — deployment-gate diagnostics
+
+`POST /api/admin/doctor/new-instance` (admin-only) runs the new-instance
+deployment checks — `login-door`, `email-delivery`, `chat-grant`,
+`agent-scope`, `branding` — and returns
+`{status, checks: [{name, status, audience, detail}]}` using the
+`agnes diagnose` status vocabulary (`ok`/`warning`/`error`/`info`).
+Optional body `{"email_to": "..."}` makes the email-delivery check send a
+real test message through the same send path the login flows use. CLI:
+`agnes admin doctor --new-instance`; the host-side siblings live in
+`scripts/ops/post-deploy-smoke-test.sh`.
+
+- /api/admin/doctor/new-instance
+
 ### `/api/admin/keboola` — Keboola diagnostics
 
 - /api/admin/keboola/test-connection
@@ -1324,6 +1338,13 @@ viewable by the person it was shared with.
 
 - /api/connectors/manifest
 - /api/connectors/params
+- /api/connectors/{slug}/prompt
+
+`/api/connectors/{slug}/prompt` returns one connector's full setup prompt
+(the post-frontmatter SKILL.md body, brand-substituted) for slugs the
+manifest lists. Consumed by `agnes connectors show <slug>` so the install
+prompt can reference connector setup by name instead of inlining every
+body.
 
 `/api/connectors/params` serves per-tenant connector params (the
 `connectors:` overlay of `instance.yaml`, filtered against the seed
