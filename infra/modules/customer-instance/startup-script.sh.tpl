@@ -755,25 +755,33 @@ chown -R 70:70 "$DATA_MNT/kai-agent-postgres"
 # Artifact Registry images authenticate through the VM SA via gcloud's docker
 # credential helper — configured for the image's own registry host only, and
 # persisted in root's docker config so the agnes-auto-upgrade pulls keep
-# working. Any other private registry needs pre-authenticated pull access on
-# the VM (not provided here).
+# working. Best-effort (`|| echo WARN`): the engine must never gate the
+# machine, and a genuine credential problem still surfaces as a failed
+# engine pull in the tolerant block in section 5. Any other private registry
+# needs pre-authenticated pull access on the VM (not provided here).
 KAI_AGENT_IMAGE_HOST="${kai_agent_image}"
 KAI_AGENT_IMAGE_HOST="$${KAI_AGENT_IMAGE_HOST%%/*}"
 case "$KAI_AGENT_IMAGE_HOST" in
-    *pkg.dev) gcloud auth configure-docker "$KAI_AGENT_IMAGE_HOST" --quiet ;;
+    *-docker.pkg.dev) gcloud auth configure-docker "$KAI_AGENT_IMAGE_HOST" --quiet \
+        || echo "WARN: gcloud auth configure-docker $KAI_AGENT_IMAGE_HOST failed — the engine image pull will likely fail below" >&2 ;;
 esac
 
 # An engine without a public origin cannot serve a single turn: its E2B
 # sandbox must reach the LLM broker from the public internet. SERVER_URL is
 # legitimately empty when the VM has no domain AND the metadata read for the
-# external IP failed — pasting that into the URL below would configure the
-# broker as "/api/broker/anthropic" and every conversation would fail with
-# nothing in the boot log saying why. Same loud posture as the secret
-# fetches above: a config-time impossibility fails the boot visibly.
+# external IP failed (that read is deliberately tolerant) — pasting that
+# into the URL below would configure the broker as "/api/broker/anthropic"
+# and every conversation would fail with nothing in the boot log saying why.
+# SKIP the engine materialization this boot rather than abort: the metadata
+# blip is transient, and the engine must never turn a degraded add-on into
+# an unprovisioned machine — the base stack, TLS, cron and watchdog proceed
+# untouched; a reboot or VM recreate retries with a fresh derivation.
+KAI_AGENT_MATERIALIZE=1
 if [ -z "$SERVER_URL" ]; then
-    echo "ERROR: kai_agent_enabled requires a resolvable public origin (set a domain on the instance, or ensure the GCE metadata server is reachable) — SERVER_URL is empty" >&2
-    exit 1
+    echo "WARN: kai-agent engine SKIPPED this boot — no resolvable public origin (set a domain on the instance, or the GCE metadata read failed); reboot or recreate to retry" >&2
+    KAI_AGENT_MATERIALIZE=0
 fi
+if [ "$KAI_AGENT_MATERIALIZE" = "1" ]; then
 
 # The engine's env. Derived URLs split by who calls them: the E2B sandbox
 # egresses to the LLM broker from the public internet, so that URL must be
@@ -861,6 +869,10 @@ services:
 KAIYAML
 
 COMPOSE_FILE_VALUE="$COMPOSE_FILE_VALUE:docker-compose.kai-agent.yml"
+
+# Closes the KAI_AGENT_MATERIALIZE guard: everything above (engine env,
+# overlay, COMPOSE_FILE append) is skipped on a boot with no public origin.
+fi
 %{ endif ~}
 cat > "$APP_DIR/.env" <<ENVEOF
 JWT_SECRET_KEY=$JWT_KEY
