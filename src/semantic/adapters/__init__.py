@@ -47,3 +47,7 @@ register_adapter("native", NativeAdapter())
 from connectors.keboola.semantic_ossie import KeboolaMetastoreAdapter  # noqa: E402
 
 register_adapter("keboola_metastore", KeboolaMetastoreAdapter())
+
+from connectors.snowflake.semantic_ossie import SnowflakeSemanticAdapter  # noqa: E402
+
+register_adapter("snowflake_semantic", SnowflakeSemanticAdapter())

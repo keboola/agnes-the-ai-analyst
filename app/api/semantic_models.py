@@ -83,6 +83,21 @@ class SemanticSourceUpdate(BaseModel):
 _VALID_KINDS = ("git", "upload", "connection")
 
 
+def _assert_known_adapter(name: str) -> None:
+    """Refuse an adapter name nothing is registered under.
+
+    Without this a typo registers happily and only fails on the first sync —
+    the "registered but never runs" state the connector validators already
+    exist to prevent. `UnknownAdapter` already names what IS available.
+    """
+    from src.semantic.adapters import UnknownAdapter, get_adapter
+
+    try:
+        get_adapter(name)
+    except UnknownAdapter as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+
 # ---------------------------------------------------------------------------
 # Access helper — the linked-package grant gate shared by export + search
 # ---------------------------------------------------------------------------
@@ -251,6 +266,7 @@ async def create_semantic_source(body: SemanticSourceCreate, user: dict = Depend
             status_code=400,
             detail=f"unknown kind {body.kind!r} (expected one of {', '.join(_VALID_KINDS)})",
         )
+    _assert_known_adapter(body.adapter)
     from uuid import uuid4
 
     source_id = f"ss_{uuid4().hex[:12]}"
@@ -280,6 +296,8 @@ async def update_semantic_source(source_id: str, body: SemanticSourceUpdate, use
     fields = body.model_dump(exclude_unset=True)
     if not fields:
         return repo.get(source_id)
+    if fields.get("adapter") is not None:
+        _assert_known_adapter(fields["adapter"])
     return repo.update(source_id, **fields)
 
 
