@@ -247,10 +247,16 @@ def install_snowflake_adbc_driver(*, missing_ok: bool = True) -> None:
         shutil.copy2(source, tmp_target)
         os.replace(tmp_target, target)
         logger.info("Copied ADBC Snowflake driver to %s", target)
-    except OSError:
+    except OSError as exc:
         if tmp_target.is_file():
             tmp_target.unlink(missing_ok=True)
-        raise
+        logger.warning(
+            "Could not stage ADBC Snowflake driver to %s: %s. "
+            "DuckDB may still find the driver via LD_LIBRARY_PATH or system paths.",
+            target,
+            exc,
+        )
+        return
 
 
 def _is_safe_segment(value: str, name: str) -> str:

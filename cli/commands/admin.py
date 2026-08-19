@@ -441,21 +441,22 @@ def register_table(
 
 @admin_app.command("discover-and-register")
 def discover_and_register(
-    source_type: str = typer.Option("keboola", help="Source type: keboola | bigquery"),
+    source_type: str = typer.Option("keboola", help="Source type: keboola"),
     token: str = typer.Option(None, help="Keboola Storage API token"),
     url: str = typer.Option(None, help="Keboola stack URL"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be registered"),
     as_json: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
-    """Discover all tables from source and register them."""
+    """Discover all tables from a Keboola source and register them."""
     import os
 
     import httpx
 
-    if source_type not in ("keboola", "bigquery"):
+    if source_type != "keboola":
         typer.echo(
             f"Discovery is not implemented for source_type='{source_type}'. "
-            "Register individual tables with `agnes admin register-table`.",
+            "Only Keboola Storage API discovery is supported; "
+            "register individual tables with `agnes admin register-table`.",
             err=True,
         )
         raise typer.Exit(2)
@@ -508,13 +509,6 @@ def discover_and_register(
         # — same effective semantics the old 'local' mode gave, but via
         # the Storage API instead of the DuckDB extension. See
         # connectors/keboola/storage_api.py + the v25→v26 migration.
-        # Other connectors keep their per-source default.
-        if source_type == "keboola":
-            default_mode = "materialized"
-        elif source_type == "bigquery":
-            default_mode = "remote"
-        else:
-            default_mode = "local"
         resp = api_post(
             "/api/admin/register-table",
             json={
@@ -522,13 +516,13 @@ def discover_and_register(
                 "source_type": source_type,
                 "bucket": bucket_id,
                 "source_table": name,
-                "query_mode": default_mode,
+                "query_mode": "materialized",
                 "description": f"Auto-discovered from {source_type}",
             },
         )
 
-        # 200 (BQ synchronous materialize), 201 (legacy non-BQ insert),
-        # and 202 (BQ background materialize) are all success — mirrors
+        # 200 (synchronous materialize), 201 (legacy non-BQ insert),
+        # and 202 (background materialize) are all success — mirrors
         # the matrix in the single-table register-table command. Pre-fix
         # this only accepted 201, so every successful BQ row counted as
         # an error (review NIT 6 in #119).

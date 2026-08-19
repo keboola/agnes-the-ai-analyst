@@ -227,6 +227,7 @@ def _normalize_primary_key(v):
 # Devin ANALYSIS_0001 on PR #141 5f649a4 review.
 _URL_BEARING_FIELDS: tuple[tuple[str, ...], ...] = (
     ("data_source", "keboola", "stack_url"),
+    ("data_source", "databricks", "host"),
     ("marketplace", "curators_url"),
     ("auth", "keboola", "stack_url"),
     ("auth", "keboola", "oauth_host"),
