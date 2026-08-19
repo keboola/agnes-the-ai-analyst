@@ -40,6 +40,30 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **The Keboola register drawer didn't make clear that pasting a Table ID and filling Bucket + Source Table are alternatives, not both required.** Added a visual "or fill in directly" divider between them, matching the pattern already used on `/admin/data-sources`.
 - **On the two-step connectors the new field-level validation never fired: BigQuery and Snowflake showed the toast but never the red box.** `/api/admin/register-table/precheck` runs *identical* Pydantic validation to `/register-table` (its own docstring says so), and the BQ/Snowflake confirm step is reachable only once that precheck has returned 200 — so a 422 on a required field always landed in step 1, where nothing mapped it back onto a field, and `BQ_REGISTER_FIELD_MAP` / `SF_REGISTER_FIELD_MAP` in step 2 were unreachable for exactly the errors they exist to place. The single-POST connectors (Keboola, Databricks) were unaffected, which is why the gap was invisible. The precheck failure path now pins the field marks too. Scope, stated plainly because the wiring alone does not deliver it: `register-table` and its precheck report business/shape problems as a plain-string `detail`, and the reachable Pydantic failures come from `@model_validator(mode="after")` hooks whose `loc` is `["body"]` — so no *server*-reported rejection currently names a field, and the red boxes an operator actually sees are the ones the client-side pre-flight checks set. Making the server report field-scoped errors would change a public error shape and is a separate decision; this change removes the wiring gap so both step-1 and step-2 failures route through the same handler once it can fire.
 - **`Use as base` inside a register drawer waited on a dialog the operator could not see.** `confirmModal`/`promptModal` render a `.modal-backdrop` fixed at z-index 1000, but the register drawers on `/admin/tables` are `.ds-drawer` at 1200 and the prefill buttons sit *inside* them — so the dialog the flow then `await`s painted behind the very panel that opened it, leaving a button that looked dead while the promise hung. Raised page-scoped to 1250: clear of the drawer, still under the toast (1300).
+### Fixed
+- **Keboola `query_mode='materialized'` tables were registered, reported
+  `last_sync=ok` with a row count, and could not be read.** `materialize_query`
+  published the parquet but never registered it in the source's
+  `extract.duckdb`, and `SyncOrchestrator.rebuild()` only ever walks `_meta` —
+  so no master view was created and every read 400d with "registered as
+  query_mode='materialized' but is not yet materialized in this instance's
+  analytics views". On an instance whose Keboola rows were ALL materialized
+  there was no `extract.duckdb` at all, so the orchestrator skipped the entire
+  source behind a debug-level log line and nothing surfaced to the operator.
+  The Keboola connector now writes the `_meta` row + inner view like BigQuery,
+  Snowflake and Databricks already did (creating `extract.duckdb` when absent,
+  which the other three can assume exists), fail-soft so a registration hiccup
+  never loses a published parquet.
+- **A failed Snowflake table registration now says why, in both places an
+  operator looks.** `POST /api/admin/register-table` answered a failed
+  remote-extract rebuild with 500 + `{status: "rebuild_failed", message: …}`;
+  the admin UI reads `detail`, so the real reason (`Catalog Error: Table with
+  name X does not exist! Did you mean "Y"?`) was thrown away and the wizard
+  showed a bare "✗ failed". The response now carries the reason under `detail`
+  as well, the UI falls back through both keys, and the row — kept on purpose
+  so a mistyped name can be edited rather than re-entered — is marked failed in
+  `sync_state` instead of reading `pending` / "never synced" forever, which is
+  indistinguishable from a row waiting for its first tick.
 
 ## [0.83.86] - 2026-08-19
 

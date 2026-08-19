@@ -721,6 +721,19 @@ def materialize_query(
             table_id,
         )
 
+    # Make the parquet visible to the orchestrator's master-view rebuild. Runs
+    # after the atomic publish so the view never points at a half-written file,
+    # and after the extractor pass (`_run_sync` order: extractor subprocess →
+    # materialized pass → rebuild), whose `_create_meta_table` DROP would
+    # otherwise wipe the row we just wrote.
+    _persist_materialized_inner_view(
+        extract_db_path=output_dir.parent / "extract.duckdb",
+        table_id=table_id,
+        parquet_path=parquet_path,
+        rows=row_count,
+        size_bytes=size,
+    )
+
     return {
         "table_id": table_id,
         "path": str(parquet_path),
@@ -784,6 +797,96 @@ def _read_last_sync_for_tc(tc: Dict[str, Any]):
 # Back-compat alias for tests written against the pre-v26 name.
 def _read_last_sync(table_id: str):
     return _read_last_sync_for_tc({"id": table_id})
+
+
+def _ensure_meta_table(conn: duckdb.DuckDBPyConnection) -> None:
+    """Idempotent variant of :func:`_create_meta_table` — creates ``_meta`` if
+    absent and leaves existing rows alone.
+
+    :func:`_create_meta_table` DROPs first, which is right for the extractor
+    pass (it rewrites the whole extract) but wrong for the materialize path,
+    which touches exactly one table's row in an extract other rows may already
+    own.
+    """
+    conn.execute("""CREATE TABLE IF NOT EXISTS _meta (
+        table_name VARCHAR NOT NULL,
+        description VARCHAR,
+        rows BIGINT,
+        size_bytes BIGINT,
+        extracted_at TIMESTAMP,
+        query_mode VARCHAR DEFAULT 'local'
+    )""")
+
+
+def _persist_materialized_inner_view(
+    extract_db_path: Path,
+    table_id: str,
+    parquet_path: Path,
+    rows: int,
+    size_bytes: int,
+) -> None:
+    """Register a materialized parquet in ``extract.duckdb`` as a ``_meta`` row
+    plus an inner view, so ``SyncOrchestrator.rebuild()`` creates the master
+    view for it.
+
+    Without this the parquet lands on disk and ``sync_state`` reports ``ok``
+    with a row count, but the orchestrator — which only ever walks ``_meta`` —
+    never creates a view, so every read 400s with "registered as
+    query_mode='materialized' but is not yet materialized in this instance's
+    analytics views". On an instance whose Keboola rows are ALL materialized
+    there was no ``extract.duckdb`` at all, so the orchestrator skipped the
+    whole source with a debug-level "no extract.duckdb" and nothing surfaced
+    in the operator's log.
+
+    Parallel of ``connectors/bigquery/extractor.py::_persist_materialized_inner_view``
+    and the Snowflake/Databricks equivalents, with one deliberate difference:
+    it CREATES ``extract.duckdb`` when absent instead of skipping. BigQuery can
+    assume the extractor subprocess made the file (a BQ instance always has
+    remote rows to write); a materialized-only Keboola source has nothing else
+    that would ever create it.
+
+    Idempotent: the table's own ``_meta`` row is replaced (the table carries no
+    UNIQUE on ``table_name``) and its inner view recreated; other rows are left
+    untouched. Fail-soft — the parquet is the canonical artifact, so a
+    registration failure (lock contention, schema drift) is logged and the next
+    pass gets another chance.
+    """
+    safe_path = str(parquet_path).replace("'", "''")
+    try:
+        extract_db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = _open_duckdb(str(extract_db_path), read_only=False)
+        try:
+            _ensure_meta_table(conn)
+            # Wrapped so a concurrent reader of `_meta` sees either the old row
+            # or the new one, never both / neither.
+            conn.execute("BEGIN")
+            try:
+                conn.execute("DELETE FROM _meta WHERE table_name = ?", [table_id])
+                conn.execute(
+                    "INSERT INTO _meta VALUES (?, ?, ?, ?, current_timestamp, 'materialized')",
+                    [table_id, "", rows, size_bytes],
+                )
+                conn.execute(
+                    f"CREATE OR REPLACE VIEW {quote_ident(table_id)} AS "
+                    f"SELECT * FROM read_parquet('{safe_path}')"
+                )
+                conn.execute("COMMIT")
+            except Exception:
+                try:
+                    conn.execute("ROLLBACK")
+                except Exception:
+                    pass
+                raise
+        finally:
+            conn.close()
+    except Exception as exc:
+        logger.warning(
+            "materialize %s: could not register _meta/inner view in %s (%s) — the parquet is "
+            "published, but the master view will be missing until the next pass",
+            table_id,
+            extract_db_path,
+            exc,
+        )
 
 
 def _create_meta_table(conn: duckdb.DuckDBPyConnection) -> None:

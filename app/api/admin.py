@@ -4414,6 +4414,23 @@ def register_table(
             # ATTACH the sf catalog and create master views.
             ok, message = _rebuild_snowflake_remote_extract()
             if not ok:
+                # The row stays registered on purpose — the usual cause is a
+                # mistyped schema/table, and editing the existing row beats
+                # re-entering everything. But a bare row would then read
+                # `pending` ("never synced") in /admin/sync and
+                # `GET /api/admin/registry` forever: nothing retries a remote
+                # rebuild except a re-save, so the operator has no way to tell
+                # "this name does not exist upstream" from "waiting for the
+                # first tick". Record the failure against the row so both
+                # surfaces say so.
+                try:
+                    sync_state_repo().set_error(request.name, message)
+                except Exception:
+                    logger.warning(
+                        "could not record rebuild failure for %s in sync_state; the 500 "
+                        "response still carries the reason",
+                        table_id,
+                    )
                 return JSONResponse(
                     status_code=500,
                     content={
@@ -4421,6 +4438,12 @@ def register_table(
                         "name": request.name,
                         "status": "rebuild_failed",
                         "view_name": table_id,
+                        # `detail` is the key every client renders (FastAPI's own
+                        # error shape, and what the admin UI reads); `message` is
+                        # kept for existing consumers. Same content — pre-fix only
+                        # `message` was set, so the UI fell through to a bare
+                        # "✗ failed" and threw the real reason away.
+                        "detail": message,
                         "message": message,
                     },
                 )

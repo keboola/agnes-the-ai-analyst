@@ -944,6 +944,57 @@ def test_admin_register_snowflake_remote_not_configured_is_not_a_500(seeded_app,
     assert "not configured" in (body.get("message") or "").lower()
 
 
+def test_admin_register_snowflake_rebuild_error_is_visible_twice(seeded_app, snowflake_instance, monkeypatch):
+    """A per-table rebuild error — in practice a schema/table name that does not
+    exist in the account — must reach the operator through BOTH channels.
+
+    Pre-fix it reached neither. The 500 body carried the real upstream reason
+    under ``message`` only, and every admin-UI error path reads ``detail``
+    (``typeof b.detail === "string" ? b.detail : "failed"``), so the operator
+    saw a bare "✗ failed". Meanwhile the registry row — inserted before the
+    rebuild is attempted, and deliberately kept so the name can be corrected by
+    editing rather than re-typing — reported ``pending``, i.e. "never synced",
+    indistinguishable from a row simply waiting for its first tick. Live
+    incident 2026-08-19: four rows sat pending for days pointing at tables that
+    never existed.
+    """
+    monkeypatch.setattr(
+        "connectors.snowflake.extract_init.rebuild_from_registry",
+        MagicMock(
+            return_value={
+                "skipped": False,
+                "tables_registered": 0,
+                "errors": [
+                    {
+                        "table": "orders_typo",
+                        "error": 'Catalog Error: Table with name BI_TYPO does not exist!',
+                    }
+                ],
+            }
+        ),
+    )
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    resp = c.post(
+        "/api/admin/register-table",
+        json=_sf_payload(name="orders_typo"),
+        headers=_auth(token),
+    )
+    assert resp.status_code == 500, resp.text
+    body = resp.json()
+    assert body["status"] == "rebuild_failed"
+    # `detail` is what every client renders; it must carry the upstream reason.
+    assert "BI_TYPO" in body["detail"]
+    # `message` stays for existing consumers, same content.
+    assert body["detail"] == body["message"]
+
+    # ...and the row must read as failed, not as "never synced".
+    reg = c.get("/api/admin/registry", headers=_auth(token)).json()
+    row = next(t for t in reg["tables"] if t["id"] == "orders_typo")
+    assert row["last_sync_status"] == "error"
+    assert "BI_TYPO" in (row["last_sync_error"] or "")
+
+
 def test_admin_register_snowflake_custom_sql_foreign_catalog_refused(seeded_app, snowflake_instance):
     """Finding #9: the materialize session ATTACHes only ``sf``. Custom SQL naming
     another catalog registers happily today and then fails at COPY time on the
