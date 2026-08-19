@@ -10,6 +10,21 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Removed
+
+- Two orphaned bootstrap scripts: `scripts/init.sh` (pre-rename local venv
+  bootstrap, superseded by the `uv pip install ".[dev]"` flow in
+  `docs/QUICKSTART.md`) and `scripts/fetch-env-from-secrets.sh` (VM-side `.env`
+  renderer for a deployment layout no longer in use — the customer-instance
+  startup script renders `.env` itself). Neither was referenced by any live
+  code path, workflow, or current doc.
+
+### Internal
+
+- `CLAUDE.md` project structure: drop the `server/` entry (the directory does
+  not exist) and add the `infra/` tree, so the Terraform module that provisions
+  a customer instance is discoverable from the project map.
+
 ## [0.83.80] - 2026-08-19
 
 ### Fixed

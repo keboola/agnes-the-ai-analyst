@@ -8,7 +8,6 @@ Utility and migration scripts for Agnes.
 |--------|---------|
 | `generate_sample_data.py` | Generate sample data for development/demo |
 | `duckdb_manager.py` | DuckDB database management utilities |
-| `init.sh` | Initial server setup (install deps, create dirs) |
 
 ## Migration Scripts (one-time use)
 
