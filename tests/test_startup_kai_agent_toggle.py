@@ -185,14 +185,39 @@ def test_auto_upgrade_tick_cannot_be_gated_by_the_engine():
 def test_auto_upgrade_tick_retries_a_downed_engine_every_tick():
     # The drift-gated recreate never fires on a no-change tick, so an engine
     # that failed at boot would stay down indefinitely without this: a
-    # tolerant, ENGINE-TARGETED `up -d kai-agent` runs on every tick, placed
-    # BEFORE the drift detection. Targeting the service (not the full list)
-    # is load-bearing — a full-list up here would recreate drifted app
-    # services and bypass the sync-defer guard.
+    # tolerant, ENGINE-TARGETED `up -d kai-agent` runs on every tick the
+    # engine is found down, placed BEFORE the drift detection. Targeting the
+    # service (not the full list) is load-bearing — a full-list up here would
+    # recreate drifted app services and bypass the sync-defer guard. So is
+    # the running-check gate: an unconditional up would re-run the one-shot
+    # migrator (service_completed_successfully dependency) every 5 minutes
+    # forever on a healthy box.
     body = Path("scripts/ops/agnes-auto-upgrade.sh").read_text()
-    retry = body.index("up -d kai-agent")
+    gate = body.index("ps -q --status running kai-agent")
+    retry = body.index("up -d kai-agent >/dev/null")
     assert "retrying next tick" in body
-    assert retry < body.index("Drift-based change detection")
+    assert gate < retry < body.index("Drift-based change detection")
+
+
+def test_tpl_skipped_boot_tears_down_stale_engine_containers():
+    # A boot that SKIPS materialization on a VM where a previous boot did
+    # materialize would otherwise leave the old containers running under
+    # restart:always with a stale env (stale broker URL / rotated secret),
+    # outside compose management — the rewritten .env drops the overlay from
+    # COMPOSE_FILE, so neither the tick's retry nor any compose invocation
+    # sees them again. The skip path must converge to a clean "engine off".
+    body = TPL.read_text()
+    # `rm -sf` and not `down`: down also removes the project's default
+    # network, which the base stack still holds — the removal fails with
+    # "active endpoints" and a false WARN on a teardown that succeeded.
+    teardown = body.index("docker compose -f docker-compose.kai-agent.yml rm -sf")
+    assert "docker compose -f docker-compose.kai-agent.yml down" not in body
+    assert '[ "$KAI_AGENT_MATERIALIZE" = "0" ]' in body
+    assert 'rm -f "$APP_DIR/docker-compose.kai-agent.yml"' in body
+    # The teardown must run BEFORE the .env rewrite (the old .env still holds
+    # the overlay's interpolation variables) and before the materialize gate.
+    assert teardown < body.index('if [ "$KAI_AGENT_MATERIALIZE" = "1" ]; then')
+    assert teardown < body.index('cat > "$APP_DIR/.env" <<ENVEOF')
 
 
 def test_tpl_engine_services_are_bounded():
