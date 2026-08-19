@@ -274,6 +274,12 @@
      openBuilder: the rows belong to ONE agent, keyed by its slug. */
   var schedules = null;         // rows for the open agent (null = not loaded yet)
   var schedulesErr = null;      // null | 'disabled' (agent profiles off) | 'error'
+  /* Generation token for the schedules fetch. `schedules` is page-wide, so
+     without it the LAST response to arrive wins rather than the LATEST one
+     issued: open agent A, then B before A's fetch settles, and A's rows land
+     in B's panel. Every loadSchedules takes the next number and only writes
+     `schedules`/`schedulesErr` while it is still the current one. */
+  var schedGen = 0;
   var skills = null;            // /api/v2/marketplace/skills, RBAC-filtered, page-wide
   var schedForm = null;         // create-form working copy, survives re-renders
   function blankSchedForm() {
@@ -601,18 +607,30 @@
      API (session-cookie auth, same-origin); the sweep + job machinery live
      server-side, this panel only edits the rows. */
   function loadSchedules(a) {
+    var gen = ++schedGen;
     schedules = null; schedulesErr = null;
     if (!a || !a.slug) { schedules = []; return Promise.resolve(); }
     return fetch('/api/v1/agents/' + encodeURIComponent(a.slug) + '/schedules', { credentials: 'same-origin' })
       .then(function (r) {
-        if (r.ok) return r.json().then(function (d) { schedules = d.data || []; });
+        // Superseded while in flight — a newer load owns `schedules` now, and
+        // every arm below (ok / 403 / other) would write another agent's state
+        // over it. Drop the response instead.
+        if (gen !== schedGen) return null;
+        if (r.ok) return r.json().then(function (d) {
+          if (gen !== schedGen) return;
+          schedules = d.data || [];
+        });
         // 403 {"kind": "agent_profiles_disabled"} = the instance-level toggle
         // is off — the whole /api/v1/agents* surface is closed, so say that
         // instead of a generic failure the owner would retry in vain.
         if (r.status === 403) { schedulesErr = 'disabled'; return null; }
         throw new Error('HTTP ' + r.status);
       })
-      .catch(function (e) { console.error('agents: schedules load failed', e); if (!schedulesErr) schedulesErr = 'error'; });
+      .catch(function (e) {
+        if (gen !== schedGen) return;
+        console.error('agents: schedules load failed', e);
+        if (!schedulesErr) schedulesErr = 'error';
+      });
   }
 
   /* Skills the caller can read (RBAC-filtered server-side), fetched once per
@@ -1070,6 +1088,10 @@
       credentials: 'same-origin',
       body: JSON.stringify({ enabled: !row.enabled })
     }).then(function (updated) {
+      // The panel may have been reopened on another agent while the PATCH was
+      // in flight — `loadSchedules` resets `schedules` to null, and mapping
+      // over that throws into the catch arm below as "Could not update".
+      if (!Array.isArray(schedules)) return;
       schedules = schedules.map(function (s) { return s.id === id ? updated : s; });
     }).catch(function (err) {
       console.error('agents: schedule toggle failed', err);
@@ -1083,6 +1105,10 @@
     if (!window.confirm('Delete schedule "' + (row.name || '') + '"? Future runs stop; already-queued runs are unaffected.')) return;
     schedFetch(schedUrl(a, id), { method: 'DELETE', credentials: 'same-origin' })
       .then(function () {
+        // Same race as the toggle: a newer loadSchedules may have reset
+        // `schedules` to null while the DELETE was in flight, and filtering
+        // null would surface the successful delete as "Could not delete".
+        if (!Array.isArray(schedules)) return;
         schedules = schedules.filter(function (s) { return s.id !== id; });
         refreshSchedulesRows();
         // Dropping below the 20-schedule cap re-arms the create button, which

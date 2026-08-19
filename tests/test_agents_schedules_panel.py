@@ -155,3 +155,58 @@ class TestUserInputIsEscaped:
         assert set_err, "setSchedErr not found"
         assert "textContent" in set_err.group(0)
         assert "innerHTML" not in set_err.group(0)
+
+
+class TestStaleResponsesCannotWriteAnotherAgentsRows:
+    """`schedules` is page-wide, so an in-flight fetch settling AFTER the panel
+    moved to another agent must not write it — otherwise agent A's rows render
+    inside B's panel — and the two mutation callbacks must not assume it is
+    still an array once a newer load reset it to null."""
+
+    def test_schedgen_counter_is_module_scope(self, markup):
+        assert re.search(r"^  var schedGen = 0;", markup, re.M), (
+            "no module-scope schedGen counter — nothing ties a schedules response to the agent it was issued for"
+        )
+
+    def test_load_takes_a_generation_token_at_entry(self, markup):
+        body = re.search(r"function loadSchedules\(a\)(.*?)\n  \}", markup, re.S)
+        assert body, "loadSchedules not found"
+        assert "var gen = ++schedGen;" in body.group(0), "loadSchedules does not claim a generation at entry"
+
+    def test_every_arm_of_the_load_drops_a_superseded_response(self, markup):
+        """The response arm (ok / 403 / other), the json() continuation and the
+        .catch arm each have to bail when a newer load has taken over."""
+        body = re.search(r"function loadSchedules\(a\)(.*?)\n  \}", markup, re.S)
+        assert body, "loadSchedules not found"
+        text = body.group(0)
+        assert text.count("gen !== schedGen") >= 3, (
+            "not every arm of loadSchedules checks the generation token "
+            f"(found {text.count('gen !== schedGen')} checks, expected >= 3)"
+        )
+        json_arm = re.search(r"if \(r\.ok\) return r\.json\(\)\.then\(function \(d\) \{(.*?)\}\)", text, re.S)
+        assert json_arm and "gen !== schedGen" in json_arm.group(1), (
+            "the ok arm assigns `schedules` without re-checking the token — "
+            "json() resolves a tick later, after a newer load may have started"
+        )
+        catch_arm = re.search(r"\.catch\(function \(e\) \{(.*?)\n      \}\)", text, re.S)
+        assert catch_arm and "gen !== schedGen" in catch_arm.group(1), (
+            "a superseded failure still writes schedulesErr over a live load"
+        )
+
+    def test_toggle_does_not_map_over_a_reset_schedules(self, markup):
+        body = re.search(r"function toggleSchedule\(a, id, btn\)(.*?)\n  \}", markup, re.S)
+        assert body, "toggleSchedule not found"
+        assert "Array.isArray(schedules)" in body.group(0), (
+            "toggleSchedule maps over `schedules` in its .then — null after a "
+            "newer loadSchedules reset it, which throws into the catch arm and "
+            "shows 'Could not update the schedule' for a PATCH that succeeded"
+        )
+
+    def test_delete_does_not_filter_a_reset_schedules(self, markup):
+        body = re.search(r"function deleteSchedule\(a, id\)(.*?)\n  \}", markup, re.S)
+        assert body, "deleteSchedule not found"
+        assert "Array.isArray(schedules)" in body.group(0), (
+            "deleteSchedule filters `schedules` in its .then — null after a "
+            "newer loadSchedules reset it, which throws into the catch arm and "
+            "shows 'Could not delete the schedule' for a DELETE that succeeded"
+        )
