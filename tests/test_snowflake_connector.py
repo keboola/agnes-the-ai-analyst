@@ -1350,3 +1350,64 @@ def test_another_rows_rebuild_error_does_not_mark_the_new_row_failed(seeded_app,
     )
     assert "BI_GONE" not in (row.get("last_sync_error") or "")
     assert "other_broken_row" not in (row.get("last_sync_error") or "")
+
+
+def test_a_skipped_rebuild_does_not_clear_a_recorded_failure(seeded_app, snowflake_instance, monkeypatch):
+    """A rebuild that never ran must not wipe the row's real failure.
+
+    `_rebuild_snowflake_remote_extract` reports ``ok=True`` for a benign SKIP
+    (`not_configured` / `no_remote_rows`) on purpose, so a skip cannot turn a
+    successful registration into a 500. The edit path's background wrapper
+    branched on `ok` alone and called `clear_error`, which sets
+    ``status='ok'`` and blanks the message — so editing a row on an instance
+    whose Snowflake password no longer resolves at rebuild time made a table
+    the operator still cannot query read as green in `/admin/sync` and
+    `GET /api/admin/registry`, with nothing to correct it until the next full
+    orchestrator sweep. Nothing was verified; the recorded failure was still
+    true.
+    """
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+
+    # Register with a per-table error so the row is recorded as failed.
+    monkeypatch.setattr(
+        "connectors.snowflake.extract_init.rebuild_from_registry",
+        MagicMock(
+            return_value={
+                "skipped": False,
+                "tables_registered": 0,
+                "errors": [{"table": "orders_broken", "error": "Catalog Error: nope"}],
+            }
+        ),
+    )
+    resp = c.post(
+        "/api/admin/register-table",
+        json=_sf_payload(name="orders_broken"),
+        headers=_auth(token),
+    )
+    assert resp.status_code == 500, resp.text
+    reg = c.get("/api/admin/registry", headers=_auth(token)).json()
+    assert next(t for t in reg["tables"] if t["id"] == "orders_broken")["last_sync_status"] == "error"
+
+    # Now the rebuild is SKIPPED rather than run — nothing is verified.
+    monkeypatch.setattr(
+        "connectors.snowflake.extract_init.rebuild_from_registry",
+        MagicMock(
+            return_value={
+                "skipped": True,
+                "reason": "not_configured",
+                "tables_registered": 0,
+                "errors": [],
+            }
+        ),
+    )
+    from app.api.admin import _rebuild_snowflake_remote_extract_bg
+
+    _rebuild_snowflake_remote_extract_bg("orders_broken")
+
+    reg = c.get("/api/admin/registry", headers=_auth(token)).json()
+    row = next(t for t in reg["tables"] if t["id"] == "orders_broken")
+    assert row["last_sync_status"] == "error", (
+        "a skipped rebuild cleared the row's recorded failure — the table is still unusable but now reads as healthy"
+    )
+    assert "Catalog Error" in (row["last_sync_error"] or "")
