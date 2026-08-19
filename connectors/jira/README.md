@@ -593,6 +593,19 @@ re-transform (4b) rebuilds that month from the raw JSON and re-`NULL`s those
 rows, because the flag is genuinely not in the cache. Refetch the affected issues
 first (see *Historical Backfill*) if you need a rebuild to keep them.
 
+**Nothing schedules that refetch for you.** Until 0.83.88 a flagless embed failed
+the completeness gate, which marked the issue `_comments_incomplete` and wrote
+the `.incomplete` sidecar, so the next `--skip-existing` backfill refetched it
+and healed the raw cache. That heal came bundled with the cost this release
+removes: the issue's *entire* comment update was deferred until that refetch
+happened. Reusing the marker would reinstate the deferral, so it is deliberately
+not set for a flag gap. In practice the cache heals on ordinary activity anyway —
+any later successful refetch of the issue (its next webhook event, an SLA poll
+while it is open, a consistency-check repair) rewrites the JSON with the flag
+present. It persists only for an issue that goes quiet immediately afterwards.
+The signal that it happened is the per-issue WARNING naming the issue key and the
+count; treat a rebuild of a month containing one as "refetch those keys first".
+
 Rows written before this column existed read as `NULL` (the extract views use
 `union_by_name=true`, so adding the column is non-breaking). To fill them in,
 re-run the batch transform (4b above) — the flag is already present in the
