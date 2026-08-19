@@ -288,3 +288,33 @@ def test_workdir_no_reinit_needed_when_sha_stable(tmp_path: Path):
     assert not wm.needs_reinit("u@z")
     # Still False on second check
     assert not wm.needs_reinit("u@z")
+
+
+def test_workdir_no_reinit_loop_when_server_url_has_surrounding_whitespace(tmp_path: Path):
+    """A SERVER_URL with stray whitespace must not reinit on every attach.
+
+    `write_sentinel` emits ``server_url: <value>`` and `read_sentinel_server_url`
+    strips what it reads back, so an unstripped `self._server_url` never equals
+    the value just written — `needs_reinit` stays True forever and every session
+    attach pays a full template copy. Non-destructive (the init path only
+    overwrites template-owned files, it deletes nothing), but a malformed env
+    var should not cost that per session.
+    """
+    repo = _make_repo(tmp_path)
+    bundled = tmp_path / "bundled"
+    bundled.mkdir(parents=True, exist_ok=True)
+    (bundled / "CLAUDE.md").write_text("d")
+
+    wm = WorkdirManager(
+        server_url="  https://analyst.example.com  ",
+        data_dir=tmp_path / "data",
+        repo=repo,
+        bundled_template_dir=bundled,
+        agnes_version="0.55.0",
+        get_marketplace_sha=lambda: "sha-1",
+        get_template_status=lambda: None,
+    )
+    wm.ensure_user_workdir("u@x")
+    assert not wm.needs_reinit("u@x"), (
+        "the sentinel was just re-stamped, yet the workspace still reads as stale — every attach would reinit"
+    )

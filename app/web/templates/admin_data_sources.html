@@ -3368,7 +3368,12 @@ async function _registerBqRows() {
         });
       } else {
         const b = await resp.json().catch(() => ({}));
-        r.statusEl.textContent = "✗ " + _esc(_registerErrorText(b));
+        // No _esc(): the sink is textContent, which escapes on its own.
+        // Escaping first would show the operator the literal
+        // `Did you mean &quot;Y&quot;?` instead of the quoted table name —
+        // mangling the one string this surface exists to relay. Line ~2412
+        // (the single-row path) already gets this right.
+        r.statusEl.textContent = "✗ " + _registerErrorText(b);
         r.statusEl.className = "ds-table-status fail";
         failed++;
       }
@@ -3472,7 +3477,12 @@ async function _registerSfRows() {
         registered.push({ id: name, name: r.table, bucket: r.schema });
       } else {
         const b = await resp.json().catch(() => ({}));
-        r.statusEl.textContent = "✗ " + _esc(_registerErrorText(b));
+        // No _esc(): the sink is textContent, which escapes on its own.
+        // Escaping first would show the operator the literal
+        // `Did you mean &quot;Y&quot;?` instead of the quoted table name —
+        // mangling the one string this surface exists to relay. Line ~2412
+        // (the single-row path) already gets this right.
+        r.statusEl.textContent = "✗ " + _registerErrorText(b);
         r.statusEl.className = "ds-table-status fail";
         failed++;
       }
