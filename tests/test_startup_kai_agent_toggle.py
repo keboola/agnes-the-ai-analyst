@@ -160,6 +160,16 @@ def test_tpl_engine_requires_public_origin():
     assert guard < closed_port_guard < url_use
 
 
+def test_kai_agent_env_rejects_multiline_values():
+    body = (MODULE / "variables.tf").read_text()
+    # The map becomes KEY=VALUE lines in the engine's env_file; an embedded
+    # newline truncates the value and corrupts the next line — the engine
+    # then silently never starts. Must fail the plan, not the runtime.
+    assert 'for k, v in var.kai_agent_env' in body
+    assert '!strcontains(v, "\\n")' in body
+    assert '!strcontains(k, "=")' in body
+
+
 def test_main_tf_precondition_covers_required_engine_env():
     body = (MODULE / "main.tf").read_text()
     # Enabling the flag with an empty kai_agent_env plans cleanly but
