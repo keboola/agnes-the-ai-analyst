@@ -15,12 +15,19 @@ which renders the same document with ``is_sandbox=False`` for a real laptop.
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from datetime import datetime
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
 
-def render_sandbox_workspace_prompt(user_email: str, *, server_url: Optional[str] = None) -> Optional[str]:
+def render_sandbox_workspace_prompt(
+    user_email: str,
+    *,
+    server_url: Optional[str] = None,
+    conn: Optional[Any] = None,
+    now: Optional[datetime] = None,
+) -> Optional[str]:
     """Render the analyst CLAUDE.md (admin Workspace Prompt override or shipped
     default), RBAC-filtered for this user — the same content ``agnes init``
     writes on a laptop via ``GET /api/welcome``.
@@ -30,32 +37,37 @@ def render_sandbox_workspace_prompt(user_email: str, *, server_url: Optional[str
 
     ``server_url`` defaults to ``agnes_server_url()``, the same fallback chain
     the sandbox env uses (``SERVER_URL`` → ``AGNES_INTERNAL_URL`` → loopback).
+
+    ``conn`` is optional and stays optional on purpose: this module opens no
+    connection of its own. ``resolve_prompt`` binds a supplied DuckDB
+    connection so a caller's in-flight read sees its own transaction, and
+    resolves through the repository factory when given nothing — which is the
+    right default for a fresh read, and the reason this file needs no entry on
+    the system-DuckDB grandfather list in
+    ``tests/test_backend_split_guard.py``. A caller that already holds a
+    request-scoped connection may pass it; on Postgres it must not.
+
+    ``now`` pins the rendered clock. Leave it unset for a document written once
+    at workspace init. Pin it when the SAME bytes must come out for the same
+    inputs: the shipped template ends with "generated {{ today }}", so an
+    unpinned render changes at every UTC date rollover.
     """
     try:
         from app.chat.manager import agnes_server_url
         from src.claude_md import render_claude_md
-        from src.db import get_system_db
-        from src.repositories import use_pg, users_repo
+        from src.repositories import users_repo
 
         # User read via the factory so it honors use_pg() — a direct
         # UserRepository(conn) read the frozen DuckDB system file on Postgres
-        # instances (#518). The conn below is the DuckDB-mode path handed to
-        # render_claude_md, which routes its own state reads through the
-        # factory; on Postgres it is None so the system DuckDB is never opened
-        # (forbidden invariant).
+        # instances (#518).
         u = users_repo().get_by_email(user_email)
         if not u:
             return None
         effective_url = agnes_server_url() if server_url is None else server_url
-        conn = None if use_pg() else get_system_db()
-        try:
-            # This is a chat sandbox — its filesystem is ephemeral and not the
-            # analyst's own machine, so the rendered prompt must use the
-            # sandbox wording (e.g. the Charts section's inline-SVG-only rule).
-            return render_claude_md(conn, user=u, server_url=effective_url, is_sandbox=True)
-        finally:
-            if conn is not None:
-                conn.close()
+        # This is a chat sandbox — its filesystem is ephemeral and not the
+        # analyst's own machine, so the rendered prompt must use the sandbox
+        # wording (e.g. the Charts section's inline-SVG-only rule).
+        return render_claude_md(conn, user=u, server_url=effective_url, is_sandbox=True, now=now)
     except Exception:
         logger.exception("render workspace prompt failed for %s", user_email)
         return None

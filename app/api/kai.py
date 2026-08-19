@@ -59,6 +59,7 @@ Deployment config (all env, like the rest of the broker's upstream wiring):
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import gzip
 import hashlib
 import hmac
@@ -783,8 +784,21 @@ async def kai_mcp(
     try:
         upstream_req = client.build_request("POST", _MCP_STREAMABLE_PATH, headers=headers, content=body)
         upstream = await client.send(upstream_req, stream=True)
-    except Exception:
-        await client.aclose()
+    # BaseException, not Exception: the client is created outside any
+    # `async with`, so this arm is the ONLY thing that closes it before the
+    # streaming iterator takes ownership — and the likeliest way to leave here
+    # is not an error at all. A sandbox that disconnects, or a shutdown, while
+    # we are awaiting `send()` cancels this task, and `asyncio.CancelledError`
+    # derives from BaseException, so an `except Exception` arm skipped
+    # `aclose()` and leaked the client with its whole connection pool. One
+    # socket per cancelled tool call, until the process restarts. Found by
+    # Devin Review on this PR.
+    except BaseException:
+        # Suppressed because we are already unwinding, possibly under
+        # cancellation, where the close itself can be interrupted: a failure to
+        # clean up must not replace the exception the caller needs to see.
+        with contextlib.suppress(Exception):
+            await client.aclose()
         raise
 
     passthrough_headers = {k: v for k, v in upstream.headers.items() if k.lower() not in _MCP_DROP_RESPONSE_HEADERS}
@@ -909,7 +923,18 @@ def _workspace_prompt_for(session: Any) -> Optional[str]:
 
     from app.chat.workspace_prompt import render_sandbox_workspace_prompt
 
-    rendered = render_sandbox_workspace_prompt(session.user_email)
+    # The clock is PINNED to the session's start, and that is what keeps this
+    # route's byte-stability promise true. The shipped template ends with
+    # "generated {{ today }}", so an unpinned render changes at every UTC date
+    # rollover — the engine re-fetches on every SDK respawn, so a conversation
+    # straddling midnight would rewrite the whole sandbox tree over a date
+    # string, which is the same defect class as the gzip container mtime this
+    # builder already pins. `started_at` is the right granularity: stable for
+    # the life of the conversation the payload belongs to, and it is what the
+    # native sandbox's own CLAUDE.md effectively carries, since WorkdirManager
+    # renders once at workspace init rather than per turn. Found by Devin
+    # Review on this PR.
+    rendered = render_sandbox_workspace_prompt(session.user_email, now=getattr(session, "started_at", None))
     # Same emptiness guard as `WorkdirManager`: a prompt that renders blank
     # must not blank out the template's own instructions.
     return rendered if rendered and rendered.strip() else None
@@ -1030,9 +1055,11 @@ async def kai_workspace(row: Dict[str, Any] = Depends(_require_session_credentia
     *server* fetches this once per SDK process spawn, and the sandbox never
     sees it.
 
-    The payload is per-caller, because the ``CLAUDE.md`` inside it is the
-    RBAC-filtered Workspace Prompt. It stays byte-stable for a given caller
-    and configuration, which is what the engine's re-fetch on every SDK
+    The payload is per-session, because the ``CLAUDE.md`` inside it is the
+    RBAC-filtered Workspace Prompt. It stays byte-stable for a given session
+    and configuration — the session, not merely the caller, because the
+    rendered document carries a date and is therefore pinned to
+    ``started_at``. That stability is what the engine's re-fetch on every SDK
     respawn relies on.
     """
 

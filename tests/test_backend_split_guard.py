@@ -255,14 +255,11 @@ _GRANDFATHERED_GET_SYSTEM_DB: set[str] = {
     "app/auth/providers/google.py",
     # app/auth/router.py — the _audit helper dropped its unused get_system_db()
     # handle; audit_repo() is factory-routed. Entry removed.
-    # app/chat/workspace_prompt.py — not a new caller: this is app/main.py's
-    # `_render_workspace_prompt` closure lifted into a module so the embedded
-    # kai-agent turn engine renders the same document (`app/api/kai.py`)
-    # instead of shipping the template's static CLAUDE.md. Sanctioned
-    # `not use_pg()` conn escape hatch, like the extractors above: the user
-    # read goes through users_repo() and the conn is None on Postgres, so the
-    # system DuckDB is never opened there.
-    "app/chat/workspace_prompt.py",
+    # app/chat/workspace_prompt.py — deliberately NOT here. The shared
+    # workspace-prompt renderer takes an optional conn and opens none itself
+    # (`resolve_prompt` resolves through the factory when given nothing), so
+    # the list keeps shrinking instead of growing for a new module. Devin
+    # review on PR #1235.
     "app/main.py",
     "app/marketplace_server/git_router.py",
     "app/web/router.py",

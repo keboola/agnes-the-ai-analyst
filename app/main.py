@@ -1563,8 +1563,22 @@ async def lifespan(app):
                     sandbox seeds. Returns None on any failure so workdir init
                     falls back to the bundled static CLAUDE.md."""
                     from app.chat.workspace_prompt import render_sandbox_workspace_prompt
+                    from src.db import get_system_db
+                    from src.repositories import use_pg
 
-                    return render_sandbox_workspace_prompt(user_email, server_url=_server_url)
+                    # Conn resolution stays HERE rather than moving into the
+                    # shared helper: the helper opens no connection of its own,
+                    # so it needs no `get_system_db()` grandfather entry, and
+                    # this path keeps the exact behaviour it had — the
+                    # DuckDB-mode conn is handed in, and on Postgres it is None
+                    # so the system DuckDB is never opened (forbidden
+                    # invariant). Devin review on this PR.
+                    conn = None if use_pg() else get_system_db()
+                    try:
+                        return render_sandbox_workspace_prompt(user_email, server_url=_server_url, conn=conn)
+                    finally:
+                        if conn is not None:
+                            conn.close()
 
                 workdir_mgr = WorkdirManager(
                     data_dir=_chat_data_dir,

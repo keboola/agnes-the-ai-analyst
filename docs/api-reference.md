@@ -1540,9 +1540,13 @@ the engine exposes nothing.
   [initial-workspace-override.md](initial-workspace-override.md)), and a
   co-session or a session bound to a scope-limited agent gets the un-filtered
   bundled text, because the rendered document describes the *owner's*
-  reachable tables and skills. The payload is therefore per-caller, but stays
-  byte-stable for a given caller and configuration, which is what the engine's
-  re-fetch on every SDK respawn relies on.
+  reachable tables and skills. The payload is therefore per-session, but stays
+  byte-stable for a given session and configuration, which is what the
+  engine's re-fetch on every SDK respawn relies on. Per *session* rather than
+  per caller because the rendered document carries a date (`{{ today }}` in
+  the shipped template), so its clock is pinned to the session's `started_at`
+  — otherwise a conversation straddling midnight would rewrite the whole
+  sandbox tree over a date string.
 
 The LLM upstream needs no new route: the engine's in-sandbox relay speaks plain
 pass-through, which is exactly what `/api/broker/anthropic/{subpath}` already

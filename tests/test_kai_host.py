@@ -1052,3 +1052,114 @@ def test_a_git_template_keeps_its_own_instructions_verbatim(seeded_app, kai_env,
     archive = seeded_app["client"].get("/api/kai/workspace", headers={"Authorization": f"Bearer {credential}"}).content
 
     assert _claude_md_from(archive) == "# the git template's own\n"
+
+
+def test_the_payload_does_not_change_when_the_date_rolls_over(seeded_app, kai_env, monkeypatch):
+    """Byte-stability has to survive midnight, not just a second boundary.
+
+    The rendered prompt goes through the real renderer here, on purpose: the
+    shipped template ends with "generated {{ today }}", so a render that reads
+    the wall clock makes the payload differ across a UTC date rollover. The
+    engine re-fetches on every SDK respawn, so a conversation straddling
+    midnight would rewrite the whole sandbox tree over a date string — the same
+    defect class as the gzip container mtime this builder already pins, and the
+    earlier byte-stability test missed it because it froze `time.time` while
+    stubbing the renderer out.
+    """
+    import datetime as _dt
+
+    import src.claude_md as claude_md_mod
+
+    credential = _claims(_mint_session(seeded_app)["token"])["downstream_credential"]
+    headers = {"Authorization": f"Bearer {credential}"}
+
+    class _FrozenDatetime(_dt.datetime):
+        _fixed = _dt.datetime(2026, 8, 19, 23, 59, 30, tzinfo=_dt.timezone.utc)
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls._fixed if tz is None else cls._fixed.astimezone(tz)
+
+    monkeypatch.setattr(claude_md_mod, "datetime", _FrozenDatetime)
+    before_midnight = seeded_app["client"].get("/api/kai/workspace", headers=headers).content
+
+    _FrozenDatetime._fixed = _dt.datetime(2026, 8, 20, 0, 0, 30, tzinfo=_dt.timezone.utc)
+    after_midnight = seeded_app["client"].get("/api/kai/workspace", headers=headers).content
+
+    assert before_midnight == after_midnight, (
+        "the workspace payload changed across a date rollover — the rendered "
+        "CLAUDE.md must be pinned to the session's clock, not the wall clock"
+    )
+
+
+def test_the_pinned_clock_is_the_sessions_own(monkeypatch):
+    """...and the pin is the session's start, not an arbitrary constant."""
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+
+    import app.api.kai as kai_mod
+    import app.chat.workspace_prompt as wp
+
+    seen = {}
+
+    def _spy(user_email, **kw):
+        seen.update(kw)
+        return "# rendered\n"
+
+    monkeypatch.setattr(wp, "render_sandbox_workspace_prompt", _spy)
+
+    started = datetime(2026, 3, 4, 5, 6, 7, tzinfo=timezone.utc)
+    session = SimpleNamespace(user_email="owner@example.com", is_co_session=False, agent_id=None, started_at=started)
+    assert kai_mod._workspace_prompt_for(session) == "# rendered\n"
+    assert seen["now"] == started
+
+
+def test_a_cancelled_tool_call_does_not_leak_the_upstream_client():
+    """A disconnect mid-connect must still close the client.
+
+    The client is created outside any `async with`, so the except arm around
+    `send()` is the only thing that closes it before the streaming iterator
+    takes ownership. `asyncio.CancelledError` derives from BaseException, so an
+    `except Exception` arm let a cancelled tool call leak the client and its
+    whole connection pool.
+    """
+    import asyncio
+    import inspect
+
+    import app.api.kai as kai_mod
+
+    src = inspect.getsource(kai_mod.kai_mcp)
+    assert "except BaseException:" in src, "cancellation escapes an `except Exception` arm and leaks the client"
+
+    # ...and drive the real route, so this is not just an assertion about text.
+    closed = []
+
+    class _Client:
+        def __init__(self, *a, **kw):
+            pass
+
+        def build_request(self, *a, **kw):
+            return object()
+
+        async def send(self, *a, **kw):
+            raise asyncio.CancelledError()
+
+        async def aclose(self):
+            closed.append(True)
+
+    class _Request:
+        headers = {"content-type": "application/json"}
+
+        async def body(self):
+            return b"{}"
+
+    with (
+        mock.patch.object(kai_mod.httpx, "AsyncClient", _Client),
+        mock.patch.object(kai_mod, "_mint_mcp_access_token", lambda _sid: "tok"),
+        mock.patch.object(kai_mod, "_mcp_internal_base", lambda: "http://mcp.invalid"),
+        mock.patch.object(kai_mod, "_require_scope", lambda *a, **k: None),
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(kai_mod.kai_mcp(request=_Request(), row={"session_id": "s1"}))
+
+    assert closed == [True], "the upstream client was not closed on cancellation"
