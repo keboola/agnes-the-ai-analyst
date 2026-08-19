@@ -217,8 +217,8 @@ Two things this deliberately does *not* do: it never embeds the analyst's token
 in the prompt text (the token is written to `~/.agnes/token` in step 2 and read
 via `--token-file`), and it does not set up data-source connectors. Connectors
 are conversational and come later — an analyst asks Claude Code to "set up Jira"
-in the workspace, or lists what is available with `agnes connector list` /
-`agnes connector show <slug>`.
+in the workspace, or lists what is available with `agnes connectors list` /
+`agnes connectors show <slug>`.
 
 To verify the path end-to-end yourself, run it once on your own machine against
 the fresh instance: the run should end with `agnes diagnose` healthy, and — on a
