@@ -301,12 +301,12 @@ def _preamble_lines(*, has_ca: bool, custom_preamble: str = "") -> list[str]:
         "only reference that file path — never print the token, echo it, or paste",
         "it into this chat.",
         "",
-        "Every step below is idempotent and safe to re-run: a machine that",
-        "already ran this setup converges instead of reinstalling, so treat",
-        '"already configured" outcomes as success. If a step fails with an',
-        "unfamiliar error, paste the exact error back and stop — and for a TLS",
-        "error look for the cause (corporate proxy, internal CA, clock skew)",
-        "rather than lowering certificate verification.",
+        "Every step below is idempotent and safe to re-run: a machine that already",
+        'ran this setup converges instead of reinstalling, so treat "already',
+        'configured" outcomes as success. If a step fails with an unfamiliar error,',
+        "paste the exact error back and stop — and for a TLS error look for the cause",
+        "(corporate proxy, internal CA, clock skew) rather than lowering certificate",
+        "verification.",
     ]
     if has_ca:
         lines.append(
@@ -496,8 +496,8 @@ def _confirm_lines() -> list[str]:
     return [
         "",
         "4) Confirm:",
-        '   Tell me "{instance_brand} workspace is ready" and recap what',
-        "   `agnes onboard` reported:",
+        '   Tell me "{instance_brand} workspace is ready" and recap what `agnes onboard`',
+        "   reported:",
         "   - what it installed versus what was already present",
         "   - the diagnose status it finished on",
         "   - which connectors are available to set up later — nothing to do now,",
