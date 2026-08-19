@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- **`/catalog/semantics` claimed there was no semantic layer when there was one.** Two pages carry the title "Semantic layer": `/catalog/semantics` renders the flat `metric_definitions` + `glossary_terms` projection, and `/semantic-layer` browses the stored Ossie document. Nothing on the former — the more reachable of the two, linked from the Library's Definitions block — pointed at the latter, so an instance whose document declares datasets and relationships but no aggregations rendered "No metrics registered yet. Import a starter pack with…" and read as an empty instance. Zero metrics is the *default* state of an imported document, not a sign the import failed. The page now offers a "Browse the full semantic layer" link in its header and names the document in the metrics empty state beside (not instead of) the import hint. Gated on the same `_can_read_model` tier the browse pages apply — a readable document, never this page's own counts — so a caller with no readable model is not sent to an empty page. `/library`'s footer already gated on exactly this condition with its own inline copy of the check; both surfaces now share one reader (`_has_readable_semantic_model`), since the two disagreeing is how the standalone page came to contradict the Library next door.
+
 ## [0.83.87] - 2026-08-19
 
 ### Fixed
