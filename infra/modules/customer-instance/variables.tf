@@ -661,9 +661,23 @@ variable "kai_agent_env" {
     Optional extras: LLM_MODEL_NAME, HOST_BROKER_MCP_URL (point it at
     $SERVER_URL/api/kai/mcp only when the instance also enables the app-side
     `kai.broker_mcp_enabled` switch), LOG_LEVEL, ...
+
+    Values must be SINGLE-LINE: the map is rendered as KEY=VALUE lines into
+    the engine's env_file, where an embedded line break truncates the value
+    and turns its remainder into a garbage line — the engine then never
+    starts, with only a generic warning in the boot log. Rejected at plan
+    time below.
   EOT
   type        = map(string)
   default     = {}
+
+  validation {
+    condition = alltrue([
+      for k, v in var.kai_agent_env :
+      !strcontains(v, "\n") && !strcontains(k, "\n") && !strcontains(k, "=")
+    ])
+    error_message = "kai_agent_env keys and values must be single-line (and keys must not contain '='): the map becomes KEY=VALUE lines in the engine's env_file, where an embedded newline corrupts the file and the engine silently never starts."
+  }
 }
 
 variable "alert_webhook_url" {
