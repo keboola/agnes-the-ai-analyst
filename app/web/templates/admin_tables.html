@@ -249,6 +249,33 @@
             transform: none;
         }
 
+        /* Real rule with the choice written on it — same shape as .ds-wor on
+           the Data sources page: the thing this form has to make obvious is
+           that Table ID (paste) and Bucket + Source Table are TWO WAYS IN,
+           not a required pair. */
+        .kb-or-divider {
+            display: flex; align-items: center; gap: 12px;
+            margin: 4px 0 16px; font-size: 12px; font-weight: 600;
+            letter-spacing: 0.02em; text-transform: uppercase;
+            color: var(--text-secondary);
+        }
+        .kb-or-divider::before, .kb-or-divider::after {
+            content: ""; flex: 1; height: 1px; background: var(--border);
+        }
+
+        /* A failed register/precheck's 422 detail is pinned back onto the
+           actual input (see _applyFieldErrors) so the operator sees WHICH
+           field is wrong instead of reverse-engineering a server-side name
+           like "name" into "View name". */
+        .form-input.field-invalid, .form-select.field-invalid, .form-textarea.field-invalid {
+            border-color: var(--error);
+        }
+        .field-invalid-hint {
+            font-size: 12px;
+            color: var(--error);
+            margin-top: 4px;
+        }
+
         /* ── Badges ── */
         .badge {
             flex-shrink: 0;
@@ -301,12 +328,17 @@
             font-size: 13px;
         }
 
-        /* ── Notification toast ── */
+        /* ── Notification toast ──
+           z-index 1300: above .ds-drawer / .tbl-more__menu (1200) and the
+           legacy .modal-overlay (1000). At 200 this toast rendered BEHIND
+           every drawer and modal on this page, so a "Loaded N buckets" or
+           a discover/register error fired invisibly while the very panel
+           the operator was looking at stayed on top of it. */
         .toast {
             position: fixed;
             top: 84px;
             right: 24px;
-            z-index: 200;
+            z-index: 1300;
             background: var(--surface);
             border: 1px solid var(--border);
             border-radius: 10px;
@@ -1665,7 +1697,7 @@
                             <label class="form-label" for="bqDataset">
                                 Dataset
                                 <button type="button" class="btn btn-secondary btn-sm"
-                                        onclick="discoverBqDatasets()" style="float:right; margin-top:-3px;">
+                                        onclick="discoverBqDatasets(this)" style="float:right; margin-top:-3px;">
                                     Discover
                                 </button>
                             </label>
@@ -1689,7 +1721,7 @@
                             <label class="form-label" for="bqSourceTable">
                                 Source Table / View
                                 <button type="button" class="btn btn-secondary btn-sm"
-                                        onclick="discoverBqTables()" style="float:right; margin-top:-3px;">
+                                        onclick="discoverBqTables(this)" style="float:right; margin-top:-3px;">
                                     List tables
                                 </button>
                             </label>
@@ -1864,7 +1896,7 @@
                             <label class="form-label" for="editBqDataset">
                                 Dataset
                                 <button type="button" class="btn btn-secondary btn-sm"
-                                        onclick="discoverBqDatasets('editBqDatasetList')"
+                                        onclick="discoverBqDatasets(this, 'editBqDatasetList')"
                                         style="float:right; margin-top:-3px;">
                                     Discover
                                 </button>
@@ -1886,7 +1918,7 @@
                             <label class="form-label" for="editBqSourceTable">
                                 Source Table / View
                                 <button type="button" class="btn btn-secondary btn-sm"
-                                        onclick="discoverBqTables('editBqDataset', 'editBqTableList')"
+                                        onclick="discoverBqTables(this, 'editBqDataset', 'editBqTableList')"
                                         style="float:right; margin-top:-3px;">
                                     List tables
                                 </button>
@@ -2076,13 +2108,15 @@
                         <div class="form-group kb-source-table">
                             <label class="form-label" for="kbTableIdPaste">
                                 Table ID
-                                <span style="font-weight:400; color:var(--text-secondary); font-size:12px;">(paste here, or fill Bucket + Source Table below)</span>
+                                <span style="font-weight:400; color:var(--text-secondary); font-size:12px;">(paste here — fastest way in)</span>
                             </label>
                             <input type="text" class="form-input" id="kbTableIdPaste"
                                    placeholder="e.g. out.c-crm-tr-RdC3aX4M.account"
                                    autocomplete="off">
-                            <div class="form-hint">Split on the last <code>.</code> into Bucket + Source Table.</div>
+                            <div class="form-hint">Split on the last <code>.</code> into Bucket + Source Table below — paste here <strong>or</strong> fill those two fields directly, not both.</div>
                         </div>
+
+                        <div class="kb-or-divider kb-source-table"><span>or fill in directly</span></div>
 
                         {# Discover/List tables backend routes by instance's data_source.type, ignoring
                            the `source` query param — on a non-Keboola instance it would return
@@ -2094,7 +2128,7 @@
                             <label class="form-label" for="kbBucket">
                                 Bucket
                                 <button type="button" class="btn btn-secondary btn-sm"
-                                        {% if 'keboola' in (connected_sources or []) %}onclick="discoverKeboolaBuckets('kbBucketList')"{% else %}disabled data-tooltip="Keboola not connected — connect a project in Data sources"{% endif %}
+                                        {% if 'keboola' in (connected_sources or []) %}onclick="discoverKeboolaBuckets(this, 'kbBucketList')"{% else %}disabled data-tooltip="Keboola not connected — connect a project in Data sources"{% endif %}
                                         style="float:right; margin-top:-3px;">Discover</button>
                             </label>
                             <input type="text" class="form-input" id="kbBucket"
@@ -2105,7 +2139,7 @@
                             <label class="form-label" for="kbSourceTable">
                                 Source Table
                                 <button type="button" class="btn btn-secondary btn-sm"
-                                        {% if 'keboola' in (connected_sources or []) %}onclick="discoverKeboolaTables('kbBucket', 'kbTableList')"{% else %}disabled data-tooltip="Keboola not connected — connect a project in Data sources"{% endif %}
+                                        {% if 'keboola' in (connected_sources or []) %}onclick="discoverKeboolaTables(this, 'kbBucket', 'kbTableList')"{% else %}disabled data-tooltip="Keboola not connected — connect a project in Data sources"{% endif %}
                                         style="float:right; margin-top:-3px;">List tables</button>
                             </label>
                             <input type="text" class="form-input" id="kbSourceTable"
@@ -2644,7 +2678,7 @@
                             <label class="form-label" for="editKbBucket">
                                 Bucket
                                 <button type="button" class="btn btn-secondary btn-sm"
-                                        {% if 'keboola' in (connected_sources or []) %}onclick="discoverKeboolaBuckets('editKbBucketList')"{% else %}disabled data-tooltip="Keboola not connected — connect a project in Data sources"{% endif %}
+                                        {% if 'keboola' in (connected_sources or []) %}onclick="discoverKeboolaBuckets(this, 'editKbBucketList')"{% else %}disabled data-tooltip="Keboola not connected — connect a project in Data sources"{% endif %}
                                         style="float:right; margin-top:-3px;">Discover</button>
                             </label>
                             <input type="text" class="form-input" id="editKbBucket"
@@ -2655,7 +2689,7 @@
                             <label class="form-label" for="editKbSourceTable">
                                 Source Table
                                 <button type="button" class="btn btn-secondary btn-sm"
-                                        {% if 'keboola' in (connected_sources or []) %}onclick="discoverKeboolaTables('editKbBucket', 'editKbTableList')"{% else %}disabled data-tooltip="Keboola not connected — connect a project in Data sources"{% endif %}
+                                        {% if 'keboola' in (connected_sources or []) %}onclick="discoverKeboolaTables(this, 'editKbBucket', 'editKbTableList')"{% else %}disabled data-tooltip="Keboola not connected — connect a project in Data sources"{% endif %}
                                         style="float:right; margin-top:-3px;">List tables</button>
                             </label>
                             <input type="text" class="form-input" id="editKbSourceTable"
@@ -4592,6 +4626,7 @@
         // tolerate either an empty call or a {bucket, source_table, ...}
         // shape from a hypothetical future prefill.
         table = table || {};
+        _clearAllFieldErrors(document.getElementById('registerBqModal'));
         document.getElementById('bqDataset').value = table.bucket || '';
         document.getElementById('bqSourceTable').value = table.source_table || table.name || '';
         document.getElementById('bqViewName').value = table.name || '';
@@ -4623,6 +4658,7 @@
         // (Q2='whole'); the kb-source-table fields are visible.
         var modal = document.getElementById('registerKeboolaModal');
         if (!modal) return;
+        _clearAllFieldErrors(modal);
         var radio = modal.querySelector('input[name="kbSyncMode"][value="whole"]');
         if (radio) radio.checked = true;
         ['kbViewName', 'kbBucket', 'kbSourceTable', 'kbSourceQuery',
@@ -4674,6 +4710,7 @@
         table = table || {};
         var modal = document.getElementById('registerSnowflakeModal');
         if (!modal) return;
+        _clearAllFieldErrors(modal);
         var accessRadio = modal.querySelector('input[name="sfAccessMode"][value="live"]');
         if (accessRadio) accessRadio.checked = true;
         var syncRadio = modal.querySelector('input[name="sfSyncMode"][value="whole"]');
@@ -4835,6 +4872,20 @@
         // default connection for this source_type" (unchanged behaviour).
         var connectionId = _kbSelectedConnectionId('kb');
 
+        // Catch the two most common misses in the form itself, before a
+        // round trip to the server — Discover/List tables populate these,
+        // but the operator can still submit with either one left blank.
+        if (mode !== 'custom') {
+            var bucketEl = document.getElementById('kbBucket');
+            var sourceTableEl = document.getElementById('kbSourceTable');
+            if (!bucket) _setFieldError(bucketEl, 'Bucket is required.');
+            if (!sourceTable) _setFieldError(sourceTableEl, 'Source table is required.');
+            if (!bucket || !sourceTable) {
+                (bucket ? sourceTableEl : bucketEl).scrollIntoView({ block: 'center', behavior: 'smooth' });
+                throw new Error('Bucket and Source Table are required.');
+            }
+        }
+
         if (mode === 'direct') {
             var strategy = _getKbStrategy();
             var payload = {
@@ -4880,9 +4931,14 @@
         };
 
         if (mode === 'custom') {
-            return Object.assign({}, common, {
-                source_query: (document.getElementById('kbSourceQuery').value || '').trim(),
-            });
+            var sourceQueryEl = document.getElementById('kbSourceQuery');
+            var sourceQuery = (sourceQueryEl.value || '').trim();
+            if (!sourceQuery) {
+                _setFieldError(sourceQueryEl, 'SQL is required for a custom SQL registration.');
+                sourceQueryEl.scrollIntoView({ block: 'center', behavior: 'smooth' });
+                throw new Error('SQL is required for a custom SQL registration.');
+            }
+            return Object.assign({}, common, { source_query: sourceQuery });
         }
         // Whole — synthesize SELECT * FROM kbc."bucket"."table".
         return Object.assign({}, common, {
@@ -4929,6 +4985,15 @@
         }
     }
 
+    // payloadKey -> the visible input it came from, so a 422 on this form
+    // lights up the actual box instead of naming a JSON key the operator
+    // never sees.
+    var KB_REGISTER_FIELD_MAP = {
+        name: 'kbViewName', bucket: 'kbBucket', source_table: 'kbSourceTable',
+        source_query: 'kbSourceQuery', sync_schedule: 'kbSyncSchedule',
+        primary_key: 'kbPrimaryKey', folder: 'kbFolder', description: 'kbDescription',
+    };
+
     function registerKeboolaTable() {
         var btn = document.getElementById('registerKeboolaSubmitBtn');
         btn.disabled = true;
@@ -4953,7 +5018,8 @@
             .then(function(r) {
                 if (!r.ok) {
                     return r.json().then(function(d) {
-                        throw new Error(d.detail || d.error || 'Registration failed');
+                        _applyFieldErrors(d && d.detail, KB_REGISTER_FIELD_MAP);
+                        throw new Error(_apiErrorMessage(d, 'Registration failed'));
                     });
                 }
                 return r.json();
@@ -5038,6 +5104,96 @@
         group.style.display = '';
     }
 
+    // Normalizes a failed-fetch response body into one readable string.
+    // FastAPI's automatic 422 validation errors put `detail` as an ARRAY of
+    // {loc, msg, type} objects — passing that straight to `new Error()` (or
+    // string-concatenating it) renders as "[object Object]" instead of the
+    // actual reason, which is exactly what an admin needs to fix a bad
+    // register-table payload. Also unwraps the {error, kind, details} shape
+    // BqAccess raises for config/auth failures. Deliberately OUTSIDE the
+    // Keboola-only guard below: BigQuery/Databricks/Snowflake register and
+    // edit-save call this on every instance, Keboola-connected or not.
+    function _apiErrorMessage(d, fallback) {
+        var detail = d && d.detail;
+        if (typeof detail === 'string' && detail) return detail;
+        if (Array.isArray(detail) && detail.length) {
+            return detail.map(function(e) {
+                if (e && typeof e === 'object') {
+                    var loc = Array.isArray(e.loc) ? e.loc.filter(function(p) { return p !== 'body'; }).join('.') : '';
+                    return (loc ? loc + ': ' : '') + (e.msg || JSON.stringify(e));
+                }
+                return String(e);
+            }).join('; ');
+        }
+        if (detail && typeof detail === 'object') {
+            return detail.error || detail.message || detail.msg || JSON.stringify(detail);
+        }
+        return (d && d.error) || (d && d.message) || fallback;
+    }
+
+    // Pins a validation error onto the actual input — red border + an
+    // inline message right under it — instead of leaving the operator to
+    // map a toast's field name back to a label by eye. Self-clears on the
+    // field's next edit. Also outside the guard — used by every connector's
+    // register form, not just Keboola's.
+    function _clearFieldError(el) {
+        if (!el) return;
+        el.classList.remove('field-invalid');
+        if (el._fieldErrorHint) { el._fieldErrorHint.remove(); el._fieldErrorHint = null; }
+    }
+
+    function _setFieldError(el, message) {
+        if (!el) return;
+        _clearFieldError(el);
+        el.classList.add('field-invalid');
+        var hint = document.createElement('div');
+        hint.className = 'field-invalid-hint';
+        hint.textContent = message;
+        el.insertAdjacentElement('afterend', hint);
+        el._fieldErrorHint = hint;
+        el.addEventListener('input', function clear() {
+            _clearFieldError(el);
+            el.removeEventListener('input', clear);
+        });
+    }
+
+    // A register modal's open/reset routine blanks inputs by setting
+    // `.value` directly, which never fires the `input` event `_setFieldError`
+    // listens for — so a previous failed attempt's red borders/messages
+    // would otherwise still be sitting on a freshly reopened, empty form.
+    // Call this once from each modal's open function.
+    function _clearAllFieldErrors(container) {
+        (container || document).querySelectorAll('.field-invalid').forEach(_clearFieldError);
+    }
+
+    // Maps a failed register/precheck's FastAPI 422 `detail` array (each
+    // {loc, msg, type}) back onto the form via `fieldMap` ({payloadKey:
+    // inputElementId}), so e.g. detail [{loc:["body","name"],msg:"Field
+    // required"}] marks the visible "View name" input instead of the
+    // toast just saying "name: Field required" and leaving the operator to
+    // guess which box that is. Always clears prior marks first — a fixed
+    // field must not still look broken on the next attempt. Returns the
+    // first marked element (for scrolling into view) or null when `detail`
+    // isn't a validation-error array (a plain-string business error, e.g.
+    // "already registered", has no single field to blame).
+    function _applyFieldErrors(detail, fieldMap) {
+        Object.keys(fieldMap).forEach(function(k) {
+            _clearFieldError(document.getElementById(fieldMap[k]));
+        });
+        if (!Array.isArray(detail)) return null;
+        var firstEl = null;
+        detail.forEach(function(e) {
+            if (!e || typeof e !== 'object' || !Array.isArray(e.loc)) return;
+            var key = e.loc[e.loc.length - 1];
+            var el = fieldMap[key] && document.getElementById(fieldMap[key]);
+            if (!el) return;
+            _setFieldError(el, e.msg || 'Invalid value');
+            if (!firstEl) firstEl = el;
+        });
+        if (firstEl) firstEl.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        return firstEl;
+    }
+
     // Emitted whenever Keboola is reachable by EITHER route — gating this
     // whole block on the legacy scalar alone meant a registry-connected,
     // non-keboola-typed instance never got these functions defined at all
@@ -5084,8 +5240,7 @@
     // one project the two were the same sentence; with several, "no token
     // available" is meaningless without saying for whom.
     function _kbErrorMessage(detail, connId) {
-        var msg = (detail && (detail.detail || detail.error)) || 'Keboola discovery failed';
-        if (msg && typeof msg === 'object') msg = JSON.stringify(msg);
+        var msg = _apiErrorMessage(detail, 'Keboola discovery failed');
         if (!connId) return msg;
         var select = document.getElementById('kbProjectSelect') || document.getElementById('editKbProjectSelect');
         var opt = select ? select.querySelector('option[value="' + connId + '"]') : null;
@@ -5093,7 +5248,9 @@
         return 'Project "' + label + '": ' + msg;
     }
 
-    function discoverKeboolaBuckets(datalistId) {
+    function discoverKeboolaBuckets(btn, datalistId) {
+        var origText = btn ? btn.textContent : null;
+        if (btn) { btn.disabled = true; btn.textContent = 'Discovering...'; }
         var prefix = datalistId.indexOf('editKb') === 0 ? 'editKb' : 'kb';
         var connId = _kbSelectedConnectionId(prefix);
         var url = connId
@@ -5133,16 +5290,21 @@
             })
             .catch(function(err) {
                 showToast('' + err.message, 'error');
+            })
+            .finally(function() {
+                if (btn) { btn.disabled = false; btn.textContent = origText; }
             });
     }
 
-    function discoverKeboolaTables(bucketInputId, tablesDatalistId) {
+    function discoverKeboolaTables(btn, bucketInputId, tablesDatalistId) {
         var bucketEl = document.getElementById(bucketInputId);
         var bucket = bucketEl ? (bucketEl.value || '').trim() : '';
         if (!bucket) {
             showToast('Fill bucket first', 'error');
             return;
         }
+        var origText = btn ? btn.textContent : null;
+        if (btn) { btn.disabled = true; btn.textContent = 'Listing...'; }
         var prefix = tablesDatalistId.indexOf('editKb') === 0 ? 'editKb' : 'kb';
         var connId = _kbSelectedConnectionId(prefix);
         var url = connId
@@ -5177,6 +5339,9 @@
             })
             .catch(function(err) {
                 showToast('' + err.message, 'error');
+            })
+            .finally(function() {
+                if (btn) { btn.disabled = false; btn.textContent = origText; }
             });
     }
     {% endif %}{# 'keboola' in (connected_sources or []) — discover helpers #}
@@ -5439,7 +5604,7 @@
                 });
                 if (!r.ok) {
                     var d = await r.json().catch(function() { return {}; });
-                    throw new Error(d.detail || d.error || 'Update failed');
+                    throw new Error(_apiErrorMessage(d, 'Update failed'));
                 }
                 // Diff Data Package chip selection vs original.
                 var kbFails = await _diffApplyPackageMembership(
@@ -5525,11 +5690,20 @@
         var serverOnly = !!(bqServerOnlyEl && bqServerOnlyEl.checked);
 
         if (accessMode === 'synced' && syncMode === 'custom') {
+            var bqSourceQueryEl = document.getElementById('bqSourceQuery');
+            var bqSourceQuery = bqSourceQueryEl.value.trim();
+            var bqViewNameEl = document.getElementById('bqViewName');
+            if (!viewName) _setFieldError(bqViewNameEl, 'View name is required.');
+            if (!bqSourceQuery) _setFieldError(bqSourceQueryEl, 'SQL is required for a custom SQL registration.');
+            if (!viewName || !bqSourceQuery) {
+                (viewName ? bqSourceQueryEl : bqViewNameEl).scrollIntoView({ block: 'center', behavior: 'smooth' });
+                throw new Error('View name and SQL are required for a custom SQL registration.');
+            }
             return {
                 name: viewName,
                 source_type: 'bigquery',
                 query_mode: 'materialized',
-                source_query: document.getElementById('bqSourceQuery').value.trim(),
+                source_query: bqSourceQuery,
                 profile_after_sync: false,
                 server_only: serverOnly,
                 description: description,
@@ -5538,8 +5712,16 @@
             };
         }
 
-        var dataset = document.getElementById('bqDataset').value.trim();
-        var sourceTable = document.getElementById('bqSourceTable').value.trim();
+        var bqDatasetEl = document.getElementById('bqDataset');
+        var bqSourceTableEl = document.getElementById('bqSourceTable');
+        var dataset = bqDatasetEl.value.trim();
+        var sourceTable = bqSourceTableEl.value.trim();
+        if (!dataset) _setFieldError(bqDatasetEl, 'Dataset is required.');
+        if (!sourceTable) _setFieldError(bqSourceTableEl, 'Source Table / View is required.');
+        if (!dataset || !sourceTable) {
+            (dataset ? bqSourceTableEl : bqDatasetEl).scrollIntoView({ block: 'center', behavior: 'smooth' });
+            throw new Error('Dataset and Source Table are required.');
+        }
         // Optional cross-project override. Blank keeps the legacy path
         // (configured project + bucket + source_table); filled in sends an
         // explicit `bq_fqn`, which the extractor, the --remote rewriter and
@@ -5645,6 +5827,7 @@
         table = table || {};
         var modal = document.getElementById('registerDatabricksModal');
         if (!modal) return;
+        _clearAllFieldErrors(modal);
         // Default to synced/whole.
         var syncedRadio = modal.querySelector('input[name="dbxAccessMode"][value="synced"]');
         if (syncedRadio) syncedRadio.checked = true;
@@ -5716,12 +5899,13 @@
 
         if (accessMode === 'synced' && loadMode === 'custom') {
             var customName = viewName;
-            if (!customName) {
-                throw new Error('View name is required for a custom SQL registration.');
-            }
-            var customSql = (document.getElementById('dbxSourceQuery').value || '').trim();
-            if (!customSql) {
-                throw new Error('SQL is required for a custom SQL registration.');
+            var dbxSourceQueryEl = document.getElementById('dbxSourceQuery');
+            var customSql = (dbxSourceQueryEl.value || '').trim();
+            if (!customName) _setFieldError(document.getElementById('dbxViewName'), 'View name is required for a custom SQL registration.');
+            if (!customSql) _setFieldError(dbxSourceQueryEl, 'SQL is required for a custom SQL registration.');
+            if (!customName || !customSql) {
+                (customName ? dbxSourceQueryEl : document.getElementById('dbxViewName')).scrollIntoView({ block: 'center', behavior: 'smooth' });
+                throw new Error('View name and SQL are required for a custom SQL registration.');
             }
             return {
                 name: customName,
@@ -5734,6 +5918,14 @@
                 folder: folder,
                 sync_schedule: syncSchedule,
             };
+        }
+        var dbxBucketEl = document.getElementById('dbxBucket');
+        var dbxSourceTableEl = document.getElementById('dbxSourceTable');
+        if (!bucket) _setFieldError(dbxBucketEl, 'Bucket is required.');
+        if (!sourceTable) _setFieldError(dbxSourceTableEl, 'Source table is required.');
+        if (!bucket || !sourceTable) {
+            (bucket ? dbxSourceTableEl : dbxBucketEl).scrollIntoView({ block: 'center', behavior: 'smooth' });
+            throw new Error('Bucket and Source Table are required.');
         }
         if (accessMode === 'synced' && loadMode === 'whole') {
             return {
@@ -5763,6 +5955,12 @@
         };
     }
 
+    var DBX_REGISTER_FIELD_MAP = {
+        name: 'dbxViewName', bucket: 'dbxBucket', source_table: 'dbxSourceTable',
+        source_query: 'dbxSourceQuery', sync_schedule: 'dbxSyncSchedule',
+        folder: 'dbxFolder', description: 'dbxDescription',
+    };
+
     function registerDatabricksTable() {
         var btn = document.getElementById('registerDatabricksSubmitBtn');
         btn.disabled = true;
@@ -5784,7 +5982,8 @@
         .then(function(r) {
             if (!r.ok) {
                 return r.json().then(function(d) {
-                    throw new Error(d.detail || d.error || 'Registration failed');
+                    _applyFieldErrors(d && d.detail, DBX_REGISTER_FIELD_MAP);
+                    throw new Error(_apiErrorMessage(d, 'Registration failed'));
                 });
             }
             return r.json();
@@ -5829,21 +6028,38 @@
         var syncSchedule = document.getElementById('sfSyncSchedule').value.trim() || null;
         var serverOnlyEl = document.getElementById('sfServerOnly');
         var serverOnly = !!(serverOnlyEl && serverOnlyEl.checked);
-        var schema = document.getElementById('sfSchema').value.trim();
-        var sourceTable = document.getElementById('sfSourceTable').value.trim();
+        var sfSchemaEl = document.getElementById('sfSchema');
+        var sfSourceTableEl = document.getElementById('sfSourceTable');
+        var schema = sfSchemaEl.value.trim();
+        var sourceTable = sfSourceTableEl.value.trim();
 
         if (accessMode === 'synced' && syncMode === 'custom') {
+            var sfSourceQueryEl = document.getElementById('sfSourceQuery');
+            var sfSourceQuery = sfSourceQueryEl.value.trim();
+            var sfViewNameEl = document.getElementById('sfViewName');
+            if (!viewName) _setFieldError(sfViewNameEl, 'View name is required.');
+            if (!sfSourceQuery) _setFieldError(sfSourceQueryEl, 'SQL is required for a custom SQL registration.');
+            if (!viewName || !sfSourceQuery) {
+                (viewName ? sfSourceQueryEl : sfViewNameEl).scrollIntoView({ block: 'center', behavior: 'smooth' });
+                throw new Error('View name and SQL are required for a custom SQL registration.');
+            }
             return {
                 name: viewName,
                 source_type: 'snowflake',
                 query_mode: 'materialized',
-                source_query: document.getElementById('sfSourceQuery').value.trim(),
+                source_query: sfSourceQuery,
                 profile_after_sync: false,
                 server_only: serverOnly,
                 description: description,
                 folder: folder,
                 sync_schedule: syncSchedule,
             };
+        }
+        if (!schema) _setFieldError(sfSchemaEl, 'Schema is required.');
+        if (!sourceTable) _setFieldError(sfSourceTableEl, 'Source Table / View is required.');
+        if (!schema || !sourceTable) {
+            (schema ? sfSourceTableEl : sfSchemaEl).scrollIntoView({ block: 'center', behavior: 'smooth' });
+            throw new Error('Schema and Source Table are required.');
         }
         if (accessMode === 'synced' && syncMode === 'whole') {
             return {
@@ -5925,18 +6141,19 @@
     // autocomplete populates the right datalist and reads from the right
     // dataset input.
 
-    function discoverBqDatasets(datalistId) {
+    function discoverBqDatasets(btn, datalistId) {
         // GET /api/admin/discover-tables (no `dataset`) → list datasets in
         // the configured BQ project. Populate the named <datalist> so the
         // dataset input shows them as autocomplete suggestions. Endpoint
         // routes through BqAccess so config / auth errors come back as the
-        // standard {error, kind, details} shape.
+        // standard {error, kind, details} shape — _apiErrorMessage unwraps it.
         var dlId = datalistId || 'bqDatasetList';
+        var origText = btn ? btn.textContent : null;
+        if (btn) { btn.disabled = true; btn.textContent = 'Discovering...'; }
         fetch('/api/admin/discover-tables')
             .then(function(r) {
                 if (!r.ok) return r.json().then(function(d) {
-                    var msg = (d && d.detail && d.detail.error) || (d && d.detail) || 'BQ discovery failed';
-                    throw new Error(msg);
+                    throw new Error(_apiErrorMessage(d, 'BQ discovery failed'));
                 });
                 return r.json();
             })
@@ -5953,10 +6170,13 @@
             })
             .catch(function(err) {
                 showToast(err.message || 'Discovery failed', 'error');
+            })
+            .finally(function() {
+                if (btn) { btn.disabled = false; btn.textContent = origText; }
             });
     }
 
-    function discoverBqTables(datasetInputId, tablesDatalistId) {
+    function discoverBqTables(btn, datasetInputId, tablesDatalistId) {
         // GET /api/admin/discover-tables?dataset=NAME → list tables + views
         // in the dataset. Two-step (dataset → tables) avoids paying the
         // per-dataset list_tables() cost up front on big projects.
@@ -5967,11 +6187,12 @@
             showToast('Fill Dataset first', 'error');
             return;
         }
+        var origText = btn ? btn.textContent : null;
+        if (btn) { btn.disabled = true; btn.textContent = 'Listing...'; }
         fetch('/api/admin/discover-tables?dataset=' + encodeURIComponent(dataset))
             .then(function(r) {
                 if (!r.ok) return r.json().then(function(d) {
-                    var msg = (d && d.detail && d.detail.error) || (d && d.detail) || 'BQ table discovery failed';
-                    throw new Error(msg);
+                    throw new Error(_apiErrorMessage(d, 'BQ table discovery failed'));
                 });
                 return r.json();
             })
@@ -5991,6 +6212,9 @@
             })
             .catch(function(err) {
                 showToast(err.message || 'Table list failed', 'error');
+            })
+            .finally(function() {
+                if (btn) { btn.disabled = false; btn.textContent = origText; }
             });
     }
 
@@ -6041,7 +6265,15 @@
         // got to review the summary before the row was committed (review
         // IMPORTANT 4 in #119).
         btn.textContent = 'Checking source...';
-        var payload = _buildBigQueryPayload();
+        var payload;
+        try {
+            payload = _buildBigQueryPayload();
+        } catch (e) {
+            showToast('' + e.message, 'error');
+            btn.disabled = false;
+            btn.textContent = 'Register Table';
+            return;
+        }
         var summary = document.getElementById('bqPrecheckSummary');
         var summaryText = document.getElementById('bqPrecheckSummaryText');
 
@@ -6051,7 +6283,7 @@
             body: JSON.stringify(payload)
         })
         .then(function(r) {
-            if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || 'Precheck failed'); });
+            if (!r.ok) return r.json().then(function(d) { throw new Error(_apiErrorMessage(d, 'Precheck failed')); });
             return r.json();
         })
         .then(function(data) {
@@ -6080,6 +6312,12 @@
         });
     }
 
+    var BQ_REGISTER_FIELD_MAP = {
+        name: 'bqViewName', bucket: 'bqDataset', source_table: 'bqSourceTable',
+        source_query: 'bqSourceQuery', sync_schedule: 'bqSyncSchedule',
+        folder: 'bqFolder', description: 'bqDescription',
+    };
+
     function _confirmRegisterBigQueryTable(btn, payload) {
         // Step 2 of the two-step BQ flow: actually POST /register-table.
         // Reached only after the operator has reviewed the precheck
@@ -6100,7 +6338,8 @@
             // missing bigquery.metadata.get).
             return r.json().then(function(d) {
                 if (!r.ok) {
-                    var msg = d.detail || d.message || 'Registration failed';
+                    _applyFieldErrors(d && d.detail, BQ_REGISTER_FIELD_MAP);
+                    var msg = _apiErrorMessage(d, 'Registration failed');
                     if (d.errors && d.errors.length) {
                         msg += ' (' + d.errors.length + ' error' + (d.errors.length > 1 ? 's' : '') + ')';
                     }
@@ -6145,7 +6384,15 @@
 
     function _registerSnowflakeTable(btn) {
         btn.textContent = 'Checking source...';
-        var payload = _buildSnowflakePayload();
+        var payload;
+        try {
+            payload = _buildSnowflakePayload();
+        } catch (e) {
+            showToast('' + e.message, 'error');
+            btn.disabled = false;
+            btn.textContent = 'Register Table';
+            return;
+        }
         var summary = document.getElementById('sfPrecheckSummary');
         var summaryText = document.getElementById('sfPrecheckSummaryText');
 
@@ -6155,7 +6402,7 @@
             body: JSON.stringify(payload)
         })
         .then(function(r) {
-            if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || 'Precheck failed'); });
+            if (!r.ok) return r.json().then(function(d) { throw new Error(_apiErrorMessage(d, 'Precheck failed')); });
             return r.json();
         })
         .then(function(data) {
@@ -6175,6 +6422,12 @@
         });
     }
 
+    var SF_REGISTER_FIELD_MAP = {
+        name: 'sfViewName', bucket: 'sfSchema', source_table: 'sfSourceTable',
+        source_query: 'sfSourceQuery', sync_schedule: 'sfSyncSchedule',
+        folder: 'sfFolder', description: 'sfDescription',
+    };
+
     function _confirmRegisterSnowflakeTable(btn, payload) {
         btn.disabled = true;
         btn.textContent = 'Registering...';
@@ -6186,7 +6439,8 @@
         .then(function(r) {
             return r.json().then(function(d) {
                 if (!r.ok) {
-                    var msg = d.detail || d.message || 'Registration failed';
+                    _applyFieldErrors(d && d.detail, SF_REGISTER_FIELD_MAP);
+                    var msg = _apiErrorMessage(d, 'Registration failed');
                     if (d.errors && d.errors.length) {
                         msg += ' (' + d.errors.length + ' error' + (d.errors.length > 1 ? 's' : '') + ')';
                     }
@@ -6594,7 +6848,7 @@
             });
             if (!r.ok) {
                 var d = await r.json().catch(function() { return {}; });
-                throw new Error(d.detail || d.error || 'Update failed');
+                throw new Error(_apiErrorMessage(d, 'Update failed'));
             }
 
             // Diff chip selection vs original — emit minimal POST/DELETE
@@ -6722,7 +6976,7 @@
                 });
                 if (!r.ok) {
                     var d = await r.json().catch(function() { return {}; });
-                    throw new Error(d.detail || d.error || 'Update failed');
+                    throw new Error(_apiErrorMessage(d, 'Update failed'));
                 }
                 // Diff Data Package chip selection vs original.
                 var bqFails = await _diffApplyPackageMembership(

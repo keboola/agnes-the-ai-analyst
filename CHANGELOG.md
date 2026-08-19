@@ -10,14 +10,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- **Discover/List tables on the Register-table drawer gave no sign of life, and its toasts rendered invisibly.** The Keboola Discover/List-tables buttons and the BigQuery Discover/List-tables buttons fired their fetch with no loading state — a slow or hung request looked identical to a dead button. They now disable and relabel ("Discovering…" / "Listing…") for the duration of the call. Separately, the result/error toast (`.toast`, z-index 200) rendered *behind* the register drawer and every other modal on the page (`.ds-drawer` / legacy `.modal-overlay`, z-index 1200 / 1000) — so a "Loaded N buckets" success or a discovery/registration error fired while completely hidden behind the very panel the operator was looking at. Toast z-index raised above both.
+- **A failed register/precheck/update showed the literal text "[object Object]", and even readable errors left the operator guessing which box to fix.** FastAPI's automatic 422 validation errors return `detail` as an array of `{loc, msg, type}` objects; several register-table, precheck, and edit-save error handlers coerced that straight into a string. A shared `_apiErrorMessage()` helper now unwraps validation-error arrays into a readable `field: message` list (and the `{error, kind, details}` shape BigQuery's connectivity checks raise) across the Keboola/BigQuery/Databricks/Snowflake register, precheck, and edit-save paths. On top of the toast, a companion `_applyFieldErrors()` now pins each returned validation error onto the actual input (red border + inline message) via a per-form field map, and the register forms also validate the obvious required combinations (Bucket + Source Table, or the custom-SQL View name + SQL) client-side before the request ever goes out.
+- **The Keboola register drawer didn't make clear that pasting a Table ID and filling Bucket + Source Table are alternatives, not both required.** Added a visual "or fill in directly" divider between them, matching the pattern already used on `/admin/data-sources`.
+
 ## [0.83.84] - 2026-08-19
 
 ### Added
 
 - **A Slack channel can now be bound to an agent profile.** A new `agent_scope` item type, `('slack_channel', <channel_id>)` — written through the existing `PUT /api/v1/agents/{id}/scope` or `agnes agent scope set --slack-channel <id>` — routes the channel's @mentions to that agent: the routed session is created AS THE AGENT'S OWNER end to end — persona, sandbox workspace and rails, live-enforced scope, and budget attribution all resolve from the owner, exactly like the agent's API runs, never from the mentioning user (Slack sessions were previously always agent-less); any gated channel member can continue a routed thread, each turn carries the mentioner as sender attribution, the first turn is prefixed with a `[slack context: channel=… thread_ts=… message_ts=… sender=…]` header so an agent granted Slack tools can operate on the right thread, and the mention gets an instant 👀 acknowledgement reaction (the bot manifest gains the `reactions:write` scope — see `docs/slack-manifest-*.md`). One agent per channel, enforced at scope-write time (`409 slack_channel_taken`); a channel with no binding behaves exactly as before. Bindings are routing only — they grant the agent no plugin/table/connection reach.
 - **Mutating MCP passthrough tools are now grantable instead of admin-only.** `tool_grants` gains `allow_mutating` (schema v121, default FALSE): a group whose grant carries the flag may invoke that specific `mutating=TRUE` tool — `POST /api/admin/mcp-tools/{tool_id}/grants` accepts `allow_mutating` (tri-state: an explicit value updates an existing grant's flag in place; omitting it leaves the flag unchanged, so routine re-granting flows — Keboola sign-in provisioning, connection-rollback restore — can never silently reset an admin's opt-in), and a new CLI mirror `agnes admin mcp tool grant <tool_id> --group <g> [--allow-mutating|--no-allow-mutating]` covers the per-tool grant endpoint that previously had none. Agent profiles ride their owner's groups with the admin short-circuit still stripped, so a scoped agent can finally hold a write-capable tool (create a CMS draft, post a message) bounded to exactly the tools its owner's groups were opted into and the MCP sources in its connection scope. Every existing grant stays read-only until an admin opts it in; the source-wide bulk grant remains deliberately read-only. Worked end-to-end example: `docs/agent-recipes/announcement-drafting-agent.md`.
-
-
 
 ## [0.83.83] - 2026-08-19
 
@@ -44,7 +48,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 - `ticket_repo().revoke_session_scopes(session_id, scopes)` (both backends) revokes a session's tickets in the named scopes only. The existing `revoke_session` is scope-blind, which is wrong for a caller holding a long-lived credential in one scope while rotating short-lived egress tickets in others: sweeping the whole session would delete the credential the caller just authenticated with, and the embedded engine has no way to be handed a replacement — its ticket-response schema is `{llm, mcp}` and it keeps using the credential baked into its session JWT, so a scope-blind revoke would `401` every turn after the first. An empty scope list deletes nothing rather than degrading to "match everything". Its counterpart: `revoke_session` — the scope-blind sweep every sandbox-lifecycle caller uses — now spares the scopes in `SWEEP_EXEMPT_SCOPES`, because the engine's chat row is an ordinary `chat_sessions` row and a user opening that conversation in web chat spawned a native runner whose sweep deleted the engine's credential outright, killing the session permanently with no channel to hand it a replacement. Exempt from the sweep, not from revocation: `revoke` and `revoke_session_scopes` still delete those rows when asked, and every such ticket carries a TTL — and a credential is refused outright once its chat row is gone, so a user deleting the conversation cuts the engine off immediately instead of at expiry.
 
-
 ## [0.83.82] - 2026-08-19
 
 ### Fixed
@@ -70,7 +73,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - `CLAUDE.md` project structure: drop the `server/` entry (the directory does
   not exist) and add the `infra/` tree, so the Terraform module that provisions
   a customer instance is discoverable from the project map.
-
 
 ## [0.83.81] - 2026-08-19
 
