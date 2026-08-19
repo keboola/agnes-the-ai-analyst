@@ -125,10 +125,43 @@ def test_tpl_engine_failure_cannot_gate_the_machine():
 def test_tpl_engine_requires_public_origin():
     body = TPL.read_text()
     # An enabled engine on a VM whose SERVER_URL could not be resolved must
-    # fail the boot loudly, not configure HOST_BROKER_LLM_URL as the
-    # meaningless "/api/broker/anthropic".
-    guard = body.index("ERROR: kai_agent_enabled requires a resolvable public origin")
-    assert guard < body.index("HOST_BROKER_LLM_URL=$SERVER_URL/api/broker/anthropic")
+    # neither configure HOST_BROKER_LLM_URL as the meaningless
+    # "/api/broker/anthropic" NOR abort the boot (SERVER_URL emptiness can be
+    # a transient metadata blip, and the engine must never turn a degraded
+    # add-on into an unprovisioned machine): the engine materialization is
+    # SKIPPED for that boot with a loud warning, and the guard opens before
+    # the URL is used.
+    guard = body.index("WARN: kai-agent engine SKIPPED this boot")
+    gate = body.index('if [ "$KAI_AGENT_MATERIALIZE" = "1" ]; then')
+    url_use = body.index("HOST_BROKER_LLM_URL=$SERVER_URL/api/broker/anthropic")
+    assert guard < gate < url_use
+    # The whole materialization (env, overlay, COMPOSE_FILE append) sits
+    # inside the gate, so a skipped boot references no overlay.
+    assert gate < body.index('COMPOSE_FILE_VALUE="$COMPOSE_FILE_VALUE:docker-compose.kai-agent.yml"')
+    # No hard abort anywhere in the engine block.
+    assert "ERROR: kai_agent_enabled requires" not in body
+
+
+def test_tpl_registry_helper_is_best_effort_and_precise():
+    body = TPL.read_text()
+    # configure-docker must not gate the machine under `set -e` — a failure
+    # warns, and a genuine credential problem surfaces at the tolerant pull.
+    assert "gcloud auth configure-docker $KAI_AGENT_IMAGE_HOST failed" in body
+    # Match Artifact Registry hosts precisely (<region>-docker.pkg.dev),
+    # not any host that merely ends in "pkg.dev".
+    assert "*-docker.pkg.dev)" in body
+
+
+def test_auto_upgrade_tick_cannot_be_gated_by_the_engine():
+    # The recurring tick recreates with the FULL COMPOSE_FILE under `set -e`;
+    # without the split a broken engine image aborts every tick before the
+    # config marker is written and the self-update runs. The single-container
+    # branch must mirror the startup script: base strictly (overlay filtered
+    # out), engine tolerantly.
+    body = Path("scripts/ops/agnes-auto-upgrade.sh").read_text()
+    assert ":docker-compose.kai-agent.yml:" in body
+    assert "grep -vx 'docker-compose.kai-agent.yml'" in body
+    assert "WARN: kai-agent engine sidecar failed to start; base stack recreated" in body
 
 
 def test_tpl_engine_services_are_bounded():
