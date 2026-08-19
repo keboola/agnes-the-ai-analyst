@@ -538,6 +538,45 @@ def _create_snowflake_secret_sql(
     )
 
 
+# Secret-literal shapes `_create_snowflake_secret_sql` emits. Both are anchored on
+# fixed delimiters with a single non-greedy span between them — linear-time over
+# untrusted text, per the security playbook.
+_SECRET_LITERAL_RES = (
+    re.compile(r"PASSWORD\s*'[^']*'", re.I),
+    re.compile(r"PRIVATE_KEY\s*\$PK\$.*?\$PK\$", re.I | re.S),
+)
+
+
+class SnowflakeAttachError(RuntimeError):
+    """An ATTACH/SECRET failure whose message has had credential material removed."""
+
+
+def _scrub_secret_material(message: str, *secrets: str | None) -> str:
+    """Strip credential material from a driver error message.
+
+    ``attach_snowflake`` EXECUTES a ``CREATE OR REPLACE SECRET … (PASSWORD '…')``
+    / ``PRIVATE_KEY $PK$…$PK$`` statement, and DuckDB's parser-class errors quote
+    the offending statement back — so on a build whose extension does not
+    recognise one of those options, the raised error carries the Snowflake
+    credential. Every caller then forwards it somewhere durable: the listing
+    endpoint into a 502 body and a log line, the extract build into
+    ``stats["errors"]`` → ``sync_state.error``, which the admin registry,
+    /admin/sync and ``agnes admin list-tables`` render unredacted.
+
+    Scrubs the known secret values first (exact substring, which also covers a
+    driver reformatting the statement), then the literal shapes as a backstop for
+    a value this call does not hold.
+    """
+    out = message
+    for secret in secrets:
+        # Guard against a degenerate short value turning the message into noise.
+        if secret and len(secret) >= 8:
+            out = out.replace(secret, "<redacted>")
+    for pattern in _SECRET_LITERAL_RES:
+        out = pattern.sub("<redacted>", out)
+    return out
+
+
 def attach_snowflake(
     conn,
     *,
@@ -562,6 +601,17 @@ def attach_snowflake(
     secret_name = f"sf_secret_{alias}"
 
     secret_sql = _create_snowflake_secret_sql(secret_name, params, token, passphrase)
-    conn.execute(secret_sql)
-    conn.execute(f"ATTACH '' AS {alias} (TYPE {SF_EXTENSION}, SECRET {secret_name}, READ_ONLY)")
+    try:
+        conn.execute(secret_sql)
+        conn.execute(f"ATTACH '' AS {alias} (TYPE {SF_EXTENSION}, SECRET {secret_name}, READ_ONLY)")
+    except Exception as exc:
+        # Redact HERE, at the one place that holds the secret, so every caller
+        # inherits the guarantee instead of each remembering to sanitize. Raised
+        # `from None`: the original exception's own message is the thing being
+        # withheld, and a chained cause would put it straight back into any
+        # traceback that gets logged. The class name keeps it diagnosable.
+        raise SnowflakeAttachError(
+            f"snowflake ATTACH failed ({type(exc).__name__}): "
+            + _scrub_secret_material(str(exc), token, passphrase)
+        ) from None
     logger.info("Attached Snowflake database %r as catalog %r", params["database"], alias)

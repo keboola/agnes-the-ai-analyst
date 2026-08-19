@@ -217,3 +217,51 @@ def test_endpoint_maps_allowlist_refusal_to_400(seeded_app, monkeypatch):
 
     assert resp.status_code == 400, resp.text
     assert "ALLOWLIST" in resp.json()["detail"]
+
+
+# ---- credential must not ride out on a driver error -----------------------
+
+
+def test_attach_failure_does_not_leak_the_credential(monkeypatch):
+    """A failing ATTACH must not carry the secret into the caller's message.
+
+    `attach_snowflake` builds and EXECUTES `CREATE OR REPLACE SECRET … (PASSWORD
+    '<token>')` / `PRIVATE_KEY $PK$…$PK$`. DuckDB's parser-class errors echo the
+    offending statement text, so on a build whose extension does not recognise
+    one of those options the raised error carries the Snowflake credential —
+    and every caller forwards it somewhere durable: this endpoint into a 502
+    `detail` and a server log line, and the extract build into
+    `stats["errors"]` → `sync_state.error`, which the admin registry, /admin/sync
+    and `agnes admin list-tables` all render unredacted.
+
+    The Keboola listing endpoint already redacts before answering 502
+    (`client._redact(exc)`); this pins the same guarantee at the Snowflake source,
+    so every caller inherits it rather than each having to remember.
+    """
+    from unittest.mock import MagicMock
+
+    from connectors.snowflake.attach import attach_snowflake
+
+    token = "sUperSecretPassw0rd-not-in-any-message"
+
+    conn = MagicMock()
+
+    def _explode(sql, *a, **k):
+        # Shape of a DuckDB parser error: it quotes the statement back.
+        raise RuntimeError(f'Parser Error: syntax error at or near "PASSWORD"\nLINE 1: {sql}')
+
+    conn.execute.side_effect = _explode
+
+    with pytest.raises(Exception) as exc_info:
+        attach_snowflake(
+            conn,
+            alias="sf",
+            url="https://acct-123.snowflakecomputing.com?database=PROD&warehouse=WH&user=SVC",
+            token=token,
+        )
+
+    msg = str(exc_info.value)
+    assert token not in msg, msg
+    assert "PASSWORD '" not in msg, msg
+    # Still has to be actionable.
+    assert "snowflake" in msg.lower(), msg
