@@ -83,15 +83,16 @@ locals {
   # Opt-in embedded kai-agent turn engine: same shape as the dispatcher —
   # per-VM flag, module-wide config, secretAccessor only when some instance
   # actually enables it. Secrets already granted through runtime_secret_env
-  # are subtracted: a caller reusing the app's own E2B secret for the engine
-  # would otherwise declare the same (project, secret, role, member) IAM
-  # binding twice and the second apply errors with "already exists" — the
-  # same duplicate-binding trap oauth_secret_name_template documents.
+  # OR runtime_secrets are subtracted: a caller reusing the app's own E2B
+  # secret for the engine would otherwise declare the same (project, secret,
+  # role, member) IAM binding twice and the second apply errors with
+  # "already exists" — the same duplicate-binding trap
+  # oauth_secret_name_template documents.
   kai_agent_any_enabled = anytrue([for inst in local.all_instances : inst.kai_agent_enabled])
   kai_agent_secrets = local.kai_agent_any_enabled ? setsubtract(toset(compact([
     var.kai_agent_jwt_secret,
     var.kai_agent_e2b_key_secret,
-  ])), toset(keys(var.runtime_secret_env))) : toset([])
+  ])), setunion(toset(keys(var.runtime_secret_env)), toset(var.runtime_secrets))) : toset([])
 
   # --- Vendor-neutral per-instance branding -> /data/state/instance.yaml ---
   # The startup script seeds instance.yaml on FIRST boot only (it never clobbers
