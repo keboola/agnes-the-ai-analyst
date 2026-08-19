@@ -724,7 +724,10 @@ def test_release_smoke_gate_assertions_hold_against_the_shipped_page(fresh_db):
 
     # Where the connector roll-call moved: `agnes onboard` step 6 reads
     # this endpoint (cli/commands/onboard.py::_fetch_connectors).
-    resp = c.get("/api/connectors/manifest", cookies={"access_token": sess})
+    # Bearer header, not a cookie — that is how scripts/smoke-test.sh
+    # authenticates, and this guard is only worth having if it exercises
+    # the same path the release gate does.
+    resp = c.get("/api/connectors/manifest", headers={"Authorization": f"Bearer {sess}"})
     assert resp.status_code == 200, resp.text
     connectors = resp.json().get("connectors")
     assert isinstance(connectors, list) and connectors, (
