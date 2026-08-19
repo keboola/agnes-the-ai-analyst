@@ -256,7 +256,20 @@ if [ -f "$ENV_FILE" ]; then
         CERTS_OK="true"
     fi
     TLS_STATE="tls_mode=${TLS_MODE:-<unset>} domain=${DOMAIN:-<unset>} certs=$CERTS_OK"
-    if [ -d "$CERTS_DIR" ] && [ "$CERTS_OK" = "false" ]; then
+    # An ACME instance (tls_mode=caddy with a DOMAIN) is the one shape where an
+    # empty certs dir is normal rather than dangerous: Let's Encrypt certs live
+    # in caddy's own volume and $CERTS_DIR is just the read-only bind mount, so
+    # it exists and stays empty for the whole life of a healthy instance. The
+    # applier does add the tls overlay off that bare directory, but it restarts
+    # only `app scheduler` with --no-deps, so the caddy the startup script
+    # brought up under --profile tls keeps running and keeps terminating TLS --
+    # closing plain :8000 is then the intended outcome, not an outage. Failing
+    # here would exit 1 on precisely the instances this gate is run against.
+    ACME_SHAPE="false"
+    if [ "$TLS_MODE" = "caddy" ] && [ -n "$DOMAIN" ]; then
+        ACME_SHAPE="true"
+    fi
+    if [ -d "$CERTS_DIR" ] && [ "$CERTS_OK" = "false" ] && [ "$ACME_SHAPE" = "false" ]; then
         check "tls: $CERTS_DIR exists but fullchain.pem/privkey.pem are missing or empty — the state-applier's next run applies docker-compose.tls.yml (app ports closed) WITHOUT starting caddy, taking the instance offline. Install both certs or remove the directory" "false"
     elif [ "$TLS_MODE" = "caddy" ] && [ -z "$DOMAIN" ]; then
         check "tls: tls_mode=caddy but DOMAIN is empty — the tls profile never starts ($TLS_STATE)" "false"
@@ -266,7 +279,7 @@ if [ -f "$ENV_FILE" ]; then
     # Caddy-with-LetsEncrypt keeps its certs in caddy's own volume, so
     # CERTS_OK=false is normal there — but then nothing closes plain :8000
     # unless the tls overlay is in COMPOSE_FILE or a firewall does it.
-    if [ "$TLS_MODE" = "caddy" ] && [ -n "$DOMAIN" ] && [ "$CERTS_OK" = "false" ]; then
+    if [ "$ACME_SHAPE" = "true" ] && [ "$CERTS_OK" = "false" ]; then
         case ":$COMPOSE_FILE_VAL:" in
             *":docker-compose.tls.yml:"*) : ;;
             *)

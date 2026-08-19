@@ -28,8 +28,9 @@ two server-side render paths:
 - The **install-prompt** rendered on `/home` (the "paste-into-Claude-Code"
   bootstrap script).
 - The **connector manifest** behind the install prompt's connector steps
-  (mandatory `required: true` installs first, then the optional tiles),
-  plus the per-connector wizard bodies inlined under each tile.
+  (mandatory `required: true` installs first, then the optional tiles).
+- The **per-connector wizard bodies**, served on demand by
+  `GET /api/connectors/{slug}/prompt` rather than inlined under each tile.
 
 When an Initial Workspace Template is registered, the operator's seed
 beats the bundled snapshot tier-by-tier (the server reads the IWT clone
@@ -224,33 +225,36 @@ git-bound `install-prompt/template.md.tmpl`.
 For each manifest entry, the server renders this exact markdown block:
 
 ```
-   {letter}) {display_name} — {short_summary}
-      Ask: "Set up {display_name} now? (yes/no)"
-      If the user agrees, follow this outline:
-
-      {SKILL.md body, indented 6 spaces, frontmatter stripped, {instance_brand} substituted}
+   {letter}) {display_name} — {short_summary} (~{estimated_minutes} min)
+      agnes connectors show {slug}
 ```
+
+The `SKILL.md` body is **not** inlined. The tile carries only the
+manifest metadata plus the command that prints the body, and
+`GET /api/connectors/{slug}/prompt` (equivalently `agnes connectors
+show <slug>`) fetches it on demand — so the install prompt stays a
+fixed size no matter how many connectors an operator seeds, and a
+connector the user declines costs nothing. `{instance_brand}` is
+substituted when that endpoint renders the body, as before.
 
 `{letter}` is `a`, `b`, `c`, … assigned in **alphabetical order by
 display_name** (case-insensitive). Two operator edits that rename a
 connector reorder the tiles automatically.
 
 Entries with `required: true` render in their own earlier step
-("Install required tools") with a different per-entry shape — no `Ask:`
-line:
-
-```
-   {letter}) {display_name} — {short_summary}
-      Follow this inline prompt:
-
-      {SKILL.md body, same indent/substitution rules as above}
-```
+("Install required tools") with the **same** per-entry shape. The two
+groups differ only in the prose around the tiles: the optional step
+asks which tools to set up and skips anything that is not a clear yes,
+while the required step says to print and follow every prompt in order.
 
 The two blocks letter their tiles independently (each starts at `a`,
 alphabetical within its group). Step numbering is dynamic: an absent
 group drops its step and everything after renumbers, so the prompt
 flows contiguously in all four combinations (no connectors at all /
 only optional / only required / both).
+
+Tiles beyond the available letters are dropped with a server-side
+warning rather than overflowing the lettering.
 
 ---
 

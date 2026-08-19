@@ -7,7 +7,7 @@
 #
 # Stubs `curl` with a fake on PATH that records every invocation to a
 # transcript and answers from FAKE_* env vars, then drives the script
-# through seven scenarios:
+# through eight scenarios:
 #
 #   A. Laptop mode — no $AGNES_OPT_DIR/.env: host checks and the doctor are
 #      SKIPped (no token), the public checks pass, exit 0.
@@ -23,6 +23,9 @@
 #   F. Missing CLI wheel — /cli/download answers 404: FAIL + exit 1.
 #   G. Target-flag disagreement — backend duckdb but db-state-target.flag
 #      says side-car-enabled: WARN (not FAIL), exit 0.
+#   H. Caddy + ACME — TLS_MODE=caddy with DOMAIN set and an empty certs
+#      directory (Let's Encrypt keeps its certs in caddy's own volume): the
+#      empty-certs FAIL must NOT fire, exit 0.
 #
 # Run with: bash tests/test_post_deploy_smoke_host_checks.sh
 set -euo pipefail
@@ -210,5 +213,27 @@ run_script
 [ "$rc" -eq 0 ] || fail "G: expected exit 0, got $rc"
 echo "$out" | grep -q "WARN compose: db-state-target.flag says side-car-enabled" || fail "G: missing flag WARN"
 echo "scenario G ok"
+
+# --- H. Caddy + ACME: empty certs dir is normal, not a FAIL ---------------------
+# Let's Encrypt certs live in caddy's own volume; $STATE_DIR/certs is only the
+# read-only bind mount, so it exists and stays empty on a perfectly healthy
+# instance. The applier's `up -d --no-deps app scheduler` leaves the already
+# running caddy alone, so closing plain :8000 is the intended outcome here --
+# nothing takes the instance offline.
+new_scenario H
+cat > "$OPT_DIR/.env" <<EOF
+STATE_DIR=$STATE_DIR
+SCHEDULER_API_TOKEN=sched-secret-token
+COMPOSE_FILE=docker-compose.yml:docker-compose.prod.yml:docker-compose.host-mount.yml:docker-compose.tls.yml
+TLS_MODE=caddy
+DOMAIN=agnes.example.com
+EOF
+mkdir -p "$STATE_DIR/certs"
+FAKE_DOCTOR_JSON="$DOCTOR_ALL_OK"
+run_script
+[ "$rc" -eq 0 ] || fail "H: expected exit 0 on a healthy ACME instance, got $rc"
+echo "$out" | grep -q "FAIL tls:" && fail "H: empty-certs FAIL fired on a caddy+ACME instance"
+echo "$out" | grep -q "PASS tls: predicates agree" || fail "H: missing tls PASS"
+echo "scenario H ok"
 
 echo "ALL SCENARIOS PASSED"
