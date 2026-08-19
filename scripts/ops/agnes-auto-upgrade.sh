@@ -246,32 +246,25 @@ fi
 . "$RESOLVER"
 RESOLVED_COMPOSE_FILE=$(agnes_resolve_compose_file /opt/agnes "$STATE_DIR")
 
-# Backward compatibility: an operator-set COMPOSE_FILE in .env (e.g. the
-# m-tier topology's docker-compose.mtier.yml) is never silently replaced
-# wholesale. But the no-.env / stale-.env fallback must never silently
-# drop an overlay the authoritative state (instance.yaml's
-# database.backend, or cert/gcp-logging file presence) requires — this is
-# the fix for the migration-durability bug documented in
-# agnes-compose-file.sh's header: agnes-state-applier.sh flips
-# database.backend to side_car but never touches .env, so trusting a
-# stale/absent .env value here used to bring the stack up WITHOUT the
-# postgres container until the next reboot.
-MISSING_OVERLAYS=$(agnes_compose_file_missing "$RESOLVED_COMPOSE_FILE" "${COMPOSE_FILE:-}")
-if [ -n "$MISSING_OVERLAYS" ]; then
-    if [ -n "${COMPOSE_FILE:-}" ]; then
-        logger -t agnes-auto-upgrade "WARN: /opt/agnes/.env COMPOSE_FILE ($COMPOSE_FILE) is missing overlay(s) the authoritative state requires ($MISSING_OVERLAYS) -- overriding with the resolved list ($RESOLVED_COMPOSE_FILE) so the stack stays consistent without a reboot"
-    fi
-    export COMPOSE_FILE="$RESOLVED_COMPOSE_FILE"
-else
-    # Nothing missing: either COMPOSE_FILE already satisfies every overlay
-    # the authoritative state requires (an operator's customization is
-    # honored verbatim, extra entries like docker-compose.mtier.yml
-    # included), or it was empty and RESOLVED_COMPOSE_FILE fills in the
-    # default -- agnes_compose_file_missing treats an empty candidate as
-    # missing everything, so this branch is only reached with a non-empty
-    # COMPOSE_FILE.
-    export COMPOSE_FILE="$COMPOSE_FILE"
+# Reconcile the .env candidate against the authoritative state, rather
+# than picking one of the two wholesale. The overlays the resolver decides
+# on (base/prod/postgres/host-mount/tls/gcp-logging) come from it and only
+# from it, so a backend flip is durable in BOTH directions without a
+# reboot: agnes-state-applier.sh rewrites instance.yaml and moves the
+# side-car but never touches .env, and a stale .env used to bring the stack
+# up without the postgres container (or, after a migration back to DuckDB,
+# with one the persisted state no longer wants). Everything else the
+# candidate carries is preserved in place — docker-compose.dispatcher.yml
+# from startup-script.sh.tpl, an operator's m-tier
+# docker-compose.mtier.yml — because this script cannot know what the
+# deploy layer added and must not delete it. See
+# agnes_compose_file_reconcile for why each half matters.
+RECONCILED_COMPOSE_FILE=$(agnes_compose_file_reconcile "$RESOLVED_COMPOSE_FILE" "${COMPOSE_FILE:-}")
+if [ -n "${COMPOSE_FILE:-}" ] && [ "$RECONCILED_COMPOSE_FILE" != "$COMPOSE_FILE" ]; then
+    MISSING_OVERLAYS=$(agnes_compose_file_missing "$RESOLVED_COMPOSE_FILE" "$COMPOSE_FILE")
+    logger -t agnes-auto-upgrade "WARN: /opt/agnes/.env COMPOSE_FILE ($COMPOSE_FILE) disagrees with the authoritative state (missing: ${MISSING_OVERLAYS:-none}) -- using the reconciled list ($RECONCILED_COMPOSE_FILE) so the stack stays consistent without a reboot"
 fi
+export COMPOSE_FILE="$RECONCILED_COMPOSE_FILE"
 
 # `-s` (size > 0) instead of `-f` — guards against the corner case where
 # rotate.sh wrote a 0-byte cert and exited (or got SIGKILLed mid-write).

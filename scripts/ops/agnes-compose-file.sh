@@ -120,15 +120,71 @@ agnes_resolve_compose_file() {
     printf '%s' "$_acf_list"
 }
 
+# The closed set of overlays agnes_resolve_compose_file decides on by
+# itself. Anything else in a candidate list came from the deploy layer or
+# an operator (docker-compose.dispatcher.yml, written by
+# startup-script.sh.tpl; docker-compose.mtier.yml, the role-split
+# topology), and this file has no opinion about it — see
+# agnes_compose_file_reconcile.
+AGNES_MANAGED_OVERLAYS="docker-compose.yml docker-compose.prod.yml \
+docker-compose.postgres.yml docker-compose.host-mount.yml \
+docker-compose.postgres-host-mount.yml docker-compose.tls.yml \
+docker-compose.gcp-logging.yml"
+
+# agnes_compose_file_reconcile <resolved> <candidate>
+#
+# Prints the COMPOSE_FILE value a caller should actually use: <resolved>
+# (authoritative, correctly ordered) plus every entry of <candidate> this
+# file does not manage, appended in candidate order.
+#
+# Reconcile, never substitute. Both halves are load-bearing:
+#
+#   - Taking <resolved> wholesale would DROP the overlays only the deploy
+#     layer knows about. startup-script.sh.tpl writes .env's COMPOSE_FILE
+#     without docker-compose.tls.yml (TLS is engaged with `--profile tls`)
+#     and without docker-compose.gcp-logging.yml, while the resolver adds
+#     both from file presence — so on every TLS or GCE-logging VM the
+#     candidate is "missing" something on EVERY tick, and a substitution
+#     there would discard docker-compose.dispatcher.yml and any m-tier
+#     docker-compose.mtier.yml each time. On an m-tier VM that also breaks
+#     role detection: `docker compose config --services` stops reporting
+#     worker/gateway, so the upgrade job brings up the single-container
+#     `app` service alongside the running api replicas.
+#
+#   - Keeping <candidate> wholesale when nothing is missing would make a
+#     backend flip non-durable in the other direction. After a side_car ->
+#     duckdb migration, agnes-state-applier.sh rewrites instance.yaml and
+#     stops the side-car but never touches .env, which still lists the
+#     postgres overlays from the last boot. Those overlays are MANAGED, so
+#     dropping them here is what stops the next tick from recreating
+#     `postgres` + `data-migrate` and re-injecting DATABASE_URL into the
+#     app — the mirror image of the bug this file was written for.
+agnes_compose_file_reconcile() {
+    _acf_resolved=$1
+    _acf_candidate=$2
+    _acf_out=$_acf_resolved
+    for _acf_f in $(printf '%s' "$_acf_candidate" | tr ':' ' '); do
+        # Already required by the authoritative state.
+        case ":$_acf_resolved:" in
+            *":$_acf_f:"*) continue ;;
+        esac
+        # A managed overlay the authoritative state no longer wants.
+        case " $AGNES_MANAGED_OVERLAYS " in
+            *" $_acf_f "*) continue ;;
+        esac
+        _acf_out="$_acf_out:$_acf_f"
+    done
+    printf '%s' "$_acf_out"
+}
+
 # agnes_compose_file_missing <resolved> <candidate>
 #
 # Prints (space-separated) any overlay present in <resolved> but absent
-# from <candidate>. Used to decide whether an operator-set /opt/agnes/.env
-# COMPOSE_FILE (or a pre-fix hardcoded fallback) is missing an overlay the
-# authoritative state requires — empty output means <candidate> already
-# satisfies every overlay <resolved> asks for and is safe to keep as-is
-# (an operator's extra entries, e.g. an m-tier topology's
-# docker-compose.mtier.yml, are preserved rather than clobbered).
+# from <candidate>. Diagnostic only — it names what a stale or
+# operator-set /opt/agnes/.env COMPOSE_FILE lacks, for the log line that
+# accompanies a reconcile. It is deliberately one-sided, so it must never
+# be the sole gate for a decision: use agnes_compose_file_reconcile, which
+# also handles the overlays a candidate carries in excess.
 agnes_compose_file_missing() {
     _acf_resolved=$1
     _acf_candidate=$2

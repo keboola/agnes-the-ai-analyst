@@ -4,6 +4,12 @@ and the customer-instance startup-script template.
 These tests do NOT exercise the unit live (systemd is not available in CI).
 They assert that the committed files contain the expected security-relevant
 strings so that a review diff catches any accidental regression.
+
+Two later additions go one step further and run the committed POSIX
+``scripts/ops/agnes-compose-file.sh`` under ``sh`` to assert the
+``COMPOSE_FILE`` reconciliation contract directly — still no systemd, no
+docker, no VM; just the shell function every overlay decision flows
+through.
 """
 
 
@@ -255,6 +261,155 @@ def test_dockerfile_ships_every_startup_installed_ops_unit():
             f"the startup-script installs it from $APP_DIR, so an image that "
             f"doesn't ship it breaks every fresh VM boot."
         )
+
+
+def _sourced_ops_helpers() -> set[str]:
+    """Every ``scripts/ops/*.sh`` the host scripts source at a path under
+    their own compose dir, i.e. one that must exist inside ``$APP_DIR``."""
+    import re
+    from pathlib import Path
+
+    found: set[str] = set()
+    for script in sorted(Path("scripts/ops").glob("*.sh")):
+        for match in re.findall(
+            r'^\s*\.\s+"[^"]*(?:COMPOSE_DIR|/opt/agnes)[^"]*/(scripts/ops/[A-Za-z0-9_.-]+\.sh)"',
+            script.read_text(),
+            re.MULTILINE,
+        ):
+            found.add(match)
+        # The resolver is also reached through a variable holding the same
+        # absolute path (RESOLVER=…; . "$RESOLVER"), so pick that shape up too.
+        for match in re.findall(
+            r'^\s*[A-Z_]+="(?:\$COMPOSE_DIR|/opt/agnes)/(scripts/ops/[A-Za-z0-9_.-]+\.sh)"',
+            script.read_text(),
+            re.MULTILINE,
+        ):
+            found.add(match)
+    return found
+
+
+def test_dockerfile_ships_every_sourced_ops_helper():
+    """The sibling of ``test_dockerfile_ships_every_startup_installed_ops_unit``
+    for files that are SOURCED rather than installed.
+
+    ``agnes-auto-upgrade.sh`` and ``agnes-state-applier.sh`` source
+    ``$COMPOSE_DIR/scripts/ops/agnes-compose-file.sh`` — the single
+    ``COMPOSE_FILE`` resolver every overlay decision now flows through.
+    ``$APP_DIR`` is populated by the startup script's recursive
+    ``docker cp .../opt/agnes-host/.``, so a sourced helper only reaches a
+    VM if the Dockerfile bakes it under the SAME relative sub-path.
+
+    It did not: the resolver landed in the repo (and in
+    ``agnes-auto-upgrade.sh``'s ``CONFIG_FILES`` GitHub fetch) without a
+    Dockerfile entry, so on a freshly provisioned VM the state applier had
+    no resolver until an internet fetch happened to land one — and on an
+    egress-restricted host, never. Both the DB state machine and the
+    upgrade job are dead in that window."""
+    from pathlib import Path
+
+    dockerfile = Path("Dockerfile").read_text()
+    sourced = _sourced_ops_helpers()
+
+    # Sanity for the test itself — the resolver is the known case.
+    assert "scripts/ops/agnes-compose-file.sh" in sourced, (
+        "expected a host script to source scripts/ops/agnes-compose-file.sh "
+        "from its compose dir; did the source path change?"
+    )
+    for helper in sorted(sourced):
+        assert Path(helper).exists(), f"{helper} is sourced but not committed"
+        assert f"/opt/agnes-host/{helper}" in dockerfile, (
+            f"Dockerfile must bake {helper} into /opt/agnes-host/{helper} — the "
+            f"host scripts source it from $APP_DIR at that same sub-path, so an "
+            f"image that doesn't ship it leaves a fresh VM without a resolver."
+        )
+
+
+def _reconcile(resolved: str, candidate: str) -> str:
+    """Call ``agnes_compose_file_reconcile`` in the real POSIX resolver."""
+    import subprocess
+
+    out = subprocess.run(
+        [
+            "sh",
+            "-c",
+            '. ./scripts/ops/agnes-compose-file.sh; agnes_compose_file_reconcile "$1" "$2"',
+            "sh",
+            resolved,
+            candidate,
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return out.stdout.strip()
+
+
+BASE = "docker-compose.yml:docker-compose.prod.yml:docker-compose.host-mount.yml"
+PG_OVERLAYS = (
+    "docker-compose.yml:docker-compose.prod.yml:docker-compose.postgres.yml:"
+    "docker-compose.host-mount.yml:docker-compose.postgres-host-mount.yml"
+)
+
+
+def test_reconcile_keeps_deploy_overlays_the_resolver_knows_nothing_about():
+    """``agnes-auto-upgrade.sh`` must not delete overlays only the deploy
+    layer knows about.
+
+    ``startup-script.sh.tpl`` writes ``.env``'s ``COMPOSE_FILE`` **without**
+    ``docker-compose.tls.yml`` (TLS is engaged with ``--profile tls``) and
+    without ``docker-compose.gcp-logging.yml``, while the resolver adds both
+    from file presence. So on every TLS or GCE-logging VM the ``.env``
+    candidate lacks something the resolver asks for on EVERY tick — which
+    made a "replace the list wholesale when anything is missing" rule the
+    normal path, not the edge case, silently dropping
+    ``docker-compose.dispatcher.yml`` and any m-tier
+    ``docker-compose.mtier.yml``. On an m-tier VM that also breaks role
+    detection: ``docker compose config --services`` stops reporting
+    worker/gateway, so the tick starts the single-container ``app`` service
+    next to the live api replicas."""
+    tls_resolved = f"{BASE}:docker-compose.tls.yml"
+
+    got = _reconcile(tls_resolved, f"{BASE}:docker-compose.dispatcher.yml")
+
+    assert got == f"{tls_resolved}:docker-compose.dispatcher.yml", got
+    assert "docker-compose.dispatcher.yml" in got, (
+        "the dispatcher overlay came from startup-script.sh.tpl and must survive"
+    )
+
+    mtier = _reconcile(f"{BASE}:docker-compose.gcp-logging.yml", f"{BASE}:docker-compose.mtier.yml")
+    assert mtier.endswith("docker-compose.mtier.yml"), mtier
+
+
+def test_reconcile_drops_postgres_overlays_a_migration_back_to_duckdb_retired():
+    """A ``side_car -> duckdb`` migration must be durable too.
+
+    ``agnes-state-applier.sh`` rewrites ``instance.yaml`` and stops the
+    side-car, but never touches ``/opt/agnes/.env`` — which still lists the
+    Postgres overlays from the last boot. A missing-only comparison sees
+    nothing missing, keeps the stale candidate, and the tick's
+    ``docker compose up -d`` recreates ``postgres`` + ``data-migrate`` and
+    re-injects ``DATABASE_URL`` into ``app``: the app back on Postgres while
+    the persisted state says DuckDB — the mirror image of the bug the single
+    resolver was written to fix. Overlays the resolver itself manages are
+    therefore taken from the resolver, not from ``.env``."""
+    got = _reconcile(BASE, PG_OVERLAYS)
+
+    assert got == BASE, got
+    assert "docker-compose.postgres.yml" not in got, (
+        "a backend flip back to DuckDB must not leave the postgres overlay engaged"
+    )
+    assert "docker-compose.postgres-host-mount.yml" not in got
+
+    # The same must hold with a deploy overlay present: drop the retired
+    # Postgres overlays, keep the dispatcher, add what the state now wants.
+    mixed = _reconcile(
+        f"{BASE}:docker-compose.tls.yml",
+        f"{PG_OVERLAYS}:docker-compose.dispatcher.yml",
+    )
+    assert mixed == f"{BASE}:docker-compose.tls.yml:docker-compose.dispatcher.yml", mixed
+
+    # And the forward direction still adds them, in the resolver's order.
+    assert _reconcile(PG_OVERLAYS, BASE) == PG_OVERLAYS
 
 
 def test_startup_script_selects_compose_overlay_by_backend():
