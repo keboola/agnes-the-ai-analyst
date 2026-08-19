@@ -465,3 +465,36 @@ def test_next_action_chips_wear_the_button_radius():
 def test_system_note_styles_exist():
     css = _read(CHAT_CSS)
     assert ".cloud-chat-system-note" in css
+
+
+# ── Long-message collapse: a cap for extremes, not for ordinary answers ──────
+
+
+def test_collapse_threshold_and_css_clamp_agree():
+    """The threshold that DECIDES to collapse is a JS constant; the max-height
+    that DOES the clamping is a CSS literal. Two hardcoded pixel values that
+    must stay the same number — drift means a body is judged at one height and
+    cut at another (raising only the JS side would still clamp a 2500px answer
+    down to 480px, i.e. exactly the bug the raise was meant to remove)."""
+    js_match = re.search(r"COLLAPSE_THRESHOLD_PX = (\d+)", _read(CHAT_JS))
+    assert js_match, "COLLAPSE_THRESHOLD_PX must stay a plain literal"
+    css_match = re.search(
+        r"\.msg-bubble\.is-collapsible \.msg-body \{[^}]*?max-height: (\d+)px",
+        _read(CHAT_CSS),
+    )
+    assert css_match, "the collapsible clamp must keep a literal max-height"
+    assert js_match.group(1) == css_match.group(1), (
+        f"chat.js collapses over {js_match.group(1)}px but chat.css clamps at "
+        f"{css_match.group(1)}px"
+    )
+
+
+def test_collapse_cap_clears_an_ordinary_long_answer():
+    """The collapse fires at FINALIZE, so the reader watches a message stream in
+    full and then sees it snap shut. At 480px (~20 lines) that hit nearly every
+    real answer. The cap is kept for genuine extremes only, so its floor must
+    stay far above an ordinary answer's height."""
+    threshold = int(re.search(r"COLLAPSE_THRESHOLD_PX = (\d+)", _read(CHAT_JS)).group(1))
+    assert threshold >= 2000, (
+        f"COLLAPSE_THRESHOLD_PX={threshold}px collapses ordinary answers; the cap is for extremes"
+    )
