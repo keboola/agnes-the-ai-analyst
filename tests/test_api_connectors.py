@@ -310,3 +310,55 @@ def test_bundled_seed_files_present():
     for slug in ("connector-asana", "connector-atlassian", "connector-gws"):
         assert (bundle / "workspace" / ".claude" / "skills" / slug / "SKILL.md").is_file(), f"missing bundled {slug}"
     assert (bundle / ".source_ref").is_file()
+
+
+# ---------------------------------------------------------------------------
+# GET /api/connectors/{slug}/prompt — the on-demand connector setup prompt
+# (the install prompt references it via `agnes connectors show <slug>`
+# instead of inlining every SKILL.md body).
+# ---------------------------------------------------------------------------
+
+
+def test_prompt_requires_auth(client_with_admin):
+    client, _token = client_with_admin
+    resp = client.get("/api/connectors/connector-asana/prompt")
+    assert resp.status_code in (401, 403)
+
+
+def test_prompt_returns_bundled_body(client_with_admin):
+    client, token = client_with_admin
+    resp = client.get(
+        "/api/connectors/connector-asana/prompt",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["slug"] == "connector-asana"
+    assert body["display_name"] == "Asana"
+    assert body["source"] == "bundled"
+    # The body is the post-frontmatter SKILL.md prose — no YAML fence.
+    assert not body["prompt"].lstrip().startswith("---")
+    # Content locks that used to live on the inline renderer: the Asana
+    # flow is PAT + REST, not the hosted MCP.
+    assert "app.asana.com/api/1.0" in body["prompt"]
+    # {instance_brand} is substituted server-side (default brand: Agnes).
+    assert "{instance_brand}" not in body["prompt"]
+
+
+def test_prompt_unknown_slug_404_hints_list(client_with_admin):
+    """A slug outside the manifest is a registry miss — the manifest is
+    also the gate that keeps arbitrary seed paths unreachable."""
+    client, token = client_with_admin
+    resp = client.get(
+        "/api/connectors/../../secrets/prompt",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 404
+    resp = client.get(
+        "/api/connectors/connector-nope/prompt",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 404
+    detail = resp.json()["detail"]
+    assert detail["kind"] == "unknown_connector"
+    assert "agnes connectors list" in detail["hint"]

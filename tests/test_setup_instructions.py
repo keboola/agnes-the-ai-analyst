@@ -92,38 +92,34 @@ def test_step4_has_no_agnes_private_tip():
     assert "deliberate action" not in joined
     assert "never run it for them" not in joined
     # Step 4 still verifies the data plane.
-    assert "4) Verify the data is queryable:" in joined
+    assert "3) Verify the data is queryable:" in joined
     assert "agnes catalog" in joined
 
 
 def test_resolve_lines_no_plugins_unified_layout():
-    """Unified always-on layout: 1 install, 2 mkdir/cd, 3 init, 4 catalog,
-    5 preflight, 6 marketplace, 7 diagnose, 8 connectors, 9 restart-claude,
-    10 confirm.
-    Preflight + marketplace + MCP + connectors block are emitted even when
-    the operator has zero plugin grants — registering the per-user
-    marketplace clone pre-wires the SessionStart hook, the Atlassian
-    Remote MCP applies to every analyst whose work touches Jira/
-    Confluence, and the connectors block is per-connector default-yes
-    (the user can decline each individually). Skills step deleted in
-    #242."""
+    """Unified always-on layout (minimal form): 1 install, 2 init,
+    3 catalog, 4 marketplace (git/claude preflight folded into its
+    header), 5 diagnose, 6 connectors, 7 restart-claude, 8 confirm.
+    Marketplace + connectors are emitted even when the operator has zero
+    plugin grants — registering the per-user marketplace clone pre-wires
+    the SessionStart hook, and the connectors block is a per-tool ask
+    whose bodies are fetched on demand (`agnes connectors show`)."""
     from app.web.setup_instructions import resolve_lines
 
     joined = "\n".join(resolve_lines("agnes.whl"))
     # Mandatory unified-flow steps.
     assert "1) Install the CLI" in joined
-    assert "3) Bootstrap your Agnes workspace" in joined
-    assert "4) Verify the data is queryable:" in joined
-    assert "5) Make sure git and claude are installed" in joined
-    assert "6) Register the Agnes Claude Code marketplace" in joined
-    assert "7) Run diagnostics:" in joined
-    assert "8) Connect the user's tools" in joined
-    assert "10) Confirm:" in joined
+    assert "2) Set up the Agnes workspace in the current directory." in joined
+    assert "3) Verify the data is queryable:" in joined
+    assert "4) Register the Agnes Claude Code marketplace" in joined
+    assert "5) Run diagnostics:" in joined
+    assert "6) Connect the user's tools" in joined
+    assert "8) Confirm:" in joined
     # No stray Confirms at other positions.
-    assert "11) Confirm:" not in joined
+    assert "9) Confirm:" not in joined
     assert "6) Confirm:" not in joined
     # Restart-claude step lands between connectors and Confirm.
-    assert "9) Restart Claude Code" in joined
+    assert "7) Restart Claude Code" in joined
     # Skills step is intentionally absent.
     assert "Skills (ask the user" not in joined
     # The marketplace step header adapts to the no-grants-visible copy
@@ -134,8 +130,9 @@ def test_resolve_lines_no_plugins_unified_layout():
     assert "the CLI reads the live manifest" in joined
     assert "agnes my-stack show" in joined
     assert "agnes refresh-marketplace --bootstrap" in joined
-    # MCP step uses SSE transport for Atlassian's hosted Remote MCP.
-    assert "claude mcp add --transport sse atlassian https://mcp.atlassian.com/v1/sse" in joined
+    # Connector bodies are NOT inlined — fetched on demand instead.
+    assert "agnes connectors show connector-asana" in joined
+    assert "app.asana.com" not in joined
     # Legacy `git config sslVerify=false` downgrade must NOT be emitted.
     # Match the specific config line, not the bare substring (which appears
     # in the preamble as a "don't do this" example).
@@ -304,11 +301,10 @@ def test_trust_block_step_0c_does_not_reference_stale_step_number():
 
 
 def test_resolve_lines_with_plugins_uses_install_first_diagnose_last_layout():
-    """Marketplace layout puts install/mkdir/init/catalog/preflight/marketplace
-    BEFORE diagnose, so diagnose is the final smoke test before the
-    restart-claude cue. Step numbers: 5 preflight, 6 marketplace, 7 diagnose,
-    8 connectors, 9 restart-claude, 10 confirm. No skills step —
-    interactive copy-or-on-demand question was confusing; on-demand
+    """Marketplace layout puts install/init/catalog/marketplace BEFORE
+    diagnose, so diagnose is the final smoke test before the restart-claude
+    cue. Step numbers: 4 marketplace, 5 diagnose, 6 connectors,
+    7 restart-claude, 8 confirm. No skills step — on-demand
     `agnes skills show` is the default."""
     from app.web.setup_instructions import resolve_lines
 
@@ -318,15 +314,8 @@ def test_resolve_lines_with_plugins_uses_install_first_diagnose_last_layout():
         server_host="agnes.example.com",
     )
     joined = "\n".join(lines)
-    # Step 4 — pre-flight, with all three platforms' install commands.
-    assert "5) Make sure git and claude are installed" in joined
-    assert "git --version" in joined
-    assert "claude --version" in joined
-    assert "brew install git" in joined
-    assert "winget install --id Git.Git -e --source winget" in joined
-    assert "sudo apt-get install git" in joined or "sudo dnf install git" in joined
-    # Step 5 — marketplace + stack install.
-    assert "6) Register the Agnes Claude Code marketplace" in joined
+    # Step 4 — marketplace + stack install, git/claude preflight in header.
+    assert "4) Register the Agnes Claude Code marketplace" in joined
     assert "agnes refresh-marketplace --bootstrap" in joined
     # The destructive prep + per-plugin install commands are inside the
     # CLI; the prompt must not emit the inline shell forms in
@@ -338,36 +327,32 @@ def test_resolve_lines_with_plugins_uses_install_first_diagnose_last_layout():
     assert "claude plugin marketplace add" not in executable
     assert "claude plugin install foo@agnes" not in executable
     assert "claude plugin install bar@agnes" not in executable
-    # Step 6 — Atlassian MCP registration (Fix C in 2026-05-10 init-report response).
-    # Step 7 — diagnose now AFTER marketplace + MCP wiring.
-    assert "7) Run diagnostics:" in joined
-    # Step 8 — connectors, last interactive step before restart-claude
-    # (skills step deleted in #242).
-    assert "8) Connect the user's tools" in joined
-    # Step 9 — restart-claude. Step 10 — Confirm.
-    assert "9) Restart Claude Code" in joined
-    assert "10) Confirm:" in joined
+    # Step 5 — diagnose AFTER marketplace wiring.
+    assert "5) Run diagnostics:" in joined
+    # Step 6 — connectors, last interactive step before restart-claude.
+    assert "6) Connect the user's tools" in joined
+    # Step 7 — restart-claude. Step 8 — Confirm.
+    assert "7) Restart Claude Code" in joined
+    assert "8) Confirm:" in joined
     for stray in (
         "4) Confirm:",
         "5) Confirm:",
         "6) Confirm:",
         "7) Confirm:",
-        "8) Confirm:",
         "9) Confirm:",
-        "11) Confirm:",
+        "10) Confirm:",
     ):
         assert stray not in joined
     # Crucial ordering invariants for the new layout.
     install_idx = joined.index("1) Install the CLI")
-    init_idx = joined.index("3) Bootstrap your Agnes workspace")
-    catalog_idx = joined.index("4) Verify the data is queryable:")
-    git_idx = joined.index("5) Make sure git and claude are installed")
-    market_idx = joined.index("6) Register the Agnes Claude Code marketplace")
-    diag_idx = joined.index("7) Run diagnostics:")
-    conn_idx = joined.index("8) Connect the user's tools")
-    restart_idx = joined.index("9) Restart Claude Code")
-    confirm_idx = joined.index("10) Confirm:")
-    assert install_idx < init_idx < catalog_idx < git_idx < market_idx < diag_idx < conn_idx < restart_idx < confirm_idx
+    init_idx = joined.index("2) Set up the Agnes workspace")
+    catalog_idx = joined.index("3) Verify the data is queryable:")
+    market_idx = joined.index("4) Register the Agnes Claude Code marketplace")
+    diag_idx = joined.index("5) Run diagnostics:")
+    conn_idx = joined.index("6) Connect the user's tools")
+    restart_idx = joined.index("7) Restart Claude Code")
+    confirm_idx = joined.index("8) Confirm:")
+    assert install_idx < init_idx < catalog_idx < market_idx < diag_idx < conn_idx < restart_idx < confirm_idx
     # Legacy `git config sslVerify=false` downgrade is gone — see CHANGELOG.
     assert "git config --global" not in joined
     # server_host is server-side substituted; the placeholder must be gone.
@@ -381,12 +366,11 @@ def test_resolve_lines_with_plugins_uses_install_first_diagnose_last_layout():
 
 
 def test_preflight_checks_both_git_and_claude():
-    """Pre-flight (step 4 when marketplace is gated on) checks BOTH binaries
-    before the marketplace clone — `git --version` is needed for the clone
-    itself, `claude --version` is needed for the `claude plugin
-    marketplace add` / `claude plugin install` calls. Either missing
-    breaks the marketplace step in a confusing way, so we surface the
-    failure before we get there.
+    """The git/claude preflight is folded into the marketplace step's
+    header — `git --version` is needed for the clone itself,
+    `claude --version` for the plugin registration. Both checks must
+    still appear, with cross-platform install hints, before the
+    `agnes refresh-marketplace --bootstrap` line.
     """
     from app.web.setup_instructions import resolve_lines
 
@@ -400,17 +384,14 @@ def test_preflight_checks_both_git_and_claude():
     # Both version checks present.
     assert "git --version" in joined
     assert "claude --version" in joined
-    # Header mentions both tools.
-    assert "Make sure git and claude are installed" in joined
-    # Install hints for claude — npm one-liner for Linux/WSL plus a doc URL
-    # for native installers on macOS / Windows. We don't try to one-line a
-    # native installer; the canonical instructions live upstream.
-    assert "npm i -g @anthropic-ai/claude-code" in joined
+    # Cross-platform install hints for git, doc URL for claude.
+    assert "brew install git" in joined
+    assert "winget install --id Git.Git -e --source winget" in joined
     assert "https://docs.claude.com/claude-code" in joined
-    # Both checks come BEFORE the marketplace add line.
+    # Both checks come BEFORE the marketplace bootstrap line.
     git_check_idx = joined.index("git --version")
     claude_check_idx = joined.index("claude --version")
-    market_idx = joined.index("claude plugin marketplace add")
+    market_idx = joined.index("agnes refresh-marketplace --bootstrap")
     assert git_check_idx < market_idx
     assert claude_check_idx < market_idx
 
@@ -622,22 +603,23 @@ def test_resolve_lines_with_ca_pem_marketplace_is_one_liner():
 
 
 def test_resolve_lines_with_ca_pem_marketplace_has_explicit_error_handling():
-    """The marketplace one-liner must still fail loudly with `exit 1` on
-    a non-zero exit (so a CLI bootstrap failure blocks downstream steps
-    instead of letting them silently misbehave)."""
+    """The marketplace step is the same single CLI invocation in the CA
+    variant — failures are covered by the preamble's paste-the-error-and-
+    stop guidance, and no legacy inline shell fallback (git clone /
+    sslVerify) may reappear."""
     from app.web.setup_instructions import resolve_lines
 
     joined = "\n".join(
         resolve_lines(
             "agnes.whl",
-            plugin_install_names=["foo", "bar"],
+            plugin_install_names=["foo"],
             server_host="agnes.example.com",
             ca_pem=_FAKE_CA_PEM,
         )
     )
-    assert "agnes refresh-marketplace --bootstrap || {" in joined
-    # Error message goes to stderr.
-    assert ">&2" in joined
+    assert "agnes refresh-marketplace --bootstrap" in joined
+    assert "git clone" not in _executable_lines(joined)
+    assert "sslVerify" not in joined
 
 
 def test_diagnose_step_documents_non_admin_role_state():
@@ -697,7 +679,7 @@ def test_resolve_lines_ca_pem_works_without_plugins():
 
     joined = "\n".join(resolve_lines("agnes.whl", ca_pem=_FAKE_CA_PEM))
     assert "0) Trust the Agnes TLS certificate" in joined
-    assert "10) Confirm:" in joined
+    assert "8) Confirm:" in joined
     # Marketplace block is now emitted unconditionally; the bootstrap
     # one-liner does the `claude plugin marketplace add` internally so
     # the literal string isn't in the prompt text — the user-facing
@@ -769,21 +751,21 @@ def test_no_skills_step_emitted():
 
 
 def test_no_plugins_layout_keeps_diagnose_before_connectors():
-    """Always-on layout: install → mkdir/cd → init → catalog → preflight →
-    marketplace → diagnose → connectors → restart_claude → confirm,
-    regardless of plugin grants. Step numbers: 7 diagnose, 8 connectors,
-    9 restart-claude, 10 confirm. Skills step deleted in #242."""
+    """Always-on layout: install → init → catalog → marketplace →
+    diagnose → connectors → restart_claude → confirm, regardless of
+    plugin grants. Step numbers: 5 diagnose, 6 connectors,
+    7 restart-claude, 8 confirm."""
     from app.web.setup_instructions import resolve_lines
 
     joined = "\n".join(resolve_lines("agnes.whl"))
-    assert "7) Run diagnostics:" in joined
-    assert "8) Connect the user's tools" in joined
-    assert "9) Restart Claude Code" in joined
-    assert "10) Confirm:" in joined
-    diag_idx = joined.index("7) Run diagnostics:")
-    conn_idx = joined.index("8) Connect the user's tools")
-    restart_idx = joined.index("9) Restart Claude Code")
-    confirm_idx = joined.index("10) Confirm:")
+    assert "5) Run diagnostics:" in joined
+    assert "6) Connect the user's tools" in joined
+    assert "7) Restart Claude Code" in joined
+    assert "8) Confirm:" in joined
+    diag_idx = joined.index("5) Run diagnostics:")
+    conn_idx = joined.index("6) Connect the user's tools")
+    restart_idx = joined.index("7) Restart Claude Code")
+    confirm_idx = joined.index("8) Confirm:")
     assert diag_idx < conn_idx < restart_idx < confirm_idx
 
 
@@ -851,16 +833,19 @@ def test_install_page_uses_versioned_wheel_url(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Connector block (step 8) — per-connector default-yes interactive asks
-# wired to seed-resident connector-*/SKILL.md files (bundled snapshot
-# fallback when no Initial Workspace Template is configured).
+# Connector block (step 6) — per-connector interactive asks referencing
+# `agnes connectors show <slug>`; SKILL.md bodies are fetched on demand,
+# never inlined. Body-content locks (Asana PAT-not-MCP, Atlassian token
+# expiry, GWS branches) moved to tests/test_api_connectors.py, on the
+# endpoint that now serves the bodies.
 # ---------------------------------------------------------------------------
 
 
 def test_connectors_block_renders_all_three_asks():
-    """Step 8 must contain an ask for Asana, Google Workspace, and
-    Atlassian (Jira / Confluence) and inline each connector's SKILL.md
-    body. The bundled snapshot in the wheel is the source when no IWT is
+    """Step 6 lists a tile for Asana, Google Workspace, and Atlassian
+    (Jira / Confluence) — display name, summary, minutes — with the
+    `agnes connectors show <slug>` fetch line, and no inlined body. The
+    bundled snapshot in the wheel is the manifest source when no IWT is
     configured.
     """
     from src import connectors_manifest as cm
@@ -869,106 +854,52 @@ def test_connectors_block_renders_all_three_asks():
 
     cm.invalidate_cache()
     joined = "\n".join(resolve_lines("agnes.whl"))
-    assert 'Ask: "Set up Asana now? (yes/no)"' in joined
-    assert 'Ask: "Set up Google Workspace now? (yes/no)"' in joined
-    assert 'Ask: "Set up Atlassian (Jira / Confluence) now? (yes/no)"' in joined
+    assert "a) Asana" in joined
+    assert "b) Atlassian (Jira / Confluence)" in joined
+    assert "c) Google Workspace" in joined
+    assert "agnes connectors show connector-asana" in joined
+    assert "agnes connectors show connector-atlassian" in joined
+    assert "agnes connectors show connector-gws" in joined
     assert "declining and deferring are both valid" in joined
+    # No inlined SKILL.md bodies (they were 76 % of the rendered prompt).
+    assert "app.asana.com" not in joined
+    assert "gws auth setup" not in joined
 
 
-def test_connectors_block_sub_letters_skip_missing_bodies(monkeypatch):
-    """Devin Review on PR #462: when a connector's SKILL.md body is
-    missing from the seed, the original `_connectors_block` used the
-    raw `enumerate` index to pick a sub-letter, so a skipped middle
-    connector caused a gap (e.g. ``a) Asana`` + ``c) GWS`` with no
-    ``b)``).
-
-    Regression guard: with the middle connector deliberately missing
-    a body, the rendered sub-letters must stay tight a/b/c..., not
-    a/c/d... — ``letter_idx`` is incremented ONLY on rendered entries.
-    """
+def test_connectors_block_letters_follow_manifest_order():
+    """Sub-letters come straight from the manifest (alphabetical by
+    display_name) — a/b/c with no gaps. Bodies are not loaded at render
+    time anymore, so a missing SKILL.md body can no longer skip a tile
+    (it surfaces at `agnes connectors show` time instead)."""
     from src import connectors_manifest as cm
 
     from app.web import setup_instructions as si
 
     cm.invalidate_cache()
-
-    # Patch _load_connector_body to return None for the middle slug.
-    # Manifest order is Asana → Atlassian → GWS (alphabetical by
-    # display_name), so dropping Atlassian's body must NOT bump GWS
-    # to letter ``c)``.
-    real_load = si._load_connector_body
-
-    def patched(slug):
-        if slug == "connector-atlassian":
-            return None
-        return real_load(slug)
-
-    monkeypatch.setattr(si, "_load_connector_body", patched)
-
     joined = "\n".join(si.resolve_lines("agnes.whl"))
-
-    # Asana rendered first (a), GWS second (b) — Atlassian skipped.
-    assert "   a) Asana" in joined
-    assert "   b) Google Workspace" in joined
-    # The gap-bug shape (Atlassian's slot left as ``b)``, GWS pushed
-    # to ``c)``) MUST NOT appear.
-    assert "   b) Atlassian" not in joined
-    assert "   c) Google Workspace" not in joined
-
-
-def test_connectors_block_gws_body_describes_oauth_app_branch():
-    """The bundled GWS SKILL.md carries BOTH the operator-OAuth-app branch
-    (~2 min, frictionless) and the manual GCP walkthrough (~20 min) in
-    one body — the seed skill reads `~/.claude/agnes/.env` at runtime to
-    pick the right one. Verify the operator-OAuth-app prose is present
-    in the rendered output.
-    """
-    from src import connectors_manifest as cm
-
-    from app.web.setup_instructions import resolve_lines
-
-    cm.invalidate_cache()
-    joined = "\n".join(resolve_lines("agnes.whl"))
-    # Operator-app branch landmark: the inlined client_secret.json schema
-    # block referencing AGNES_GWS_CLIENT_ID from the per-tenant .env file.
-    assert "AGNES_GWS_CLIENT_ID" in joined
-    assert "client_secret.json" in joined
-
-
-def test_connectors_block_gws_body_describes_manual_branch():
-    """The same bundled body also covers the fallback flow when no
-    operator OAuth app is provisioned. Verify the manual `gws auth setup`
-    walkthrough text is present.
-    """
-    from src import connectors_manifest as cm
-
-    from app.web.setup_instructions import resolve_lines
-
-    cm.invalidate_cache()
-    joined = "\n".join(resolve_lines("agnes.whl"))
-    assert "gws auth setup" in joined
+    a = joined.index("a) Asana")
+    b = joined.index("b) Atlassian")
+    c = joined.index("c) Google Workspace")
+    assert a < b < c
 
 
 def test_step_numbering_with_connectors_step():
-    """_step_numbers must return preflight=5, marketplace=6, diagnose=7,
-    connectors=8, restart_claude=9, confirm=10. Anchors the numeric
-    expectations the rest of the test suite assumes. (Skills step deleted
-    in #242; connectors added in #243; standalone `mcp_servers` step
-    retired and folded into the Atlassian connector's prompt body;
-    explicit mkdir/cd step added between install and init shifts later
-    step numbers up by 1; explicit restart-Claude step added between
-    connectors and confirm shifts confirm up by 1 more.)"""
+    """_step_numbers must return marketplace=4, diagnose=5, connectors=6,
+    restart_claude=7, confirm=8. Anchors the numeric expectations the
+    rest of the test suite assumes. (Preflight folded into the
+    marketplace header; the mkdir/cd step moved into the CLI's
+    unsafe_workspace guard.)"""
     from app.web.setup_instructions import _step_numbers
 
     steps = _step_numbers()
-    assert steps["preflight"] == "5"
-    assert steps["marketplace"] == "6"
+    assert "preflight" not in steps
+    assert steps["marketplace"] == "4"
     assert "mcp_servers" not in steps
-    assert steps["diagnose"] == "7"
+    assert steps["diagnose"] == "5"
     assert steps["required_connectors"] == ""  # none in the default layout
-    assert steps["connectors"] == "8"
-    assert steps["restart_claude"] == "9"
-    assert steps["confirm"] == "10"
+    assert steps["connectors"] == "6"
+    assert steps["restart_claude"] == "7"
+    assert steps["confirm"] == "8"
     assert "skills" not in steps  # deleted in #242
 
 
@@ -1011,28 +942,13 @@ def _connector_entry(slug: str, name: str, *, required: bool = False):
     )
 
 
-def _fake_bodies(monkeypatch, missing: frozenset[str] = frozenset()):
-    """Serve a deterministic body per slug so these tests don't depend on
-    the bundled seed content; `missing` slugs resolve to None (the
-    missing-body path)."""
-    from app.web import setup_instructions as si
-
-    def fake_load(slug: str):
-        if slug in missing:
-            return None
-        return f"Install {slug} for {{instance_brand}}."
-
-    monkeypatch.setattr(si, "_load_connector_body", fake_load)
-
-
-def test_required_block_mix_layout(monkeypatch):
-    """Mix combo: required entries take step 8 (no asks), optional tiles
-    shift to 9, restart 10, confirm 11; letters restart per block; the
-    inlined body gets the 6-space indent + {instance_brand} substitution.
+def test_required_block_mix_layout():
+    """Mix combo: required entries take step 6 (no asks), optional tiles
+    shift to 7, restart 8, confirm 9; letters restart per block; tiles
+    reference `agnes connectors show <slug>` instead of inlining bodies.
     """
     from app.web.setup_instructions import resolve_lines
 
-    _fake_bodies(monkeypatch)
     manifest = [
         _connector_entry("connector-xtool", "XTool", required=True),
         _connector_entry("connector-ytool", "YTool", required=True),
@@ -1040,43 +956,37 @@ def test_required_block_mix_layout(monkeypatch):
     ]
     joined = "\n".join(resolve_lines("agnes.whl", connector_manifest=manifest, instance_brand="BrandCo"))
 
-    req_idx = joined.index("8) Install required tools (run every prompt below now):")
-    opt_idx = joined.index("9) Connect the user's tools (last interactive ask before Confirm):")
-    restart_idx = joined.index("10) Restart Claude Code")
-    confirm_idx = joined.index("11) Confirm:")
-    assert joined.index("7) Run diagnostics:") < req_idx < opt_idx
+    req_idx = joined.index("6) Install required tools (no ask — this instance mandates them):")
+    opt_idx = joined.index("7) Connect the user's tools (last interactive ask before Confirm):")
+    restart_idx = joined.index("8) Restart Claude Code")
+    confirm_idx = joined.index("9) Confirm:")
+    assert joined.index("5) Run diagnostics:") < req_idx < opt_idx
     assert opt_idx < restart_idx < confirm_idx
-
-    # Required tools get no ask; the optional tile keeps its ask.
-    assert 'Ask: "Set up XTool now? (yes/no)"' not in joined
-    assert 'Ask: "Set up YTool now? (yes/no)"' not in joined
-    assert 'Ask: "Set up ZTool now? (yes/no)"' in joined
-    assert "This instance requires the tools below for every account" in joined
 
     # Letter sequences are independent per block.
     assert "   a) XTool" in joined
     assert "   b) YTool" in joined
     assert "   a) ZTool" in joined
 
-    # Trailer names the next step; body inlined with brand substituted.
-    assert "Move on to step 9 once each tool above is set up or has" in joined
-    assert "      Install connector-xtool for BrandCo." in joined
+    # Tiles fetch on demand; trailer names the next step.
+    assert "agnes connectors show connector-xtool" in joined
+    assert "agnes connectors show connector-ztool" in joined
+    assert "Move on to step 7 once each tool above is set up or has" in joined
 
 
-def test_required_only_omits_optional_step_and_renumbers(monkeypatch):
+def test_required_only_omits_optional_step_and_renumbers():
     from app.web.setup_instructions import resolve_lines
 
-    _fake_bodies(monkeypatch)
     manifest = [_connector_entry("connector-xtool", "XTool", required=True)]
     joined = "\n".join(resolve_lines("agnes.whl", connector_manifest=manifest))
 
-    assert "8) Install required tools" in joined
+    assert "6) Install required tools" in joined
     assert "Connect the user's tools" not in joined
-    assert "9) Restart Claude Code" in joined
-    assert "10) Confirm:" in joined
-    assert "11) Confirm:" not in joined
-    # With no optional step, the trailer points at restart (step 9).
-    assert "Move on to step 9 once each tool above is set up or has" in joined
+    assert "7) Restart Claude Code" in joined
+    assert "8) Confirm:" in joined
+    assert "9) Confirm:" not in joined
+    # With no optional step, the trailer points at restart (step 7).
+    assert "Move on to step 7 once each tool above is set up or has" in joined
 
 
 def test_default_manifest_has_no_required_step():
@@ -1100,8 +1010,8 @@ def test_empty_manifest_renumbers_past_both_blocks():
     joined = "\n".join(resolve_lines("agnes.whl", connector_manifest=[]))
     assert "Install required tools" not in joined
     assert "Connect the user's tools" not in joined
-    assert "8) Restart Claude Code" in joined
-    assert "9) Confirm:" in joined
+    assert "6) Restart Claude Code" in joined
+    assert "7) Confirm:" in joined
 
 
 def test_step_numbers_required_combos():
@@ -1121,35 +1031,35 @@ def test_step_numbers_required_combos():
     assert slots(has_connectors=False, has_required_connectors=False) == (
         "",
         "",
-        "8",
-        "9",
+        "6",
+        "7",
     )
     assert slots(has_connectors=True, has_required_connectors=False) == (
         "",
+        "6",
+        "7",
         "8",
-        "9",
-        "10",
     )
     assert slots(has_connectors=False, has_required_connectors=True) == (
-        "8",
+        "6",
         "",
-        "9",
-        "10",
+        "7",
+        "8",
     )
     assert slots(has_connectors=True, has_required_connectors=True) == (
+        "6",
+        "7",
         "8",
         "9",
-        "10",
-        "11",
     )
 
 
-def test_required_block_letters_stay_tight_on_missing_body(monkeypatch):
-    """#462 mirror for the required block: a skipped middle body must not
-    leave a letter gap."""
+def test_required_block_letters_follow_manifest():
+    """Letters come straight from the manifest — tight a/b/c, no body
+    loading at render time (a missing SKILL.md surfaces at
+    `agnes connectors show` time via connector_body_missing)."""
     from app.web.setup_instructions import resolve_lines
 
-    _fake_bodies(monkeypatch, missing=frozenset({"connector-btool"}))
     manifest = [
         _connector_entry("connector-atool", "ATool", required=True),
         _connector_entry("connector-btool", "BTool", required=True),
@@ -1158,18 +1068,16 @@ def test_required_block_letters_stay_tight_on_missing_body(monkeypatch):
     joined = "\n".join(resolve_lines("agnes.whl", connector_manifest=manifest))
 
     assert "   a) ATool" in joined
-    assert "   b) CTool" in joined
-    assert "   b) BTool" not in joined
-    assert "   c) CTool" not in joined
+    assert "   b) BTool" in joined
+    assert "   c) CTool" in joined
 
 
-def test_finale_bullets_split_required_and_optional(monkeypatch):
+def test_finale_bullets_split_required_and_optional():
     """Mix: the Confirm summary carries one bullet per group — required
     first (no "declined" wording; those can't be declined), optional with
     the set-up/failed/declined wording. Required-only: no "declined" at all."""
     from app.web.setup_instructions import resolve_lines
 
-    _fake_bodies(monkeypatch)
     manifest = [
         _connector_entry("connector-xtool", "XTool", required=True),
         _connector_entry("connector-ztool", "ZTool"),
@@ -1186,7 +1094,7 @@ def test_finale_bullets_split_required_and_optional(monkeypatch):
     assert "or declined" not in joined
 
 
-def test_connectors_trailer_names_restart_step_not_confirm(monkeypatch):
+def test_connectors_trailer_names_restart_step_not_confirm():
     """P1a regression: the optional-connectors trailer must forward to the
     Restart-Claude step, not skip straight to Confirm — Restart-Claude sits
     between connectors and Confirm and re-loads plugins/MCP servers/hooks
@@ -1194,27 +1102,24 @@ def test_connectors_trailer_names_restart_step_not_confirm(monkeypatch):
     every later step number by one."""
     from app.web.setup_instructions import resolve_lines
 
-    # Default layout: no required connectors. Restart is step 9, Confirm 10.
+    # Default layout: no required connectors. Restart is step 7, Confirm 8.
     joined = "\n".join(resolve_lines("agnes.whl"))
-    assert "After all asks (regardless of answers) continue to step 9." in joined
-    assert "9) Restart Claude Code" in joined
-    assert "After all asks (regardless of answers) continue to step 10." not in joined
+    assert "After all asks (regardless of answers) continue to step 7." in joined
+    assert "7) Restart Claude Code" in joined
+    assert "After all asks (regardless of answers) continue to step 8." not in joined
 
     # With a required connector present, everything after it shifts by one:
-    # optional connectors move to 9, restart to 10, confirm to 11.
-    _fake_bodies(monkeypatch)
+    # optional connectors move to 7, restart to 8, confirm to 9.
     manifest = [
         _connector_entry("connector-xtool", "XTool", required=True),
         _connector_entry("connector-ztool", "ZTool"),
     ]
     joined = "\n".join(resolve_lines("agnes.whl", connector_manifest=manifest))
-    assert "After all asks (regardless of answers) continue to step 10." in joined
-    assert "10) Restart Claude Code" in joined
-    assert "After all asks (regardless of answers) continue to step 11." not in joined
+    assert "After all asks (regardless of answers) continue to step 8." in joined
 
 
 def test_restart_claude_step_emitted_unconditionally():
-    """`9) Restart Claude Code` renders in every layout (with / without
+    """`7) Restart Claude Code` renders in every layout (with / without
     plugins, with / without CA) so users never finish setup sitting in
     a stale Claude Code session that has not loaded the freshly-installed
     plugins / MCP servers / SessionStart hooks."""
@@ -1228,7 +1133,7 @@ def test_restart_claude_step_emitted_unconditionally():
         {"plugin_install_names": ["foo"], "server_host": "h", "ca_pem": fake_ca},
     ):
         joined = "\n".join(resolve_lines("agnes.whl", **kwargs))
-        assert "9) Restart Claude Code" in joined, f"missing restart step for kwargs={kwargs!r}"
+        assert "7) Restart Claude Code" in joined, f"missing restart step for kwargs={kwargs!r}"
         # The body should mention /exit + re-running `claude` from the
         # workspace dir so the SessionStart hook (workspace-scoped) fires.
         assert "/exit" in joined
@@ -1236,8 +1141,8 @@ def test_restart_claude_step_emitted_unconditionally():
 
 
 def test_restart_claude_substitutes_workspace_dir():
-    """The restart-claude body interpolates the workspace folder so the
-    user sees their actual `~/Desktop/<brand>` path, not a literal placeholder."""
+    """workspace_dir threads into the rendered prompt (step 2's suggested
+    folder), and the restart step renders without leaked placeholders."""
     from app.web.setup_instructions import resolve_lines
 
     joined = "\n".join(
@@ -1247,7 +1152,7 @@ def test_restart_claude_substitutes_workspace_dir():
             workspace_dir="FoundryAI",
         )
     )
-    assert "9) Restart Claude Code" in joined
+    assert "7) Restart Claude Code" in joined
     assert "~/Desktop/FoundryAI" in joined
     assert "{workspace_dir}" not in joined
 
@@ -1283,20 +1188,22 @@ def test_asana_prompt_uses_pat_not_mcp():
     assert "Claude Code — {instance_brand}" in body
 
 
-def test_asana_prompt_brand_threads_through_renderer():
-    """When `resolve_lines` is called with a brand string, the PAT-label
-    placeholder renders with that brand instead of the default 'Agnes'.
-    The substitution happens in the renderer (not in the SKILL.md file
-    itself) so a single seed file works for every instance.
+def test_asana_prompt_brand_placeholder_survives_body_loader():
+    """`load_connector_body` returns the raw body with the
+    {instance_brand} placeholder intact — substitution happens in
+    GET /api/connectors/{slug}/prompt (per-instance brand), not at file
+    read time, so a single seed file works for every instance.
+    (Endpoint-side substitution is locked in tests/test_api_connectors.py.)
     """
-    from src import connectors_manifest as cm
+    from src.connectors_manifest import load_connector_body
 
-    from app.web.setup_instructions import resolve_lines
-
-    cm.invalidate_cache()
-    joined = "\n".join(resolve_lines("agnes.whl", instance_brand="Foundry AI"))
-    assert "Claude Code — Foundry AI" in joined
-    assert "{instance_brand}" not in joined
+    loaded = load_connector_body("connector-asana")
+    assert loaded is not None
+    body, source = loaded
+    assert source == "bundled"
+    assert "Claude Code — {instance_brand}" in body
+    # Frontmatter is stripped — the body starts with prose, not `---`.
+    assert not body.lstrip().startswith("---")
 
 
 def test_atlassian_prompt_instructs_1_year_expiry():
@@ -1315,15 +1222,13 @@ def test_atlassian_prompt_instructs_1_year_expiry():
     assert "Claude Code — {instance_brand}" in body
 
 
-def test_atlassian_prompt_brand_threads_through_renderer():
-    from src import connectors_manifest as cm
+def test_atlassian_prompt_brand_placeholder_survives_body_loader():
+    from src.connectors_manifest import load_connector_body
 
-    from app.web.setup_instructions import resolve_lines
-
-    cm.invalidate_cache()
-    joined = "\n".join(resolve_lines("agnes.whl", instance_brand="Foundry AI"))
-    # Atlassian token label uses the brand placeholder.
-    assert 'name it "Claude Code — Foundry AI"' in joined
+    loaded = load_connector_body("connector-atlassian")
+    assert loaded is not None
+    body, _source = loaded
+    assert 'Label it "Claude Code — {instance_brand}"' in body
 
 
 def test_gws_prompt_emits_pass_fail_contract():
@@ -1339,83 +1244,42 @@ def test_gws_prompt_emits_pass_fail_contract():
 # ---------------------------------------------------------------------------
 
 
-def test_step_2_uses_three_branch_decision_tree():
-    """Step 2 must use an unsafe-targets / prepared-workspace / anything-else
-    tree instead of hard-coding `~/Desktop/<workspace_dir>` as the only
-    acceptable path. The old flow scolded any user who cd'd into a
-    project folder before pasting; the new flow respects intentional cwd
-    and only protects against destructive defaults ($HOME / system dirs).
+def test_step_2_triage_replaces_decision_tree():
+    """The install-location decision tree moved into the CLI: `agnes init`
+    itself refuses $HOME / roots / system dirs with a typed
+    `unsafe_workspace` error (cli/commands/init.py). The prompt keeps a
+    three-bullet outcome triage instead of the old 2a/2b/2c prose tree.
 
     Contract:
-      - Step header renamed to "Confirm the install location".
-      - All three branches (unsafe targets, prepared workspace, anything
-        else) are documented in the script.
-      - `pwd` check is still emitted.
-      - The unsafe-targets list explicitly names `$HOME` plus the system
-        dirs the install must never touch.
-      - The prepared-workspace branch whitelists the workspace artefacts a
-        prepared folder might already hold (`.git`, `.claude`, `.agnes`,
-        `AGNES_WORKSPACE.md`, `README.md`, `bash.exe.stackdump`) so a
-        re-paste into an already-initialised workspace doesn't prompt.
-      - The anything-else branch offers 'ok'/'default'/'abort' (instead of
-        the old 'install here'/'abort' pair) — 'default' lets the user opt
-        into the recommended `~/Desktop/<workspace_dir>` path without
-        re-pasting, and the legacy 'install here' phrasing remains as a
-        synonym for 'ok' for muscle-memory compatibility.
-      - The script never auto-runs `mkdir` for the user except inside
-        the 'default' branch of the confirm prompt.
+      - Step 2 header is the init step, run in the current directory.
+      - The unsafe_workspace refusal is explained, with the fix (create a
+        workspace folder, cd, re-run) left to the USER — the agent must
+        not mkdir/cd on its own.
+      - The already-initialized outcome routes to `agnes update`.
+      - The missing-token outcome routes back to the install guide (or
+        `agnes auth login`).
+      - The old prose tree (2a/2b/2c, pwd checks, artefact whitelist,
+        'install here' keyword protocol) is gone.
     """
     from app.web.setup_instructions import resolve_lines
 
     joined = "\n".join(resolve_lines("agnes.whl"))
 
-    # New step header.
-    assert "2) Confirm the install location." in joined
+    assert "2) Set up the Agnes workspace in the current directory." in joined
+    assert "`unsafe_workspace` refusal" in joined
+    assert "don't pick a directory" in joined
+    assert "don't `mkdir`/`cd` on your own" in joined
+    assert "Already initialized (`.claude/init-complete` exists)" in joined
+    assert "agnes update" in joined
+    assert "agnes auth login" in joined
 
-    # `pwd` check still present.
-    assert "pwd" in joined
-
-    # All three branches documented.
-    assert "2a) Unsafe targets" in joined
-    assert "2b) Prepared workspace" in joined
-    assert "2c) Anything else" in joined
-
-    # Unsafe-targets list explicitly names $HOME + the system paths.
-    for path in ("$HOME", "/tmp", "/etc", "/usr", "/var", "/opt", "/root"):
-        assert path in joined, f"unsafe-targets list missing {path!r}"
-
-    # Prepared-workspace whitelist contains the workspace artefacts,
-    # including the common Windows Git Bash crash-dump leftover.
-    for artefact in (
-        ".git",
-        ".claude",
-        ".agnes",
-        "AGNES_WORKSPACE.md",
-        "README.md",
-        "bash.exe.stackdump",
-    ):
-        assert artefact in joined, f"prepared-workspace whitelist missing {artefact!r}"
-
-    # The whitelist check's grep command is kept in sync with the artefact
-    # list above — a real leftover crash dump must not trip the "anything
-    # else" branch.
-    assert "-e bash.exe.stackdump" in joined
-
-    # Confirm prompt offers the new three-way decision.
-    assert "'ok'" in joined
-    assert "'default'" in joined
-    assert "'abort'" in joined
-
-    # Legacy 'install here' phrasing kept as an 'ok' synonym (muscle memory).
-    assert "'install here'" in joined
-
-    # The 'default' branch is the only place mkdir runs automatically.
-    assert "mkdir -p ~/Desktop/Agnes && cd ~/Desktop/Agnes" in joined
-
-    # No auto-mkdir from the very-old flow.
-    assert 'mkdir -p "$HOME/Agnes"' not in joined
-    assert 'New-Item -ItemType Directory -Force -Path "$HOME\\Agnes"' not in joined
-    assert 'Set-Location "$HOME\\Agnes"' not in joined
+    # Old tree is gone.
+    assert "2a) Unsafe targets" not in joined
+    assert "2b) Prepared workspace" not in joined
+    assert "2c) Anything else" not in joined
+    assert "bash.exe.stackdump" not in joined
+    assert "'install here'" not in joined
+    assert "mkdir -p ~/Desktop/Agnes && cd ~/Desktop/Agnes" not in joined
 
 
 def test_step_2_substitutes_custom_brand_and_workspace_dir():
@@ -1430,63 +1294,40 @@ def test_step_2_substitutes_custom_brand_and_workspace_dir():
             workspace_dir="FoundryAI",
         )
     )
-    assert "2) Confirm the install location." in joined
-    # Default path threads through the unsafe-targets copy, the
-    # prepared-workspace reference, and the confirm-prompt 'default' branch.
+    assert "2) Set up the Foundry AI workspace in the current directory." in joined
+    # The suggested folder threads the workspace_dir value.
     assert "~/Desktop/FoundryAI" in joined
-    assert "mkdir -p ~/Desktop/FoundryAI && cd ~/Desktop/FoundryAI" in joined
-    # Brand surfaces in step 3's header (workspace_dir carries the unsafe-
-    # targets + confirm copy; instance_brand shows up once the flow reaches
-    # the bootstrap step).
-    assert "3) Bootstrap your Foundry AI workspace" in joined
     # No placeholders survive.
     assert "{workspace_dir}" not in joined
     assert "{instance_brand}" not in joined
 
 
-def test_step_2_refuse_branch_lists_home_and_system_paths():
-    """The unsafe-targets branch must explicitly enumerate $HOME plus the
-    system dirs. Without this list a model might decide an OS path is
-    'fine' and install into /etc or /root, scattering files where they
-    don't belong."""
+def test_unsafe_dir_facts_split_between_prompt_and_cli():
+    """The prompt names the headline unsafe dirs ($HOME, /tmp) and the
+    typed error kind; the authoritative enumeration lives in the CLI
+    guard (`_UNSAFE_WORKSPACE_PATHS`) — one source of truth, so a model
+    can't talk itself into installing into /etc based on prompt prose."""
+    from cli.commands.init import _UNSAFE_WORKSPACE_PATHS
+
     from app.web.setup_instructions import resolve_lines
 
     joined = "\n".join(resolve_lines("agnes.whl"))
-    # All paths the unsafe-targets line claims to block must appear in the
-    # rendered script so the AI follower can match against pwd output.
-    for path in (
-        "$HOME",
-        "/tmp",
-        "/etc",
-        "/usr",
-        "/var",
-        "/opt",
-        "/root",
-        "/bin",
-        "/sbin",
-        "/boot",
-        "/sys",
-        "/proc",
-    ):
-        assert path in joined, f"refuse path {path!r} missing"
+    assert "$HOME" in joined
+    assert "/tmp" in joined
+    assert "unsafe_workspace" in joined
+    # The CLI guard still enumerates the full system list.
+    for path in ("/", "/tmp", "/etc", "/usr", "/var", "/opt", "/root", "/bin", "/sbin", "/boot", "/sys", "/proc"):
+        assert path in _UNSAFE_WORKSPACE_PATHS, f"CLI guard missing {path!r}"
 
 
-def test_step_9_restart_references_install_dir_not_hardcoded():
-    """Step 9 must describe the restart cwd as the directory confirmed
-    in step 2 (mentioning the default path) rather than a bare hardcoded
-    `~/{workspace_dir}`. The phrasing keeps the user-flow connection
-    visible across step 2's three branches and step 9's restart cue."""
+def test_restart_references_init_directory_not_hardcoded():
+    """The restart step describes the cwd as the workspace where
+    `agnes init` ran (step 2) rather than a hardcoded `~/…` path."""
     from app.web.setup_instructions import resolve_lines
 
     joined = "\n".join(resolve_lines("agnes.whl"))
-    assert "9) Restart Claude Code" in joined
-    # Wording references the step-2 confirmation.
-    assert "install dir confirmed in step 2" in joined
-    # Default path still mentioned as the expected baseline.
-    assert "~/Desktop/Agnes" in joined
-    # Step 9 still mentions 'install here' as the legacy synonym so
-    # users who learned the old flow recognise it.
-    assert "'install here'" in joined
+    assert "7) Restart Claude Code" in joined
+    assert "the workspace where `agnes init` ran in step 2" in joined
 
 
 # ---------------------------------------------------------------------------
@@ -1495,20 +1336,20 @@ def test_step_9_restart_references_install_dir_not_hardcoded():
 
 
 def test_restart_claude_step_ends_with_recap_before_confirm():
-    """The restart-Claude step (9) closes with a recap cue naming the
-    Confirm step (10). It intentionally overlaps `_finale_lines`' Confirm
+    """The restart-Claude step (7) closes with a recap cue naming the
+    Confirm step (8). It intentionally overlaps `_finale_lines`' Confirm
     summary as a short bridge — a plain-language outcome summary right
     before the structured Confirm bullets."""
     from app.web.setup_instructions import resolve_lines
 
     joined = "\n".join(resolve_lines("agnes.whl"))
-    assert "Before step 10 (Confirm):" in joined
+    assert "Before step 8 (Confirm):" in joined
     assert "short recap of what was installed or was already present" in joined
-    # The recap belongs to the restart step, so it lands after the step-9
-    # header and before the step-10 Confirm header.
-    recap_idx = joined.index("Before step 10 (Confirm):")
-    restart_idx = joined.index("9) Restart Claude Code")
-    confirm_idx = joined.index("10) Confirm:")
+    # The recap belongs to the restart step, so it lands after the step-7
+    # header and before the step-8 Confirm header.
+    recap_idx = joined.index("Before step 8 (Confirm):")
+    restart_idx = joined.index("7) Restart Claude Code")
+    confirm_idx = joined.index("8) Confirm:")
     assert restart_idx < recap_idx < confirm_idx
 
 

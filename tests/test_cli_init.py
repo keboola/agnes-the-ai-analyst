@@ -1184,3 +1184,79 @@ def test_init_absent_token_file_note_points_at_the_likely_cause(tmp_path, monkey
     assert "does not exist" in out
     assert "expired" in out, "the note does not mention the expired-credential case"
     assert "/home" in out, "the note does not point back at the token step"
+
+
+# ---------------------------------------------------------------------------
+# Unsafe-workspace guard — `agnes init` refuses $HOME, /, /tmp and other
+# system directories so the install prompt no longer needs a prose decision
+# tree; the refusal (and its hint) live in the CLI itself.
+# ---------------------------------------------------------------------------
+
+
+def test_init_refuses_home_directory(tmp_path, monkeypatch):
+    """--workspace pointing at $HOME is refused before any network or
+    filesystem side effect (no token consumed, nothing written)."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path / "_cfg"))
+
+    result = runner.invoke(
+        init_app,
+        ["--server-url", "http://x", "--token", "t", "--workspace", str(home)],
+    )
+    assert result.exit_code != 0
+    out = " ".join(_clean(result.output).split())
+    assert "unsafe_workspace" in out
+    assert "workspace folder" in out, "hint must tell the user the fix"
+    assert not (home / "CLAUDE.md").exists()
+    assert not (home / ".claude").exists()
+
+
+def test_init_refuses_cwd_home_directory(tmp_path, monkeypatch):
+    """Same refusal when $HOME is the implicit cwd (no --workspace)."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path / "_cfg"))
+    monkeypatch.chdir(home)
+
+    result = runner.invoke(init_app, ["--server-url", "http://x", "--token", "t"])
+    assert result.exit_code != 0
+    assert "unsafe_workspace" in _clean(result.output)
+
+
+def test_init_refuses_system_directories(tmp_path, monkeypatch):
+    """The POSIX system list is refused — including macOS' /tmp →
+    /private/tmp symlink resolution."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path / "_cfg"))
+
+    for target in ("/", "/tmp", "/etc", "/usr", "/var", "/opt"):
+        result = runner.invoke(
+            init_app,
+            ["--server-url", "http://x", "--token", "t", "--workspace", target],
+        )
+        assert result.exit_code != 0, f"{target} was not refused"
+        assert "unsafe_workspace" in _clean(result.output), target
+
+
+def test_init_allows_subdirectory_of_home(tmp_path, monkeypatch):
+    """Only exact matches are unsafe — a workspace folder under $HOME (the
+    documented default ~/Desktop/<brand>) initializes normally."""
+    home = tmp_path / "home"
+    ws = home / "Desktop" / "Agnes"
+    ws.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path / "_cfg"))
+    api_get = _make_api_get()
+    monkeypatch.setattr("cli.commands.init.api_get", api_get, raising=False)
+    monkeypatch.setattr("cli.lib.pull.api_get", api_get, raising=False)
+
+    result = runner.invoke(
+        init_app,
+        ["--server-url", "http://x", "--token", "t", "--workspace", str(ws)],
+    )
+    assert result.exit_code == 0, result.output

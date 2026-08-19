@@ -1923,6 +1923,55 @@
         "title": "ConnectorMeta",
         "type": "object"
       },
+      "ConnectorPromptResponse": {
+        "description": "One connector's full setup prompt \u2014 the post-frontmatter SKILL.md\nbody, brand-substituted. Consumed by ``agnes connectors show <slug>``\nso the install prompt can reference connector setup by name instead\nof inlining every body (issue: 76 % of the rendered install prompt\nwas connector bodies the user may never run).",
+        "properties": {
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "estimated_minutes": {
+            "title": "Estimated Minutes",
+            "type": "integer"
+          },
+          "prompt": {
+            "title": "Prompt",
+            "type": "string"
+          },
+          "required": {
+            "default": false,
+            "title": "Required",
+            "type": "boolean"
+          },
+          "schema_version": {
+            "default": 2,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "short_summary": {
+            "title": "Short Summary",
+            "type": "string"
+          },
+          "slug": {
+            "title": "Slug",
+            "type": "string"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "slug",
+          "display_name",
+          "short_summary",
+          "estimated_minutes",
+          "prompt",
+          "source"
+        ],
+        "title": "ConnectorPromptResponse",
+        "type": "object"
+      },
       "ConnectorsManifestResponse": {
         "properties": {
           "connectors": {
@@ -11037,7 +11086,7 @@
   "info": {
     "description": "Self-hosted AI harness: governed data access, skills marketplace, corporate memory, and agent workspaces",
     "title": "AI Harness",
-    "version": "0.83.51"
+    "version": "0.83.70"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -33014,6 +33063,71 @@
           }
         },
         "summary": "Get Params",
+        "tags": [
+          "connectors"
+        ]
+      }
+    },
+    "/api/connectors/{slug}/prompt": {
+      "get": {
+        "description": "Return one connector's setup prompt (SKILL.md body, brand-substituted).\n\nThe manifest is the registry gate: a slug that ``load_manifest()``\ndid not emit is a 404 \u2014 this endpoint never resolves seed paths from\ncaller input directly, so traversal-shaped slugs die here too.",
+        "operationId": "get_connector_prompt_api_connectors__slug__prompt_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectorPromptResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Connector Prompt",
         "tags": [
           "connectors"
         ]

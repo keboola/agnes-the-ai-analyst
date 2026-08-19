@@ -108,16 +108,25 @@ The numbered steps are arranged so that:
     step before Confirm — the whole prompt is non-interactive, no
     decision questions for the user.
 
-Layout:
+Layout (default; required/optional connector steps drop out with their
+manifest group and later steps renumber):
   0  TLS trust block (only when ca_pem is supplied)
   1  Install CLI
-  2  agnes init (auth + workspace bootstrap)
+  2  agnes init (auth + workspace bootstrap; unsafe-dir refusal lives in
+     the CLI itself — `unsafe_workspace`)
   3  agnes catalog (smoke verify)
-  4  Pre-flight: git + claude
-  5  Marketplace (always, even with empty served stack)
-  6  MCP servers (Atlassian Remote MCP)
-  7  Diagnose
-  8  Confirm
+  4  Marketplace (always, even with empty served stack; git/claude
+     preflight folded into its header)
+  5  Diagnose
+  6  Required connectors (only when the manifest has required=True rows)
+  7  Optional connectors (ask, then `agnes connectors show <slug>`)
+  8  Restart Claude Code
+  9  Confirm
+
+Connector SKILL.md bodies are NOT inlined (they were 76 % of the rendered
+prompt): the steps reference `agnes connectors show <slug>`, backed by
+``GET /api/connectors/{slug}/prompt``, so a body is fetched only for
+tools the user actually says yes to.
 
 The combined-bundle source uses a fallback chain so the prompt still works
 on machines without the system Python `certifi`: we try (a) `python3 -c
@@ -129,7 +138,6 @@ permitted that fallback chain — it's not improvising-around-a-TLS-error.
 from __future__ import annotations
 
 import logging
-import re
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
@@ -364,49 +372,21 @@ def _install_cli_lines(*, has_ca: bool, server_url_placeholder: str = "{server_u
 
 
 def _init_lines(server_url_placeholder: str = "{server_url}") -> list[str]:
-    """Steps 2-4 — install-location decision, then `agnes init` + smoke verify.
+    """Steps 2-3 — `agnes init` in the current directory + smoke verify.
 
-    Step 2 picks the install directory using a three-way decision tree on
-    the user's current cwd instead of demanding a specific "expected"
-    path. Earlier flows hard-coded `~/Desktop/{workspace_dir}` as the
-    Right Answer and treated every other cwd as a recoverable mistake —
-    which scolded users who intentionally `cd`'d into a project folder
-    (e.g. `~/Devel/acme-data-app/`) before pasting the script.
-
-    The new tree:
-
-    - **Unsafe targets** if cwd is `$HOME` exactly, or a system path (`/`,
-      `/tmp`, `/etc`, `/usr`, `/var`, `/opt`, `/root`, `/bin`, `/sbin`,
-      `/boot`, `/sys`, `/proc`). Installing into any of these dumps
-      `.claude/`, `.agnes/`, `AGNES_WORKSPACE.md`, marketplace clones,
-      etc. into a directory that already has unrelated meaning. The old
-      flow's `'install here'` keyword silently accepted `$HOME` — this
-      one explains why and stops instead.
-    - **Prepared workspace** if cwd is empty, or contains only the
-      whitelisted artefacts a prepared workspace might already hold
-      (`.git`, `.claude`, `.agnes`, `AGNES_WORKSPACE.md`, `README.md`,
-      `bash.exe.stackdump` — a harmless Git Bash crash-dump leftover on
-      Windows). The user clearly created+cd'd into a workspace folder
-      before pasting; no need to interrupt them, beyond naming the
-      directory.
-    - **Anything else** (cwd has unrelated content): ask once, in the
-      assistant's own words, whether to install here, at the default
-      path, or not at all. The 'default' branch runs the `mkdir + cd`
-      itself so the user doesn't have to re-paste. Anything else stops
-      cleanly without touching the filesystem. Users who want a
-      different custom path /exit, `cd` to their preferred location,
-      restart `claude`, and re-paste — Claude Code can't change the
-      parent shell's cwd from inside a session anyway.
+    The install-location decision tree that used to be step 2 (~65 lines
+    of prose walking the agent through pwd checks, an unsafe-directory
+    list, and a whitelist of prepared-workspace artefacts) moved into the
+    CLI: `agnes init` itself refuses $HOME, filesystem roots and system
+    directories with a typed `unsafe_workspace` error and an actionable
+    hint (`cli/commands/init.py`). The prompt keeps a three-bullet
+    outcome triage instead — refusal, already-initialized (→ `agnes
+    update`), missing token file — because those are the judgment calls
+    the agent still has to make.
 
     `{workspace_dir}` and `{instance_brand}` are placeholders pre-substituted
     by :func:`resolve_lines` from the operator-configured brand. Defaults
     keep `~/Desktop/Agnes` behavior for instances that don't set the brand knob.
-
-    `agnes init --workspace .` continues to use the current cwd, so once
-    step 2 has confirmed (or auto-accepted) the install dir, step 3
-    lands in the right place. Step 9's restart-claude cue references
-    "this same directory" so users on a custom path see accurate
-    guidance.
 
     `agnes init` is the workspace-rails delivery mechanism for everyone:
     it authenticates with the PAT, fetches CLAUDE.md (RBAC-filtered),
@@ -431,71 +411,7 @@ def _init_lines(server_url_placeholder: str = "{server_url}") -> list[str]:
     """
     return [
         "",
-        "2) Confirm the install location.",
-        '   The /home page\'s "Step 2 — pick a folder" recommended',
-        "       mkdir -p ~/Desktop/{workspace_dir} && cd ~/Desktop/{workspace_dir}",
-        "   but the install works in any workspace folder the user prepared.",
-        "   Decide where to install using the three branches below. Do not",
-        "   create or change directories on your own — say what you intend to",
-        "   do and let the user confirm. A cwd outside the unsafe list below is",
-        "   not a mistake.",
-        "",
-        "   Run:",
-        "       pwd",
-        "",
-        "   2a) Unsafe targets — home and system directories. Explain to the",
-        "       user, in your own words, why you are not installing there:",
-        "",
-        "       Cover these points: the install would scatter `.claude/`,",
-        "       `.agnes/`, `AGNES_WORKSPACE.md` and marketplace clones across a",
-        "       home or system directory; a workspace folder such as",
-        "       ~/Desktop/{workspace_dir} or ~/work/{workspace_dir} is the right",
-        "       target; the user should cd there and re-run this script.",
-        "",
-        "       Then stop — no `mkdir`, no `cd`, no further steps. The list of",
-        "       directories to avoid is an exact match on:",
-        "           $HOME    /    /tmp    /etc    /usr    /var    /opt",
-        "           /root    /bin    /sbin    /boot    /sys    /proc",
-        "",
-        "   2b) Prepared workspace — if the cwd is already prepared, tell the",
-        "       user right away which directory you are installing into, then",
-        "       continue to step 3. The whitelisted artefacts a prepared",
-        "       workspace may already hold are:",
-        "           .git    .claude    .agnes    AGNES_WORKSPACE.md    README.md",
-        "           bash.exe.stackdump",
-        "       (the last one is a harmless Git Bash crash-dump leftover on",
-        "       Windows — safe to install over). To check, run (fixed-string",
-        "       match, no regex):",
-        "",
-        "           ls -A | grep -Fxv -e .git -e .claude -e .agnes -e AGNES_WORKSPACE.md -e README.md -e bash.exe.stackdump | head -1",
-        "",
-        "       If the output is empty (cwd is empty OR contains only the",
-        "       whitelisted artefacts above) → the user clearly prepared this",
-        "       folder; continue to step 3 in <pwd>. Remember <pwd> as the",
-        "       install dir for step 9.",
-        "",
-        "   2c) Anything else — the directory holds unrelated content.",
-        "       Summarise what is in it and ask, once, whether to install here,",
-        "       in ~/Desktop/{workspace_dir} instead, or not at all. Mention",
-        "       that a different custom path means leaving the session, cd-ing",
-        "       there, and re-running this script.",
-        "",
-        "       Wait for the user's reply.",
-        "         - 'ok' / 'yes' / 'install here' / Enter → continue to step 3",
-        "                       in <pwd>. Remember <pwd> as the install dir.",
-        "         - 'default' → run:",
-        "                       mkdir -p ~/Desktop/{workspace_dir} && cd ~/Desktop/{workspace_dir}",
-        "                       Then continue to step 3 in the new cwd.",
-        "                       Remember ~/Desktop/{workspace_dir} as the install",
-        "                       dir for step 9.",
-        "         - 'abort' / anything else → stop without making any changes:",
-        "                       no `mkdir`, no `cd`, no further steps.",
-        "",
-        "   Through the rest of the steps below, post a brief one-line progress",
-        "   note as each step finishes, so the user has visibility instead of",
-        "   sitting silent for minutes.",
-        "",
-        "3) Bootstrap your {instance_brand} workspace in this directory.",
+        "2) Set up the {instance_brand} workspace in the current directory.",
         "   The token was saved to ~/.agnes/token by step 4 of the install",
         "   guide, so there is nothing to write here — `agnes init",
         "   --token-file` reads it directly (never on the command line) and",
@@ -504,42 +420,38 @@ def _init_lines(server_url_placeholder: str = "{server_url}") -> list[str]:
         "",
         f'   agnes init --server-url "{server_url_placeholder}" --token-file ~/.agnes/token --workspace .',
         "",
-        "   If `.claude/init-complete` already exists in this directory, the",
-        "   workspace is initialised and `agnes init` will refuse — that is",
-        "   expected. Run `agnes update` instead — it uses your SAVED",
-        "   credentials (no token needed) and converges the CLI, workspace",
-        "   template, plugins and data, repairing anything broken.",
-        "   Template/default workspace files you edited are backed up to",
-        "   `<name>.bak.<ts>` before being updated; Agnes-owned",
-        "   hooks/statusLine/commands are re-applied on top. Then skip to step 4.",
-        "   (If `agnes update` fails on auth because your saved token expired:",
-        "   the saved credential lives in ~/.config/agnes/token.json. Re-run",
-        "   step 4 on {server_url}/home to save a fresh token — /home hides",
-        "   the install guide (and its step 4) once onboarding completes, so",
-        '   press its "Mark me as offboarded" button at the bottom to bring',
-        "   the guide back — then run",
-        f'   `agnes init --force --server-url "{server_url_placeholder}" --token-file ~/.agnes/token --workspace .`',
-        "   — the --force is what makes init re-read the fresh token file;",
-        "   plain `agnes init` refuses once `.claude/init-complete` exists.)",
-        "",
-        "   This authenticates with the PAT, fetches your CLAUDE.md (RBAC-filtered),",
-        "   writes AGNES_WORKSPACE.md (human-facing docs), installs Claude Code",
-        "   SessionStart/End hooks (auto-refresh), and runs an initial `agnes pull`",
-        "   so your DuckDB views are ready.",
-        "",
-        "   If you ran `agnes init` above, verify the token file was consumed:",
+        "   This fetches your CLAUDE.md (RBAC-filtered), writes",
+        "   AGNES_WORKSPACE.md (human-facing docs), installs Claude Code",
+        "   SessionStart/End hooks (auto-refresh), and runs an initial",
+        "   `agnes pull` so your DuckDB views are ready. Afterwards verify the",
+        "   token file was consumed:",
         '   test -f ~/.agnes/token && echo "token file STILL PRESENT" || echo "token file consumed"',
+        "   (still present after `agnes init` = the deletion failed and a",
+        "   plaintext token is left on disk — tell the user to remove it)",
         "",
-        "   `agnes init` deletes ~/.agnes/token once the credential is saved; if",
-        "   the file still exists after `agnes init`, the deletion failed and a",
-        "   plaintext access token is left on disk — tell the user to remove it",
-        "   manually. After the `agnes update` reconcile path this check does",
-        "   not apply the same way: `agnes update` removes a leftover",
-        "   ~/.agnes/token only after an authenticated step proved the saved",
-        "   credential works — if the update could not reach the server, the",
-        "   file stays as the input for the recovery command above.",
+        "   Three outcomes need a different move:",
+        "   - `unsafe_workspace` refusal: `agnes init` refuses $HOME, /tmp and",
+        "     other system directories. Have the user create a workspace folder",
+        "     (the install guide suggested ~/Desktop/{workspace_dir}), cd into",
+        "     it, and re-run this script from there — don't pick a directory",
+        "     for them, and don't `mkdir`/`cd` on your own.",
+        "   - Already initialized (`.claude/init-complete` exists): run",
+        "     `agnes update` instead — it converges the CLI, workspace,",
+        "     plugins and data off the saved credential",
+        "     (~/.config/agnes/token.json); edited template files are backed",
+        "     up to `<name>.bak.<ts>` first. A leftover ~/.agnes/token is",
+        "     removed only after an authenticated step proved the saved",
+        "     credential works. If the update fails on an expired credential:",
+        "     re-run step 4 of the install guide on {server_url}/home (press",
+        '     "Mark me as offboarded" at the bottom if the guide is hidden),',
+        "     then:",
+        f'     agnes init --force --server-url "{server_url_placeholder}" --token-file ~/.agnes/token --workspace .',
+        "   - ~/.agnes/token missing on a fresh install: stop and send the",
+        "     user to {server_url}/home step 4 (the step that saves it), or",
+        "     run `agnes auth login` for a browser sign-in, then re-run this",
+        "     step.",
         "",
-        "4) Verify the data is queryable:",
+        "3) Verify the data is queryable:",
         "   agnes catalog",
         "",
         "   This should list the tables your account has grants for. Empty list",
@@ -581,38 +493,12 @@ def _diagnose_lines(*, diagnose_num: str) -> list[str]:
     ]
 
 
-def _load_connector_body(slug: str) -> Optional[str]:
-    """Read the post-frontmatter body of a connector skill's SKILL.md,
-    sourced from the operator's Initial Workspace Template clone (preferred)
-    or the bundled snapshot in the wheel (fallback).
-
-    Returns ``None`` when neither tier has the file — the caller logs a
-    warning and skips the entry rather than rendering a half-block.
-    """
-    from src.initial_workspace import resolve_seed_file
-
-    rel_path = f"workspace/.claude/skills/{slug}/SKILL.md"
-    result = resolve_seed_file(rel_path)
-    if result is None:
-        return None
-    content, _source = result
-
-    # Strip YAML frontmatter — the prompt body starts after the closing `---`.
-    stripped = content.lstrip()
-    if not stripped.startswith("---"):
-        return content
-    body = stripped[3:]
-    end_match = re.search(r"^---\s*$", body, re.MULTILINE)
-    if not end_match:
-        # Malformed frontmatter — return the raw content rather than
-        # silently emitting an empty body. The manifest validator already
-        # logged the issue; double-failure here would lose context.
-        return content
-    return body[end_match.end() :].lstrip("\n")
-
-
 # Tile sub-letters shared by the required + optional connector blocks.
 # Each block letters its own tiles independently (both restart at "a").
+# (Connector SKILL.md bodies are no longer inlined here — they were 76 %
+# of the rendered prompt. `agnes connectors show <slug>` fetches one on
+# demand via GET /api/connectors/{slug}/prompt; the body loader lives in
+# src.connectors_manifest.load_connector_body.)
 _SUB_LETTERS = "abcdefghijklmnopqrstuvwxyz"
 
 
@@ -626,23 +512,23 @@ def _required_connectors_block(
     """Mandatory-install step for ``required=True`` connectors — rendered
     between diagnose and the optional yes/no tiles, with NO per-tool ask.
 
-    Same fail-soft body handling as :func:`_connectors_block` (missing
-    SKILL.md body → warn + skip, letters stay tight) so a bad seed commit
-    never 500s ``/home``; the operator-facing guard for a missing
-    REQUIRED body is the seed-sync render dry-run, which reports it as an
-    error. Empty manifest renders no block.
+    Bodies are fetched on demand via ``agnes connectors show <slug>``
+    rather than inlined (see the module docstring); a missing body
+    surfaces at fetch time with the endpoint's ``connector_body_missing``
+    hint, and the operator-facing guard for a missing REQUIRED body stays
+    the seed-sync render dry-run. Empty manifest renders no block.
     """
     if not manifest:
         return []
 
     lines = [
         "",
-        f"{step_num}) Install required tools (run every prompt below now):",
+        f"{step_num}) Install required tools (no ask — this instance mandates them):",
         "",
-        "   This instance requires the tools below for every account, so run",
-        "   each inline prompt now, in order. Every prompt is idempotent and",
-        "   safe to re-run; a tool that's already configured short-circuits",
-        "   with its ✅ line instead of reinstalling.",
+        "   For each tool below, in order, print its setup prompt and follow",
+        "   it now. Every prompt is idempotent and safe to re-run; a tool",
+        "   that's already configured short-circuits with its ✅ line instead",
+        "   of reinstalling.",
         "",
     ]
     letter_idx = 0
@@ -653,23 +539,15 @@ def _required_connectors_block(
                 len(_SUB_LETTERS),
             )
             break
-        body = _load_connector_body(entry.slug)
-        if body is None:
-            logger.warning(
-                "setup_instructions: required connector %s body not found in seed — skipped",
-                entry.slug,
-            )
-            continue
-        body = body.replace("{instance_brand}", instance_brand)
-        lines.append(f"   {_SUB_LETTERS[letter_idx]}) {entry.display_name} — {entry.short_summary}")
-        lines.append("      Follow this inline prompt:")
-        lines.append("")
-        for body_line in body.split("\n"):
-            lines.append(f"      {body_line}" if body_line else "")
-        lines.append("")
+        lines.append(
+            f"   {_SUB_LETTERS[letter_idx]}) {entry.display_name} — {entry.short_summary}"
+            f" (~{entry.estimated_minutes} min)"
+        )
+        lines.append(f"      agnes connectors show {entry.slug}")
         letter_idx += 1
     lines.extend(
         [
+            "",
             f"   Move on to step {next_step_num} once each tool above is set up or has",
             "   reported a failure.",
         ]
@@ -684,19 +562,22 @@ def _connectors_block(
     next_step_num: str,
     instance_brand: str,
 ) -> list[str]:
-    """Per-connector interactive ask + inline prompt. Last interactive
-    step before Confirm — its trailer forwards to the Restart-Claude step
-    (`next_step_num`), which then bridges into Confirm on its own.
+    """Per-connector interactive ask, bodies fetched on demand. Last
+    interactive step before Confirm — its trailer forwards to the
+    Restart-Claude step (`next_step_num`), which then bridges into
+    Confirm on its own.
 
     Requires an explicit yes before setting a connector up — anything else
-    (a decline, a deferral, silence) skips it. Each connector ships with its
-    own step-0 keychain precheck so re-runs short-circuit cleanly.
+    (a decline, a deferral, silence) skips it. Each connector's fetched
+    prompt ships with its own keychain precheck so re-runs short-circuit
+    cleanly.
 
     Manifest source: ``src.connectors_manifest.load_manifest()`` reads the
     seed-resident ``workspace/.claude/skills/connector-*/SKILL.md`` files
     (operator IWT clone first, bundled snapshot fallback). Each entry
-    carries display_name + short_summary + estimated_minutes; the body
-    text comes from the same file via :func:`_load_connector_body`.
+    carries display_name + short_summary + estimated_minutes; the body is
+    NOT inlined — `agnes connectors show <slug>` prints it when (and only
+    when) the user says yes to that tool.
 
     Order: stable, alphabetical by display_name (set in
     ``load_manifest``). Empty manifest renders no block.
@@ -711,20 +592,13 @@ def _connectors_block(
         "",
         f"{step_num}) Connect the user's tools (last interactive ask before Confirm):",
         "",
-        "   For each tool below, tell the user what it does and what access it",
-        "   needs, then ask whether to set it up — one combined question covering",
-        "   all the tools is fine; don't start setting a tool up until its answer",
-        "   has arrived. If the answer is anything other than a clear yes, skip",
-        "   that tool — declining and deferring are both valid answers. The",
-        "   prompts below are idempotent and safe to re-run if anything goes",
-        "   sideways.",
+        "   This instance offers the optional tools below (also listable with",
+        "   `agnes connectors list`). Tell the user what each does, then ask",
+        "   which to set up — one combined question covering all the tools is",
+        "   fine. If an answer is anything other than a clear yes, skip that",
+        "   tool — declining and deferring are both valid answers.",
         "",
     ]
-    # Sub-letter index tracks ONLY the connectors we actually rendered
-    # (not the raw enumerate index) — if a connector body is missing
-    # from the seed we want the letter sequence to stay tight (a, b, c)
-    # rather than skip to (a, c, d). The bug was visible to users as
-    # "b)" and "c)" with no "a)" in the rendered install prompt.
     letter_idx = 0
     for entry in manifest:
         if letter_idx >= len(_SUB_LETTERS):
@@ -733,29 +607,20 @@ def _connectors_block(
                 len(_SUB_LETTERS),
             )
             break
-        body = _load_connector_body(entry.slug)
-        if body is None:
-            logger.warning(
-                "setup_instructions: connector %s body not found in seed — skipped",
-                entry.slug,
-            )
-            continue
-        # Substitute brand placeholder. Atlassian / Asana / GWS bodies all
-        # reference {instance_brand} in their token-label hints.
-        body = body.replace("{instance_brand}", instance_brand)
-        lines.append(f"   {_SUB_LETTERS[letter_idx]}) {entry.display_name} — {entry.short_summary}")
-        # Neutral (yes/no) — the header above requires a clear yes and treats
-        # declining/deferring as valid skips, so the ask must not carry the
-        # capital-Y "Enter means yes" convention the old default-yes flow had.
-        lines.append(f'      Ask: "Set up {entry.display_name} now? (yes/no)"')
-        lines.append("      If the user agrees, follow this outline:")
-        lines.append("")
-        for body_line in body.split("\n"):
-            lines.append(f"      {body_line}" if body_line else "")
-        lines.append("")
+        lines.append(
+            f"   {_SUB_LETTERS[letter_idx]}) {entry.display_name} — {entry.short_summary}"
+            f" (~{entry.estimated_minutes} min)"
+        )
+        lines.append(f"      agnes connectors show {entry.slug}")
         letter_idx += 1
     lines.extend(
         [
+            "",
+            "   For each yes: print the tool's setup prompt with the command",
+            "   above and follow it. Every prompt is idempotent and safe to",
+            "   re-run; an already-configured tool short-circuits with its ✅",
+            "   line.",
+            "",
             f"   After all asks (regardless of answers) continue to step {next_step_num}.",
         ]
     )
@@ -781,9 +646,8 @@ def _restart_claude_lines(step_num: str, *, confirm_step_num: str) -> list[str]:
     return [
         "",
         f"{step_num}) Restart Claude Code so every plugin, MCP server, and SessionStart hook installed above actually loads:",
-        "   Tell me to type `/exit` (or close the Claude Code session entirely), then run `claude` again from this same directory — the install dir confirmed in step 2 (`~/Desktop/{workspace_dir}` on the default path, or whatever cwd the user explicitly accepted with 'install here').",
-        "   The next session boots with all marketplace plugins, every connector's keychain entries / OAuth grants, and the SessionStart/End hooks that `agnes init` installed. This is the last action before the Confirm summary — once I'm back in Claude Code, setup is complete.",
-        f"   Before step {confirm_step_num} (Confirm): after all the steps and asks above (whatever the answers), give me a short recap of what was installed or was already present — CLI, workspace files, hooks, marketplace plugins, connectors — so the outcome is clear, then continue.",
+        "   Tell me to type `/exit` (or close the Claude Code session entirely), then run `claude` again from this same directory — the workspace where `agnes init` ran in step 2.",
+        f"   Before step {confirm_step_num} (Confirm): give me a short recap of what was installed or was already present — CLI, workspace files, hooks, marketplace plugins, connectors — so the outcome is clear, then continue.",
     ]
 
 
@@ -819,7 +683,6 @@ def _finale_lines(
         "   - Confirmation that `./CLAUDE.md` and `./AGNES_WORKSPACE.md` exist",
         "   - Confirmation that `./.claude/settings.json` contains SessionStart/End hooks",
         "   - The `agnes diagnose` overall status",
-        "   - Whether skills were copied or left on-demand",
         "   - Confirmation that `~/.agnes/marketplace/.git/` exists "
         "(the marketplace clone) and that any granted plugins installed",
     ]
@@ -847,51 +710,6 @@ def _finale_lines(
         f"{confirm_step_num}) Confirm:",
         '   Tell me "{instance_brand} workspace is ready" and summarize:',
         *bullets,
-    ]
-
-
-def _preflight_block(step_num: str) -> list[str]:
-    """Pre-flight check — runs before the marketplace clone.
-
-    `claude plugin marketplace add` (and our git-clone fallback) shells out
-    to `git`, AND the marketplace step calls `claude` itself, so a missing
-    binary on either side fails the step with a confusing error. We check
-    both here so the user gets a single clear "install X" message instead
-    of debugging a downstream error.
-
-    Cross-platform install commands cover the three supported workstation
-    OSes:
-      - macOS: Homebrew (`brew install git`). The Xcode CLT bundle also
-        ships git; we prefer brew because it's non-interactive.
-      - Windows: winget (`winget install --id Git.Git -e ...`). Bundled
-        with Windows 10 1809+ and Windows 11.
-      - Linux: apt or dnf, depending on distro family.
-
-    For `claude` we point at the official platform installer docs rather
-    than vendoring an install one-liner — Anthropic ships per-platform
-    installers (npm on Linux, native binary on macOS/Windows) and the
-    canonical instructions live at https://docs.claude.com/claude-code.
-
-    `step_num` is parameterized because step ordering shifted between
-    layouts (the marketplace block now runs before diagnose/skills, so
-    preflight + marketplace are steps 4-5 instead of 6-7).
-    """
-    return [
-        "",
-        f"{step_num}) Make sure git and claude are installed (required for the marketplace clone):",
-        "     git --version",
-        "     claude --version",
-        "",
-        '   If `git --version` fails ("command not found" or similar), install git:',
-        "     - macOS:   brew install git",
-        "     - Windows: winget install --id Git.Git -e --source winget",
-        "     - Linux:   sudo apt-get install git    OR    sudo dnf install git",
-        "",
-        "   If `claude --version` fails, install Claude Code:",
-        "     - npm (Linux): npm i -g @anthropic-ai/claude-code",
-        "     - macOS / Windows native installer: see https://docs.claude.com/claude-code",
-        "",
-        "   Then re-run both `--version` checks to confirm before continuing.",
     ]
 
 
@@ -964,78 +782,35 @@ def _marketplace_block(
     """
     has_plugins = bool(plugin_install_names)
     header = (
-        "Register the Agnes Claude Code marketplace and install plugins:"
+        "Register the {instance_brand} Claude Code marketplace and install plugins:"
         if has_plugins
         else (
-            "Register the Agnes Claude Code marketplace (no plugin grants were "
-            "visible when this prompt was generated — the CLI reads the live "
-            "manifest, so anything granted since will still install):"
+            "Register the {instance_brand} Claude Code marketplace (no plugin "
+            "grants were visible when this prompt was generated — the CLI reads "
+            "the live manifest, so anything granted since will still install):"
         )
     )
-    # Both branches phrase grants as a render-time snapshot, not a timeless
-    # fact: grants change after the prompt is generated, and the prompt is
-    # also served grant-blind on unauthenticated pages. The CLI reads the
-    # LIVE manifest, so the instruction is always "install what is granted
-    # now, then verify with `agnes my-stack show`" rather than a baked-in
-    # claim the agent could contradict mid-install.
-    bullet_5 = (
-        "   #   5. install every plugin the live manifest grants this account"
-        if has_plugins
-        else (
-            "   #   5. install every plugin the live manifest grants this account"
-            " (per the header above, none were visible at render time)"
-        )
-    )
-    verify_lines = [
-        "   Then verify what landed:",
+    return [
+        "",
+        f"{step_num}) {header}",
+        "   Needs git and claude on PATH — run `git --version` and",
+        "   `claude --version` first. Missing git: macOS `brew install git`,",
+        "   Windows `winget install --id Git.Git -e --source winget`, Linux",
+        "   apt-get/dnf. Missing claude: https://docs.claude.com/claude-code.",
+        "",
+        "   agnes refresh-marketplace --bootstrap",
+        "",
+        "   One idempotent command: clones the per-user marketplace to",
+        "   ~/.agnes/marketplace, registers it with Claude Code, and installs",
+        "   every plugin the LIVE manifest grants this account (a leftover",
+        "   clone from a previous instance is re-cloned automatically). Grants",
+        "   added later land on their own via the SessionStart hook's detached",
+        "   `agnes update` — no re-run of this script needed. Verify:",
         "   agnes my-stack show",
         "   # [✓] = in your stack; [✗] = available to you but NOT added — an",
         "   # opt-in marker, not an error. Add one with",
         "   # `agnes marketplace add <marketplace-id>/<plugin-name>`, then run",
         "   # `agnes update` and `/reload-plugins` in Claude Code.",
-    ]
-    if has_plugins:
-        trailer = [
-            *verify_lines,
-            "",
-            "   These run non-interactively. After they finish, tell the user to /exit",
-            "   and run `claude` again so the new plugins load. From then on, the",
-            "   SessionStart hook keeps the marketplace clone in sync via a detached",
-            "   `agnes update` on every Claude Code session.",
-        ]
-    else:
-        trailer = [
-            *verify_lines,
-            "",
-            "   No plugin grants were visible for this account when this prompt was",
-            "   generated (grants added since — or a prompt copied while logged",
-            "   out — won't show here; `agnes my-stack show` above is the live",
-            "   truth). Registering the marketplace regardless pre-wires the",
-            "   SessionStart hook: when an admin grants you a plugin later, the",
-            "   detached `agnes update` (run by the hook on every Claude Code",
-            "   session) will reconcile and install it automatically — no need to",
-            "   re-run this setup script.",
-        ]
-    return [
-        "",
-        f"{step_num}) {header}",
-        "   # `agnes refresh-marketplace --bootstrap` does:",
-        "   #   1. clone the per-user marketplace bare repo to ~/.agnes/marketplace",
-        "   #   2. strip the PAT from the cloned origin URL (refreshes use a",
-        "   #      per-invocation git credential helper, not the URL)",
-        "   #   3. best-effort chmod 700/600 on POSIX (no-op on Windows NTFS)",
-        "   #   4. `claude plugin marketplace add ~/.agnes/marketplace`",
-        bullet_5,
-        "   # Idempotent — re-runs over an existing clone do fetch+reset+reconcile",
-        "   # via the same path the SessionStart hook uses. A leftover clone from",
-        "   # a PREVIOUS instance (origin pointing at another host) is detected",
-        "   # and re-cloned from the current server automatically.",
-        "   agnes refresh-marketplace --bootstrap || {",
-        '     echo "ERROR: agnes refresh-marketplace --bootstrap failed" >&2',
-        "     exit 1",
-        "   }",
-        "",
-        *trailer,
     ]
 
 
@@ -1089,31 +864,10 @@ def _preamble_lines(*, has_ca: bool, custom_preamble: str = "") -> list[str]:
         "(install location, which optional tools to connect) come up inside the",
         "steps below.",
         "",
-        "Run these, in order. The script is idempotent — safe to re-run if a step",
-        "fails partway through.",
-        "",
-        "Before you start, check whether this machine already ran this setup: if",
-        "the target workspace contains `.claude/init-complete` (or `agnes",
-        "--version` already works), this is a reconcile of an existing install,",
-        "not a fresh start. Run every step in order anyway — each converges to",
-        "the desired state rather than reinstalling — and treat 'already",
-        "configured' outcomes as success, not as errors. Leftover state from a",
-        "previous instance (e.g. an old marketplace clone) is handled by the",
-        "steps themselves.",
-        "",
-        "First, a quick check: run `test -s ~/.agnes/token`.",
-        "  - If the file exists, continue with step 1.",
-        "  - If it is missing and this machine was already set up (the checks",
-        "    above say reconcile) AND a saved credential exists (`test -s",
-        "    ~/.config/agnes/token.json`), that's fine: the token file is",
-        "    consumed and removed by the first `agnes init`, and later runs use",
-        "    the saved credential. Continue. A working `agnes --version` alone",
-        "    is NOT enough — the CLI may be installed globally while this",
-        "    machine has never signed in.",
-        "  - If it is missing on a fresh install, stop here — tell the user",
-        "    to open {server_url}/home and run step 4 (the step that saves",
-        "    your login token to ~/.agnes/token — its exact title differs",
-        "    per instance), then paste this script again.",
+        "Run the steps in order. Everything is idempotent — a re-run, or a",
+        "machine that already ran this setup, converges instead of reinstalling,",
+        "so treat 'already configured' outcomes as success, not as errors. Post",
+        "a brief one-line progress note as each step finishes.",
         "",
         "If a step fails with an unfamiliar error, paste the exact error back and",
         "stop. If the failure is a TLS error, look for the cause — corporate",
@@ -1131,31 +885,27 @@ def _preamble_lines(*, has_ca: bool, custom_preamble: str = "") -> list[str]:
     return lines
 
 
-def _step_numbers(
-    *, has_connectors: bool = True, has_required_connectors: bool = False
-) -> dict[str, str]:
+def _step_numbers(*, has_connectors: bool = True, has_required_connectors: bool = False) -> dict[str, str]:
     """Compute the step numbers for the unified layout.
 
     Returns a dict keyed by logical step name; values are stringified
     1-based step numbers (preserving the existing string-based helper API
     so call sites stay diff-minimal).
 
-    Steps (default layout): install (1), mkdir/cd (2), init (3),
-    catalog (4), preflight (5), marketplace (6), diagnose (7),
-    required_connectors (only when the manifest has ``required=True``
-    entries — takes 8), connectors (8, or 9 after a required step),
-    restart_claude, confirm. Preflight +
-    marketplace + connectors + restart_claude are always-on:
+    Steps (default layout): install (1), init (2), catalog (3),
+    marketplace (4, with the git/claude preflight folded into its
+    header), diagnose (5), required_connectors (only when the manifest
+    has ``required=True`` entries — takes 6), connectors (6, or 7 after
+    a required step), restart_claude, confirm. Marketplace + connectors
+    + restart_claude are always-on:
       - Marketplace registration is useful even when the operator has
         zero plugin grants (SessionStart hook reconciles future grants
         automatically).
-      - Connectors are per-connector default-yes asks sourced from the
-        seed manifest — the user can decline each individually, so
-        always-emitting the block costs nothing for users who skip
-        everything. The Atlassian Remote MCP registration
-        (`claude mcp add ...`) lives INSIDE the Atlassian connector's
-        SKILL.md body in the seed, so all Atlassian setup is grouped
-        together rather than scattered across the setup script.
+      - Connector setup bodies are NOT inlined anymore — they were 76 %
+        of the rendered prompt. The blocks reference
+        `agnes connectors show <slug>` (backed by
+        ``GET /api/connectors/{slug}/prompt``) so the agent fetches a
+        body only for tools the user actually says yes to.
 
     The interactive "Skills" step that previously sat between diagnose
     and Confirm was deleted in #242 — on-demand `agnes skills show
@@ -1172,9 +922,7 @@ def _step_numbers(
     has_ca and has its own "0)" header rendered inside the trust block
     helper.
     """
-    n = 5
-    preflight = str(n)
-    n += 1
+    n = 4
     marketplace = str(n)
     n += 1
     diagnose = str(n)
@@ -1189,7 +937,6 @@ def _step_numbers(
     n += 1
     confirm = str(n)
     return {
-        "preflight": preflight,
         "marketplace": marketplace,
         "diagnose": diagnose,
         "required_connectors": required_connectors,
@@ -1258,9 +1005,7 @@ def resolve_lines(
     # is plugging the user's tools. An absent group (no required entries,
     # no optional entries, or an empty manifest) drops its step and the
     # rest renumber — _step_numbers handles it.
-    steps = _step_numbers(
-        has_connectors=has_connectors, has_required_connectors=has_required
-    )
+    steps = _step_numbers(has_connectors=has_connectors, has_required_connectors=has_required)
 
     lines: list[str] = []
     if has_ca:
@@ -1268,7 +1013,6 @@ def resolve_lines(
     lines.extend(_preamble_lines(has_ca=has_ca, custom_preamble=custom_preamble))
     lines.extend(_install_cli_lines(has_ca=has_ca))  # 1
     lines.extend(_init_lines())  # 2, 3
-    lines.extend(_preflight_block(steps["preflight"]))  # 4
     lines.extend(_marketplace_block(names, step_num=steps["marketplace"]))  # 5
     lines.extend(_diagnose_lines(diagnose_num=steps["diagnose"]))  # 6
     if has_required:

@@ -603,6 +603,14 @@ _EXEMPT: dict[str, str] = {
         "names blind. If a surface ever exposes the fetched columns, this "
         "should follow it there rather than stay REST-only"
     ),
+    "/api/connectors/{slug}/prompt": (
+        "connector setup prompt for the analyst-laptop install flow — "
+        "consumed by `agnes connectors show <slug>` (REST+CLI). Deliberately "
+        "NOT an MCP tool: the prompt walks through storing credentials in "
+        "the LOCAL OS keychain and registering local MCP servers, which is "
+        "meaningless (and a footgun) inside the server-side chat sandbox "
+        "where MCP callers live"
+    ),
     "/api/me/display-name": (
         "self-service display-name edit (issue #1036) — UI-only affordance on "
         "/profile; a one-field personal profile edit with no CLI/MCP analogue"

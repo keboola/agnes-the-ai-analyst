@@ -1324,6 +1324,13 @@ viewable by the person it was shared with.
 
 - /api/connectors/manifest
 - /api/connectors/params
+- /api/connectors/{slug}/prompt
+
+`/api/connectors/{slug}/prompt` returns one connector's full setup prompt
+(the post-frontmatter SKILL.md body, brand-substituted) for slugs the
+manifest lists. Consumed by `agnes connectors show <slug>` so the install
+prompt can reference connector setup by name instead of inlining every
+body.
 
 `/api/connectors/params` serves per-tenant connector params (the
 `connectors:` overlay of `instance.yaml`, filtered against the seed
