@@ -73,26 +73,52 @@ EXIT_INIT_FAILED = 1
 EXIT_CONFIG = 1
 EXIT_UNSAFE_DIR = 21
 EXIT_UNRELATED_DIR = 22
+EXIT_MISSING_DIR = 23
 
 # Directory verdicts.
 DIR_UNSAFE = "unsafe"
 DIR_PREPARED = "prepared"
 DIR_UNRELATED = "unrelated"
+DIR_MISSING = "missing"
 
 # Artefacts a *prepared* workspace folder may already hold. Anything else is
 # unrelated content and needs an explicit `--accept-dir`. `bash.exe.stackdump`
 # is Git-Bash-on-Windows litter that lands in a freshly created folder through
 # no fault of the user.
+#
+# The Agnes-written entries matter for the *interrupted* case: a run killed
+# before the sentinel (`agnes init` step 9) leaves `CLAUDE.md` (step 3),
+# `server/parquet/` + `user/{duckdb,knowledge,snapshots}/` (the first pull) and
+# `AGNES_WORKSPACE.md` (step 8) behind, and none of that is "unrelated content"
+# to refuse over. A *completed* workspace is covered by the sentinel
+# short-circuit in `classify_workspace_dir` instead — the admin-authored
+# workspace template can ship anything, so no allowlist could enumerate it.
 PREPARED_ALLOWLIST = frozenset(
     {
         ".git",
+        ".gitignore",
         ".claude",
         ".agnes",
         "AGNES_WORKSPACE.md",
+        "CLAUDE.md",
         "README.md",
+        "server",
+        "user",
         "bash.exe.stackdump",
     }
 )
+
+# Written by `agnes init` as its very last step; its presence means this
+# directory is an Agnes workspace we created ourselves.
+INIT_SENTINEL = Path(".claude") / "init-complete"
+
+
+def is_initialized_workspace(workspace: Path) -> bool:
+    """True when ``workspace`` already holds a completed `agnes init`."""
+    try:
+        return (workspace / INIT_SENTINEL).exists()
+    except OSError:
+        return False
 
 # How many unrelated entries to name before summarizing the rest.
 _MAX_LISTED_ENTRIES = 8
@@ -114,14 +140,31 @@ def classify_workspace_dir(workspace: Path) -> tuple[str, str]:
     from cli.commands.init import _unsafe_workspace_reason
 
     resolved = workspace.resolve()
+    # Checked first on purpose: a stray sentinel must never buy an install
+    # into $HOME or a system directory.
     unsafe = _unsafe_workspace_reason(resolved)
     if unsafe is not None:
         return DIR_UNSAFE, unsafe
 
+    # Already an Agnes workspace → prepared, whatever else it holds. `agnes
+    # onboard` advertises itself as safe to re-run, and a finished run leaves
+    # files no allowlist can enumerate (CLAUDE.md, server/, user/, plus the
+    # admin-authored workspace template's own content). Without this the
+    # repair path would refuse every real workspace with `--accept-dir`.
+    if is_initialized_workspace(resolved):
+        return DIR_PREPARED, ""
+
+    if not resolved.is_dir():
+        # The command never creates a directory — a target that does not
+        # exist must be refused here, NOT deferred: `agnes init` would create
+        # it and succeed while later steps resolved their own directories
+        # against a cwd this gate never classified.
+        return DIR_MISSING, "does not exist"
+
     try:
         entries = sorted(p.name for p in resolved.iterdir())
     except OSError:
-        # Unreadable or missing: not our call to make here. Treat as prepared
+        # Exists but unreadable: not our call to make here. Treat as prepared
         # and let `agnes init` produce the real filesystem error.
         return DIR_PREPARED, ""
 
@@ -238,19 +281,47 @@ def _run_init(*, workspace: Path, server_url: str) -> None:
 
 
 def _run_update() -> dict:
-    """Run the `agnes update` convergence and return its parsed run report."""
+    """Run the `agnes update` convergence and return its parsed run report.
+
+    `agnes update` ends benign early-outs with ``typer.Exit(0)`` — the
+    single-instance lock is held by the SessionStart background refresh, or
+    the config dir is unreadable. ``typer.Exit`` subclasses ``Exception``,
+    so letting it escape would reach our caller's catch-all and turn "nothing
+    to do" into a fatal init failure. Those runs are reported as
+    ``{"early_exit": True}``; a NON-zero exit is a real failure and is
+    re-raised with a legible message (bare ``Exit: 3`` tells nobody anything).
+    """
+    import click
+
     from cli.commands.update import update as update_cmd
 
     buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        update_cmd(quiet=False, as_json=True)
-    raw = buf.getvalue().strip()
-    if not raw:
-        return {"steps": []}
+    early_exit = False
     try:
-        return json.loads(raw.splitlines()[-1])
-    except ValueError:
-        return {"steps": []}
+        with contextlib.redirect_stdout(buf):
+            update_cmd(quiet=False, as_json=True)
+    except click.exceptions.Exit as exc:  # typer.Exit is a subclass
+        code = int(getattr(exc, "exit_code", 0) or 0)
+        if code != 0:
+            raise RuntimeError(
+                f"`agnes update` exited {code} — run `agnes update` on its own to see the failing stage"
+            ) from exc
+        early_exit = True
+
+    raw = buf.getvalue().strip()
+    report: dict = {"steps": []}
+    if raw:
+        try:
+            parsed = json.loads(raw.splitlines()[-1])
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, dict):
+            report = parsed
+    # An early exit that still printed a report (the config-dir path) carries
+    # its own error stages — those speak for themselves.
+    if early_exit and not (report.get("steps") or []):
+        report["early_exit"] = True
+    return report
 
 
 def _step_init(workspace: Path, *, server_url: str, quiet: bool) -> list[dict]:
@@ -258,15 +329,32 @@ def _step_init(workspace: Path, *, server_url: str, quiet: bool) -> list[dict]:
 
     Raises on failure — this is the one step whose failure aborts the run.
     """
-    sentinel = workspace / ".claude" / "init-complete"
-    if sentinel.exists():
-        with _quiet_stdout(quiet):
+    if is_initialized_workspace(workspace):
+        # Run the convergence IN the workspace — `agnes update` falls back to
+        # the cwd when its config anchor is unset, same per-step rule as the
+        # marketplace and diagnose steps.
+        with _quiet_stdout(quiet), contextlib.chdir(workspace):
             report = _run_update()
+        if report.get("early_exit"):
+            return [
+                _row(
+                    "init",
+                    "already-configured",
+                    "workspace already initialized; another `agnes update` is already running "
+                    "(the background SessionStart refresh) and converges it",
+                )
+            ]
         steps = report.get("steps") or []
         bad = [s for s in steps if s.get("status") == "error"]
         detail = "workspace already initialized; converged via `agnes update`"
         if bad:
             detail += f" ({len(bad)} convergence issue(s): " + ", ".join(str(s.get("stage")) for s in bad) + ")"
+            # A convergence that failed stages is not "already configured".
+            # Reporting it as such would let the run's only substantive step
+            # fail while `overall` still says "ok" — and `overall` is the
+            # machine-readable channel for "something is off" (see module
+            # docstring), since the exit code stays 0 by design.
+            return [_row("init", "warning", detail)]
         return [_row("init", "already-configured", detail)]
 
     with _quiet_stdout(quiet):
@@ -530,6 +618,21 @@ def onboard(
                 "NEXT: create a dedicated workspace folder, cd into it, and re-run "
                 "`agnes onboard` from there — for example:",
                 "  mkdir -p ~/Desktop/agnes-workspace && cd ~/Desktop/agnes-workspace",
+            ],
+        )
+    if verdict == DIR_MISSING:
+        _emit_refusal(
+            as_json=as_json,
+            workspace=workspace,
+            verdict=verdict,
+            detail=dir_detail,
+            code=EXIT_MISSING_DIR,
+            lines=[
+                f"{workspace} does not exist.",
+                "`agnes onboard` never creates a directory on your behalf.",
+                "NEXT: create the folder yourself, then re-run — for example:",
+                f"  mkdir -p {workspace} && cd {workspace} && agnes onboard",
+                "Nothing was created or changed.",
             ],
         )
     if verdict == DIR_UNRELATED and not accept_dir:
