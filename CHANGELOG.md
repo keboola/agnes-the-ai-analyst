@@ -10,6 +10,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.83.84] - 2026-08-19
+
+### Added
+
+- **A Slack channel can now be bound to an agent profile.** A new `agent_scope` item type, `('slack_channel', <channel_id>)` — written through the existing `PUT /api/v1/agents/{id}/scope` or `agnes agent scope set --slack-channel <id>` — routes the channel's @mentions to that agent: the routed session is created AS THE AGENT'S OWNER end to end — persona, sandbox workspace and rails, live-enforced scope, and budget attribution all resolve from the owner, exactly like the agent's API runs, never from the mentioning user (Slack sessions were previously always agent-less); any gated channel member can continue a routed thread, each turn carries the mentioner as sender attribution, the first turn is prefixed with a `[slack context: channel=… thread_ts=… message_ts=… sender=…]` header so an agent granted Slack tools can operate on the right thread, and the mention gets an instant 👀 acknowledgement reaction (the bot manifest gains the `reactions:write` scope — see `docs/slack-manifest-*.md`). One agent per channel, enforced at scope-write time (`409 slack_channel_taken`); a channel with no binding behaves exactly as before. Bindings are routing only — they grant the agent no plugin/table/connection reach.
+- **Mutating MCP passthrough tools are now grantable instead of admin-only.** `tool_grants` gains `allow_mutating` (schema v121, default FALSE): a group whose grant carries the flag may invoke that specific `mutating=TRUE` tool — `POST /api/admin/mcp-tools/{tool_id}/grants` accepts `allow_mutating` (tri-state: an explicit value updates an existing grant's flag in place; omitting it leaves the flag unchanged, so routine re-granting flows — Keboola sign-in provisioning, connection-rollback restore — can never silently reset an admin's opt-in), and a new CLI mirror `agnes admin mcp tool grant <tool_id> --group <g> [--allow-mutating|--no-allow-mutating]` covers the per-tool grant endpoint that previously had none. Agent profiles ride their owner's groups with the admin short-circuit still stripped, so a scoped agent can finally hold a write-capable tool (create a CMS draft, post a message) bounded to exactly the tools its owner's groups were opted into and the MCP sources in its connection scope. Every existing grant stays read-only until an admin opts it in; the source-wide bulk grant remains deliberately read-only. Worked end-to-end example: `docs/agent-recipes/announcement-drafting-agent.md`.
+
 ## [0.83.81] - 2026-08-19
 
 ### Added

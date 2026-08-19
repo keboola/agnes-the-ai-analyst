@@ -1842,3 +1842,91 @@ class TestMCPSourceBulkGrantParity:
         cli_state = self._snapshot(source_id, gid)
 
         assert api_state == cli_state == []
+
+
+# ---------------------------------------------------------------------------
+# MCP per-tool grant (allow_mutating opt-in, v120)
+# ---------------------------------------------------------------------------
+
+
+class TestMcpToolGrantParity:
+    """``POST /api/admin/mcp-tools/{id}/grants`` ↔ ``agnes admin mcp tool grant``."""
+
+    def _seed_tool_and_group(self, conn, *, tool_id="tg.parity", gname="parity_mut"):
+        from src.repositories.mcp_sources import MCPSourceRepository
+        from src.repositories.tool_registry import PASSTHROUGH, ToolRegistryRepository
+
+        gid = _seed_group_with_user(conn, name=gname, user_id="analyst1")
+        MCPSourceRepository(conn).upsert(id="src_parity", name="parity-src", transport="stdio", command="/bin/true")
+        ToolRegistryRepository(conn).upsert(
+            tool_id=tool_id, source_id="src_parity",
+            original_name="write_thing", exposed_name="write_thing",
+            mode=PASSTHROUGH, mutating=True,
+        )
+        return gid
+
+    def _grants_snapshot(self, conn, tool_id="tg.parity"):
+        return _snapshot_table(
+            conn,
+            "SELECT tool_id, group_id, COALESCE(allow_mutating, FALSE) FROM tool_grants WHERE tool_id = ?",
+            [tool_id],
+        )
+
+    def test_grant_with_allow_mutating_parity(self, parity_env):
+        conn = get_system_db()
+        _purge_user_state(conn)
+        gid = self._seed_tool_and_group(conn)
+        conn.close()
+
+        r = parity_env["client"].post(
+            "/api/admin/mcp-tools/tg.parity/grants",
+            json={"group_id": gid, "allow_mutating": True},
+            headers=_auth(parity_env["admin_token"]),
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["allow_mutating"] is True
+        conn = get_system_db()
+        delta_api = self._grants_snapshot(conn)
+        conn.execute("DELETE FROM tool_grants WHERE tool_id = 'tg.parity'")
+        conn.close()
+
+        parity_env["run_cli"](
+            ["admin", "mcp", "tool", "grant", "tg.parity", "--group", gid, "--allow-mutating"]
+        )
+
+        conn = get_system_db()
+        delta_cli = self._grants_snapshot(conn)
+        conn.close()
+
+        assert delta_api == delta_cli == [("tg.parity", gid, True)]
+
+    def test_regrant_downgrades_to_read_only_parity(self, parity_env):
+        conn = get_system_db()
+        _purge_user_state(conn)
+        gid = self._seed_tool_and_group(conn, tool_id="tg.parity2", gname="parity_mut2")
+        conn.close()
+
+        for path in ("api", "cli"):
+            # start each path from the same opted-in state
+            conn = get_system_db()
+            conn.execute("DELETE FROM tool_grants WHERE tool_id = 'tg.parity2'")
+            conn.execute(
+                "INSERT INTO tool_grants(tool_id, group_id, allow_mutating) VALUES ('tg.parity2', ?, TRUE)",
+                [gid],
+            )
+            conn.close()
+            if path == "api":
+                r = parity_env["client"].post(
+                    "/api/admin/mcp-tools/tg.parity2/grants",
+                    json={"group_id": gid, "allow_mutating": False},
+                    headers=_auth(parity_env["admin_token"]),
+                )
+                assert r.status_code == 200, r.text
+            else:
+                parity_env["run_cli"](
+                    ["admin", "mcp", "tool", "grant", "tg.parity2", "--group", gid, "--no-allow-mutating"]
+                )
+            conn = get_system_db()
+            snap = self._grants_snapshot(conn, "tg.parity2")
+            conn.close()
+            assert snap == [("tg.parity2", gid, False)], f"path={path}"

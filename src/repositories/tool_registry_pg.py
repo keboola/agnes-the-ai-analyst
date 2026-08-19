@@ -229,13 +229,36 @@ class ToolRegistryPgRepository:
                 {"sid": source_id},
             )
 
-    def add_grant(self, tool_id: str, group_id: str) -> None:
+    def add_grant(self, tool_id: str, group_id: str, allow_mutating: Optional[bool] = None) -> None:
+        """Insert-or-update a grant, tri-state on ``allow_mutating``:
+
+        - ``None`` (default) — leave an existing grant's flag UNCHANGED
+          (``ON CONFLICT DO NOTHING``, the pre-v121 semantics); a brand-new
+          grant lands read-only. This is what routine re-granting callers
+          (Keboola sign-in provisioning, connection rollback) must get, or
+          every re-run would silently reset an admin's mutating opt-in.
+        - explicit ``True``/``False`` — set the flag, updating an existing
+          row in place: the flag is part of the grant, so an explicit
+          re-grant is the edit path.
+        """
         with self._engine.begin() as conn:
+            if allow_mutating is None:
+                conn.execute(
+                    sa.text(
+                        "INSERT INTO tool_grants (tool_id, group_id, allow_mutating) "
+                        "VALUES (:tool_id, :group_id, FALSE) "
+                        "ON CONFLICT (tool_id, group_id) DO NOTHING"
+                    ),
+                    {"tool_id": tool_id, "group_id": group_id},
+                )
+                return
             conn.execute(
                 sa.text(
-                    "INSERT INTO tool_grants (tool_id, group_id) VALUES (:tool_id, :group_id) ON CONFLICT DO NOTHING"
+                    "INSERT INTO tool_grants (tool_id, group_id, allow_mutating) "
+                    "VALUES (:tool_id, :group_id, :allow_mutating) "
+                    "ON CONFLICT (tool_id, group_id) DO UPDATE SET allow_mutating = EXCLUDED.allow_mutating"
                 ),
-                {"tool_id": tool_id, "group_id": group_id},
+                {"tool_id": tool_id, "group_id": group_id, "allow_mutating": bool(allow_mutating)},
             )
 
     def remove_grant(self, tool_id: str, group_id: str) -> None:
@@ -252,3 +275,39 @@ class ToolRegistryPgRepository:
                 {"tool_id": tool_id},
             ).all()
         return [r[0] for r in rows]
+
+    def grant_rows_for_tool(self, tool_id: str) -> List[Dict[str, Any]]:
+        """Grants with their flags — ``[{"group_id", "allow_mutating"}, ...]``.
+
+        ``grants_for_tool`` (bare group ids) stays for existing callers;
+        this is the detail view. NULL ``allow_mutating`` (row predating
+        v121) reads as False.
+        """
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                sa.text(
+                    "SELECT group_id, COALESCE(allow_mutating, FALSE) AS allow_mutating "
+                    "FROM tool_grants WHERE tool_id = :tool_id"
+                ),
+                {"tool_id": tool_id},
+            ).all()
+        return [{"group_id": r[0], "allow_mutating": bool(r[1])} for r in rows]
+
+    def is_mutating_granted_to_groups(self, tool_id: str, group_ids: List[str]) -> bool:
+        """True iff any of ``group_ids`` holds a grant on this tool with
+        ``allow_mutating=TRUE`` (the v121 opt-in consumed by
+        ``app.api.mcp_policy.check_mutating``)."""
+        if not group_ids:
+            return False
+        placeholders = ",".join(f":g{i}" for i in range(len(group_ids)))
+        params: dict = {"tool_id": tool_id}
+        params.update({f"g{i}": g for i, g in enumerate(group_ids)})
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                sa.text(
+                    f"SELECT 1 FROM tool_grants WHERE tool_id = :tool_id AND group_id IN ({placeholders}) "
+                    "AND COALESCE(allow_mutating, FALSE) = TRUE LIMIT 1"
+                ),
+                params,
+            ).first()
+        return row is not None

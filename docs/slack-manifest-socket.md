@@ -25,6 +25,7 @@ oauth_config:
       - chat:write
       - im:history
       - im:write
+      - reactions:write
       - users:read
       - users:read.email
 settings:

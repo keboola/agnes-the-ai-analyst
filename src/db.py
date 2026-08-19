@@ -66,8 +66,12 @@ _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 # materialized columns carry a linked app's id / url / name, replacing a
 # hardcoded alias list that only knew one upstream's column names (see
 # `_v118_to_v119`), 120 adds agent_schedules — scheduled runs for agent
-# profiles (see `_v119_to_v120`).
-SCHEMA_VERSION = 120
+# profiles (see `_v119_to_v120`),
+# 121 adds tool_grants.allow_mutating — per-group opt-in that lets a
+# non-admin caller (including an agent riding its owner's groups) invoke a
+# mutating passthrough tool, replacing the admin-or-bust mutating gate (see
+# `_v120_to_v121`).
+SCHEMA_VERSION = 121
 
 # v96: data_apps registry (hosted user web apps). Extracted as a shared
 # module-level constant so the fresh-install DDL (appended to
@@ -7602,6 +7606,38 @@ def _v119_to_v120(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("UPDATE schema_version SET version = 120")
 
 
+def _v120_to_v121(conn: duckdb.DuckDBPyConnection) -> None:
+    """v120→v121: add ``tool_grants.allow_mutating``.
+
+    ``check_mutating`` (``app/api/mcp_policy.py``) was admin-or-bust: a
+    ``mutating=True`` passthrough tool was uninvokable by any non-admin,
+    including every agent profile (``AgentPrincipal.is_admin`` is pinned
+    False by design). The policy module reserved this exact evolution — "a
+    separate ``mutating_grant`` row" — and this column is it: a grant row
+    with ``allow_mutating=TRUE`` lets members of that group (and agents
+    whose owner is a member, still narrowed by connection scope) invoke the
+    tool. Default FALSE keeps every existing grant read-only, so behavior
+    is unchanged until an admin opts a group in per tool.
+
+    ``tool_grants`` may not exist yet when the ladder replays from a stamp
+    older than v64 — same guard-then-stamp pattern as ``_v118_to_v119``.
+
+    No NOT NULL on the ALTER: DuckDB rejects ADD COLUMN with constraints
+    ("Adding columns with constraints not yet supported"); DEFAULT FALSE
+    backfills existing rows, and the repo layer treats NULL as FALSE so the
+    two backends cannot drift on a tri-state.
+
+    (Renumbered from v119→v120 when the agent_schedules migration merged
+    first with that number.)
+    """
+    table_exists = conn.execute("SELECT 1 FROM information_schema.tables WHERE table_name = 'tool_grants'").fetchone()
+    if table_exists:
+        existing_cols = {row[1] for row in conn.execute("PRAGMA table_info('tool_grants')").fetchall()}
+        if "allow_mutating" not in existing_cols:
+            conn.execute("ALTER TABLE tool_grants ADD COLUMN allow_mutating BOOLEAN DEFAULT FALSE")
+    conn.execute("UPDATE schema_version SET version = 121")
+
+
 def _add_store_entity_trust_columns(conn: duckdb.DuckDBPyConnection) -> None:
     """The v111 column DDL on its own, with no version stamp.
 
@@ -8643,6 +8679,10 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # v119→v120: agent_schedules (scheduled agent runs). No-op on
             # fresh installs — _SYSTEM_SCHEMA already declares the table.
             _v119_to_v120(conn)
+            # v120→v121: tool_grants.allow_mutating. tool_grants is created
+            # by the ladder (_v63_to_v64), not _SYSTEM_SCHEMA, so this ALTER
+            # does real work on fresh installs too.
+            _v120_to_v121(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -8936,6 +8976,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v118_to_v119(conn)
             if current < 120:
                 _v119_to_v120(conn)
+            if current < 121:
+                _v120_to_v121(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],
