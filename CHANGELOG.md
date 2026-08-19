@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- **A long chat answer no longer collapses under the reader the moment it finishes.** The web chat clamped any message body over 480px (~20 lines) to that height behind a fade and a "Show more" button — and because the clamp runs at finalize while the stream itself paints uncapped, an answer streamed in full and then snapped shut mid-sentence, with every long message pre-collapsed after a reload. At 480px that fired on nearly every real answer, making the toggle a control whose only job was to undo a limit Agnes had imposed on itself. The cap now applies from 2500px, so it only catches the extreme bodies it was meant for. The threshold is duplicated by construction — `COLLAPSE_THRESHOLD_PX` in `chat.js` decides whether to collapse, `max-height` in `chat.css` decides where the cut lands — so a guard now fails if the two drift.
+
 ## [0.83.91] - 2026-08-19
 
 ### Changed
@@ -20,7 +24,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Fixed
 
 - The shipped default workspace-prompt template no longer trips the `/admin/prompts` stale-override banner when saved as an override: its stale-docs bullet mentioned a legacy CLI spelling that the legacy-string scanner flags.
-
 ## [0.83.90] - 2026-08-19
 
 ### Added
@@ -100,10 +103,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   admin list-tables` render unredacted. It now names only the failure class and
   the setting to check; the original exception stays chained for a local
   traceback.
-### Fixed
-
-- **A long chat answer no longer collapses under the reader the moment it finishes.** The web chat clamped any message body over 480px (~20 lines) to that height behind a fade and a "Show more" button — and because the clamp runs at finalize while the stream itself paints uncapped, an answer streamed in full and then snapped shut mid-sentence, with every long message pre-collapsed after a reload. At 480px that fired on nearly every real answer, making the toggle a control whose only job was to undo a limit Agnes had imposed on itself. The cap now applies from 2500px, so it only catches the extreme bodies it was meant for. The threshold is duplicated by construction — `COLLAPSE_THRESHOLD_PX` in `chat.js` decides whether to collapse, `max-height` in `chat.css` decides where the cut lands — so a guard now fails if the two drift.
-
 ## [0.83.89] - 2026-08-19
 
 ### Added
