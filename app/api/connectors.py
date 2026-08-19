@@ -162,6 +162,21 @@ async def get_connector_prompt(
     The manifest is the registry gate: a slug that ``load_manifest()``
     did not emit is a 404 — this endpoint never resolves seed paths from
     caller input directly, so traversal-shaped slugs die here too.
+
+    Substitution set: ``{instance_brand}`` only, which is what
+    ``docs/seed-repo-contract.md`` §6 promises a connector body gets. Note
+    the divergence from an inlined body's old path: ``resolve_lines`` in
+    ``app/web/setup_instructions.py`` also replaced ``{wheel_filename}``,
+    ``{server_host}`` and ``{workspace_dir}``, so an operator seed that used
+    one of those inside a ``SKILL.md`` would now print the literal
+    placeholder. No bundled body does, and the contract never offered them
+    here.
+
+    TODO: if a seed ever needs those, they have to be plumbed in rather than
+    copied — ``server_host`` and ``workspace_dir`` are derivable from the
+    request and instance config, but ``wheel_filename`` comes from CLI
+    release resolution that only the ``/home`` render path performs. Decide
+    the intended set before widening it, and state it in §6.
     """
     from app.instance_config import get_instance_brand
 
