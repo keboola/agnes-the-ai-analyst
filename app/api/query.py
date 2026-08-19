@@ -2115,6 +2115,27 @@ def _bq_guardrail_inputs(
                         "registered_as": row["name"],
                     },
                 )
+            policied = _policied_row_over_physical_source(
+                repo,
+                source_type="bigquery",
+                bucket=bucket_raw,
+                source_table=source_table_raw,
+            )
+            if policied is not None:
+                return (
+                    [],
+                    [],
+                    {
+                        "reason": "bq_path_policied",
+                        "path": f"bq.{quote_ident(bucket_raw)}.{quote_ident(source_table_raw)}",
+                        "registered_as": policied["name"],
+                        "hint": (
+                            "This BigQuery table carries an access policy, which is "
+                            f"enforced under its registered name. Query {policied['name']!r} "
+                            "instead of the direct bq.* path."
+                        ),
+                    },
+                )
         # Add to dry-run set if not already covered by bare-name pass.
         bucket = row["bucket"]
         source_table = row["source_table"]
@@ -2186,6 +2207,27 @@ def _bq_guardrail_inputs(
                             "reason": "bq_path_access_denied",
                             "path": f"`{proj}.{ds}.{tbl}`",
                             "registered_as": row["name"],
+                        },
+                    )
+                policied = _policied_row_over_physical_source(
+                    repo,
+                    source_type="bigquery",
+                    bucket=ds,
+                    source_table=tbl,
+                )
+                if policied is not None:
+                    return (
+                        [],
+                        [],
+                        {
+                            "reason": "bq_path_policied",
+                            "path": f"`{proj}.{ds}.{tbl}`",
+                            "registered_as": policied["name"],
+                            "hint": (
+                                "This BigQuery table carries an access policy, which is "
+                                f"enforced under its registered name. Query {policied['name']!r} "
+                                "instead of the direct path."
+                            ),
                         },
                     )
             bucket = row["bucket"]
@@ -2261,6 +2303,42 @@ def _caller_is_unrestricted_admin(user, sys_conn) -> bool:
     )
 
 
+def _policied_row_over_physical_source(
+    repo,
+    *,
+    source_type: str,
+    bucket: str,
+    source_table: str,
+):
+    """The registry row carrying an access policy over this physical
+    source, if any — the reason an engine-qualified path must be refused.
+
+    ``rewrite_sql`` substitutes policied tables by registry NAME (§5.2), and
+    an ``sf."SCHEMA"."TABLE"`` / ``bq."ds"."tbl"`` reference names the
+    PHYSICAL source instead, so the rewrite never fires for it and the
+    policy simply does not apply. Each engine's gate below already proves
+    the path is registered and that the caller holds a grant on the row it
+    resolved to — neither of which says anything about a policy, and the
+    row it resolves to need not even be the policied one when a source is
+    registered twice. Fail closed and send the caller to the registered
+    name, where enforcement lives.
+
+    Scans ``list_by_source`` (both backends implement it) rather than
+    adding a repository lookup, matching the existing ``sf.*`` gate's own
+    scan; the registry is bounded by an instance's table count.
+    """
+    bucket_l = (bucket or "").lower()
+    table_l = (source_table or "").lower()
+    if not bucket_l or not table_l:
+        return None
+    for row in repo.list_by_source(source_type):
+        if not row.get("access_policy_sql"):
+            continue
+        if (row.get("bucket") or "").lower() == bucket_l and (row.get("source_table") or "").lower() == table_l:
+            return row
+    return None
+
+
 def _sf_guardrail_inputs(sql: str, sql_lower: str, sys_conn, user, allowed) -> Optional[dict]:
     """Registry + RBAC gate for direct ``sf."schema"."table"`` paths.
 
@@ -2301,6 +2379,23 @@ def _sf_guardrail_inputs(sql: str, sql_lower: str, sys_conn, user, allowed) -> O
                     "reason": "sf_path_access_denied",
                     "path": f"sf.{quote_ident(schema_raw)}.{quote_ident(table_raw)}",
                     "registered_as": row["name"],
+                }
+            policied = _policied_row_over_physical_source(
+                repo,
+                source_type="snowflake",
+                bucket=schema_raw,
+                source_table=table_raw,
+            )
+            if policied is not None:
+                return {
+                    "reason": "sf_path_policied",
+                    "path": f"sf.{quote_ident(schema_raw)}.{quote_ident(table_raw)}",
+                    "registered_as": policied["name"],
+                    "hint": (
+                        "This Snowflake table carries an access policy, which is "
+                        f"enforced under its registered name. Query {policied['name']!r} "
+                        "instead of the direct sf.* path."
+                    ),
                 }
     return None
 
