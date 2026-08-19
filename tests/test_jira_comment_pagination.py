@@ -1083,6 +1083,8 @@ class TestWebhookSaveIssueSyncsSidecarMarker:
     def _save(self, service, issue):
         with (
             patch("connectors.jira.service.trigger_incremental_transform", return_value=True),
+            patch.object(service, "fetch_remote_links", return_value=[]),
+            patch.object(service, "fetch_refresh_fields", return_value=None),
             patch.object(service, "download_all_attachments", return_value=[]),
         ):
             return service.save_issue(issue)
@@ -1126,6 +1128,8 @@ class TestWebhookSaveIssueSyncsSidecarMarker:
 
         with (
             patch("connectors.jira.service.trigger_incremental_transform", return_value=True) as transform,
+            patch.object(service, "fetch_remote_links", return_value=[]),
+            patch.object(service, "fetch_refresh_fields", return_value=None),
             patch.object(service, "download_all_attachments", return_value=[]),
             patch(
                 "connectors.jira.service._sync_incomplete_marker",
