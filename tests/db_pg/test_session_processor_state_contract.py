@@ -12,7 +12,7 @@ identically on DuckDB and Postgres.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -49,7 +49,7 @@ def _make_pg_repo(pg_engine, monkeypatch):
     command.upgrade(cfg, "head")
 
     monkeypatch.setenv("AGNES_DB_URL", str(pg_engine.url))
-    import src.db_pg as db_pg
+    from src import db_pg
 
     db_pg.dispose()
     db_pg.get_engine()
@@ -89,6 +89,28 @@ def _seed(repos, processor, session_file, items=1):
 
 
 # ---------------------------------------------------------------------------
+# mark_processed
+# ---------------------------------------------------------------------------
+
+
+class TestMarkProcessed:
+    def test_supplied_read_at_round_trips(self, repos):
+        """A caller can pass an explicit observation timestamp; both backends
+        store it as ``processed_at`` so ``scan_unprocessed_for`` compares
+        mtime against the content-snapshot moment, not the completion time."""
+        read_at = datetime(2026, 8, 17, 12, 0, 0, tzinfo=UTC)
+        repos["repo"].mark_processed(
+            processor_name="verification",
+            session_file="alice/a.jsonl",
+            username="alice",
+            items_count=1,
+            file_hash="h1",
+            read_at=read_at,
+        )
+        assert _processed_at_utc(repos, "verification", "alice/a.jsonl") == read_at
+
+
+# ---------------------------------------------------------------------------
 # delete_for_processors
 # ---------------------------------------------------------------------------
 
@@ -107,22 +129,16 @@ class TestDeleteForProcessors:
 
         # The OTHER processor's rows are untouched.
         assert repos["repo"].processed_session_files("usage") == set()
-        assert repos["repo"].processed_session_files("verification") == {
-            "alice/a.jsonl"
-        }
+        assert repos["repo"].processed_session_files("verification") == {"alice/a.jsonl"}
 
     def test_deletes_multiple_processors(self, repos):
         _seed(repos, "usage", "alice/a.jsonl")
         _seed(repos, "marketplace_rollup_30d", "alice/a.jsonl")
         _seed(repos, "verification", "alice/a.jsonl")
 
-        deleted = repos["repo"].delete_for_processors(
-            ["usage", "marketplace_rollup_30d"]
-        )
+        deleted = repos["repo"].delete_for_processors(["usage", "marketplace_rollup_30d"])
         assert deleted == 2
-        assert repos["repo"].processed_session_files("verification") == {
-            "alice/a.jsonl"
-        }
+        assert repos["repo"].processed_session_files("verification") == {"alice/a.jsonl"}
 
     def test_unknown_processor_deletes_nothing(self, repos):
         _seed(repos, "usage", "alice/a.jsonl")
@@ -183,9 +199,7 @@ class TestGetStatesForSessionFiles:
         _seed(repos, "verification", "alice/a.jsonl", items=3)
         _seed(repos, "verification", "alice/b.jsonl", items=0)
 
-        states = repos["repo"].get_states_for_session_files(
-            "verification", ["alice/a.jsonl", "alice/b.jsonl"]
-        )
+        states = repos["repo"].get_states_for_session_files("verification", ["alice/a.jsonl", "alice/b.jsonl"])
         assert set(states.keys()) == {"alice/a.jsonl", "alice/b.jsonl"}
         assert states["alice/a.jsonl"]["items_extracted"] == 3
         assert states["alice/b.jsonl"]["items_extracted"] == 0
@@ -194,24 +208,18 @@ class TestGetStatesForSessionFiles:
     def test_only_returns_requested_files(self, repos):
         _seed(repos, "verification", "alice/a.jsonl")
         _seed(repos, "verification", "alice/b.jsonl")
-        states = repos["repo"].get_states_for_session_files(
-            "verification", ["alice/a.jsonl"]
-        )
+        states = repos["repo"].get_states_for_session_files("verification", ["alice/a.jsonl"])
         assert set(states.keys()) == {"alice/a.jsonl"}
 
     def test_scoped_to_processor(self, repos):
         _seed(repos, "usage", "alice/a.jsonl")
         # File exists under 'usage' but we ask 'verification' — no match.
-        states = repos["repo"].get_states_for_session_files(
-            "verification", ["alice/a.jsonl"]
-        )
+        states = repos["repo"].get_states_for_session_files("verification", ["alice/a.jsonl"])
         assert states == {}
 
     def test_missing_file_absent_from_result(self, repos):
         _seed(repos, "verification", "alice/a.jsonl")
-        states = repos["repo"].get_states_for_session_files(
-            "verification", ["alice/a.jsonl", "alice/missing.jsonl"]
-        )
+        states = repos["repo"].get_states_for_session_files("verification", ["alice/a.jsonl", "alice/missing.jsonl"])
         assert set(states.keys()) == {"alice/a.jsonl"}
 
 
@@ -222,14 +230,14 @@ class TestGetStatesForSessionFiles:
 
 class TestActivitySince:
     def test_no_rows_returns_none_and_zero(self, repos):
-        since = datetime.now(timezone.utc) - timedelta(hours=1)
+        since = datetime.now(UTC) - timedelta(hours=1)
         result = repos["repo"].activity_since("verification", since)
         assert result == {"last_processed_at": None, "items_extracted": 0}
 
     def test_sums_items_within_window(self, repos):
         _seed(repos, "verification", "alice/a.jsonl", items=3)
         _seed(repos, "verification", "alice/b.jsonl", items=4)
-        since = datetime.now(timezone.utc) - timedelta(hours=1)
+        since = datetime.now(UTC) - timedelta(hours=1)
         result = repos["repo"].activity_since("verification", since)
         assert result["items_extracted"] == 7
         assert result["last_processed_at"] is not None
@@ -237,13 +245,13 @@ class TestActivitySince:
     def test_excludes_rows_outside_window(self, repos):
         _seed(repos, "verification", "alice/a.jsonl", items=5)
         # A window in the future — the just-seeded row falls before it.
-        since = datetime.now(timezone.utc) + timedelta(hours=1)
+        since = datetime.now(UTC) + timedelta(hours=1)
         result = repos["repo"].activity_since("verification", since)
         assert result == {"last_processed_at": None, "items_extracted": 0}
 
     def test_scoped_to_processor(self, repos):
         _seed(repos, "usage", "alice/a.jsonl", items=9)
-        since = datetime.now(timezone.utc) - timedelta(hours=1)
+        since = datetime.now(UTC) - timedelta(hours=1)
         result = repos["repo"].activity_since("verification", since)
         assert result == {"last_processed_at": None, "items_extracted": 0}
 
@@ -267,7 +275,7 @@ def _processed_at_utc(repos, processor, key):
     does identical arithmetic on both backends.
     """
     pa = repos["repo"].get_states_for_session_files(processor, [key])[key]["processed_at"]
-    return pa.replace(tzinfo=timezone.utc) if pa.tzinfo is None else pa.astimezone(timezone.utc)
+    return pa.replace(tzinfo=UTC) if pa.tzinfo is None else pa.astimezone(UTC)
 
 
 def _write_session(session_dir, username, name, body):
