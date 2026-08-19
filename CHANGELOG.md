@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- **`/catalog/semantics` claimed there was no semantic layer when there was one.** Two pages carry the title "Semantic layer": `/catalog/semantics` renders the flat `metric_definitions` + `glossary_terms` projection, and `/semantic-layer` browses the stored Ossie document. Nothing on the former — the more reachable of the two, linked from the Library's Definitions block — pointed at the latter, so an instance whose document declares datasets and relationships but no aggregations rendered "No metrics registered yet. Import a starter pack with…" and read as an empty instance. Zero metrics is the *default* state of an imported document, not a sign the import failed. The page now offers a "Browse the full semantic layer" link in its header and names the document in the metrics empty state beside (not instead of) the import hint. Gated on the same `_can_read_model` tier the browse pages apply — a readable document, never this page's own counts — so a caller with no readable model is not sent to an empty page. `/library`'s footer already gated on exactly this condition with its own inline copy of the check; both surfaces now share one reader (`_has_readable_semantic_model`), since the two disagreeing is how the standalone page came to contradict the Library next door.
+
 ## [0.83.89] - 2026-08-19
 
 ### Added
@@ -30,6 +34,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 - **Every release since 0.83.86 failed its post-merge smoke test and rolled `:stable` back automatically.** `scripts/smoke-test.sh` step 11 required `/home` to contain the bundled connectors' frontmatter display name `Atlassian (Jira / Confluence)` and a finale roll-call listing all three. 0.83.86's thin install prompt removed both **on purpose** — connector setup moved into `agnes onboard`, whose step 6 reads `GET /api/connectors/manifest` and prints what the instance offers — and `tests/test_web_home_page.py::test_connectors_section_removed_from_home` pins that removal. So the suite asserted the tiles were gone while the release gate asserted they were present, and 0.83.86 and 0.83.87 both shipped, failed smoke, and reverted `:stable` to the last good image (tracking issues opened automatically). The gate now checks the surviving contract — the page renders and still names Asana / Google Workspace / Atlassian in its own copy — plus the manifest endpoint the coverage moved to, so nothing is merely deleted to get green.
 - **The same drift can no longer wait for a release to be discovered.** Step 11 ran only after a merge to `main`, against the built image, so its assertions were invisible to every PR. `test_release_smoke_gate_assertions_hold_against_the_shipped_page` mirrors them into the pre-merge suite.
+
 ## [0.83.87] - 2026-08-19
 
 ### Fixed
