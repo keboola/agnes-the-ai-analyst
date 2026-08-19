@@ -12,10 +12,11 @@ month, then apply all of a month's updates against one load and one save per tab
 Two invariants this file pins, both load-bearing and neither obvious:
 
   * **Equivalence.** Batched output must equal what the per-issue path produces for
-    the same inputs, including the two tri-state rules that are decided PER ISSUE
+    the same inputs, including the tri-state rules that are decided PER ISSUE
     against shared state — a `_comments_incomplete` marker preserves that issue's
-    stored thread, and an absent `_remote_links` overlay preserves its stored links.
-    Flattening those to a per-batch decision would silently wipe threads.
+    stored thread, an absent `_remote_links` overlay preserves its stored links,
+    and an absent `changelog` overlay preserves its stored history. Flattening any
+    of them to a per-batch decision would silently wipe a month's rows.
   * **Lock discipline.** `file_lock.py` documents the nesting as
     `issue_json_lock` (outer) -> `parquet_month_lock` (inner). The batch path holds
     the month lock across many issues, so it must never reach for an issue lock

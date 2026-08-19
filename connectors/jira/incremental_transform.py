@@ -385,25 +385,24 @@ def _comment_records(payload: _IssuePayload, existing: pd.DataFrame | None) -> l
     stored" and write the partial list THERE while the real thread sits in the
     creation month; views glob `month=*`, so they would double-count.
 
-    Whatever does get written passes through `_carry_forward_public_visibility`
-    first — the same delete-then-insert that can shorten a thread can also NULL a
-    column, one comment at a time. Both return paths go through it so "every row
-    this connector writes incrementally was carry-checked" holds by construction;
-    on the second the frame provably has no rows for this issue, so it is a no-op.
+    Whatever survives those rules is written through
+    `_carry_forward_public_visibility` — the same delete-then-insert that can
+    shorten a thread can also NULL a column, one comment at a time. One exit, so
+    "every row this connector writes incrementally was carry-checked" holds by
+    construction rather than by remembering to add the call to a new branch.
     """
-    if not payload.comments_incomplete:
-        return _carry_forward_public_visibility(payload.issue_key, payload.comments, existing)
-    if payload.created_at_missing or _has_stored_rows(existing, payload.issue_key) or not payload.comments:
+    if payload.comments_incomplete:
+        if payload.created_at_missing or _has_stored_rows(existing, payload.issue_key) or not payload.comments:
+            logger.warning(
+                f"Skipping comments upsert for {payload.issue_key}: pagination incomplete "
+                f"(fetch failure). Existing rows preserved."
+            )
+            return None
         logger.warning(
-            f"Skipping comments upsert for {payload.issue_key}: pagination incomplete "
-            f"(fetch failure). Existing rows preserved."
+            f"Writing {len(payload.comments)} partially-fetched comments for "
+            f"{payload.issue_key}: pagination incomplete (fetch failure), but no stored rows "
+            f"to preserve."
         )
-        return None
-    logger.warning(
-        f"Writing {len(payload.comments)} partially-fetched comments for "
-        f"{payload.issue_key}: pagination incomplete (fetch failure), but no stored rows "
-        f"to preserve."
-    )
     return _carry_forward_public_visibility(payload.issue_key, payload.comments, existing)
 
 
@@ -473,6 +472,12 @@ def _carry_forward_public_visibility(issue_key: str, records: list[dict], existi
 
     Mutates *records* in place and returns it: ``_apply_payloads`` calls the
     comments selector exactly once per payload.
+
+    The "nothing unresolved" early-out is load-bearing, not a micro-optimisation:
+    reading the stored side means masking `existing` — the whole MONTH partition —
+    once per issue, and the SLA poll runs a month's open tickets through here in
+    one pass. On any deployment where the flag is present (i.e. all of them, see
+    `transform._comment_public_visibility`) that cost is never paid at all.
     """
     unresolved = [r for r in records if r.get("public_visibility") is None]
     if not unresolved:
@@ -783,8 +788,9 @@ def transform_single_issue(
     try:
         # One payload, then the shared apply path — the same one
         # `transform_issues` uses, so the per-issue rules for an
-        # incomplete comment thread and an absent remote-links overlay cannot
-        # drift between the single and batched callers.
+        # incomplete comment thread, an absent changelog or remote-links overlay,
+        # and the public_visibility carry-forward cannot drift between the single
+        # and batched callers.
         payload = _build_issue_payload(issue_key, raw_dir, attachments_dir, warn_unresolved=warn_unresolved)
         if payload is None:
             return False

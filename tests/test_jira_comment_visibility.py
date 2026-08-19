@@ -321,6 +321,28 @@ def _stored_comments(tmp_path, issue_key: str | None = None) -> pd.DataFrame:
     return df if issue_key is None else df[df["issue_key"] == issue_key].reset_index(drop=True)
 
 
+def _webhook_service(tmp_path, monkeypatch):
+    """A `JiraService` whose writes land in the same tree `_land` reads.
+
+    Both directories matter and they are set in different places: `save_issue`
+    writes the raw JSON under `Config.JIRA_DATA_DIR`, while the parquet root is
+    `incremental_transform.DEFAULT_OUTPUT_DIR` — `trigger_incremental_transform`
+    deliberately does NOT forward an `output_dir`, so the module default is the
+    only seam. Point either one somewhere else and the assertions read an empty
+    partition and pass vacuously.
+    """
+    from connectors.jira import incremental_transform as inc
+    from connectors.jira import service as svc
+
+    monkeypatch.setattr(svc.Config, "JIRA_DOMAIN", "mycompany.atlassian.net")
+    monkeypatch.setattr(svc.Config, "JIRA_EMAIL", "bot@mycompany.com")
+    monkeypatch.setattr(svc.Config, "JIRA_API_TOKEN", "test-token-xyz")
+    monkeypatch.setattr(svc.Config, "JIRA_DATA_DIR", tmp_path / "raw")
+    monkeypatch.setattr(inc, "DEFAULT_OUTPUT_DIR", tmp_path / "data")
+    monkeypatch.setattr(svc, "_jira_service", None)
+    return svc.JiraService()
+
+
 def _visibilities(df: pd.DataFrame) -> list:
     """``public_visibility`` as plain Python — ``None`` for every null flavour."""
     return [None if pd.isna(v) else bool(v) for v in df["public_visibility"]]
@@ -547,18 +569,6 @@ class TestFlaglessWebhookFallbackNullsNothing:
     the update LANDS (no deferral) and no stored boolean is lost.
     """
 
-    def _service(self, tmp_path, monkeypatch):
-        from connectors.jira import incremental_transform as inc
-        from connectors.jira import service as svc
-
-        monkeypatch.setattr(svc.Config, "JIRA_DOMAIN", "mycompany.atlassian.net")
-        monkeypatch.setattr(svc.Config, "JIRA_EMAIL", "bot@mycompany.com")
-        monkeypatch.setattr(svc.Config, "JIRA_API_TOKEN", "test-token-xyz")
-        monkeypatch.setattr(svc.Config, "JIRA_DATA_DIR", tmp_path / "raw")
-        monkeypatch.setattr(inc, "DEFAULT_OUTPUT_DIR", tmp_path / "data")
-        monkeypatch.setattr(svc, "_jira_service", None)
-        return svc.JiraService()
-
     def _fallback(self, service, embedded, *, attachments=()):
         with (
             patch.object(service, "fetch_issue", return_value=None),
@@ -570,7 +580,7 @@ class TestFlaglessWebhookFallbackNullsNothing:
 
     def test_no_stored_boolean_is_lost_and_the_update_still_lands(self, tmp_path, monkeypatch):
         _land(tmp_path, _raw_issue("SUPPORT-20", _comment("1", jsdPublic=False), _comment("2", jsdPublic=True)))
-        service = self._service(tmp_path, monkeypatch)
+        service = _webhook_service(tmp_path, monkeypatch)
 
         edited = _raw_issue(
             "SUPPORT-20",
@@ -591,7 +601,7 @@ class TestFlaglessWebhookFallbackNullsNothing:
 
     def test_an_edited_comment_still_reports_an_honest_null(self, tmp_path, monkeypatch):
         _land(tmp_path, _raw_issue("SUPPORT-21", _comment("1", jsdPublic=True)))
-        service = self._service(tmp_path, monkeypatch)
+        service = _webhook_service(tmp_path, monkeypatch)
 
         self._fallback(service, _raw_issue("SUPPORT-21", _comment("1", updated="2026-01-17T08:00:00.000+0000")))
 
@@ -609,18 +619,6 @@ class TestUnresolvedWarningIsLoggedOncePerEvent:
     grouping pass already used.
     """
 
-    def _service(self, tmp_path, monkeypatch):
-        from connectors.jira import incremental_transform as inc
-        from connectors.jira import service as svc
-
-        monkeypatch.setattr(svc.Config, "JIRA_DOMAIN", "mycompany.atlassian.net")
-        monkeypatch.setattr(svc.Config, "JIRA_EMAIL", "bot@mycompany.com")
-        monkeypatch.setattr(svc.Config, "JIRA_API_TOKEN", "test-token-xyz")
-        monkeypatch.setattr(svc.Config, "JIRA_DATA_DIR", tmp_path / "raw")
-        monkeypatch.setattr(inc, "DEFAULT_OUTPUT_DIR", tmp_path / "data")
-        monkeypatch.setattr(svc, "_jira_service", None)
-        return svc.JiraService()
-
     def _save_with_attachment(self, service, issue):
         with (
             patch.object(service, "fetch_remote_links", return_value=[]),
@@ -634,7 +632,7 @@ class TestUnresolvedWarningIsLoggedOncePerEvent:
         return [r for r in caplog.records if "jsdPublic" in r.getMessage()]
 
     def test_one_warning_even_when_an_attachment_re_transforms(self, tmp_path, monkeypatch, caplog):
-        service = self._service(tmp_path, monkeypatch)
+        service = _webhook_service(tmp_path, monkeypatch)
 
         with caplog.at_level(logging.WARNING, logger="connectors.jira.transform"):
             self._save_with_attachment(service, _raw_issue("SUPPORT-30", _comment("1")))
@@ -651,7 +649,7 @@ class TestUnresolvedWarningIsLoggedOncePerEvent:
         monkeypatch.setattr(
             svc, "trigger_incremental_transform", lambda *a, **kw: seen.append(kw.get("warn_unresolved", True)) or True
         )
-        service = self._service(tmp_path, monkeypatch)
+        service = _webhook_service(tmp_path, monkeypatch)
         (tmp_path / "raw" / "issues").mkdir(parents=True, exist_ok=True)
         (tmp_path / "raw" / "issues" / "SUPPORT-31.json").write_text(json.dumps(_raw_issue("SUPPORT-31")))
 
