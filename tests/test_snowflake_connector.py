@@ -995,6 +995,54 @@ def test_admin_register_snowflake_rebuild_error_is_visible_twice(seeded_app, sno
     assert "BI_TYPO" in (row["last_sync_error"] or "")
 
 
+def test_fixing_a_bad_snowflake_name_clears_the_recorded_failure(seeded_app, snowflake_instance, monkeypatch):
+    """Correcting the typo must clear the row's failed state, not leave a stale one.
+
+    Registration marks a row failed when its remote-extract rebuild errors (so
+    it stops reading "never synced"). The obvious next move is to edit the name
+    — and `PUT /registry/{id}` re-runs the rebuild. If that success does not
+    clear `sync_state.error`, `GET /api/admin/registry` and `/admin/sync` keep
+    showing the OLD failure until the next full orchestrator sweep re-derives
+    state from `_meta`, i.e. the fix looks like it did not take. A status that
+    lies about a corrected row is the same defect class this whole change set
+    exists to remove.
+    """
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+
+    # 1. a registration whose rebuild fails → row is marked failed
+    monkeypatch.setattr(
+        "connectors.snowflake.extract_init.rebuild_from_registry",
+        MagicMock(
+            return_value={
+                "skipped": False,
+                "tables_registered": 0,
+                "errors": [{"table": "orders_fix", "error": "Catalog Error: Table with name NOPE does not exist!"}],
+            }
+        ),
+    )
+    resp = c.post("/api/admin/register-table", json=_sf_payload(name="orders_fix"), headers=_auth(token))
+    assert resp.status_code == 500, resp.text
+    row = next(t for t in c.get("/api/admin/registry", headers=_auth(token)).json()["tables"] if t["id"] == "orders_fix")
+    assert row["last_sync_status"] == "error"
+
+    # 2. the admin corrects the name; this rebuild succeeds
+    monkeypatch.setattr(
+        "connectors.snowflake.extract_init.rebuild_from_registry",
+        MagicMock(return_value={"skipped": False, "tables_registered": 1, "errors": []}),
+    )
+    resp = c.put(
+        "/api/admin/registry/orders_fix",
+        json={"source_table": "orders"},
+        headers=_auth(token),
+    )
+    assert resp.status_code == 200, resp.text
+
+    row = next(t for t in c.get("/api/admin/registry", headers=_auth(token)).json()["tables"] if t["id"] == "orders_fix")
+    assert row["last_sync_status"] != "error", row
+    assert not (row["last_sync_error"] or ""), row
+
+
 def test_admin_register_snowflake_custom_sql_foreign_catalog_refused(seeded_app, snowflake_instance):
     """Finding #9: the materialize session ATTACHes only ``sf``. Custom SQL naming
     another catalog registers happily today and then fails at COPY time on the
@@ -1204,6 +1252,39 @@ def test_unnameable_single_line_value_is_treated_as_an_inline_key_not_a_path(pkc
     pem, passphrase = _private_key_pem_and_passphrase(pkcs8_pem)
     assert "BEGIN PRIVATE KEY" in pem
     assert passphrase is None
+
+
+def test_unreadable_private_key_path_is_not_echoed_into_the_error(tmp_path):
+    """The failure message must not carry the credential value.
+
+    The path probe fires on any single-line, non-PEM value under 4 KiB — which a
+    pasted base64 DER key is. If such a value happens to name a real file that
+    cannot be decoded (or read at all), the raised `ValueError` used to
+    interpolate `{raw!r}`, i.e. the key material itself, and `{exc}` too — an
+    `OSError`'s own `str()` ends with the offending filename, which here IS the
+    credential. That string then travels: `attach_snowflake` →
+    `extract_init` → `register-table`'s 500 body → and, since the row is now
+    marked failed, into `sync_state.error`, where `GET /api/admin/registry`,
+    `/admin/sync` and `agnes admin list-tables` all read it with no redaction
+    and no TTL. Admin-only, but a Snowflake service-account key's
+    confidentiality boundary is not Agnes's admin boundary.
+    """
+    from connectors.snowflake.attach import _private_key_pem_and_passphrase
+
+    # A real file whose bytes are not valid UTF-8 → read_text(errors="strict")
+    # raises UnicodeDecodeError, the branch that used to echo the value.
+    secret_looking_path = tmp_path / "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSj"
+    secret_looking_path.write_bytes(b"\xff\xfe\x00binary-not-utf8")
+
+    with pytest.raises(ValueError) as exc_info:
+        _private_key_pem_and_passphrase(str(secret_looking_path))
+
+    msg = str(exc_info.value)
+    assert secret_looking_path.name not in msg, msg
+    assert str(secret_looking_path) not in msg, msg
+    # Still has to be diagnosable: name the setting and the failure class.
+    assert "private key" in msg.lower(), msg
+    assert "UnicodeDecodeError" in msg or "unicode" in msg.lower(), msg
 
 
 def test_private_key_path_that_cannot_be_expanded_raises_valueerror(monkeypatch):

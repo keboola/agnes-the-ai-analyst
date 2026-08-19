@@ -459,7 +459,25 @@ def _private_key_pem_and_passphrase(token: str, passphrase: str | None = None) -
             if isinstance(exc, OSError) and exc.errno in (errno.ENAMETOOLONG, errno.EINVAL):
                 pass
             else:
-                raise ValueError(f"snowflake private key file {raw!r} could not be read: {exc}") from exc
+                # Neither the value nor the exception text may appear here.
+                # `raw` is the credential itself (it is only reassigned to file
+                # CONTENTS on the success branch above), and an OSError's own
+                # str() ends with the offending filename — which in this branch
+                # IS that same value. The message travels a long way: into
+                # `init_extract`'s per-table errors, out through
+                # `register-table`'s 500 body, and into `sync_state.error`,
+                # which `GET /api/admin/registry`, /admin/sync and `agnes admin
+                # list-tables` all render unredacted and without a TTL. The
+                # exception class (plus errno symbol) distinguishes a bad mount
+                # from a bad encoding without carrying the payload; the original
+                # stays chained for a local traceback.
+                _why = type(exc).__name__
+                if isinstance(exc, OSError) and exc.errno is not None:
+                    _why = f"{_why}/{errno.errorcode.get(exc.errno, exc.errno)}"
+                raise ValueError(
+                    "snowflake private key looked like a filesystem path but could not be read "
+                    f"({_why}); check the file named by data_source.snowflake.private_key_env"
+                ) from exc
 
     # Defense-in-depth: a key should never contain '$', but a pasted value
     # containing it could close a dollar-quoted SQL literal. Reject early.
