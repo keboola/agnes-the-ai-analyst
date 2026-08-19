@@ -10,6 +10,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- **Keboola tables can now be registered as live (`query_mode='remote'`) from
+  the Add-data wizard.** Each row in the bucket browser carries a
+  live/materialized select (shown once the table is checked, defaulting to
+  materialized — the previous hardcoded behavior). Live rows resolve through
+  the Keboola DuckDB extension at query time via `_remote_attach`, exactly
+  like rows registered through the API; previously the wizard forced every
+  Keboola table to `materialized` and remote registration was API/CLI-only.
+
 ### Changed
 
 - **The bundled reference install-prompt template is thin and self-contained.** `src/_bundled_seed/install-prompt/template.md.tmpl` mirrors the thin default (install the CLI inline, `agnes onboard`, restart, confirm) and references only what a forked template can actually use: `{server_url}` plus the Jinja `{{ ... }}` context. `docs/seed-repo-contract.md` §5 now documents that contract, and a new guard test keeps retired/unwired placeholders out of the bundle. Bundled-seed provenance (`.source_ref`) is refreshed to the current upstream tip.
