@@ -19,6 +19,117 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 - The shipped default workspace-prompt template no longer trips the `/admin/prompts` stale-override banner when saved as an override: its stale-docs bullet mentioned a legacy CLI spelling that the legacy-string scanner flags.
 
+## [0.83.90] - 2026-08-19
+
+### Added
+
+- **Keboola tables can now be registered as live (`query_mode='remote'`) from
+  the Add-data wizard.** Each row in the bucket browser carries a
+  live/materialized select (shown once the table is checked, defaulting to
+  materialized — the previous hardcoded behavior). Live rows resolve through
+  the Keboola DuckDB extension at query time via `_remote_attach`, exactly
+  like rows registered through the API; previously the wizard forced every
+  Keboola table to `materialized` and remote registration was API/CLI-only.
+
+### Changed
+
+- **The bundled reference install-prompt template is thin and self-contained.** `src/_bundled_seed/install-prompt/template.md.tmpl` mirrors the thin default (install the CLI inline, `agnes onboard`, restart, confirm) and references only what a forked template can actually use: `{server_url}` plus the Jinja `{{ ... }}` context. `docs/seed-repo-contract.md` §5 now documents that contract, and a new guard test keeps retired/unwired placeholders out of the bundle. Bundled-seed provenance (`.source_ref`) is refreshed to the current upstream tip.
+- **The Initial Workspace sync dry-run warns about unusable install-prompt placeholders.** It scans the template the prompt is actually bound to (custom `git_path` included) for single-brace names nothing substitutes on the git-bound path, instead of exercising the built-in renderer, which no longer reads seed content.
+
+### Fixed
+
+- **Registering a valid Snowflake remote table marked it failed whenever some OTHER row was broken, and correcting a row failed to clear its error for the same reason.** `rebuild_from_registry` walks every `query_mode='remote'` Snowflake row and the API collapsed all per-table errors into one aggregate string, so on an instance already carrying a phantom row every subsequent valid registration read `error` in `/admin/sync` and `GET /api/admin/registry` quoting a table the operator had never typed — while the edit path, gated on that same aggregate, could never clear a corrected row at all. The rebuild helper now reports which tables actually failed and whether it ran at all (a benign skip reports success by design, so a skip used to wipe a real failure and turn an unusable table green); recording and clearing both key off this row's own outcome — and the edit path hands the rebuild the row's POST-update name, since a rename would otherwise leave the old name absent from the failed set no matter what the rebuild found.
+- **A failed bulk registration on `/admin/data-sources` showed HTML entities instead of the server's message.** Two of the three status sinks ran the message through `_esc()` before assigning it to `textContent`, which escapes on its own — so `Catalog Error: … Did you mean "Y"?` reached the operator as `Did you mean &quot;Y&quot;?`, mangling the one string those sinks exist to relay. Not an escaping hole (all three write `textContent`, never `innerHTML`); the single-row path already got this right.
+- **A `SERVER_URL` with stray whitespace re-initialized every chat workspace on every attach.** The `.claude/init-complete` sentinel reader strips what it reads back, so an unstripped comparand never equalled the value just written and `WorkdirManager.needs_reinit()` stayed True forever. Non-destructive — the init path only overwrites template-owned files — but a malformed env var cost a full template copy per session. Both sides strip now.
+- **`agnes onboard` refuses a `--workspace` target that does not exist** (exit 23) instead of letting `agnes init` create it while later steps resolved paths against an unclassified directory — the command never creates directories on the user's behalf.
+- **Re-running `agnes onboard` in a workspace it already created no longer demands `--accept-dir`.** The directory gate recognizes the `.claude/init-complete` sentinel (checked after the home/system-dir refusal, so a stray sentinel can't bless `$HOME`), and the allowlist covers the artefacts an interrupted init leaves behind.
+- **A benign `agnes update` early-out no longer aborts `agnes onboard` as a failed init.** `typer.Exit(0)` (the single-instance lock held by the background SessionStart refresh) is reported as "another update is already running"; a non-zero exit stays fatal with a legible message. A convergence that reported failed stages now marks the init row `warning` and degrades the report's `overall` instead of reading as "already configured".
+
+- **Keboola `query_mode='materialized'` tables were registered, reported
+  `last_sync=ok` with a row count, and could not be read.** `materialize_query`
+  published the parquet but never registered it in the source's
+  `extract.duckdb`, and `SyncOrchestrator.rebuild()` only ever walks `_meta` —
+  so no master view was created and every read 400d with "registered as
+  query_mode='materialized' but is not yet materialized in this instance's
+  analytics views". On an instance whose Keboola rows were ALL materialized
+  there was no `extract.duckdb` at all, so the orchestrator skipped the entire
+  source behind a debug-level log line and nothing surfaced to the operator.
+  The Keboola connector now writes the `_meta` row + inner view like BigQuery,
+  Snowflake and Databricks already did (creating `extract.duckdb` when absent,
+  which the other three can assume exists), fail-soft so a registration hiccup
+  never loses a published parquet. Which half of that actually carries the
+  fix is worth stating: the `_meta` write opens `extract.duckdb` as a second
+  write handle, and `src/orchestrator.py` already documents that exact call
+  colliding with the read-only ATTACH `rebuild()` holds (`Unique file handle
+  conflict`) for BigQuery's equivalent — which is why the 0.41.0
+  filesystem-fallback pass over `data/*.parquet` exists. So on an instance
+  where that collision fires, the master view still comes from the fallback;
+  the load-bearing change here is **creating `extract.duckdb` at all** for a
+  materialized-only Keboola source, since without it the orchestrator skipped
+  the whole source before the fallback could ever run.
+- **A failed Snowflake table registration now says why, in both places an
+  operator looks.** `POST /api/admin/register-table` answered a failed
+  remote-extract rebuild with 500 + `{status: "rebuild_failed", message: …}`;
+  the admin UI reads `detail`, so the real reason (`Catalog Error: Table with
+  name X does not exist! Did you mean "Y"?`) was thrown away and the wizard
+  showed a bare "✗ failed". The response now carries the reason under `detail`
+  as well, the UI falls back through both keys, and the row — kept on purpose
+  so a mistyped name can be edited rather than re-entered — is marked failed in
+  `sync_state` instead of reading `pending` / "never synced" forever, which is
+  indistinguishable from a row waiting for its first tick.
+- **Correcting a bad Snowflake schema/table now clears the row's recorded
+  failure.** `PUT /api/admin/registry/{id}` re-runs the remote-extract rebuild,
+  but a success left the previous failure in `sync_state`, so `/admin/sync` and
+  `GET /api/admin/registry` kept serving the old error until the next full
+  orchestrator sweep re-derived state from `_meta` — the fix looked like it had
+  not taken.
+
+- **A per-user chat workspace re-initializes when the instance's `SERVER_URL` changes.** `WorkdirManager.needs_reinit()` compared only the marketplace SHA and the Agnes version, so a workspace initialized under one URL kept serving a rendered `CLAUDE.md` naming the pre-migration host after an operator moved the instance to a new domain — the in-sandbox agent read the mismatch as a phishing indicator, and the workspace only converged when the next version bump happened to force a re-init. The server URL recorded in the `.claude/init-complete` sentinel (new reader: `src/initial_workspace.py::read_sentinel_server_url`) is now part of the re-init decision; a sentinel predating the `server_url` line triggers one self-healing re-init that re-stamps it.
+
+### Security
+
+- **A Snowflake private key is no longer echoed into an error message.** The
+  key loader treats a single-line, non-PEM value under 4 KiB as a possible file
+  path; when such a value named a real file that could not be read or decoded,
+  the raised error interpolated the value itself — and the underlying
+  `OSError`'s own text ends with the same string. That message reaches the
+  `register-table` response and (as of this release) the persisted
+  `sync_state.error` that `/admin/sync`, `GET /api/admin/registry` and `agnes
+  admin list-tables` render unredacted. It now names only the failure class and
+  the setting to check; the original exception stays chained for a local
+  traceback.
+
+## [0.83.89] - 2026-08-19
+
+### Added
+
+- **Snowflake semantic views can be imported into the semantic layer** — a new `snowflake_semantic` adapter composes one Apache Ossie document per semantic view (logical tables → datasets, dimensions/facts → fields, metrics → metrics, `FOREIGN_KEY`/`REF_KEY` → relationships, plus the view's own AI instructions and verified queries). Register it as a `connection`-kind source: `agnes admin semantic-source add --kind connection --name "Snowflake semantic views" --adapter snowflake_semantic`; optional `config` scope keys are `database`, `schema` and `like`. Credentials are never taken from the source row — they resolve from the instance's Snowflake connection, and egress stays gated by the existing host allowlist and SECRET. Every imported expression is tagged `SNOWFLAKE`, so it is readable in Agnes but deliberately **not** runnable locally: `src/semantic/dialect.py` refuses to splice a warehouse-specific fragment into a DuckDB query. Declared time dimensions become `dimension.is_time` and each relationship's `join_type` is preserved — both come from an `EXTENSION` row that Snowflake's SQL reference does not document and that carries them nowhere else.
+
+### Changed
+
+- **An unknown semantic-source adapter is now refused at registration** (`400`, naming the adapters that do exist) instead of registering successfully and failing on the first sync.
+
+### Fixed
+
+- **The Snowflake panel on `/admin/data-sources` no longer points semantic views at the table registry.** It claimed "for custom SQL, partitioning or semantic views, use Tables → Register new table", but a semantic view is not a registerable table and that form rejects Snowflake-flavour SQL outright — an admin following the hint hit a dead end. It now points at the semantic-layer page and states that the imported metric SQL is not locally runnable.
+
+## [0.83.88] - 2026-08-19
+
+### Fixed
+
+- **Every release since 0.83.86 failed its post-merge smoke test and rolled `:stable` back automatically.** `scripts/smoke-test.sh` step 11 required `/home` to contain the bundled connectors' frontmatter display name `Atlassian (Jira / Confluence)` and a finale roll-call listing all three. 0.83.86's thin install prompt removed both **on purpose** — connector setup moved into `agnes onboard`, whose step 6 reads `GET /api/connectors/manifest` and prints what the instance offers — and `tests/test_web_home_page.py::test_connectors_section_removed_from_home` pins that removal. So the suite asserted the tiles were gone while the release gate asserted they were present, and 0.83.86 and 0.83.87 both shipped, failed smoke, and reverted `:stable` to the last good image (tracking issues opened automatically). The gate now checks the surviving contract — the page renders and still names Asana / Google Workspace / Atlassian in its own copy — plus the manifest endpoint the coverage moved to, so nothing is merely deleted to get green.
+- **The same drift can no longer wait for a release to be discovered.** Step 11 ran only after a merge to `main`, against the built image, so its assertions were invisible to every PR. `test_release_smoke_gate_assertions_hold_against_the_shipped_page` mirrors them into the pre-merge suite.
+## [0.83.87] - 2026-08-19
+
+### Fixed
+
+- **The Keboola register drawer's default mode could not register anything.** `_buildKeboolaPayload`'s whole-table branch — the pre-checked "Whole table (extension)" radio — synthesized `SELECT * FROM kbc."<bucket>"."<table>"` into `source_query` alongside `query_mode='materialized'`, and that exact combination is refused by `RegisterTableRequest._check_mode_query_coherence` ("Keboola materialized source_query must be a JSON filter spec … not SQL") and again by `connectors/keboola/extractor.py` at sync time. A Keboola materialized row exports through the Storage API, whose filter is a JSON spec, so a NULL `source_query` *is* "full-table export" — the synthesized SQL was never a valid payload. Both builders now send bucket + source_table only. Pre-existing, and invisible until this release: the 422's array `detail` rendered as the literal `[object Object]`, so the dead register path looked like an ugly error message rather than a broken endpoint. The edit form built the same payload, which `UpdateTableRequest` happens to accept, so it could persist a row the extractor then refuses to sync — and there it sends an explicit `source_query: null` rather than just dropping the key, because `update_table` overlays `model_dump(exclude_unset=True)` onto the stored row: omitting the field would keep a previous filter spec attached while the drawer claimed a full-table copy, and would leave a row still carrying the legacy synthesized SQL wedged on the merged-record guard with no way to clear it from the drawer. Switching such a row back to "Whole table" now repairs it.
+- **Discover/List tables on the Register-table drawer gave no sign of life, and its toasts rendered invisibly.** The Keboola Discover/List-tables buttons and the BigQuery Discover/List-tables buttons fired their fetch with no loading state — a slow or hung request looked identical to a dead button. They now disable and relabel ("Discovering…" / "Listing…") for the duration of the call. Separately, the result/error toast (`.toast`, z-index 200) rendered *behind* the register drawer and every other modal on the page (`.ds-drawer` / legacy `.modal-overlay`, z-index 1200 / 1000) — so a "Loaded N buckets" success or a discovery/registration error fired while completely hidden behind the very panel the operator was looking at. Toast z-index raised above both.
+- **A failed register/precheck/update showed the literal text "[object Object]", and even readable errors left the operator guessing which box to fix.** FastAPI's automatic 422 validation errors return `detail` as an array of `{loc, msg, type}` objects; several register-table, precheck, and edit-save error handlers coerced that straight into a string. A shared `_apiErrorMessage()` helper now unwraps validation-error arrays into a readable `field: message` list (and the `{error, kind, details}` shape BigQuery's connectivity checks raise) across the Keboola/BigQuery/Databricks/Snowflake register, precheck, and edit-save paths. On top of the toast, a companion `_applyFieldErrors()` now pins each returned validation error onto the actual input (red border + inline message) via a per-form field map, and the register forms also validate the obvious required combinations (Bucket + Source Table, or the custom-SQL View name + SQL) client-side before the request ever goes out.
+- **The Keboola register drawer didn't make clear that pasting a Table ID and filling Bucket + Source Table are alternatives, not both required.** Added a visual "or fill in directly" divider between them, matching the pattern already used on `/admin/data-sources`.
+- **On the two-step connectors the new field-level validation never fired: BigQuery and Snowflake showed the toast but never the red box.** `/api/admin/register-table/precheck` runs *identical* Pydantic validation to `/register-table` (its own docstring says so), and the BQ/Snowflake confirm step is reachable only once that precheck has returned 200 — so a 422 on a required field always landed in step 1, where nothing mapped it back onto a field, and `BQ_REGISTER_FIELD_MAP` / `SF_REGISTER_FIELD_MAP` in step 2 were unreachable for exactly the errors they exist to place. The single-POST connectors (Keboola, Databricks) were unaffected, which is why the gap was invisible. The precheck failure path now pins the field marks too. Scope, stated plainly because the wiring alone does not deliver it: `register-table` and its precheck report business/shape problems as a plain-string `detail`, and the reachable Pydantic failures come from `@model_validator(mode="after")` hooks whose `loc` is `["body"]` — so no *server*-reported rejection currently names a field, and the red boxes an operator actually sees are the ones the client-side pre-flight checks set. Making the server report field-scoped errors would change a public error shape and is a separate decision; this change removes the wiring gap so both step-1 and step-2 failures route through the same handler once it can fire.
+- **`Use as base` inside a register drawer waited on a dialog the operator could not see.** `confirmModal`/`promptModal` render a `.modal-backdrop` fixed at z-index 1000, but the register drawers on `/admin/tables` are `.ds-drawer` at 1200 and the prefill buttons sit *inside* them — so the dialog the flow then `await`s painted behind the very panel that opened it, leaving a button that looked dead while the promise hung. Raised page-scoped to 1250: clear of the drawer, still under the toast (1300).
+
 ## [0.83.86] - 2026-08-19
 
 ### Added

@@ -88,17 +88,14 @@ def _scan_bundled_seed_file(rel_path: str) -> list[str]:
 # `src/_bundled_seed/`, and once a baseline is empty the corresponding
 # test enforces the full banned list unconditionally (the skip branch
 # never fires on a clean seed).
-_TIER2_KNOWN_DIRTY: frozenset[str] = frozenset(
-    {
-        "--silent",
-        "NODE_TLS_REJECT_UNAUTHORIZED",
-        "PROCEED SILENTLY",
-        "REFUSE",
-        "Treat empty/Enter",
-        "http.sslVerify",
-        "verbatim",
-    }
-)
+#
+# Tier 2 reached an empty baseline (2026-08-19): the bundled install-prompt
+# template was rewritten to the thin shape, and every phrase it used to be
+# pinned for lived in the fat prompt's sections (`REFUSE` / `PROCEED
+# SILENTLY` install-location triage, the `Treat empty/Enter` connector
+# tiles, the TLS-disabling counter-examples). The guard is now
+# unconditional for that file.
+_TIER2_KNOWN_DIRTY: frozenset[str] = frozenset()
 
 _TIER3_KNOWN_DIRTY: dict[str, frozenset[str]] = {
     "connector-asana": frozenset(

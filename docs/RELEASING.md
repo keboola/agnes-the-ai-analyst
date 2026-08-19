@@ -50,6 +50,9 @@ from the work that earned them.
 2. **If yes**, the release-cut is REQUIRED in the same PR before merge. BEFORE
    pushing the final commit:
    - Bump `pyproject.toml` to `X.Y.Z`
+   - Bump `server.json`'s `"version"` to the same `X.Y.Z` — the MCP registry
+     manifest carries its own copy, and `tests/test_mcp_registry_manifest.py::
+     test_version_matches_pyproject` fails the build when the two drift
    - Rename `## [Unreleased]` → `## [X.Y.Z] — YYYY-MM-DD`, add a new empty
      `## [Unreleased]` on top
    - Either squash these into the consolidation commit OR add as a separate
