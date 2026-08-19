@@ -14,6 +14,12 @@ runner = CliRunner()
 def tmp_config(tmp_path, monkeypatch):
     monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path / "config"))
     monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path / "local"))
+    # `agnes auth login` exports the resolved server into os.environ, which
+    # outlives the invocation — so without this every test after one that signs
+    # in would inherit a server it never asked for, and a missing-server case
+    # would pass for the wrong reason in a full-file run while failing in
+    # isolation. Tests that need one set it explicitly.
+    monkeypatch.delenv("AGNES_SERVER", raising=False)
     (tmp_path / "config").mkdir()
     (tmp_path / "local").mkdir()
     yield tmp_path
@@ -487,6 +493,7 @@ def test_da_login_sends_password(monkeypatch):
         )
 
     monkeypatch.setattr(auth_mod, "api_post", fake_post, raising=False)
+    monkeypatch.setenv("AGNES_SERVER", "http://example.test")
 
     runner = CliRunner()
     # Provide email and password via stdin (typer prompts). --password selects
