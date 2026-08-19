@@ -572,14 +572,25 @@ resource "google_compute_instance" "vm" {
     }
 
     # Same plan-time catch for the kai-agent engine: an enabled VM without
-    # the module-wide config would fail loudly halfway through boot.
+    # the module-wide config would fail loudly halfway through boot — and an
+    # enabled VM whose kai_agent_env is missing the keys the engine's own
+    # env validation requires (HOST_AGENT_IDENTITY always; the
+    # ANTHROPIC_UPSTREAM_* pair when CLOUD_LLM_PROVIDER=anthropic) would
+    # plan and apply cleanly and then crash-loop at runtime — the same
+    # silent-fallback class the dispatcher's policies check exists to catch.
     precondition {
       condition = !each.value.kai_agent_enabled || (
         var.kai_agent_image != "" &&
         var.kai_agent_jwt_secret != "" &&
-        var.kai_agent_e2b_key_secret != ""
+        var.kai_agent_e2b_key_secret != "" &&
+        contains(keys(var.kai_agent_env), "HOST_AGENT_IDENTITY") &&
+        contains(keys(var.kai_agent_env), "CLOUD_LLM_PROVIDER") &&
+        (lookup(var.kai_agent_env, "CLOUD_LLM_PROVIDER", "") != "anthropic" || (
+          contains(keys(var.kai_agent_env), "ANTHROPIC_UPSTREAM_URL") &&
+          contains(keys(var.kai_agent_env), "ANTHROPIC_UPSTREAM_API_KEY")
+        ))
       )
-      error_message = "kai_agent_enabled=true on instance ${each.value.name} requires kai_agent_image, kai_agent_jwt_secret and kai_agent_e2b_key_secret to be set on the module."
+      error_message = "kai_agent_enabled=true on instance ${each.value.name} requires kai_agent_image, kai_agent_jwt_secret and kai_agent_e2b_key_secret on the module, plus kai_agent_env carrying HOST_AGENT_IDENTITY and CLOUD_LLM_PROVIDER (and the ANTHROPIC_UPSTREAM_URL/ANTHROPIC_UPSTREAM_API_KEY pair when the provider is anthropic) — the engine's env validation refuses to boot without them."
     }
   }
 
