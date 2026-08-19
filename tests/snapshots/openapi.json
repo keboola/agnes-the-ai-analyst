@@ -11037,7 +11037,7 @@
   "info": {
     "description": "Self-hosted AI harness: governed data access, skills marketplace, corporate memory, and agent workspaces",
     "title": "AI Harness",
-    "version": "0.83.56"
+    "version": "0.83.3"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -50051,7 +50051,7 @@
     },
     "/auth/password/reset": {
       "get": {
-        "description": "Render the 'set new password' form when arriving via reset link.\n\n``reason=must_change`` marks the forced-rotation arrival (see\n``password_login_web``): the credentials were correct, but the password\nwas set by someone else and has to be replaced before a session is\nissued. Without it the page is indistinguishable from \"you forgot your\npassword\", and first-time users reasonably conclude their password was\nrejected.",
+        "description": "Render the reset flow's GET page.\n\nWith ``email`` + ``token`` (arriving via an emailed reset link) this is\nthe 'set new password' form. Without a token it renders the 'enter your\nemail' request form \u2014 the standalone forgot-password page the login page\nlinks to. (It used to redirect back to the login page instead, leaving\nthe hidden-email POST from the login form as the only way to request a\nreset \u2014 which silently submitted an empty address when the user clicked\nForgot Password before typing their email.)\n\n``reason=must_change`` marks the forced-rotation arrival (see\n``password_login_web``): the credentials were correct, but the password\nwas set by someone else and has to be replaced before a session is\nissued. Without it the page is indistinguishable from \"you forgot your\npassword\", and first-time users reasonably conclude their password was\nrejected.",
         "operationId": "reset_page_auth_password_reset_get",
         "parameters": [
           {
