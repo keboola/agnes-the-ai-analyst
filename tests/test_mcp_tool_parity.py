@@ -199,6 +199,7 @@ _TITLE_VERBS = {
     "run",
     "open",
     "show",
+    "register",
 }
 
 

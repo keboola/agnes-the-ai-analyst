@@ -5,6 +5,35 @@ import pytest
 from fastapi import HTTPException
 
 
+@pytest.fixture(autouse=True)
+def _clear_sample_cache():
+    """The sample-result TTL cache is module-level; clear it between tests so
+    cached payloads from a sibling test don't mask call paths.
+
+    This used to be scoped to `TestBqAccessErrors` alone, which left the rest
+    of the file exposed to the same hazard: the cache is
+    `TTLCache(maxsize=512, ttl_seconds=3600)` keyed on `f"{table_id}|{n}"`, it
+    outlives a test by an hour, and every test here samples the same seeded
+    ids (`bq_view`, `local_t`). Nothing in the key distinguishes one test's
+    monkeypatched `_fetch_bq_sample` from another's, so whichever runs first
+    wins and the next one reads its rows — with the fetch never called, which
+    makes the monkeypatch look ignored rather than shadowed.
+
+    It stayed latent only while the polluting pair happened to land in
+    different pytest-xdist workers. Adding test files anywhere in the suite
+    moves the pytest-split boundaries and can put them together, at which
+    point `TestSampleAccessPolicyBqBranch::
+    test_non_policied_bq_table_is_unaffected` fails asserting
+    `[{'col': 'secret'}]` == `[{'event_date': '2026-04-27'}]` — the left side
+    being `test_rbac_check_runs_before_cache`'s rows.
+    """
+    from app.api import v2_sample
+
+    v2_sample._sample_cache.clear()
+    yield
+    v2_sample._sample_cache.clear()
+
+
 @pytest.fixture
 def reload_db(tmp_path, monkeypatch):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
@@ -252,16 +281,6 @@ class TestBqAccessErrors:
     identifiers + LIMIT n), so a BadRequest from BQ means registry corruption,
     NOT user input → translates to `bq_upstream_error` (HTTP 502), not 400.
     """
-
-    @pytest.fixture(autouse=True)
-    def _clear_sample_cache(self):
-        """The sample-result TTL cache is module-level; clear it between
-        tests so cached payloads from a sibling test don't mask call paths."""
-        from app.api import v2_sample
-
-        v2_sample._sample_cache.clear()
-        yield
-        v2_sample._sample_cache.clear()
 
     def test_sample_returns_502_on_bq_forbidden_serviceusage(self, reload_db, bq_access):
         """When the BQ extension raises Forbidden mentioning serviceusage,
