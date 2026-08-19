@@ -346,14 +346,14 @@ def test_prompt_returns_bundled_body(client_with_admin):
 
 
 def test_prompt_unknown_slug_404_hints_list(client_with_admin):
-    """A slug outside the manifest is a registry miss — the manifest is
-    also the gate that keeps arbitrary seed paths unreachable."""
+    """A slug outside the manifest is a registry miss with a next-step
+    hint. (Traversal-shaped slugs can't even reach the handler: Starlette's
+    `{slug}` converter is single-segment and URL-aware clients normalize
+    `../` before sending — the handler-level gate is manifest equality,
+    locked by `test_prompt_manifest_equality_is_the_gate`; the
+    filesystem-level gate is locked by
+    `test_body_loader_contains_traversal_shaped_slugs`.)"""
     client, token = client_with_admin
-    resp = client.get(
-        "/api/connectors/../../secrets/prompt",
-        headers={"Authorization": f"Bearer {token}"},
-    )
-    assert resp.status_code == 404
     resp = client.get(
         "/api/connectors/connector-nope/prompt",
         headers={"Authorization": f"Bearer {token}"},
@@ -362,3 +362,47 @@ def test_prompt_unknown_slug_404_hints_list(client_with_admin):
     detail = resp.json()["detail"]
     assert detail["kind"] == "unknown_connector"
     assert "agnes connectors list" in detail["hint"]
+
+
+def test_prompt_manifest_equality_is_the_gate(client_with_admin, monkeypatch):
+    """The handler resolves a body ONLY for slugs the manifest emitted —
+    the delete-the-check regression lock the old `../../` URL test could
+    not provide (client-side URL normalization meant that request never
+    reached the handler). A slug absent from the manifest 404s as
+    `unknown_connector` BEFORE any body loading happens, even when a
+    body would resolve for it."""
+    calls: list[str] = []
+
+    import app.api.connectors as mod
+
+    def spy_load(slug):
+        calls.append(slug)
+        return ("SHOULD NEVER BE SERVED", "bundled")
+
+    monkeypatch.setattr(mod, "load_connector_body", spy_load)
+    client, token = client_with_admin
+    resp = client.get(
+        "/api/connectors/connector-not-in-manifest/prompt",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["kind"] == "unknown_connector"
+    assert calls == []  # the body loader was never consulted
+    assert "SHOULD NEVER BE SERVED" not in resp.text
+
+
+def test_body_loader_contains_traversal_shaped_slugs(tmp_path):
+    """Defense-in-depth below the manifest gate: even if a traversal-shaped
+    slug reached `load_connector_body`, `resolve_seed_file`'s realpath
+    containment (`_is_within`) refuses to read outside the seed roots.
+    Exercised directly because the HTTP layer structurally can't deliver
+    a slug containing `/` (single-segment route param)."""
+    from src.connectors_manifest import load_connector_body
+
+    # A real file outside the seed roots that would leak if containment
+    # failed.
+    outside = tmp_path / "SKILL.md"
+    outside.write_text("SECRET", encoding="utf-8")
+    up = "/".join([".."] * 12)
+    assert load_connector_body(f"{up}{tmp_path}") is None
+    assert load_connector_body("../../../../etc/passwd") is None

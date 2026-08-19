@@ -606,10 +606,14 @@ _EXEMPT: dict[str, str] = {
     "/api/connectors/{slug}/prompt": (
         "connector setup prompt for the analyst-laptop install flow — "
         "consumed by `agnes connectors show <slug>` (REST+CLI). Deliberately "
-        "NOT an MCP tool: the prompt walks through storing credentials in "
-        "the LOCAL OS keychain and registering local MCP servers, which is "
-        "meaningless (and a footgun) inside the server-side chat sandbox "
-        "where MCP callers live"
+        "NOT an MCP tool on either transport: on the server-side foundation "
+        "tools (app/api/mcp/foundation_tools.py) it would be a footgun — the "
+        "prompt walks through storing credentials in the LOCAL OS keychain "
+        "and registering local MCP servers, meaningless inside the chat "
+        "sandbox; and the stdio server (cli/mcp/server.py) runs on the "
+        "analyst's machine only because the agnes CLI is installed, so "
+        "`agnes connectors show` is already present in that exact venue — a "
+        "tool there would duplicate the CLI surface without adding reach"
     ),
     "/api/me/display-name": (
         "self-service display-name edit (issue #1036) — UI-only affordance on "
