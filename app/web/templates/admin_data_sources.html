@@ -610,6 +610,22 @@
     color: var(--ds-accent-success-ink); background: var(--ds-accent-success-bg);
     border-radius: 5px; padding: 1px 7px;
   }
+  /* An attach-only tray bound to a package that already exists: its name is
+     the package's (read-only — renames belong to the package's page) and the
+     badge says what Finish will do. Deliberately NOT .ds-dropdown-native:
+     the paper skin hides that class when it is paired with the custom
+     dropdown, and this select has no twin. */
+  .ds-exist-sel {
+    padding: 4px 10px; border-radius: 999px; max-width: 240px;
+    border: 1px solid var(--border, var(--ds-border)); background: var(--surface, var(--ds-surface));
+    font-size: 12px; font-weight: 600; color: var(--ds-text-secondary); cursor: pointer;
+  }
+  .ds-exist-sel:hover { border-color: var(--ds-primary); color: var(--ds-primary-dark, var(--ds-primary)); }
+  .ds-tray-exist {
+    font-size: 11px; font-weight: 700; letter-spacing: 0.02em;
+    color: var(--ds-accent-info-ink, var(--ds-text-secondary)); background: var(--ds-accent-info-bg, var(--ds-surface-dim));
+    border-radius: 5px; padding: 1px 7px;
+  }
   .ds-btray.is-created { border-color: var(--ds-accent-success-line, var(--ds-border)); }
   .ds-btray.is-created .ds-tray-name { cursor: default; }
   .ds-btray.is-created .ds-tray-name:hover { background: transparent; }
@@ -1150,6 +1166,15 @@
           <span>Start from:</span>
           <button type="button" class="ds-seed-chip" data-wseed="one">One package</button>
           <button type="button" class="ds-seed-chip" data-wseed="bucket">Split by bucket</button>
+          {# New tables don't always deserve a NEW package — a fresh source's
+             churn table usually belongs in the Customer 360 that already
+             exists. Picking one adds an attach-only tray to the board: move
+             tables into it and Finish POSTs them to the package, creating
+             nothing and leaving its sharing exactly as it stands. Options
+             load on first open (the list is another page's data). #}
+          <select id="ds-existing-pkg-sel" class="ds-exist-sel" aria-label="Add tables to an existing package">
+            <option value="">＋ Into existing package…</option>
+          </select>
           <span style="flex:1"></span>
           <button type="button" class="btn btn-secondary" id="ds-new-tray-btn">＋ New package</button>
         </div>
@@ -2390,11 +2415,13 @@ let _bqCredStatus = null;      // cached /api/admin/datasource-secrets read
 let _sfCredStatus = null;      // cached Snowflake credential status {password, key}
 let _sfConfigLoaded = false;   // cached Snowflake config read for this wizard open
 let _wizardTables = [];       // [{id, name, bucket}] registered in step 2
-let _wizardBoard = null;      // {trays: [{id, name, tables: [table]}], out: [table]}
+let _wizardBoard = null;      // {trays: [{id, name, tables: [table], existing?: pkgId}], out: [table]}
 let _wizardTrayIdSeq = 0;
 let _wizardPackages = [];     // [{id, name, count}] created entering step 4
 let _wizardShares = null;     // {trayLocalId: [{group_id, name, tier}]}
 let _wizardGroups = null;     // cached /api/admin/groups
+let _wizardExistPkgs = null;  // cached /api/admin/data-packages, for attach-only trays
+let _wizardExistingAdds = []; // [{name, count}] tables attached to EXISTING packages this run
 
 const _WIZ_STEP_PANES = {
   1: "ds-wizard-step-connect",
@@ -2747,6 +2774,8 @@ function openWizard(connector) {
   _wizardBoard = null;
   _wizardPackages = [];
   _wizardShares = null;
+  _wizardExistPkgs = null;
+  _wizardExistingAdds = [];
   _bqCredStatus = null;
   _sfCredStatus = null;
   _sfRestartRequired = false;
@@ -3280,9 +3309,13 @@ function _renderBoard() {
       <div class="ds-btray-hd">
         ${out
           ? '<b style="font-size:13px;">Leave out</b>'
-          : `<input class="ds-tray-name" value="${_esc(tray.name)}" aria-label="Package name"${tray.committed ? " readonly" : ""}>`}
+          : `<input class="ds-tray-name" value="${_esc(tray.name)}" aria-label="Package name"${tray.committed || tray.existing ? " readonly" : ""}>`}
         <span class="cnt">${tray.tables.length} table${tray.tables.length === 1 ? "" : "s"}</span>
-        ${tray.committed ? '<span class="ds-tray-created" title="Already created — rename, merge or split it on Data packages.">✓ created</span>' : ""}
+        ${tray.committed
+          ? `<span class="ds-tray-created" title="${tray.existing ? "Added — the package already had its own tables and sharing." : "Already created — rename, merge or split it on Data packages."}">✓ ${tray.existing ? "added" : "created"}</span>`
+          : tray.existing
+            ? '<span class="ds-tray-exist" title="This package already exists — Finish adds these tables to it and changes nothing else about it. Its name is edited on the package’s own page.">→ adds to existing</span>'
+            : ""}
         ${out ? '<span class="cnt" style="margin-left:auto; font-weight:500;">they wait in the unpackaged tray — nobody can pull them until packaged</span>' : ""}
       </div>
       ${tray.tables.map((t) => `
@@ -3350,16 +3383,24 @@ function _moveSelected(target) {
 
 function _updateBundleCta() {
   if (_wizardStep !== 3 || !_wizardBoard) return;
-  const pending = _wizardBoard.trays.filter((t) => t.tables.length && !t.committed).length;
+  const pending = _wizardBoard.trays.filter((t) => t.tables.length && !t.committed);
+  const creates = pending.filter((t) => !t.existing).length;
+  const adds = pending.filter((t) => t.existing).length;
   const btn = document.getElementById("ds-wizard-bundle-btn");
-  if (!pending && _wizardPackages.length) {
+  if (!pending.length && _wizardPackages.length) {
     // Stepped back into a Bundle whose packages already exist and were not
     // changed — the button is a way forward, not a second creation.
     btn.textContent = "Back to sharing";
+  } else if (!pending.length) {
+    btn.textContent = "Continue (no packages)";
   } else {
-    btn.textContent = pending === 0
-      ? "Continue (no packages)"
-      : `Create ${pending} package${pending === 1 ? "" : "s"} & continue`;
+    // The button says exactly what Finish will do — creating and adding are
+    // different verbs with different blast radii, so neither may hide
+    // inside the other's count.
+    const parts = [];
+    if (creates) parts.push(`Create ${creates} package${creates === 1 ? "" : "s"}`);
+    if (adds) parts.push(`${creates ? "add" : "Add"} to ${adds} existing`);
+    btn.textContent = parts.join(" · ") + " & continue";
   }
 }
 
@@ -3373,6 +3414,25 @@ async function _createPackagesAndContinue() {
     // Only trays that are not already packages — re-entering this step from
     // the strip must move on, not mint a duplicate of everything on it.
     for (const tray of _wizardBoard.trays.filter((t) => t.tables.length && !t.committed)) {
+      // Attach-only tray: the package exists, so Finish only POSTs its
+      // tables. It stays OFF the share step — its grants already stand, and
+      // a share card here would offer to write a second copy of them.
+      if (tray.existing) {
+        let added = 0;
+        for (const t of tray.tables) {
+          const ar = await fetch(`/api/admin/data-packages/${encodeURIComponent(tray.existing)}/tables`, {
+            method: "POST", credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ table_id: t.id }),
+          });
+          if (ar.ok) added++;
+          else showToast(`"${t.name}" could not be added to ${tray.name} — attach it later from the package.`, false);
+        }
+        tray.committed = tray.existing;
+        _wizardExistingAdds.push({ name: tray.name, count: added });
+        showToast(`${added} table${added === 1 ? "" : "s"} added to "${tray.name}" — its sharing is unchanged.`, true);
+        continue;
+      }
       let slug = _slugify(tray.name);
       let resp = await fetch("/api/admin/data-packages", {
         method: "POST", credentials: "include",
@@ -3431,8 +3491,17 @@ async function _renderShareStep() {
     _wizardShares = {};
     for (const p of _wizardPackages) _wizardShares[p.localId] = [];
   }
+  // Tables attached to EXISTING packages need no card here — their sharing
+  // already stands — but they must be SAID, or "no packages were created"
+  // reads as "nothing happened" after Finish did exactly what was asked.
+  const existingNote = _wizardExistingAdds.length
+    ? `<div class="ds-scope-note">${_wizardExistingAdds
+        .map((a) => `${a.count} table${a.count === 1 ? "" : "s"} added to <b>${_esc(a.name)}</b>`)
+        .join(" · ")} — already shared as those packages are.</div>`
+    : "";
   if (!_wizardPackages.length) {
-    host.innerHTML = '<div class="ds-empty">No packages were created — the tables wait in the unpackaged tray on Data packages.</div>';
+    host.innerHTML = existingNote ||
+      '<div class="ds-empty">No packages were created — the tables wait in the unpackaged tray on Data packages.</div>';
     return;
   }
   const card = (p) => {
@@ -3461,7 +3530,7 @@ async function _renderShareStep() {
       ${_wizardGroups.map(row).join("") || '<div class="ds-btray-empty">No groups on this instance yet.</div>'}
     </div>`;
   };
-  host.innerHTML = _wizardPackages.map(card).join("");
+  host.innerHTML = existingNote + _wizardPackages.map(card).join("");
 }
 
 async function _shareAndFinish() {
@@ -3767,6 +3836,36 @@ document.getElementById("ds-wizard-step-bundle").addEventListener("click", (e) =
 });
 document.getElementById("ds-wizard-step-bundle").addEventListener("change", (e) => {
   if (e.target.classList.contains("ds-bt-check")) _updateMovebar();
+  if (e.target.id === "ds-existing-pkg-sel" && e.target.value) {
+    const pkg = (_wizardExistPkgs || []).find((p) => p.id === e.target.value);
+    e.target.value = "";
+    if (!pkg) return;
+    _wizardBoard.trays.push({
+      id: "t" + (++_wizardTrayIdSeq),
+      name: pkg.name,
+      tables: [],
+      existing: pkg.id,
+    });
+    _renderBoard();
+  }
+});
+// The existing-package list loads on first open, not on page load — it is
+// another page's data and most wizard runs never open this picker. Packages
+// already sitting on the board are omitted, not disabled: offering a second
+// tray for the same package would make Finish attach twice.
+document.getElementById("ds-existing-pkg-sel").addEventListener("focus", async (e) => {
+  const sel = e.target;
+  if (_wizardExistPkgs === null) {
+    try {
+      const r = await fetch("/api/admin/data-packages", { credentials: "include" });
+      const body = r.ok ? await r.json() : [];
+      _wizardExistPkgs = Array.isArray(body) ? body : (body.items || []);
+    } catch (err) { _wizardExistPkgs = []; }
+  }
+  const onBoard = new Set((_wizardBoard ? _wizardBoard.trays : []).map((t) => t.existing || t.committed).filter(Boolean));
+  sel.innerHTML = '<option value="">＋ Into existing package…</option>' +
+    _wizardExistPkgs.filter((p) => !onBoard.has(p.id))
+      .map((p) => `<option value="${_esc(p.id)}">${_esc(p.name)}</option>`).join("");
 });
 document.getElementById("ds-wizard-step-bundle").addEventListener("input", (e) => {
   if (e.target.classList.contains("ds-tray-name")) {
