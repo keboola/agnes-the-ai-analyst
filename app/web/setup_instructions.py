@@ -264,7 +264,7 @@ def _tls_trust_block(ca_pem: str) -> list[str]:
     return lines
 
 
-def _preamble_lines(*, custom_preamble: str = "") -> list[str]:
+def _preamble_lines(*, custom_preamble: str = "", instance_brand: str = "Agnes") -> list[str]:
     """Header that opens the prompt: what this is, which server, where the
     login token already lives, and the idempotence promise.
 
@@ -287,7 +287,11 @@ def _preamble_lines(*, custom_preamble: str = "") -> list[str]:
     the operator's product name, installs a binary called `agnes`, and
     downloads from the instance's own host, so an agent seeing three
     different names has no way to know they are one system unless the
-    prompt says so.
+    prompt says so. On an unbranded instance there is no third name to
+    reconcile — `instance_brand` is still the default `"Agnes"` — so the
+    sentence drops the "own deployment of Agnes" clause rather than
+    rendering the tautology "Agnes is this organization's own deployment
+    of Agnes".
 
     The "don't lower certificate verification" advice stays unconditional —
     it's good guidance regardless of whether the server runs with a private
@@ -301,13 +305,23 @@ def _preamble_lines(*, custom_preamble: str = "") -> list[str]:
     loop; it must NOT contain literal `{server_url}` (that only resolves
     at click time in the JS clipboard flow, not in the preamble).
     """
+    brand_lines = (
+        [
+            "{instance_brand} is served from {server_url}, and the command-line",
+            "tool it installs is named `agnes`.",
+        ]
+        if instance_brand == "Agnes"
+        else [
+            "{instance_brand} is this organization's own deployment of Agnes, served",
+            "from {server_url}, and the command-line tool it installs is named `agnes`.",
+        ]
+    )
     lines = [
         "Set up the {instance_brand} CLI on this machine.",
         "",
         "Server: {server_url}",
         "",
-        "{instance_brand} is this organization's own deployment of Agnes, served",
-        "from {server_url}, and the command-line tool it installs is named `agnes`.",
+        *brand_lines,
         "",
         "Your login token is already saved on this machine at ~/.agnes/token",
         "(written by step 4 of the install guide at {server_url}). The steps below",
@@ -582,7 +596,7 @@ def resolve_lines(
     lines: list[str] = []
     if has_ca:
         lines.extend(_tls_trust_block(ca_pem))  # type: ignore[arg-type]
-    lines.extend(_preamble_lines(custom_preamble=custom_preamble))
+    lines.extend(_preamble_lines(custom_preamble=custom_preamble, instance_brand=instance_brand))
     lines.extend(_token_precheck_lines())
     lines.extend(_install_cli_lines(has_ca=has_ca))  # 1
     lines.append("")
