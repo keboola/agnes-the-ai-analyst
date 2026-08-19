@@ -27,6 +27,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Internal
 
 - **A packaging guard now asserts server-only dependencies (`claude-agent-sdk`, `fastapi`, `sqlalchemy`, `psycopg`, `google-cloud-bigquery`, …) stay out of the CLI wheel**, and that the CI `cli-wheel-clean-install` job's clean-room install also can't import `claude_agent_sdk`/`fastapi` — mirroring the existing `kbcstorage` regression guard.
+- **The skipped-materialized count now matches what `--materialize` would actually fetch.** It was incremented before the stack filter and before the `server_only` check, so a materialized row outside the analyst's stack, or one the server never distributes, still counted — and the summary then pointed them at a re-run that would not fetch it either. Counted after both filters now.
+- **The setup prompt's install step fails loudly when the wheel download fails.** Both branches took `WHEEL=$(ls …)` from a listing that can legitimately come back empty and ran `uv tool install "$WHEEL"` with no check, so a 404 from `/cli/download` surfaced as a confusing install error instead of the real cause. They now carry the same guard `/cli/install.sh` already had — the prompt is pasted into a shell that is not necessarily running under `set -e`, and the `curl` sits in a subshell whose status nothing inspects.
+- **`README.md`'s contributor setup installs `.[dev,server]` like the other three docs.** It was the one surface missed when the web framework moved into the `server` extra, so anyone following the README hit an import failure on the very next line (`uvicorn app.main:app --reload`).
 
 ## [0.83.70] - 2026-08-18
 

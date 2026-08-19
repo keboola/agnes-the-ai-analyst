@@ -1023,6 +1023,12 @@ def run_pull(
         for tid, info in server_tables.items():
             if info.get("query_mode") == "remote":
                 continue
+            # #506 — when typed sections are present, the stack is the unit of
+            # access: never download a flat-dict table the typed stack omits
+            # (admin god-mode over-list). Pre-v49 servers have
+            # `authorized_names is None` → no filter.
+            if authorized_names is not None and tid not in authorized_names:
+                continue
             if skip_materialize and info.get("query_mode") == "materialized":
                 # Operator opt-out for first-init. Materialized rows are
                 # still discoverable via `agnes catalog` and queryable
@@ -1033,13 +1039,15 @@ def run_pull(
                 # run considered", and adding skipped rows to it would make the
                 # X/Y summary claim they were fetched. The caller needs the two
                 # apart to say what happened (`cli/commands/init.py`).
-                materialized_skipped += 1
-                continue
-            # #506 — when typed sections are present, the stack is the unit of
-            # access: never download a flat-dict table the typed stack omits
-            # (admin god-mode over-list). Pre-v49 servers have
-            # `authorized_names is None` → no filter.
-            if authorized_names is not None and tid not in authorized_names:
+                #
+                # Placement is load-bearing. This sits AFTER the stack filter
+                # and excludes `server_only`, because the number is printed as
+                # "re-run with --materialize to fetch these": a row outside the
+                # analyst's stack, or one the server never distributes, would
+                # not be fetched by that re-run either, so counting it sends
+                # them after data they cannot have.
+                if not info.get("server_only"):
+                    materialized_skipped += 1
                 continue
             non_remote_total += 1
             # #607 — server_only tables are kept fresh server-side and stay
