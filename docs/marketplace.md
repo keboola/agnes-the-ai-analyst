@@ -152,8 +152,10 @@ claude plugin marketplace add ~/agnes-marketplace
 git -C ~/agnes-marketplace remote set-url origin https://agnes.example.com/marketplace.git/
 ```
 
-The dashboard-served setup payload (see `app/web/setup_instructions.py`) already
-branches between (a) and (b) automatically based on platform when a private CA
-is in play. The block above is the manual equivalent for users registering
-outside that flow (e.g. operators bringing up a new instance, or analysts whose
-first attempt failed and need to retry by hand).
+Analysts do not run any of this by hand during setup: `agnes onboard` (the one
+command the dashboard's install prompt pastes into Claude Code) calls
+`agnes refresh-marketplace --bootstrap`, which clones, strips the PAT from the
+clone's origin, and registers the clone with Claude Code — the same reconcile the
+`SessionStart` hook runs on every later session. The block above is the manual
+equivalent for registering outside that flow (e.g. operators bringing up a new
+instance, or a user whose bootstrap failed and wants to retry by hand).
