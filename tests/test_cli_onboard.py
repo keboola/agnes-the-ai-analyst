@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import os
 import re
 from pathlib import Path
 
@@ -35,8 +36,20 @@ def _clean(s: str) -> str:
 
 runner = CliRunner()
 
-# Captured before any fixture stubs it out (see `test_server_url_missing_fails_fast`).
+# Captured before any fixture stubs them out (see `test_server_url_missing_fails_fast`
+# and `test_convergence_errors_degrade_the_run`).
 _REAL_RESOLVE_SERVER_URL = onb._resolve_server_url
+_REAL_STEP_INIT = onb._step_init
+
+
+@pytest.fixture(autouse=True)
+def _restore_cwd():
+    """`agnes onboard` `chdir`s into the gated workspace — put the test
+    process back where it started so a tmp_path cwd can't leak into the
+    next test."""
+    previous = Path.cwd()
+    yield
+    os.chdir(previous)
 
 
 # --------------------------------------------------------------------------- #
@@ -72,6 +85,62 @@ def test_classify_unrelated_content(tmp_path):
     assert "taxes-2025.xlsx" in detail
     assert "photos" in detail
     assert ".claude" not in detail
+
+
+def _complete_workspace(root: Path) -> Path:
+    """A workspace as a FINISHED `agnes onboard` run leaves it on disk."""
+    (root / ".claude").mkdir()
+    (root / ".claude" / "init-complete").write_text("override: false\n", encoding="utf-8")
+    (root / "CLAUDE.md").write_text("# workspace\n", encoding="utf-8")
+    (root / "AGNES_WORKSPACE.md").write_text("x", encoding="utf-8")
+    (root / "server" / "parquet").mkdir(parents=True)  # legacy flat parquet tree
+    (root / "user" / "snapshots").mkdir(parents=True)  # snapshots + duckdb + knowledge
+    (root / ".gitignore").write_text(".claude/agnes/\n", encoding="utf-8")
+    # …plus whatever the admin's workspace template shipped.
+    (root / "notebooks").mkdir()
+    (root / "team-playbook.md").write_text("x", encoding="utf-8")
+    return root
+
+
+def test_completed_workspace_is_prepared_regardless_of_its_content(tmp_path):
+    """The repair path must survive its own first run.
+
+    A finished run leaves files the allowlist cannot enumerate (the workspace
+    template is admin-authored), so the gate keys off the init sentinel: this
+    directory is already ours.
+    """
+    verdict, detail = onb.classify_workspace_dir(_complete_workspace(tmp_path))
+    assert verdict == onb.DIR_PREPARED
+    assert detail == ""
+
+
+def test_interrupted_init_artefacts_are_allowlisted(tmp_path):
+    """A run killed before the sentinel still leaves Agnes-written files; those
+    are ours too and must not read as unrelated content."""
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / "CLAUDE.md").write_text("# workspace\n", encoding="utf-8")
+    (tmp_path / "server").mkdir()
+    (tmp_path / "user").mkdir()
+    (tmp_path / ".gitignore").write_text("x", encoding="utf-8")
+    verdict, _ = onb.classify_workspace_dir(tmp_path)
+    assert verdict == onb.DIR_PREPARED
+
+
+def test_completed_workspace_reruns_without_accept_dir(tmp_path, stubbed):
+    """`agnes onboard` advertises itself as safe to re-run — so re-running it
+    in a real workspace must not demand `--accept-dir`."""
+    result = runner.invoke(onboard_app, ["--workspace", str(_complete_workspace(tmp_path))])
+    assert result.exit_code == 0, result.output
+    assert stubbed == ["init", "catalog", "preflight", "marketplace", "diagnose"]
+
+
+def test_initialized_home_dir_is_still_unsafe(tmp_path, monkeypatch):
+    """The "it's already ours" short-circuit never overrides the home/system
+    refusal — a stray sentinel cannot buy an install into $HOME."""
+    _complete_workspace(tmp_path)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    verdict, _ = onb.classify_workspace_dir(tmp_path)
+    assert verdict == onb.DIR_UNSAFE
 
 
 def test_classify_home_is_unsafe(tmp_path, monkeypatch):
@@ -164,6 +233,47 @@ def test_accept_dir_overrides_the_unrelated_gate(tmp_path, stubbed):
     result = runner.invoke(onboard_app, ["--workspace", str(tmp_path), "--accept-dir"])
     assert result.exit_code == 0, result.output
     assert stubbed == ["init", "catalog", "preflight", "marketplace", "diagnose"]
+
+
+def test_gated_workspace_becomes_the_cwd_for_every_later_step(tmp_path, monkeypatch):
+    """`--workspace` must bind the WHOLE run, not just `agnes init`.
+
+    Steps 4-5 (`refresh-marketplace`, `diagnose`) and the `agnes update`
+    convergence resolve the workspace from the process cwd, so a run started
+    elsewhere used to initialize the gated directory while writing
+    `.claude/settings.json` into a directory the step-0 gate never saw.
+    """
+    target = tmp_path / "workspace"
+    target.mkdir()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+
+    seen: dict[str, Path] = {}
+
+    def _rec(name: str, rows=False):
+        def _fn(*_a, **_kw):
+            seen[name] = Path.cwd().resolve()
+            row = {"step": name, "status": "ok", "detail": "stub"}
+            return [row] if rows else row
+
+        return _fn
+
+    monkeypatch.setattr(onb, "_step_init", _rec("init", rows=True))
+    monkeypatch.setattr(onb, "_step_catalog", _rec("catalog"))
+    monkeypatch.setattr(onb, "_step_preflight", _rec("preflight"))
+    monkeypatch.setattr(onb, "_step_marketplace", _rec("marketplace"))
+    monkeypatch.setattr(onb, "_step_diagnose", _rec("diagnose"))
+    monkeypatch.setattr(onb, "_fetch_connectors", list)
+    monkeypatch.setattr(onb, "_resolve_server_url", lambda explicit: "https://agnes.example.com")
+
+    monkeypatch.chdir(elsewhere)
+    result = runner.invoke(onboard_app, ["--workspace", str(target)])
+    assert result.exit_code == 0, result.output
+
+    assert set(seen) == {"init", "catalog", "preflight", "marketplace", "diagnose"}
+    assert set(seen.values()) == {target.resolve()}
+    # …and the directory we started from stays untouched.
+    assert list(elsewhere.iterdir()) == []
 
 
 def test_prepared_dir_is_announced(tmp_path, stubbed):
@@ -337,6 +447,81 @@ def test_initialized_workspace_converges_instead_of_reinitializing(tmp_path, mon
     assert seen == ["update"]
     assert rows[0]["step"] == "init"
     assert rows[0]["status"] == "already-configured"
+
+
+def test_update_lock_skip_is_not_a_failed_init(tmp_path, monkeypatch):
+    """`agnes update` raises `typer.Exit(0)` on benign early-outs (the
+    single-instance lock is held by the background SessionStart refresh, or the
+    config dir is unreadable). `typer.Exit` is an Exception, so the catch-all
+    used to turn "nothing to do" into a fatal init failure."""
+    import typer as _typer
+
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude" / "init-complete").write_text("override: false\n", encoding="utf-8")
+    monkeypatch.setattr(onb, "_run_init", lambda **kw: pytest.fail("must not re-init"))
+    monkeypatch.setattr(
+        "cli.commands.update.update",
+        lambda **kw: (_ for _ in ()).throw(_typer.Exit(0)),
+    )
+
+    rows = onb._step_init(tmp_path, server_url="https://agnes.example.com", quiet=True)
+    assert rows[0]["status"] == "already-configured"
+    assert "already running" in rows[0]["detail"]
+
+
+def test_update_nonzero_exit_is_a_real_failure(tmp_path, monkeypatch, stubbed):
+    """…while a non-zero exit stays fatal, and says so legibly."""
+    import typer as _typer
+
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude" / "init-complete").write_text("override: false\n", encoding="utf-8")
+    monkeypatch.setattr(onb, "_step_init", _REAL_STEP_INIT)
+    monkeypatch.setattr(onb, "_run_init", lambda **kw: pytest.fail("must not re-init"))
+    monkeypatch.setattr(
+        "cli.commands.update.update",
+        lambda **kw: (_ for _ in ()).throw(_typer.Exit(3)),
+    )
+
+    result = runner.invoke(onboard_app, ["--workspace", str(tmp_path), "--json"])
+    assert result.exit_code == onb.EXIT_INIT_FAILED
+    payload = json.loads(result.stdout)
+    assert payload["overall"] == "failed"
+    assert payload["steps"][0]["status"] == "failed"
+    assert "3" in payload["steps"][0]["detail"]
+    assert "agnes update" in payload["steps"][0]["detail"]
+
+
+def test_convergence_errors_mark_the_init_row_as_a_warning(tmp_path, monkeypatch):
+    """A convergence that reported failed stages is not "already configured"."""
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude" / "init-complete").write_text("override: false\n", encoding="utf-8")
+    monkeypatch.setattr(onb, "_run_init", lambda **kw: pytest.fail("must not re-init"))
+    monkeypatch.setattr(
+        onb,
+        "_run_update",
+        lambda **kw: {"steps": [{"stage": "plugins", "status": "error"}, {"stage": "pull", "status": "ok"}]},
+    )
+
+    rows = onb._step_init(tmp_path, server_url="https://agnes.example.com", quiet=True)
+    assert rows[0]["step"] == "init"
+    assert rows[0]["status"] == "warning"
+    assert "plugins" in rows[0]["detail"]
+
+
+def test_convergence_errors_degrade_the_run(tmp_path, monkeypatch, stubbed):
+    """…and that warning must reach `overall`, the only machine-readable
+    channel for "something is off" (the exit code stays 0 by design)."""
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude" / "init-complete").write_text("override: false\n", encoding="utf-8")
+    monkeypatch.setattr(onb, "_step_init", _REAL_STEP_INIT)
+    monkeypatch.setattr(onb, "_run_init", lambda **kw: pytest.fail("must not re-init"))
+    monkeypatch.setattr(onb, "_run_update", lambda **kw: {"steps": [{"stage": "plugins", "status": "error"}]})
+
+    result = runner.invoke(onboard_app, ["--workspace", str(tmp_path), "--json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["steps"][0]["status"] == "warning"
+    assert payload["overall"] != "ok"
 
 
 def test_fresh_workspace_runs_init(tmp_path, monkeypatch):

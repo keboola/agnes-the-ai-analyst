@@ -10,7 +10,11 @@ Steps, in order:
 
   0. dir check    — refuse home/system dirs, proceed silently in a prepared
                     folder, ask for `--accept-dir` when the folder holds
-                    unrelated content. Never `mkdir`/`cd` on the user's behalf.
+                    unrelated content. Never creates a directory, and never
+                    touches the user's own shell; once the gate approves the
+                    target, THIS process `chdir`s into it so every later step
+                    — several resolve the workspace from the process cwd —
+                    operates on the directory the gate actually approved.
   1. init         — `agnes init --token-file ~/.agnes/token` on a fresh
                     workspace; the `agnes update` convergence on an already
                     initialized one. THE ONLY FATAL STEP — nothing after it
@@ -83,16 +87,41 @@ DIR_UNRELATED = "unrelated"
 # unrelated content and needs an explicit `--accept-dir`. `bash.exe.stackdump`
 # is Git-Bash-on-Windows litter that lands in a freshly created folder through
 # no fault of the user.
+#
+# The Agnes-written entries matter for the *interrupted* case: a run killed
+# before the sentinel (`agnes init` step 9) leaves `CLAUDE.md` (step 3),
+# `server/parquet/` + `user/{duckdb,knowledge,snapshots}/` (the first pull) and
+# `AGNES_WORKSPACE.md` (step 8) behind, and none of that is "unrelated content"
+# to refuse over. A *completed* workspace is covered by the sentinel
+# short-circuit below instead — the admin-authored workspace template can ship
+# anything, so no allowlist could enumerate it.
 PREPARED_ALLOWLIST = frozenset(
     {
         ".git",
+        ".gitignore",
         ".claude",
         ".agnes",
         "AGNES_WORKSPACE.md",
+        "CLAUDE.md",
         "README.md",
+        "server",
+        "user",
         "bash.exe.stackdump",
     }
 )
+
+# Written by `agnes init` as its very last step; its presence means this
+# directory is an Agnes workspace we created ourselves.
+INIT_SENTINEL = Path(".claude") / "init-complete"
+
+
+def is_initialized_workspace(workspace: Path) -> bool:
+    """True when ``workspace`` already holds a completed `agnes init`."""
+    try:
+        return (workspace / INIT_SENTINEL).exists()
+    except OSError:
+        return False
+
 
 # How many unrelated entries to name before summarizing the rest.
 _MAX_LISTED_ENTRIES = 8
@@ -108,6 +137,9 @@ def classify_workspace_dir(workspace: Path) -> tuple[str, str]:
     ``unsafe`` and a comma-separated sample of the offending entries for
     ``unrelated`` (empty for ``prepared``).
 
+    Order matters: unsafe wins over everything, then "this is already our own
+    workspace" wins over the content check, then the allowlist decides.
+
     The unsafe list is shared with `agnes init` rather than re-declared here —
     one refusal policy, one place to change it.
     """
@@ -116,7 +148,17 @@ def classify_workspace_dir(workspace: Path) -> tuple[str, str]:
     resolved = workspace.resolve()
     unsafe = _unsafe_workspace_reason(resolved)
     if unsafe is not None:
+        # Checked first on purpose: a stray sentinel must never buy an install
+        # into $HOME or a system directory.
         return DIR_UNSAFE, unsafe
+
+    # Already an Agnes workspace → prepared, whatever else it holds. `agnes
+    # onboard` advertises itself as safe to re-run, and a finished run leaves
+    # files no allowlist can enumerate (CLAUDE.md, server/, user/, plus the
+    # admin-authored workspace template's own content). Without this the
+    # repair path would refuse every real workspace with `--accept-dir`.
+    if is_initialized_workspace(resolved):
+        return DIR_PREPARED, ""
 
     try:
         entries = sorted(p.name for p in resolved.iterdir())
@@ -234,19 +276,47 @@ def _run_init(*, workspace: Path, server_url: str) -> None:
 
 
 def _run_update() -> dict:
-    """Run the `agnes update` convergence and return its parsed run report."""
+    """Run the `agnes update` convergence and return its parsed run report.
+
+    `agnes update` ends benign early-outs with ``typer.Exit(0)`` — the
+    single-instance lock is held by the SessionStart background refresh, or
+    the config dir is unreadable. ``typer.Exit`` subclasses ``RuntimeError``,
+    so letting it escape would reach our caller's catch-all and turn "nothing
+    to do" into a fatal init failure. Those runs are reported as
+    ``{"early_exit": True}``; a NON-zero exit is a real failure and is
+    re-raised with a legible message (bare ``Exit: 3`` tells nobody anything).
+    """
+    import click
+
     from cli.commands.update import update as update_cmd
 
     buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        update_cmd(quiet=False, as_json=True)
-    raw = buf.getvalue().strip()
-    if not raw:
-        return {"steps": []}
+    early_exit = False
     try:
-        return json.loads(raw.splitlines()[-1])
-    except ValueError:
-        return {"steps": []}
+        with contextlib.redirect_stdout(buf):
+            update_cmd(quiet=False, as_json=True)
+    except click.exceptions.Exit as exc:  # typer.Exit is a subclass
+        code = int(getattr(exc, "exit_code", 0) or 0)
+        if code != 0:
+            raise RuntimeError(
+                f"`agnes update` exited {code} — run `agnes update` on its own to see the failing stage"
+            ) from exc
+        early_exit = True
+
+    raw = buf.getvalue().strip()
+    report: dict = {"steps": []}
+    if raw:
+        try:
+            parsed = json.loads(raw.splitlines()[-1])
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, dict):
+            report = parsed
+    # An early exit that still printed a report (the config-dir path) carries
+    # its own error stages — those speak for themselves.
+    if early_exit and not (report.get("steps") or []):
+        report["early_exit"] = True
+    return report
 
 
 def _step_init(workspace: Path, *, server_url: str, quiet: bool) -> list[dict]:
@@ -254,15 +324,29 @@ def _step_init(workspace: Path, *, server_url: str, quiet: bool) -> list[dict]:
 
     Raises on failure — this is the one step whose failure aborts the run.
     """
-    sentinel = workspace / ".claude" / "init-complete"
-    if sentinel.exists():
+    if is_initialized_workspace(workspace):
         with _quiet_stdout(quiet):
             report = _run_update()
+        if report.get("early_exit"):
+            return [
+                _row(
+                    "init",
+                    "already-configured",
+                    "workspace already initialized; another `agnes update` is already running "
+                    "(the background SessionStart refresh) and converges it",
+                )
+            ]
         steps = report.get("steps") or []
         bad = [s for s in steps if s.get("status") == "error"]
         detail = "workspace already initialized; converged via `agnes update`"
         if bad:
+            # A convergence that failed stages is not "already configured".
+            # Reporting it as such would let the run's only substantive step
+            # fail while `overall` still says "ok" — and `overall` is the
+            # machine-readable channel for "something is off" (see module
+            # docstring), since the exit code stays 0 by design.
             detail += f" ({len(bad)} convergence issue(s): " + ", ".join(str(s.get("stage")) for s in bad) + ")"
+            return [_row("init", "warning", detail)]
         return [_row("init", "already-configured", detail)]
 
     with _quiet_stdout(quiet):
@@ -540,6 +624,23 @@ def onboard(
             ],
         )
 
+    # --- The gate approved THIS directory; make it the process cwd ---------
+    # `--workspace` is only honored end to end if it binds the whole run:
+    # `refresh-marketplace` writes `<cwd>/.claude/settings.json`, `diagnose`
+    # runs as a subprocess that inherits our cwd, and the `agnes update`
+    # convergence falls back to the cwd when the config anchor is unset. Without
+    # this, `agnes onboard --workspace /elsewhere` would initialize /elsewhere
+    # while scattering workspace files into whatever directory we happen to be
+    # in — a directory step 0 never classified. This is our own process only; we
+    # still never `cd` the user's shell and never create a directory.
+    try:
+        os.chdir(workspace)
+    except OSError:
+        # Missing or unreadable — not an error to invent here (step 0 defers
+        # those to `agnes init`, which produces the real filesystem error and
+        # aborts the run before any later step can write anything).
+        pass
+
     # --- Config: fail fast rather than invent a server --------------------
     resolved_server = _resolve_server_url(server_url)
     if not resolved_server:
@@ -609,6 +710,9 @@ def onboard(
     rows.append(_guarded("diagnose", lambda: _step_diagnose(quiet=quiet)))
 
     connectors = _fetch_connectors()
+    # "warning" counts — that is how a convergence with failed stages, a
+    # degraded `agnes diagnose` and a leftover bootstrap token all reach the
+    # caller. Only a clean run is "ok".
     overall = "degraded" if any(r["status"] in ("failed", "warning") for r in rows) else "ok"
 
     if as_json:
