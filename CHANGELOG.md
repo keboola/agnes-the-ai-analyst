@@ -10,11 +10,26 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
-## [0.83.76] - 2026-08-19
+## [0.83.77] - 2026-08-19
 
 ### Fixed
 
 - **Jira: issues with more than 100 comments no longer silently lose their oldest comments.** The issue endpoint embeds the NEWEST 100 comments (the payload's own `fields.comment.startAt` is `total − 100`), but the pagination that completes an over-cap thread started at `startAt = len(embedded)` — inside that window — so the oldest comments (up to 100 per issue; an issue with 101–200 comments was left with exactly 100 stored rows, a larger one with its newest `total − 100`) were never fetched by any path, and each refetch's issue-scoped delete-then-insert dropped previously stored old rows. The walk now starts at the thread head (`startAt=0`) and stops when the id-deduplicated union of pages + embed reaches `comment.total` — correct regardless of where the embed window sits, issuing the same number of page requests as before (it re-downloads up to one page's worth of already-embedded comments, which dedup drops) — and the merged thread stays oldest-first, with the fresher paged copy winning on a duplicate id. A non-conforming endpoint that keeps serving pages without new comment ids is cut off once `startAt` passes `comment.total` (bounded requests, issue marked incomplete) instead of looping forever; the stored-vs-total shortfall WARNING now states what actually happened (pagination failure, skipped pagination, or a stale total) instead of guessing "comments added mid-fetch"; and ANY shortfall now marks the issue `_comments_incomplete` — a mid-walk deletion shifts offsets and can hide a live comment from every page, so a short merged list is never publishable as complete: the incremental transform preserves the stored rows and the `.incomplete` sidecar makes the next backfill refetch the issue. A genuinely deleted comment's row therefore survives in the parquet until that next clean refetch — the issue's next webhook event, or for a dormant issue the next backfill run; operators relying on prompt deletion propagation should run backfills accordingly. The webhook save path now syncs the `.incomplete` sidecar marker exactly like the backfill save does, so an issue whose webhook refetch failed mid-pagination is picked up by the next `--skip-existing` backfill instead of staying invisible to it (best-effort on both save paths: a marker write failure is logged, never allowed to abort the already-completed JSON save or skip the parquet publish). **Recovering already-affected issues is operator work:** their cached JSONs hold only the truncated embed and carry no `.incomplete` marker, so a default backfill skips them — run a targeted backfill with `--no-skip-existing` (skipping is ON by default; merely omitting `--skip-existing` changes nothing), then the batch transform (`python -m connectors.jira.transform`) to publish the healed JSONs to parquet — or wait for each issue's next webhook update. Run any raw-JSON re-transform jobs only after that refetch: a full re-transform from a stale truncated JSON doesn't just miss the recovered tail, it deletes those rows from the parquet again.
+
+## [0.83.76] - 2026-08-19
+
+### Removed
+
+- **The SendGrid SDK mail branch is gone; SMTP relay is the only mail transport.** The `sendgrid` package was never a declared dependency, so the SDK path in the magic-link and password providers always died on `ImportError` — while `SENDGRID_API_KEY` alone made the availability predicates advertise email sign-in in the login UI, turning every magic-link/reset/invite send into a silent dead end. The env key no longer counts as a configured transport; SendGrid keeps working through its SMTP relay (`SMTP_HOST=smtp.sendgrid.net`, `SMTP_USER=apikey`).
+
+### Fixed
+
+- **A configured-but-failing mail transport no longer answers success.** `POST /auth/email/send-link` (and its web form), `POST /auth/password/reset` and `POST /auth/password/setup/request` used to answer the generic "check your email" even when SMTP delivery raised — the person waited for a mail that was never sent. A failed send now logs the error and returns HTTP 500 (the web form redirects to the login page with an explanatory banner). Anti-enumeration is preserved: unknown addresses attempt no send and keep the generic success.
+
+### Changed
+
+- **One sender key for outgoing auth mail: `SMTP_FROM`.** The SendGrid branch read `EMAIL_FROM_ADDRESS` while the SMTP branch read `SMTP_FROM`; the SMTP sender now falls back to `EMAIL_FROM_ADDRESS` when `SMTP_FROM` is unset, so deployments configured under either key keep their sender.
+- **`email.from_address` in `instance.yaml` is finally read.** The config template ships that key and `docs/CONFIGURATION.md` documents it, but sender resolution went through the environment only — so an operator who configured just the YAML kept sending as `noreply@example.com`, with nothing to notice. `SMTP_FROM` and the legacy `EMAIL_FROM_ADDRESS` still win, so no existing deployment's sender changes; this only makes an already-advertised knob work. The template's own placeholder is not treated as a configured value, and an unreadable `instance.yaml` falls back rather than turning every magic link into a 500. `email.from_name` is marked NOT IMPLEMENTED in the template instead — the SMTP transport sends a bare address with no display name, and the rest of the `email:` block is env-backed by the `"${SMTP_HOST}"`-style convention already visible there.
 
 ## [0.83.75] - 2026-08-18
 

@@ -400,7 +400,7 @@ validates the JWT and loads the user from `users` in `system.duckdb`.
 |----------|---------------|------|
 | `google.py` | `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET` set | Google OAuth 2.0 / OIDC (Authlib). Domain restriction via `allowed_domains` in `instance.yaml`. Callback issues JWT cookie. |
 | `microsoft.py` | `MICROSOFT_TENANT_ID` + `MICROSOFT_CLIENT_ID` + `MICROSOFT_CLIENT_SECRET` set, **and** the tenant is a directory GUID / verified domain | Microsoft Entra ID OIDC (Authlib), single-tenant only — `common`/`organizations`/`consumers` are refused and leave the provider unavailable. Authentication only (no Graph group sync); users land in `Everyone`. Setup + trust model: [`auth-microsoft-oauth.md`](auth-microsoft-oauth.md). |
-| `email.py` | `SMTP_HOST` or `SENDGRID_API_KEY` set | Magic link: `POST /auth/email/send-link` generates a token stored in `users.setup_token`; `POST /auth/email/verify` exchanges it for a JWT. |
+| `email.py` | `SMTP_HOST` set | Magic link: `POST /auth/email/send-link` generates a token stored in `users.setup_token`; `POST /auth/email/verify` exchanges it for a JWT. SMTP relay is the only mail transport (SendGrid & co. via their relay host). |
 | `password.py` | Always registered | Email + password with hashed credentials. |
 
 ### RBAC
@@ -762,7 +762,7 @@ Table configuration lives in `table_registry` inside `system.duckdb`, not in sta
 Use `POST /api/admin/register-table` or the web UI admin panel to register tables.
 
 Required env vars: `DATA_DIR`, `JWT_SECRET_KEY`. Source-specific vars (`KEBOOLA_STORAGE_TOKEN`,
-`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `SMTP_HOST` / `SENDGRID_API_KEY`, etc.) are
+`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `SMTP_HOST`, etc.) are
 optional and gate the relevant connectors/providers.
 
 ---

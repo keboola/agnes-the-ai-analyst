@@ -77,7 +77,10 @@ def is_available() -> bool:
 
 
 def _has_email_transport() -> bool:
-    return bool(os.environ.get("SMTP_HOST") or os.environ.get("SENDGRID_API_KEY"))
+    # SMTP only — mirrors the email provider's predicate. SENDGRID_API_KEY
+    # used to count here, but the SDK branch it advertised could never send
+    # (the `sendgrid` package was not a dependency).
+    return bool(os.environ.get("SMTP_HOST"))
 
 
 def _cookie_secure(request: Request | None = None) -> bool:
@@ -264,40 +267,20 @@ def _render_setup_form(request: Request, email: str, token: str, name: str = "",
 
 
 def _send_mail(to_email: str, subject: str, body_text: str) -> bool:
-    """Send a plaintext email via SendGrid or SMTP. Returns True on success."""
+    """Send a plaintext email via SMTP. Returns True on success, False when
+    no transport is configured or delivery failed (failures are logged).
+
+    SMTP relay is the only transport — SendGrid works through
+    ``SMTP_HOST=smtp.sendgrid.net`` (see ``app.auth._common.send_smtp_email``
+    for why the SDK branch is gone).
+    """
+    from app.auth._common import send_smtp_email
+
+    if not _has_email_transport():
+        return False
     try:
-        sendgrid_key = os.environ.get("SENDGRID_API_KEY")
-        if sendgrid_key:
-            import sendgrid
-            from sendgrid.helpers.mail import Mail
-
-            sg = sendgrid.SendGridAPIClient(api_key=sendgrid_key)
-            msg = Mail(
-                from_email=os.environ.get("EMAIL_FROM_ADDRESS", "noreply@example.com"),
-                to_emails=to_email,
-                subject=subject,
-                plain_text_content=body_text,
-            )
-            sg.send(msg)
-            return True
-
-        smtp_host = os.environ.get("SMTP_HOST")
-        if smtp_host:
-            import smtplib
-            from email.mime.text import MIMEText
-
-            msg = MIMEText(body_text)
-            msg["Subject"] = subject
-            msg["From"] = os.environ.get("SMTP_FROM", "noreply@example.com")
-            msg["To"] = to_email
-            with smtplib.SMTP(smtp_host, int(os.environ.get("SMTP_PORT", "587"))) as s:
-                if os.environ.get("SMTP_USE_TLS", "true").lower() == "true":
-                    s.starttls()
-                smtp_user = os.environ.get("SMTP_USER")
-                if smtp_user:
-                    s.login(smtp_user, os.environ.get("SMTP_PASSWORD", ""))
-                s.send_message(msg)
-            return True
+        send_smtp_email(to_email, subject, body_text)
+        return True
     except Exception:
         logger.exception("Failed to send mail to %s", to_email)
     return False
@@ -513,7 +496,7 @@ async def reset_request(
     Rate limited at the same 5/min as ``/auth/email/send-link`` — the
     attack surface is identical (single IP rotates random recipient
     addresses, anti-enumeration response shape masks which addresses
-    landed, attacker burns SMTP / SendGrid quota + spams real users).
+    landed, attacker burns SMTP relay quota + spams real users).
     """
     # Strip only — case is folded by the lookup itself (get_by_email_ci), so a
     # mixed-case row an admin stored as-is is still found when the person types
@@ -529,7 +512,27 @@ async def reset_request(
                 reset_token=hash_token(token),
                 reset_token_created=datetime.now(timezone.utc),
             )
-            send_reset_email(request, user["email"], token)
+            sent = send_reset_email(request, user["email"], token)
+            if _has_email_transport() and not sent:
+                # A configured transport that failed must not render the
+                # success page — the person would wait for a mail that was
+                # never sent. Trades a sliver of anti-enumeration away while
+                # the relay is down (the 500 implies the account exists);
+                # the silent failure was judged worse. Unknown addresses
+                # never attempt a send, so they keep the generic page.
+                # Deliberately NOT bypassed in LOCAL_DEV_MODE (unlike the
+                # magic-link JSON dev path, which returns the link plus a
+                # send_error field): the reset flow has no response field to
+                # carry the failure, and a broken-but-configured relay is
+                # worth surfacing in dev too — the link is already in the
+                # logs either way.
+                return _render_message(
+                    request,
+                    title="Email delivery failed",
+                    message="We could not send the password-reset email. "
+                    "Please try again later or contact your administrator.",
+                    status_code=500,
+                )
     return _render_message(
         request,
         title="Check your email",
@@ -741,7 +744,16 @@ async def setup_request(
                 setup_token=hash_token(token),
                 setup_token_created=datetime.now(timezone.utc),
             )
-            send_setup_email(request, user["email"], token)
+            sent = send_setup_email(request, user["email"], token)
+            if _has_email_transport() and not sent:
+                # Same rationale as reset_request: a configured-but-failing
+                # transport must surface, not render the success page.
+                return _render_message(
+                    request,
+                    title="Email delivery failed",
+                    message="We could not send the setup email. Please try again later or contact your administrator.",
+                    status_code=500,
+                )
     return _render_message(
         request,
         title="Check your email",

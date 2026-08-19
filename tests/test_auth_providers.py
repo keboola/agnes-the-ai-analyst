@@ -159,8 +159,10 @@ class TestEmailAuth:
         """Web-form variant renders the 'check your email' page (the door
         that /login/email now points at) instead of JSON. The POST refuses
         without a mail transport (is_available reads env per call), so one
-        is configured here; no email is ever sent."""
+        is configured here; the SMTP delivery itself is faked (a real failed
+        send now surfaces as an error instead of rendering this page)."""
         monkeypatch.setenv("SMTP_HOST", "smtp.test.invalid")
+        monkeypatch.setattr("smtplib.SMTP", _recording_smtp([]))
         resp = client.post("/auth/email/send-link/web", data={"email": "ml@test.com"})
         assert resp.status_code == 200
         assert "Check Your Email" in resp.text
@@ -223,6 +225,127 @@ class TestEmailAuth:
         failures = results.count(401)
         assert successes == 1, f"Expected exactly 1 success, got {successes} (results: {results})"
         assert failures == 1, f"Expected exactly 1 failure, got {failures} (results: {results})"
+
+
+class _BoomSMTP:
+    """smtplib.SMTP stand-in whose connect always fails."""
+
+    def __init__(self, *args, **kwargs):
+        raise OSError("connection refused (test)")
+
+
+def _recording_smtp(sent: list):
+    """smtplib.SMTP stand-in that records messages instead of delivering."""
+
+    class FakeSMTP:
+        def __init__(self, host, port):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def starttls(self):
+            pass
+
+        def login(self, user, password):
+            pass
+
+        def send_message(self, msg):
+            sent.append(msg)
+
+    return FakeSMTP
+
+
+class TestEmailSendFailureIsSurfaced:
+    """A configured mail transport that fails to deliver must not answer 200.
+
+    The trap this pins: a transport that looks configured but fails on every
+    send used to leave the endpoint answering the generic success message, so
+    the person waits for a mail that was never sent and nothing surfaces the
+    misconfiguration.
+    """
+
+    def test_send_link_smtp_failure_returns_500(self, client, monkeypatch):
+        monkeypatch.delenv("LOCAL_DEV_MODE", raising=False)
+        monkeypatch.setenv("SMTP_HOST", "smtp.test.invalid")
+        monkeypatch.setattr("smtplib.SMTP", _BoomSMTP)
+        resp = client.post("/auth/email/send-link", json={"email": "ml@test.com"})
+        assert resp.status_code == 500
+
+    def test_send_link_web_smtp_failure_shows_error(self, client, monkeypatch):
+        monkeypatch.delenv("LOCAL_DEV_MODE", raising=False)
+        monkeypatch.setenv("SMTP_HOST", "smtp.test.invalid")
+        monkeypatch.setattr("smtplib.SMTP", _BoomSMTP)
+        resp = client.post("/auth/email/send-link/web", data={"email": "ml@test.com"}, follow_redirects=False)
+        assert resp.status_code == 303
+        assert "error=email_send_failed" in resp.headers["location"]
+
+    def test_send_link_smtp_failure_unknown_address_keeps_generic_200(self, client, monkeypatch):
+        """Anti-enumeration: an unknown address attempts no send, so the
+        failure path must not fire and the generic success stays."""
+        monkeypatch.delenv("LOCAL_DEV_MODE", raising=False)
+        monkeypatch.setenv("SMTP_HOST", "smtp.test.invalid")
+        monkeypatch.setattr("smtplib.SMTP", _BoomSMTP)
+        resp = client.post("/auth/email/send-link", json={"email": "nobody@test.com"})
+        assert resp.status_code == 200
+        assert "If this email" in resp.json()["message"]
+
+
+class TestSendGridSdkRemoved:
+    """SENDGRID_API_KEY must not count as a mail transport anywhere.
+
+    The SDK branch is gone: the `sendgrid` package was never a declared
+    dependency, so that path always raised ImportError at send time while the
+    availability predicates kept advertising email sign-in. SendGrid still
+    works as an ordinary SMTP relay (SMTP_HOST=smtp.sendgrid.net).
+    """
+
+    def test_email_provider_not_available_on_sendgrid_key_alone(self, monkeypatch):
+        from app.auth.providers import email as email_mod
+
+        monkeypatch.delenv("LOCAL_DEV_MODE", raising=False)
+        monkeypatch.delenv("SMTP_HOST", raising=False)
+        monkeypatch.setenv("SENDGRID_API_KEY", "SG.test-key")
+        assert email_mod.is_available() is False
+        assert email_mod._has_email_transport() is False
+
+    def test_password_transport_predicate_ignores_sendgrid_key(self, monkeypatch):
+        from app.auth.providers import password as pw_mod
+
+        monkeypatch.delenv("SMTP_HOST", raising=False)
+        monkeypatch.setenv("SENDGRID_API_KEY", "SG.test-key")
+        assert pw_mod._has_email_transport() is False
+
+
+class TestSenderAddressUnified:
+    """One sender key — SMTP_FROM — with the SendGrid-era EMAIL_FROM_ADDRESS
+    honored as a backward-compatible fallback so existing deployments keep
+    their configured sender."""
+
+    def _send_and_capture(self, client, monkeypatch):
+        sent: list = []
+        monkeypatch.setattr("smtplib.SMTP", _recording_smtp(sent))
+        monkeypatch.delenv("LOCAL_DEV_MODE", raising=False)
+        monkeypatch.setenv("SMTP_HOST", "smtp.example.com")
+        resp = client.post("/auth/email/send-link", json={"email": "ml@test.com"})
+        assert resp.status_code == 200, resp.text
+        assert len(sent) == 1, "expected exactly one delivered message"
+        return sent[0]
+
+    def test_smtp_from_wins_over_legacy_key(self, client, monkeypatch):
+        monkeypatch.setenv("SMTP_FROM", "canonical@example.com")
+        monkeypatch.setenv("EMAIL_FROM_ADDRESS", "legacy@example.com")
+        msg = self._send_and_capture(client, monkeypatch)
+        assert msg["From"] == "canonical@example.com"
+
+    def test_legacy_email_from_address_is_a_fallback(self, client, monkeypatch):
+        monkeypatch.delenv("SMTP_FROM", raising=False)
+        monkeypatch.setenv("EMAIL_FROM_ADDRESS", "legacy@example.com")
+        msg = self._send_and_capture(client, monkeypatch)
+        assert msg["From"] == "legacy@example.com"
 
 
 class TestEmailCaseInsensitiveSignIn:
@@ -369,7 +492,9 @@ class TestTokenOwnershipDecidesIdentity:
 
         conn = get_system_db()
         try:
-            rows = dict(conn.execute("SELECT id, password_hash FROM users WHERE id IN ('dup-old','dup-new')").fetchall())
+            rows = dict(
+                conn.execute("SELECT id, password_hash FROM users WHERE id IN ('dup-old','dup-new')").fetchall()
+            )
         finally:
             conn.close()
         assert rows["dup-new"], "password was not set on the token's own account"
@@ -1167,3 +1292,66 @@ class TestGoogleOAuthFullFlow:
     def test_google_callback_api_error_handled(self, tmp_path, monkeypatch):
         """Google OAuth callback must handle API errors gracefully."""
         pass
+
+
+class TestSmtpSenderResolution:
+    """`email.from_address` is shipped by `config/instance.yaml.example` and
+    documented in `docs/CONFIGURATION.md`, but nothing read it — an operator who
+    configured only the YAML kept sending as `noreply@example.com`, with no
+    error to notice. Env stays ahead of it so no existing deployment's sender
+    changes.
+    """
+
+    @staticmethod
+    def _clear_env(monkeypatch):
+        monkeypatch.delenv("SMTP_FROM", raising=False)
+        monkeypatch.delenv("EMAIL_FROM_ADDRESS", raising=False)
+
+    def test_smtp_from_env_wins_over_yaml(self, monkeypatch):
+        from app.auth import _common
+
+        monkeypatch.setenv("SMTP_FROM", "env@corp.example")
+        monkeypatch.setattr("app.instance_config.get_value", lambda *k, **kw: "yaml@corp.example", raising=False)
+        assert _common.smtp_from_address() == "env@corp.example"
+
+    def test_legacy_env_key_still_wins_over_yaml(self, monkeypatch):
+        """`EMAIL_FROM_ADDRESS` was the removed SendGrid branch's key. A
+        deployment carrying it must not have its sender changed by a YAML value
+        it never intended to activate."""
+        from app.auth import _common
+
+        self._clear_env(monkeypatch)
+        monkeypatch.setenv("EMAIL_FROM_ADDRESS", "legacy@corp.example")
+        monkeypatch.setattr("app.instance_config.get_value", lambda *k, **kw: "yaml@corp.example", raising=False)
+        assert _common.smtp_from_address() == "legacy@corp.example"
+
+    def test_yaml_from_address_is_honored_when_no_env_is_set(self, monkeypatch):
+        from app.auth import _common
+
+        self._clear_env(monkeypatch)
+        monkeypatch.setattr("app.instance_config.get_value", lambda *k, **kw: "yaml@corp.example", raising=False)
+        assert _common.smtp_from_address() == "yaml@corp.example"
+
+    def test_the_templates_own_placeholder_is_not_treated_as_configured(self, monkeypatch):
+        """`instance.yaml.example` ships the literal `noreply@example.com`. A
+        copied-but-unedited template must not read as a deliberate choice — the
+        answer is the same either way, but treating it as configured would make
+        the fallback chain lie about where the value came from."""
+        from app.auth import _common
+
+        self._clear_env(monkeypatch)
+        monkeypatch.setattr("app.instance_config.get_value", lambda *k, **kw: "noreply@example.com", raising=False)
+        assert _common.smtp_from_address() == "noreply@example.com"
+
+    def test_an_unreadable_instance_config_does_not_break_sending(self, monkeypatch):
+        """Resolving a sender must not be the thing that raises: a corrupt or
+        absent instance.yaml would otherwise turn every magic link into a 500."""
+        from app.auth import _common
+
+        self._clear_env(monkeypatch)
+
+        def _boom(*_a, **_kw):
+            raise RuntimeError("instance.yaml unreadable")
+
+        monkeypatch.setattr("app.instance_config.get_value", _boom, raising=False)
+        assert _common.smtp_from_address() == "noreply@example.com"
