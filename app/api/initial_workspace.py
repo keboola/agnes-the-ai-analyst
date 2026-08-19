@@ -792,15 +792,20 @@ def _compute_render_dry_run() -> dict:
         tmpl = resolve_seed_file(scan_path)
         if tmpl is not None:
             tmpl_text, _tmpl_source = tmpl
+            # Negative lookaround keeps Jinja expressions out: `{{today}}`
+            # written without spaces would otherwise match its inner
+            # `{today}` pair and flag a variable that substitutes fine.
             unwired = sorted(
                 {
                     name
-                    for name in re.findall(r"\{[a-z][a-z0-9_]*\}", tmpl_text)
+                    for name in re.findall(
+                        r"(?<!\{)\{[a-z][a-z0-9_]*\}(?!\})", tmpl_text
+                    )
                     if name != "{server_url}"
                 }
             )
             if unwired:
-                summary["warnings"].append(
+                msg = (
                     f"{scan_path} (install prompt) references placeholder(s) "
                     f"{', '.join(unwired)} that nothing substitutes on the "
                     "git-bound prompt path — they will render literally in "
@@ -808,6 +813,15 @@ def _compute_render_dry_run() -> dict:
                     "{{ ... }} context are replaced; see "
                     "docs/seed-repo-contract.md section 5)"
                 )
+                if bound_git_path is None:
+                    # Editor mode: the prompt renders the DB override or the
+                    # shipped default, not this seed file — the finding only
+                    # matters for a future git binding / fork of the template.
+                    msg += (
+                        " (warning only: the install prompt does not"
+                        " currently render this file)"
+                    )
+                summary["warnings"].append(msg)
     except Exception as e:
         summary["ok"] = False
         summary["errors"].append(f"render dry-run raised: {e!r}")

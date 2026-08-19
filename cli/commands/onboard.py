@@ -96,15 +96,27 @@ DIR_MISSING = "missing"
 PREPARED_ALLOWLIST = frozenset(
     {
         ".git",
-        ".gitignore",
         ".claude",
         ".agnes",
         "AGNES_WORKSPACE.md",
-        "CLAUDE.md",
         "README.md",
+        "bash.exe.stackdump",
+    }
+)
+
+# Additionally allowlisted ONLY when the directory carries an Agnes marker
+# (`.claude/` or `.agnes/`). These names are generic enough that a random
+# project checkout may hold all of them (`CLAUDE.md`, `server/`, `user/`,
+# `.gitignore`) — without the marker they must still read as unrelated
+# content, or the gate silently adopts a stranger's repo. An interrupted
+# `agnes init` always leaves the marker: the workspace scaffold (`.claude/`)
+# is written before any of these files.
+_AGNES_INTERRUPTED_ARTEFACTS = frozenset(
+    {
+        ".gitignore",
+        "CLAUDE.md",
         "server",
         "user",
-        "bash.exe.stackdump",
     }
 )
 
@@ -168,7 +180,10 @@ def classify_workspace_dir(workspace: Path) -> tuple[str, str]:
         # and let `agnes init` produce the real filesystem error.
         return DIR_PREPARED, ""
 
-    unrelated = [name for name in entries if name not in PREPARED_ALLOWLIST]
+    allowlist = PREPARED_ALLOWLIST
+    if ".claude" in entries or ".agnes" in entries:
+        allowlist = allowlist | _AGNES_INTERRUPTED_ARTEFACTS
+    unrelated = [name for name in entries if name not in allowlist]
     if not unrelated:
         return DIR_PREPARED, ""
 
@@ -291,8 +306,6 @@ def _run_update() -> dict:
     ``{"early_exit": True}``; a NON-zero exit is a real failure and is
     re-raised with a legible message (bare ``Exit: 3`` tells nobody anything).
     """
-    import click
-
     from cli.commands.update import update as update_cmd
 
     buf = io.StringIO()
@@ -300,7 +313,10 @@ def _run_update() -> dict:
     try:
         with contextlib.redirect_stdout(buf):
             update_cmd(quiet=False, as_json=True)
-    except click.exceptions.Exit as exc:  # typer.Exit is a subclass
+    # Catch typer.Exit itself, NOT click.exceptions.Exit: newer typer vendors
+    # click as `typer._click`, so the standalone click's Exit is a different
+    # class there and the except arm would silently stop matching.
+    except typer.Exit as exc:
         code = int(getattr(exc, "exit_code", 0) or 0)
         if code != 0:
             raise RuntimeError(
