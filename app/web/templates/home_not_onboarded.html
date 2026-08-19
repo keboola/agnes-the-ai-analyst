@@ -496,10 +496,10 @@ What can I help you with?
                 <div class="session-content">
                     <h3>Launch your workspace</h3>
                     <p><strong>Open a terminal</strong> &mdash; in VS Code, press <kbd>⌘</kbd>+<kbd>`</kbd> (Mac) or <kbd>Ctrl</kbd>+<kbd>`</kbd> (Windows). On macOS you can also open the standalone Terminal app from Spotlight.</p>
-                    <p><strong>Type one word</strong> &mdash; <code>{{ workspace_dir | lower }}</code> &mdash; and hit Enter.</p>
+                    <p><strong>Type one word</strong> &mdash; <code>{{ workspace_launcher_word }}</code> &mdash; and hit Enter.</p>
                     <div class="terminal-frame">
                         <div class="terminal-bar"><span class="traffic r"></span><span class="traffic y"></span><span class="traffic g"></span><span class="terminal-title">~/Desktop/{{ workspace_dir }} &nbsp;&mdash;&nbsp; zsh</span></div>
-                        <div class="terminal-body"><span class="prompt">$</span><span class="you">{{ workspace_dir | lower }}</span></div>
+                        <div class="terminal-body"><span class="prompt">$</span><span class="you">{{ workspace_launcher_word }}</span></div>
                     </div>
                     <p class="annotation">That single word jumps into your <code>~/Desktop/{{ workspace_dir }}</code> folder <em>and</em> launches Claude in one go &mdash; same on day&nbsp;1 as day&nbsp;100. No <code>cd</code>, no flags, no setup to remember. (The shortcut is created automatically by <code>agnes init</code>.)</p>
                 </div>
@@ -604,7 +604,7 @@ Want me to draft a 1-page brief, or dig into one of these?
 <span class="ai-name">See you next time.</span>
 <span class="prompt">$</span><span class="caret"></span></div>
                     </div>
-                    <p class="annotation">Nothing to clean up, no "save your work" prompt, no version to remember. Next time you type <code>{{ workspace_dir | lower }}</code>, this project is right at the top of the recent list &mdash; and Claude remembers every decision, file, and follow-up from today.</p>
+                    <p class="annotation">Nothing to clean up, no "save your work" prompt, no version to remember. Next time you type <code>{{ workspace_launcher_word }}</code>, this project is right at the top of the recent list &mdash; and Claude remembers every decision, file, and follow-up from today.</p>
                     <p class="annotation session-privacy">
                         <strong>What leaves your machine.</strong> Session telemetry &mdash; prompts, tool calls, and tool responses &mdash; flows back to the central catalog so the team can analyse failure patterns. Raw data rows you query locally stay on your machine; only the prompt/response transcript travels. Need a session off the record? Toggle Private in Claude Code (type <code>/agnes-private</code>) to disable telemetry for that chat &mdash; nothing from that session reaches the catalog.
                     </p>
@@ -658,7 +658,7 @@ Want me to draft a 1-page brief, or dig into one of these?
                         <li>Open VS Code &rarr; <strong>File &rarr; Open Folder</strong> &rarr; select your <code>~/Desktop/{{ workspace_dir }}</code> folder.</li>
                         <li>Open terminal: <kbd>⌘</kbd>+<kbd>`</kbd> (macOS) or <kbd>Ctrl</kbd>+<kbd>`</kbd> (Windows).</li>
                         <li>Right-click the terminal tab &rarr; <em>"Move Terminal into Editor Area"</em>. Split with <kbd>⌘</kbd>+<kbd>\</kbd> &mdash; one panel for the conversation, one for diffs.</li>
-                        <li>Type <code>{{ workspace_dir | lower }}</code> (or <code>claude</code>). The welcome menu fires &mdash; pick a project or describe what you want.</li>
+                        <li>Type <code>{{ workspace_launcher_word }}</code> (or <code>claude</code>). The welcome menu fires &mdash; pick a project or describe what you want.</li>
                     </ol>
                 </div>
                 <div class="when-to-use">
@@ -675,7 +675,7 @@ Want me to draft a 1-page brief, or dig into one of these?
                     <ol>
                         <li>Open <strong>Terminal</strong> (macOS: <kbd>⌘</kbd>+<kbd>Space</kbd>, type <em>Terminal</em>) or <strong>PowerShell</strong> (Windows: <kbd>⊞</kbd>, type <em>PowerShell</em>).</li>
                         <li>Go to your folder: <code>cd ~/Desktop/{{ workspace_dir }}</code></li>
-                        <li>Type <code>claude</code> (or <code>{{ workspace_dir | lower }}</code>) and hit Enter.</li>
+                        <li>Type <code>claude</code> (or <code>{{ workspace_launcher_word }}</code>) and hit Enter.</li>
                         <li>Welcome menu fires &mdash; same as in VS Code.</li>
                     </ol>
                 </div>
