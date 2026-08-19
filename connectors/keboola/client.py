@@ -664,6 +664,7 @@ class KeboolaClient:
                                 slice_url,
                                 file_data.get("credentials") or {},
                                 file_data.get("region"),
+                                expected_bucket=(file_data.get("s3Path") or {}).get("bucket"),
                             )
 
                         logger.debug(f"Downloading slice {i + 1}/{len(slice_entries)}")
@@ -705,6 +706,7 @@ class KeboolaClient:
                         download_url,
                         file_data.get("credentials") or {},
                         file_data.get("region"),
+                        expected_bucket=(file_data.get("s3Path") or {}).get("bucket"),
                     )
                 logger.debug(f"Downloading from: {download_url}")
                 download_response = requests.get(download_url, stream=True)
