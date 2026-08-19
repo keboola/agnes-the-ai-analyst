@@ -448,3 +448,71 @@ def test_admin_tables_keboola_branch_unchanged(seeded_app, monkeypatch):
         assert 'id="kbViewName"' in html
     finally:
         reset_cache()
+
+
+def test_precheck_failure_pins_field_errors_for_two_step_connectors(seeded_app, bq_instance):
+    """A 422 on a required field can only surface at PRECHECK for the
+    two-step connectors, so the field marks have to be applied there.
+
+    `register_table_precheck` runs "identical Pydantic validation to
+    register-table" (its own docstring), and the BQ / Snowflake confirm step
+    is reachable only after that precheck returned 200. Wiring
+    `_applyFieldErrors` solely into `_confirmRegister{BigQuery,Snowflake}Table`
+    therefore left `BQ_REGISTER_FIELD_MAP` / `SF_REGISTER_FIELD_MAP`
+    unreachable for validation errors — the operator got the readable toast
+    but never the red box that the rest of this feature promises, while the
+    single-POST connectors (Keboola, Databricks) did.
+    """
+    c = seeded_app["client"]
+    html = c.get("/admin/tables", headers=_auth(seeded_app["admin_token"])).text
+
+    for fn, field_map in (
+        ("function _registerBigQueryTable(", "BQ_REGISTER_FIELD_MAP"),
+        ("function _registerSnowflakeTable(", "SF_REGISTER_FIELD_MAP"),
+    ):
+        start = html.index(fn)
+        end = html.index("\n    function ", start + len(fn))
+        body = html[start:end]
+        assert "'/api/admin/register-table/precheck'" in body, (
+            f"{fn} no longer calls precheck — this guard has nothing to check"
+        )
+        assert f"_applyFieldErrors(d && d.detail, {field_map})" in body, (
+            f"{fn}: a precheck 422 must pin the field marks too, not just toast — "
+            "the confirm step that carries the field map is unreachable until "
+            "precheck has already passed validation"
+        )
+
+
+def test_nested_confirm_prompt_dialog_outranks_the_register_drawer(seeded_app, bq_instance):
+    """`Use as base` inside a register drawer awaits an invisible dialog.
+
+    modal.js's confirmModal / promptModal render a `.modal-backdrop` fixed at
+    z-index 1000 (style-custom.css), but the register drawers here are
+    `.ds-drawer` at 1200 (css/drawer.css) and `prefillFromTable` /
+    `prefillFromKeboolaTable` are invoked from buttons *inside* them — so the
+    dialog the flow then awaits painted behind the panel that opened it and
+    the button looked dead. The page-scoped override must clear the drawer
+    and stay under the toast.
+    """
+    import re
+    from pathlib import Path
+
+    c = seeded_app["client"]
+    html = c.get("/admin/tables", headers=_auth(seeded_app["admin_token"])).text
+
+    def _z(css: str, selector: str) -> int:
+        parts = css.split(selector + " {", 1)
+        assert len(parts) == 2, f"no `{selector} {{` rule found — this guard has nothing to compare"
+        m = re.search(r"z-index:\s*(\d+)", parts[1].split("}", 1)[0])
+        assert m, f"{selector} lost its z-index — this guard has nothing to compare"
+        return int(m.group(1))
+
+    drawer_z = _z(Path("app/web/static/css/drawer.css").read_text(encoding="utf-8"), ".ds-drawer")
+    backdrop_z = _z(html, ".modal-backdrop")
+    toast_z = _z(html, ".toast")
+
+    assert backdrop_z > drawer_z, (
+        f".modal-backdrop ({backdrop_z}) must outrank .ds-drawer ({drawer_z}) — "
+        "confirmModal/promptModal are opened from inside the register drawers"
+    )
+    assert backdrop_z < toast_z, f".modal-backdrop ({backdrop_z}) must stay under .toast ({toast_z})"

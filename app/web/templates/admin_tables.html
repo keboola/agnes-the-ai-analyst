@@ -328,6 +328,18 @@
             font-size: 13px;
         }
 
+        /* Same layering bug, one tier down: modal.js's confirmModal /
+           promptModal / alertModal render a `.modal-backdrop` fixed at
+           z-index 1000 (style-custom.css), and the register drawers on this
+           page open the "Use as base" prompt FROM INSIDE a `.ds-drawer`
+           (1200) — so the dialog the flow then `await`s painted behind the
+           very panel that opened it, leaving a dead-looking button waiting
+           on an invisible prompt. Page-scoped so no other page's stacking
+           moves: 1250 clears the drawer and stays under the toast (1300). */
+        .modal-backdrop {
+            z-index: 1250;
+        }
+
         /* ── Notification toast ──
            z-index 1300: above .ds-drawer / .tbl-more__menu (1200) and the
            legacy .modal-overlay (1000). At 200 this toast rendered BEHIND
@@ -6283,7 +6295,16 @@
             body: JSON.stringify(payload)
         })
         .then(function(r) {
-            if (!r.ok) return r.json().then(function(d) { throw new Error(_apiErrorMessage(d, 'Precheck failed')); });
+            // Precheck runs the SAME Pydantic validation as /register-table
+            // (see register_table_precheck), so a 422 on a required field
+            // ALWAYS lands here, in step 1 — the confirm step below is only
+            // reachable once validation has already passed. Pin the field
+            // marks here too, or the two-step connectors (BQ, Snowflake)
+            // would get the readable toast but never the red box.
+            if (!r.ok) return r.json().then(function(d) {
+                _applyFieldErrors(d && d.detail, BQ_REGISTER_FIELD_MAP);
+                throw new Error(_apiErrorMessage(d, 'Precheck failed'));
+            });
             return r.json();
         })
         .then(function(data) {
@@ -6402,7 +6423,13 @@
             body: JSON.stringify(payload)
         })
         .then(function(r) {
-            if (!r.ok) return r.json().then(function(d) { throw new Error(_apiErrorMessage(d, 'Precheck failed')); });
+            // Same as the BQ precheck above: identical Pydantic validation
+            // to /register-table, so a 422 on a required field surfaces at
+            // step 1 and never reaches the confirm step's field mapping.
+            if (!r.ok) return r.json().then(function(d) {
+                _applyFieldErrors(d && d.detail, SF_REGISTER_FIELD_MAP);
+                throw new Error(_apiErrorMessage(d, 'Precheck failed'));
+            });
             return r.json();
         })
         .then(function(data) {
