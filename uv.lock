@@ -34,6 +34,49 @@ wheels = [
 ]
 
 [[package]]
+name = "adbc-driver-manager"
+version = "1.12.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/9c/f8/ed6475b49a7cf35ea888d5c95e7d4bc9dc6568f9d741f14c0573d622cc1e/adbc_driver_manager-1.12.0.tar.gz", hash = "sha256:45991f0c2de369d330c6a211ca2edbcce6389c5dc81cde70461bdeb6f8f7b268", size = 217579, upload-time = "2026-07-28T00:43:03.512Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/73/2d/e41ea911f9486c497534ae181dfdab19adca21f71abc8a1fcaf2c27251a8/adbc_driver_manager-1.12.0-cp311-cp311-macosx_10_15_x86_64.whl", hash = "sha256:3c0c73670c8aa6fe42de1d5e71a0b329c4b37f7c55c560c23f6f3a1609200c1f", size = 600030, upload-time = "2026-07-28T00:41:54.753Z" },
+    { url = "https://files.pythonhosted.org/packages/10/ea/1a8b51999785d7dce17079dd635c9ee2372c75ec7328423ce862741cb503/adbc_driver_manager-1.12.0-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:6943c7adcf3c7c9f7c4b5bdb7589c331027a347e3c77471eb3f656b1a881e351", size = 611058, upload-time = "2026-07-28T00:41:56.306Z" },
+    { url = "https://files.pythonhosted.org/packages/85/a2/5ede53173a420742fa71d6c26792e2295fc73f25cf39055f912a5385b1f0/adbc_driver_manager-1.12.0-cp311-cp311-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:78c9936adb280e2c10e90632e41b58aa23be358e1136d8fb3c52862b72818a95", size = 4663735, upload-time = "2026-07-28T00:41:58.793Z" },
+    { url = "https://files.pythonhosted.org/packages/1c/1a/781561d0f55e05a0b884244ed563dab14b165b4dd74abd8af3f8efd95e3d/adbc_driver_manager-1.12.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:30d96ab4a2594b4109496fb4913646f41a5bf1ecce79b4313847d240a2a62db3", size = 4747090, upload-time = "2026-07-28T00:42:00.746Z" },
+    { url = "https://files.pythonhosted.org/packages/c6/fa/47c755a74ea4887968c52a968e02736007da4042fc0820292dc8c6827a94/adbc_driver_manager-1.12.0-cp311-cp311-win_amd64.whl", hash = "sha256:67419b92c286646944426992069f56fed90c2ceac83521f6d66d7d3cbf6c17ea", size = 760952, upload-time = "2026-07-28T00:42:02.432Z" },
+    { url = "https://files.pythonhosted.org/packages/de/8c/cd3fe16df716719116a6c79e64a768fe994f6ded55d5a8f091bb4f42d6f0/adbc_driver_manager-1.12.0-cp312-cp312-macosx_10_15_x86_64.whl", hash = "sha256:fd02364c65b8b376c5627e3b77410f457fcbbf983e52e8d15ca099da3a7ae314", size = 599054, upload-time = "2026-07-28T00:42:04.072Z" },
+    { url = "https://files.pythonhosted.org/packages/49/4a/2f060ff6bd61420ea1613670e1f85a22a8714934c235186dc3803de8ddac/adbc_driver_manager-1.12.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:d8dcf62621090e8d9c8216e08dfc4043f16331872522186af61a5de9478e9c63", size = 609964, upload-time = "2026-07-28T00:42:05.82Z" },
+    { url = "https://files.pythonhosted.org/packages/8a/f1/0746db149828ae91e4a6cf49f8d0e49210eec20c03ad80044454139c8240/adbc_driver_manager-1.12.0-cp312-cp312-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:efa5dbbf101962d212b176f25e6fc509dacf07afd4cf70b5027d81ec6871bdec", size = 4685726, upload-time = "2026-07-28T00:42:08.1Z" },
+    { url = "https://files.pythonhosted.org/packages/b9/c3/f8e9c5157b19e986df719259eb3502dad1268df9f7a1034f65ca220ab2ea/adbc_driver_manager-1.12.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:8b340679a005a8adf6b0b58754dbc638dff00db7b2559c140406a1d92678b48c", size = 4768774, upload-time = "2026-07-28T00:42:10.359Z" },
+    { url = "https://files.pythonhosted.org/packages/92/51/f8e625af691e6b4c54945790854524356a02a0a69063e888f7cfee1b2e50/adbc_driver_manager-1.12.0-cp312-cp312-win_amd64.whl", hash = "sha256:47f428a922d224fd486b661deeaf9520e5faec558b3d144832bed09a080cac88", size = 760087, upload-time = "2026-07-28T00:42:11.871Z" },
+    { url = "https://files.pythonhosted.org/packages/9a/f9/674c5bbc5093617d72c4f58a5dab67982710b2320cc9aa826050a6aaa131/adbc_driver_manager-1.12.0-cp313-cp313-macosx_10_15_x86_64.whl", hash = "sha256:c42ca4d9caa22b3a5ce76bde8729169f403bb7393e3671734b9416634c207125", size = 596815, upload-time = "2026-07-28T00:42:13.64Z" },
+    { url = "https://files.pythonhosted.org/packages/56/5f/c1d888d787330801edae282d2a9def3765e8157547cc20e71154ff38c1bb/adbc_driver_manager-1.12.0-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:c894117c8f5c484b902c8b070bcfd9d31d90efe0288b2b58a3ddab97c80f66e7", size = 608277, upload-time = "2026-07-28T00:42:15.643Z" },
+    { url = "https://files.pythonhosted.org/packages/06/4b/ee799babf171e39690ef45560451096f869d9e7387bc0e5a754bb243ed2a/adbc_driver_manager-1.12.0-cp313-cp313-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:214f80f9b65562f08b4d1c52a756b5db557530e3c0652f587c43aaa80039579a", size = 4667230, upload-time = "2026-07-28T00:42:17.97Z" },
+    { url = "https://files.pythonhosted.org/packages/00/c6/a35e38ef5e0db391be79e0e14c019ce378b87d9d7e31d1dfcd451e9d291f/adbc_driver_manager-1.12.0-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:532ab290b3d923ce0a75bca21dc6e13f55835625f78808e1664755939f3ebdf6", size = 4745299, upload-time = "2026-07-28T00:42:20.189Z" },
+    { url = "https://files.pythonhosted.org/packages/16/e2/62bacd6844859036d79ea229401b5200056fb5050c82dc3a2e28b08ff49b/adbc_driver_manager-1.12.0-cp313-cp313-win_amd64.whl", hash = "sha256:034da82c1a6e195d67ca1f0c97a1a517046037ec3029ab9a0ea8f7ccb14056e4", size = 758878, upload-time = "2026-07-28T00:42:21.598Z" },
+]
+
+[[package]]
+name = "adbc-driver-snowflake"
+version = "1.11.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "adbc-driver-manager" },
+    { name = "importlib-resources" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/fd/c1/561549e36abe8644bedc6b4848abb79ab41a6b0fc4b106ceef944b0c3493/adbc_driver_snowflake-1.11.0.tar.gz", hash = "sha256:7fce54ae7540c6c63aad6cc9ec2795a05647cc147c8af41ca2bd4e95455e8eae", size = 30570, upload-time = "2026-04-07T00:17:30.403Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/2a/f3/1125c7929faf750e7a5bdcec33ca22259ce040338dae12f75f3eb8080def/adbc_driver_snowflake-1.11.0-py3-none-macosx_10_15_x86_64.whl", hash = "sha256:5ebddfa5fc0b5cd7c86b5cce17bb578889c8db5ff2b756903b64e684b56829e8", size = 15094744, upload-time = "2026-04-07T00:16:55.86Z" },
+    { url = "https://files.pythonhosted.org/packages/d5/1d/88d564a8941607e6e555a3d3290ecb92852d4aa5a926a1cdbe86b17a8424/adbc_driver_snowflake-1.11.0-py3-none-macosx_11_0_arm64.whl", hash = "sha256:be862f8d0b6a507dae5c0644e13be79290180532c097d97c5a95a294c0bb5302", size = 13517204, upload-time = "2026-04-07T00:17:00.137Z" },
+    { url = "https://files.pythonhosted.org/packages/6f/26/baa44b8b9faaf26846dd8c0e513c7ce6862d7f35de46ee61175ac976699f/adbc_driver_snowflake-1.11.0-py3-none-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:7c7d7ecef7246303648a08cee3d78c383133bea8f2e1568cf6e8750ab94b5a57", size = 27574063, upload-time = "2026-04-07T00:17:04.862Z" },
+    { url = "https://files.pythonhosted.org/packages/5d/41/fe557f0d8414037dfe86fcba6338eb094a51da894050ec9a4c9f4504513d/adbc_driver_snowflake-1.11.0-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:07b5edbeb1b85be0882d7095641df26a24b3b4c2ba4d8edda35e3bbe89e70a06", size = 24767291, upload-time = "2026-04-07T00:17:09.763Z" },
+    { url = "https://files.pythonhosted.org/packages/e9/ca/542793fc9a164f013e3248061e922ac5d5246ce93718a5c0cb44bbd2219e/adbc_driver_snowflake-1.11.0-py3-none-win_amd64.whl", hash = "sha256:83b1a363a44ae4cb1e4956f9cc6c4e44dddd7c768a0f0a8b42d9cb8eb8906305", size = 27264722, upload-time = "2026-04-07T00:17:14.083Z" },
+]
+
+[[package]]
 name = "agnes-the-ai-analyst"
 version = "0.83.67"
 source = { editable = "." }
@@ -117,6 +160,7 @@ observability = [
     { name = "posthog" },
 ]
 server = [
+    { name = "adbc-driver-snowflake" },
     { name = "fastapi-debug-toolbar" },
     { name = "kbcstorage" },
 ]
@@ -149,6 +193,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "adbc-driver-snowflake", marker = "extra == 'server'", specifier = ">=1.0.0" },
     { name = "aiohttp", marker = "extra == 'dev'", specifier = ">=3.14.3" },
     { name = "aiohttp", marker = "extra == 'slack-socket'", specifier = ">=3.14.3" },
     { name = "aiohttp", marker = "extra == 'telegram'", specifier = ">=3.14.3" },
@@ -1886,6 +1931,15 @@ wheels = [
 ]
 
 [[package]]
+name = "importlib-resources"
+version = "7.1.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/e4/06/b56dfa750b44e86157093bc8fca0ab81dccbf5260510de4eaf1cb69b5b99/importlib_resources-7.1.0.tar.gz", hash = "sha256:0722d4c6212489c530f2a145a34c0a7a3b4721bc96a15fada5930e2a0b760708", size = 44985, upload-time = "2026-04-12T16:36:09.232Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8a/db/55a262f3606bebcae07cc14095338471ad7c0bbcaa37707e6f0ee49725b7/importlib_resources-7.1.0-py3-none-any.whl", hash = "sha256:1bd7b48b4088eddb2cd16382150bb515af0bd2c70128194392725f82ad2c96a1", size = 37232, upload-time = "2026-04-12T16:36:08.219Z" },
+]
+
+[[package]]
 name = "iniconfig"
 version = "2.3.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2380,7 +2434,7 @@ wheels = [
 
 [[package]]
 name = "mcp"
-version = "1.28.1"
+version = "1.29.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -2398,9 +2452,9 @@ dependencies = [
     { name = "typing-inspection" },
     { name = "uvicorn", marker = "sys_platform != 'emscripten'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/6e/77/9450b8f251a13affb6281997d0523c4615f8a8b35d0b21ff30db3a5aac9d/mcp-1.28.1.tar.gz", hash = "sha256:d51e36a5f5644faea4f85ea649bfffa6bc6c26770d42798ad6a3de3d2ba69683", size = 638501, upload-time = "2026-06-26T12:57:29.093Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/30/d3/f9acc21dfc886e4f78e2add1a47db46ce16884346afde53f8a064c02c891/mcp-1.29.0.tar.gz", hash = "sha256:52d01f334de1868cc3bb2d6604931126a67631f99a6c5d3b82ba47290315ec36", size = 643148, upload-time = "2026-07-28T13:41:41.939Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e2/5e/d118fce19f87a2e7d8101c35c8ae0ec289098a4df0ff244cec23e415aca0/mcp-1.28.1-py3-none-any.whl", hash = "sha256:2726bca5e7193f61c5dde8b12500a6de2d9acf6d1a1c0be9e8c2e706437991df", size = 222620, upload-time = "2026-06-26T12:57:27.218Z" },
+    { url = "https://files.pythonhosted.org/packages/01/c8/248b201f6d753d69fd5d6506011abbb35a946d9142b2ae311a948fd0be3d/mcp-1.29.0-py3-none-any.whl", hash = "sha256:f5a075bb611f23d6f4d080c6a1699fa62772eebc562ba9e66b306ddde1c755f7", size = 223436, upload-time = "2026-07-28T13:41:40.337Z" },
 ]
 
 [[package]]

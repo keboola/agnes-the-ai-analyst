@@ -10,6 +10,28 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.83.81] - 2026-08-19
+
+### Added
+
+- **Databricks is now configurable from the `/admin/data-sources` "Add data" wizard.** The step-1 form collects host, warehouse ID, catalog and token, saves the non-secret coordinates to `data_source.databricks` via `/admin/server-config`, and stores the workspace PAT write-only in the datasource vault. Tables still register through `Tables → Register new table`, where the full SQL-warehouse / metric-view editor lives.
+- **`agnes admin register-table` and the MCP `admin_register_table` tool now support Databricks and Snowflake.** The CLI lists `snowflake` in the `--source-type` help, defaults `--query-mode` to a source-appropriate value (`materialized` for Databricks/Snowflake, `remote` for BigQuery, `local` otherwise), and allows full-table auto-registration without `--query` for Snowflake. The MCP tool mirrors `POST /api/admin/register-table` with an optional `dry_run` precheck.
+- **`agnes admin discover-and-register` now rejects unsupported source types with a clear pointer.** It only supports Keboola Storage API discovery; other source types are refused with a message directing the admin to `agnes admin register-table` for Databricks and Snowflake.
+
+### Changed
+
+- **The Databricks SQL-warehouse / semantic-layer path resolves its token from the configured `token_env`** (default `DATABRICKS_TOKEN`) through env then the datasource vault, so a token stored through the admin UI works without a server restart. A custom `data_source.databricks.token_env` is env-only by design; the resolver no longer falls back to a vault-stored `DATABRICKS_TOKEN` when the custom name is unset.
+
+### Fixed
+
+- **The Databricks wizard reads and writes the credential under the name the backend actually looks at.** It previously used a hardcoded `DATABRICKS_TOKEN` while `resolve_databricks_settings` reads the env var named by `token_env`; both paths now resolve the same name and the wizard reports which secret name the token was stored under.
+- **A saved Databricks connection change reports that a restart is needed.** `POST /api/admin/server-config` always answers `restart_required` and resets only the calling process's config cache; the wizard previously navigated straight to `/admin/tables` and could leave a role-split scheduler using the old warehouse.
+- **The Databricks credential-status row is styled like its siblings.** `.ds-dbxcred` had no stylesheet rule, so the badge and warning text stacked and the row collapsed while the async status load was in flight.
+- **DuckDB's ``snowflake`` community extension no longer fails to load because the ADBC Snowflake shared library is missing.** `connectors.snowflake.attach.install_snowflake_adbc_driver` copies `libadbc_driver_snowflake.*` from the installed `adbc-driver-snowflake` package into the DuckDB extension directory before every `INSTALL`/`LOAD snowflake`. `scripts/install-adbc-driver.sh` performs the same copy and is also run during the Docker build.
+- **Snowflake key-pair authentication normalizes pasted private keys to the unencrypted PKCS#8 PEM DuckDB's Snowflake ADBC driver expects.** The driver rejected PEMs with escaped `\n` line endings, Windows `\r\n`, PKCS#1 `RSA PRIVATE KEY` blocks, and encrypted keys without the exact PKCS#8 envelope. `connectors.snowflake.attach` now uses `cryptography` to decode, optionally decrypt, and re-emit an unencrypted PKCS#8 PEM to a private per-process temp file before building `CREATE SECRET ... PRIVATE_KEY_FILE`.
+- **Session pipeline no longer misses a jsonl appended within milliseconds of the previous tick's `processed_at`.** `st_mtime` can lag `datetime.now()` by a few milliseconds on some filesystems/VM clocks, so a session file appended right as processing finished could get an mtime marginally older than the stored `processed_at` and be skipped on the next tick. `scan_unprocessed_for` now compares `mtime >= processed_at` (not `>`) and treats an mtime within 50 ms of `processed_at` as ambiguous, verifying the stored `file_hash` before discarding the file. This closes the clock-skew window only — it is not a general fix for the mtime-vs-`processed_at` race: a tick that takes longer than 50 ms between reading a session and writing `processed_at` can still leave a final append with an mtime more than 50 ms older than `processed_at`, and that append stays unprocessed until the file is written to again. Closing the residual gap needs the mtime observed at read time persisted next to the hash (a schema change), left for a follow-up.
+- **A Snowflake password beginning with `~` no longer aborts the connection.** `_looks_like_key_pair()` probes whether the credential is a path to a PEM file, and that probe runs for *every* credential — passwords included. On Python 3.11+ `Path('~user').expanduser()` raises `RuntimeError` ("Could not determine home directory.") when the named user cannot be resolved, and `RuntimeError` is not an `OSError`/`ValueError`, so it escaped the probe's guard and aborted `attach_snowflake` before the password path was ever reached. Both `expanduser()` guards now catch it: the probe treats the value as "not a key path", and the key *loader* surfaces the typed `ValueError` its contract already promises.
+
 ## [0.83.80] - 2026-08-19
 
 ### Fixed

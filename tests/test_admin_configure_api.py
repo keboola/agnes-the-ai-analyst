@@ -491,6 +491,53 @@ class TestServerConfigAuthProvidersValidation:
         assert resp.status_code == 422, resp.text
         assert "must be https" in resp.text
 
+    def test_http_databricks_host_is_refused(self, seeded_app):
+        """`data_source.databricks.host` is where the workspace PAT is sent, so a
+        cleartext scheme must fail closed at store time (`validate_workspace_host`
+        inside `_validate_urls_in_patch`) rather than leak the bearer token over
+        http on the first Statement Execution API call."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/server-config",
+            json={
+                "sections": {"data_source": {"databricks": {"host": "http://dbc-a1b2c3d4-e5f6.example.com"}}},
+                "confirm_danger": True,
+            },
+            headers=_auth(token),
+        )
+        assert resp.status_code == 422, resp.text
+        assert "data_source.databricks.host" in resp.text
+        assert "https" in resp.text
+
+    def test_bare_databricks_host_is_normalized_to_https(self, seeded_app):
+        """A bare workspace address (what an admin copies out of the Databricks UI)
+        is accepted and upgraded to `https://…` *before* it is persisted and before
+        the SSRF check runs, so the stored value is the one the client will dial.
+
+        DNS is stubbed to a public address (same pattern as TestAdminConfigureSSRF)
+        so the test does not depend on the runner's resolver.
+        """
+        import yaml
+
+        def _public_dns(host, port, **kwargs):
+            return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("93.184.216.34", port))]
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        with patch("app.api.admin._socket.getaddrinfo", _public_dns):
+            resp = c.post(
+                "/api/admin/server-config",
+                json={
+                    "sections": {"data_source": {"databricks": {"host": "dbc-a1b2c3d4-e5f6.example.com/"}}},
+                    "confirm_danger": True,
+                },
+                headers=_auth(token),
+            )
+        assert resp.status_code == 200, resp.text
+        overlay = yaml.safe_load((seeded_app["env"]["data_dir"] / "state" / "instance.yaml").read_text())
+        assert overlay["data_source"]["databricks"]["host"] == "https://dbc-a1b2c3d4-e5f6.example.com"
+
     def test_keboola_enabled_and_configured_in_same_save_accepted(self, seeded_app):
         """Enabling keboola AND supplying its config in one save must pass —
         availability is evaluated against the current config merged with the

@@ -246,3 +246,119 @@ class TestActivitySince:
         since = datetime.now(timezone.utc) - timedelta(hours=1)
         result = repos["repo"].activity_since("verification", since)
         assert result == {"last_processed_at": None, "items_extracted": 0}
+
+
+# ---------------------------------------------------------------------------
+# scan_unprocessed_for
+# ---------------------------------------------------------------------------
+
+
+def _md5(path):
+    import hashlib
+
+    return hashlib.md5(path.read_bytes()).hexdigest()
+
+
+def _processed_at_utc(repos, processor, key):
+    """The stored processed_at as a tz-aware UTC datetime.
+
+    DuckDB hands back a UTC-clock-naive value (the connection pins the session
+    timezone to UTC); PG's TIMESTAMPTZ keeps the offset. Normalize so the test
+    does identical arithmetic on both backends.
+    """
+    pa = repos["repo"].get_states_for_session_files(processor, [key])[key]["processed_at"]
+    return pa.replace(tzinfo=timezone.utc) if pa.tzinfo is None else pa.astimezone(timezone.utc)
+
+
+def _write_session(session_dir, username, name, body):
+    user_dir = session_dir / username
+    user_dir.mkdir(parents=True, exist_ok=True)
+    p = user_dir / name
+    p.write_text(body)
+    return p
+
+
+def _set_mtime(path, when):
+    import os
+
+    ts = when.timestamp()
+    os.utime(path, (ts, ts))
+
+
+class TestScanUnprocessedFor:
+    """The mtime precheck, incl. the clock-skew window and its hash-verify
+    fallback. Both backends must make the same include/skip call.
+    """
+
+    def test_no_state_row_is_surfaced(self, repos, tmp_path):
+        sess = tmp_path / "sessions"
+        _write_session(sess, "alice", "a.jsonl", '{"x":1}\n')
+        found = repos["repo"].scan_unprocessed_for("verification", sess)
+        assert [(u, p.name) for u, p in found] == [("alice", "a.jsonl")]
+
+    def test_stable_session_well_before_processed_at_is_skipped(self, repos, tmp_path):
+        """The cheap stat-only optimization still holds: a file untouched since
+        the last tick is skipped without hashing."""
+        sess = tmp_path / "sessions"
+        p = _write_session(sess, "alice", "a.jsonl", '{"x":1}\n')
+        _seed(repos, "verification", "alice/a.jsonl")
+        pa = _processed_at_utc(repos, "verification", "alice/a.jsonl")
+        _set_mtime(p, pa - timedelta(seconds=30))
+        assert repos["repo"].scan_unprocessed_for("verification", sess) == []
+
+    def test_mtime_equal_to_processed_at_is_surfaced(self, repos, tmp_path):
+        """The comparison is `mtime >= processed_at`, not `>`: a same-instant
+        write is a live-append candidate, not a stable file."""
+        sess = tmp_path / "sessions"
+        p = _write_session(sess, "alice", "a.jsonl", '{"x":1}\n')
+        _seed(repos, "verification", "alice/a.jsonl")
+        pa = _processed_at_utc(repos, "verification", "alice/a.jsonl")
+        _set_mtime(p, pa)
+        found = repos["repo"].scan_unprocessed_for("verification", sess)
+        assert [(u, f.name) for u, f in found] == [("alice", "a.jsonl")]
+
+    def test_within_skew_window_with_changed_content_is_surfaced(self, repos, tmp_path):
+        """The fix: an mtime marginally OLDER than processed_at (clock skew) used
+        to be discarded on the stat alone. Inside the skew window the stored
+        file_hash is consulted, and a mismatch surfaces the file."""
+        sess = tmp_path / "sessions"
+        p = _write_session(sess, "alice", "a.jsonl", '{"x":1}\n')
+        # _seed stores a sentinel hash, which cannot match the file's real md5.
+        _seed(repos, "verification", "alice/a.jsonl")
+        pa = _processed_at_utc(repos, "verification", "alice/a.jsonl")
+        _set_mtime(p, pa - timedelta(milliseconds=10))
+        found = repos["repo"].scan_unprocessed_for("verification", sess)
+        assert [(u, f.name) for u, f in found] == [("alice", "a.jsonl")]
+
+    def test_within_skew_window_with_matching_hash_is_skipped(self, repos, tmp_path):
+        """The window must not turn every near-mtime file into churn: when the
+        stored hash still matches the content there is nothing to reprocess."""
+        sess = tmp_path / "sessions"
+        p = _write_session(sess, "alice", "a.jsonl", '{"x":1}\n')
+        repos["repo"].mark_processed(
+            processor_name="verification",
+            session_file="alice/a.jsonl",
+            username="alice",
+            items_count=1,
+            file_hash=_md5(p),
+        )
+        pa = _processed_at_utc(repos, "verification", "alice/a.jsonl")
+        _set_mtime(p, pa - timedelta(milliseconds=10))
+        assert repos["repo"].scan_unprocessed_for("verification", sess) == []
+
+    def test_outside_skew_window_is_skipped_even_when_content_changed(self, repos, tmp_path):
+        """Pins the RESIDUAL gap the 50 ms window does NOT close: a final append
+        whose mtime lands more than the window before `processed_at` (a tick
+        slower than 50 ms) is still skipped and the stored hash is never
+        consulted. Closing it needs mtime-at-read persisted — a schema change.
+        Update this test when that lands; it is documentation, not a wish.
+        """
+        sess = tmp_path / "sessions"
+        p = _write_session(sess, "alice", "a.jsonl", '{"x":1}\n')
+        _seed(repos, "verification", "alice/a.jsonl")  # sentinel hash != real md5
+        pa = _processed_at_utc(repos, "verification", "alice/a.jsonl")
+        _set_mtime(p, pa - timedelta(seconds=1))
+        assert repos["repo"].scan_unprocessed_for("verification", sess) == []
+
+    def test_missing_session_dir_returns_empty(self, repos, tmp_path):
+        assert repos["repo"].scan_unprocessed_for("verification", tmp_path / "nope") == []

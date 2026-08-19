@@ -17,7 +17,11 @@ from typing import Any, Optional
 import duckdb
 
 from connectors.bigquery.extractor import MaterializeBudgetError
-from connectors.snowflake.attach import attach_snowflake, build_remote_attach_url
+from connectors.snowflake.attach import (
+    attach_snowflake,
+    build_remote_attach_url,
+    install_snowflake_adbc_driver,
+)
 from src.duckdb_conn import _open_duckdb
 from src.identifier_validation import validate_identifier
 from src.orchestrator_security import is_attach_host_allowed
@@ -220,6 +224,7 @@ def materialize_query(
             tmp_path.unlink()
 
         conn = _open_duckdb(str(tmp_db), read_only=False)
+        install_snowflake_adbc_driver()
         conn.execute(f"INSTALL {_SF_EXTENSION} FROM community")
         conn.execute(f"LOAD {_SF_EXTENSION}")
 

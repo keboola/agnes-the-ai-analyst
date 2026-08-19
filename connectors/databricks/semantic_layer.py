@@ -34,7 +34,7 @@ from __future__ import annotations
 import logging
 import os
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 from urllib.parse import urlsplit
 
 import yaml
@@ -71,11 +71,11 @@ _YAML_BODY_RE = re.compile(r"\$\$(.*?)\$\$", re.DOTALL)
 _METRIC_VIEW_TABLE_TYPES = ("METRIC_VIEW", "METRIC VIEW")
 
 
-def _empty_counters() -> Dict[str, int]:
+def _empty_counters() -> dict[str, int]:
     return {key: 0 for key in _COUNTER_KEYS}
 
 
-def _error_result(message: str, code: str) -> Dict[str, Any]:
+def _error_result(message: str, code: str) -> dict[str, Any]:
     return {"status": "error", "error": message, "code": code, **_empty_counters()}
 
 
@@ -84,7 +84,7 @@ def _error_result(message: str, code: str) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def resolve_databricks_settings() -> Optional[Dict[str, Any]]:
+def resolve_databricks_settings() -> dict[str, Any] | None:
     """Read the instance's Databricks settings; ``None`` when unconfigured.
 
     ``data_source.databricks.{host, warehouse_id, catalog}`` from the
@@ -102,10 +102,10 @@ def resolve_databricks_settings() -> Optional[Dict[str, Any]]:
     token = os.environ.get(token_env, "")
     if not token:
         try:
-            from app.datasource_secrets import datasource_secret
+            from src.orchestrator_security import resolve_remote_attach_token
 
-            token = datasource_secret("DATABRICKS_TOKEN") or ""
-        except Exception:  # pragma: no cover - vault optional in dev contexts
+            token = resolve_remote_attach_token(token_env) or ""
+        except Exception:  # pragma: no cover - vault optional in dev contexts  # noqa: BLE001
             token = ""
     if not (host and warehouse_id and token):
         return None
@@ -134,7 +134,7 @@ def _source_ref_for_host(host: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def extract_yaml_from_create(create_stmt: str) -> Optional[str]:
+def extract_yaml_from_create(create_stmt: str) -> str | None:
     """Pull the YAML body out of a ``SHOW CREATE TABLE`` statement for a
     metric view (``… WITH METRICS LANGUAGE YAML AS $$ <yaml> $$``)."""
     if not create_stmt:
@@ -164,7 +164,7 @@ def build_metric_rows(
     yaml_text: str,
     *,
     source_ref: str,
-) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+) -> tuple[list[dict[str, Any]], str | None]:
     """Map one metric view's YAML definition to metric_definitions row dicts —
     one Agnes metric per declared measure.
 
@@ -187,7 +187,7 @@ def build_metric_rows(
 
     fqn = f"{catalog}.{schema}.{view}"
     quoted_fqn = f"{_quote_dbx_ident(catalog)}.{_quote_dbx_ident(schema)}.{_quote_dbx_ident(view)}"
-    rows: List[Dict[str, Any]] = []
+    rows: list[dict[str, Any]] = []
     for measure in measures:
         if not isinstance(measure, dict):
             continue
@@ -197,7 +197,7 @@ def build_metric_rows(
         description = str(measure.get("description") or measure.get("comment") or "") or view_comment or ""
         expression = str(measure.get("expr") or "")
         sql = f"SELECT MEASURE({_quote_dbx_ident(name)}) FROM {quoted_fqn}"
-        row: Dict[str, Any] = {
+        row: dict[str, Any] = {
             "id": f"databricks/{fqn}/{name}",
             "name": name,
             "display_name": name,
@@ -208,10 +208,12 @@ def build_metric_rows(
             "source": SOURCE_LABEL,
             "notes": [
                 f"Unity Catalog metric view {fqn} (source_type=databricks, workspace {source_ref}).",
-                "MEASURE() only evaluates on a Databricks SQL warehouse — run this "
-                "server-side (a query_mode='materialized' row, or adapt the "
-                "materialized row's source_query); group by any listed dimension: "
-                f"SELECT <dimension>, MEASURE({_quote_dbx_ident(name)}) FROM {quoted_fqn} GROUP BY 1.",
+                (
+                    "MEASURE() only evaluates on a Databricks SQL warehouse — run this "
+                    "server-side (a query_mode='materialized' row, or adapt the "
+                    "materialized row's source_query); group by any listed dimension: "
+                    f"SELECT <dimension>, MEASURE({_quote_dbx_ident(name)}) FROM {quoted_fqn} GROUP BY 1."
+                ),
             ],
         }
         if dimension_names:
@@ -227,7 +229,7 @@ def build_metric_rows(
 # ---------------------------------------------------------------------------
 
 
-def _in_scope(row: Dict[str, Any], scope_refs: set) -> bool:
+def _in_scope(row: dict[str, Any], scope_refs: set) -> bool:
     """True when an existing metric row belongs to this sync's prune scope:
     written by this connector AND stamped with this workspace's ref. Rows
     from other writers (manual, yaml_import, keboola_semantic_layer) or other
@@ -237,7 +239,7 @@ def _in_scope(row: Dict[str, Any], scope_refs: set) -> bool:
     return row.get("source_ref") in scope_refs
 
 
-def _is_owned_by_source(existing: Optional[Dict[str, Any]], incoming_id: str, scope_refs: set) -> bool:
+def _is_owned_by_source(existing: dict[str, Any] | None, incoming_id: str, scope_refs: set) -> bool:
     """May this sync write a row under a name ``existing`` already holds?
     Ownership tracks the prune scope — the rows a source may delete are
     exactly the rows it may overwrite; any other writer keeps its name."""
@@ -253,7 +255,7 @@ def _is_owned_by_source(existing: Optional[Dict[str, Any]], incoming_id: str, sc
 # ---------------------------------------------------------------------------
 
 
-def _list_metric_views(client: DatabricksStatementClient, catalog: str) -> List[Tuple[str, str, str, str]]:
+def _list_metric_views(client: DatabricksStatementClient, catalog: str) -> list[tuple[str, str, str, str]]:
     """Enumerate metric views in one catalog as
     ``(catalog, schema, name, comment)`` tuples, privilege-filtered by the
     warehouse's own information_schema."""
@@ -264,7 +266,7 @@ def _list_metric_views(client: DatabricksStatementClient, catalog: str) -> List[
         f"WHERE table_type IN ({candidates})"
     )
     _columns, rows = client.execute_rows(sql)
-    out: List[Tuple[str, str, str, str]] = []
+    out: list[tuple[str, str, str, str]] = []
     for row in rows:
         if not row or len(row) < 3 or not row[0] or not row[1] or not row[2]:
             continue
@@ -273,7 +275,7 @@ def _list_metric_views(client: DatabricksStatementClient, catalog: str) -> List[
     return out
 
 
-def _log_table_type_vocabulary(client: DatabricksStatementClient, catalogs: List[str]) -> None:
+def _log_table_type_vocabulary(client: DatabricksStatementClient, catalogs: list[str]) -> None:
     """Best-effort diagnostic for a zero-metric-view run: report which
     ``table_type`` values the workspace actually publishes.
 
@@ -288,7 +290,7 @@ def _log_table_type_vocabulary(client: DatabricksStatementClient, catalogs: List
             _cols, rows = client.execute_rows(
                 f"SELECT DISTINCT table_type FROM {_quote_dbx_ident(catalog)}.information_schema.tables"
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - best-effort diagnostic probe
             logger.debug("Databricks semantic layer: table_type probe skipped for %s (%s)", catalog, exc)
             continue
         found = sorted({str(r[0]) for r in rows if r and r[0]})
@@ -303,7 +305,7 @@ def _log_table_type_vocabulary(client: DatabricksStatementClient, catalogs: List
         )
 
 
-def sync_semantic_layer(client: Optional[DatabricksStatementClient] = None) -> Dict[str, Any]:
+def sync_semantic_layer(client: DatabricksStatementClient | None = None) -> dict[str, Any]:
     """Sync the configured workspace's metric views into metric_definitions.
 
     Pass ``client`` to override construction (tests, future named
@@ -345,7 +347,7 @@ def sync_semantic_layer(client: Optional[DatabricksStatementClient] = None) -> D
     claimed_names: set = set()
 
     try:
-        views: List[Tuple[str, str, str, str]] = []
+        views: list[tuple[str, str, str, str]] = []
         for cat in settings["catalogs"]:
             views.extend(_list_metric_views(client, cat))
 

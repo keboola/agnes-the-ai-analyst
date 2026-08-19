@@ -1723,8 +1723,8 @@ class TestBigQueryUITwoStepFlow:
 
 class TestCliDiscoverAndRegisterAcceptsAllSuccessCodes:
     """Review NIT 6: `agnes admin discover-and-register` must accept 200
-    (BQ sync OK) and 202 (BQ background) as success, not just 201.
-    Pre-fix every successful BQ row counted as an error."""
+    (sync OK) and 202 (background) as success, not just 201.
+    Pre-fix every successful row counted as an error."""
 
     def _resp(self, status_code=200, json_data=None, text=""):
         r = MagicMock()
@@ -1733,7 +1733,7 @@ class TestCliDiscoverAndRegisterAcceptsAllSuccessCodes:
         r.text = text
         return r
 
-    def _run(self, monkeypatch, status_code, body=None, source_type="bigquery"):
+    def _run(self, monkeypatch, status_code, body=None, source_type="keboola"):
         from typer.testing import CliRunner
         from cli.main import app
         runner = CliRunner()
