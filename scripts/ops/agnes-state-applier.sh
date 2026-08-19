@@ -69,26 +69,27 @@ _env_get() {
 AGNES_TAG="$(_env_get AGNES_TAG)"
 export AGNES_TAG
 
-# Compose chain reused for every invocation. Mirrors the layering in
-# agnes-auto-upgrade.sh so this daemon plays well with the existing -f
-# argument style on provisioned VMs (no COMPOSE_FILE env coupling).
-COMPOSE_FILES=( -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.host-mount.yml )
-# gcplogs overlay — ships container logs to GCP Cloud Logging on GCE VMs.
-# Guarded on file presence so a legacy VM whose image predates the overlay
-# degrades gracefully to the default json-file driver rather than failing the
-# state-apply with "no such file".
-if [ -f "$COMPOSE_DIR/docker-compose.gcp-logging.yml" ]; then
-    COMPOSE_FILES+=( -f docker-compose.gcp-logging.yml )
-fi
-if [ -f "$COMPOSE_DIR/docker-compose.tls.yml" ] && [ -d /data/state/certs ]; then
-    COMPOSE_FILES+=( -f docker-compose.tls.yml )
-fi
+# Compose chain reused for every invocation, resolved through the single
+# shared resolver (scripts/ops/agnes-compose-file.sh) so this daemon can
+# never disagree with agnes-auto-upgrade.sh / startup-script.sh.tpl on the
+# overlay list or its order again (a hardcoded array here previously
+# appended the postgres overlays AFTER docker-compose.host-mount.yml,
+# the inverse of the order docker-compose.postgres-host-mount.yml's
+# !override needs).
+#
+# TARGET (the lifecycle flag), not instance.yaml's database.backend, is
+# the authoritative input HERE: the flag flips to side-car-enabled (and
+# the postgres container must come up) BEFORE instance.yaml leaves the
+# transient *_in_progress value — see agnes-compose-file.sh's docstring.
+# shellcheck source=./agnes-compose-file.sh
+. "$COMPOSE_DIR/scripts/ops/agnes-compose-file.sh"
 case "$TARGET" in
-    side-car-enabled)
-        COMPOSE_FILES+=( -f docker-compose.postgres.yml -f docker-compose.postgres-host-mount.yml )
-        ;;
+    side-car-enabled) _ACF_BACKEND=side_car ;;
+    *) _ACF_BACKEND=duckdb ;;
 esac
-dc() { docker compose "${COMPOSE_FILES[@]}" "$@"; }
+export COMPOSE_FILE
+COMPOSE_FILE=$(agnes_resolve_compose_file "$COMPOSE_DIR" /data/state "$_ACF_BACKEND")
+dc() { docker compose "$@"; }
 
 # --- Pending-job detection ------------------------------------------------
 # A job file with status=pending is the signal that the API endpoint
