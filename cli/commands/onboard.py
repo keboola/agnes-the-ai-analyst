@@ -84,18 +84,19 @@ DIR_MISSING = "missing"
 # Artefacts a *prepared* workspace folder may already hold. Anything else is
 # unrelated content and needs an explicit `--accept-dir`. `bash.exe.stackdump`
 # is Git-Bash-on-Windows litter that lands in a freshly created folder through
-# no fault of the user.
+# no fault of the user; `.gitignore` alone only ever discriminates an empty
+# scaffold repo (any real checkout trips the gate on other entries), so
+# refusing over it is pure false-positive surface.
 #
-# The Agnes-written entries matter for the *interrupted* case: a run killed
-# before the sentinel (`agnes init` step 9) leaves `CLAUDE.md` (step 3),
-# `server/parquet/` + `user/{duckdb,knowledge,snapshots}/` (the first pull) and
-# `AGNES_WORKSPACE.md` (step 8) behind, and none of that is "unrelated content"
-# to refuse over. A *completed* workspace is covered by the sentinel
-# short-circuit in `classify_workspace_dir` instead — the admin-authored
-# workspace template can ship anything, so no allowlist could enumerate it.
+# A *completed* workspace is covered by the sentinel short-circuit in
+# `classify_workspace_dir` — the admin-authored workspace template can ship
+# anything, so no allowlist could enumerate it. The *interrupted* case
+# (killed before the sentinel, `agnes init` step 9) is covered by
+# `_AGNES_INTERRUPTED_ARTEFACTS` below, gated on a real Agnes marker.
 PREPARED_ALLOWLIST = frozenset(
     {
         ".git",
+        ".gitignore",
         ".claude",
         ".agnes",
         "AGNES_WORKSPACE.md",
@@ -104,21 +105,39 @@ PREPARED_ALLOWLIST = frozenset(
     }
 )
 
-# Additionally allowlisted ONLY when the directory carries an Agnes marker
-# (`.claude/` or `.agnes/`). These names are generic enough that a random
-# project checkout may hold all of them (`CLAUDE.md`, `server/`, `user/`,
-# `.gitignore`) — without the marker they must still read as unrelated
-# content, or the gate silently adopts a stranger's repo. An interrupted
-# `agnes init` always leaves the marker: the workspace scaffold (`.claude/`)
-# is written before any of these files.
+# Additionally allowlisted ONLY when the directory carries a real Agnes
+# marker (`_has_agnes_marker`). An interrupted init leaves `CLAUDE.md`
+# (step 4), `server/` + `user/` (the first pull) behind — but the names are
+# generic enough that a random project checkout may hold all of them, so
+# without the marker they must still read as unrelated content, or the gate
+# silently adopts a stranger's repo.
 _AGNES_INTERRUPTED_ARTEFACTS = frozenset(
     {
-        ".gitignore",
         "CLAUDE.md",
         "server",
         "user",
     }
 )
+
+
+def _has_agnes_marker(workspace: Path) -> bool:
+    """True when the directory shows evidence Agnes itself set it up.
+
+    A bare `.claude/` directory is NOT a marker — that is Claude Code's own
+    per-project dir and exists in essentially every repo the user has opened
+    in Claude Code, which is exactly where the install prompt gets pasted.
+    What is distinctive: a workspace-local `.agnes/`, or a
+    `.claude/settings.json` carrying the agnes hooks `agnes init` installs
+    (step 5 of the init flow — before the first pull writes `server/` and
+    `user/`, so an interrupted run that left those behind left this too).
+    """
+    try:
+        if (workspace / ".agnes").exists():
+            return True
+        settings = workspace / ".claude" / "settings.json"
+        return settings.is_file() and "agnes" in settings.read_text(encoding="utf-8")
+    except OSError:
+        return False
 
 # Written by `agnes init` as its very last step; its presence means this
 # directory is an Agnes workspace we created ourselves.
@@ -181,7 +200,7 @@ def classify_workspace_dir(workspace: Path) -> tuple[str, str]:
         return DIR_PREPARED, ""
 
     allowlist = PREPARED_ALLOWLIST
-    if ".claude" in entries or ".agnes" in entries:
+    if _has_agnes_marker(resolved):
         allowlist = allowlist | _AGNES_INTERRUPTED_ARTEFACTS
     unrelated = [name for name in entries if name not in allowlist]
     if not unrelated:

@@ -583,6 +583,9 @@ def test_interrupted_init_artefacts_are_allowlisted(tmp_path):
     """A run killed before the sentinel still leaves Agnes-written files; those
     are ours too and must not read as unrelated content."""
     (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude" / "settings.json").write_text(
+        '{"hooks": {"SessionStart": "( nohup agnes update --quiet & )"}}', encoding="utf-8"
+    )
     (tmp_path / "CLAUDE.md").write_text("# workspace\n", encoding="utf-8")
     (tmp_path / "server").mkdir()
     (tmp_path / "user").mkdir()
@@ -719,6 +722,10 @@ def test_generic_project_without_agnes_marker_is_unrelated(tmp_path):
     (tmp_path / "CLAUDE.md").write_text("# some other project\n", encoding="utf-8")
     (tmp_path / "server").mkdir()
     (tmp_path / "user").mkdir()
+    # A bare Claude Code dir is NOT an Agnes marker — it exists in every
+    # repo the user has opened in Claude Code.
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude" / "settings.json").write_text('{"model": "opus"}', encoding="utf-8")
     verdict, detail = onb.classify_workspace_dir(tmp_path)
     assert verdict == onb.DIR_UNRELATED
     assert "CLAUDE.md" in detail

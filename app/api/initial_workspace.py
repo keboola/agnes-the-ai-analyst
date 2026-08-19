@@ -778,7 +778,11 @@ def _compute_render_dry_run() -> dict:
         # (docs/seed-repo-contract.md §5), so a retired or unwired
         # single-brace placeholder renders literally into the analyst's
         # prompt. Surface that to the operator here.
-        from src.initial_workspace import PROMPT_SEED_PATHS, resolve_seed_file
+        from src.initial_workspace import (
+            PROMPT_SEED_PATHS,
+            UNWIRED_PLACEHOLDER_RE,
+            resolve_seed_file,
+        )
 
         # Scan the file the prompt is actually bound to when a custom
         # git_path is set (same resolution rule as the `{token}` probe
@@ -792,15 +796,10 @@ def _compute_render_dry_run() -> dict:
         tmpl = resolve_seed_file(scan_path)
         if tmpl is not None:
             tmpl_text, _tmpl_source = tmpl
-            # Negative lookaround keeps Jinja expressions out: `{{today}}`
-            # written without spaces would otherwise match its inner
-            # `{today}` pair and flag a variable that substitutes fine.
             unwired = sorted(
                 {
                     name
-                    for name in re.findall(
-                        r"(?<!\{)\{[a-z][a-z0-9_]*\}(?!\})", tmpl_text
-                    )
+                    for name in UNWIRED_PLACEHOLDER_RE.findall(tmpl_text)
                     if name != "{server_url}"
                 }
             )
@@ -822,6 +821,45 @@ def _compute_render_dry_run() -> dict:
                         " currently render this file)"
                     )
                 summary["warnings"].append(msg)
+
+            # A git-bound template is also rendered through the sandboxed
+            # Jinja path — and a render error there is SILENT for analysts
+            # (`/setup` falls back to the built-in default with only a log
+            # line). Validate the render here with the same stub context the
+            # welcome-template save endpoint uses, so a broken seed commit
+            # surfaces to the operator instead. Editor mode skips this: the
+            # seed file is not rendered at all there, and the DB override
+            # was already validated at save time.
+            if bound_git_path is not None:
+                from app.api.welcome import (
+                    _VALIDATION_STUB_CONTEXT,
+                    _VALIDATION_STUB_CONTEXT_ANON,
+                )
+                from src.prompt_render import make_prompt_env
+
+                try:
+                    env = make_prompt_env()
+                    template = env.from_string(tmpl_text)
+                    template.render(**_VALIDATION_STUB_CONTEXT)
+                    # /setup is publicly reachable, so the anonymous shape
+                    # must render too — with StrictUndefined, `user.email`
+                    # without an `{% if user %}` guard fails only here.
+                    template.render(**_VALIDATION_STUB_CONTEXT_ANON)
+                except Exception as exc:  # noqa: BLE001 — any render failure means silent fallback
+                    msg = (
+                        f"{scan_path} (git-bound to the install prompt) does "
+                        f"not render: {type(exc).__name__}: {exc}. Analysts "
+                        "silently get the built-in default prompt instead."
+                    )
+                    if _tmpl_source == "iwt":
+                        summary["errors"].append(msg)
+                        summary["ok"] = False
+                    else:
+                        summary["warnings"].append(
+                            msg
+                            + " (warning only: resolved from the bundled "
+                            "seed, not the operator's synced clone)"
+                        )
     except Exception as e:
         summary["ok"] = False
         summary["errors"].append(f"render dry-run raised: {e!r}")

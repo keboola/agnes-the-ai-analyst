@@ -1197,3 +1197,26 @@ def test_dry_run_tight_jinja_variables_are_not_flagged(monkeypatch):
     monkeypatch.setattr(iw, "resolve_seed_file", fake_resolve)
     summary = api._compute_render_dry_run()
     assert not any("render literally" in w for w in summary["warnings"]), summary["warnings"]
+
+
+def test_dry_run_bound_template_render_error_is_surfaced(monkeypatch):
+    """A git-bound template with a Jinja render error silently falls back to
+    the built-in default for analysts — the dry-run must surface it to the
+    operator as an error (iwt-sourced)."""
+    from app.api import initial_workspace as api
+    from src import initial_workspace as iw
+
+    def fake_resolve(rel):
+        if rel == "install-prompt/custom.md.tmpl":
+            return ("Hello {{ user.email.upper.bogus() }} at {server_url}", "iwt")
+        return None
+
+    monkeypatch.setattr("src.connectors_manifest.load_manifest", lambda: [])
+    monkeypatch.setattr(iw, "resolve_seed_file", fake_resolve)
+    monkeypatch.setattr(
+        "src.repositories.welcome_template_repo",
+        lambda: _FakePromptMetaRepo({"source_mode": "git", "git_path": "install-prompt/custom.md.tmpl"}),
+    )
+    summary = api._compute_render_dry_run()
+    assert summary["ok"] is False
+    assert any("does not render" in e for e in summary["errors"]), summary["errors"]
