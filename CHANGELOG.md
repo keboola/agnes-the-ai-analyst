@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.83.86] - 2026-08-19
+
 ### Added
 
 - **`agnes onboard` — one idempotent command that installs and verifies an analyst workspace end to end.** Workspace-directory gate (refuses home/system dirs, asks for `--accept-dir` on a folder with unrelated content, and recognizes an already-initialized Agnes workspace as its own — a re-run repairs it without asking; the command never creates a directory or touches the user's shell, though the run itself enters the gated directory so every step operates there), `agnes init` on a fresh workspace or the `agnes update` convergence on an initialized one, catalog smoke test, `git`/`claude` preflight with per-OS install hints, marketplace bootstrap, diagnostics, and a summary listing the instance's connectors plus a `NEXT:` block. `--json` emits the whole run report as one object. Only the init step is fatal; every other failure is reported and the run continues (a failed convergence degrades the report's `overall`).
