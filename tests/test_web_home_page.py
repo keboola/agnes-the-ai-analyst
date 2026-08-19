@@ -234,14 +234,12 @@ def test_home_onboarded_user_sees_nav_hub(fresh_db):
 
 def test_connectors_section_removed_from_home(fresh_db):
     """The dedicated `<details data-section="connectors">` block was
-    dropped from `/home` — the install-hero's Step 4 clipboard payload
-    (rendered via `_claude_setup_instructions.jinja` inside the manual
-    fallback) already inlines the same Asana / GWS / Atlassian prompts
-    from `app/web/connector_prompts.py` via
-    `app/web/setup_instructions.py::_connectors_block`. Showing them
-    twice on the same page was duplicate UX. The lead paragraph in the
-    install-hero now mentions the connectors briefly so users still see
-    the benefit before they hit the install.
+    dropped from `/home`: showing connector setup twice on the same page
+    was duplicate UX, and since the install prompt went thin the setup
+    bodies live nowhere on this page at all — `agnes onboard` reports
+    which connectors are available and the user asks for one afterwards.
+    The surfaces copy still names them so users see the benefit before
+    they hit the install.
 
     Co-asserts the auto-mode block removal that this test originally
     pinned — onboarded users still see neither the connectors block
@@ -285,11 +283,14 @@ def test_connectors_section_removed_from_home(fresh_db):
     body2 = _client().get("/home", cookies={"access_token": sess2}).text
     assert 'class="connector-tiles"' not in body2
     assert 'data-section="connectors"' not in body2
-    # The install-prompt's finale step lists the configured connectors
-    # by display_name — sourced from the seed manifest. Bundled snapshot
-    # ships Asana, Atlassian (Jira / Confluence), Google Workspace (the
-    # alphabetical sort order ``load_manifest`` enforces).
-    assert "Asana, Atlassian (Jira / Confluence), Google Workspace" in body2
+    # Connector names no longer come from the install prompt — the thin
+    # prompt has no connector tiles and no finale roll-call (`agnes
+    # onboard` lists what is available at the end of its own run, and the
+    # user asks for one when they want it). The benefit is still surfaced
+    # on the page itself, which is what this test cares about.
+    assert "Asana" in body2
+    assert "Google Workspace" in body2
+    assert "agnes connectors show" not in body2
 
 
 def test_minimize_toggle_no_longer_rendered(fresh_db):

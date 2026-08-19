@@ -1066,8 +1066,8 @@ def get_ssrf_allowed_hosts() -> frozenset[str]:
 
 
 def get_instance_custom_preamble() -> str:
-    """Operator-authored preamble injected at the TOP of the `agnes init`
-    install prompt (above ``Set up the {instance_brand} CLI…``). Empty/unset
+    """Operator-authored preamble injected at the TOP of the install
+    prompt (above ``Set up the {instance_brand} CLI…``). Empty/unset
     emits zero lines so the rendered prompt stays byte-identical to the
     default — keeping the OSS vendor-neutral; the brand-specific value is
     set in production config, outside this repo.

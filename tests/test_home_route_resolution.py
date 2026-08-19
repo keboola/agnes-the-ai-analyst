@@ -200,9 +200,10 @@ def test_gws_body_describes_both_branches(fresh_db, monkeypatch):
     """The GWS SKILL.md body always describes BOTH branches
     (operator-OAuth-app and manual GCP walkthrough) — the skill checks
     `~/.claude/agnes/.env` at install time to pick the right one. The
-    /home install prompt no longer inlines connector bodies (they are
-    fetched via `agnes connectors show` / GET /api/connectors/{slug}/prompt),
-    so the landmarks are pinned on the body loader the endpoint uses.
+    /home install prompt neither inlines connector bodies nor references
+    them (they are fetched via the connectors CLI / GET
+    /api/connectors/{slug}/prompt when the user asks for one), so the
+    landmarks are pinned on the body loader the endpoint uses.
 
     Behaviour unchanged from A1.2 either way: literal client_id /
     client_secret values never render into HTML; they flow through
@@ -228,7 +229,10 @@ def test_gws_body_describes_both_branches(fresh_db, monkeypatch):
     # No leaked client_id placeholder.
     assert "GOOGLE_WORKSPACE_CLI_CLIENT_ID=" not in body
     # And the /home page itself must NOT inline the body (that was 76 %
-    # of the install prompt) nor leak any secret value.
+    # of the install prompt before it went thin) nor leak any secret
+    # value. Since the thin rewrite the page does not reference the
+    # connector at all — `agnes onboard` reports what is available and
+    # the user asks for it afterwards.
     import html as _html
 
     from src.db import close_system_db, get_system_db
@@ -246,7 +250,7 @@ def test_gws_body_describes_both_branches(fresh_db, monkeypatch):
     page = _html.unescape(resp.text)
     assert "GOCSPX-secret-xyz" not in page
     assert "~/.config/gws/client_secret.json" not in page
-    assert "agnes connectors show connector-gws" in page
+    assert "agnes connectors show connector-gws" not in page
 
 
 def test_home_automode_default_show(fresh_db, monkeypatch):

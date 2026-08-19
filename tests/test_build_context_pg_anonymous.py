@@ -47,9 +47,7 @@ def _patch_common(monkeypatch, tmp_path, *, use_pg: bool):
     monkeypatch.setattr("src.welcome_template.render_agent_prompt_banner", _fake_banner)
     # Anonymous default path — return a distinct marker, no heavy machinery.
     monkeypatch.setattr("app.web.setup_instructions.resolve_lines", lambda *a, **k: ["ANON_DEFAULT"])
-    monkeypatch.setattr(router, "load_manifest", lambda *a, **k: [])
     monkeypatch.setattr(router, "_read_agnes_ca_pem", lambda *a, **k: None)
-    monkeypatch.setattr("app.api.cli_artifacts._find_wheel", lambda *a, **k: None)
     monkeypatch.setattr("src.repositories.use_pg", lambda: use_pg)
     return calls
 
