@@ -3552,28 +3552,35 @@ def _rebuild_snowflake_remote_extract_bg(table_name: Optional[str] = None) -> No
     ``_meta``, and the fix reads as if it did not take.
     """
     outcome = _rebuild_snowflake_remote_extract()
-    message = outcome.message
-    if outcome.ok:
-        logger.info("%s", message)
-        # Gate the CLEAR on a rebuild that actually ran. A skip
-        # (`not_configured` / `no_remote_rows`) also reports ok=True — by
-        # design, so a benign skip never 500s a registration — but it verified
-        # nothing, and the row's recorded failure is still true. Clearing it
-        # there would flip a table an operator cannot query to a green
-        # "ok"/no-error row in /admin/sync and GET /api/admin/registry until
-        # the next full orchestrator sweep.
-        if table_name and outcome.rebuilt:
-            try:
-                sync_state_repo().clear_error(table_name)
-            except Exception as exc:
-                logger.warning(
-                    "rebuild for %s succeeded but its recorded failure could not be "
-                    "cleared (%s); /admin/sync may show a stale error until the next sweep",
-                    table_name,
-                    exc,
-                )
-    else:
-        logger.error("%s", message)
+    (logger.info if outcome.ok else logger.error)("%s", outcome.message)
+
+    # Clear on THIS row's outcome, never on the aggregate. Two separate traps
+    # live here, and `outcome.ok` alone walks into both:
+    #
+    #   * `ok` is False as soon as ANY registered remote row errors, and the
+    #     rebuild walks every one of them. On the instance this whole change
+    #     set came from — which carries pre-existing phantom rows — `ok` is
+    #     permanently False, so gating on it means the row the operator just
+    #     corrected NEVER gets its error cleared, and the fix reads as if it
+    #     did not take. That is the exact symptom being removed here.
+    #   * `ok` is True for a benign SKIP (`not_configured` / `no_remote_rows`)
+    #     by design, so a skip cannot 500 a registration. But a skip verified
+    #     nothing, and the row's recorded failure is still true — clearing it
+    #     would flip a table the operator cannot query to a green row.
+    #
+    # So: the rebuild must have actually RUN, and this row must not be among
+    # the ones it could not build. Mirrors the attribution `register_table`
+    # uses on the recording side.
+    if table_name and outcome.rebuilt and table_name not in outcome.failed_tables:
+        try:
+            sync_state_repo().clear_error(table_name)
+        except Exception as exc:
+            logger.warning(
+                "rebuild for %s succeeded but its recorded failure could not be "
+                "cleared (%s); /admin/sync may show a stale error until the next sweep",
+                table_name,
+                exc,
+            )
 
 
 # Source types that don't depend on a `data_source.<name>.*` block — they
