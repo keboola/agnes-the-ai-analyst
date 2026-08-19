@@ -10,6 +10,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- **`agnes auth login` silently signed in against `http://localhost:8000` when no server was configured.** With no `--server`, no `AGNES_SERVER` and no saved config, login fell through to `get_server_url()`'s local-dev default and opened a browser there, so the only symptom was "localhost refused to connect" with nothing naming the real cause — the same trap `agnes onboard` already refuses ("onboarding against an invented default would fail deep inside"). Both login paths (browser loopback and `--password`) now resolve the server through the shared `cli.config.resolve_server_url` — flag, then `AGNES_SERVER`, then saved config — and exit 1 naming the fix when all three are empty. A local instance is still reachable, explicitly: `--server http://localhost:8000`.
+- **`agnes auth login --server <url>` did not persist the URL, so the next command fell back to localhost.** It only exported `AGNES_SERVER` for its own process — unlike `agnes auth import-token --server`, which has always written it to `~/.config/agnes/config.yaml`. A successful login was therefore followed by `agnes auth whoami` / `agnes pull` (and login's own manual-fallback hint) resolving a different, nonexistent server until `agnes init` eventually seeded the config. `--server` is now persisted, normalized (trailing slash stripped), by both login paths.
+- **The emailed magic-link sign-in URL could point at `http://localhost:8000`.** `_build_magic_link` read `SERVER_URL` alone with a hard localhost fallback, ignoring the resolution order every other outbound link uses — so an instance served behind a TLS terminator that never set `SERVER_URL` mailed its users a link to their own laptop. The link now comes from `public_base_url(request=...)`: pinned `AGNES_BASE_URL` / `SERVER_URL` first, otherwise the (proxy-aware) request origin, with localhost only as the local-dev floor. Both senders — the JSON `/auth/email/send-link` and the web-form `/send-link/web` — pass the same resolved origin, and so does the SMTP delivery path that builds the link a second time.
+
 ## [0.83.87] - 2026-08-19
 
 ### Fixed

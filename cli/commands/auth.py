@@ -13,6 +13,7 @@ from cli.config import (
     clear_token,
     get_token,
     get_server_url,
+    resolve_server_url,
     save_config,
     load_config,
 )
@@ -68,12 +69,38 @@ def _manual_token_hint() -> None:
     )
 
 
-def _login_with_password(server: str | None) -> None:
-    """Terminal-only email+password login (no browser)."""
-    if server:
-        import os
+def _require_server(explicit: str | None) -> str:
+    """Resolve the server to sign in against, or exit 1 naming the fix.
 
-        os.environ["AGNES_SERVER"] = server
+    Both login paths (browser loopback and ``--password``) run through here
+    BEFORE anything else, so neither can fall back to `get_server_url()`'s
+    ``http://localhost:8000`` default and send the user to a server that
+    isn't there. When ``--server`` is given it is also persisted, so the next
+    command — and this command's own manual-fallback hint — resolve the same
+    host instead of dropping back to the default.
+    """
+    import os
+
+    resolved = resolve_server_url(explicit)
+    if not resolved:
+        typer.echo(
+            "No server configured. Pass --server https://<your-agnes-host>, or set "
+            "AGNES_SERVER.\n"
+            "  Running an instance on this machine? --server http://localhost:8000",
+            err=True,
+        )
+        raise typer.Exit(1)
+    if explicit:
+        save_config({"server": resolved})
+    os.environ["AGNES_SERVER"] = resolved
+    return resolved
+
+
+def _login_with_password() -> None:
+    """Terminal-only email+password login (no browser).
+
+    The server is already resolved and exported by `_require_server`.
+    """
     email = typer.prompt("Email")
     password = typer.prompt("Password", hide_input=True)
     body = {"email": email, "password": password}
@@ -100,7 +127,11 @@ def _login_with_password(server: str | None) -> None:
 
 @auth_app.command()
 def login(
-    server: str = typer.Option(None, help="Server URL override"),
+    server: str = typer.Option(
+        None,
+        help="Server URL. Required unless AGNES_SERVER or a saved config already "
+        "names one; persisted for later commands when passed.",
+    ),
     password: bool = typer.Option(
         False,
         "--password",
@@ -122,10 +153,15 @@ def login(
     Use --password for a terminal-only email+password login (rare; only for
     password accounts on a host with no browser), or --no-browser to print the
     URL when no browser can be auto-launched.
+
+    The server comes from --server, then AGNES_SERVER, then the saved config;
+    with none of the three this refuses instead of guessing a local instance.
     """
+    server_url = _require_server(server)
+
     if password:
         try:
-            _login_with_password(server)
+            _login_with_password()
         except typer.Exit:
             raise
         except Exception as e:
@@ -133,14 +169,8 @@ def login(
             raise typer.Exit(1)
         return
 
-    if server:
-        import os
-
-        os.environ["AGNES_SERVER"] = server
-
     from cli.lib.loopback import capture_code_via_browser
 
-    server_url = get_server_url()
     token_name = f"Agnes CLI ({socket.gethostname()})"[:80]
 
     if not no_browser:
