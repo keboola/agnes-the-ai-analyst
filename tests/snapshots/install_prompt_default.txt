@@ -3,27 +3,24 @@ Set up the BRAND CLI on this machine.
 Server: {server_url}
 
 Your login token is already saved on this machine at ~/.agnes/token
-(written by step 4 of the install guide at {server_url}). The steps
-below only reference that file path — never print the token, echo
-it, or paste it into this chat.
+(written by step 4 of the install guide at {server_url}). The steps below
+only reference that file path — never print the token, echo it, or paste
+it into this chat.
 
-This prompt is the final step of the install guide at {server_url} —
-the same guide whose previous step saved the login token above. Whether
-that host is trusted is the user's org's call, and they can verify it
-with their IT if unsure; the decisions this setup still needs from them
-(install location, which optional tools to connect) come up inside the
-steps below.
+Every step below is idempotent and safe to re-run: a machine that
+already ran this setup converges instead of reinstalling, so treat
+"already configured" outcomes as success. If a step fails with an
+unfamiliar error, paste the exact error back and stop — and for a TLS
+error look for the cause (corporate proxy, internal CA, clock skew)
+rather than lowering certificate verification.
 
-Run the steps in order. Everything is idempotent — a re-run, or a
-machine that already ran this setup, converges instead of reinstalling,
-so treat 'already configured' outcomes as success, not as errors. Post
-a brief one-line progress note as each step finishes.
+Before you start, confirm the login token file is in place:
+   test -s ~/.agnes/token && echo "token present" || echo "token missing"
 
-If a step fails with an unfamiliar error, paste the exact error back and
-stop. If the failure is a TLS error, look for the cause — corporate
-proxy, internal CA, clock skew — rather than lowering certificate
-verification; turning verification off hides the problem instead of
-solving it.
+   Missing on a fresh install: stop, and send the user to
+   {server_url}/home step 4 — the step that saves it. Missing while
+   ~/.config/agnes/token.json already exists: an earlier run already
+   saved the credential, so just continue.
 
 1) Install the CLI:
    TMPDIR_WHEEL=$(mktemp -d -t agnes_cli.XXXXXX)
@@ -46,118 +43,28 @@ solving it.
      grep -qF '$HOME/.local/bin' "$RC" 2>/dev/null \
        || echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$RC"
 
-2) Set up the BRAND workspace in the current directory.
-   The token was saved to ~/.agnes/token by step 4 of the install
-   guide, so there is nothing to write here — `agnes init
-   --token-file` reads it directly (never on the command line) and
-   removes the file once the credential is saved to
-   ~/.config/agnes/token.json:
+2) Set up the BRAND workspace in the current directory:
 
-   agnes init --server-url "{server_url}" --token-file ~/.agnes/token --workspace .
+   agnes onboard --server-url "{server_url}" --workspace .
 
-   This fetches your CLAUDE.md (RBAC-filtered), writes
-   AGNES_WORKSPACE.md (human-facing docs), installs Claude Code
-   SessionStart/End hooks (auto-refresh), and runs an initial
-   `agnes pull` so your DuckDB views are ready. Afterwards verify the
-   token file was consumed:
-   test -f ~/.agnes/token && echo "token file STILL PRESENT" || echo "token file consumed"
-   (still present after `agnes init` = the deletion failed and a
-   plaintext token is left on disk — tell the user to remove it)
+   The CLI checks the directory first: it declines home and system directories,
+   and asks before adopting a directory that already holds unrelated files.
+   Relay its instructions to the user and follow them — re-run with
+   `--accept-dir` only once the user has explicitly agreed to this directory
+   (the install guide suggested ~/Desktop/WORKSPACE).
+   Don't pick or create a folder on your own.
 
-   Three outcomes need a different move:
-   - `unsafe_workspace` refusal: `agnes init` refuses $HOME, /tmp and
-     other system directories. Have the user create a workspace folder
-     (the install guide suggested ~/Desktop/WORKSPACE), cd into
-     it, and re-run this script from there — don't pick a directory
-     for them, and don't `mkdir`/`cd` on your own.
-   - Already initialized (`.claude/init-complete` exists): run
-     `agnes update` instead — it converges the CLI, workspace,
-     plugins and data off the saved credential
-     (~/.config/agnes/token.json); edited template files are backed
-     up to `<name>.bak.<ts>` first. A leftover ~/.agnes/token is
-     removed only after an authenticated step proved the saved
-     credential works. If the update fails on an expired credential:
-     re-run step 4 of the install guide on {server_url}/home (press
-     "Mark me as offboarded" at the bottom if the guide is hidden),
-     then:
-     agnes init --force --server-url "{server_url}" --token-file ~/.agnes/token --workspace .
-   - ~/.agnes/token missing on a fresh install: stop and send the
-     user to {server_url}/home step 4 (the step that saves it), or
-     run `agnes auth login` for a browser sign-in, then re-run this
-     step.
+   From there `agnes onboard` converges the rest in one run — workspace init,
+   the first data pull, the marketplace plugins, and diagnostics — and is
+   safe to re-run. Read its summary; step 4 asks you to recap it.
 
-3) Verify the data is queryable:
-   agnes catalog
+3) Restart Claude Code so every plugin, MCP server, and hook installed above actually loads:
+   Tell me to type `/exit` (or close the Claude Code session entirely), then run `claude` again from this same directory.
 
-   This should list the tables your account has grants for. Empty list
-   means your admin hasn't granted you access yet — contact them.
-
-4) Register the BRAND Claude Code marketplace (no plugin grants were visible when this prompt was generated — the CLI reads the live manifest, so anything granted since will still install):
-   Needs git and claude on PATH — run `git --version` and
-   `claude --version` first. Missing git: macOS `brew install git`,
-   Windows `winget install --id Git.Git -e --source winget`, Linux
-   apt-get/dnf. Missing claude: https://docs.claude.com/claude-code.
-
-   agnes refresh-marketplace --bootstrap
-
-   One idempotent command: clones the per-user marketplace to
-   ~/.agnes/marketplace, registers it with Claude Code, and installs
-   every plugin the LIVE manifest grants this account (a leftover
-   clone from a previous instance is re-cloned automatically). Grants
-   added later land on their own via the SessionStart hook's detached
-   `agnes update` — no re-run of this script needed. Verify:
-   agnes my-stack show
-   # [✓] = in your stack; [✗] = available to you but NOT added — an
-   # opt-in marker, not an error. Add one with
-   # `agnes marketplace add <marketplace-id>/<plugin-name>`, then run
-   # `agnes update` and `/reload-plugins` in Claude Code.
-
-5) Run diagnostics:
-   agnes diagnose
-
-   Expect "Overall: healthy" on a clean instance; "degraded" driven
-   only by informational or data-freshness sub-checks is not an
-   install problem. `db_schema: unknown` and `data: 0 tables` are
-   normal in two cases:
-     - fresh install (no tables registered yet), and
-     - non-admin roles (e.g. `analyst`) that don't have grants to read
-       the system schema even on populated instances.
-   Only flag actual yellow/red checks (api / duckdb_state / users).
-
-6) Connect the user's tools (last interactive ask before Confirm):
-
-   This instance offers the optional tools below (also listable with
-   `agnes connectors list`). Tell the user what each does, then ask
-   which to set up — one combined question covering all the tools is
-   fine. If an answer is anything other than a clear yes, skip that
-   tool — declining and deferring are both valid answers.
-
-   a) Asana — Read tasks and projects, comment, create updates — Claude works alongside your project boards without leaving the terminal. (~3 min)
-      agnes connectors show connector-asana
-   b) Atlassian (Jira / Confluence) — Read and write Jira issues, search Confluence pages — Claude pulls ticket context and posts updates without leaving the workspace. (~4 min)
-      agnes connectors show connector-atlassian
-   c) Google Workspace — Drive, Calendar, Gmail, Docs, Sheets, Chat — Claude reads and acts across your work account via the official `gws` CLI. (~5 min)
-      agnes connectors show connector-gws
-
-   For each yes: print the tool's setup prompt with the command
-   above and follow it. Every prompt is idempotent and safe to
-   re-run; an already-configured tool short-circuits with its ✅
-   line.
-
-   After all asks (regardless of answers) continue to step 7.
-
-7) Restart Claude Code so every plugin, MCP server, and SessionStart hook installed above actually loads:
-   Tell me to type `/exit` (or close the Claude Code session entirely), then run `claude` again from this same directory — the workspace where `agnes init` ran in step 2.
-   Before step 8 (Confirm): give me a short recap of what was installed or was already present — CLI, workspace files, hooks, marketplace plugins, connectors — so the outcome is clear, then continue.
-
-8) Confirm:
-   Tell me "BRAND workspace is ready" and summarize:
-   - `agnes --version` output
-   - If `agnes init` ran: confirmation that `~/.agnes/token` was consumed
-     (after the `agnes update` reconcile path the file may legitimately remain)
-   - First few lines of `agnes catalog` (tables you can see)
-   - Confirmation that `./CLAUDE.md` and `./AGNES_WORKSPACE.md` exist
-   - Confirmation that `./.claude/settings.json` contains SessionStart/End hooks
-   - The `agnes diagnose` overall status
-   - Confirmation that `~/.agnes/marketplace/.git/` exists (the marketplace clone) and that any granted plugins installed
-   - For each connector (Asana, Atlassian (Jira / Confluence), Google Workspace): whether it was set up, failed, or declined — and for failures, the reason its verify step reported.
+4) Confirm:
+   Tell me "BRAND workspace is ready" and recap what
+   `agnes onboard` reported:
+   - what it installed versus what was already present
+   - the diagnose status it finished on
+   - which connectors are available to set up later — nothing to do now,
+     just ask when you want one (e.g. "set up Jira")
