@@ -10,6 +10,31 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+- **Keboola `query_mode='materialized'` tables were registered, reported
+  `last_sync=ok` with a row count, and could not be read.** `materialize_query`
+  published the parquet but never registered it in the source's
+  `extract.duckdb`, and `SyncOrchestrator.rebuild()` only ever walks `_meta` —
+  so no master view was created and every read 400d with "registered as
+  query_mode='materialized' but is not yet materialized in this instance's
+  analytics views". On an instance whose Keboola rows were ALL materialized
+  there was no `extract.duckdb` at all, so the orchestrator skipped the entire
+  source behind a debug-level log line and nothing surfaced to the operator.
+  The Keboola connector now writes the `_meta` row + inner view like BigQuery,
+  Snowflake and Databricks already did (creating `extract.duckdb` when absent,
+  which the other three can assume exists), fail-soft so a registration hiccup
+  never loses a published parquet.
+- **A failed Snowflake table registration now says why, in both places an
+  operator looks.** `POST /api/admin/register-table` answered a failed
+  remote-extract rebuild with 500 + `{status: "rebuild_failed", message: …}`;
+  the admin UI reads `detail`, so the real reason (`Catalog Error: Table with
+  name X does not exist! Did you mean "Y"?`) was thrown away and the wizard
+  showed a bare "✗ failed". The response now carries the reason under `detail`
+  as well, the UI falls back through both keys, and the row — kept on purpose
+  so a mistyped name can be edited rather than re-entered — is marked failed in
+  `sync_state` instead of reading `pending` / "never synced" forever, which is
+  indistinguishable from a row waiting for its first tick.
+
 ## [0.83.86] - 2026-08-19
 
 ### Added
