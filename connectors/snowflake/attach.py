@@ -115,7 +115,13 @@ def _try_decode_base64_key(text: str) -> bytes:
 
 def _snowflake_key_dir() -> Path:
     """Return a per-process, user-private directory for temporary PEM key files."""
-    d = Path(tempfile.gettempdir()) / "agnes-snowflake-keys" / f"pid-{os.getpid()}"
+    parent = Path(tempfile.gettempdir()) / "agnes-snowflake-keys"
+    d = parent / f"pid-{os.getpid()}"
+    parent.mkdir(parents=True, exist_ok=True)
+    try:
+        parent.chmod(0o700)
+    except OSError:
+        pass
     d.mkdir(parents=True, exist_ok=True)
     d.chmod(0o700)
     return d

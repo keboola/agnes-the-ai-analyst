@@ -2857,7 +2857,7 @@ function _renderDbxCredStatus(host) {
 async function _saveDatabricksAndContinue() {
   const err = document.getElementById("ds-wizard-error");
   err.style.display = "none";
-  const host = document.getElementById("ds-dbx-host").value.trim();
+  let host = document.getElementById("ds-dbx-host").value.trim().replace(/\/+$/, "");
   const warehouse = document.getElementById("ds-dbx-warehouse").value.trim();
   const catalog = document.getElementById("ds-dbx-catalog").value.trim();
   const token = document.getElementById("ds-dbx-token").value;
@@ -2865,6 +2865,15 @@ async function _saveDatabricksAndContinue() {
     err.textContent = "Host, warehouse ID and catalog are required.";
     err.style.display = "block";
     return;
+  }
+  // Mirror the backend `validate_workspace_host`: https only, no path, no userinfo.
+  if (host.toLowerCase().startsWith("http://")) {
+    err.textContent = "Databricks host must use https://, not http://.";
+    err.style.display = "block";
+    return;
+  }
+  if (!host.toLowerCase().startsWith("https://")) {
+    host = `https://${host}`;
   }
   if ((!_dbxCredStatus || !_dbxCredStatus.has_value) && !token) {
     err.textContent = `Databricks token is required. Paste it below or set ${_esc(_dbxTokenEnv)} in Instance secrets.`;
