@@ -24,11 +24,42 @@ KAI_SECRET = "test-kai-host-secret-that-is-at-least-32-chars"
 
 
 @pytest.fixture
-def kai_env(monkeypatch):
+def kai_secrets(monkeypatch):
+    """The deployment secrets alone — the integration's kill switch.
+
+    Split out from ``kai_env`` so a test can have the integration CONFIGURED
+    while the caller is still UNAUTHORIZED, which is the only way to see the
+    `chat` grant actually being enforced (with the secret unset every route
+    503s before any gate runs).
+    """
     monkeypatch.setenv("KAI_HOST_JWT_SECRET", KAI_SECRET)
     monkeypatch.setenv("KAI_HOST_JWT_ISSUER", "agnes-test")
     monkeypatch.setenv("KAI_HOST_JWT_AUDIENCE", "kai-agent-test")
     monkeypatch.setenv("KAI_TENANT_ID", "tenant-test")
+
+
+@pytest.fixture
+def chat_grant(seeded_app):
+    """Give the seeded analyst the `chat` resource grant.
+
+    ``POST /api/kai/sessions`` carries the same ``ResourceType.CHAT`` gate as
+    the native chat API — cloud chat is denied to everyone by default — and
+    the conftest analyst is created with no group membership at all, so
+    without this every functional test below would 403 at the door.
+    """
+    from src.db import SYSTEM_EVERYONE_GROUP
+    from src.repositories import resource_grants_repo, user_group_members_repo, user_groups_repo
+
+    everyone = user_groups_repo().get_by_name(SYSTEM_EVERYONE_GROUP)
+    user_group_members_repo().add_member("analyst1", everyone["id"], source="system_seed")
+    resource_grants_repo().create(everyone["id"], "chat", "chat")
+    return everyone
+
+
+@pytest.fixture
+def kai_env(kai_secrets, chat_grant):
+    """The configured-and-authorized baseline: secrets set, caller granted."""
+    return None
 
 
 def _decode_segment(segment: str) -> dict:
@@ -64,8 +95,13 @@ def _mint_session(seeded_app):
 # ---------------------------------------------------------------------------
 
 
-def test_unconfigured_instance_serves_no_kai_routes(seeded_app, monkeypatch):
-    """No shared secret ⇒ the integration is off, not half-on."""
+def test_unconfigured_instance_serves_no_kai_routes(seeded_app, chat_grant, monkeypatch):
+    """No shared secret ⇒ the integration is off, not half-on.
+
+    Takes ``chat_grant`` so the caller clears the route's `chat` gate and the
+    503 being asserted is genuinely the kill switch rather than a 403 from the
+    door in front of it.
+    """
     monkeypatch.delenv("KAI_HOST_JWT_SECRET", raising=False)
     resp = seeded_app["client"].post(
         "/api/kai/sessions",
@@ -77,6 +113,57 @@ def test_unconfigured_instance_serves_no_kai_routes(seeded_app, monkeypatch):
 
 def test_session_requires_authentication(seeded_app, kai_env):
     assert seeded_app["client"].post("/api/kai/sessions").status_code in (401, 403)
+
+
+def test_session_creation_requires_the_chat_grant(seeded_app, kai_secrets):
+    """Authentication is not authorization: the caller must hold `chat`.
+
+    Every native chat route carries ``require_resource_access(
+    ResourceType.CHAT, "chat")`` — cloud chat is denied to everyone by default
+    and granted to a group on ``/admin/access``. This route is the embedded
+    engine's equivalent front door and mints strictly more than a chat session
+    does: a 12 h session JWT plus the ``kai_session`` credential behind it,
+    which mints ``llm`` tickets and drives ``/api/broker/anthropic/*`` on the
+    instance's LLM budget. So an authenticated user an admin deliberately left
+    out of the chat grant must not get through merely because this instance
+    sets ``KAI_HOST_JWT_SECRET``.
+
+    Not a cross-user escalation either way — the turn runs as the caller and
+    downstream RBAC still applies — which is exactly why
+    ``tests/test_route_auth_guard.py`` cannot catch it: that guard only asserts
+    that *some* auth dependency exists, and ``get_current_user`` is one.
+    """
+    from src.repositories import chat_session_repo
+
+    # `kai_secrets` without `chat_grant`: the integration is configured, the
+    # caller is authenticated, and nothing has granted them chat.
+    with mock.patch("app.api.kai.ticket_repo") as ticket_repo_factory:
+        resp = seeded_app["client"].post(
+            "/api/kai/sessions",
+            headers={"Authorization": f"Bearer {seeded_app['analyst_token']}"},
+        )
+
+    assert resp.status_code == 403, f"ungranted caller minted a session: {resp.text}"
+    assert "token" not in resp.json()
+
+    # And the refusal must land before either side effect — a row plus a live
+    # credential written for a caller who was then told no is the whole bug.
+    assert chat_session_repo().list_sessions("analyst@test.com", include_archived=True) == []
+    ticket_repo_factory.return_value.mint.assert_not_called()
+
+
+def test_a_chat_granted_user_still_mints_a_live_session(seeded_app, kai_env):
+    """The companion to the refusal above: the gate must not close the door on
+    the callers it is supposed to admit."""
+    from src.repositories import chat_session_repo
+
+    body = _mint_session(seeded_app)
+
+    assert body["chat_id"]
+    assert _verify(body["token"]) is True
+    assert _claims(body["token"])["sub"] == "analyst@test.com"
+    rows = chat_session_repo().list_sessions("analyst@test.com", include_archived=True)
+    assert [r.id for r in rows] == [body["chat_id"]]
 
 
 def test_session_token_carries_every_claim_the_engine_requires(seeded_app, kai_env):

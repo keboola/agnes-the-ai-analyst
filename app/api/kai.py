@@ -83,13 +83,29 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.api.broker import _require_scope, require_broker_ticket
-from app.auth.dependencies import get_current_user, reject_keboola_header_credential
+from app.auth.access import require_resource_access
+from app.auth.dependencies import reject_keboola_header_credential
 from app.chat.types import Surface
+from app.resource_types import ResourceType
 from src.repositories import audit_repo, chat_session_repo, ticket_repo
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/kai", tags=["kai"])
+
+#: The SAME gate every native chat route carries (`app/api/chat.py`, 13 call
+#: sites): cloud chat is an RBAC resource, denied to everyone by default and
+#: granted to a group on `/admin/access`. `POST /api/kai/sessions` creates an
+#: ordinary `chat_sessions` row and hands back a 12 h session token plus the
+#: `kai_session` credential behind it — which mints `llm` tickets and drives
+#: `/api/broker/anthropic/*` on the instance's LLM budget. So it decides who
+#: may run an agent at all, and an authenticated user an admin deliberately
+#: left out of the chat grant must not reach it merely because this instance
+#: sets `KAI_HOST_JWT_SECRET`. Not a cross-user escalation either way (the
+#: turn runs as the caller and downstream RBAC still applies) — it is the
+#: entry gate itself. The resource is a singleton, so the path template is
+#: the fixed id "chat"; admins short-circuit via god-mode.
+require_chat_access = require_resource_access(ResourceType.CHAT, "chat")
 
 #: Lifetime of a Kai session token *and* of the credential it carries. The
 #: engine hard-caps ``exp`` at 24 h and rejects anything longer (there is no
@@ -302,18 +318,27 @@ _NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache"}
     # egress tickets and spends the instance's LLM budget — so it belongs in
     # that set, and `keboola_token_header`'s own description already promises
     # "credential-minting endpoints stay blocked". Route-level so the handler's
-    # `Depends(get_current_user)` still populates `user` (FastAPI dedupes the
+    # own `Depends(require_chat_access)` still populates `user` (that gate
+    # resolves the caller through `get_current_user`, and FastAPI dedupes the
     # two calls). Found by Devin Review on this PR.
     dependencies=[Depends(reject_keboola_header_credential)],
 )
-async def create_kai_session(response: Response, user: dict = Depends(get_current_user)) -> KaiSessionResponse:
+async def create_kai_session(response: Response, user: dict = Depends(require_chat_access)) -> KaiSessionResponse:
     """Create a chat session and mint the engine session token for it.
 
-    Authenticated as an ordinary user: the caller can only ever mint a token
-    for **themselves**, because every identity claim is taken from the
-    resolved ``user`` and none from the request body. There is no request body
-    at all — that is the point. A body-supplied ``sub`` would make this an
-    impersonation endpoint.
+    Authenticated as an ordinary user **who holds the chat grant**: the caller
+    can only ever mint a token for **themselves**, because every identity
+    claim is taken from the resolved ``user`` and none from the request body.
+    There is no request body at all — that is the point. A body-supplied
+    ``sub`` would make this an impersonation endpoint.
+
+    ``require_chat_access`` (which resolves the caller through
+    ``get_current_user`` and then checks the ``chat`` resource grant) rather
+    than bare authentication: this route is the entry point to running an
+    agent on this instance, so it carries the same gate the native chat
+    routes do. Without it, any authenticated user on an instance that sets
+    ``KAI_HOST_JWT_SECRET`` could mint a session credential and spend the
+    instance's LLM budget, chat grant or not.
 
     ``async def`` + ``to_thread`` rather than a plain ``def``: the repo calls
     are synchronous DuckDB/PG work that must not run on the single uvicorn
