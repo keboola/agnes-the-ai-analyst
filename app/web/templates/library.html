@@ -1761,35 +1761,6 @@
   <div class="fbar-dock"><span class="fbar-dock__veil" aria-hidden="true"></span><div class="fbar-dock__card">
   <div class="fbar-chips fbar-chips--center" id="lib-chips" hidden></div>
   <div class="fbar" role="group" aria-label="Search, filter and sort library">
-    {# ── SCOPE ────────────────────────────────────────────────────────────
-       Two states, and the second one is the app's one structural concept:
-       the STACK. The Library is everything the caller can see; the Stack is
-       the subset their chat agent actually draws on — and this segment is
-       where the chrome teaches that, so it uses the word and carries the
-       count (the unfiltered in-Stack tally, kept truthful by
-       refreshStackCount below).
-
-       `all` is the wildcard and the default — arriving at the Library still
-       shows everything, which both keeps search predictable (whatever you
-       type, if you can see it anywhere, it is found) and honours the rule
-       that nothing reachable hides on another page: acquirable rows sit in
-       the same list wearing their own "+ Add to stack" pill.
-
-       This is deliberately NOT the three-way segment the Catalog/Marketplace
-       fold first shipped (All / Yours / Available to add). "Available to
-       add" framed the Library as a shop and gave the acquisition question
-       toolbar rank the Stack concept deserved more; it is demoted to an
-       ordinary refinement in the Filter menu ("Not in stack yet"), which is
-       also where the retired browse pages' `?scope=available` redirects now
-       land. And the segment says "In stack", not "Yours": it slices on
-       `data-stack` (the strict membership the ?stack=in_stack deep link and
-       the chat empty state count by), not the old ownership-blended scope —
-       your own uploads answer to the Owner facet, not to the Stack. #}
-    <div class="fbar-seg" id="lib-scope" role="group" aria-label="Scope">
-      <button type="button" class="fbar-seg__btn is-active" data-seg="all" aria-selected="true">All</button>
-      <button type="button" class="fbar-seg__btn" data-seg="in_stack" aria-selected="false">In stack<span class="fbar-seg__n" data-stack-count>{{ library_in_stack_count }}</span></button>
-    </div>
-
     {# The bar's own `role="search"` landmark. It sits inside a `group` rather
        than fronting one, which is why the landmark rides this box: a search
        field with no landmark of its own is unreachable by landmark navigation. #}
@@ -1861,16 +1832,32 @@
       </div>
     </div>
 
-    {# The stack question lives at the head of the bar now — the Scope
-       segment's "In stack" state (`#lib-scope`), where it carries the
-       unfiltered in-Stack count. Its history in one breath: first an
-       "In stack only" pressed-state toggle here, then one state of the
-       fold's three-way segment (All / Yours / Available to add), now the
-       named half of a two-state segment — the Stack is the concept the
-       toolbar exists to teach, and the acquisition question the third
-       segment used to carry is the Filter menu's "Not in stack yet" toggle
-       above. `library_stack_toggle` still rides the context for pages that
-       read it. #}
+    {# "In stack only" — a binary condition, and the single most consequential
+       one on this page ("what can my default agent actually use?"), so it
+       rides the bar as a pressed-state BUTTON with its count — the design
+       system's own pattern for a refinement worth seeing at rest
+       (`.fbar-toggle` in filter_toolbar.css) — rather than as a scope
+       segment (tab-rank for a filter; tried after the fold, retired) or a
+       row one level deep in the Filter menu. filter_toolbar.js owns it as an
+       ordinary facet via `control` (see FilterToolbar.init below):
+       `data-facet-value` carries the value an in-menu checkbox would have
+       carried in `value=`, and the engine drives aria-pressed. Because the
+       button shows its own state, the engine leaves this facet out of the
+       Filter badge count and the chip row; "Clear all" still clears it and
+       syncs the button back. The count is the unfiltered in-Stack tally
+       (kept truthful by refreshStackCount); rendered only when flipping it
+       would change the list (`library_stack_toggle`), so it never sits
+       there as a no-op. The acquisition sibling ("Not in stack yet") stays
+       one level deep in the Filter menu — granted-but-not-added is a
+       shopping question, not this one. #}
+    {% if library_stack_toggle %}
+    <button type="button" class="fbar-toggle" id="lib-stack-toggle"
+            data-facet-value="in_stack" aria-pressed="false"
+            title="Only what's in your stack — the set your default agent can use">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 2 9 4.9-9 4.9-9-4.9L12 2Z"></path><path d="m3 11.9 9 4.9 9-4.9"></path><path d="m3 16.9 9 4.9 9-4.9"></path></svg>
+      In stack only<span class="fbar-toggle__n" data-stack-count>{{ library_in_stack_count }}</span>
+    </button>
+    {% endif %}
 
     {# Sorting for GRID view. In table view the column headers own it (see the
        <thead> below) and this control hides — two live readouts of one order
@@ -2910,13 +2897,12 @@
       // flat set for search/sort and defers grouping to the sections config.
       rows: '[data-lib-sec] tr[data-item-id]:not([data-parent-id])',
       search: { el: '#lib-search', attr: 'data-search' },
-      // Scope — All / In stack. `all` is the wildcard, so the page still
-      // opens on everything; `in_stack` slices on the row's strict Stack
-      // membership (data-stack), the concept the segment exists to teach.
-      // The acquisition question the fold's third segment carried
-      // ("Available to add") is the `availability` toggle facet below.
-      segments: { container: '#lib-scope', name: 'seg', attr: 'data-stack' },
       facets: [
+        // "In stack only" — a binary condition worth seeing at rest, so it
+        // rides the bar as the #lib-stack-toggle button (`control`) rather
+        // than a menu row; slices the row's strict Stack membership.
+        { key: 'stack', attr: 'data-stack', label: 'In stack only',
+          toggle: true, control: '#lib-stack-toggle' },
         // "Not in stack yet" — one condition, so a TOGGLE: a single checkbox
         // in the menu (value="available"), a chip that states the condition.
         { key: 'availability', attr: 'data-stack', label: 'Not in stack yet', toggle: true },
@@ -3136,14 +3122,14 @@
   // Pressed before the STACK_ONLY branch below so an old `?stack=in_stack`
   // link cannot fight a newer `?scope=` one on the same URL. The two legal
   // values map onto the controls that own their questions now: `mine` (the
-  // old "Yours"/My-tab half) presses the In stack segment, and `available`
+  // old "Yours"/My-tab half) presses the "In stack only" button, and `available`
   // (the old browse-the-shop half) checks the Filter menu's "Not in stack
   // yet" toggle — the redirect keeps meaning "show me what I could add"
   // even though the third segment is gone.
   const SCOPE = {{ (library_scope or '') | tojson }};
   const pressInStack = () => {
-    const seg = document.querySelector('#lib-scope [data-seg="in_stack"]');
-    if (seg && !seg.classList.contains('is-active')) seg.click();
+    const btn = document.getElementById('lib-stack-toggle');
+    if (btn && btn.getAttribute('aria-pressed') !== 'true') btn.click();
   };
   if (SCOPE === 'mine') {
     pressInStack();
@@ -3154,10 +3140,9 @@
 
   const STACK_ONLY = {{ (library_stack_only or False) | tojson }};
   if (STACK_ONLY && !SCOPE) {
-    // `?stack=in_stack` is the older spelling of the In stack segment — the
-    // /stack retirement redirect and the chat empty state both still send it,
-    // so it presses the segment rather than 404ing on a control that no
-    // longer exists.
+    // `?stack=in_stack` is the older spelling of the "In stack only" press —
+    // the /stack retirement redirect and the chat empty state both still
+    // send it.
     pressInStack();
     document.querySelectorAll('[data-lib-sec]').forEach(sec => {
       const key = sec.dataset.libSec;

@@ -377,47 +377,38 @@ class TestRailOptIn:
         assert "In stack only" not in menu, "the stack toggle must not also sit in the Filter menu"
         assert "fbar-menu__toggle" not in text, "retired in-menu toggle markup"
 
-        # Order on the bar: Scope · Filter · Sort. Scope answers "whose is
-        # this" before Filter narrows within it and Sort orders the result, so
-        # it reads first — and the Stack question ("what can the default agent
-        # use?") is its `In stack` segment.
+        # Order on the bar: Search · Filter · the "In stack only" toggle ·
+        # Sort — search is the way into a library of any size, so it leads;
+        # the refinements follow it.
         positions = [
-            text.index('id="lib-scope"'),
+            text.index('id="lib-search"'),
             text.index('id="lib-filter-btn"'),
             text.index('id="lib-sort"'),
         ]
-        assert positions == sorted(positions), "scope must lead the bar, before Filter and Sort"
+        assert positions == sorted(positions), "search must lead the bar, before Filter and Sort"
 
-    def test_scope_is_a_segment_not_a_binary_toggle(self, web_client, admin_cookie, monkeypatch):
-        """Scope is All / In stack, on the bar; the acquisition question lives
-        in the Filter menu.
+    def test_stack_filter_is_a_pressed_toggle_not_a_segment(self, web_client, admin_cookie, monkeypatch):
+        """The stack filter is the `.fbar-toggle` button, engine-owned; the
+        acquisition question lives in the Filter menu.
 
-        The fold first shipped a three-way segment (All / Yours / Available
-        to add), but "Available to add" framed the Library as a shop and gave
-        the acquisition question toolbar rank that belongs to the app's one
-        structural concept — the Stack. So the segment is two-state and says
-        the word it teaches, and "what could I add" demoted to a "Not in
-        stack yet" toggle in the Filter menu: every acquirable row already
-        sits in All wearing its own Add pill, so nothing is hidden by the
-        demotion (see REDIRECTED_UNDER_RAIL — the retired browse pages'
-        `?scope=available` links arrive with that toggle applied).
+        The fold first shipped a three-way Scope segment (All / Yours /
+        Available to add): "Available to add" framed the Library as a shop,
+        and a segment gave one FILTER tab-rank. Both narrowings are ordinary
+        refinements now — "In stack only" as the bar's pressed-state button
+        (the design system's pattern for a binary condition worth seeing at
+        rest, count riding the button), "Not in stack yet" one level deep in
+        the Filter menu (see REDIRECTED_UNDER_RAIL — the retired browse
+        pages' `?scope=available` links arrive with that one applied).
         """
         text = web_client.get("/library", cookies=admin_cookie).text
-        assert 'id="lib-scope"' in text, "the scope segment must be on the bar"
-        for value in ("all", "in_stack"):
-            assert f'data-seg="{value}"' in text, value
-        for retired in ("mine", "available"):
-            assert f'data-seg="{retired}"' not in text, f"the {retired} segment stays retired"
-        # Driven by the shared engine's own segmented control, not page-local
-        # click handlers — so Clear all and reset keep working. Slices on the
-        # row's strict Stack membership, the same attribute the demoted
-        # availability toggle reads the other value of.
-        assert "segments: { container: '#lib-scope', name: 'seg', attr: 'data-stack' }" in text
+        # Engine-owned via `control` — so Clear all and reset keep working.
+        # Asserted on the config string because the button itself renders
+        # only when flipping it would change the list.
+        assert "control: '#lib-stack-toggle'" in text
         assert 'data-facet="availability"' in text, "the demoted acquisition filter must exist"
-        # The control the segment replaced is gone, not merely hidden: two
-        # controls for one question is the mistake the marketplace shelves
-        # already made.
-        assert 'id="lib-stack-toggle"' not in text
+        # The segment is gone, not merely hidden — a filter is not a tab.
+        assert 'id="lib-scope"' not in text
+        assert "segments: {" not in text
 
     def test_rail_has_no_studio_or_marketplace_entry(self, web_client, admin_cookie, monkeypatch):
         """Studio is retired from the rail and Marketplace is no longer a rail
