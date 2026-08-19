@@ -504,6 +504,41 @@ class TestCatalogSmoke:
 
 
 # ---------------------------------------------------------------------------
+# Connectors — on-demand connector setup prompt (seed-backed, no DB reads;
+# smoked on both backends anyway so the auth dependency chain is exercised)
+# ---------------------------------------------------------------------------
+
+
+class TestConnectorsPromptSmoke:
+    COVERED_ROUTES = {
+        "GET /api/connectors/{slug}/prompt",
+    }
+
+    def test_prompt_known_slug(self, seeded_app_both):
+        r = seeded_app_both["client"].get(
+            "/api/connectors/connector-asana/prompt",
+            headers=_admin_headers(seeded_app_both),
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["slug"] == "connector-asana"
+        assert body["prompt"]
+        assert "{instance_brand}" not in body["prompt"]
+
+    def test_prompt_unknown_slug_404(self, seeded_app_both):
+        r = seeded_app_both["client"].get(
+            "/api/connectors/connector-nope/prompt",
+            headers=_admin_headers(seeded_app_both),
+        )
+        assert r.status_code == 404
+        assert r.json()["detail"]["kind"] == "unknown_connector"
+
+    def test_prompt_requires_auth(self, seeded_app_both):
+        r = seeded_app_both["client"].get("/api/connectors/connector-asana/prompt")
+        assert r.status_code in (401, 403)
+
+
+# ---------------------------------------------------------------------------
 # Data (requires registered_table_both)
 # ---------------------------------------------------------------------------
 
