@@ -11,11 +11,15 @@ works, even for admins.
 chat)`` once, on the instance's genuine first boot. ``resource_grants``
 carries no provenance column (unlike ``user_group_members.source``), so
 "never seeded" and "an admin revoked it" are indistinguishable from the
-grants table alone — the caller (``app.main`` lifespan) gates the seed on
-whether the ``Everyone`` system group already existed *before* this boot's
-group-seeding step ran, which can only be false once in an instance's
-lifetime (system groups are never deleted). These tests exercise the
-function directly on both backends via the repository factory.
+grants table alone; a marker file on the state volume records that the
+question is settled.
+
+Two gates, because the marker is younger than the instances it reasons
+about: the marker itself, and — on the first boot after upgrading to the
+build that introduced the marker, where a long-running instance has none
+either — the presence of ANY ``(chat, chat)`` grant, which proves a human
+already decided who gets chat. These tests exercise the function directly
+on both backends via the repository factory.
 """
 
 from __future__ import annotations
@@ -92,6 +96,43 @@ def test_does_not_reseed_after_admin_revokes_it(_env):
 
     assert seeded is False, f"[{_env}] must not re-add a grant an admin deliberately revoked"
     assert not resource_grants_repo().has_grant([everyone_id], "chat", "chat")
+
+
+def test_does_not_widen_an_existing_narrow_grant_on_upgrade(_env):
+    """The marker cannot tell a fresh deploy from a long-running instance
+    booting for the first time on the build that introduced the marker —
+    neither has one. Seeding there would take an instance whose admin gave
+    chat to a single group and hand it to every user (``Everyone`` is
+    auto-membership). A pre-existing ``(chat, chat)`` grant is the signal
+    that a human already decided, so nothing is seeded."""
+    from app.chat.grant_seed import MARKER_NAME, seed_everyone_chat_grant
+    from app.secrets import _state_dir
+    from src.repositories import resource_grants_repo, user_groups_repo
+
+    everyone_id = _everyone_group_id()
+
+    # An admin's deliberately narrow rollout: chat granted to Analysts only.
+    analysts = user_groups_repo().create(name="Analysts", created_by="admin@example.com")
+    resource_grants_repo().ensure_grant(
+        group_id=analysts["id"],
+        resource_type="chat",
+        resource_id="chat",
+        assigned_by="admin@example.com",
+    )
+    # First boot on the build that introduced the marker: none exists yet.
+    assert not (_state_dir() / MARKER_NAME).exists()
+
+    seeded = seed_everyone_chat_grant(chat_enabled=True)
+
+    assert seeded is False, f"[{_env}] must not seed over an admin-configured chat grant"
+    assert not resource_grants_repo().has_grant([everyone_id], "chat", "chat"), (
+        f"[{_env}] upgrading must never widen a narrow chat rollout to Everyone"
+    )
+    assert resource_grants_repo().has_grant([analysts["id"]], "chat", "chat"), (
+        f"[{_env}] the admin's own grant must survive untouched"
+    )
+    # The question is settled from now on, so later boots stop re-checking.
+    assert (_state_dir() / MARKER_NAME).exists(), f"[{_env}] the skip must be recorded, like the seed is"
 
 
 def test_idempotent_double_seed_does_not_duplicate(_env):
