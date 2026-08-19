@@ -112,6 +112,13 @@ _PERMITTED_NODE_TYPES: tuple[type[exp.Expression], ...] = (
     exp.Paren,
     exp.Tuple,
     exp.DataType,
+    # NOTE: neither exp.ColumnDef nor exp.DataTypeParam is listed here. Both
+    # do appear inside a type declaration -- a STRUCT's field list parses into
+    # ColumnDef, and DECIMAL(18,2) / TIMESTAMP(3) carry precision as
+    # DataTypeParam -- but a flat entry would permit one anywhere in the body on
+    # the strength of an assumption about where it can appear.
+    # `_reject_disallowed_constructs` checks the position instead: under a
+    # DataType, permitted; anywhere else, refused.
     # operators that are NOT exp.Func subclasses
     exp.Not,
     exp.Neg,
@@ -293,11 +300,38 @@ def _reject_disallowed_constructs(statement: exp.Select) -> None:
                     f"function not allowed in an access policy: {name or type(node).__name__}",
                 )
             continue
+        if isinstance(node, (exp.ColumnDef, exp.DataTypeParam)):
+            # A STRUCT type spells its fields as ColumnDef nodes:
+            # ``CAST(NULL AS STRUCT(v VARCHAR, i BIGINT))`` parses to
+            # Cast → DataType → ColumnDef; a parameterized type does the same
+            # with DataTypeParam (DECIMAL(18,2), TIMESTAMP(3)). Both are type
+            # declarations, not DDL, and the compiler emits exactly these shapes
+            # for a hidden or nullified column of such a type — so refusing them
+            # made the builder hand an admin SQL the save then rejected, with no
+            # way out for that column. Permitted ONLY under a DataType: either
+            # node anywhere else is still an unrecognized construct.
+            if _is_inside_data_type(node):
+                continue
+            raise PolicyValidationError(
+                "policy_disallowed_construct",
+                f"construct not allowed in an access policy: {type(node).__name__} "
+                "outside a type declaration",
+            )
         if not isinstance(node, _PERMITTED_NODE_TYPES):
             raise PolicyValidationError(
                 "policy_disallowed_construct",
                 f"construct not allowed in an access policy: {type(node).__name__}",
             )
+
+
+def _is_inside_data_type(node: exp.Expression) -> bool:
+    """Whether ``node`` sits anywhere under an ``exp.DataType``."""
+    parent = node.parent
+    while parent is not None:
+        if isinstance(parent, exp.DataType):
+            return True
+        parent = parent.parent
+    return False
 
 
 def _reject_bad_table_references(statement: exp.Select, *, table_name: str, mapping_table_names: set[str]) -> None:

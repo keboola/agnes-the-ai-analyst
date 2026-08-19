@@ -301,15 +301,16 @@ attached to a `query_mode='remote'` or `server_only=true` table — the builder 
 this so the UI can nudge toward `server_only` first rather than fail silently later.
 
 `POST /api/admin/registry/{table_id}/policy/compile` turns a structured spec into the
-same canonical SQL the resolver runs — the anti-leak invariant (a masked column is
-always `EXCLUDE`d before it is re-derived) is enforced in `src/access_policy_compile.py`,
-not duplicated here:
+same canonical SQL the resolver runs — the anti-leak invariant (every output column is
+named explicitly; masked columns are emitted once and new source columns added after the
+policy is saved are omitted) is enforced in `src/access_policy_compile.py`, not
+duplicated here:
 
 | Field | Type | Notes |
 |---|---|---|
 | `row_rules` | array, optional | `[{"column", "op", "value"}]` — `op` is one of `in_caller_groups`, `eq_caller_email`, `eq_caller_id`, `eq`, `in` |
 | `row_combine` | string, optional | `"and"` (default) or `"or"` |
-| `column_masks` | object, optional | `{column: "show"\|"hide"\|"nullify"\|"hash"\|"unmask"}` — `"unmask"` takes `{"choice": "unmask", "group": "..."}` |
+| `column_masks` | object, optional | `{column: "show"\|"hide"\|"nullify"\|"hash"\|"unmask"}` — `"unmask"` takes `{"choice": "unmask", "groups": ["..."]}` (single-group `"group"` is still accepted) |
 
 ```bash
 curl -s -X POST \
@@ -320,7 +321,7 @@ curl -s -X POST \
     "row_rules": [{"column": "cost_center", "op": "in_caller_groups"}],
     "column_masks": {"email": "hash", "national_id": "hide"}
   }'
-# {"sql": "SELECT * EXCLUDE (\"national_id\", \"email\"), md5(\"email\") AS \"email\" FROM \"orders_daily\" WHERE list_contains($user_groups, \"cost_center\")",
+# {"sql": "SELECT md5(\"email\") AS \"email\", \"cost_center\" FROM \"orders_daily\" WHERE list_contains($user_groups, \"cost_center\")",
 #  "warnings": []}
 ```
 

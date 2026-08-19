@@ -48,8 +48,9 @@ intercepts every `con.execute(sql, params)` from `src/db.py`.
 
 The toolbar is mounted innermost so it sees raw HTML before
 `_SelectiveGZipMiddleware` compresses the body, and gated by `DEBUG=1` —
-**never imported in production**. The dev dependency group
-(`uv pip install ".[dev]"`) is the only place `fastapi-debug-toolbar` lives.
+**never imported in production**. It ships in the `server` extra (build-once: the image validated in dev is
+the one promoted to prod, differing only by `DEBUG`), which
+`uv pip install ".[dev,server]"` pulls in.
 
 ### Enabling it
 
@@ -131,7 +132,7 @@ block, JSON 500 body).
 ## Running locally
 
 ```bash
-uv pip install ".[dev]"
+uv pip install ".[dev,server]"
 DEBUG=1 LOCAL_DEV_MODE=1 uv run uvicorn app.main:app --reload --port 8000
 ```
 

@@ -537,6 +537,136 @@ def test_init_manifest_unauthorized_when_pull_records_manifest_error(tmp_path, m
     assert ("manifest_unauthorized" in output) or ("Manifest fetch failed" in output)
 
 
+def test_init_default_skips_materialized_and_reports_note(tmp_path, monkeypatch):
+    """Onboarding-speed default flip: plain `agnes init` (no flag) skips
+    materialized-mode tables on the first pull and tells the user how to
+    get them, so a single multi-GB scheduled-query parquet can't stall an
+    otherwise-instant first-time install."""
+    from cli.lib.pull import PullResult
+
+    monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path / "_cfg"))
+    api_get = _make_api_get()
+    monkeypatch.setattr("cli.commands.init.api_get", api_get, raising=False)
+
+    captured = {}
+
+    def _fake_run_pull(server_url, token, workspace, *, dry_run=False, skip_materialize=False, show_progress=False):
+        captured["skip_materialize"] = skip_materialize
+        result = PullResult()
+        # Modelled on what the real `run_pull` produces: the skip branch in
+        # `cli/lib/pull.py` `continue`s BEFORE the `non_remote_total` counter,
+        # so an instance whose only distributable rows are materialized yields
+        # parquets_total == 0 and materialized_skipped == 3. The earlier fake
+        # set parquets_total=3 with tables_updated=0, a combination
+        # skip_materialize=True can never produce — which is why the summary
+        # bug it was meant to guard went unnoticed.
+        result.parquets_total = 0
+        result.tables_updated = 0
+        result.materialized_skipped = 3
+        return result
+
+    monkeypatch.setattr("cli.commands.init.run_pull", _fake_run_pull, raising=False)
+
+    result = runner.invoke(
+        init_app,
+        [
+            "--server-url",
+            "http://x",
+            "--token",
+            "t",
+            "--workspace",
+            str(tmp_path),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured["skip_materialize"] is True
+    assert "materialized row(s) skipped by default" in result.output
+    assert "3 materialized row(s) skipped" in result.output
+    assert "agnes pull" in result.output
+    assert "agnes init --materialize" in result.output
+
+
+def test_init_does_not_claim_skipped_rows_when_there_are_none(tmp_path, monkeypatch):
+    """The note counts rows actually left alone, not rows fetched.
+
+    `parquets_total` is the number of non-remote tables the run CONSIDERED, so
+    reading it as "skipped" told an analyst with three ordinary tables and no
+    materialized ones that three rows had been skipped — while the same three
+    were sitting in their workspace."""
+    from cli.lib.pull import PullResult
+
+    monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path / "_cfg"))
+    monkeypatch.setattr("cli.commands.init.api_get", _make_api_get(), raising=False)
+
+    def _fake_run_pull(server_url, token, workspace, *, dry_run=False, skip_materialize=False, show_progress=False):
+        result = PullResult()
+        result.parquets_total = 3
+        result.tables_updated = 3
+        result.materialized_skipped = 0
+        return result
+
+    monkeypatch.setattr("cli.commands.init.run_pull", _fake_run_pull, raising=False)
+
+    result = runner.invoke(
+        init_app,
+        ["--server-url", "http://x", "--token", "t", "--workspace", str(tmp_path)],
+    )
+    assert result.exit_code == 0, result.output
+    assert "skipped" not in result.output
+    assert "3/3 local table(s) fetched" in result.output
+
+
+def test_init_materialize_flag_forces_full_pull(tmp_path, monkeypatch):
+    """`--materialize` overrides the skip-by-default and passes
+    skip_materialize=False through to run_pull, restoring the pre-flip
+    full first pull."""
+    from cli.lib.pull import PullResult
+
+    monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path / "_cfg"))
+    api_get = _make_api_get()
+    monkeypatch.setattr("cli.commands.init.api_get", api_get, raising=False)
+
+    captured = {}
+
+    def _fake_run_pull(server_url, token, workspace, *, dry_run=False, skip_materialize=False, show_progress=False):
+        captured["skip_materialize"] = skip_materialize
+        result = PullResult()
+        result.parquets_total = 3
+        result.tables_updated = 3
+        return result
+
+    monkeypatch.setattr("cli.commands.init.run_pull", _fake_run_pull, raising=False)
+
+    result = runner.invoke(
+        init_app,
+        [
+            "--server-url",
+            "http://x",
+            "--token",
+            "t",
+            "--workspace",
+            str(tmp_path),
+            "--materialize",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured["skip_materialize"] is False
+    # Reworded with the counter fix: `parquets_total` counts non-remote
+    # tables considered, not materialized rows, and the old phrasing was the
+    # same conflation that produced the wrong "skipped" count.
+    assert "3/3 local table(s) fetched" in result.output
+
+
+def test_init_explicit_skip_materialize_flag_still_works(tmp_path, monkeypatch):
+    """`--skip-materialize` (the pre-flip flag spelling) is preserved for
+    backward compatibility with existing scripts/docs — it's a no-op today
+    since it matches the new default, but must not error."""
+    result = runner.invoke(init_app, ["--help"])
+    assert result.exit_code == 0
+    assert "--skip-materialize" in _clean(result.output)
+    assert "--materialize" in _clean(result.output)
+
+
 def test_init_uses_explicit_token_arg_not_stale_disk_token(tmp_path, monkeypatch):
     """Regression for Devin Review finding on init.py:99.
 
