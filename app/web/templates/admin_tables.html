@@ -4148,17 +4148,28 @@
 
                 <!-- Task 5: table-level "referenceable from other policies"
                      switch — reuses the existing PUT's policy_mapping field
-                     (today CLI-only via `agnes admin table set-policy-mapping`). -->
-                <div class="ap-mapping-row">
-                    <label class="toggle-switch">
-                        <input type="checkbox" id="apMappingToggle" onchange="apToggleMapping(this.checked)">
-                        <span class="toggle-slider"></span>
-                    </label>
-                    <div>
-                        <div class="form-label" style="margin-bottom:2px;">Allow other policies to reference this table</div>
-                        <div class="form-hint" style="margin:0;">Referenceable from any policy — not a grant.</div>
+                     (today CLI-only via `agnes admin table set-policy-mapping`).
+                     Deliberately set apart (own label + divider) from the
+                     row/column scope below: this answers "can OTHER tables'
+                     policies read through this one" (a mapping-table
+                     allowance), not "who sees which rows of THIS table" —
+                     the two read as one setting when styled identically and
+                     stacked directly above the row-rule section. -->
+                <div class="ap-mapping-section">
+                    <div class="form-label" style="margin-bottom:2px;">Use as input for other tables' policies</div>
+                    <div class="ap-mapping-row">
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="apMappingToggle" onchange="apToggleMapping(this.checked)">
+                            <span class="toggle-slider"></span>
+                        </label>
+                        <div class="form-hint" style="margin:0;">
+                            Lets another table's policy SQL join against this table (e.g. a person →
+                            cost-centre mapping) — not a grant, and it does not change who sees which
+                            rows of THIS table below.
+                        </div>
                     </div>
                 </div>
+                <hr style="border:0; border-top:1px solid var(--ds-border); margin:14px 0;">
 
                 <!-- Task 4: Builder (default) + Advanced SQL tabs. Builder
                      never writes SQL directly — every mask change re-POSTs
@@ -4250,6 +4261,18 @@
                         (or, left blank, the stored policy) without saving anything.
                     </div>
                     <div id="apPreviewResult" style="display:none;"></div>
+
+                    <!-- review-plan P1.4: sweeps every REAL user_groups row
+                         through the same policy in one call — catches a
+                         CASE with a missing/wrong ELSE branch (every group
+                         not explicitly named silently seeing everything)
+                         without the admin manually re-running the
+                         single-persona preview above once per group. -->
+                    <div style="margin-top:10px;">
+                        <button type="button" class="btn btn-secondary btn-sm" onclick="apRunPreviewAllGroups()">Preview all groups</button>
+                        <span class="form-hint" style="margin:0;">Runs the SQL above (or the stored policy) once per real group — a quick way to catch a group that unexpectedly sees everything.</span>
+                    </div>
+                    <div id="apPreviewGroupsResult" style="display:none;"></div>
                 </div>
 
                 <div class="form-group" id="apHistorySection" style="display:none;">
@@ -7123,6 +7146,18 @@
         el.textContent = '';
     }
 
+    // Cheap client-side mirror of compile_policy()'s own no-op warning
+    // ("not rules and not excluded and not derived") — WHERE/EXCLUDE/CASE
+    // cover every shape the Builder itself can emit, and a hand-written
+    // Advanced SQL body gets the same nudge. This never blocks a save (a
+    // mask-only or row-only policy is legitimate) — it only makes a policy
+    // that quietly does nothing impossible to save without a second click,
+    // instead of silently landing as a "Policy" chip that filters nothing.
+    function _apSqlFiltersOrMasksNothing(sql) {
+        var upper = sql.toUpperCase();
+        return !/\bWHERE\b/.test(upper) && !/\bEXCLUDE\b/.test(upper) && !/\bCASE\b/.test(upper);
+    }
+
     async function apSavePolicy() {
         if (!_apTable) return;
         var sql = document.getElementById('apSql').value.trim();
@@ -7136,6 +7171,15 @@
             _apShowSaveError('access_policy_note is required whenever a policy is attached -- explain why '
                 + 'this policy exists so the next admin to find it knows whether it is safe to change.');
             return;
+        }
+
+        if (sql && _apSqlFiltersOrMasksNothing(sql)) {
+            var proceed = await confirmModal({
+                message: 'This policy does not filter any rows or mask any columns — everyone with '
+                    + 'access to this table will see everything. Save anyway?',
+                confirmText: 'Save anyway',
+            });
+            if (!proceed) return;
         }
 
         var btn = document.getElementById('apSaveBtn');
@@ -7268,6 +7312,61 @@
         }
     }
 
+    // review-plan P1.4 — sweeps the policy above (or the stored one, when
+    // the textarea is blank) across every REAL user_groups row in one call,
+    // so a CASE with a missing/wrong ELSE branch shows up as an unexpected
+    // group seeing the whole table instead of requiring the admin to run
+    // apRunPreview() once per group by hand.
+    async function apRunPreviewAllGroups() {
+        if (!_apTable) return;
+        var sql = document.getElementById('apSql').value.trim();
+        var resultEl = document.getElementById('apPreviewGroupsResult');
+        var payload = sql ? { sql: sql } : {};
+
+        resultEl.style.display = '';
+        resultEl.innerHTML = '<div class="form-hint">Running preview for every group…</div>';
+        try {
+            var r = await fetch('/api/admin/registry/' + encodeURIComponent(_apTable.id) + '/policy/preview-groups', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+            });
+            var body = await r.json().catch(function() { return {}; });
+            if (!r.ok) {
+                resultEl.innerHTML = '<div class="form-hint form-hint--danger" style="margin-bottom:0;">'
+                    + escapeHtml(typeof body.detail === 'string' ? body.detail : (body.detail || body.error || ('HTTP ' + r.status)))
+                    + '</div>';
+                return;
+            }
+            resultEl.innerHTML = _apRenderPreviewGroupsResult(body);
+        } catch (err) {
+            resultEl.innerHTML = '<div class="form-hint form-hint--danger" style="margin-bottom:0;">'
+                + 'Network error: ' + escapeHtml(err.message) + '</div>';
+        }
+    }
+
+    function _apRenderPreviewGroupsResult(body) {
+        if (body.mapping_warning) {
+            return '<div class="form-hint form-hint--warn" style="margin:8px 0 0;">'
+                + escapeHtml(body.mapping_warning) + '</div>';
+        }
+        var rowsTotal = body.rows_total;
+        var groups = body.groups || [];
+        var html = '<div style="margin-top:8px; max-height:220px; overflow:auto; '
+                 + 'border:1px solid var(--ds-border); border-radius:6px;">';
+        html += '<table class="data-table"><thead><tr><th>Group</th><th>Rows visible</th></tr></thead><tbody>';
+        groups.forEach(function(g) {
+            var everything = g.rows_visible !== null && rowsTotal > 0 && g.rows_visible === rowsTotal;
+            var cell = g.error
+                ? '<span class="form-hint form-hint--danger" style="margin:0;">' + escapeHtml(g.error) + '</span>'
+                : formatNumber(g.rows_visible) + ' / ' + formatNumber(rowsTotal);
+            html += '<tr' + (everything ? ' style="color:var(--ds-accent-warn-ink);"' : '') + '>'
+                + '<td>' + escapeHtml(g.group) + '</td><td>' + cell + '</td></tr>';
+        });
+        html += '</tbody></table></div>';
+        return html;
+    }
+
     // Task B (access-policy-builder-ux Slice 2) — best-effort before/after
     // matching. There is no guaranteed PK (design doc §13.1), so this is a
     // heuristic, not an exact join: for each raw row, pick the not-yet-
@@ -7332,6 +7431,10 @@
     }
 
     function _apRenderPreviewResult(body) {
+        if (body.mapping_warning) {
+            return '<div class="form-hint form-hint--warn" style="margin:0;">'
+                + escapeHtml(body.mapping_warning) + '</div>';
+        }
         var cols = body.columns || [];
         var hiddenCols = cols.filter(function(c) { return c.hidden; }).map(function(c) { return c.name; });
         var visibleColNames = cols.filter(function(c) { return !c.hidden; }).map(function(c) { return c.name; });

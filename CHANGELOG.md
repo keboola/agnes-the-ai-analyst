@@ -10,6 +10,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- **Access-policy builder: "Preview all groups" sweeps every real group through a policy in one call.** `POST /api/admin/registry/{id}/policy/preview-groups` runs the SAME single-persona preview primitive once per real `user_groups` row and reports `rows_visible`/`rows_total` for each, so a `CASE`-on-`$user_groups` policy with a missing or wrong `ELSE` branch shows up as an unexpected group seeing the whole table instead of requiring the admin to re-run the single-persona preview by hand, once per group. Wired into the policy editor modal as a new "Preview all groups" action next to the existing single-persona preview.
+- **Access-policy preview flags an empty or never-synced `policy_mapping` table inline.** `.../policy/preview` and the new `.../policy/preview-groups` now carry a `mapping_warning` field, computed the same way `GET /api/me/effective-access`'s `mapping_empty` reason already is, so a suspiciously-low (or unreachable) `rows_visible` in the preview itself explains why instead of reading as "you legitimately have no data."
+- **Access-policy attach/edit/clear gets a dedicated audit action.** `PUT /api/admin/registry/{id}` already wrote a generic `update_table` row for a policy change; it now also writes `access_policy.set` / `access_policy.clear`, alongside the generic entry, so "every policy change in the last N days" is a direct query instead of grepping `update_table` rows for `access_policy_sql`.
+
+### Fixed
+
+- **The access-policy builder's column picker no longer reports "No columns found" for a table it just can't describe.** `GET .../policy/columns` sourced its column list from a bare `DESCRIBE` against the shared analytics connection, which only resolves for a table with a view already built there — so a `query_mode='remote'` table that had never been locally synced silently returned zero columns, indistinguishable from a table with a genuinely empty schema. It now reads schema the same way `agnes schema` does (`build_schema_uncached` — BigQuery's own INFORMATION_SCHEMA, Databricks Unity Catalog, or the table's own parquet, depending on source), and a real lookup failure surfaces as a `columns_error` string instead of a silent empty list. `.../policy/compile` and `.../policy/preview` share the same fix.
+- **The access-policy editor asks for confirmation before saving a policy that filters or masks nothing.** A `SELECT * FROM <table>` body — the Builder's own no-op shape, or a hand-written Advanced SQL one — used to save silently on click, showing a "Policy" chip that in fact restricts nothing. `apSavePolicy()` now detects the same no-op shape the compiler warns about and requires an explicit "Save anyway" before proceeding; a genuine mask-only or row-only policy is unaffected.
+- **The "referenceable from other policies" toggle in the access-policy editor is visually separated from the row/column scope below it.** It answers a different question (can OTHER tables' policies read through this one) than the row-rule/mask builder underneath, but shared identical styling with no separator — easy to misread as changing this table's own row visibility, which it does not.
+
 ## [0.83.47] - 2026-08-18
 
 ### Added

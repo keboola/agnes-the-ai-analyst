@@ -21,6 +21,7 @@ import duckdb
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
 from app.switches import SWITCHES
+from connectors.bigquery.access import BqAccess, get_bq_access
 from connectors.snowflake.settings import SF_TOKEN_ENV
 from src.identifier_validation import (
     is_safe_identifier as _is_safe_identifier,
@@ -5238,6 +5239,27 @@ async def update_table(
         params=_sanitize_for_audit({"updated_fields": sorted(updates.keys()), **updates}),
     )
 
+    # A dedicated action name, alongside the generic `update_table` above --
+    # so "every access-policy change in the last N days" is a direct
+    # `action_prefix=access_policy.` query instead of grepping `update_table`
+    # rows for `access_policy_sql` inside `updated_fields`. Mirrors why
+    # `.../policy/preview` already logs its own `access_policy.preview`
+    # action: this feature's own docs call "who looked at whose data, when"
+    # the first question after an incident, and that applies just as much to
+    # who CHANGED a policy as to who previewed one.
+    if "access_policy_sql" in updates:
+        audit_repo().log(
+            user_id=user.get("id"),
+            action="access_policy.clear" if _final_access_policy_sql is None else "access_policy.set",
+            resource=table_id,
+            params=_sanitize_for_audit(
+                {
+                    "access_policy_sql": _final_access_policy_sql,
+                    "access_policy_note": _final_access_policy_note,
+                }
+            ),
+        )
+
     # If we updated a BQ row (or one that's now BQ), refresh the extract in
     # the background so the view picks up renames / column-list changes.
     # Use the BG wrapper so any rebuild errors are logged at ERROR level
@@ -5452,12 +5474,40 @@ def _policy_preview_referenced_variables(sql: str) -> set:
     return {p.name for p in statement.find_all(exp.Placeholder) if p.name in _POLICY_PREVIEW_KNOWN_VARIABLES}
 
 
+def _policy_preview_mapping_warning(policy_sql: str) -> Optional[str]:
+    """review plan P2.6 -- an empty/never-synced ``policy_mapping`` table
+    behind a ``JOIN`` reads, from a live query, as an ordinary empty
+    result: indistinguishable from "you legitimately have no data"
+    (``docs/table-access-policies.md``, "The empty-mapping trap").
+    ``GET /api/me/effective-access`` already names this explicitly via
+    ``reason: mapping_empty`` (``app/api/access.py::
+    _raise_if_policy_mapping_empty``), but that is a separate endpoint an
+    admin authoring a policy has no reason to have open. Surfacing the same
+    check here means a suspiciously-low ``rows_visible`` in THIS preview
+    carries its own explanation inline, rather than sending the admin to
+    check effective-access by hand. Best-effort: any failure other than the
+    named condition is swallowed -- this is a hint, not a new failure mode
+    for the preview itself.
+    """
+    from app.api.access import _raise_if_policy_mapping_empty
+    from src.access_policy import PolicyMappingEmpty
+
+    try:
+        _raise_if_policy_mapping_empty(policy_sql)
+    except PolicyMappingEmpty as exc:
+        return str(exc)
+    except Exception:
+        return None
+    return None
+
+
 @router.post("/registry/{table_id}/policy/preview")
 async def preview_table_policy(
     table_id: str,
     request: PolicyPreviewRequest,
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+    bq: BqAccess = Depends(get_bq_access),
 ):
     """Run a stored or candidate access policy as a chosen persona and
     report what it does (design doc §13.1) — the single-persona primitive
@@ -5529,6 +5579,24 @@ async def preview_table_policy(
         except PolicyValidationError as e:
             raise HTTPException(status_code=422, detail=f"{e.reason}: {e.detail}") from e
 
+    # P2.6 -- checked BEFORE persona resolution/execution, not just added to
+    # the response: a mapping table that never synced at all has no view in
+    # the analytics connection, so the live queries below would crash on
+    # "table does not exist" instead of explaining why. Mirrors
+    # GET /api/me/effective-access's mapping_empty short-circuit (§15.1) for
+    # the same condition.
+    mapping_warning = _policy_preview_mapping_warning(policy_sql)
+    if mapping_warning:
+        return {
+            "columns": [],
+            "sample_rows": [],
+            "base_sample_rows": [],
+            "base_sample_comparable": True,
+            "rows_visible": None,
+            "rows_total": None,
+            "mapping_warning": mapping_warning,
+        }
+
     # Persona resolution -- exactly one of as_user / as_groups was required
     # above, so exactly one branch below runs.
     if request.as_user:
@@ -5562,11 +5630,14 @@ async def preview_table_policy(
         except PolicyValidationError as e:
             raise HTTPException(status_code=422, detail=f"{e.reason}: {e.detail}") from e
 
-        try:
-            base_rows = analytics_conn.execute(f"DESCRIBE {quote_ident(row['name'])}").fetchall()
-        except Exception:
-            base_rows = []
-        base_names = [r[0] for r in base_rows]
+        # Same schema source as the builder's column picker
+        # (`_policy_builder_schema_columns`) — a bare local DESCRIBE only
+        # resolves for a table with a view already built in the shared
+        # analytics connection, so a genuinely remote/never-synced table
+        # used to report zero base columns here, which made every probed
+        # column look "hidden" instead of simply new.
+        base_columns, _base_columns_error = _policy_builder_schema_columns(table_id, row, conn, bq)
+        base_names = [c["name"] for c in base_columns]
         probed_names = {c["name"] for c in probed_columns}
         columns = [{"name": name, "hidden": name not in probed_names} for name in base_names]
         for probed_col in probed_columns:
@@ -5662,16 +5733,155 @@ async def preview_table_policy(
         "base_sample_comparable": bool(base_sample_comparable),
         "rows_visible": int(rows_visible),
         "rows_total": int(rows_total),
+        # Always None here -- the check above already returned early when it
+        # was set, before any of these live queries ran.
+        "mapping_warning": mapping_warning,
+    }
+
+
+class PolicyPreviewGroupsRequest(BaseModel):
+    """Body for ``POST /registry/{table_id}/policy/preview-groups`` (review
+    plan P1.4). ``sql`` is optional, same meaning as
+    :class:`PolicyPreviewRequest` -- omitted previews the stored policy,
+    given previews a candidate body first.
+    """
+
+    sql: Optional[str] = None
+
+
+@router.post("/registry/{table_id}/policy/preview-groups")
+async def preview_table_policy_all_groups(
+    table_id: str,
+    request: PolicyPreviewGroupsRequest,
+    user: dict = Depends(require_admin),
+):
+    """Batch single-group preview across every real group in the instance.
+
+    ``preview_table_policy`` above already lets an admin check one persona
+    at a time; a policy that branches on ``$user_groups`` with a ``CASE``
+    (the documented "missing ``ELSE``" bug class -- see
+    ``docs/table-access-policies.md``'s "Row filtering" section) needs every
+    group checked before anyone trusts it, and doing that one API call per
+    group by hand is exactly the friction that lets the bug slip through.
+    This runs the SAME policy once per real ``user_groups`` row and reports
+    ``rows_visible``/``rows_total`` for each in one response.
+
+    Deliberately cheaper than the full persona-matrix TODO left in
+    ``preview_table_policy``'s docstring (union coverage + pairwise overlap
+    across every distinct group-set real users actually hold, which needs a
+    "list the distinct group-sets of users with access to this table"
+    primitive that does not exist yet): this previews one group at a time,
+    never a combination, and only counts rows -- no sample-row
+    materialization -- so it stays a single cheap ``COUNT(*)`` per group.
+    """
+    from src.access_policy_validate import PolicyValidationError, validate_policy_sql
+    from src.db import get_analytics_db_readonly
+    from src.repositories import user_groups_repo
+    from src.sql_ident import quote_ident
+
+    row = table_registry_repo().get(table_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Table not found")
+
+    is_candidate = request.sql is not None
+    policy_sql = request.sql if is_candidate else row.get("access_policy_sql")
+    if not policy_sql:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "policy_preview_no_policy: this table has no stored access policy, and "
+                "no candidate `sql` was given to preview"
+            ),
+        )
+
+    mapping_table_names = {
+        r["name"] for r in table_registry_repo().list_all() if r.get("policy_mapping") and r.get("name")
+    }
+    try:
+        validate_policy_sql(
+            policy_sql,
+            table_id=table_id,
+            table_name=row.get("name") or table_id,
+            mapping_table_names=mapping_table_names,
+            for_remote=(row.get("query_mode") == "remote"),
+        )
+    except PolicyValidationError as e:
+        raise HTTPException(status_code=422, detail=f"{e.reason}: {e.detail}") from e
+
+    # P2.6 -- checked before running a COUNT per group: a mapping table
+    # that never synced at all has no view to query, so every group would
+    # otherwise report the same "table does not exist" error individually
+    # instead of one explanation up front.
+    mapping_warning = _policy_preview_mapping_warning(policy_sql)
+    if mapping_warning:
+        return {"rows_total": None, "groups": [], "mapping_warning": mapping_warning}
+
+    try:
+        referenced = _policy_preview_referenced_variables(policy_sql)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"policy_preview_failed: could not parse policy SQL: {exc}",
+        ) from exc
+
+    group_names = [g["name"] for g in user_groups_repo().list_all()]
+
+    analytics_conn = get_analytics_db_readonly()
+    try:
+        try:
+            rows_total = analytics_conn.execute(f"SELECT COUNT(*) FROM {quote_ident(row['name'])}").fetchone()[0]
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=f"policy_preview_failed: {exc}") from exc
+
+        results = []
+        for group_name in group_names:
+            # Same screen `preview_table_policy` applies to an `as_groups`
+            # persona -- an ad-hoc bind, not a live membership lookup, so a
+            # pattern metacharacter here would silently widen the query.
+            if "user_groups" in referenced and any(ch in group_name for ch in _POLICY_PREVIEW_PATTERN_METACHARACTERS):
+                results.append({"group": group_name, "rows_visible": None, "error": "unsafe group name (%, _)"})
+                continue
+            params: Dict[str, Any] = {}
+            if "user_email" in referenced:
+                params["user_email"] = None
+            if "user_id" in referenced:
+                params["user_id"] = None
+            if "user_groups" in referenced:
+                params["user_groups"] = [group_name]
+            try:
+                rows_visible = analytics_conn.execute(
+                    f"SELECT COUNT(*) FROM ({policy_sql}) AS __agnes_policy_preview__",
+                    params,
+                ).fetchone()[0]
+            except Exception as exc:
+                results.append({"group": group_name, "rows_visible": None, "error": str(exc)})
+                continue
+            results.append({"group": group_name, "rows_visible": int(rows_visible), "error": None})
+    finally:
+        analytics_conn.close()
+
+    audit_repo().log(
+        user_id=user.get("id"),
+        action="access_policy.preview_groups",
+        resource=table_id,
+        params=_sanitize_for_audit({"candidate_sql": request.sql, "groups": group_names}),
+    )
+
+    return {
+        "rows_total": int(rows_total),
+        "groups": results,
+        # Always None here -- the check above already returned early when it
+        # was set, before any of these live queries ran.
+        "mapping_warning": mapping_warning,
     }
 
 
 def _policy_builder_describe(name: str) -> list:
-    """``DESCRIBE {name}`` on the read-only analytics connection -- the
-    same query ``preview_table_policy`` already runs (line ~5054),
-    factored out here because both new builder endpoints below need it:
-    Task 2's columns list wants types too, Task 3's compile just wants the
-    names. Never trusts a caller-supplied name -- every caller resolves
-    ``name`` from the registry row first, never from the URL/body.
+    """``DESCRIBE {name}`` on the read-only analytics connection -- a bare
+    fallback for a name ``_policy_builder_schema_columns`` below could not
+    resolve any other way. Never trusts a caller-supplied name -- every
+    caller resolves ``name`` from the registry row first, never from the
+    URL/body.
     """
     from src.db import get_analytics_db_readonly
     from src.sql_ident import quote_ident
@@ -5684,6 +5894,57 @@ def _policy_builder_describe(name: str) -> list:
             return []
     finally:
         analytics_conn.close()
+
+
+def _policy_builder_schema_columns(
+    table_id: str,
+    row: dict,
+    conn: duckdb.DuckDBPyConnection,
+    bq,
+) -> tuple:
+    """Real column list for the policy builder, sourced the same way
+    ``GET /api/v2/schema/{table_id}`` (``agnes schema``) already is --
+    ``build_schema_uncached`` reads BigQuery's own INFORMATION_SCHEMA for a
+    ``query_mode='remote'`` BQ row, Unity Catalog for a remote Databricks
+    row, and the table's own parquet directly for everything else
+    (local/materialized, any source_type) -- instead of a bare ``DESCRIBE``
+    against the shared analytics connection, which only resolves for a
+    table with a view already built there and fails silently (into an
+    empty list, previously) for anything else, most commonly a genuinely
+    remote table that has never been locally synced.
+
+    Returns ``(columns, error)`` -- ``columns`` is a list of
+    ``{"name", "type"}`` dicts, empty ONLY when the table genuinely has
+    none; ``error`` is a short, caller-facing string set (with ``columns``
+    empty) when the lookup itself failed, so ``GET .../policy/columns`` can
+    tell an admin "this table has never synced" apart from "this table has
+    no columns" instead of both rendering as the same silent "No columns
+    found."  Falls back to the raw local ``DESCRIBE`` only as a last
+    resort, for any source/query_mode shape ``build_schema_uncached``
+    itself does not recognize.
+    """
+    from app.api.v2_schema import NotFound as SchemaNotFound
+    from app.api.v2_schema import build_schema_uncached
+
+    try:
+        payload = build_schema_uncached(conn, table_id, bq=bq, row=row)
+        return [{"name": c["name"], "type": c.get("type")} for c in payload.get("columns") or []], None
+    except SchemaNotFound:
+        pass
+    except Exception as exc:
+        logger.warning("policy builder: schema lookup failed for table %s: %s", table_id, exc)
+        fallback = _policy_builder_describe(row.get("name") or table_id)
+        if fallback:
+            return [{"name": c[0], "type": c[1]} for c in fallback], None
+        return [], (
+            f"could not read this table's schema ({exc}) -- it may not have synced yet, "
+            "or the connection it depends on may be unavailable right now"
+        )
+
+    fallback = _policy_builder_describe(row.get("name") or table_id)
+    if fallback:
+        return [{"name": c[0], "type": c[1]} for c in fallback], None
+    return [], "this table has not synced yet -- no data found to read a schema from"
 
 
 # Best-effort name hints for the builder's `pii` flag (plan Task 2) -- never
@@ -5727,6 +5988,8 @@ def _policy_builder_looks_like_pii(col_name: str, profile_col: dict) -> bool:
 async def policy_builder_columns(
     table_id: str,
     user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+    bq: BqAccess = Depends(get_bq_access),
 ):
     """Real schema + sample values for the no-SQL policy builder (plan
     Task 2, access-policy-builder-ux) -- the column list a
@@ -5747,7 +6010,7 @@ async def policy_builder_columns(
     name = row.get("name") or table_id
     eligible = row.get("query_mode") == "remote" or bool(row.get("server_only"))
 
-    base_rows = _policy_builder_describe(name)
+    base_rows, columns_error = _policy_builder_schema_columns(table_id, row, conn, bq)
 
     # A profile may be keyed by the registry id or the table name depending
     # on when/how it was saved (mirrors `catalog.py::get_table_profile`'s own
@@ -5758,7 +6021,7 @@ async def policy_builder_columns(
 
     columns = []
     for col_row in base_rows:
-        col_name, col_type = col_row[0], col_row[1]
+        col_name, col_type = col_row["name"], col_row["type"]
         prof_col = profile_by_col.get(col_name, {})
         columns.append(
             {
@@ -5772,7 +6035,7 @@ async def policy_builder_columns(
 
     mapping_tables = [r["name"] for r in table_registry_repo().list_all() if r.get("policy_mapping") and r.get("name")]
 
-    return {"columns": columns, "mapping_tables": mapping_tables, "eligible": eligible}
+    return {"columns": columns, "mapping_tables": mapping_tables, "eligible": eligible, "columns_error": columns_error}
 
 
 class PolicyCompileRequest(BaseModel):
@@ -5794,6 +6057,8 @@ async def policy_builder_compile(
     table_id: str,
     request: PolicyCompileRequest,
     user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+    bq: BqAccess = Depends(get_bq_access),
 ):
     """Turn a structured builder spec into the canonical policy SQL (plan
     Task 3) via ``src.access_policy_compile.compile_policy`` -- the ONLY
@@ -5813,7 +6078,8 @@ async def policy_builder_compile(
         raise HTTPException(status_code=404, detail="Table not found")
 
     name = row.get("name") or table_id
-    columns = [c[0] for c in _policy_builder_describe(name)]
+    base_columns, _columns_error = _policy_builder_schema_columns(table_id, row, conn, bq)
+    columns = [c["name"] for c in base_columns]
 
     from src.access_policy_compile import compile_policy
 
