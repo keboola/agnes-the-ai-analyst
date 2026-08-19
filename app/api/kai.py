@@ -1,9 +1,9 @@
 """Host-side wiring for an embedded ``kai-agent`` turn engine.
 
-``kai-agent`` (keboola/ui ``apps/kai-agent``) is a Claude-Agent-SDK turn engine
-that embeds in a host platform through a ``HostModule`` port. Its ``jwt`` host
-adapter expects the host to supply exactly three things; this module is all
-three:
+``kai-agent`` is an external Claude-Agent-SDK turn engine that embeds in a host
+platform through a ``HostModule`` port — it is not part of this repository, and
+nothing here depends on it being present. Its ``jwt`` host adapter expects the
+host to supply exactly three things; this module is all three:
 
 - **A session token.** ``POST /api/kai/sessions`` mints the short-lived HS256
   JWT the engine verifies on every call. Its claims *are* the principal the
