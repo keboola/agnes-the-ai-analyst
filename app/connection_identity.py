@@ -46,6 +46,46 @@ CONNECTION_IDENTITY_LEAVES: Dict[str, frozenset[str]] = {
 }
 
 
+# What a leaf resolves to when the config does not set it. Taken from the code
+# that READS each leaf, not invented here — `resolve_snowflake_settings` falls
+# back to `SNOWFLAKE_PASSWORD`, the Keboola client to `KEBOOLA_STORAGE_TOKEN`,
+# and so on. Any leaf without an entry defaults to "" (unset), which is what
+# every remaining reader coerces a missing value to.
+#
+# This matters because the callers synthesize full blocks: the setup wizard
+# always writes `token_env: "KEBOOLA_STORAGE_TOKEN"` and the Add-data wizard
+# always writes `auth_type`. Comparing raw values would score those as
+# `None -> "KEBOOLA_STORAGE_TOKEN"` on an instance that simply relied on the
+# default — a phantom repoint on a no-op re-save, and (since `token_env` matches
+# the audit log's secret-key rule) one reported as `*** -> ***`, which explains
+# nothing to the operator it just blocked.
+CONNECTION_IDENTITY_DEFAULTS: Dict[str, Dict[str, Any]] = {
+    "snowflake": {
+        "auth_type": "password",
+        "token_env": "SNOWFLAKE_PASSWORD",
+        "private_key_env": "SNOWFLAKE_PRIVATE_KEY",
+    },
+    "keboola": {"token_env": "KEBOOLA_STORAGE_TOKEN"},
+    "databricks": {"token_env": "DATABRICKS_TOKEN"},
+    "bigquery": {},
+}
+
+
+def _effective(source: str, field: str, block: Dict[str, Any]) -> Any:
+    """The value a reader would see for ``field`` — the configured one, or the
+    default when it is missing or blank.
+
+    Blank collapses to the default deliberately: every reader resolves it as
+    ``get_value(...) or DEFAULT``, so an empty string and an absent key mean the
+    same thing to the running system, and a guard that disagreed with the
+    readers would fire on a difference that does not exist.
+    """
+    value = block.get(field)
+    if value is None or value == "":
+        return CONNECTION_IDENTITY_DEFAULTS.get(source, {}).get(field, "")
+    return value
+
+
 def identity_changes(
     source: str,
     before: Dict[str, Any] | None,
@@ -54,9 +94,13 @@ def identity_changes(
     """Return the identity leaves whose value differs between two config blocks.
 
     Each entry is ``{"field", "before", "after"}``, ordered by field name so the
-    refusal message is stable. A leaf that appears only in ``after`` counts as a
-    change: going from "no role" to a role decides which grants apply, exactly
-    the class of edit this guard exists to surface.
+    refusal message is stable, and carries the *effective* values (defaults
+    resolved) rather than the raw ones — the operator is being asked about what
+    the instance will actually connect to.
+
+    A leaf that is genuinely unset before and set after counts as a change:
+    going from "no role" to a role decides which grants apply, exactly the class
+    of edit this guard exists to surface.
     """
     leaves = CONNECTION_IDENTITY_LEAVES.get(source)
     if not leaves:
@@ -70,7 +114,8 @@ def identity_changes(
             # Absent from the patch-merged block means the operator did not
             # touch it, so there is nothing to warn about.
             continue
-        old, new = before.get(field), after[field]
+        old = _effective(source, field, before)
+        new = _effective(source, field, after)
         if old != new:
             changes.append({"field": field, "before": old, "after": new})
     return changes

@@ -84,6 +84,16 @@ def fetch_schema(
     try:
         # Schema and table are bound as parameters, not interpolated: they are
         # admin-controlled, but a registry row is still hand-editable.
+        #
+        # Matched VERBATIM, not upper-cased. Snowflake stores unquoted
+        # identifiers folded to upper case, so a row registered in lower case
+        # finds nothing here — but that same row's query also finds nothing,
+        # because `full_table_sql` quotes the identifiers exactly as stored
+        # (`sf."gold"."x"`). Folding the case here would make `agnes schema`
+        # answer for a table no query can reach, which is the drift this whole
+        # function exists to prevent. With allow_empty=False at the endpoint the
+        # mismatch surfaces as an error naming the schema and table, which is
+        # what an operator needs to spot the wrong case.
         rows = conn.execute(
             f"SELECT column_name, data_type, is_nullable, comment "
             f"FROM {SF_ALIAS}.information_schema.columns "
@@ -110,5 +120,9 @@ def fetch_schema(
         for r in rows
     ]
     if not columns and not allow_empty:
-        raise ValueError(f"snowflake reported no columns for {schema}.{table}")
+        raise ValueError(
+            f"snowflake reported no columns for {database}.{schema}.{table} — the table may have "
+            "been dropped, the connection repointed, or the registered bucket/source_table may "
+            "differ in case from how Snowflake stores it"
+        )
     return columns

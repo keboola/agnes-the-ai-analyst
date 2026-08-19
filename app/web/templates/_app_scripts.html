@@ -20,6 +20,11 @@
          event handlers (click/change/keydown/DOMContentLoaded) — never at
          top-level parse time — by which point the globals are defined. -->
     <script src="{{ static_url('js/modal.js') }}"></script>
+    <!-- Shared confirm-and-retry for the connection-repoint 409. Loaded here,
+         not per page, because all four surfaces that write a data_source
+         connection need it and only one of them owns a dialog. Depends on
+         modal.js above (falls back to window.confirm if it is absent). -->
+    <script src="{{ static_url('js/connection_repoint.js') }}"></script>
     <script>
       // v54 global undo-toast — surfaced by admin delete handlers. The
       // toast carries an Undo button that POSTs to a restore URL, so

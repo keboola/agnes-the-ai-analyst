@@ -156,9 +156,40 @@ class TestIdentityChanges:
         assert changes == [{"field": "database", "before": "PROD", "after": "GOLD"}]
 
     def test_setting_a_previously_unset_coordinate_counts(self):
-        """`role: null -> AGNES_SVC` changes which grants apply — it is a repoint."""
+        """`role: unset -> AGNES_SVC` changes which grants apply — it is a repoint.
+
+        Reported as `"" -> "AGNES_SVC"`: the effective previous value, which is
+        what the instance was actually connecting with."""
         changes = identity_changes("snowflake", {}, {"role": "AGNES_SVC"})
-        assert changes == [{"field": "role", "before": None, "after": "AGNES_SVC"}]
+        assert changes == [{"field": "role", "before": "", "after": "AGNES_SVC"}]
+
+    def test_a_leaf_left_at_its_default_is_not_a_change_when_resent_explicitly(self):
+        """The setup wizard always writes `token_env: KEBOOLA_STORAGE_TOKEN` and
+        the Add-data wizard always writes `auth_type` — on an instance that
+        relied on those defaults, comparing raw values scored a phantom repoint,
+        and `token_env` masks to `***` so the refusal explained nothing."""
+        assert identity_changes("keboola", {}, {"token_env": "KEBOOLA_STORAGE_TOKEN"}) == []
+        assert identity_changes("snowflake", {}, {"auth_type": "password"}) == []
+        assert identity_changes("databricks", {}, {"token_env": "DATABRICKS_TOKEN"}) == []
+
+    def test_blank_and_absent_mean_the_same_thing(self):
+        """Readers resolve both as `get_value(...) or DEFAULT`, so a guard that
+        told them apart would fire on a difference the running system cannot
+        see."""
+        assert identity_changes("snowflake", {"role": ""}, {"role": None}) == []
+        assert identity_changes("snowflake", {"token_env": ""}, {"token_env": "SNOWFLAKE_PASSWORD"}) == []
+
+    def test_moving_off_a_default_is_still_a_change(self):
+        assert identity_changes("keboola", {}, {"token_env": "OTHER_TOKEN"}) == [
+            {"field": "token_env", "before": "KEBOOLA_STORAGE_TOKEN", "after": "OTHER_TOKEN"}
+        ]
+
+    def test_bigquery_location_has_no_default_so_setting_it_counts(self):
+        """`location` unset is not the same as `us` — the region-scoped metadata
+        path is skipped entirely when it is blank."""
+        assert identity_changes("bigquery", {}, {"location": "us"}) == [
+            {"field": "location", "before": "", "after": "us"}
+        ]
 
     def test_unknown_source_has_no_identity(self):
         assert identity_changes("nope", {"host": "a"}, {"host": "b"}) == []
@@ -257,26 +288,60 @@ class TestConfigureWizardIsGuardedToo:
         assert resp.status_code == 200, resp.text
 
 
-class TestRepointModalMarkers:
-    """The 409 is only half the guard — an admin saving from the browser has to
-    see the blast radius and be able to say yes."""
+class TestEveryConnectionSaveSurfaceIsWired:
+    """The 409 is only half the guard. Four UI surfaces write a `data_source`
+    connection, and a confirm flow taught to only one of them turns the other
+    three into dead ends — an operator rotating a credential from the Add-data
+    wizard would be stopped by a refusal that page cannot answer."""
 
-    def test_page_carries_the_repoint_dialog_the_js_targets(self, seeded_app):
+    SURFACES = [
+        "app/web/templates/admin_server_config.html",  # instance settings
+        "app/web/templates/admin_data_sources.html",  # Snowflake + Databricks wizards
+        "app/web/templates/setup.html",  # first-boot / re-run setup
+    ]
+
+    @pytest.mark.parametrize("template", SURFACES)
+    def test_surface_saves_through_the_shared_confirm_helper(self, template):
+        from pathlib import Path
+
+        body = Path(template).read_text()
+        assert "saveConnectionConfig" in body, (
+            f"{template} writes a data_source connection but does not go through "
+            "saveConnectionConfig, so it cannot answer the repoint 409"
+        )
+
+    @pytest.mark.parametrize("template", SURFACES)
+    def test_surface_renders_an_object_detail_instead_of_stringifying_it(self, template):
+        """This 409's `detail` is an object (a 422's is an array); interpolating
+        either into a template literal prints "[object Object]" at the exact
+        moment the operator needs to read why."""
+        from pathlib import Path
+
+        body = Path(template).read_text()
+        assert "apiDetailText" in body
+
+    def test_the_helper_is_loaded_on_every_page(self):
+        from pathlib import Path
+
+        assert "js/connection_repoint.js" in Path("app/web/templates/_app_scripts.html").read_text()
+
+    def test_the_helper_confirms_and_retries(self):
+        from pathlib import Path
+
+        helper = Path("app/web/static/js/connection_repoint.js").read_text()
+        assert "connection_change_affects_registrations" in helper
+        assert "confirm_connection_change" in helper
+        # Declining must be a no-op the caller can tell apart from a failure.
+        assert "cancelled" in helper
+
+    def test_the_page_actually_serves_the_helper(self, seeded_app):
         c = seeded_app["client"]
         c.cookies.set("access_token", seeded_app["admin_token"])
         try:
             body = c.get("/admin/server-config", headers={"Accept": "text/html"}).text
         finally:
             c.cookies.clear()
-
-        assert 'id="repoint-modal"' in body
-        assert 'id="repoint-confirm-btn"' in body
-        # The three slots confirmRepoint() fills from the 409 payload.
-        for slot in ("repoint-sub", "repoint-diff", "repoint-sample"):
-            assert f'id="{slot}"' in body
-        # The flag the retry POST must carry, and the error code it keys off.
-        assert "confirm_connection_change" in body
-        assert "connection_change_affects_registrations" in body
+        assert "connection_repoint.js" in body
 
 
 class TestIdentityMapCoverage:

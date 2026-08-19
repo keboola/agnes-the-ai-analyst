@@ -197,7 +197,7 @@ async function apiCall(url, body) {
         throw new Error('Session expired');
     }
     const data = await resp.json();
-    if (!resp.ok) throw new Error(data.detail || 'Request failed');
+    if (!resp.ok) throw new Error(window.apiDetailText(data.detail, 'Request failed'));
     return data;
 }
 
@@ -238,7 +238,20 @@ async function configureSource(e) {
             body.bigquery_project = document.getElementById('bq-project').value;
             body.bigquery_location = document.getElementById('bq-location').value;
         }
-        await apiCall('/api/admin/configure', body);
+        /* Re-running setup on an instance that already has registered tables
+           can repoint a live connection, which the server refuses until
+           confirmed. saveConnectionConfig (js/connection_repoint.js) shows the
+           blast radius and re-sends on confirm — the same dialog the Add-data
+           wizard and instance settings use. */
+        const saved = await window.saveConnectionConfig(
+            '/api/admin/configure', body,
+            { headers: token ? { Authorization: 'Bearer ' + token } : {} }
+        );
+        if (saved.cancelled) {
+            showStatus('Cancelled — the data source was left unchanged.', '');
+            return false;
+        }
+        if (!saved.ok) throw new Error(window.apiDetailText(saved.data.detail, 'Request failed'));
         showStatus('Connection verified!', 'success');
         if (src === 'local') {
             goToStep(4);
@@ -263,7 +276,7 @@ async function discoverTables() {
         if (token) headers['Authorization'] = 'Bearer ' + token;
         const resp = await fetch('/api/admin/discover-and-register', { method: 'POST', headers });
         const data = await resp.json();
-        if (!resp.ok) throw new Error(data.detail || 'Discovery failed');
+        if (!resp.ok) throw new Error(window.apiDetailText(data.detail, 'Discovery failed'));
 
         const el = document.getElementById('discover-result');
         el.style.display = 'block';

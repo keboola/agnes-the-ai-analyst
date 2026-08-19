@@ -127,7 +127,7 @@ class TestSchemaEndpoint:
             monkeypatch.setattr(
                 sf_remote,
                 "fetch_schema",
-                lambda row, *, settings: [
+                lambda row, *, settings, allow_empty=True: [
                     {"name": "EMPLOYEE_TYPE", "type": "TEXT", "nullable": True, "description": ""}
                 ],
             )

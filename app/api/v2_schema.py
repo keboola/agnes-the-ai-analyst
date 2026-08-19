@@ -284,7 +284,12 @@ def build_schema_uncached(
         if settings is None:
             raise NotFound(table_id)
         try:
-            columns = snowflake_fetch_schema(row, settings=settings)
+            # allow_empty=False: a `WHERE table_schema/table_name` miss — a
+            # dropped table, a repointed connection, a case-mismatched bucket —
+            # would otherwise return `columns: []` as a successful answer AND
+            # cache it, hiding for the cache's lifetime exactly the breakage
+            # this endpoint is being asked about.
+            columns = snowflake_fetch_schema(row, settings=settings, allow_empty=False)
         except ValueError:
             raise
         except Exception as exc:
