@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- **The `/agents` builder now has a Schedules panel.** A new numbered section on each agent lists its scheduled runs — name, cadence, an enable/disable toggle, last-fired time and dispatch status, with the `backlogged` status called out as a warning (it means the previous run is still queued because no worker is picking up `agent_response` jobs) — plus a create form with the schedule grammar inline and a note that a new schedule anchors at creation and first fires on the next cadence tick. Server validation errors render as owner-readable messages. An optional **Skill** dropdown (fed from the caller's RBAC-filtered marketplace skills, with the agent's own picked plugins grouped first) drafts the prompt as "Run the `<skill>` skill: `<description>`" — still editable, purely client-side templating. The CLI gets the same sugar: `agnes agent schedule add --skill <name>` (or `<plugin>:<skill>`) templates the prompt in place of `--prompt`.
+
 ## [0.83.50] - 2026-08-18
 
 ### Added

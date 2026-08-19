@@ -168,6 +168,29 @@
   .ag-bnd-k { color: var(--ds-text-secondary); }
   .ag-bnd-v { color: var(--ds-text-primary); font-weight: 550; text-align: right; }
 
+  /* Schedules (unattended runs). Status chips ride the shared status accent
+     vocabulary; `backlogged` wears the WARN treatment deliberately — it means
+     the previous run is still sitting queued because no worker is claiming
+     agent_response jobs, which an owner must notice, not skim past. */
+  .ag-sch-cadence { font-family: var(--ds-font-mono); font-size: 12px; color: var(--ds-text-secondary); background: var(--ds-surface-sunken); border: 1px solid var(--ds-border); border-radius: 6px; padding: 1px 7px; white-space: nowrap; }
+  .ag-sch-status { font-size: 11px; font-weight: 700; letter-spacing: 0.02em; border-radius: var(--ds-radius-pill); padding: 1px 8px; white-space: nowrap; }
+  .ag-sch-status--enqueued { color: var(--ds-accent-success-ink); background: var(--ds-accent-success-bg); border: 1px solid var(--ds-accent-success-line); }
+  .ag-sch-status--failed { color: var(--ds-accent-danger-ink); background: var(--ds-accent-danger-bg); border: 1px solid var(--ds-accent-danger-line); }
+  .ag-sch-status--backlogged { color: var(--ds-accent-warn-ink); background: var(--ds-accent-warn-bg); border: 1px solid var(--ds-accent-warn-line); }
+  .ag-row--sch-off .ag-row-name, .ag-row--sch-off .ag-row-desc, .ag-row--sch-off .ag-sch-last { opacity: 0.55; }
+  .ag-sch-last { font-size: 12px; color: var(--ds-text-muted); margin-top: 3px; }
+  .ag-sch-acts { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+  .ag-sch-form { margin-top: 14px; border-top: 1px dashed var(--ds-border); }
+  .ag-sch-form h4 { font-size: 13.5px; margin: 14px 0 0; color: var(--ds-text-primary); }
+  .ag-field select { width: 100%; padding: 9px 12px; border: 1px solid var(--ds-border); border-radius: 9px; font: inherit; font-size: 14px; background: var(--ds-surface); color: var(--ds-text-primary); }
+  .ag-field select:focus { outline: 2px solid var(--ds-primary); outline-offset: -1px; }
+  .ag-hint { display: block; font-weight: 400; font-size: 12px; color: var(--ds-text-muted); margin-top: 5px; line-height: 1.5; }
+  .ag-hint code { font-family: var(--ds-font-mono); font-size: 11.5px; background: var(--ds-surface-sunken); border: 1px solid var(--ds-border); border-radius: 5px; padding: 0 4px; }
+  .ag-sch-en { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; color: var(--ds-text-primary); margin-top: 14px; cursor: pointer; }
+  .ag-sch-err { margin-top: 12px; font-size: 13px; color: var(--ds-accent-danger-ink); background: var(--ds-accent-danger-bg); border: 1px solid var(--ds-accent-danger-line); border-radius: 9px; padding: 8px 12px; }
+  .ag-sch-foot { display: flex; align-items: center; gap: 12px; margin-top: 14px; flex-wrap: wrap; }
+  .ag-sch-fine { font-size: 12px; color: var(--ds-text-muted); margin: 0; }
+
   /* Preview aside. */
   .ag-preview { position: sticky; top: 18px; }
   .ag-preview h3 { font-size: 14px; margin: 0 0 10px; }
@@ -245,6 +268,17 @@
   var plugins = null;           // all marketplace items available to the caller
   var pluginsErr = false;
   var query = { knowledge: '', capabilities: '' };  // per-section search text
+
+  /* ── Schedules — per-open-agent working copy of the agent-schedules rows
+     (/api/v1/agents/{slug}/schedules, owner CRUD). Reset on every
+     openBuilder: the rows belong to ONE agent, keyed by its slug. */
+  var schedules = null;         // rows for the open agent (null = not loaded yet)
+  var schedulesErr = null;      // null | 'disabled' (agent profiles off) | 'error'
+  var skills = null;            // /api/v2/marketplace/skills, RBAC-filtered, page-wide
+  var schedForm = null;         // create-form working copy, survives re-renders
+  function blankSchedForm() {
+    return { name: '', schedule: '', prompt: '', enabled: true, skill: '', busy: false };
+  }
 
   /* Persist one agent with a short debounce: field edits fire on every
      keystroke, so a naive PATCH-per-input would hammer the API. Keyed by id so
@@ -413,12 +447,17 @@
   }
 
   /* ── Builder view ── */
-  var SECTION_KEYS = ['identity', 'knowledge', 'capabilities', 'surfaces', 'boundaries'];
+  var SECTION_KEYS = ['identity', 'knowledge', 'capabilities', 'surfaces', 'schedules', 'boundaries'];
 
   function openBuilder(id) {
     currentId = id;
-    collapsed = { identity: false, knowledge: true, capabilities: true, surfaces: true, boundaries: true };
+    collapsed = { identity: false, knowledge: true, capabilities: true, surfaces: true, schedules: true, boundaries: true };
+    schedForm = blankSchedForm();
     loadPlugins().then(renderBuilder);
+    loadSchedules(current()).then(renderBuilder);
+    // Late-arriving skills only swap the <select> options in place — a full
+    // re-render here could pull the caret out of a form someone is typing in.
+    loadSkills().then(refreshSkillSelect);
     renderBuilder();
     window.scrollTo(0, 0);
   }
@@ -558,6 +597,200 @@
       '<div class="ag-note">Inherited from the workspace — you build within them. Ask an admin to change a boundary.</div>';
   }
 
+  /* ── Schedules — unattended runs on a cadence. CRUD rides the agent-schedules
+     API (session-cookie auth, same-origin); the sweep + job machinery live
+     server-side, this panel only edits the rows. */
+  function loadSchedules(a) {
+    schedules = null; schedulesErr = null;
+    if (!a || !a.slug) { schedules = []; return Promise.resolve(); }
+    return fetch('/api/v1/agents/' + encodeURIComponent(a.slug) + '/schedules', { credentials: 'same-origin' })
+      .then(function (r) {
+        if (r.ok) return r.json().then(function (d) { schedules = d.data || []; });
+        // 403 {"kind": "agent_profiles_disabled"} = the instance-level toggle
+        // is off — the whole /api/v1/agents* surface is closed, so say that
+        // instead of a generic failure the owner would retry in vain.
+        if (r.status === 403) { schedulesErr = 'disabled'; return null; }
+        throw new Error('HTTP ' + r.status);
+      })
+      .catch(function (e) { console.error('agents: schedules load failed', e); if (!schedulesErr) schedulesErr = 'error'; });
+  }
+
+  /* Skills the caller can read (RBAC-filtered server-side), fetched once per
+     page — feeds the optional "Skill" dropdown in the create form. Purely
+     client-side sugar: picking one only templates the prompt text. */
+  function loadSkills() {
+    if (skills !== null) return Promise.resolve();
+    return fetch('/api/v2/marketplace/skills', { credentials: 'same-origin' })
+      .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+      .then(function (d) { skills = d.skills || []; })
+      .catch(function () { skills = []; });
+  }
+
+  function skillKey(s) { return s.marketplace_id + '/' + s.plugin_name + '/' + s.skill_name; }
+  function skillPromptFor(s) {
+    var label = s.name || s.skill_name;
+    var desc = (s.description || '').trim();
+    return 'Run the ' + label + ' skill' + (desc ? ': ' + desc : '.');
+  }
+  /* Split the caller-readable skills into (from this agent's picked plugins,
+     everything else). A skill's home plugin is `curated-{marketplace_id}/
+     {plugin_name}` in the capability picker's id vocabulary; community-store
+     (`flea-`) picks never match because the v2 skills endpoint only serves
+     curated marketplaces. An agent with no plugins picked runs on the
+     workspace default (everything available), so nothing is "its own" then. */
+  function skillSplitFor(a) {
+    var all = skills || [];
+    var sel = (a && a.plugins) || [];
+    if (!sel.length) return { own: [], other: all };
+    var own = [], other = [];
+    all.forEach(function (s) {
+      (sel.indexOf('curated-' + s.marketplace_id + '/' + s.plugin_name) >= 0 ? own : other).push(s);
+    });
+    return { own: own, other: other };
+  }
+  function skillOptionsHtml(a) {
+    var html = '<option value="">No skill — write the prompt yourself</option>';
+    if (skills === null) return html + '<option value="" disabled>Loading skills…</option>';
+    var split = skillSplitFor(a);
+    var opt = function (s) {
+      var key = skillKey(s);
+      return '<option value="' + esc(key) + '"' + (schedForm.skill === key ? ' selected' : '') + '>' +
+        esc(s.name || s.skill_name) + ' — ' + esc(s.plugin_name) + '</option>';
+    };
+    if (split.own.length) {
+      html += '<optgroup label="From this agent’s plugins">' + split.own.map(opt).join('') + '</optgroup>';
+      if (split.other.length) html += '<optgroup label="Other skills you can access">' + split.other.map(opt).join('') + '</optgroup>';
+    } else {
+      html += split.other.map(opt).join('');
+    }
+    return html;
+  }
+
+  /* Server error codes -> owner-readable messages. Anything unmapped falls
+     back to the server's own message text. */
+  var SCHED_ERR = {
+    invalid_name: 'Name must be a single label — letters, digits, dashes or underscores, max 64 characters (e.g. morning-briefing).',
+    invalid_schedule: 'Cadence not recognized. Use "every 30m" / "every 2h", "daily 07:00" (comma-separate several times), or "cron 0 7 * * 1-5" — note the literal "cron " prefix. All times are UTC.',
+    invalid_prompt: 'Prompt is required — it is what the agent is asked to do on every run.',
+    invalid_enabled: 'Enabled must be on or off.',
+    schedule_name_taken: 'This agent already has a schedule with that name — pick another.',
+    schedule_limit: 'This agent already has the maximum of 20 schedules — delete one first.',
+    agent_not_found: 'This agent no longer exists on the server — reload the page.'
+  };
+  function schedErrorMessage(detail) {
+    if (detail && detail.code && SCHED_ERR[detail.code]) return SCHED_ERR[detail.code];
+    if (detail && detail.message) return detail.message;
+    return 'Could not save the schedule — try again.';
+  }
+
+  function fmtSchedTs(v) {
+    // DuckDB and Postgres serialize timestamps differently ("2026-08-18
+    // 07:00:00.123" vs ISO with a T) — normalize to "YYYY-MM-DD HH:MM".
+    return String(v).replace('T', ' ').slice(0, 16);
+  }
+  function schedStatusBadge(row) {
+    var st = row.last_status;
+    if (!st) return '';
+    if (st === 'backlogged') {
+      return '<span class="ag-sch-status ag-sch-status--backlogged" title="The previous run is still queued — no worker is picking up agent_response jobs. Ask an admin to check that a worker process is running.">backlogged</span>';
+    }
+    if (st === 'failed_enqueue') {
+      return '<span class="ag-sch-status ag-sch-status--failed" title="The last due tick could not queue a run — check the server logs.">enqueue failed</span>';
+    }
+    return '<span class="ag-sch-status ag-sch-status--enqueued" title="The last due tick queued a run.">' + esc(st) + '</span>';
+  }
+
+  function scheduleRows() {
+    if (!schedules || !schedules.length) {
+      return '<p class="ag-emptyrows">No scheduled runs yet — add one below to run this agent unattended.</p>';
+    }
+    return schedules.map(function (s) {
+      // `last_run_at` is stamped at CREATION to anchor the cadence (a new
+      // schedule never fires an immediate catch-up run), so it is only a real
+      // "last fired" once a dispatch recorded a status.
+      var fired = s.last_status
+        ? 'Last fired ' + esc(fmtSchedTs(s.last_run_at)) + ' UTC'
+        : 'Hasn’t fired yet — first run is the next cadence tick';
+      return '<div class="ag-row' + (s.enabled ? '' : ' ag-row--sch-off') + '">' +
+        '<div class="ag-row-body">' +
+          '<div class="ag-row-name">' + esc(s.name) +
+            ' <code class="ag-sch-cadence">' + esc(s.schedule) + '</code> ' +
+            schedStatusBadge(s) + '</div>' +
+          '<div class="ag-row-desc" title="' + esc(s.prompt) + '">' + esc(s.prompt) + '</div>' +
+          '<div class="ag-sch-last">' + fired + '</div>' +
+        '</div>' +
+        '<span class="ag-sch-acts">' +
+          '<button type="button" class="ag-tglbtn' + (s.enabled ? ' on' : '') + '" data-ag-sch-toggle="' + esc(s.id) + '">' + (s.enabled ? '✓ On' : 'Off') + '</button>' +
+          '<button type="button" class="ag-del" data-ag-sch-del="' + esc(s.id) + '">Delete</button>' +
+        '</span>' +
+      '</div>';
+    }).join('');
+  }
+
+  function scheduleFormHtml(a) {
+    var atLimit = schedules && schedules.length >= 20;
+    return '<div class="ag-sch-form">' +
+      '<h4>Add a scheduled run</h4>' +
+      '<label class="ag-field"><span>Name <em>— unique per agent</em></span>' +
+        '<input type="text" data-ag-sch-field="name" value="' + esc(schedForm.name) + '" placeholder="e.g. morning-briefing" maxlength="64" autocomplete="off"></label>' +
+      '<label class="ag-field"><span>Cadence <em>— all times UTC</em></span>' +
+        '<input type="text" data-ag-sch-field="schedule" value="' + esc(schedForm.schedule) + '" placeholder="e.g. cron 0 7 * * 1-5" autocomplete="off">' +
+        '<span class="ag-hint">Formats: <code>every 30m</code> / <code>every 2h</code> · <code>daily 07:00</code> (comma-separate several times) · <code>cron 0 7 * * 1-5</code> — note the literal <code>cron </code> prefix.</span></label>' +
+      '<label class="ag-field"><span>Skill <em>— optional; picking one drafts the prompt for you</em></span>' +
+        '<select data-ag-sch-skill>' + skillOptionsHtml(a) + '</select></label>' +
+      '<label class="ag-field"><span>Prompt <em>— what the agent is asked on every run</em></span>' +
+        '<textarea rows="3" data-ag-sch-field="prompt" placeholder="e.g. Prepare the morning briefing from the latest data.">' + esc(schedForm.prompt) + '</textarea></label>' +
+      '<label class="ag-sch-en"><input type="checkbox" data-ag-sch-enabled' + (schedForm.enabled ? ' checked' : '') + '> Enabled</label>' +
+      '<div class="ag-sch-err" data-sch-err hidden></div>' +
+      '<div class="ag-sch-foot">' +
+        '<button type="button" class="cc-btn cc-btn--primary" data-ag-sch-create' + (schedForm.busy || atLimit ? ' disabled' : '') + '>' + (atLimit ? 'Limit reached (20)' : 'Add schedule') + '</button>' +
+        '<p class="ag-sch-fine">A new schedule doesn’t fire immediately — its first run is the next cadence tick.</p>' +
+      '</div>' +
+    '</div>';
+  }
+
+  function schedulesBody(a) {
+    if (!a.slug) return '<div class="ag-note">This agent has no address yet — reload the page and try again.</div>';
+    if (schedulesErr === 'disabled') {
+      return '<div class="ag-note">Scheduled runs are turned off on this instance (agent profiles are disabled) — ask an admin to enable them.</div>';
+    }
+    if (schedulesErr) return '<div class="ag-note">Could not load this agent’s schedules right now — try reloading the page.</div>';
+    if (schedules === null) return '<p class="ag-row-desc" style="padding:12px 0">Loading schedules…</p>';
+    return '<div class="ag-rows" data-rows="schedules">' + scheduleRows() + '</div>' +
+      scheduleFormHtml(a) +
+      '<div class="ag-note">Each run sends the schedule’s prompt to this agent as a fresh background job, with your identity and the agent’s usual scope and budget. Results land in the agent’s job history and webhooks.</div>';
+  }
+
+  function scheduleSummary() {
+    if (schedulesErr === 'disabled') return 'Off for this instance';
+    if (schedulesErr) return '';
+    if (schedules === null) return '…';
+    if (!schedules.length) return 'None yet';
+    var on = schedules.filter(function (s) { return s.enabled; }).length;
+    return on + ' of ' + schedules.length + ' on';
+  }
+
+  /* Partial refresh — rows + section summary only, so an in-progress create
+     form (someone mid-typing a prompt) is never re-rendered out from under
+     the caret by a toggle/delete on the list above it. */
+  function refreshSchedulesRows() {
+    var rowsEl = document.querySelector('[data-rows="schedules"]');
+    if (rowsEl) rowsEl.innerHTML = scheduleRows();
+    var sumEl = document.querySelector('[data-sec="schedules"] .ag-sec-sum');
+    if (sumEl) sumEl.textContent = scheduleSummary();
+  }
+  function refreshSkillSelect() {
+    var sel = document.querySelector('[data-ag-sch-skill]');
+    var a = current();
+    if (sel && a) sel.innerHTML = skillOptionsHtml(a);
+  }
+  function setSchedErr(msg) {
+    var el = document.querySelector('[data-sch-err]');
+    if (!el) return;
+    el.hidden = !msg;
+    el.textContent = msg || '';
+  }
+
   function previewHtml(a) {
     var kn = a.knowledge.length, cp = a.plugins.length;
     var sn = Object.keys(a.surfaces).filter(function (k) { return a.surfaces[k]; }).length;
@@ -616,7 +849,10 @@
           section('surfaces', 4, 'Surfaces', 'where it runs',
             'The same agent, reachable where your team already works.',
             'On ' + sn, surfacesBody(a)) +
-          section('boundaries', 5, 'Boundaries', 'set by admin',
+          section('schedules', 5, 'Schedules', 'when it runs on its own',
+            'Run this agent unattended on a cadence — each schedule sends its own prompt.',
+            scheduleSummary(), schedulesBody(a)) +
+          section('boundaries', 6, 'Boundaries', 'set by admin',
             'Guardrails managed by your workspace admin — you build within them.',
             'Admin-managed', boundariesBody()) +
         '</div>' +
@@ -721,7 +957,7 @@
     // without this the click both navigated and swapped the view underneath it.
     // Let the anchor do what an anchor does.
     if (e.target.closest('.ag-chat')) return;
-    var t = e.target.closest('[data-ag-new],[data-ag-open],[data-ag-del],[data-ag-back],[data-ag-status],[data-ag-toggle-sec],[data-ag-tone],[data-ag-kn],[data-ag-cap],[data-ag-surf],[data-ag-tpl],[data-ag-tpl-close]');
+    var t = e.target.closest('[data-ag-new],[data-ag-open],[data-ag-del],[data-ag-back],[data-ag-status],[data-ag-toggle-sec],[data-ag-tone],[data-ag-kn],[data-ag-cap],[data-ag-surf],[data-ag-tpl],[data-ag-tpl-close],[data-ag-sch-toggle],[data-ag-sch-del],[data-ag-sch-create]');
     if (!t) return;
     var a = current();
     if (t.hasAttribute('data-ag-new')) {
@@ -796,6 +1032,117 @@
       var sid = t.getAttribute('data-ag-surf');
       var def = SURFACE_DEFS.find(function (d) { return d.id === sid; });
       if (def && !def.base) { a.surfaces[sid] = !a.surfaces[sid]; save(); renderBuilder(); }
+    } else if (t.hasAttribute('data-ag-sch-toggle') && a) {
+      toggleSchedule(a, t.getAttribute('data-ag-sch-toggle'), t);
+    } else if (t.hasAttribute('data-ag-sch-del') && a) {
+      deleteSchedule(a, t.getAttribute('data-ag-sch-del'));
+    } else if (t.hasAttribute('data-ag-sch-create') && a) {
+      createSchedule(a, t);
+    }
+  });
+
+  /* ── Schedule mutations ── list rows update via the partial refresh so an
+     in-progress create form is never re-rendered under the caret; only a
+     successful CREATE does a full render (its whole point is a fresh form). */
+  function schedUrl(a, id) {
+    return '/api/v1/agents/' + encodeURIComponent(a.slug) + '/schedules' +
+      (id ? '/' + encodeURIComponent(id) : '');
+  }
+  /* Parse-body-then-decide, so an error body's {detail:{code,message}} can be
+     turned into the owner-readable message. */
+  function schedFetch(url, opts) {
+    return fetch(url, opts).then(function (r) {
+      if (r.status === 204) return null;
+      return r.json().catch(function () { return null; }).then(function (body) {
+        if (!r.ok) throw new Error(schedErrorMessage(body && body.detail));
+        return body;
+      });
+    });
+  }
+
+  function toggleSchedule(a, id, btn) {
+    var row = (schedules || []).find(function (s) { return s.id === id; });
+    if (!row) return;
+    btn.disabled = true;
+    schedFetch(schedUrl(a, id), {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ enabled: !row.enabled })
+    }).then(function (updated) {
+      schedules = schedules.map(function (s) { return s.id === id ? updated : s; });
+    }).catch(function (err) {
+      console.error('agents: schedule toggle failed', err);
+      if (window.appToast) window.appToast({ kind: 'error', msg: 'Could not update the schedule: ' + err.message });
+    }).finally(refreshSchedulesRows);
+  }
+
+  function deleteSchedule(a, id) {
+    var row = (schedules || []).find(function (s) { return s.id === id; });
+    if (!row) return;
+    if (!window.confirm('Delete schedule "' + (row.name || '') + '"? Future runs stop; already-queued runs are unaffected.')) return;
+    schedFetch(schedUrl(a, id), { method: 'DELETE', credentials: 'same-origin' })
+      .then(function () {
+        schedules = schedules.filter(function (s) { return s.id !== id; });
+        refreshSchedulesRows();
+        // Dropping below the 20-schedule cap re-arms the create button, which
+        // only re-renders on a full pass — flip it in place instead.
+        var btn = document.querySelector('[data-ag-sch-create]');
+        if (btn && schedules.length < 20 && schedForm && !schedForm.busy) {
+          btn.disabled = false;
+          btn.textContent = 'Add schedule';
+        }
+      })
+      .catch(function (err) {
+        console.error('agents: schedule delete failed', err);
+        if (window.appToast) window.appToast({ kind: 'error', msg: 'Could not delete the schedule: ' + err.message });
+      });
+  }
+
+  function createSchedule(a, btn) {
+    var name = (schedForm.name || '').trim();
+    var cadence = (schedForm.schedule || '').trim();
+    var prompt = (schedForm.prompt || '').trim();
+    if (!name || !cadence || !prompt) {
+      setSchedErr('Name, cadence and prompt are all required.');
+      return;
+    }
+    schedForm.busy = true;
+    btn.disabled = true;
+    setSchedErr('');
+    schedFetch(schedUrl(a), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ name: name, schedule: cadence, prompt: prompt, enabled: !!schedForm.enabled })
+    }).then(function (created) {
+      (schedules = schedules || []).push(created);
+      schedForm = blankSchedForm();
+      renderBuilder();
+    }).catch(function (err) {
+      schedForm.busy = false;
+      btn.disabled = false;
+      setSchedErr(err.message);
+    });
+  }
+
+  /* Skill pick -> template the prompt (still editable); enabled checkbox ->
+     form state. `change` bubbles for both, `input` does not fire on <select>
+     in every browser. */
+  document.addEventListener('change', function (e) {
+    var el = e.target;
+    if (!el.hasAttribute) return;
+    if (el.hasAttribute('data-ag-sch-skill')) {
+      if (!schedForm) return;
+      schedForm.skill = el.value;
+      if (!el.value) return;
+      var s = (skills || []).find(function (x) { return skillKey(x) === el.value; });
+      if (!s) return;
+      schedForm.prompt = skillPromptFor(s);
+      var ta = document.querySelector('[data-ag-sch-field="prompt"]');
+      if (ta) ta.value = schedForm.prompt;
+    } else if (el.hasAttribute('data-ag-sch-enabled')) {
+      if (schedForm) schedForm.enabled = !!el.checked;
     }
   });
 
@@ -820,6 +1167,10 @@
       }
       return;
     }
+    // Schedule create form — state only (no re-render), so typing never
+    // loses the caret; values survive re-renders triggered elsewhere.
+    var sf = e.target.getAttribute && e.target.getAttribute('data-ag-sch-field');
+    if (sf) { if (schedForm) schedForm[sf] = e.target.value; return; }
     var f = e.target.getAttribute && e.target.getAttribute('data-ag-field');
     if (!f) return;
     var a = current(); if (!a) return;
