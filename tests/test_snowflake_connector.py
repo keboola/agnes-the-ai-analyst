@@ -1121,6 +1121,40 @@ def test_attach_snowflake_password_starting_with_tilde_is_not_a_key_path(monkeyp
         assert "PASSWORD '" in secret_call, password
 
 
+def test_unnameable_single_line_value_is_treated_as_an_inline_key_not_a_path(pkcs8_pem):
+    """A value the OS cannot even name is not a path, so the path probe must
+    fall through to the inline-key branch instead of failing the call.
+
+    This is the deterministic form of a ~5%-per-run flake in
+    `test_attach_snowflake_key_pair_normalizes_pasted_keys`. That test feeds a
+    pasted base64 DER key, and base64's alphabet includes `/` — so the value
+    splits into path components whose lengths depend on where those `/` land,
+    i.e. on the freshly generated key's random bytes. When one component
+    exceeds NAME_MAX, `Path(...).is_file()` raises `OSError(ENAMETOOLONG)`
+    (which `is_file()` does not ignore) and the loader used to convert that
+    into `ValueError: … could not be read`. Measured over 40 generated keys:
+    2 raised. Here the over-long component is constructed rather than hoped
+    for, so the case is pinned.
+
+    A real path that cannot be read, and an unresolvable `~user`, must still
+    raise — see the test below.
+    """
+    from connectors.snowflake.attach import _private_key_pem_and_passphrase
+
+    # No newline, no PEM header, under the 4096 length gate, and one component
+    # far beyond NAME_MAX (255) — exactly the shape base64 sometimes produces.
+    unnameable = "A" * 300 + "/" + "B" * 300
+    with pytest.raises(ValueError) as exc_info:
+        _private_key_pem_and_passphrase(unnameable)
+    # It must fail as "not a key", never as "the file could not be read".
+    assert "could not be read" not in str(exc_info.value)
+
+    # And the same shape carrying a real key body resolves normally.
+    pem, passphrase = _private_key_pem_and_passphrase(pkcs8_pem)
+    assert "BEGIN PRIVATE KEY" in pem
+    assert passphrase is None
+
+
 def test_private_key_path_that_cannot_be_expanded_raises_valueerror(monkeypatch):
     """When the credential really is meant to be a key *path* but '~user' cannot
     be resolved, the loader must surface the typed `ValueError` its own contract

@@ -12,6 +12,7 @@ from __future__ import annotations
 import atexit
 import base64
 import binascii
+import errno
 import hashlib
 import json
 import logging
@@ -445,7 +446,20 @@ def _private_key_pem_and_passphrase(token: str, passphrase: str | None = None) -
         # RuntimeError: see _looks_like_key_pair — expanduser() raises it for an
         # unresolvable '~user' prefix, which is not an OSError/ValueError.
         except (OSError, RuntimeError, UnicodeError, ValueError) as exc:
-            raise ValueError(f"snowflake private key file {raw!r} could not be read: {exc}") from exc
+            # ENAMETOOLONG / EINVAL mean the value cannot be a filesystem name
+            # at all, so it was never a path and this is not an error — fall
+            # through and treat it as an inline key. A pasted base64 DER key is
+            # exactly this case: base64's alphabet includes '/', so the value
+            # splits into path components whose lengths depend on where those
+            # '/' land, i.e. on the key's random bytes. Roughly one run in
+            # twenty produces a component over NAME_MAX, which is why
+            # test_attach_snowflake_key_pair_normalizes_pasted_keys was flaky
+            # rather than reliably red. Every other failure (a real path that
+            # cannot be read, an unresolvable '~user') still surfaces.
+            if isinstance(exc, OSError) and exc.errno in (errno.ENAMETOOLONG, errno.EINVAL):
+                pass
+            else:
+                raise ValueError(f"snowflake private key file {raw!r} could not be read: {exc}") from exc
 
     # Defense-in-depth: a key should never contain '$', but a pasted value
     # containing it could close a dollar-quoted SQL literal. Reject early.
