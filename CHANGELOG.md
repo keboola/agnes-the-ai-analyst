@@ -10,6 +10,19 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Removed
+
+- Two orphaned bootstrap scripts: `scripts/init.sh` (pre-rename local venv
+  bootstrap, superseded by the `uv pip install ".[dev]"` flow in
+  `docs/QUICKSTART.md`) and `scripts/fetch-env-from-secrets.sh` (VM-side `.env`
+  renderer for a deployment layout no longer in use — the customer-instance
+  startup script renders `.env` itself). Neither was referenced by any live
+  code path, workflow, or current doc.
+
+### Internal
+
+- `CLAUDE.md` project structure: drop the `server/` entry (the directory does
+
 ## [0.83.72] - 2026-08-18
 
 ### Internal
@@ -71,18 +84,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **An unreadable table schema is explained instead of reported as an empty table.** `GET /registry/{id}/policy/columns` answered 200 with an empty column list both for a table with no columns and for one whose `DESCRIBE` failed — the ordinary outcome for a `query_mode='remote'` row, whose external catalog is not re-ATTACHed on the read-only analytics connection that read uses. "No columns found" sent the admin looking for a data problem while the real reason surfaced only once a compile was attempted and 422'd. The response carries `schema_available` and the builder says what happened, pointing at the Advanced SQL tab.
 - **A pending or in-flight builder compile is cancelled before it can overwrite hand-written SQL.** The debounced compile could still fire after the admin switched to the Advanced SQL tab or started typing, replacing the SQL box with stale output and re-raising a compile error that had already been dismissed. Editing the box cancels the queued timer and aborts any in-flight `fetch`; each compile request also carries a generation sequence, and responses from superseded requests are ignored. Opening the tab **runs** a queued compile rather than cancelling it — cancelling dropped any builder change made inside the 250 ms debounce window, so the box kept older text, no compile error was set to block the save, and the admin stored a policy that silently omitted their last edit.
 - **The one-click "Use table as base" button clears the compile block, like typing does.** It assigns `#apSql.value` programmatically, and a programmatic assignment does not fire `input`, so the textarea's `oninput` hook never ran: a block set by an earlier failure outlived starter SQL the admin had just asked for, and the save stayed refused until they typed an extra character. For the deterministic failures the escape hatch exists for, no builder interaction could clear it at all.
-### Removed
-
-- Two orphaned bootstrap scripts: `scripts/init.sh` (pre-rename local venv
-  bootstrap, superseded by the `uv pip install ".[dev]"` flow in
-  `docs/QUICKSTART.md`) and `scripts/fetch-env-from-secrets.sh` (VM-side `.env`
-  renderer for a deployment layout no longer in use — the customer-instance
-  startup script renders `.env` itself). Neither was referenced by any live
-  code path, workflow, or current doc.
-
-### Internal
-
-- `CLAUDE.md` project structure: drop the `server/` entry (the directory does
   not exist) and add the `infra/` tree, so the Terraform module that provisions
   a customer instance is discoverable from the project map.
 
