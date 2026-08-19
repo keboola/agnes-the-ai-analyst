@@ -860,26 +860,6 @@ async def lifespan(app):
 
     validate_jwt_secret_or_raise()
 
-    # Fresh-instance detector for the first-boot chat-grant seed further
-    # down (app/chat/grant_seed.py) — MUST be computed before ANY
-    # connection to system.duckdb exists. DuckDB's own per-connect schema
-    # hook (src.db._seed_system_groups) creates the Admin/Everyone system
-    # groups as a side effect of the FIRST get_system_db() call anywhere in
-    # this process — several run before the explicit group-seed step below
-    # — so checking group existence there would find them "pre-existing"
-    # even on a genuinely fresh instance. The on-disk file is the only
-    # signal that predates every connection. Postgres has no equivalent
-    # per-connect seed, so there the group-seed step's own DB read (right
-    # before it calls ensure_system) is the correct, and only, check.
-    _system_duckdb_preexisted_at_boot: "bool | None" = None
-    from src.repositories import use_pg as _use_pg_fresh_check
-
-    if not _use_pg_fresh_check():
-        from src.db import _get_state_dir
-
-        _system_duckdb_preexisted_at_boot = (Path(_get_state_dir()) / "system.duckdb").exists()
-        logger.error("DEBUG file_check=%s", _system_duckdb_preexisted_at_boot)
-
     # Resolve the instance's absolute base URL once and stash it on app.state
     # so request-less surfaces can build absolute links. The Slack bot (Socket
     # Mode) has no inbound request to derive the host from, so without this its
@@ -1188,26 +1168,10 @@ async def lifespan(app):
         # grants like Required onboarding never surface). ensure_system is
         # idempotent and routes through the factory, so it is correct on either
         # backend.
-        # Conservative default: if this lookup itself fails, treat the
-        # instance as NOT fresh (below) rather than risk re-seeding the
-        # chat grant onto an instance where an admin already revoked it.
-        _everyone_group_preexisted = True
         try:
-            from src.db import SYSTEM_EVERYONE_GROUP, _SYSTEM_GROUPS_SEED
+            from src.db import _SYSTEM_GROUPS_SEED
 
             _ug_repo = user_groups_repo()
-            if _system_duckdb_preexisted_at_boot is not None:
-                # DuckDB: the pre-connection file check computed at the top
-                # of lifespan is the only reliable "first boot ever" signal
-                # (see the comment there) — a group lookup here would find
-                # Admin/Everyone already seeded by an earlier get_system_db()
-                # call in THIS SAME boot.
-                _everyone_group_preexisted = _system_duckdb_preexisted_at_boot
-            else:
-                # Postgres: nothing seeds these groups implicitly before
-                # this point, so a direct lookup — captured BEFORE
-                # ensure_system runs below — is the correct check.
-                _everyone_group_preexisted = _ug_repo.get_by_name(SYSTEM_EVERYONE_GROUP) is not None
             for _grp_name, _grp_desc in _SYSTEM_GROUPS_SEED:
                 _ug_repo.ensure_system(_grp_name, _grp_desc)
         except Exception as e:
@@ -1227,11 +1191,7 @@ async def lifespan(app):
             from app.secrets import _state_dir as _seed_chat_state_dir
 
             _chat_cfg_early = load_chat_config(_seed_chat_state_dir() / "instance.yaml")
-            logger.error("DEBUG pre-seed everyone_preexisted=%s chat_enabled=%s", _everyone_group_preexisted, _chat_cfg_early.enabled)
-            if seed_everyone_chat_grant(
-                everyone_group_preexisted=_everyone_group_preexisted,
-                chat_enabled=_chat_cfg_early.enabled,
-            ):
+            if seed_everyone_chat_grant(chat_enabled=_chat_cfg_early.enabled):
                 logger.info("Seeded chat resource grant for Everyone (fresh instance, chat.enabled=true)")
         except Exception as e:
             logger.warning("Could not seed chat resource grant: %s", e)

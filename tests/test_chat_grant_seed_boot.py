@@ -25,10 +25,14 @@ def test_fresh_boot_with_chat_enabled_seeds_everyone_chat_grant(e2e_env, monkeyp
     from app.main import create_app
 
     app = create_app()
-    client = TestClient(app)
-
-    r = client.get("/api/health")  # first request — triggers lifespan startup
-    assert r.status_code == 200
+    # `with` is load-bearing: TestClient runs the lifespan only inside the
+    # context manager. Constructing it and firing a request does NOT start
+    # lifespan, and the Everyone group would still appear (DuckDB seeds the
+    # system groups on connect), so the assertions below would pass or fail
+    # for reasons unrelated to the seeding this test exists to cover.
+    with TestClient(app) as client:
+        r = client.get("/api/health")
+        assert r.status_code == 200
 
     from src.repositories import resource_grants_repo, user_groups_repo
 
@@ -55,10 +59,9 @@ def test_fresh_boot_with_chat_disabled_does_not_seed_grant(e2e_env, monkeypatch)
     from app.main import create_app
 
     app = create_app()
-    client = TestClient(app)
-
-    r = client.get("/api/health")
-    assert r.status_code == 200
+    with TestClient(app) as client:  # see the note above — `with` runs lifespan
+        r = client.get("/api/health")
+        assert r.status_code == 200
 
     from src.repositories import resource_grants_repo, user_groups_repo
 
