@@ -637,3 +637,222 @@ def test_update_display_name_overwrite_existing(users_repo):
     row = repo.get_by_id("user-1")
     assert row is not None
     assert row["name"] == "Newest"
+
+
+# ---------------------------------------------------------------------------
+# list_case_variant_duplicates — the reconciliation report
+#
+# `users` is UNIQUE on `email`, so two rows colliding case-insensitively are
+# invisible to every constraint and to every list view sorted by address.
+# `get_by_email_ci` silently resolves one of them; this names all of them.
+# ---------------------------------------------------------------------------
+
+
+def test_list_case_variant_duplicates_is_empty_without_collisions(users_repo):
+    repo, _, _ = users_repo
+    _make_user(repo, id="user-a", email="a@example.com")
+    _make_user(repo, id="user-b", email="b@example.com")
+    assert repo.list_case_variant_duplicates() == []
+
+
+def test_list_case_variant_duplicates_groups_the_colliding_rows(users_repo):
+    repo, _, backend = users_repo
+    _make_user(repo, id="user-old", email="Dup@Example.com")
+    _make_user(repo, id="user-new", email="dup@example.com")
+    _make_user(repo, id="user-solo", email="solo@example.com")
+    _set_created_at(repo, backend, "user-old", datetime(2025, 1, 1, tzinfo=timezone.utc))
+    _set_created_at(repo, backend, "user-new", datetime(2026, 6, 1, tzinfo=timezone.utc))
+
+    groups = repo.list_case_variant_duplicates()
+
+    assert len(groups) == 1, "the non-colliding row must not appear"
+    g = groups[0]
+    assert g["email"] == "dup@example.com", "the address is reported folded"
+    assert g["count"] == 2
+    assert [u["id"] for u in g["users"]] == ["user-old", "user-new"]
+    # Both spellings survive in the rows — the operator needs to see which is which.
+    assert [u["email"] for u in g["users"]] == ["Dup@Example.com", "dup@example.com"]
+
+
+def test_list_case_variant_duplicates_names_the_row_sign_in_resolves_to(users_repo):
+    """The whole point of the report: `resolved_id` is the account a sign-in
+    actually lands on, so an operator can see that deactivating the OTHER row
+    would not have disabled the identity."""
+    repo, _, backend = users_repo
+    _make_user(repo, id="user-old", email="dup@example.com")
+    _make_user(repo, id="user-new", email="DUP@EXAMPLE.COM")
+    _set_created_at(repo, backend, "user-old", datetime(2025, 1, 1, tzinfo=timezone.utc))
+    _set_created_at(repo, backend, "user-new", datetime(2026, 6, 1, tzinfo=timezone.utc))
+
+    g = repo.list_case_variant_duplicates()[0]
+    assert g["resolved_id"] == repo.get_by_email_ci("dup@example.com")["id"]
+    assert g["resolved_id"] == g["users"][0]["id"], "users[0] is the resolved row"
+
+
+def test_list_case_variant_duplicates_tiebreaks_like_get_by_email_ci(users_repo):
+    """`created_at` is not unique. If the report ordered a tie differently from
+    `get_by_email_ci`, `resolved_id` would name a row that sign-in never
+    reaches — the report would be actively misleading on exactly the instances
+    it exists for."""
+    repo, _, backend = users_repo
+    same = datetime(2025, 3, 1, tzinfo=timezone.utc)
+    _make_user(repo, id="user-b", email="Tie@example.com")
+    _make_user(repo, id="user-a", email="tie@example.com")
+    _make_user(repo, id="user-c", email="TIE@EXAMPLE.COM")
+    for uid in ("user-a", "user-b", "user-c"):
+        _set_created_at(repo, backend, uid, same)
+
+    g = repo.list_case_variant_duplicates()[0]
+    assert [u["id"] for u in g["users"]] == ["user-a", "user-b", "user-c"]
+    assert g["resolved_id"] == repo.get_by_email_ci("tie@example.com")["id"] == "user-a"
+
+
+def test_list_case_variant_duplicates_orders_groups_by_folded_address(users_repo):
+    """Two backends and two runs must agree on group order, or diffing one
+    report against the next shows churn that isn't there."""
+    repo, _, _ = users_repo
+    _make_user(repo, id="u-z1", email="zeta@example.com")
+    _make_user(repo, id="u-z2", email="Zeta@example.com")
+    _make_user(repo, id="u-a1", email="alpha@example.com")
+    _make_user(repo, id="u-a2", email="Alpha@example.com")
+
+    assert [g["email"] for g in repo.list_case_variant_duplicates()] == [
+        "alpha@example.com",
+        "zeta@example.com",
+    ]
+
+
+def test_list_case_variant_duplicates_reports_deactivation_state_per_row(users_repo):
+    """The failure this report exists to catch: an operator disables the
+    account they can see while sign-in resolves to a still-active variant."""
+    repo, _, backend = users_repo
+    _make_user(repo, id="user-old", email="dup@example.com")
+    _make_user(repo, id="user-new", email="Dup@Example.com")
+    _set_created_at(repo, backend, "user-old", datetime(2025, 1, 1, tzinfo=timezone.utc))
+    _set_created_at(repo, backend, "user-new", datetime(2026, 6, 1, tzinfo=timezone.utc))
+    repo.update(
+        "user-new",
+        active=False,
+        deactivated_at=datetime.now(timezone.utc),
+        deactivated_by="admin@example.com",
+    )
+
+    g = repo.list_case_variant_duplicates()[0]
+    by_id = {u["id"]: u for u in g["users"]}
+    assert by_id["user-new"]["active"] is False
+    assert by_id["user-old"]["active"] is True
+    assert g["resolved_id"] == "user-old", "the still-active row is the one sign-in reaches"
+
+
+def test_list_case_variant_duplicates_never_returns_credentials(users_repo):
+    """`users` carries `password_hash`, `setup_token` and `reset_token`. A
+    `SELECT *` here would put password hashes and live one-time-link tokens into
+    `agnes admin duplicate-accounts --json` — output an operator reconciling
+    accounts is likely to redirect to a file or paste into a ticket."""
+    repo, _, _ = users_repo
+    _make_user(repo, id="user-a", email="Dup@example.com")
+    _make_user(repo, id="user-b", email="dup@example.com")
+    repo.update(
+        "user-a",
+        password_hash="$argon2id$v=19$SECRETHASH",
+        reset_token="LIVE-RESET-TOKEN",
+        setup_token="LIVE-SETUP-TOKEN",
+    )
+
+    rows = repo.list_case_variant_duplicates()[0]["users"]
+
+    for row in rows:
+        for banned in ("password_hash", "reset_token", "setup_token", "reset_token_created", "setup_token_created"):
+            assert banned not in row, f"{banned} must not reach the duplicate report"
+    # The useful part survives: whether a password exists, without the hash.
+    assert {r["id"]: r["has_password"] for r in rows} == {"user-a": True, "user-b": False}
+
+
+def test_list_case_variant_duplicates_also_groups_whitespace_padded_rows(users_repo):
+    """The sign-in doors normalize their input with strip + lower, so a stored
+    ` ann@x` and a stored `ann@x` are the same address to a person and shadow
+    each other in the same way a case variant does."""
+    repo, _, _ = users_repo
+    _make_user(repo, id="user-clean", email="pad@example.com")
+    _make_user(repo, id="user-padded", email=" pad@example.com")
+
+    groups = repo.list_case_variant_duplicates()
+    assert len(groups) == 1
+    assert groups[0]["email"] == "pad@example.com"
+    assert {u["id"] for u in groups[0]["users"]} == {"user-clean", "user-padded"}
+
+
+def test_a_padded_row_is_flagged_unreachable_and_never_named_as_resolved(users_repo):
+    """`get_by_email_ci` folds case but does NOT trim the column, so a padded
+    row is matched by no address anyone can type. Naming it `resolved_id`
+    because it happens to be oldest would point the operator at the one row
+    sign-in can never reach — the exact inversion this report exists to prevent.
+    """
+    repo, _, backend = users_repo
+    _make_user(repo, id="user-padded", email=" pad@example.com")
+    _make_user(repo, id="user-clean", email="pad@example.com")
+    _set_created_at(repo, backend, "user-padded", datetime(2025, 1, 1, tzinfo=timezone.utc))
+    _set_created_at(repo, backend, "user-clean", datetime(2026, 6, 1, tzinfo=timezone.utc))
+
+    g = repo.list_case_variant_duplicates()[0]
+    by_id = {u["id"]: u for u in g["users"]}
+    assert by_id["user-padded"]["unreachable_by_sign_in"] is True
+    assert by_id["user-clean"]["unreachable_by_sign_in"] is False
+    assert g["resolved_id"] == "user-clean", "the older padded row must not win"
+    # And the claim the flag encodes is true of the real lookup, checked with
+    # the address a door actually passes. `normalize_email` strips before the
+    # call, so the padded row is unreachable however the person typed it —
+    # feeding the padded string straight in would match, but no door does that.
+    from src.user_identity import normalize_email
+
+    for typed in (" pad@example.com", "pad@example.com ", " PAD@Example.com "):
+        assert repo.get_by_email_ci(normalize_email(typed))["id"] == "user-clean"
+
+
+def test_a_group_of_only_padded_rows_resolves_to_nobody(users_repo):
+    """Both rows unreachable means the address signs nobody in at all. `None`
+    says that; picking one would invent a winner."""
+    repo, _, _ = users_repo
+    _make_user(repo, id="user-p1", email=" ghost@example.com")
+    _make_user(repo, id="user-p2", email="ghost@example.com ")
+
+    g = repo.list_case_variant_duplicates()[0]
+    assert g["resolved_id"] is None
+    assert all(u["unreachable_by_sign_in"] for u in g["users"])
+
+
+def test_tab_padded_duplicates_are_reported_like_space_padded_ones(users_repo):
+    """SQL `trim()` strips spaces only, on both engines. Folding in SQL would
+    therefore put a tab-padded pair in two single-row groups, `HAVING COUNT(*) >
+    1` would drop both, and the collision would never be reported — the
+    unreachable-row class this report exists for, missing precisely when the
+    padding is least visible. The fold lives in Python so all whitespace counts.
+    """
+    repo, _, _ = users_repo
+    _make_user(repo, id="user-tab", email="\tws@example.com")
+    _make_user(repo, id="user-nl", email="ws@example.com\n")
+    _make_user(repo, id="user-clean", email="ws@example.com")
+
+    groups = repo.list_case_variant_duplicates()
+    assert len(groups) == 1
+    g = groups[0]
+    assert g["email"] == "ws@example.com"
+    assert {u["id"] for u in g["users"]} == {"user-tab", "user-nl", "user-clean"}
+    assert g["resolved_id"] == "user-clean", "only the unpadded row is reachable"
+    assert {u["id"] for u in g["users"] if u["unreachable_by_sign_in"]} == {"user-tab", "user-nl"}
+
+
+def test_grouping_survives_rows_whose_folded_addresses_interleave(users_repo):
+    """The fold no longer depends on SQL ordering putting colliding rows next to
+    each other, so a third address sorting between two variants cannot split a
+    group in half."""
+    repo, _, _ = users_repo
+    _make_user(repo, id="user-a1", email="\tmid@example.com")
+    _make_user(repo, id="user-b", email="mia@example.com")
+    _make_user(repo, id="user-b2", email="MIA@example.com")
+    _make_user(repo, id="user-a2", email="mid@example.com")
+
+    groups = {g["email"]: g for g in repo.list_case_variant_duplicates()}
+    assert set(groups) == {"mia@example.com", "mid@example.com"}
+    assert {u["id"] for u in groups["mid@example.com"]["users"]} == {"user-a1", "user-a2"}
+    assert {u["id"] for u in groups["mia@example.com"]["users"]} == {"user-b", "user-b2"}
