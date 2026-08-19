@@ -1191,16 +1191,48 @@ def test_mention_prebinding_human_thread_keeps_working_for_its_starter(monkeypat
     )
     mgr = _FakeMgr()
     app = _FakeApp(conn=conn, mgr=mgr)
-    asyncio.run(ev._handle_mention(app, {"channel": "C_OK", "ts": "9.12", "user": "U_OK", "text": "<@U07BOT> continue"}))
+    asyncio.run(
+        ev._handle_mention(app, {"channel": "C_OK", "ts": "9.12", "user": "U_OK", "text": "<@U07BOT> continue"})
+    )
     # Unrouted: plain text, no header/prefix, no ack; the starter is served.
     assert mgr.sent and mgr.sent[0][1] == "continue"
     assert reactions == []
 
 
+def _seed_stored_agent(conn, *, owner_id="uid_boss5", owner_email="boss5@x", slug="stored"):
+    """A non-passthrough agent whose owner holds CHAT and which holds NO
+    ('slack_channel', …) scope item — the shape a service thread's stored
+    agent_id points at once its channel has been unbound."""
+    from src.repositories import agents_repo
+
+    conn.execute(
+        "INSERT INTO users(id, email, name) VALUES (?, ?, 'Boss') ON CONFLICT DO NOTHING",
+        [owner_id, owner_email],
+    )
+    egid = conn.execute("SELECT id FROM user_groups WHERE name='Everyone'").fetchone()[0]
+    conn.execute(
+        "INSERT INTO user_group_members(user_id, group_id, source) VALUES (?, ?, 'system_seed') ON CONFLICT DO NOTHING",
+        [owner_id, egid],
+    )
+    agent_id = f"ag_{slug}"
+    agents_repo().create(
+        id=agent_id,
+        owner_user_id=owner_id,
+        name="Stored",
+        slug=slug,
+        plugins_mode="selected",
+        connections_mode="selected",
+        tables_mode="selected",
+        memory_mode="selected",
+    )
+    return agent_id
+
+
 def test_mention_service_thread_survives_unbinding(monkeypatch):
     """Unbinding a channel stops NEW routed threads; an existing service
     thread (agent_id set) stays continuable by gated members — the session
-    keeps its stored agent (Devin Review on this PR)."""
+    keeps its stored agent, which is re-checked (exists, not deleted, not
+    all-'all', owner still holds CHAT) on the way through."""
     import asyncio
     import services.slack_bot.events as ev
 
@@ -1214,20 +1246,76 @@ def test_mention_service_thread_survives_unbinding(monkeypatch):
     _ensure_schema(conn)
     _seed_bound_chat_user(conn)
     _allow_channel(conn)
-    # NO binding for C_OK in this test — but a service thread exists.
-    conn.execute("INSERT INTO users(id, email, name) VALUES ('uid_boss5', 'boss5@x', 'Boss') ON CONFLICT DO NOTHING")
+    # NO binding for C_OK in this test — but a service thread exists, and its
+    # stored agent is a real, still-healthy row (a dangling agent_id is the
+    # separate refusal case below).
+    agent_id = _seed_stored_agent(conn)
     conn.execute(
         "INSERT INTO chat_sessions(id, user_email, surface, slack_channel_id, "
         "slack_thread_ts, title, started_at, agent_id) VALUES "
-        "('s_unbound', 'boss5@x', 'slack_thread', 'C_OK', '9.13', NULL, current_timestamp, 'ag_gone')"
+        "('s_unbound', 'boss5@x', 'slack_thread', 'C_OK', '9.13', NULL, current_timestamp, ?)",
+        [agent_id],
     )
     conn.execute(
         "INSERT INTO chat_messages(id, session_id, role, content) VALUES ('m_unbound1', 's_unbound', 'user', 'hi')"
     )
     mgr = _FakeMgr()
     app = _FakeApp(conn=conn, mgr=mgr)
-    asyncio.run(ev._handle_mention(app, {"channel": "C_OK", "ts": "9.13", "user": "U_OK", "text": "<@U07BOT> tweak it"}))
+    asyncio.run(
+        ev._handle_mention(app, {"channel": "C_OK", "ts": "9.13", "user": "U_OK", "text": "<@U07BOT> tweak it"})
+    )
     assert mgr.sent and mgr.sent[0][1] == "[slack sender=<@U_OK>]\ntweak it"
+
+
+def test_mention_service_thread_refuses_agent_widened_after_unbinding(monkeypatch):
+    """A stored agent_id outlives its binding, so the service-thread path
+    must re-run the routing invariants the binding path enforces.
+
+    An agent widened to all-'all' AFTER its channel was unbound would
+    otherwise keep serving the thread on the owner's PLAIN identity JWT:
+    the session was created as the owner, so the broker's
+    `_mint_identity_jwt` never diverts to `mint_agent_session_jwt` and the
+    owner's admin short-circuit rides along. Refuse instead of delivering.
+    """
+    import asyncio
+    import services.slack_bot.events as ev
+    from src.repositories import agents_repo
+
+    posts = []
+
+    async def _fake_ep(ch, u, txt):
+        posts.append(txt)
+
+    monkeypatch.setattr(ev, "send_ephemeral_to_user", _fake_ep)
+
+    async def _fake_react(channel, ts, emoji):
+        return None
+
+    monkeypatch.setattr(ev, "add_reaction", _fake_react)
+    conn = get_system_db()
+    _ensure_schema(conn)
+    _seed_bound_chat_user(conn)  # the second, gated member who mentions
+    _allow_channel(conn)
+    # Owner-owned service thread pointing at an agent that was bound, then
+    # unbound (scope item removed) and widened to passthrough.
+    agent_id = _seed_stored_agent(conn, slug="widened")
+    agents_repo().set_scope(agent_id, [])
+    agents_repo().update(agent_id, plugins_mode="all", connections_mode="all", tables_mode="all", memory_mode="all")
+    conn.execute(
+        "INSERT INTO chat_sessions(id, user_email, surface, slack_channel_id, "
+        "slack_thread_ts, title, started_at, agent_id) VALUES "
+        "('s_widened', 'boss5@x', 'slack_thread', 'C_OK', '9.19', NULL, current_timestamp, ?)",
+        [agent_id],
+    )
+    conn.execute(
+        "INSERT INTO chat_messages(id, session_id, role, content) VALUES ('m_widened1', 's_widened', 'user', 'hi')"
+    )
+    mgr = _FakeMgr()
+    app = _FakeApp(conn=conn, mgr=mgr)
+    asyncio.run(ev._handle_mention(app, {"channel": "C_OK", "ts": "9.19", "user": "U_OK", "text": "<@U07BOT> do it"}))
+    assert posts and "no longer available" in posts[-1]
+    assert mgr.sent == []
+    assert mgr.created == []
 
 
 def test_mention_cap_hit_gets_ephemeral_not_silence(monkeypatch):

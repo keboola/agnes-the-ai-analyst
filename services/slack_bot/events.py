@@ -493,6 +493,52 @@ async def _handle_mention(app, event: dict) -> None:
         bound_agent = None
         routed_session_user = None
 
+    if service_thread and bound_agent is None:
+        # The stored agent_id outlives its binding, so an unbound (or
+        # re-bound) channel reaches here with service_thread True and none
+        # of the 5b checks run — they all sit under `if bound_agent is not
+        # None`. Re-assert them against the STORED agent, because the turn
+        # is still delivered into an agent-carrying, owner-owned session:
+        # without this an agent widened to all-'all' after unbinding takes
+        # the broker's passthrough optimization (session user == owner, so
+        # `_mint_identity_jwt` never diverts to mint_agent_session_jwt) and
+        # runs on the owner's PLAIN identity JWT, admin short-circuit and
+        # all. A missing/deleted agent is refused here too — the broker
+        # already fails closed on it (401 ticket_agent_not_found), so
+        # delivering would buy an opaque failure instead of a plain answer.
+        from src.agent_scope_intersection import agent_is_passthrough
+
+        stored_agent = None
+        try:
+            stored_agent = agents_repo().get_by_id(str(existing_agent_id))
+        except Exception:
+            logger.exception("stored agent lookup failed for service thread %s", existing_agent_id)
+        stored_owner = (
+            None
+            if stored_agent is None or stored_agent.get("deleted_at") is not None
+            else users_repo().get_by_id(str(stored_agent["owner_user_id"]))
+        )
+        if (
+            stored_agent is None
+            or stored_agent.get("deleted_at") is not None
+            or agent_is_passthrough(stored_agent)
+            or stored_owner is None
+            or not stored_owner.get("email")
+            or not can_access(stored_owner["id"], ResourceType.CHAT.value, "chat", conn)
+        ):
+            logger.warning(
+                "service thread %s refused: stored agent %s is missing, deleted, all-'all', "
+                "or its owner no longer holds the CHAT grant",
+                getattr(existing, "id", None),
+                existing_agent_id,
+            )
+            await send_ephemeral_to_user(
+                channel,
+                slack_user_id,
+                "This thread's agent is no longer available — start a new thread.",
+            )
+            return
+
     # The identity the session row (and everything keyed off it) belongs to.
     # (routed_session_user is non-None exactly when bound_agent survived all
     # the routing checks above — the two are set and cleared together.)
