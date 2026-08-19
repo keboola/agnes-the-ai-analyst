@@ -10,6 +10,86 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.83.90] - 2026-08-19
+
+### Added
+
+- **Keboola tables can now be registered as live (`query_mode='remote'`) from
+  the Add-data wizard.** Each row in the bucket browser carries a
+  live/materialized select (shown once the table is checked, defaulting to
+  materialized — the previous hardcoded behavior). Live rows resolve through
+  the Keboola DuckDB extension at query time via `_remote_attach`, exactly
+  like rows registered through the API; previously the wizard forced every
+  Keboola table to `materialized` and remote registration was API/CLI-only.
+
+### Changed
+
+- **The bundled reference install-prompt template is thin and self-contained.** `src/_bundled_seed/install-prompt/template.md.tmpl` mirrors the thin default (install the CLI inline, `agnes onboard`, restart, confirm) and references only what a forked template can actually use: `{server_url}` plus the Jinja `{{ ... }}` context. `docs/seed-repo-contract.md` §5 now documents that contract, and a new guard test keeps retired/unwired placeholders out of the bundle. Bundled-seed provenance (`.source_ref`) is refreshed to the current upstream tip.
+- **The Initial Workspace sync dry-run warns about unusable install-prompt placeholders.** It scans the template the prompt is actually bound to (custom `git_path` included) for single-brace names nothing substitutes on the git-bound path, instead of exercising the built-in renderer, which no longer reads seed content.
+
+### Fixed
+
+- **Registering a valid Snowflake remote table marked it failed whenever some OTHER row was broken, and correcting a row failed to clear its error for the same reason.** `rebuild_from_registry` walks every `query_mode='remote'` Snowflake row and the API collapsed all per-table errors into one aggregate string, so on an instance already carrying a phantom row every subsequent valid registration read `error` in `/admin/sync` and `GET /api/admin/registry` quoting a table the operator had never typed — while the edit path, gated on that same aggregate, could never clear a corrected row at all. The rebuild helper now reports which tables actually failed and whether it ran at all (a benign skip reports success by design, so a skip used to wipe a real failure and turn an unusable table green); recording and clearing both key off this row's own outcome — and the edit path hands the rebuild the row's POST-update name, since a rename would otherwise leave the old name absent from the failed set no matter what the rebuild found.
+- **A failed bulk registration on `/admin/data-sources` showed HTML entities instead of the server's message.** Two of the three status sinks ran the message through `_esc()` before assigning it to `textContent`, which escapes on its own — so `Catalog Error: … Did you mean "Y"?` reached the operator as `Did you mean &quot;Y&quot;?`, mangling the one string those sinks exist to relay. Not an escaping hole (all three write `textContent`, never `innerHTML`); the single-row path already got this right.
+- **A `SERVER_URL` with stray whitespace re-initialized every chat workspace on every attach.** The `.claude/init-complete` sentinel reader strips what it reads back, so an unstripped comparand never equalled the value just written and `WorkdirManager.needs_reinit()` stayed True forever. Non-destructive — the init path only overwrites template-owned files — but a malformed env var cost a full template copy per session. Both sides strip now.
+- **`agnes onboard` refuses a `--workspace` target that does not exist** (exit 23) instead of letting `agnes init` create it while later steps resolved paths against an unclassified directory — the command never creates directories on the user's behalf.
+- **Re-running `agnes onboard` in a workspace it already created no longer demands `--accept-dir`.** The directory gate recognizes the `.claude/init-complete` sentinel (checked after the home/system-dir refusal, so a stray sentinel can't bless `$HOME`), and the allowlist covers the artefacts an interrupted init leaves behind.
+- **A benign `agnes update` early-out no longer aborts `agnes onboard` as a failed init.** `typer.Exit(0)` (the single-instance lock held by the background SessionStart refresh) is reported as "another update is already running"; a non-zero exit stays fatal with a legible message. A convergence that reported failed stages now marks the init row `warning` and degrades the report's `overall` instead of reading as "already configured".
+
+- **Keboola `query_mode='materialized'` tables were registered, reported
+  `last_sync=ok` with a row count, and could not be read.** `materialize_query`
+  published the parquet but never registered it in the source's
+  `extract.duckdb`, and `SyncOrchestrator.rebuild()` only ever walks `_meta` —
+  so no master view was created and every read 400d with "registered as
+  query_mode='materialized' but is not yet materialized in this instance's
+  analytics views". On an instance whose Keboola rows were ALL materialized
+  there was no `extract.duckdb` at all, so the orchestrator skipped the entire
+  source behind a debug-level log line and nothing surfaced to the operator.
+  The Keboola connector now writes the `_meta` row + inner view like BigQuery,
+  Snowflake and Databricks already did (creating `extract.duckdb` when absent,
+  which the other three can assume exists), fail-soft so a registration hiccup
+  never loses a published parquet. Which half of that actually carries the
+  fix is worth stating: the `_meta` write opens `extract.duckdb` as a second
+  write handle, and `src/orchestrator.py` already documents that exact call
+  colliding with the read-only ATTACH `rebuild()` holds (`Unique file handle
+  conflict`) for BigQuery's equivalent — which is why the 0.41.0
+  filesystem-fallback pass over `data/*.parquet` exists. So on an instance
+  where that collision fires, the master view still comes from the fallback;
+  the load-bearing change here is **creating `extract.duckdb` at all** for a
+  materialized-only Keboola source, since without it the orchestrator skipped
+  the whole source before the fallback could ever run.
+- **A failed Snowflake table registration now says why, in both places an
+  operator looks.** `POST /api/admin/register-table` answered a failed
+  remote-extract rebuild with 500 + `{status: "rebuild_failed", message: …}`;
+  the admin UI reads `detail`, so the real reason (`Catalog Error: Table with
+  name X does not exist! Did you mean "Y"?`) was thrown away and the wizard
+  showed a bare "✗ failed". The response now carries the reason under `detail`
+  as well, the UI falls back through both keys, and the row — kept on purpose
+  so a mistyped name can be edited rather than re-entered — is marked failed in
+  `sync_state` instead of reading `pending` / "never synced" forever, which is
+  indistinguishable from a row waiting for its first tick.
+- **Correcting a bad Snowflake schema/table now clears the row's recorded
+  failure.** `PUT /api/admin/registry/{id}` re-runs the remote-extract rebuild,
+  but a success left the previous failure in `sync_state`, so `/admin/sync` and
+  `GET /api/admin/registry` kept serving the old error until the next full
+  orchestrator sweep re-derived state from `_meta` — the fix looked like it had
+  not taken.
+
+- **A per-user chat workspace re-initializes when the instance's `SERVER_URL` changes.** `WorkdirManager.needs_reinit()` compared only the marketplace SHA and the Agnes version, so a workspace initialized under one URL kept serving a rendered `CLAUDE.md` naming the pre-migration host after an operator moved the instance to a new domain — the in-sandbox agent read the mismatch as a phishing indicator, and the workspace only converged when the next version bump happened to force a re-init. The server URL recorded in the `.claude/init-complete` sentinel (new reader: `src/initial_workspace.py::read_sentinel_server_url`) is now part of the re-init decision; a sentinel predating the `server_url` line triggers one self-healing re-init that re-stamps it.
+
+### Security
+
+- **A Snowflake private key is no longer echoed into an error message.** The
+  key loader treats a single-line, non-PEM value under 4 KiB as a possible file
+  path; when such a value named a real file that could not be read or decoded,
+  the raised error interpolated the value itself — and the underlying
+  `OSError`'s own text ends with the same string. That message reaches the
+  `register-table` response and (as of this release) the persisted
+  `sync_state.error` that `/admin/sync`, `GET /api/admin/registry` and `agnes
+  admin list-tables` render unredacted. It now names only the failure class and
+  the setting to check; the original exception stays chained for a local
+  traceback.
+
 ## [0.83.89] - 2026-08-19
 
 ### Added

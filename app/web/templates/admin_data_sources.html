@@ -341,6 +341,12 @@
   .ds-table-row label { flex: 1; cursor: pointer; display: flex; align-items: center; gap: 8px; min-width: 0; }
   .ds-table-name { color: var(--text-primary, var(--ds-text-primary)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .ds-table-rows { color: var(--text-secondary, var(--ds-text-secondary)); flex-shrink: 0; font-variant-numeric: tabular-nums; }
+  .ds-table-mode {
+    flex: 0 0 auto; display: none; font: inherit; font-size: 11px; padding: 2px 6px;
+    border: 1px solid var(--border, var(--ds-border)); border-radius: 6px;
+    background: var(--surface, var(--ds-surface)); color: var(--text-secondary, var(--ds-text-secondary));
+  }
+  .ds-table-row.is-sel .ds-table-mode { display: block; }
   .ds-table-status { font-size: 11px; flex-shrink: 0; min-width: 90px; text-align: right; }
   .ds-table-status.ok { color: var(--ds-accent-success-ink); }
   .ds-table-status.fail { color: var(--ds-accent-danger-ink); }
@@ -916,7 +922,7 @@
           <button type="button" class="ds-srcopt on" data-wsrc="keboola">
             <span class="so-logo so-logo--kbc">K</span>
             <span class="so-name">Keboola project</span>
-            <span class="so-sub">Buckets &amp; tables, synced copies</span>
+            <span class="so-sub">Buckets &amp; tables, synced copies or live</span>
           </button>
           <button type="button" class="ds-srcopt" data-wsrc="bigquery">
             <span class="so-logo so-logo--bq"><svg class="connector-logo" viewBox="0 0 24 24" fill="currentColor" role="img" aria-label="BigQuery"><rect x="3" y="3" width="8" height="8" rx="2"/><rect x="13" y="3" width="8" height="8" rx="2"/><rect x="3" y="13" width="8" height="8" rx="2"/><rect x="13" y="13" width="8" height="8" rx="2"/></svg></span>
@@ -1229,6 +1235,19 @@
 const API_CONNECTIONS = "/api/admin/source-connections";
 const API_REGISTER_TABLE = "/api/admin/register-table";
 const API_SERVER_CONFIG = "/api/admin/server-config";
+
+// Error text for a failed register-table call. `register-table` answers a
+// FAILED remote-extract rebuild with 500 + `{status:"rebuild_failed", detail,
+// message}` — the upstream reason (e.g. `Catalog Error: Table with name X does
+// not exist! Did you mean "Y"?`) is the single most useful thing on the page,
+// and reading only `detail` used to render a bare "✗ failed" for any endpoint
+// that put it under `message`. Falls back through both keys, then to a
+// non-empty default.
+function _registerErrorText(body) {
+  const b = body || {};
+  const text = typeof b.detail === "string" ? b.detail : typeof b.message === "string" ? b.message : "";
+  return text || "failed";
+}
 
 function _esc(s) {
   return (s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -2083,6 +2102,11 @@ function _renderBucketPicker(connId, buckets) {
           <span class="ds-table-name">${_esc(t.name)}</span>
         </label>
         <span class="ds-table-rows">${(t.rows ?? 0).toLocaleString()} rows</span>
+        <select class="ds-table-mode" data-kb-mode aria-label="How ${_esc(t.name)} is served"
+                title="materialized = scheduled copy on the server; live = every query goes to Keboola Storage">
+          <option value="materialized" selected>materialized</option>
+          <option value="remote">live</option>
+        </select>
         <span class="ds-table-status" id="ds-tstatus-${connId}-${bi}-${ti}"></span>
       </div>`;
     }).join("");
@@ -2162,6 +2186,12 @@ function _syncPicker(root) {
   const groups = [...root.querySelectorAll("[data-bucket-group]")];
   groups.forEach(_syncBucket);
   const boxes = [...root.querySelectorAll(".ds-table-checkbox")];
+  // The per-row mode select only means something for a row about to be
+  // registered — show it exactly for the checked ones. Bulk paths (bucket
+  // check, Select all/none) set .checked programmatically, which fires no
+  // change event, so the class has to be reasserted here, the one sync
+  // point every path already goes through.
+  boxes.forEach((b) => b.closest(".ds-table-row").classList.toggle("is-sel", b.checked));
   const selected = boxes.filter((b) => b.checked);
   // A table selected but filtered out of view is still going to be
   // registered — say so, rather than letting the filter imply otherwise.
@@ -2335,8 +2365,10 @@ async function registerSelected(connId, errElId) {
   const registered = [];
   let okCount = 0, failCount = 0, alreadyCount = 0;
   for (const cb of checked) {
-    const statusId = cb.closest(".ds-table-row").querySelector(".ds-table-status").id;
+    const rowEl = cb.closest(".ds-table-row");
+    const statusId = rowEl.querySelector(".ds-table-status").id;
     const statusEl = document.getElementById(statusId);
+    const modeSel = rowEl.querySelector("[data-kb-mode]");
     statusEl.textContent = "registering…";
     statusEl.className = "ds-table-status";
     try {
@@ -2350,7 +2382,7 @@ async function registerSelected(connId, errElId) {
           // BARE in-bucket name — the full `bucket.table` id here doubled
           // the bucket when the sync path re-composed the export id.
           source_table: cb.dataset.tableBare || cb.dataset.tableName,
-          query_mode: "materialized",
+          query_mode: modeSel ? modeSel.value : "materialized",
           connection_id: connId,
           description: `Added via the Data sources wizard (#755)`,
         }),
@@ -2359,6 +2391,7 @@ async function registerSelected(connId, errElId) {
         statusEl.textContent = "✓ registered";
         statusEl.className = "ds-table-status ok";
         cb.disabled = true;
+        if (modeSel) modeSel.disabled = true;
         okCount++;
         registered.push({
           id: (cb.dataset.tableName || "").trim().toLowerCase().replace(/ /g, "_"),
@@ -2379,7 +2412,7 @@ async function registerSelected(connId, errElId) {
         });
       } else {
         const body = await r.json().catch(() => ({}));
-        statusEl.textContent = "✗ " + (body.detail || "failed");
+        statusEl.textContent = "✗ " + (_registerErrorText(body));
         statusEl.className = "ds-table-status fail";
         failCount++;
       }
@@ -3338,7 +3371,12 @@ async function _registerBqRows() {
         });
       } else {
         const b = await resp.json().catch(() => ({}));
-        r.statusEl.textContent = "✗ " + _esc(typeof b.detail === "string" ? b.detail : "failed");
+        // No _esc(): the sink is textContent, which escapes on its own.
+        // Escaping first would show the operator the literal
+        // `Did you mean &quot;Y&quot;?` instead of the quoted table name —
+        // mangling the one string this surface exists to relay. Line ~2412
+        // (the single-row path) already gets this right.
+        r.statusEl.textContent = "✗ " + _registerErrorText(b);
         r.statusEl.className = "ds-table-status fail";
         failed++;
       }
@@ -3442,7 +3480,12 @@ async function _registerSfRows() {
         registered.push({ id: name, name: r.table, bucket: r.schema });
       } else {
         const b = await resp.json().catch(() => ({}));
-        r.statusEl.textContent = "✗ " + _esc(typeof b.detail === "string" ? b.detail : "failed");
+        // No _esc(): the sink is textContent, which escapes on its own.
+        // Escaping first would show the operator the literal
+        // `Did you mean &quot;Y&quot;?` instead of the quoted table name —
+        // mangling the one string this surface exists to relay. Line ~2412
+        // (the single-row path) already gets this right.
+        r.statusEl.textContent = "✗ " + _registerErrorText(b);
         r.statusEl.className = "ds-table-status fail";
         failed++;
       }
