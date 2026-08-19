@@ -40,6 +40,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   `GET /api/admin/registry` kept serving the old error until the next full
   orchestrator sweep re-derived state from `_meta` — the fix looked like it had
   not taken.
+- **A Snowflake materialized table no longer reports `error` when its parquet is
+  fine.** `rebuild()` holds the source's `extract.duckdb` ATTACHed in the same
+  process, so a materialize landing mid-rebuild cannot open it as a second write
+  handle — DuckDB answers `Unique file handle conflict: Cannot attach "extract"`.
+  That race is expected and already covered (the orchestrator's
+  filesystem-fallback pass builds the master view from the parquet), but the
+  Snowflake connector let the exception escape, so the row was flagged failed
+  while holding a complete, queryable table. It now logs and continues, matching
+  the BigQuery and Databricks equivalents.
 
 ### Security
 
