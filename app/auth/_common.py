@@ -15,8 +15,31 @@ def smtp_from_address() -> str:
     backward-compatible fallback — it was the removed SendGrid-SDK branch's
     sender key, so a deployment that configured its sender through it keeps
     that sender when it switches to the SMTP relay.
+
+    ``email.from_address`` in ``instance.yaml`` is honored third. The config
+    template ships that key and ``docs/CONFIGURATION.md`` documents it, but
+    nothing read it — so an operator who configured only the YAML kept sending
+    as ``noreply@example.com`` with no error to notice. Env stays ahead of it so
+    no existing deployment's sender changes; this only makes a knob that was
+    already advertised start working.
+
+    Imported inside the call rather than at module scope: this module is on the
+    auth import path and ``app.instance_config`` is not, so a top-level import
+    would put config loading back on it.
     """
-    return os.environ.get("SMTP_FROM") or os.environ.get("EMAIL_FROM_ADDRESS") or "noreply@example.com"
+    from_env = os.environ.get("SMTP_FROM") or os.environ.get("EMAIL_FROM_ADDRESS")
+    if from_env:
+        return from_env
+    try:
+        from app.instance_config import get_value
+
+        configured = get_value("email", "from_address")
+    except Exception:
+        configured = None
+    # The template's own placeholder is not a configured sender.
+    if configured and configured != "noreply@example.com":
+        return str(configured)
+    return "noreply@example.com"
 
 
 def send_smtp_email(to_email: str, subject: str, body_text: str) -> None:

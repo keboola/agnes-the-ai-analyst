@@ -1292,3 +1292,66 @@ class TestGoogleOAuthFullFlow:
     def test_google_callback_api_error_handled(self, tmp_path, monkeypatch):
         """Google OAuth callback must handle API errors gracefully."""
         pass
+
+
+class TestSmtpSenderResolution:
+    """`email.from_address` is shipped by `config/instance.yaml.example` and
+    documented in `docs/CONFIGURATION.md`, but nothing read it — an operator who
+    configured only the YAML kept sending as `noreply@example.com`, with no
+    error to notice. Env stays ahead of it so no existing deployment's sender
+    changes.
+    """
+
+    @staticmethod
+    def _clear_env(monkeypatch):
+        monkeypatch.delenv("SMTP_FROM", raising=False)
+        monkeypatch.delenv("EMAIL_FROM_ADDRESS", raising=False)
+
+    def test_smtp_from_env_wins_over_yaml(self, monkeypatch):
+        from app.auth import _common
+
+        monkeypatch.setenv("SMTP_FROM", "env@corp.example")
+        monkeypatch.setattr("app.instance_config.get_value", lambda *k, **kw: "yaml@corp.example", raising=False)
+        assert _common.smtp_from_address() == "env@corp.example"
+
+    def test_legacy_env_key_still_wins_over_yaml(self, monkeypatch):
+        """`EMAIL_FROM_ADDRESS` was the removed SendGrid branch's key. A
+        deployment carrying it must not have its sender changed by a YAML value
+        it never intended to activate."""
+        from app.auth import _common
+
+        self._clear_env(monkeypatch)
+        monkeypatch.setenv("EMAIL_FROM_ADDRESS", "legacy@corp.example")
+        monkeypatch.setattr("app.instance_config.get_value", lambda *k, **kw: "yaml@corp.example", raising=False)
+        assert _common.smtp_from_address() == "legacy@corp.example"
+
+    def test_yaml_from_address_is_honored_when_no_env_is_set(self, monkeypatch):
+        from app.auth import _common
+
+        self._clear_env(monkeypatch)
+        monkeypatch.setattr("app.instance_config.get_value", lambda *k, **kw: "yaml@corp.example", raising=False)
+        assert _common.smtp_from_address() == "yaml@corp.example"
+
+    def test_the_templates_own_placeholder_is_not_treated_as_configured(self, monkeypatch):
+        """`instance.yaml.example` ships the literal `noreply@example.com`. A
+        copied-but-unedited template must not read as a deliberate choice — the
+        answer is the same either way, but treating it as configured would make
+        the fallback chain lie about where the value came from."""
+        from app.auth import _common
+
+        self._clear_env(monkeypatch)
+        monkeypatch.setattr("app.instance_config.get_value", lambda *k, **kw: "noreply@example.com", raising=False)
+        assert _common.smtp_from_address() == "noreply@example.com"
+
+    def test_an_unreadable_instance_config_does_not_break_sending(self, monkeypatch):
+        """Resolving a sender must not be the thing that raises: a corrupt or
+        absent instance.yaml would otherwise turn every magic link into a 500."""
+        from app.auth import _common
+
+        self._clear_env(monkeypatch)
+
+        def _boom(*_a, **_kw):
+            raise RuntimeError("instance.yaml unreadable")
+
+        monkeypatch.setattr("app.instance_config.get_value", _boom, raising=False)
+        assert _common.smtp_from_address() == "noreply@example.com"
