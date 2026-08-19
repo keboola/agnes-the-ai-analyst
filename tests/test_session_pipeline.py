@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import json
 import os
+import time
+from datetime import UTC
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -320,7 +322,7 @@ class TestSessionProcessorStateRepository:
         """File touched after processed_at — likely a Claude Code live append —
         must come back through scan so the runner can hash + decide."""
         import time
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         conn = _fresh_db(tmp_path, monkeypatch)
         sessions = tmp_path / "sessions"
@@ -331,7 +333,7 @@ class TestSessionProcessorStateRepository:
         repo = SessionProcessorStateRepository(conn)
         # Mark processed at past time, then bump the file mtime to "now"
         # to simulate a post-processing append.
-        past = datetime.now(timezone.utc).replace(microsecond=0)
+        past = datetime.now(UTC).replace(microsecond=0)
         conn.execute(
             "INSERT INTO session_processor_state VALUES (?, ?, ?, ?, ?, ?)",
             ["verification", "alice/live.jsonl", "alice", past, 0, "h1"],
@@ -466,6 +468,41 @@ class TestRunProcessor:
         stats2 = run_processor(conn, proc, session_data_dir=sessions)
         assert stats2["processed"] == 1
         assert proc.calls == ["alice/s.jsonl", "alice/s.jsonl"]
+        conn.close()
+
+    def test_file_appended_during_processing_is_reprocessed(self, tmp_path, monkeypatch):
+        """A session jsonl appended *while* it is being processed must be seen
+        again on the next tick, not dropped because mtime < processed_at."""
+        conn = _fresh_db(tmp_path, monkeypatch)
+        sessions = tmp_path / "sessions"
+        _seed_session(sessions, "alice", "s.jsonl", content="line1\n")
+
+        class _Appender:
+            name = "verification"
+            cadence_minutes = 1
+
+            def process_session(self, session_path: Path, username: str, session_key: str, conn, **kwargs):
+                # Simulate a live append that happens mid-run. The write/flush
+                # sets mtime early; the processor keeps running. With the old
+                # completion-time semantics, processed_at ends up well after
+                # the file mtime and the skew window hides the live append.
+                with session_path.open("a") as f:
+                    f.write("line2\n")
+                    f.flush()
+                time.sleep(0.2)
+                return ProcessorResult(items_count=1)
+
+        stats1 = run_processor(conn, _Appender(), session_data_dir=sessions)
+        assert stats1["processed"] == 1
+
+        # The append happened during processing, so the stored hash is stale.
+        # The next tick must detect mtime > read_at and reprocess.
+        stats2 = run_processor(
+            conn,
+            _FakeProcessor(name="verification", return_value=ProcessorResult(items_count=1)),
+            session_data_dir=sessions,
+        )
+        assert stats2["processed"] == 1
         conn.close()
 
     def test_uuid_dir_passes_email_as_username(self, tmp_path, monkeypatch):
@@ -748,8 +785,9 @@ class TestRunProcessorTimeBudget:
 
         proc = _FakeProcessor(return_value=ProcessorResult(items_count=1))
 
-        import services.session_pipeline.runner as runner_module
         from unittest.mock import patch
+
+        import services.session_pipeline.runner as runner_module
 
         # Scope the monotonic() patch to just the first call (via `with`,
         # not monkeypatch.setattr) — monkeypatch.undo() would also revert

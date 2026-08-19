@@ -180,39 +180,76 @@ else
     echo "  SKIP metrics (no token)"
 fi
 
-# 11. /home renders with bundled connectors (regression guard for the
-#     seed-driven install-prompt renderer in app/web/setup_instructions.py).
-#     A blank /home — empty body, missing connector tiles, renderer crash —
-#     is the worst-case failure of the A1 connector-skills refactor: the
-#     setup prompt is the primary onboarding surface. CI smoke can only
-#     exercise the bundled-fallback path (fresh stack has no IWT clone),
-#     so we assert the three bundled connector display names appear in
-#     the rendered body plus the finale's alphabetical connector list.
+# 11. /home renders, and the connector manifest is served (regression
+#     guard for the install-prompt renderer in
+#     app/web/setup_instructions.py). A blank /home — empty body,
+#     renderer crash — is the worst-case failure here: the setup prompt
+#     is the primary onboarding surface.
+#
+#     Contract note (0.83.86, "thin install prompt"): /home no longer
+#     renders connector tiles or a finale roll-call of connector display
+#     names. That work moved into `agnes onboard`, whose step 6 reads
+#     GET /api/connectors/manifest and prints "Available connectors on
+#     this instance:". The removal is deliberate and is pinned by
+#     tests/test_web_home_page.py::test_connectors_section_removed_from_home,
+#     which asserts `class="connector-tiles"` and
+#     `data-section="connectors"` are ABSENT while "Asana" and "Google
+#     Workspace" still appear in the page copy — i.e. exactly the
+#     opposite of what this check used to require. This check was left
+#     behind by that change and failed every release until it was
+#     updated; it now asserts the surviving contract (the page renders
+#     and still names the connector families) plus the endpoint the
+#     coverage moved to, so nothing is merely deleted.
 if [ -n "$TOKEN" ]; then
     HOME_BODY=$(curl -s "$HOST/home" \
       -H "Authorization: Bearer $TOKEN" \
       -b "access_token=$TOKEN" 2>/dev/null || echo "")
     HOME_OK="true"
-    # Display names from each bundled connector's frontmatter. Use
-    # here-string instead of pipe — `grep -q` closes stdin as soon as
-    # it matches, the upstream `echo` dies of SIGPIPE, and `pipefail`
-    # then surfaces that as a false negative for the substring check.
-    for name in "Asana" "Atlassian (Jira / Confluence)" "Google Workspace"; do
+    # Connector FAMILY names, as they appear in the page's own copy —
+    # not the bundled skills' frontmatter display names, which the thin
+    # prompt no longer renders. Use a here-string instead of a pipe:
+    # `grep -q` closes stdin as soon as it matches, the upstream `echo`
+    # dies of SIGPIPE, and `pipefail` then surfaces that as a false
+    # negative for the substring check.
+    for name in "Asana" "Google Workspace" "Atlassian"; do
         if ! grep -qF "$name" <<< "$HOME_BODY"; then
             HOME_OK="false"
-            echo "  WARN /home body missing \"$name\" (bundled seed regression?)"
+            echo "  WARN /home body missing \"$name\" (page copy regression?)"
         fi
     done
-    # Finale "For each connector (..." bullet — proves dynamic finale
-    # rendering picked the manifest up correctly.
-    if ! grep -qF "Asana, Atlassian (Jira / Confluence), Google Workspace" <<< "$HOME_BODY"; then
-        HOME_OK="false"
-        echo "  WARN /home finale connector list out of order or missing"
-    fi
     if [ -z "$HOME_BODY" ]; then
         HOME_OK="false"
+        echo "  WARN /home body empty (renderer crash?)"
     fi
-    check "/home renders bundled connector tiles" "$HOME_OK"
+    check "/home renders" "$HOME_OK"
+
+    # Where the connector roll-call moved: `agnes onboard` step 6 reads
+    # this endpoint to tell the operator what the instance offers, so a
+    # broken manifest is the modern shape of the failure the /home tile
+    # check used to catch.
+    CONN_HTTP=$(curl -s -o /tmp/smoke_connectors.json -w "%{http_code}" \
+      "$HOST/api/connectors/manifest" \
+      -H "Authorization: Bearer $TOKEN" 2>/dev/null || echo "000")
+    CONN_OK="false"
+    if [ "$CONN_HTTP" = "200" ]; then
+        CONN_COUNT=$(python3 -c "
+import json
+try:
+    b = json.load(open('/tmp/smoke_connectors.json'))
+    c = b.get('connectors')
+    print(len(c) if isinstance(c, list) else -1)
+except Exception:
+    print(-1)
+" 2>/dev/null || echo "-1")
+        if [ "$CONN_COUNT" -ge 1 ] 2>/dev/null; then
+            CONN_OK="true"
+        else
+            echo "  WARN /api/connectors/manifest returned no connectors (bundled seed regression?)"
+        fi
+    else
+        echo "  WARN /api/connectors/manifest HTTP $CONN_HTTP"
+    fi
+    check "connector manifest served (HTTP $CONN_HTTP)" "$CONN_OK"
 else
     echo "  SKIP /home (no token)"
 fi

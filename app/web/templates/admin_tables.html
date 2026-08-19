@@ -3,7 +3,7 @@
 
 {% block title %}Table Management - {{ config.INSTANCE_NAME }}{% endblock %}
 
-{% block body_attrs %}data-source-type="{{ data_source_type }}" data-connected-source-types="{{ (connected_source_types or []) | join(',') }}"{% endblock %}
+{% block body_attrs %}data-source-type="{{ data_source_type }}" data-connected-sources="{{ (connected_sources or []) | join(',') }}" data-connected-source-types="{{ (connected_source_types or []) | join(',') }}"{% endblock %}
 
 {% block head_extra %}
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -249,6 +249,33 @@
             transform: none;
         }
 
+        /* Real rule with the choice written on it — same shape as .ds-wor on
+           the Data sources page: the thing this form has to make obvious is
+           that Table ID (paste) and Bucket + Source Table are TWO WAYS IN,
+           not a required pair. */
+        .kb-or-divider {
+            display: flex; align-items: center; gap: 12px;
+            margin: 4px 0 16px; font-size: 12px; font-weight: 600;
+            letter-spacing: 0.02em; text-transform: uppercase;
+            color: var(--text-secondary);
+        }
+        .kb-or-divider::before, .kb-or-divider::after {
+            content: ""; flex: 1; height: 1px; background: var(--border);
+        }
+
+        /* A failed register/precheck's 422 detail is pinned back onto the
+           actual input (see _applyFieldErrors) so the operator sees WHICH
+           field is wrong instead of reverse-engineering a server-side name
+           like "name" into "View name". */
+        .form-input.field-invalid, .form-select.field-invalid, .form-textarea.field-invalid {
+            border-color: var(--error);
+        }
+        .field-invalid-hint {
+            font-size: 12px;
+            color: var(--error);
+            margin-top: 4px;
+        }
+
         /* ── Badges ── */
         .badge {
             flex-shrink: 0;
@@ -301,12 +328,29 @@
             font-size: 13px;
         }
 
-        /* ── Notification toast ── */
+        /* Same layering bug, one tier down: modal.js's confirmModal /
+           promptModal / alertModal render a `.modal-backdrop` fixed at
+           z-index 1000 (style-custom.css), and the register drawers on this
+           page open the "Use as base" prompt FROM INSIDE a `.ds-drawer`
+           (1200) — so the dialog the flow then `await`s painted behind the
+           very panel that opened it, leaving a dead-looking button waiting
+           on an invisible prompt. Page-scoped so no other page's stacking
+           moves: 1250 clears the drawer and stays under the toast (1300). */
+        .modal-backdrop {
+            z-index: 1250;
+        }
+
+        /* ── Notification toast ──
+           z-index 1300: above .ds-drawer / .tbl-more__menu (1200) and the
+           legacy .modal-overlay (1000). At 200 this toast rendered BEHIND
+           every drawer and modal on this page, so a "Loaded N buckets" or
+           a discover/register error fired invisibly while the very panel
+           the operator was looking at stayed on top of it. */
         .toast {
             position: fixed;
             top: 84px;
             right: 24px;
-            z-index: 200;
+            z-index: 1300;
             background: var(--surface);
             border: 1px solid var(--border);
             border-radius: 10px;
@@ -1665,7 +1709,7 @@
                             <label class="form-label" for="bqDataset">
                                 Dataset
                                 <button type="button" class="btn btn-secondary btn-sm"
-                                        onclick="discoverBqDatasets()" style="float:right; margin-top:-3px;">
+                                        onclick="discoverBqDatasets(this)" style="float:right; margin-top:-3px;">
                                     Discover
                                 </button>
                             </label>
@@ -1689,7 +1733,7 @@
                             <label class="form-label" for="bqSourceTable">
                                 Source Table / View
                                 <button type="button" class="btn btn-secondary btn-sm"
-                                        onclick="discoverBqTables()" style="float:right; margin-top:-3px;">
+                                        onclick="discoverBqTables(this)" style="float:right; margin-top:-3px;">
                                     List tables
                                 </button>
                             </label>
@@ -1864,7 +1908,7 @@
                             <label class="form-label" for="editBqDataset">
                                 Dataset
                                 <button type="button" class="btn btn-secondary btn-sm"
-                                        onclick="discoverBqDatasets('editBqDatasetList')"
+                                        onclick="discoverBqDatasets(this, 'editBqDatasetList')"
                                         style="float:right; margin-top:-3px;">
                                     Discover
                                 </button>
@@ -1886,7 +1930,7 @@
                             <label class="form-label" for="editBqSourceTable">
                                 Source Table / View
                                 <button type="button" class="btn btn-secondary btn-sm"
-                                        onclick="discoverBqTables('editBqDataset', 'editBqTableList')"
+                                        onclick="discoverBqTables(this, 'editBqDataset', 'editBqTableList')"
                                         style="float:right; margin-top:-3px;">
                                     List tables
                                 </button>
@@ -1989,13 +2033,21 @@
                         </button>
                     </div>
                     <div class="ds-drawer__body">
-                        {# Banner: shown when Keboola is not the configured data source.
-                           Discover buttons are hidden in that case (see guard below), so
-                           the operator would hit a silent dead-end without this warning. #}
-                        {% if data_source_type != 'keboola' %}
+                        {# Banner: shown when Keboola is not reachable by ANY
+                           route — neither a registered source_connections row
+                           nor the legacy data_source.type scalar names it.
+                           `connected_sources` is the one signal for that (see
+                           `_connected_source_types`-successor in
+                           app/web/router.py); the scalar alone used to fire
+                           this on every non-Keboola-typed instance even when a
+                           Keboola project was connected through the registry.
+                           Discover buttons are hidden in that case (see guard
+                           below), so the operator would hit a silent
+                           dead-end without this warning. #}
+                        {% if 'keboola' not in (connected_sources or []) %}
                         <div class="alert-v2 alert-warning-v2" style="font-size:13px;">
                             <svg style="flex-shrink:0; margin-top:1px; color:var(--warning);" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-                            <span>Keboola is not connected — <strong>Discover</strong> won't work. Set your token in <a href="/admin/server-config#cfg-s-data_source" style="color:inherit; text-decoration:underline;">Instance settings</a>.</span>
+                            <span>Keboola is not connected — <strong>Discover</strong> won't work. <a href="/admin/data-sources" style="color:inherit; text-decoration:underline;">Connect a Keboola project</a>, or fill in Bucket / Source Table by hand.</span>
                         </div>
                         {% endif %}
                         {# Three sync-mode radios:
@@ -2034,6 +2086,24 @@
                             </div>
                         </div>
 
+                        {# Per-project picker (#347 follow-up): populated client-side from
+                           GET /api/admin/source-connections?source_type=keboola, so it needs
+                           no new server context here. Hidden by default and shown by
+                           _populateKbProjectPicker() only when that call returns at least
+                           one connection — on a single-source instance with none the form
+                           behaves exactly as before (legacy instance-level Keboola). When
+                           the legacy scalar ALSO names Keboola, an explicit
+                           "Instance-level Keboola (legacy)" option is added so both routes
+                           stay reachable side by side. Discover / List tables / Use table as
+                           base all read the current selection (see
+                           _kbSelectedConnectionId()) and the chosen id rides along in the
+                           register payload so the table isn't provenance-less. #}
+                        <div class="form-group" id="kbProjectPickerGroup" style="display:none;">
+                            <label class="form-label" for="kbProjectSelect">Keboola project</label>
+                            <select class="form-select" id="kbProjectSelect"></select>
+                            <div class="form-hint">Discover, List tables and Use table as base run against this project.</div>
+                        </div>
+
                         <div class="form-group">
                             <label class="form-label" for="kbViewName">View name (analyst-visible)</label>
                             <input type="text" class="form-input" id="kbViewName"
@@ -2050,13 +2120,15 @@
                         <div class="form-group kb-source-table">
                             <label class="form-label" for="kbTableIdPaste">
                                 Table ID
-                                <span style="font-weight:400; color:var(--text-secondary); font-size:12px;">(paste here, or fill Bucket + Source Table below)</span>
+                                <span style="font-weight:400; color:var(--text-secondary); font-size:12px;">(paste here — fastest way in)</span>
                             </label>
                             <input type="text" class="form-input" id="kbTableIdPaste"
                                    placeholder="e.g. out.c-crm-tr-RdC3aX4M.account"
                                    autocomplete="off">
-                            <div class="form-hint">Split on the last <code>.</code> into Bucket + Source Table.</div>
+                            <div class="form-hint">Split on the last <code>.</code> into Bucket + Source Table below — paste here <strong>or</strong> fill those two fields directly, not both.</div>
                         </div>
+
+                        <div class="kb-or-divider kb-source-table"><span>or fill in directly</span></div>
 
                         {# Discover/List tables backend routes by instance's data_source.type, ignoring
                            the `source` query param — on a non-Keboola instance it would return
@@ -2068,7 +2140,7 @@
                             <label class="form-label" for="kbBucket">
                                 Bucket
                                 <button type="button" class="btn btn-secondary btn-sm"
-                                        {% if data_source_type == 'keboola' %}onclick="discoverKeboolaBuckets('kbBucketList')"{% else %}disabled data-tooltip="Keboola not connected — set token in Instance settings"{% endif %}
+                                        {% if 'keboola' in (connected_sources or []) %}onclick="discoverKeboolaBuckets(this, 'kbBucketList')"{% else %}disabled data-tooltip="Keboola not connected — connect a project in Data sources"{% endif %}
                                         style="float:right; margin-top:-3px;">Discover</button>
                             </label>
                             <input type="text" class="form-input" id="kbBucket"
@@ -2079,7 +2151,7 @@
                             <label class="form-label" for="kbSourceTable">
                                 Source Table
                                 <button type="button" class="btn btn-secondary btn-sm"
-                                        {% if data_source_type == 'keboola' %}onclick="discoverKeboolaTables('kbBucket', 'kbTableList')"{% else %}disabled data-tooltip="Keboola not connected — set token in Instance settings"{% endif %}
+                                        {% if 'keboola' in (connected_sources or []) %}onclick="discoverKeboolaTables(this, 'kbBucket', 'kbTableList')"{% else %}disabled data-tooltip="Keboola not connected — connect a project in Data sources"{% endif %}
                                         style="float:right; margin-top:-3px;">List tables</button>
                             </label>
                             <input type="text" class="form-input" id="kbSourceTable"
@@ -2090,8 +2162,8 @@
                             <label class="form-label" for="kbSourceQuery">
                                 SQL
                                 <button type="button" class="btn btn-secondary btn-sm"
-                                        {% if data_source_type == 'keboola' %}onclick="prefillFromKeboolaTable('kbSourceQuery')"
-                                        title="Prefill SELECT * FROM kbc.bucket.table so you only edit the WHERE / projection"{% else %}disabled data-tooltip="Keboola not connected — set token in Instance settings"{% endif %}
+                                        {% if 'keboola' in (connected_sources or []) %}onclick="prefillFromKeboolaTable('kbSourceQuery')"
+                                        title="Prefill SELECT * FROM kbc.bucket.table so you only edit the WHERE / projection"{% else %}disabled data-tooltip="Keboola not connected — connect a project in Data sources"{% endif %}
                                         style="float:right; margin-top:-3px;">
                                     Use table as base
                                 </button>
@@ -2263,7 +2335,12 @@
                         </button>
                     </div>
                     <div class="ds-drawer__body">
-                        {% if data_source_type != 'databricks' and 'databricks' not in (connected_source_types or []) %}
+                        {# `connected_sources` already unions the registry with the legacy
+                           scalar (when it names a real source), so the belt-and-braces
+                           `data_source_type != 'databricks' and` half of this used to be
+                           redundant — and, on a registry-only-connected instance, wrong
+                           (it kept the banner up even though Databricks WAS connected). #}
+                        {% if 'databricks' not in (connected_sources or []) %}
                         <div class="alert-v2 alert-warning-v2" style="font-size:13px;">
                             <svg style="flex-shrink:0; margin-top:1px; color:var(--warning);" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
                             <span>Databricks is not connected — set host/token/catalog in <a href="/admin/server-config#cfg-s-data_source" style="color:inherit; text-decoration:underline;">Instance settings</a> before this table can sync.</span>
@@ -2547,16 +2624,28 @@
                         </button>
                     </div>
                     <div class="modal-body">
-                        {% if data_source_type != 'keboola' %}
+                        {# Same instance-level signal as the Register banner
+                           above — `connected_sources`, not the legacy scalar
+                           alone (see that banner's comment for why). #}
+                        {% if 'keboola' not in (connected_sources or []) %}
                         <div class="alert-v2 alert-warning-v2" style="font-size:13px;">
                             <svg style="flex-shrink:0; margin-top:1px; color:var(--warning);" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-                            <span>Keboola is not connected — <strong>Discover</strong> won't work. Set your token in <a href="/admin/server-config#cfg-s-data_source" style="color:inherit; text-decoration:underline;">Instance settings</a>.</span>
+                            <span>Keboola is not connected — <strong>Discover</strong> won't work. <a href="/admin/data-sources" style="color:inherit; text-decoration:underline;">Connect a Keboola project</a>, or fill in Bucket / Source Table by hand.</span>
                         </div>
                         {% endif %}
                         <div class="form-group">
                             <label class="form-label" for="editKbTableId">Table ID</label>
                             <input type="text" class="form-input" id="editKbTableId" readonly>
                             <div class="form-hint">Slugified id, immutable.</div>
+                        </div>
+
+                        {# Per-project picker — mirror of the Register modal's (see its
+                           comment for the populate/normalize contract). Preselected to
+                           the row's own connection_id, when it has one, on open. #}
+                        <div class="form-group" id="editKbProjectPickerGroup" style="display:none;">
+                            <label class="form-label" for="editKbProjectSelect">Keboola project</label>
+                            <select class="form-select" id="editKbProjectSelect"></select>
+                            <div class="form-hint">Discover, List tables and Use table as base run against this project. Not sent on save — it only steers where these buttons look.</div>
                         </div>
 
                         {# Three sync-mode radios (mirror of Register). #}
@@ -2601,7 +2690,7 @@
                             <label class="form-label" for="editKbBucket">
                                 Bucket
                                 <button type="button" class="btn btn-secondary btn-sm"
-                                        {% if data_source_type == 'keboola' %}onclick="discoverKeboolaBuckets('editKbBucketList')"{% else %}disabled data-tooltip="Keboola not connected — set token in Instance settings"{% endif %}
+                                        {% if 'keboola' in (connected_sources or []) %}onclick="discoverKeboolaBuckets(this, 'editKbBucketList')"{% else %}disabled data-tooltip="Keboola not connected — connect a project in Data sources"{% endif %}
                                         style="float:right; margin-top:-3px;">Discover</button>
                             </label>
                             <input type="text" class="form-input" id="editKbBucket"
@@ -2612,7 +2701,7 @@
                             <label class="form-label" for="editKbSourceTable">
                                 Source Table
                                 <button type="button" class="btn btn-secondary btn-sm"
-                                        {% if data_source_type == 'keboola' %}onclick="discoverKeboolaTables('editKbBucket', 'editKbTableList')"{% else %}disabled data-tooltip="Keboola not connected — set token in Instance settings"{% endif %}
+                                        {% if 'keboola' in (connected_sources or []) %}onclick="discoverKeboolaTables(this, 'editKbBucket', 'editKbTableList')"{% else %}disabled data-tooltip="Keboola not connected — connect a project in Data sources"{% endif %}
                                         style="float:right; margin-top:-3px;">List tables</button>
                             </label>
                             <input type="text" class="form-input" id="editKbSourceTable"
@@ -2623,8 +2712,8 @@
                             <label class="form-label" for="editKbSourceQuery">
                                 SQL
                                 <button type="button" class="btn btn-secondary btn-sm"
-                                        {% if data_source_type == 'keboola' %}onclick="prefillFromKeboolaTable('editKbSourceQuery')"
-                                        title="Prefill SELECT * FROM kbc.bucket.table so you only edit the WHERE / projection"{% else %}disabled data-tooltip="Keboola not connected — set token in Instance settings"{% endif %}
+                                        {% if 'keboola' in (connected_sources or []) %}onclick="prefillFromKeboolaTable('editKbSourceQuery')"
+                                        title="Prefill SELECT * FROM kbc.bucket.table so you only edit the WHERE / projection"{% else %}disabled data-tooltip="Keboola not connected — connect a project in Data sources"{% endif %}
                                         style="float:right; margin-top:-3px;">
                                     Use table as base
                                 </button>
@@ -3726,7 +3815,7 @@
         const list = document.getElementById('bulk-assign-list');
         if (!_bulkAssignTables.length) {
           list.innerHTML = '<div style="padding:12px; color:#5f6368;">'
-            + 'No tables registered yet — register some via the connector tabs first.</div>';
+            + 'No tables registered yet — use "+ Register new table" above.</div>';
           return;
         }
         list.innerHTML = _bulkAssignTables.map(function(t) {
@@ -4288,6 +4377,9 @@
     // Replaces the per-connector tab nav. The user picks the connector
     // here only to choose which register modal to open; otherwise the
     // page is package-centric and source_type is just an inline tag.
+    // Reads CONNECTED_SOURCE_TYPES (registry rows only), NOT the wider
+    // CONNECTED_SOURCES union the connectedness banners use — see that var's
+    // note further down for why the two questions stay apart.
     function _dbxIsOnlyConnectedSource() {
         var active = CONNECTED_SOURCE_TYPES.filter(Boolean);
         return active.length === 1 && active[0] === 'databricks';
@@ -4477,9 +4569,22 @@
     // type. Lives on <body> after C3 (previously on the now-removed
     // #registerModal).
     var DATA_SOURCE_TYPE = document.body.dataset.sourceType || 'keboola';
-    // Source types with at least one connection in the source-connection
-    // registry (see _connected_source_types in app/web/router.py). The legacy
-    // scalar above names ONE default type and cannot answer "is X connected?".
+    // Every source type actually reachable — unions the source-connection
+    // registry, the legacy scalar above (only when it names a real source),
+    // and instance-side bq/snowflake/databricks credential probes (see
+    // `connected_sources` in app/web/router.py). The scalar alone names ONE
+    // default type and cannot answer "is X connected?" — it kept "Keboola is
+    // not connected" on the screen for instances that had a Keboola project
+    // connected through the registry (#347).
+    var CONNECTED_SOURCES = (document.body.dataset.connectedSources || '')
+        .split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+    // The NARROWER question, deliberately kept separate: which source types own
+    // a row in the `source_connections` registry (`_connected_source_types` in
+    // app/web/router.py). Only the register-split-button shortcut above reads
+    // it. "Is this the ONE source somebody deliberately set up here?" is not
+    // the same question as "is X reachable?", and answering it from the union
+    // above disarmed the shortcut on a Databricks instance that merely also had
+    // a BigQuery service account in the vault.
     var CONNECTED_SOURCE_TYPES = (document.body.dataset.connectedSourceTypes || '')
         .split(',').map(function (s) { return s.trim(); }).filter(Boolean);
 
@@ -4533,6 +4638,7 @@
         // tolerate either an empty call or a {bucket, source_table, ...}
         // shape from a hypothetical future prefill.
         table = table || {};
+        _clearAllFieldErrors(document.getElementById('registerBqModal'));
         document.getElementById('bqDataset').value = table.bucket || '';
         document.getElementById('bqSourceTable').value = table.source_table || table.name || '';
         document.getElementById('bqViewName').value = table.name || '';
@@ -4564,6 +4670,7 @@
         // (Q2='whole'); the kb-source-table fields are visible.
         var modal = document.getElementById('registerKeboolaModal');
         if (!modal) return;
+        _clearAllFieldErrors(modal);
         var radio = modal.querySelector('input[name="kbSyncMode"][value="whole"]');
         if (radio) radio.checked = true;
         ['kbViewName', 'kbBucket', 'kbSourceTable', 'kbSourceQuery',
@@ -4590,6 +4697,7 @@
         // structured builder so it shows an empty editor, not stale rows.
         _rebuildWhereFiltersBuilder('kbWhereFiltersBuilder');
         onKbSyncModeChange();  // apply default visibility
+        _populateKbProjectPicker('kb');
         var btn = document.getElementById('registerKeboolaSubmitBtn');
         btn.disabled = false;
         btn.textContent = 'Register';
@@ -4614,6 +4722,7 @@
         table = table || {};
         var modal = document.getElementById('registerSnowflakeModal');
         if (!modal) return;
+        _clearAllFieldErrors(modal);
         var accessRadio = modal.querySelector('input[name="sfAccessMode"][value="live"]');
         if (accessRadio) accessRadio.checked = true;
         var syncRadio = modal.querySelector('input[name="sfSyncMode"][value="whole"]');
@@ -4768,6 +4877,26 @@
         // defaults false; the backend validator rejects true + remote.
         var serverOnlyEl = document.getElementById('kbServerOnly');
         var serverOnly = !!(serverOnlyEl && serverOnlyEl.checked);
+        // Pins the row to the project the operator discovered/registered
+        // from (see the picker in the modal above) — null when the picker
+        // is hidden or the "Instance-level Keboola (legacy)" option is
+        // selected, which is what the backend already treats as "use the
+        // default connection for this source_type" (unchanged behaviour).
+        var connectionId = _kbSelectedConnectionId('kb');
+
+        // Catch the two most common misses in the form itself, before a
+        // round trip to the server — Discover/List tables populate these,
+        // but the operator can still submit with either one left blank.
+        if (mode !== 'custom') {
+            var bucketEl = document.getElementById('kbBucket');
+            var sourceTableEl = document.getElementById('kbSourceTable');
+            if (!bucket) _setFieldError(bucketEl, 'Bucket is required.');
+            if (!sourceTable) _setFieldError(sourceTableEl, 'Source table is required.');
+            if (!bucket || !sourceTable) {
+                (bucket ? sourceTableEl : bucketEl).scrollIntoView({ block: 'center', behavior: 'smooth' });
+                throw new Error('Bucket and Source Table are required.');
+            }
+        }
 
         if (mode === 'direct') {
             var strategy = _getKbStrategy();
@@ -4780,6 +4909,7 @@
                 primary_key: primaryKey,
                 sync_strategy: strategy,
                 server_only: serverOnly,
+                connection_id: connectionId,
                 sync_schedule: (document.getElementById('kbSyncSchedule').value || '').trim() || null,
                 description: (document.getElementById('kbDescription').value || '').trim() || null,
                 folder: (document.getElementById('kbFolder').value || '').trim() || null,
@@ -4806,21 +4936,43 @@
             query_mode: 'materialized',
             primary_key: primaryKey,
             server_only: serverOnly,
+            connection_id: connectionId,
             sync_schedule: (document.getElementById('kbSyncSchedule').value || '').trim() || null,
             description: (document.getElementById('kbDescription').value || '').trim() || null,
             folder: (document.getElementById('kbFolder').value || '').trim() || null,
         };
 
         if (mode === 'custom') {
-            return Object.assign({}, common, {
-                source_query: (document.getElementById('kbSourceQuery').value || '').trim(),
-            });
+            // TODO(keboola-custom-mode): this branch cannot succeed as written.
+            // `RegisterTableRequest._check_mode_query_coherence` refuses SQL in
+            // `source_query` for a Keboola materialized row (it wants a JSON
+            // filter spec — columns/whereFilters/changedSince), and
+            // `connectors/keboola/extractor.py` refuses it again at sync time.
+            // So "Custom SQL" 422s on every submit no matter what is typed.
+            // Fixing it is a semantics decision, not a payload tweak — either
+            // this textarea takes a filter spec (and the radio's label and help
+            // text are wrong), or a Keboola row with custom SQL belongs under a
+            // different query_mode. Left offering the mode rather than silently
+            // removing an operator-visible capability; the error it produces is
+            // at least readable now.
+            var sourceQueryEl = document.getElementById('kbSourceQuery');
+            var sourceQuery = (sourceQueryEl.value || '').trim();
+            if (!sourceQuery) {
+                _setFieldError(sourceQueryEl, 'SQL is required for a custom SQL registration.');
+                sourceQueryEl.scrollIntoView({ block: 'center', behavior: 'smooth' });
+                throw new Error('SQL is required for a custom SQL registration.');
+            }
+            return Object.assign({}, common, { source_query: sourceQuery });
         }
-        // Whole — synthesize SELECT * FROM kbc."bucket"."table".
+        // Whole — bucket + source_table with NO source_query. A Keboola
+        // materialized row exports through the Storage API, whose filter is a
+        // JSON spec, not SQL: `RegisterTableRequest._check_mode_query_coherence`
+        // rejects a source_query starting with SELECT/WITH outright, and
+        // `connectors/keboola/extractor.py` raises on the same shape at sync
+        // time. A NULL source_query is exactly what "full-table export" means.
         return Object.assign({}, common, {
             bucket: bucket,
             source_table: sourceTable,
-            source_query: 'SELECT * FROM kbc."' + bucket + '"."' + sourceTable + '"',
         });
     }
 
@@ -4861,6 +5013,15 @@
         }
     }
 
+    // payloadKey -> the visible input it came from, so a 422 on this form
+    // lights up the actual box instead of naming a JSON key the operator
+    // never sees.
+    var KB_REGISTER_FIELD_MAP = {
+        name: 'kbViewName', bucket: 'kbBucket', source_table: 'kbSourceTable',
+        source_query: 'kbSourceQuery', sync_schedule: 'kbSyncSchedule',
+        primary_key: 'kbPrimaryKey', folder: 'kbFolder', description: 'kbDescription',
+    };
+
     function registerKeboolaTable() {
         var btn = document.getElementById('registerKeboolaSubmitBtn');
         btn.disabled = true;
@@ -4885,7 +5046,8 @@
             .then(function(r) {
                 if (!r.ok) {
                     return r.json().then(function(d) {
-                        throw new Error(d.detail || d.error || 'Registration failed');
+                        _applyFieldErrors(d && d.detail, KB_REGISTER_FIELD_MAP);
+                        throw new Error(_apiErrorMessage(d, 'Registration failed'));
                     });
                 }
                 return r.json();
@@ -4904,16 +5066,168 @@
             });
     }
 
-    // Discovery shims — the existing /api/admin/discover-tables endpoint
-    // already routes by the instance's data_source.type (returning Keboola
-    // tables when the instance is Keboola-typed); the source=keboola query
-    // param is informational. Hidden behind `data_source_type == 'keboola'`
-    // because on a BQ-typed instance the endpoint would return BQ-shaped
-    // data (wrong shape, confusing); operators fall back to manual entry
-    // for cross-source registration. Future work: extend the endpoint to
-    // accept an explicit ?source= override so secondary-source registration
-    // works in both directions and we can remove this guard.
-    {% if data_source_type == 'keboola' %}
+    // Discovery shims. Two backends, picked per project selection:
+    //   - a registry connection (see _kbSelectedConnectionId) hits
+    //     GET /api/admin/source-connections/{id}/tables — scoped to that
+    //     project's own token, shape {buckets: [{id, tables: [...]}, ...]}.
+    //   - no selection (legacy / no picker) falls back to the existing
+    //     /api/admin/discover-tables?source=keboola, which routes by the
+    //     instance's data_source.type and ignores ?source — shape
+    //     {tables: [...]}, flat.
+    // Which registry connection (if any) the Discover/List/Use-as-base
+    // buttons — and the register payload — should use for this modal.
+    // `prefix` is 'kb' (Register) or 'editKb' (Edit). Returns null when the
+    // picker isn't shown (no registry connections — legacy single-source
+    // behaviour) or the operator explicitly chose the "Instance-level
+    // Keboola (legacy)" option (empty-string sentinel value). Defined
+    // unconditionally: both modals — and manual entry within them — work on
+    // every instance regardless of whether Keboola is reachable at all.
+    function _kbSelectedConnectionId(prefix) {
+        var group = document.getElementById(prefix + 'ProjectPickerGroup');
+        if (!group || group.style.display === 'none') return null;
+        var select = document.getElementById(prefix + 'ProjectSelect');
+        return (select && select.value) ? select.value : null;
+    }
+
+    // Populates + shows the per-project picker from the registry, so the
+    // Register/Edit modals need no new server-rendered context for it.
+    // Hidden (and the form falls back to the legacy instance-level path)
+    // when the registry has zero Keboola connections — today's behaviour
+    // on a single-source instance, unchanged. `preselectId` re-selects a
+    // row's own connection when re-opening Edit on it. Also unconditional —
+    // called from the modal-open handlers, which run on every instance.
+    async function _populateKbProjectPicker(prefix, preselectId) {
+        var group = document.getElementById(prefix + 'ProjectPickerGroup');
+        var select = document.getElementById(prefix + 'ProjectSelect');
+        if (!group || !select) return;
+        select.innerHTML = '';
+        var rows = [];
+        try {
+            var r = await fetch('/api/admin/source-connections?source_type=keboola', { credentials: 'include' });
+            if (r.ok) rows = await r.json();
+        } catch (e) {
+            rows = [];
+        }
+        if (!Array.isArray(rows) || !rows.length) {
+            group.style.display = 'none';
+            return;
+        }
+        rows.forEach(function(c) {
+            var o = document.createElement('option');
+            o.value = c.id;
+            o.textContent = c.name || c.id;
+            select.appendChild(o);
+        });
+        // The legacy scalar's ONE surviving meaning outside "which register
+        // modal to open by default": the /api/admin/discover-tables legacy
+        // path routes by it, not by the registry, so it alone decides
+        // whether that fallback is actually reachable as an option here.
+        if (DATA_SOURCE_TYPE === 'keboola') {
+            var legacy = document.createElement('option');
+            legacy.value = '';
+            legacy.textContent = 'Instance-level Keboola (legacy)';
+            select.appendChild(legacy);
+        }
+        if (preselectId) select.value = preselectId;
+        group.style.display = '';
+    }
+
+    // Normalizes a failed-fetch response body into one readable string.
+    // FastAPI's automatic 422 validation errors put `detail` as an ARRAY of
+    // {loc, msg, type} objects — passing that straight to `new Error()` (or
+    // string-concatenating it) renders as "[object Object]" instead of the
+    // actual reason, which is exactly what an admin needs to fix a bad
+    // register-table payload. Also unwraps the {error, kind, details} shape
+    // BqAccess raises for config/auth failures. Deliberately OUTSIDE the
+    // Keboola-only guard below: BigQuery/Databricks/Snowflake register and
+    // edit-save call this on every instance, Keboola-connected or not.
+    function _apiErrorMessage(d, fallback) {
+        var detail = d && d.detail;
+        if (typeof detail === 'string' && detail) return detail;
+        if (Array.isArray(detail) && detail.length) {
+            return detail.map(function(e) {
+                if (e && typeof e === 'object') {
+                    var loc = Array.isArray(e.loc) ? e.loc.filter(function(p) { return p !== 'body'; }).join('.') : '';
+                    return (loc ? loc + ': ' : '') + (e.msg || JSON.stringify(e));
+                }
+                return String(e);
+            }).join('; ');
+        }
+        if (detail && typeof detail === 'object') {
+            return detail.error || detail.message || detail.msg || JSON.stringify(detail);
+        }
+        return (d && d.error) || (d && d.message) || fallback;
+    }
+
+    // Pins a validation error onto the actual input — red border + an
+    // inline message right under it — instead of leaving the operator to
+    // map a toast's field name back to a label by eye. Self-clears on the
+    // field's next edit. Also outside the guard — used by every connector's
+    // register form, not just Keboola's.
+    function _clearFieldError(el) {
+        if (!el) return;
+        el.classList.remove('field-invalid');
+        if (el._fieldErrorHint) { el._fieldErrorHint.remove(); el._fieldErrorHint = null; }
+    }
+
+    function _setFieldError(el, message) {
+        if (!el) return;
+        _clearFieldError(el);
+        el.classList.add('field-invalid');
+        var hint = document.createElement('div');
+        hint.className = 'field-invalid-hint';
+        hint.textContent = message;
+        el.insertAdjacentElement('afterend', hint);
+        el._fieldErrorHint = hint;
+        el.addEventListener('input', function clear() {
+            _clearFieldError(el);
+            el.removeEventListener('input', clear);
+        });
+    }
+
+    // A register modal's open/reset routine blanks inputs by setting
+    // `.value` directly, which never fires the `input` event `_setFieldError`
+    // listens for — so a previous failed attempt's red borders/messages
+    // would otherwise still be sitting on a freshly reopened, empty form.
+    // Call this once from each modal's open function.
+    function _clearAllFieldErrors(container) {
+        (container || document).querySelectorAll('.field-invalid').forEach(_clearFieldError);
+    }
+
+    // Maps a failed register/precheck's FastAPI 422 `detail` array (each
+    // {loc, msg, type}) back onto the form via `fieldMap` ({payloadKey:
+    // inputElementId}), so e.g. detail [{loc:["body","name"],msg:"Field
+    // required"}] marks the visible "View name" input instead of the
+    // toast just saying "name: Field required" and leaving the operator to
+    // guess which box that is. Always clears prior marks first — a fixed
+    // field must not still look broken on the next attempt. Returns the
+    // first marked element (for scrolling into view) or null when `detail`
+    // isn't a validation-error array (a plain-string business error, e.g.
+    // "already registered", has no single field to blame).
+    function _applyFieldErrors(detail, fieldMap) {
+        Object.keys(fieldMap).forEach(function(k) {
+            _clearFieldError(document.getElementById(fieldMap[k]));
+        });
+        if (!Array.isArray(detail)) return null;
+        var firstEl = null;
+        detail.forEach(function(e) {
+            if (!e || typeof e !== 'object' || !Array.isArray(e.loc)) return;
+            var key = e.loc[e.loc.length - 1];
+            var el = fieldMap[key] && document.getElementById(fieldMap[key]);
+            if (!el) return;
+            _setFieldError(el, e.msg || 'Invalid value');
+            if (!firstEl) firstEl = el;
+        });
+        if (firstEl) firstEl.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        return firstEl;
+    }
+
+    // Emitted whenever Keboola is reachable by EITHER route — gating this
+    // whole block on the legacy scalar alone meant a registry-connected,
+    // non-keboola-typed instance never got these functions defined at all
+    // (#347), so the enabled Discover button their tooltip promised had no
+    // onclick to call.
+    {% if 'keboola' in (connected_sources or []) %}
     // After a discover call repopulates a <datalist>, nudge the browser to
     // open its native suggestion popup so the freshly loaded options are
     // visible without the user having to click back into the input. Focus
@@ -4930,11 +5244,50 @@
         inputEl.dispatchEvent(new Event('input', { bubbles: true }));
     }
 
-    function discoverKeboolaBuckets(datalistId) {
-        fetch('/api/admin/discover-tables?source=keboola')
+    // Normalizes both discover response shapes into a flat table list:
+    //   legacy {tables: [...]}                       — already flat.
+    //   scoped {buckets: [{id, tables: [...]}, ...]}  — per-connection
+    //          listing nests tables under their own bucket.
+    function _kbTablesForBucket(data, bucket) {
+        if (Array.isArray(data.tables)) return data.tables;
+        if (Array.isArray(data.buckets)) {
+            var match = data.buckets.find(function(b) { return b.id === bucket; });
+            if (match) return match.tables || [];
+            // Bucket not found by id — an unknown bucket genuinely has no
+            // tables. This used to flatten EVERY bucket's tables and lean on
+            // the caller's filter to narrow them back down, but that filter
+            // passes any row carrying no bucket id of its own
+            // (`!b || b === bucket`), so a mistyped bucket offered the whole
+            // project's table list as suggestions for it.
+            return [];
+        }
+        return [];
+    }
+
+    // Error message that names WHICH project failed, not just why — with
+    // one project the two were the same sentence; with several, "no token
+    // available" is meaningless without saying for whom.
+    function _kbErrorMessage(detail, connId) {
+        var msg = _apiErrorMessage(detail, 'Keboola discovery failed');
+        if (!connId) return msg;
+        var select = document.getElementById('kbProjectSelect') || document.getElementById('editKbProjectSelect');
+        var opt = select ? select.querySelector('option[value="' + connId + '"]') : null;
+        var label = opt ? opt.textContent : connId;
+        return 'Project "' + label + '": ' + msg;
+    }
+
+    function discoverKeboolaBuckets(btn, datalistId) {
+        var origText = btn ? btn.textContent : null;
+        if (btn) { btn.disabled = true; btn.textContent = 'Discovering...'; }
+        var prefix = datalistId.indexOf('editKb') === 0 ? 'editKb' : 'kb';
+        var connId = _kbSelectedConnectionId(prefix);
+        var url = connId
+            ? '/api/admin/source-connections/' + encodeURIComponent(connId) + '/tables'
+            : '/api/admin/discover-tables?source=keboola';
+        fetch(url)
             .then(function(r) {
                 if (!r.ok) return r.json().then(function(d) {
-                    throw new Error(d.detail || d.error || 'Keboola discovery failed');
+                    throw new Error(_kbErrorMessage(d, connId));
                 });
                 return r.json();
             })
@@ -4965,20 +5318,30 @@
             })
             .catch(function(err) {
                 showToast('' + err.message, 'error');
+            })
+            .finally(function() {
+                if (btn) { btn.disabled = false; btn.textContent = origText; }
             });
     }
 
-    function discoverKeboolaTables(bucketInputId, tablesDatalistId) {
+    function discoverKeboolaTables(btn, bucketInputId, tablesDatalistId) {
         var bucketEl = document.getElementById(bucketInputId);
         var bucket = bucketEl ? (bucketEl.value || '').trim() : '';
         if (!bucket) {
             showToast('Fill bucket first', 'error');
             return;
         }
-        fetch('/api/admin/discover-tables?source=keboola&bucket=' + encodeURIComponent(bucket))
+        var origText = btn ? btn.textContent : null;
+        if (btn) { btn.disabled = true; btn.textContent = 'Listing...'; }
+        var prefix = tablesDatalistId.indexOf('editKb') === 0 ? 'editKb' : 'kb';
+        var connId = _kbSelectedConnectionId(prefix);
+        var url = connId
+            ? '/api/admin/source-connections/' + encodeURIComponent(connId) + '/tables'
+            : '/api/admin/discover-tables?source=keboola&bucket=' + encodeURIComponent(bucket);
+        fetch(url)
             .then(function(r) {
                 if (!r.ok) return r.json().then(function(d) {
-                    throw new Error(d.detail || d.error || 'Keboola table discovery failed');
+                    throw new Error(_kbErrorMessage(d, connId));
                 });
                 return r.json();
             })
@@ -4986,8 +5349,8 @@
                 var dl = document.getElementById(tablesDatalistId);
                 if (!dl) return;
                 dl.innerHTML = '';
-                var tables = data.tables || [];
-                // Filter to the selected bucket if endpoint didn't.
+                var tables = _kbTablesForBucket(data, bucket);
+                // Filter to the selected bucket if the source didn't.
                 tables.filter(function(t) {
                     var b = t.bucket_id || (t.bucket && t.bucket.id);
                     return !bucket || !b || b === bucket;
@@ -5004,9 +5367,12 @@
             })
             .catch(function(err) {
                 showToast('' + err.message, 'error');
+            })
+            .finally(function() {
+                if (btn) { btn.disabled = false; btn.textContent = origText; }
             });
     }
-    {% endif %}{# data_source_type == 'keboola' — discover helpers #}
+    {% endif %}{# 'keboola' in (connected_sources or []) — discover helpers #}
 
     // ── Keboola edit-modal sync-mode helpers (always needed — radio buttons
     //    are rendered for all instance types) ───────────────────────────────
@@ -5073,6 +5439,12 @@
         //   - query_mode='materialized' + custom SQL  → 'custom'
         table = table || {};
         document.getElementById('editKbTableId').value = table.id || '';
+        // Preselect the row's own project so Discover/List/Use-as-base look
+        // at the project this table actually came from, not whichever the
+        // picker happened to default to. Informational only — saving does
+        // not change a row's connection_id (the PUT schema has no field for
+        // that today).
+        _populateKbProjectPicker('editKb', table.connection_id || null);
         var bucket = table.bucket || '';
         var sourceTable = table.source_table || '';
         var sourceQuery = table.source_query || '';
@@ -5226,10 +5598,21 @@
                 source_query: (document.getElementById('editKbSourceQuery').value || '').trim(),
             });
         }
+        // Whole — an EXPLICIT null, not an omitted key. Keboola materialized
+        // takes a JSON filter spec or nothing at all (same reason as the
+        // register form), but `update_table` overlays
+        // `model_dump(exclude_unset=True)` onto the stored row, so *omitting*
+        // source_query means "keep whatever is there". Switching a row from
+        // custom back to whole table would then keep exporting the old filter
+        // — or, for a row carrying the legacy synthesized
+        // `SELECT * FROM kbc."b"."t"`, wedge the PUT on the merged-record
+        // guard with no way to clear it from this drawer. Explicit null is
+        // accepted by UpdateTableRequest and persists as NULL, which is what
+        // "full-table export" means; an empty string is rejected.
         return Object.assign({}, common, {
             bucket: bucket,
             source_table: sourceTable,
-            source_query: 'SELECT * FROM kbc."' + bucket + '"."' + sourceTable + '"',
+            source_query: null,
         });
     }
 
@@ -5260,7 +5643,7 @@
                 });
                 if (!r.ok) {
                     var d = await r.json().catch(function() { return {}; });
-                    throw new Error(d.detail || d.error || 'Update failed');
+                    throw new Error(_apiErrorMessage(d, 'Update failed'));
                 }
                 // Diff Data Package chip selection vs original.
                 var kbFails = await _diffApplyPackageMembership(
@@ -5284,12 +5667,14 @@
         })();
     }
 
-    // prefillFromKeboolaTable is already inside the outer Phase F2
-    // guard (the data_source_type keboola Jinja `if` above) — it only
-    // fires from a button inside the Keboola Edit modal that itself
-    // only renders when data_source_type == 'keboola'. The redundant
-    // nested guard was dropped during the rebase onto main; main
-    // never had it.
+    // prefillFromKeboolaTable is defined here, OUTSIDE the discover-helpers
+    // Jinja guard above ('keboola' in connected_sources) — it must exist
+    // whenever the Register or Edit modal is open, on ANY instance, because
+    // Edit is per-row and not gated by the instance's connectedness. What
+    // IS gated is the button's onclick attribute that calls it (see the
+    // Register/Edit button guards above) — a disconnected instance never
+    // wires up the onclick, so this definition existing unconditionally is
+    // harmless dead code for it, not a live call path.
     async function prefillFromKeboolaTable(textareaId) {
         // Edit-modal callers may pass an editKbBucket / editKbSourceTable
         // pair instead of the Register modal's kbBucket / kbSourceTable.
@@ -5344,11 +5729,20 @@
         var serverOnly = !!(bqServerOnlyEl && bqServerOnlyEl.checked);
 
         if (accessMode === 'synced' && syncMode === 'custom') {
+            var bqSourceQueryEl = document.getElementById('bqSourceQuery');
+            var bqSourceQuery = bqSourceQueryEl.value.trim();
+            var bqViewNameEl = document.getElementById('bqViewName');
+            if (!viewName) _setFieldError(bqViewNameEl, 'View name is required.');
+            if (!bqSourceQuery) _setFieldError(bqSourceQueryEl, 'SQL is required for a custom SQL registration.');
+            if (!viewName || !bqSourceQuery) {
+                (viewName ? bqSourceQueryEl : bqViewNameEl).scrollIntoView({ block: 'center', behavior: 'smooth' });
+                throw new Error('View name and SQL are required for a custom SQL registration.');
+            }
             return {
                 name: viewName,
                 source_type: 'bigquery',
                 query_mode: 'materialized',
-                source_query: document.getElementById('bqSourceQuery').value.trim(),
+                source_query: bqSourceQuery,
                 profile_after_sync: false,
                 server_only: serverOnly,
                 description: description,
@@ -5357,8 +5751,16 @@
             };
         }
 
-        var dataset = document.getElementById('bqDataset').value.trim();
-        var sourceTable = document.getElementById('bqSourceTable').value.trim();
+        var bqDatasetEl = document.getElementById('bqDataset');
+        var bqSourceTableEl = document.getElementById('bqSourceTable');
+        var dataset = bqDatasetEl.value.trim();
+        var sourceTable = bqSourceTableEl.value.trim();
+        if (!dataset) _setFieldError(bqDatasetEl, 'Dataset is required.');
+        if (!sourceTable) _setFieldError(bqSourceTableEl, 'Source Table / View is required.');
+        if (!dataset || !sourceTable) {
+            (dataset ? bqSourceTableEl : bqDatasetEl).scrollIntoView({ block: 'center', behavior: 'smooth' });
+            throw new Error('Dataset and Source Table are required.');
+        }
         // Optional cross-project override. Blank keeps the legacy path
         // (configured project + bucket + source_table); filled in sends an
         // explicit `bq_fqn`, which the extractor, the --remote rewriter and
@@ -5464,6 +5866,7 @@
         table = table || {};
         var modal = document.getElementById('registerDatabricksModal');
         if (!modal) return;
+        _clearAllFieldErrors(modal);
         // Default to synced/whole.
         var syncedRadio = modal.querySelector('input[name="dbxAccessMode"][value="synced"]');
         if (syncedRadio) syncedRadio.checked = true;
@@ -5535,12 +5938,13 @@
 
         if (accessMode === 'synced' && loadMode === 'custom') {
             var customName = viewName;
-            if (!customName) {
-                throw new Error('View name is required for a custom SQL registration.');
-            }
-            var customSql = (document.getElementById('dbxSourceQuery').value || '').trim();
-            if (!customSql) {
-                throw new Error('SQL is required for a custom SQL registration.');
+            var dbxSourceQueryEl = document.getElementById('dbxSourceQuery');
+            var customSql = (dbxSourceQueryEl.value || '').trim();
+            if (!customName) _setFieldError(document.getElementById('dbxViewName'), 'View name is required for a custom SQL registration.');
+            if (!customSql) _setFieldError(dbxSourceQueryEl, 'SQL is required for a custom SQL registration.');
+            if (!customName || !customSql) {
+                (customName ? dbxSourceQueryEl : document.getElementById('dbxViewName')).scrollIntoView({ block: 'center', behavior: 'smooth' });
+                throw new Error('View name and SQL are required for a custom SQL registration.');
             }
             return {
                 name: customName,
@@ -5553,6 +5957,14 @@
                 folder: folder,
                 sync_schedule: syncSchedule,
             };
+        }
+        var dbxBucketEl = document.getElementById('dbxBucket');
+        var dbxSourceTableEl = document.getElementById('dbxSourceTable');
+        if (!bucket) _setFieldError(dbxBucketEl, 'Bucket is required.');
+        if (!sourceTable) _setFieldError(dbxSourceTableEl, 'Source table is required.');
+        if (!bucket || !sourceTable) {
+            (bucket ? dbxSourceTableEl : dbxBucketEl).scrollIntoView({ block: 'center', behavior: 'smooth' });
+            throw new Error('Bucket and Source Table are required.');
         }
         if (accessMode === 'synced' && loadMode === 'whole') {
             return {
@@ -5582,6 +5994,12 @@
         };
     }
 
+    var DBX_REGISTER_FIELD_MAP = {
+        name: 'dbxViewName', bucket: 'dbxBucket', source_table: 'dbxSourceTable',
+        source_query: 'dbxSourceQuery', sync_schedule: 'dbxSyncSchedule',
+        folder: 'dbxFolder', description: 'dbxDescription',
+    };
+
     function registerDatabricksTable() {
         var btn = document.getElementById('registerDatabricksSubmitBtn');
         btn.disabled = true;
@@ -5603,7 +6021,8 @@
         .then(function(r) {
             if (!r.ok) {
                 return r.json().then(function(d) {
-                    throw new Error(d.detail || d.error || 'Registration failed');
+                    _applyFieldErrors(d && d.detail, DBX_REGISTER_FIELD_MAP);
+                    throw new Error(_apiErrorMessage(d, 'Registration failed'));
                 });
             }
             return r.json();
@@ -5648,21 +6067,38 @@
         var syncSchedule = document.getElementById('sfSyncSchedule').value.trim() || null;
         var serverOnlyEl = document.getElementById('sfServerOnly');
         var serverOnly = !!(serverOnlyEl && serverOnlyEl.checked);
-        var schema = document.getElementById('sfSchema').value.trim();
-        var sourceTable = document.getElementById('sfSourceTable').value.trim();
+        var sfSchemaEl = document.getElementById('sfSchema');
+        var sfSourceTableEl = document.getElementById('sfSourceTable');
+        var schema = sfSchemaEl.value.trim();
+        var sourceTable = sfSourceTableEl.value.trim();
 
         if (accessMode === 'synced' && syncMode === 'custom') {
+            var sfSourceQueryEl = document.getElementById('sfSourceQuery');
+            var sfSourceQuery = sfSourceQueryEl.value.trim();
+            var sfViewNameEl = document.getElementById('sfViewName');
+            if (!viewName) _setFieldError(sfViewNameEl, 'View name is required.');
+            if (!sfSourceQuery) _setFieldError(sfSourceQueryEl, 'SQL is required for a custom SQL registration.');
+            if (!viewName || !sfSourceQuery) {
+                (viewName ? sfSourceQueryEl : sfViewNameEl).scrollIntoView({ block: 'center', behavior: 'smooth' });
+                throw new Error('View name and SQL are required for a custom SQL registration.');
+            }
             return {
                 name: viewName,
                 source_type: 'snowflake',
                 query_mode: 'materialized',
-                source_query: document.getElementById('sfSourceQuery').value.trim(),
+                source_query: sfSourceQuery,
                 profile_after_sync: false,
                 server_only: serverOnly,
                 description: description,
                 folder: folder,
                 sync_schedule: syncSchedule,
             };
+        }
+        if (!schema) _setFieldError(sfSchemaEl, 'Schema is required.');
+        if (!sourceTable) _setFieldError(sfSourceTableEl, 'Source Table / View is required.');
+        if (!schema || !sourceTable) {
+            (schema ? sfSourceTableEl : sfSchemaEl).scrollIntoView({ block: 'center', behavior: 'smooth' });
+            throw new Error('Schema and Source Table are required.');
         }
         if (accessMode === 'synced' && syncMode === 'whole') {
             return {
@@ -5744,18 +6180,19 @@
     // autocomplete populates the right datalist and reads from the right
     // dataset input.
 
-    function discoverBqDatasets(datalistId) {
+    function discoverBqDatasets(btn, datalistId) {
         // GET /api/admin/discover-tables (no `dataset`) → list datasets in
         // the configured BQ project. Populate the named <datalist> so the
         // dataset input shows them as autocomplete suggestions. Endpoint
         // routes through BqAccess so config / auth errors come back as the
-        // standard {error, kind, details} shape.
+        // standard {error, kind, details} shape — _apiErrorMessage unwraps it.
         var dlId = datalistId || 'bqDatasetList';
+        var origText = btn ? btn.textContent : null;
+        if (btn) { btn.disabled = true; btn.textContent = 'Discovering...'; }
         fetch('/api/admin/discover-tables')
             .then(function(r) {
                 if (!r.ok) return r.json().then(function(d) {
-                    var msg = (d && d.detail && d.detail.error) || (d && d.detail) || 'BQ discovery failed';
-                    throw new Error(msg);
+                    throw new Error(_apiErrorMessage(d, 'BQ discovery failed'));
                 });
                 return r.json();
             })
@@ -5772,10 +6209,13 @@
             })
             .catch(function(err) {
                 showToast(err.message || 'Discovery failed', 'error');
+            })
+            .finally(function() {
+                if (btn) { btn.disabled = false; btn.textContent = origText; }
             });
     }
 
-    function discoverBqTables(datasetInputId, tablesDatalistId) {
+    function discoverBqTables(btn, datasetInputId, tablesDatalistId) {
         // GET /api/admin/discover-tables?dataset=NAME → list tables + views
         // in the dataset. Two-step (dataset → tables) avoids paying the
         // per-dataset list_tables() cost up front on big projects.
@@ -5786,11 +6226,12 @@
             showToast('Fill Dataset first', 'error');
             return;
         }
+        var origText = btn ? btn.textContent : null;
+        if (btn) { btn.disabled = true; btn.textContent = 'Listing...'; }
         fetch('/api/admin/discover-tables?dataset=' + encodeURIComponent(dataset))
             .then(function(r) {
                 if (!r.ok) return r.json().then(function(d) {
-                    var msg = (d && d.detail && d.detail.error) || (d && d.detail) || 'BQ table discovery failed';
-                    throw new Error(msg);
+                    throw new Error(_apiErrorMessage(d, 'BQ table discovery failed'));
                 });
                 return r.json();
             })
@@ -5810,6 +6251,9 @@
             })
             .catch(function(err) {
                 showToast(err.message || 'Table list failed', 'error');
+            })
+            .finally(function() {
+                if (btn) { btn.disabled = false; btn.textContent = origText; }
             });
     }
 
@@ -5860,7 +6304,15 @@
         // got to review the summary before the row was committed (review
         // IMPORTANT 4 in #119).
         btn.textContent = 'Checking source...';
-        var payload = _buildBigQueryPayload();
+        var payload;
+        try {
+            payload = _buildBigQueryPayload();
+        } catch (e) {
+            showToast('' + e.message, 'error');
+            btn.disabled = false;
+            btn.textContent = 'Register Table';
+            return;
+        }
         var summary = document.getElementById('bqPrecheckSummary');
         var summaryText = document.getElementById('bqPrecheckSummaryText');
 
@@ -5870,7 +6322,16 @@
             body: JSON.stringify(payload)
         })
         .then(function(r) {
-            if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || 'Precheck failed'); });
+            // Precheck runs the SAME Pydantic validation as /register-table
+            // (see register_table_precheck), so a 422 on a required field
+            // ALWAYS lands here, in step 1 — the confirm step below is only
+            // reachable once validation has already passed. Pin the field
+            // marks here too, or the two-step connectors (BQ, Snowflake)
+            // would get the readable toast but never the red box.
+            if (!r.ok) return r.json().then(function(d) {
+                _applyFieldErrors(d && d.detail, BQ_REGISTER_FIELD_MAP);
+                throw new Error(_apiErrorMessage(d, 'Precheck failed'));
+            });
             return r.json();
         })
         .then(function(data) {
@@ -5899,6 +6360,12 @@
         });
     }
 
+    var BQ_REGISTER_FIELD_MAP = {
+        name: 'bqViewName', bucket: 'bqDataset', source_table: 'bqSourceTable',
+        source_query: 'bqSourceQuery', sync_schedule: 'bqSyncSchedule',
+        folder: 'bqFolder', description: 'bqDescription',
+    };
+
     function _confirmRegisterBigQueryTable(btn, payload) {
         // Step 2 of the two-step BQ flow: actually POST /register-table.
         // Reached only after the operator has reviewed the precheck
@@ -5919,7 +6386,8 @@
             // missing bigquery.metadata.get).
             return r.json().then(function(d) {
                 if (!r.ok) {
-                    var msg = d.detail || d.message || 'Registration failed';
+                    _applyFieldErrors(d && d.detail, BQ_REGISTER_FIELD_MAP);
+                    var msg = _apiErrorMessage(d, 'Registration failed');
                     if (d.errors && d.errors.length) {
                         msg += ' (' + d.errors.length + ' error' + (d.errors.length > 1 ? 's' : '') + ')';
                     }
@@ -5964,7 +6432,15 @@
 
     function _registerSnowflakeTable(btn) {
         btn.textContent = 'Checking source...';
-        var payload = _buildSnowflakePayload();
+        var payload;
+        try {
+            payload = _buildSnowflakePayload();
+        } catch (e) {
+            showToast('' + e.message, 'error');
+            btn.disabled = false;
+            btn.textContent = 'Register Table';
+            return;
+        }
         var summary = document.getElementById('sfPrecheckSummary');
         var summaryText = document.getElementById('sfPrecheckSummaryText');
 
@@ -5974,7 +6450,13 @@
             body: JSON.stringify(payload)
         })
         .then(function(r) {
-            if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || 'Precheck failed'); });
+            // Same as the BQ precheck above: identical Pydantic validation
+            // to /register-table, so a 422 on a required field surfaces at
+            // step 1 and never reaches the confirm step's field mapping.
+            if (!r.ok) return r.json().then(function(d) {
+                _applyFieldErrors(d && d.detail, SF_REGISTER_FIELD_MAP);
+                throw new Error(_apiErrorMessage(d, 'Precheck failed'));
+            });
             return r.json();
         })
         .then(function(data) {
@@ -5994,6 +6476,12 @@
         });
     }
 
+    var SF_REGISTER_FIELD_MAP = {
+        name: 'sfViewName', bucket: 'sfSchema', source_table: 'sfSourceTable',
+        source_query: 'sfSourceQuery', sync_schedule: 'sfSyncSchedule',
+        folder: 'sfFolder', description: 'sfDescription',
+    };
+
     function _confirmRegisterSnowflakeTable(btn, payload) {
         btn.disabled = true;
         btn.textContent = 'Registering...';
@@ -6005,7 +6493,8 @@
         .then(function(r) {
             return r.json().then(function(d) {
                 if (!r.ok) {
-                    var msg = d.detail || d.message || 'Registration failed';
+                    _applyFieldErrors(d && d.detail, SF_REGISTER_FIELD_MAP);
+                    var msg = _apiErrorMessage(d, 'Registration failed');
                     if (d.errors && d.errors.length) {
                         msg += ' (' + d.errors.length + ' error' + (d.errors.length > 1 ? 's' : '') + ')';
                     }
@@ -6413,7 +6902,7 @@
             });
             if (!r.ok) {
                 var d = await r.json().catch(function() { return {}; });
-                throw new Error(d.detail || d.error || 'Update failed');
+                throw new Error(_apiErrorMessage(d, 'Update failed'));
             }
 
             // Diff chip selection vs original — emit minimal POST/DELETE
@@ -6541,7 +7030,7 @@
                 });
                 if (!r.ok) {
                     var d = await r.json().catch(function() { return {}; });
-                    throw new Error(d.detail || d.error || 'Update failed');
+                    throw new Error(_apiErrorMessage(d, 'Update failed'));
                 }
                 // Diff Data Package chip selection vs original.
                 var bqFails = await _diffApplyPackageMembership(
@@ -8125,11 +8614,13 @@
     function renderConnectorNotice(tables) {
         var host = document.getElementById('adminTablesConnectorNotice');
         if (!host) return;
-        // Connected is what the registry says. Keying this on DATA_SOURCE_TYPE
-        // alone claimed "Keboola is not connected" on instances with Keboola
-        // projects connected — listed, by name, on the adjacent Sources tab.
-        if (DATA_SOURCE_TYPE === 'keboola'
-            || CONNECTED_SOURCE_TYPES.indexOf('keboola') !== -1) {
+        // Connected is what CONNECTED_SOURCES says — it already unions the
+        // registry with the legacy scalar (when the scalar names a real
+        // source), so checking DATA_SOURCE_TYPE too here was redundant.
+        // Keying this on DATA_SOURCE_TYPE alone claimed "Keboola is not
+        // connected" on instances with Keboola projects connected — listed,
+        // by name, on the adjacent Sources tab.
+        if (CONNECTED_SOURCES.indexOf('keboola') !== -1) {
             host.hidden = true; host.innerHTML = ''; return;
         }
         var n = tables.filter(function(t) {

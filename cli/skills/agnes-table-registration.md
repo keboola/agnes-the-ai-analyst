@@ -43,10 +43,10 @@ If the source can't confirm the table exists, **stop and ask the user to verify*
 
 ```bash
 agnes admin register-table <name> \
-    --source-type=<keboola|bigquery|jira> \
-    --bucket=<dataset_or_bucket> \
+    --source-type=<keboola|bigquery|jira|databricks|snowflake> \
+    --bucket=<dataset_or_bucket_or_schema> \
     --source-table=<source_object_name> \
-    --query-mode=<local|remote> \
+    --query-mode=<local|remote|materialized> \
     --description="<short purpose, 1 line>"
 ```
 
@@ -55,33 +55,49 @@ Field meanings:
 | Flag | Meaning | Example |
 |---|---|---|
 | `<name>` | Display name; the slugged form (`lower`, spaces→`_`) becomes the table id | `User Sessions` → id `user_sessions` |
-| `--source-type` | Connector identity | `bigquery`, `keboola`, `jira` |
-| `--bucket` | BQ dataset / Keboola bucket / Jira board | `product_analytics` |
-| `--source-table` | Object name at the source (case-sensitive for BQ) | `events_daily` |
-| `--query-mode` | `local` = synced parquet / `remote` = on-demand BQ | `remote` for BQ views |
+| `--source-type` | Connector identity | `keboola`, `bigquery`, `jira`, `databricks`, `snowflake` |
+| `--bucket` | BQ dataset / Keboola bucket / Jira board / Databricks schema (`catalog.schema`) / Snowflake schema | `product_analytics` |
+| `--source-table` | Object name at the source (case-sensitive for BQ; Snowflake/Databricks identifiers quoted as-is) | `events_daily` |
+| `--query-mode` | `local` = synced parquet / `remote` = on-demand at source / `materialized` = server-side scheduled SQL → parquet | `remote` for BQ views; `materialized` for Databricks/Snowflake |
 | `--description` | One sentence shown in `agnes catalog` | `"Per-session landing-page rows."` |
 
 **Idempotence:** the API returns `409 Conflict` if the slugged id already exists. Always run `agnes admin list-tables --json` first and only register when the id is missing.
 
 ## Bulk discovery
 
-When the user says "register everything from <source>", let the connector enumerate:
-
-```bash
-# 1. preview without writing anything
-agnes admin discover-and-register --source-type=bigquery --dry-run --json
-
-# 2. review output, then commit
-agnes admin discover-and-register --source-type=bigquery
-```
-
-`discover-and-register` is **safe on re-run**: existing tables are skipped (not overwritten), new ones added. The `--dry-run` output lists what *would* change.
+`discover-and-register` is only implemented for **Keboola**; it enumerates the full Storage API table list. For BigQuery, Databricks, Snowflake, and Jira, register tables one-by-one with `agnes admin register-table` (the server-side precheck validates the table exists).
 
 For Keboola, pass `--token` and `--url` if not already in `instance.yaml`:
 
 ```bash
+# 1. preview without writing anything
 agnes admin discover-and-register --source-type=keboola \
     --token="$KEBOOLA_TOKEN" --url=https://connection.keboola.com --dry-run
+
+# 2. review output, then commit
+agnes admin discover-and-register --source-type=keboola \
+    --token="$KEBOOLA_TOKEN" --url=https://connection.keboola.com
+```
+
+`discover-and-register` is **safe on re-run**: existing tables are skipped (not overwritten), new ones added. The `--dry-run` output lists what *would* change.
+
+### New non-Keboola sources
+
+```bash
+# BigQuery remote view
+agnes admin register-table events_daily \
+    --source-type=bigquery --bucket=product_analytics --source-table=events \
+    --query-mode=remote --description="BQ events view"
+
+# Databricks materialized table
+agnes admin register-table databricks_users \
+    --source-type=databricks --bucket=default.users --source-table=users \
+    --query-mode=materialized --description="Users from Databricks"
+
+# Snowflake materialized table
+agnes admin register-table snowflake_orders \
+    --source-type=snowflake --bucket=GOLD.orders --source-table=orders \
+    --query-mode=materialized --description="Orders from Snowflake"
 ```
 
 ## Update an existing entry

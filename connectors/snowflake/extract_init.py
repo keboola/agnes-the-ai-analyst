@@ -15,6 +15,7 @@ from connectors.snowflake.attach import (
     SF_TOKEN_ENV,
     attach_snowflake,
     build_remote_attach_url,
+    install_snowflake_adbc_driver,
 )
 from src.duckdb_conn import _open_duckdb
 from src.orchestrator_security import is_attach_host_allowed, is_token_env_allowed
@@ -82,6 +83,7 @@ def _default_attach_fn(
     token: str,
     passphrase: str | None = None,
 ) -> None:
+    install_snowflake_adbc_driver()
     conn.execute(f"INSTALL {SF_EXTENSION} FROM community")
     conn.execute(f"LOAD {SF_EXTENSION}")
     attach_snowflake(conn, alias=SF_ALIAS, url=url, token=token, passphrase=passphrase)

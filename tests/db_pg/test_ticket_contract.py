@@ -146,5 +146,68 @@ def test_revoke_session_invalidates_all_tickets_for_session(repo):
     assert repo.resolve(other) is not None
 
 
+def test_revoke_session_spares_long_lived_credentials(repo):
+    """The lifecycle sweep must not kill a credential its holder cannot replace.
+
+    Every `revoke_session` caller is a sandbox-lifecycle sweep (runner spawn /
+    stop / respawn / resume, Slack session reset) meaning "retire the tickets
+    that relay held". The embedded engine's `kai_session` credential is not
+    that: it is minted once per session and its holder has no channel to be
+    handed a new one — and the engine's chat row is an ordinary `chat_sessions`
+    row, so a user opening that conversation in web chat spawned a native
+    runner whose sweep killed the engine's session for good. Found by Devin
+    Review on PR #1235.
+    """
+    credential = repo.mint("chat_sweep", "kai_session")
+    main = repo.mint("chat_sweep", "main")
+    mcp = repo.mint("chat_sweep", "mcp")
+
+    repo.revoke_session("chat_sweep")
+
+    assert repo.resolve(main) is None, "egress tickets are what the sweep is for"
+    assert repo.resolve(mcp) is None
+    assert repo.resolve(credential) is not None, "a long-lived credential must survive the sweep"
+
+    # Exempt from the SWEEP, not from revocation: asked explicitly, it goes.
+    repo.revoke_session_scopes("chat_sweep", ["kai_session"])
+    assert repo.resolve(credential) is None
+
+
 def test_revoke_session_unknown_session_is_idempotent(repo):
     repo.revoke_session("never-existed")  # must not raise
+
+
+def test_revoke_session_scopes_spares_other_scopes(repo):
+    """The scope-limited sweep is what lets a caller rotate short-lived egress
+    tickets while keeping a long-lived session credential in another scope
+    (``app/api/kai.py``) — a scope-blind sweep would delete the credential the
+    caller authenticated with."""
+    credential = repo.mint("chat_5", "kai_session")
+    llm = repo.mint("chat_5", "main")
+    mcp = repo.mint("chat_5", "mcp")
+
+    repo.revoke_session_scopes("chat_5", ["main", "mcp"])
+
+    assert repo.resolve(llm) is None
+    assert repo.resolve(mcp) is None
+    # the credential in the untouched scope survives
+    assert repo.resolve(credential) is not None
+
+
+def test_revoke_session_scopes_is_session_scoped(repo):
+    mine = repo.mint("chat_6", "main")
+    theirs = repo.mint("chat_7", "main")
+    repo.revoke_session_scopes("chat_6", ["main"])
+    assert repo.resolve(mine) is None
+    assert repo.resolve(theirs) is not None
+
+
+def test_revoke_session_scopes_empty_deletes_nothing(repo):
+    """Fail safe: an empty scope list must not degrade to "match everything"."""
+    tok = repo.mint("chat_8", "main")
+    repo.revoke_session_scopes("chat_8", [])
+    assert repo.resolve(tok) is not None
+
+
+def test_revoke_session_scopes_unknown_is_idempotent(repo):
+    repo.revoke_session_scopes("never-existed", ["main"])  # must not raise

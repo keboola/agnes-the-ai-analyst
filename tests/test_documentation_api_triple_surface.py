@@ -602,6 +602,17 @@ _EXEMPT: dict[str, str] = {
         "join its cohort rather than stay exempt"
     ),
     "/api/auth/keboola/projects": _KEBOOLA_LOGIN_PROJECTS_REASON,
+    "/api/admin/doctor/new-instance": (
+        "deployment-gate doctor (post-deploy smoke checks) — CLI-reachable via "
+        "`agnes admin doctor --new-instance` and called by "
+        "scripts/ops/post-deploy-smoke-test.sh, but deliberately never "
+        "MCP-exposed per the 'operator security-posture diagnostics' standing "
+        "exemption in CONTRIBUTING.md: the response enumerates the instance's "
+        "auth-configuration posture (which login doors exist, whether "
+        "bootstrap is still open, email transport state) — one-call "
+        "reconnaissance in a prompt-injected agent session, not an agent "
+        "affordance"
+    ),
     "/api/admin/mcp-tools/{tool_id}/projection-map": (
         "names which of a lister tool's columns carry an app's id, URL and "
         "name. The decision is only makeable against the column list a fetch "
@@ -610,6 +621,18 @@ _EXEMPT: dict[str, str] = {
         "what one emitted — so a CLI flag or MCP tool would be choosing column "
         "names blind. If a surface ever exposes the fetched columns, this "
         "should follow it there rather than stay REST-only"
+    ),
+    "/api/connectors/{slug}/prompt": (
+        "connector setup prompt for the analyst-laptop install flow — "
+        "consumed by `agnes connectors show <slug>` (REST+CLI). Deliberately "
+        "NOT an MCP tool on either transport: on the server-side foundation "
+        "tools (app/api/mcp/foundation_tools.py) it would be a footgun — the "
+        "prompt walks through storing credentials in the LOCAL OS keychain "
+        "and registering local MCP servers, meaningless inside the chat "
+        "sandbox; and the stdio server (cli/mcp/server.py) runs on the "
+        "analyst's machine only because the agnes CLI is installed, so "
+        "`agnes connectors show` is already present in that exact venue — a "
+        "tool there would duplicate the CLI surface without adding reach"
     ),
     "/api/me/display-name": (
         "self-service display-name edit (issue #1036) — UI-only affordance on "
@@ -836,6 +859,55 @@ _EXEMPT: dict[str, str] = {
     "/api/broker/anthropic/{subpath}": _BROKER_REASON,
     "/api/broker/agnes-api": _BROKER_REASON,
     "/api/broker/agnes-mcp": _BROKER_REASON,
+    # Embedded kai-agent turn engine host wiring (app/api/kai.py). Both routes
+    # are handshake/credential surfaces for the engine, not analyst features:
+    # /sessions mints the engine's own session token for the calling user
+    # (bodyless by design — every claim comes from the resolved identity, so
+    # there is nothing for a CLI flag or an MCP argument to carry), and
+    # /tickets is an internal engine-server→Agnes route gated by an opaque
+    # credential rather than user auth, exactly like the /api/broker/* family.
+    # The two surfaces are declined for DIFFERENT reasons, stated separately
+    # because "bodyless, so no flags to carry" is a weak argument for the CLI
+    # half and was the whole of an earlier version of this note (Devin Review
+    # on #1235 asked for the call to be conscious rather than inherited):
+    #
+    #   * MCP — the standing credential-provisioning exemption applies as
+    #     written: an agent-invokable tool that mints session credentials is a
+    #     privilege-escalation seam, not a convenience.
+    #   * CLI — declined not because a command would be awkward to shape (a
+    #     bodyless command is trivial) but because its OUTPUT has no consumer
+    #     at a terminal. The response is a token only a kai-agent server
+    #     holding the matching `HOST_JWT_*` secret can use, paired with a chat
+    #     id owned by that server's database. Printing it for a human would
+    #     hand out a live 12 h credential with no way to spend it and an
+    #     obvious way to leak it (shell history, CI logs). If a CLI ever needs
+    #     this, the right shape is a command that RUNS a turn, not one that
+    #     prints a credential — and that command would drive the engine's own
+    #     API, not this handshake.
+    "/api/kai/sessions": (
+        "embedded kai-agent turn engine — mints a session token usable only by "
+        "an engine server holding the matching HOST_JWT_* secret; no MCP tool "
+        "(credential-minting is an escalation seam, per CONTRIBUTING.md) and no "
+        "CLI command (its output has no consumer at a terminal — see the note "
+        "above this dict)"
+    ),
+    "/api/kai/tickets": (
+        "embedded kai-agent turn engine — internal engine-server→Agnes route "
+        "minting per-turn scope-split broker tickets, gated by an opaque "
+        "credential (not user auth), like the other /api/broker/* routes"
+    ),
+    "/api/kai/mcp": (
+        "embedded kai-agent turn engine — internal sandbox→Agnes MCP "
+        "pass-through gated by an mcp-scoped broker ticket (not user auth); "
+        "the tools it reaches are already the CLI/MCP surface, so a CLI "
+        "command calling the proxy would be circular"
+    ),
+    "/api/kai/workspace": (
+        "embedded kai-agent turn engine — internal engine-server→Agnes route "
+        "serving the caller's workspace tree as a tarball, gated by an opaque "
+        "credential (not user auth); the analyst-facing equivalent is the "
+        "existing /api/initial-workspace.zip flow"
+    ),
     "/api/admin/run-keboola-semantic-layer-refresh": (
         "scheduler-driven Keboola semantic layer (Metastore) sync trigger — "
         "admin/scheduler maintenance op, mirrors the run-bq-metadata-refresh / "

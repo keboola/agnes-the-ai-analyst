@@ -2,8 +2,9 @@
 
 The previous `?role=analyst|admin` query parameter is gone. The route
 renders a single layout for everyone — admin-vs-analyst is no longer a
-branch. The marketplace + plugins block is gated by per-user
-`resource_grants` resolved inside `compute_default_agent_prompt`.
+branch, and since the install prompt went thin neither are plugin grants:
+the marketplace bootstrap happens inside `agnes onboard`, off the live
+manifest, so the rendered prompt is caller-independent.
 """
 
 import pytest
@@ -35,25 +36,23 @@ def client(tmp_path, monkeypatch):
 
 
 def test_setup_page_renders_unified_layout(client):
-    """Bare `/setup` (no query param) renders the unified flow:
+    """Bare `/setup` (no query param) renders the thin flow:
 
-    - `agnes init` is mandatory (subsumes the old admin-only
-      `agnes auth import-token` + `agnes auth whoami` pair).
-    - Marketplace block is always emitted (Fix B in 2026-05-10
-      init-report response): anonymous visitors with no plugin grants
-      still get the marketplace registration step so the SessionStart
-      hook is pre-wired. Confirm = step 8.
+    - `agnes onboard` is the one orchestration call (it subsumes the old
+      init / catalog / preflight / marketplace / diagnose steps, which in
+      turn subsumed the admin-only `agnes auth import-token` +
+      `agnes auth whoami` pair).
+    - Four steps, so Confirm = step 4 for every caller.
     """
     resp = client.get("/setup", follow_redirects=True)
     assert resp.status_code == 200
     text = resp.text
     # Unified flow markers.
-    assert "agnes init" in text
-    # Legacy admin-only login verbs are gone from the rendered prompt.
+    assert "agnes onboard" in text
+    # Superseded login/bootstrap verbs are gone from the rendered prompt.
+    assert "agnes init" not in text
     assert "agnes auth import-token" not in text
-    # Always-on layout (preflight + marketplace + MCP + connectors block all
-    # unconditional; skills step deleted in #242): Confirm = step 9.
-    assert "10) Confirm:" in text
+    assert "4) Confirm:" in text
 
 
 def test_setup_page_ignores_role_query_param(client):
@@ -66,27 +65,26 @@ def test_setup_page_ignores_role_query_param(client):
     assert bare.status_code == 200
     assert with_role.status_code == 200
     # Both responses contain the unified-flow marker.
-    assert "agnes init" in bare.text
-    assert "agnes init" in with_role.text
-    # Legacy admin-only login verbs are gone from both.
+    assert "agnes onboard" in bare.text
+    assert "agnes onboard" in with_role.text
+    # Superseded login/bootstrap verbs are gone from both.
+    assert "agnes init" not in bare.text
+    assert "agnes init" not in with_role.text
     assert "agnes auth import-token" not in bare.text
     assert "agnes auth import-token" not in with_role.text
 
 
 def test_setup_page_renders_marketplace_for_user_with_grants(client, monkeypatch):
-    """When the caller has a non-empty served stack, the marketplace block
-    renders the "install your current stack" copy variant. Confirm stays
-    at step 8 in the post-skills-removal layout (preflight + marketplace
-    + MCP all always-on regardless of stack contents).
+    """A caller with a non-empty served stack gets the SAME prompt as
+    everyone else: the thin prompt has no plugin-grant branch left, because
+    `agnes onboard` installs from the LIVE marketplace manifest at run time
+    — strictly fresher than a render-time snapshot, and one less way for
+    the page to leak who has which grant.
 
     Stub `marketplace_filter.resolve_user_marketplace` to return a
     plugin so we don't have to seed the full marketplace plumbing in
     this test — we're verifying the layout, not the RBAC resolver
-    itself (covered by `test_marketplace_filter`).
-
-    Post-Model B (v28+): the setup page reads from
-    `resolve_user_marketplace` (which gates on explicit subscriptions)
-    rather than `resolve_allowed_plugins` (RBAC-only)."""
+    itself (covered by `test_marketplace_filter`)."""
     from app.web.router import get_optional_user
     from fastapi import Request
     from src import marketplace_filter
@@ -108,19 +106,17 @@ def test_setup_page_renders_marketplace_for_user_with_grants(client, monkeypatch
 
     assert resp.status_code == 200
     text = resp.text
-    # Marketplace block marker. The per-plugin install lines moved inside
-    # `agnes refresh-marketplace --bootstrap`, so we check the section
-    # header + the one-liner instead of `claude plugin install <name>@agnes`.
-    # Non-empty stack → "install plugins" header variant.
-    assert "Register the Agnes Claude Code marketplace and install plugins" in text
-    assert "agnes refresh-marketplace --bootstrap" in text
-    # Layout shift: Confirm is now step 9 (preflight + marketplace + MCP +
-    # connectors all always-on; skills step deleted in #242).
-    assert "10) Confirm:" in text
-    # Pre-flight is in the rendered prompt at step 4.
-    assert "Make sure git and claude are installed" in text
-    # Atlassian MCP registration is at step 6.
-    assert "claude mcp add --transport sse atlassian" in text
+    # Same four steps as for a caller with no grants at all.
+    assert "agnes onboard" in text
+    assert "4) Confirm:" in text
+    # None of the orchestration the CLI owns leaks back into the page —
+    # not the marketplace bootstrap, not the git/claude preflight, not the
+    # connector wizards (incl. the Atlassian MCP registration).
+    assert "agnes refresh-marketplace" not in text
+    assert "Register the Agnes Claude Code marketplace" not in text
+    assert "Needs git and claude on PATH" not in text
+    assert "agnes connectors show" not in text
+    assert "claude mcp add --transport sse atlassian" not in text
 
 
 def test_install_legacy_path_redirects_to_setup(client):

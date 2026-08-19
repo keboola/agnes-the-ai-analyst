@@ -3,6 +3,17 @@
     "schemas": {
       "AddGrantRequest": {
         "properties": {
+          "allow_mutating": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allow Mutating"
+          },
           "group_id": {
             "title": "Group Id",
             "type": "string"
@@ -1926,6 +1937,55 @@
           "estimated_minutes"
         ],
         "title": "ConnectorMeta",
+        "type": "object"
+      },
+      "ConnectorPromptResponse": {
+        "description": "One connector's full setup prompt \u2014 the post-frontmatter SKILL.md\nbody, brand-substituted. Consumed by ``agnes connectors show <slug>``\nso the install prompt can reference connector setup by name instead\nof inlining every body (issue: 76 % of the rendered install prompt\nwas connector bodies the user may never run).",
+        "properties": {
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "estimated_minutes": {
+            "title": "Estimated Minutes",
+            "type": "integer"
+          },
+          "prompt": {
+            "title": "Prompt",
+            "type": "string"
+          },
+          "required": {
+            "default": false,
+            "title": "Required",
+            "type": "boolean"
+          },
+          "schema_version": {
+            "default": 2,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "short_summary": {
+            "title": "Short Summary",
+            "type": "string"
+          },
+          "slug": {
+            "title": "Slug",
+            "type": "string"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "slug",
+          "display_name",
+          "short_summary",
+          "estimated_minutes",
+          "prompt",
+          "source"
+        ],
+        "title": "ConnectorPromptResponse",
         "type": "object"
       },
       "ConnectorsManifestResponse": {
@@ -4817,6 +4877,30 @@
         "title": "JourneyUpdateBody",
         "type": "object"
       },
+      "KaiSessionResponse": {
+        "description": "What a client needs to start talking to the engine: the token to send\nas ``Authorization: Bearer``, and the chat id to send as ``body.id`` so\nthe engine's chat row and our ``chat_sessions`` row share a key.",
+        "properties": {
+          "chat_id": {
+            "title": "Chat Id",
+            "type": "string"
+          },
+          "expires_at": {
+            "title": "Expires At",
+            "type": "integer"
+          },
+          "token": {
+            "title": "Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "chat_id",
+          "token",
+          "expires_at"
+        ],
+        "title": "KaiSessionResponse",
+        "type": "object"
+      },
       "KnobEntry": {
         "properties": {
           "current_value": {
@@ -5842,6 +5926,23 @@
           "store"
         ],
         "title": "MyStackResponse",
+        "type": "object"
+      },
+      "NewInstanceDoctorRequest": {
+        "properties": {
+          "email_to": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email To"
+          }
+        },
+        "title": "NewInstanceDoctorRequest",
         "type": "object"
       },
       "NewsBody": {
@@ -17316,6 +17417,77 @@
         ]
       }
     },
+    "/api/admin/doctor/new-instance": {
+      "post": {
+        "description": "Run the new-instance deployment checks and return a verdict per check.\n\nResponse: ``{status, checks: [{name, status, audience, detail}]}`` with\n``status \u2208 {ok, warning, error, info}`` per check (the ``agnes diagnose``\nvocabulary) and the headline aggregating the worst check. Checks:\n``login-door``, ``email-delivery``, ``chat-grant``, ``agent-scope``,\n``branding``. Optional body ``{\"email_to\": ...}`` makes the\nemail-delivery check send a real test message.",
+        "operationId": "doctor_new_instance_api_admin_doctor_new_instance_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/NewInstanceDoctorRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Doctor New Instance",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/api/admin/grants": {
       "get": {
         "operationId": "list_grants_api_admin_grants_get",
@@ -18407,7 +18579,7 @@
     },
     "/api/admin/keboola/test-connection": {
       "post": {
-        "description": "Verify the Keboola Storage API token by listing buckets.\n\nDeclared as a plain ``def`` (not ``async``) so FastAPI runs it in the\ndefault threadpool executor \u2014 the underlying KeboolaClient does\nsynchronous file I/O on init and synchronous HTTP on buckets.list(),\nneither of which is safe to call on the async event-loop thread.\n\nReturns 200 with ``{ok, stack_url, bucket_count, elapsed_ms}`` on success.\n\nError responses:\n- 400 ``not_configured`` \u2014 token or URL not set\n- 400 ``invalid_token`` \u2014 Keboola returned 401\n- 502 ``keboola_upstream_error`` \u2014 other API error",
+        "description": "Verify the Keboola Storage API token by listing buckets.\n\nDeclared as a plain ``def`` (not ``async``) so FastAPI runs it in the\ndefault threadpool executor \u2014 the underlying KeboolaClient does\nsynchronous file I/O on init and synchronous HTTP on buckets.list(),\nneither of which is safe to call on the async event-loop thread.\n\nReturns 200 with ``{ok, scope, stack_url, bucket_count, elapsed_ms}`` on\nsuccess. Every response \u2014 success or error \u2014 carries ``scope: \"instance\"``\nnaming the layer this probe checks (instance-level config, never the\nper-project ``source_connections`` registry).\n\nError responses:\n- 400 ``not_configured`` \u2014 token or URL not set. ``hint`` additionally\n  points at ``/admin/data-sources`` when the registry has a keboola\n  connection, so \"not configured here\" doesn't read as \"Keboola is\n  broken\" on an instance whose real projects live there.\n- 400 ``invalid_token`` \u2014 Keboola returned 401\n- 502 ``keboola_upstream_error`` \u2014 other API error",
         "operationId": "test_connection_api_admin_keboola_test_connection_post",
         "parameters": [
           {
@@ -20087,7 +20259,7 @@
     },
     "/api/admin/mcp-tools/{tool_id}/grants": {
       "post": {
-        "description": "Grant a user group access to the tool. Idempotent (ON CONFLICT DO NOTHING).",
+        "description": "Grant a user group access to the tool. Idempotent; re-POSTing an\nexisting grant with an explicit ``allow_mutating`` updates the flag in\nplace (the flag is part of the grant, so the re-POST is the edit path),\nwhile omitting it leaves an existing grant's flag untouched.",
         "operationId": "add_mcp_tool_grant_api_admin_mcp_tools__tool_id__grants_post",
         "parameters": [
           {
@@ -25801,7 +25973,7 @@
         ]
       },
       "post": {
-        "description": "Patch instance.yaml from the /admin/server-config editor.\n\nAccepts a partial patch keyed by section. Validates sections, refuses\ndanger-zone edits without explicit confirmation, deep-merges into the\ncurrent overlay, writes the file, and emits one audit entry per save\nwith a sanitized diff. Returns ``restart_required=true`` so the UI can\nshow the restart banner \u2014 hot-reload is a separate issue (see #91 Out\nof scope).",
+        "description": "Patch instance.yaml from the /admin/server-config editor.\n\nAccepts a partial patch keyed by section. Validates sections, refuses\ndanger-zone edits without explicit confirmation, deep-merges into the\ncurrent overlay, writes the file, and emits one audit entry per save\nwith a sanitized diff. Returns ``restart_required`` computed from the\nsections actually touched (``true`` only when at least one has effect\n``restart``/``deploy`` \u2014 see ``_SECTION_BASELINE_EFFECT``/\n``_effect_for_section`` above) plus ``sections_effect``, a\n``{section: \"live\"|\"restart\"|\"deploy\"}`` map so the UI can say which\nsection forced it.",
         "operationId": "update_server_config_api_admin_server_config_post",
         "parameters": [
           {
@@ -30674,7 +30846,7 @@
     },
     "/api/broker/anthropic": {
       "post": {
-        "description": "Inject the real Anthropic API key server-side and forward to the\npinned Anthropic API \u2014 the sandbox's dummy key is discarded, and the\ntarget host is never taken from the agent-supplied request.\n\nRegistered for both the bare path and any sub-path: the Anthropic SDK\nappends ``/v1/messages`` (etc.) to its base URL, so the real request\narrives at ``/api/broker/anthropic/v1/messages``. The sub-path is\nrecomputed from ``request.url.path`` and forwarded to the pinned host \u2014\nthe agent-supplied request still cannot choose the target host (Devin\nreview on #849). When LLM_DISPATCHER_URL is set, POST /v1/messages is\ninstead forwarded to that dispatcher with LLM_DISPATCHER_API_KEY\n(token-arbitrage PoC); all other subpaths keep the pinned Anthropic\nupstream.",
+        "description": "Inject the real Anthropic API key server-side and forward to the\npinned Anthropic API \u2014 the sandbox's dummy key is discarded, and the\ntarget host is never taken from the agent-supplied request.\n\nRegistered for both the bare path and any sub-path: the Anthropic SDK\nappends ``/v1/messages`` (etc.) to its base URL, so the real request\narrives at ``/api/broker/anthropic/v1/messages``. The sub-path is\nrecomputed from ``request.url.path`` and forwarded to the pinned host \u2014\nthe agent-supplied request still cannot choose the target host (Devin\nreview on #849). When LLM_DISPATCHER_URL is set, POST /v1/messages is\ninstead forwarded to that dispatcher with LLM_DISPATCHER_API_KEY\n(token-arbitrage PoC); all other subpaths keep the pinned Anthropic\nupstream.\n\nAccepts `llm` alongside `main`: the embedded turn engine's egress ticket\n(`app/api/kai.py`) is minted in that narrower scope precisely so it cannot\nalso authenticate `agnes-api`, which requires `main` and replays the whole\nnon-admin `/api/*` surface. Found by Devin Review on #1235.",
         "operationId": "anthropic_proxy_bare_api_broker_anthropic_post",
         "responses": {
           "200": {
@@ -30700,7 +30872,7 @@
     },
     "/api/broker/anthropic/{subpath}": {
       "post": {
-        "description": "Inject the real Anthropic API key server-side and forward to the\npinned Anthropic API \u2014 the sandbox's dummy key is discarded, and the\ntarget host is never taken from the agent-supplied request.\n\nRegistered for both the bare path and any sub-path: the Anthropic SDK\nappends ``/v1/messages`` (etc.) to its base URL, so the real request\narrives at ``/api/broker/anthropic/v1/messages``. The sub-path is\nrecomputed from ``request.url.path`` and forwarded to the pinned host \u2014\nthe agent-supplied request still cannot choose the target host (Devin\nreview on #849). When LLM_DISPATCHER_URL is set, POST /v1/messages is\ninstead forwarded to that dispatcher with LLM_DISPATCHER_API_KEY\n(token-arbitrage PoC); all other subpaths keep the pinned Anthropic\nupstream.",
+        "description": "Inject the real Anthropic API key server-side and forward to the\npinned Anthropic API \u2014 the sandbox's dummy key is discarded, and the\ntarget host is never taken from the agent-supplied request.\n\nRegistered for both the bare path and any sub-path: the Anthropic SDK\nappends ``/v1/messages`` (etc.) to its base URL, so the real request\narrives at ``/api/broker/anthropic/v1/messages``. The sub-path is\nrecomputed from ``request.url.path`` and forwarded to the pinned host \u2014\nthe agent-supplied request still cannot choose the target host (Devin\nreview on #849). When LLM_DISPATCHER_URL is set, POST /v1/messages is\ninstead forwarded to that dispatcher with LLM_DISPATCHER_API_KEY\n(token-arbitrage PoC); all other subpaths keep the pinned Anthropic\nupstream.\n\nAccepts `llm` alongside `main`: the embedded turn engine's egress ticket\n(`app/api/kai.py`) is minted in that narrower scope precisely so it cannot\nalso authenticate `agnes-api`, which requires `main` and replays the whole\nnon-admin `/api/*` surface. Found by Devin Review on #1235.",
         "operationId": "anthropic_proxy_subpath_api_broker_anthropic__subpath__post",
         "responses": {
           "200": {
@@ -33190,6 +33362,71 @@
         ]
       }
     },
+    "/api/connectors/{slug}/prompt": {
+      "get": {
+        "description": "Return one connector's setup prompt (SKILL.md body, brand-substituted).\n\nThe manifest is the registry gate: a slug that ``load_manifest()``\ndid not emit is a 404 \u2014 this endpoint never resolves seed paths from\ncaller input directly, so traversal-shaped slugs die here too.\n\nSubstitution set: ``{instance_brand}`` only, which is what\n``docs/seed-repo-contract.md`` \u00a76 promises a connector body gets. Note\nthe divergence from an inlined body's old path: ``resolve_lines`` in\n``app/web/setup_instructions.py`` also replaced ``{wheel_filename}``,\n``{server_host}`` and ``{workspace_dir}``, so an operator seed that used\none of those inside a ``SKILL.md`` would now print the literal\nplaceholder. No bundled body does, and the contract never offered them\nhere.\n\nTODO: if a seed ever needs those, they have to be plumbed in rather than\ncopied \u2014 ``server_host`` and ``workspace_dir`` are derivable from the\nrequest and instance config, but ``wheel_filename`` comes from CLI\nrelease resolution that only the ``/home`` render path performs. Decide\nthe intended set before widening it, and state it in \u00a76.",
+        "operationId": "get_connector_prompt_api_connectors__slug__prompt_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectorPromptResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Connector Prompt",
+        "tags": [
+          "connectors"
+        ]
+      }
+    },
     "/api/data-apps": {
       "get": {
         "operationId": "list_data_apps_api_data_apps_get",
@@ -35151,6 +35388,152 @@
         "summary": "Get Job",
         "tags": [
           "jobs"
+        ]
+      }
+    },
+    "/api/kai/mcp": {
+      "post": {
+        "description": "Forward the engine sandbox's MCP request to Agnes's own MCP server,\nunder the ticket's real identity.\n\nScope-gated on ``kai_mcp``: neither an ``llm``-scoped ticket nor the native\nsandbox's ``mcp`` can reach the tool surface, mirroring `_require_scope` on\nevery other broker route. ``kai_mcp`` and not ``mcp`` because that native\nscope also authenticates ``/api/broker/agnes-mcp``.\n\nThe response streams chunk by chunk. A Streamable-HTTP server answers\neither as JSON or as an SSE stream, and a tool that takes a while to\nproduce its result must not be buffered whole \u2014 the same mistake the\nAnthropic proxy had to fix for token deltas, and here it additionally\ncollides with the engine relay's time-to-headers bound (see\n`_mcp_internal_base` for why this is a real HTTP hop and not an in-process\nASGI dispatch).",
+        "operationId": "kai_mcp_api_kai_mcp_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          }
+        },
+        "summary": "Kai Mcp",
+        "tags": [
+          "kai"
+        ]
+      }
+    },
+    "/api/kai/sessions": {
+      "post": {
+        "description": "Create a chat session and mint the engine session token for it.\n\nAuthenticated as an ordinary user **who holds the chat grant**: the caller\ncan only ever mint a token for **themselves**, because every identity\nclaim is taken from the resolved ``user`` and none from the request body.\nThere is no request body at all \u2014 that is the point. A body-supplied\n``sub`` would make this an impersonation endpoint.\n\n``require_chat_access`` (which resolves the caller through\n``get_current_user`` and then checks the ``chat`` resource grant) rather\nthan bare authentication: this route is the entry point to running an\nagent on this instance, so it carries the same gate the native chat\nroutes do. Without it, any authenticated user on an instance that sets\n``KAI_HOST_JWT_SECRET`` could mint a session credential and spend the\ninstance's LLM budget, chat grant or not.\n\n``async def`` + ``to_thread`` rather than a plain ``def``: the repo calls\nare synchronous DuckDB/PG work that must not run on the single uvicorn\nevent loop (Tier 1, PR #188), and a sync route body would also run inside\nthe threadpool where the dev debug-toolbar's profiler cannot stop itself\n(\"Failed to stop profiling \u2026 same thread\" \u2192 500 in local dev). Every other\nroute in this family is async for the same reason.",
+        "operationId": "create_kai_session_api_kai_sessions_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KaiSessionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Kai Session",
+        "tags": [
+          "kai"
+        ]
+      }
+    },
+    "/api/kai/tickets": {
+      "post": {
+        "description": "Mint this turn's scope-split broker tickets for the engine's relay.\n\nCalled once per turn by the engine's server (never by the sandbox), which\npushes the result into the sandbox over stdin. The engine requires ``llm``\nand treats every other key as optional host data, so an instance that\nbrokers no MCP upstream simply omits it \u2014 here that means\n``KAI_BROKER_MCP_ENABLED`` unset.\n\nMinting retires the session's previous egress tickets, so one live set\nexists per chat and a stale turn's ticket cannot be replayed \u2014 mirroring\nthe engine's own contract (\"minting retires the chat's previous set\").",
+        "operationId": "issue_kai_tickets_api_kai_tickets_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Issue Kai Tickets Api Kai Tickets Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          }
+        },
+        "summary": "Issue Kai Tickets",
+        "tags": [
+          "kai"
+        ]
+      }
+    },
+    "/api/kai/workspace": {
+      "get": {
+        "description": "Serve this caller's workspace tree as one gzipped tarball.\n\nClosed contract: exactly ``200`` with the archive, or ``204`` for \"this\ncaller has no workspace\". Any other status fails the engine's turn, so\nthere is no partial answer \u2014 an unreadable template falls back to the\nbundled tree rather than erroring.\n\nAuthenticated by the session credential, not a broker ticket: the engine's\n*server* fetches this once per SDK process spawn, and the sandbox never\nsees it.\n\nThe payload is per-session, because the ``CLAUDE.md`` inside it is the\nRBAC-filtered Workspace Prompt. It stays byte-stable for a given session\nand configuration \u2014 the session, not merely the caller, because the\nrendered document carries a date and is therefore pinned to\n``started_at``. That stability is what the engine's re-fetch on every SDK\nrespawn relies on.",
+        "operationId": "kai_workspace_api_kai_workspace_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/gzip": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "gzipped tar archive of the caller's workspace tree"
+          },
+          "204": {
+            "description": "this deployment ships no workspace payload"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          }
+        },
+        "summary": "Kai Workspace",
+        "tags": [
+          "kai"
         ]
       }
     },
@@ -50222,7 +50605,7 @@
     },
     "/auth/password/reset": {
       "get": {
-        "description": "Render the 'set new password' form when arriving via reset link.\n\n``reason=must_change`` marks the forced-rotation arrival (see\n``password_login_web``): the credentials were correct, but the password\nwas set by someone else and has to be replaced before a session is\nissued. Without it the page is indistinguishable from \"you forgot your\npassword\", and first-time users reasonably conclude their password was\nrejected.",
+        "description": "Render the reset flow's GET page.\n\nWith ``email`` + ``token`` (arriving via an emailed reset link) this is\nthe 'set new password' form. Without a token it renders the 'enter your\nemail' request form \u2014 the standalone forgot-password page the login page\nlinks to. (It used to redirect back to the login page instead, leaving\nthe hidden-email POST from the login form as the only way to request a\nreset \u2014 which silently submitted an empty address when the user clicked\nForgot Password before typing their email.)\n\n``reason=must_change`` marks the forced-rotation arrival (see\n``password_login_web``): the credentials were correct, but the password\nwas set by someone else and has to be replaced before a session is\nissued. Without it the page is indistinguishable from \"you forgot your\npassword\", and first-time users reasonably conclude their password was\nrejected.",
         "operationId": "reset_page_auth_password_reset_get",
         "parameters": [
           {

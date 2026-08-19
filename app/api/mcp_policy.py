@@ -2,10 +2,14 @@
 
 Three independent gates, each driven by a column on ``tool_registry``:
 
-* ``mutating`` (BOOLEAN) — when true, only admins can invoke the tool.
-  POC scope is read-only-by-default for analyst users; admin gets the
-  full surface for testing + curation. A future iteration can replace
-  the admin-or-bust check with a separate ``mutating_grant`` row.
+* ``mutating`` (BOOLEAN) — when true, the tool is invokable by admins and
+  by callers whose groups hold a ``tool_grants`` row with
+  ``allow_mutating=TRUE`` for it (v121 — the "separate ``mutating_grant``
+  row" the POC reserved). Read-only-by-default stands: a plain grant does
+  not open a mutating tool; the per-tool opt-in is an explicit admin act.
+  An ``AgentPrincipal`` rides its owner's groups with ``is_admin`` forced
+  False, so an agent reaches exactly the mutating tools its owner's groups
+  were opted into — still narrowed by its connection scope below.
 
 * ``pii_fields`` (JSON list[str]) — recursive-redact every value whose
   *key* matches an entry in the list. Applied to both ``text`` (when
@@ -42,20 +46,40 @@ from app.instance_config import get_public_url
 
 
 class MutatingNotAllowed(Exception):
-    """Raised by ``check_mutating`` when a non-admin invokes a mutating tool."""
+    """Raised by ``check_mutating`` when a caller without mutating authority
+    (admin, or a group grant with ``allow_mutating=TRUE``) invokes a
+    mutating tool."""
 
 
-def check_mutating(tool: Dict[str, Any], *, is_admin: bool) -> None:
-    """Raise ``MutatingNotAllowed`` for a non-admin call on a mutating tool.
+def check_mutating(
+    tool: Dict[str, Any],
+    *,
+    is_admin: bool,
+    group_ids: Optional[List[str]] = None,
+) -> None:
+    """Raise ``MutatingNotAllowed`` unless the caller may run a mutating tool.
 
-    No-op for admin callers (curation + testing flow) and for tools whose
-    registry row has ``mutating=False`` (the read-only default).
+    No-op for tools whose registry row has ``mutating=False`` (the read-only
+    default), for admin callers (curation + testing flow), and — since v121 —
+    for callers whose ``group_ids`` hold a ``tool_grants`` row with
+    ``allow_mutating=TRUE`` for this tool. ``group_ids`` are the caller's
+    resolved groups (an ``AgentPrincipal``'s OWNER groups — the owner's
+    grants are the agent's ceiling); ``None``/empty fails closed to the
+    pre-v121 admin-or-bust behavior.
     """
     if not bool(tool.get("mutating", False)):
         return
     if is_admin:
         return
-    raise MutatingNotAllowed(f"tool {tool.get('tool_id')!r} is marked mutating; non-admin invocations are blocked")
+    if group_ids:
+        from src.repositories import tool_registry_repo
+
+        if tool_registry_repo().is_mutating_granted_to_groups(str(tool.get("tool_id")), list(group_ids)):
+            return
+    raise MutatingNotAllowed(
+        f"tool {tool.get('tool_id')!r} is marked mutating; it requires an admin caller "
+        f"or a group grant with allow_mutating=TRUE"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -153,7 +177,9 @@ def enforce_passthrough_access(tool: Dict[str, Any], caller: Any) -> None:
 
     1. **grant** — admin short-circuits; otherwise the caller must be in a group
        listed in ``tool_grants`` for this tool (``GrantDenied`` on miss);
-    2. **mutating** — a ``mutating`` tool is admin-only (``MutatingNotAllowed``);
+    2. **mutating** — a ``mutating`` tool needs an admin caller or a caller
+       group whose grant carries ``allow_mutating=TRUE``
+       (``MutatingNotAllowed``);
     3. **connection scope** — an agent whose ``connections_mode='selected'``
        may only reach tools on an MCP source it declared
        (``ConnectionNotInScope``). This is the *call* seam of the same filter
@@ -181,11 +207,12 @@ def enforce_passthrough_access(tool: Dict[str, Any], caller: Any) -> None:
 
     authority = caller_authority(caller)
     tool_id = tool.get("tool_id")
+    group_ids: List[str] = []
     if not authority.is_admin:
         group_ids = list(_user_group_ids(authority.user_id)) if authority.user_id else []
         if not tool_registry_repo().is_granted_to_groups(tool_id, group_ids):
             raise GrantDenied(f"no grant on tool {tool_id!r} for your groups")
-    check_mutating(tool, is_admin=authority.is_admin)
+    check_mutating(tool, is_admin=authority.is_admin, group_ids=group_ids)
     allowed_sources = connection_scope_ids(authority)
     if allowed_sources is not None and tool.get("source_id") not in allowed_sources:
         raise ConnectionNotInScope(

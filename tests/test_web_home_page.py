@@ -70,7 +70,7 @@ def test_home_not_onboarded_user_sees_setup_view(fresh_db):
     resp = c.get("/home", cookies={"access_token": sess})
     assert resp.status_code == 200
     body = resp.text
-    assert "install Claude Code" in body  # step 1 label
+    assert "Install Claude Code" in body  # step 1 label
     assert "Pick a folder for" in body  # step 2 label
     assert "self-mark-btn" in body  # self-acknowledged escape hatch
     assert "setupClaudeBtn" in body  # primary one-click CTA from shared partial
@@ -234,14 +234,12 @@ def test_home_onboarded_user_sees_nav_hub(fresh_db):
 
 def test_connectors_section_removed_from_home(fresh_db):
     """The dedicated `<details data-section="connectors">` block was
-    dropped from `/home` — the install-hero's Step 4 clipboard payload
-    (rendered via `_claude_setup_instructions.jinja` inside the manual
-    fallback) already inlines the same Asana / GWS / Atlassian prompts
-    from `app/web/connector_prompts.py` via
-    `app/web/setup_instructions.py::_connectors_block`. Showing them
-    twice on the same page was duplicate UX. The lead paragraph in the
-    install-hero now mentions the connectors briefly so users still see
-    the benefit before they hit the install.
+    dropped from `/home`: showing connector setup twice on the same page
+    was duplicate UX, and since the install prompt went thin the setup
+    bodies live nowhere on this page at all — `agnes onboard` reports
+    which connectors are available and the user asks for one afterwards.
+    The surfaces copy still names them so users see the benefit before
+    they hit the install.
 
     Co-asserts the auto-mode block removal that this test originally
     pinned — onboarded users still see neither the connectors block
@@ -285,11 +283,14 @@ def test_connectors_section_removed_from_home(fresh_db):
     body2 = _client().get("/home", cookies={"access_token": sess2}).text
     assert 'class="connector-tiles"' not in body2
     assert 'data-section="connectors"' not in body2
-    # The install-prompt's finale step lists the configured connectors
-    # by display_name — sourced from the seed manifest. Bundled snapshot
-    # ships Asana, Atlassian (Jira / Confluence), Google Workspace (the
-    # alphabetical sort order ``load_manifest`` enforces).
-    assert "Asana, Atlassian (Jira / Confluence), Google Workspace" in body2
+    # Connector names no longer come from the install prompt — the thin
+    # prompt has no connector tiles and no finale roll-call (`agnes
+    # onboard` lists what is available at the end of its own run, and the
+    # user asks for one when they want it). The benefit is still surfaced
+    # on the page itself, which is what this test cares about.
+    assert "Asana" in body2
+    assert "Google Workspace" in body2
+    assert "agnes connectors show" not in body2
 
 
 def test_minimize_toggle_no_longer_rendered(fresh_db):
@@ -494,14 +495,13 @@ def test_home_hides_email_admin_button_when_gws_configured(fresh_db, monkeypatch
 # `test_home_renders_connector_prompts_from_shared_module` was dropped here
 # alongside the removal of the /home `<details data-section="connectors">`
 # block. The test pinned source-of-truth parity between the home tile
-# `<code id="*-prompt">` blocks and `app/web/connector_prompts.py`. With the
-# tiles gone, the only surface left for those strings is the install-hero's
-# Step 4 clipboard payload (rendered via `_claude_setup_instructions.jinja`
-# from `setup_instructions_lines`, which is built in
-# `app/web/setup_instructions.py::_connectors_block` calling the same
-# `connector_prompts.py` functions). One surface, no drift risk → the
-# parity test is redundant. If a second surface ever re-renders these
-# prompts, restore a parity test scoped to that new consumer.
+# `<code id="*-prompt">` blocks and the shared connector-prompt module.
+# /home renders no connector prompt at all any more: the install prompt
+# went thin, so the only surface that serves a wizard body is
+# `GET /api/connectors/{slug}/prompt`, pulled up after setup when the user
+# asks for that connector — and that endpoint has its own tests. No second
+# surface, no drift risk → the parity test is redundant. If one ever
+# reappears, restore a parity test scoped to that new consumer.
 
 
 # ── Setup section header + Overview + Usage modes ────────────────────────
@@ -686,3 +686,51 @@ def test_welcome_support_independent_of_overview(fresh_db, monkeypatch):
         assert_element(body, "div", class_="home-hero-footnotes")
     assert_element(body, "div", class_="home-hero-support")
     assert "SUPPORT_ONLY_MARKER" in body
+
+
+def test_release_smoke_gate_assertions_hold_against_the_shipped_page(fresh_db):
+    """Pin the two things `scripts/smoke-test.sh` step 11 greps for.
+
+    That gate runs only *after* a merge to `main`, against the freshly
+    built image — so when the page's contract changes underneath it, the
+    first sign is a failed release plus an automatic `:stable` rollback,
+    not a red PR. That is exactly what happened in 0.83.86: the thin
+    install prompt removed the connector tiles and the finale roll-call
+    (deliberately, pinned by `test_connectors_section_removed_from_home`
+    directly above), the smoke gate still required both, and two
+    consecutive releases rolled back before anyone read the smoke log.
+
+    This test moves that gate's assertions into the pre-merge suite so
+    the same drift fails on the PR instead. Keep it in step with
+    `scripts/smoke-test.sh` step 11 — if you change one, change both.
+    """
+    from src.db import get_system_db, close_system_db
+
+    conn = get_system_db()
+    try:
+        _, sess = _make_user_and_session(conn, onboarded=False)
+    finally:
+        conn.close()
+        close_system_db()
+
+    c = _client()
+    body = c.get("/home", cookies={"access_token": sess}).text
+    assert body.strip(), "/home rendered empty — the smoke gate reads this as a renderer crash"
+    for name in ("Asana", "Google Workspace", "Atlassian"):
+        assert name in body, (
+            f"/home no longer names {name!r}; scripts/smoke-test.sh step 11 greps for it "
+            "and will fail the release with an automatic :stable rollback"
+        )
+
+    # Where the connector roll-call moved: `agnes onboard` step 6 reads
+    # this endpoint (cli/commands/onboard.py::_fetch_connectors).
+    # Bearer header, not a cookie — that is how scripts/smoke-test.sh
+    # authenticates, and this guard is only worth having if it exercises
+    # the same path the release gate does.
+    resp = c.get("/api/connectors/manifest", headers={"Authorization": f"Bearer {sess}"})
+    assert resp.status_code == 200, resp.text
+    connectors = resp.json().get("connectors")
+    assert isinstance(connectors, list) and connectors, (
+        "the bundled connector manifest is empty — `agnes onboard` would tell the "
+        "operator this instance offers nothing to set up"
+    )

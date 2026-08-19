@@ -9,11 +9,25 @@ the new content rather than treating the first hash as final.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import hashlib
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Optional
 
 import duckdb
+
+# When a jsonl is modified immediately after the previous processing tick,
+# ``st_mtime`` can lag ``datetime.now()`` by a few milliseconds on some
+# filesystems/VM clocks.  Treat mtimes within this window of ``processed_at``
+# as ambiguous and verify with the stored file hash before discarding.
+_MTIME_SKEW_WINDOW = timedelta(milliseconds=50)
+
+
+def _md5_file(path: Path) -> str:
+    h = hashlib.md5()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 class SessionProcessorStateRepository:
@@ -46,9 +60,15 @@ class SessionProcessorStateRepository:
         username: str,
         items_count: int,
         file_hash: str,
+        read_at: datetime | None = None,
     ) -> None:
-        """UPSERT — overwrites previous state row for (processor, session)."""
-        now = datetime.now(timezone.utc)
+        """UPSERT — overwrites previous state row for (processor, session).
+
+        *read_at* should be the moment the file hash was observed; when the
+        processor runs for a long time or appends to the jsonl mid-run, this
+        preserves the correct mtime/ordering relationship for the next scan.
+        """
+        processed_at = read_at if read_at is not None else datetime.now(UTC)
         self.conn.execute(
             """INSERT INTO session_processor_state
                 (processor_name, session_file, username, processed_at, items_extracted, file_hash)
@@ -58,7 +78,7 @@ class SessionProcessorStateRepository:
                     items_extracted = excluded.items_extracted,
                     file_hash = excluded.file_hash,
                     username = excluded.username""",
-            [processor_name, session_file, username, now, items_count, file_hash],
+            [processor_name, session_file, username, processed_at, items_count, file_hash],
         )
 
     def delete_for_processors(self, processor_names: list[str]) -> int:
@@ -80,7 +100,7 @@ class SessionProcessorStateRepository:
         ).fetchall()
         return len(rows)
 
-    def max_processed_at(self, processor_name: str) -> "datetime | None":
+    def max_processed_at(self, processor_name: str) -> datetime | None:
         """Most recent processed_at across all session rows for *processor_name*,
         or None if the processor has no state rows. Backs the session-pipeline
         health check in app/api/health.py."""
@@ -108,7 +128,7 @@ class SessionProcessorStateRepository:
         items_extracted = int(row[1] or 0) if row else 0
         return {"last_processed_at": last_processed_at, "items_extracted": items_extracted}
 
-    def processed_session_files(self, processor_name: str) -> "set[str]":
+    def processed_session_files(self, processor_name: str) -> set[str]:
         """The set of session_file values this processor has a state row for.
         Backs the FIFO stuck-file check in app/api/health.py."""
         rows = self.conn.execute(
@@ -121,7 +141,7 @@ class SessionProcessorStateRepository:
         self,
         processor_name: str,
         session_files: list[str],
-    ) -> "dict[str, dict]":
+    ) -> dict[str, dict]:
         """For *processor_name*, return ``{session_file: {'processed_at': ...,
         'items_extracted': ...}}`` for each of *session_files* that has a state
         row. Empty input → ``{}``. Backs the pipeline-status enrichment in
@@ -136,10 +156,7 @@ class SessionProcessorStateRepository:
                   AND session_file IN ({placeholders})""",
             [processor_name, *session_files],
         ).fetchall()
-        return {
-            r[0]: {"processed_at": r[1], "items_extracted": r[2]}
-            for r in rows
-        }
+        return {r[0]: {"processed_at": r[1], "items_extracted": r[2]} for r in rows}
 
     def scan_unprocessed_for(
         self,
@@ -147,32 +164,30 @@ class SessionProcessorStateRepository:
         session_dir: Path,
     ) -> list[tuple[str, Path]]:
         """Return (username, jsonl_path) pairs in *session_dir* that this
-        processor needs to (re)process: no state row, OR state row with
-        an mtime newer than the stored processed_at (file modified since
-        last run — likely a live-append from an active Claude Code session).
+        processor needs to (re)process: no state row, OR state row whose
+        stored hash does not match the current file content, OR state row
+        with an mtime newer than the stored ``processed_at``.
 
-        The mtime precheck is a cheap stat-only optimization: for stable
-        sessions (mtime <= processed_at) we skip without reading the file.
-        Files that survive the precheck still go through the runner's
-        per-file ``is_processed(file_hash)`` check for authoritative
-        hash-based invalidation. Without this filter, the runner would
-        MD5-rehash every stable session on every scheduler tick.
+        ``st_mtime`` is used as a cheap precheck, but it can lag
+        ``datetime.now()`` by a few milliseconds on some filesystems/VM clocks.
+        When mtime is within :data:`_MTIME_SKEW_WINDOW` of ``processed_at`` we
+        verify with the stored ``file_hash`` before discarding the file.
+        Files that survive the precheck still go through the runner's per-file
+        ``is_processed(file_hash)`` check for authoritative hash-based
+        invalidation.
         """
         results: list[tuple[str, Path]] = []
         if not session_dir.exists():
             return results
 
-        # One query per scan, not per file. Storing processed_at (not file_hash)
-        # because mtime is the cheap precheck — file_hash compare lives in the
-        # runner where it's already paying the IO cost to hash.
-        known: dict[str, Optional[datetime]] = {}
+        known: dict[str, tuple[datetime | None, str]] = {}
         rows = self.conn.execute(
-            """SELECT session_file, processed_at FROM session_processor_state
+            """SELECT session_file, processed_at, file_hash FROM session_processor_state
                 WHERE processor_name = ?""",
             [processor_name],
         ).fetchall()
-        for sf, pa in rows:
-            known[sf] = pa
+        for sf, pa, fh in rows:
+            known[sf] = (pa, fh)
 
         for user_dir in session_dir.iterdir():
             if not user_dir.is_dir():
@@ -184,7 +199,7 @@ class SessionProcessorStateRepository:
                     # No state row → definitely needs processing.
                     results.append((username, jsonl_file))
                     continue
-                processed_at = known[key]
+                processed_at, stored_hash = known[key]
                 if processed_at is None:
                     # Defensive: row without processed_at shouldn't happen
                     # (mark_processed always sets it), but if it does,
@@ -203,14 +218,26 @@ class SessionProcessorStateRepository:
                 # (`src.db._open_duckdb`) pins the session timezone to UTC,
                 # so `processed_at` reads as UTC-clock-naive. Convert the
                 # file's epoch mtime to UTC-naive on the same axis.
-                mtime = datetime.fromtimestamp(mtime_epoch, tz=timezone.utc).replace(tzinfo=None)
+                mtime = datetime.fromtimestamp(mtime_epoch, tz=UTC).replace(tzinfo=None)
                 if processed_at.tzinfo is not None:
                     processed_at = processed_at.replace(tzinfo=None)
-                if mtime > processed_at:
-                    # File touched since last run — could be a live-append
+
+                if mtime >= processed_at:
+                    # File touched since/at last run — could be a live-append
                     # (Claude Code writing to an active session). Surface
                     # for the runner; its hash compare will skip if content
                     # is identical (some editors rewrite-without-change).
                     results.append((username, jsonl_file))
+                    continue
+
+                if (processed_at - mtime) <= _MTIME_SKEW_WINDOW:
+                    # mtime is too close to processed_at to trust alone:
+                    # clock skew can make a post-process write look earlier
+                    # than processed_at.  Verify the stored hash.
+                    try:
+                        if _md5_file(jsonl_file) != stored_hash:
+                            results.append((username, jsonl_file))
+                    except OSError:
+                        results.append((username, jsonl_file))
                 # else: stable session, skip without hashing.
         return results

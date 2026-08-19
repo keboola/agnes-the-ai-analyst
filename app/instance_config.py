@@ -1066,8 +1066,8 @@ def get_ssrf_allowed_hosts() -> frozenset[str]:
 
 
 def get_instance_custom_preamble() -> str:
-    """Operator-authored preamble injected at the TOP of the `agnes init`
-    install prompt (above ``Set up the {instance_brand} CLI…``). Empty/unset
+    """Operator-authored preamble injected at the TOP of the install
+    prompt (above ``Set up the {instance_brand} CLI…``). Empty/unset
     emits zero lines so the rendered prompt stays byte-identical to the
     default — keeping the OSS vendor-neutral; the brand-specific value is
     set in production config, outside this repo.
@@ -1408,6 +1408,11 @@ _DATA_APPS_ENV_DEFAULTS = {
     "default_mem_limit": "1g",
     "default_cpus": 1.0,
     "max_apps_per_user": 3,
+    # Mirrors `app/api/data_apps.py::_CONFIG_DEFAULTS` — read-only rootfs off
+    # by default (its tmpfs list is unverified against the shipped runtime
+    # image), fork-bomb ceiling on.
+    "container_read_only": False,
+    "container_pids_limit": 512,
 }
 
 

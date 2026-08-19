@@ -4,14 +4,26 @@ Mirrors ``src/repositories/session_processor_state.py``. PG ``TIMESTAMP
 WITH TIME ZONE`` preserves UTC offsets across the round-trip, so we no
 longer need the strip-tz step the DuckDB impl carries.
 """
+
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import hashlib
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Optional
 
 import sqlalchemy as sa
 from sqlalchemy.engine import Engine
+
+# Mirrors ``src.repositories.session_processor_state._MTIME_SKEW_WINDOW``.
+_MTIME_SKEW_WINDOW = timedelta(milliseconds=50)
+
+
+def _md5_file(path: Path) -> str:
+    h = hashlib.md5()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 class SessionProcessorStatePgRepository:
@@ -43,8 +55,15 @@ class SessionProcessorStatePgRepository:
         username: str,
         items_count: int,
         file_hash: str,
+        read_at: datetime | None = None,
     ) -> None:
-        now = datetime.now(timezone.utc)
+        """UPSERT — overwrites previous state row for (processor, session).
+
+        *read_at* should be the moment the file hash was observed; when the
+        processor runs for a long time or appends to the jsonl mid-run, this
+        preserves the correct mtime/ordering relationship for the next scan.
+        """
+        processed_at = read_at if read_at is not None else datetime.now(UTC)
         with self._engine.begin() as conn:
             conn.execute(
                 sa.text(
@@ -58,8 +77,12 @@ class SessionProcessorStatePgRepository:
                             username = EXCLUDED.username"""
                 ),
                 {
-                    "p": processor_name, "s": session_file, "u": username,
-                    "now": now, "ic": items_count, "h": file_hash,
+                    "p": processor_name,
+                    "s": session_file,
+                    "u": username,
+                    "now": processed_at,
+                    "ic": items_count,
+                    "h": file_hash,
                 },
             )
 
@@ -82,15 +105,12 @@ class SessionProcessorStatePgRepository:
             ).all()
         return len(rows)
 
-    def max_processed_at(self, processor_name: str) -> "datetime | None":
+    def max_processed_at(self, processor_name: str) -> datetime | None:
         """Most recent processed_at across all session rows for *processor_name*,
         or None if the processor has no state rows."""
         with self._engine.connect() as conn:
             row = conn.execute(
-                sa.text(
-                    "SELECT MAX(processed_at) FROM session_processor_state "
-                    "WHERE processor_name = :p"
-                ),
+                sa.text("SELECT MAX(processed_at) FROM session_processor_state WHERE processor_name = :p"),
                 {"p": processor_name},
             ).first()
         return row[0] if row else None
@@ -110,14 +130,11 @@ class SessionProcessorStatePgRepository:
         items_extracted = int(row[1] or 0) if row else 0
         return {"last_processed_at": last_processed_at, "items_extracted": items_extracted}
 
-    def processed_session_files(self, processor_name: str) -> "set[str]":
+    def processed_session_files(self, processor_name: str) -> set[str]:
         """The set of session_file values this processor has a state row for."""
         with self._engine.connect() as conn:
             rows = conn.execute(
-                sa.text(
-                    "SELECT session_file FROM session_processor_state "
-                    "WHERE processor_name = :p"
-                ),
+                sa.text("SELECT session_file FROM session_processor_state WHERE processor_name = :p"),
                 {"p": processor_name},
             ).all()
         return {r[0] for r in rows}
@@ -126,7 +143,7 @@ class SessionProcessorStatePgRepository:
         self,
         processor_name: str,
         session_files: list[str],
-    ) -> "dict[str, dict]":
+    ) -> dict[str, dict]:
         """For *processor_name*, return ``{session_file: {'processed_at': ...,
         'items_extracted': ...}}`` for each of *session_files* that has a state
         row. Empty input → ``{}``."""
@@ -143,10 +160,7 @@ class SessionProcessorStatePgRepository:
                 stmt,
                 {"p": processor_name, "files": list(session_files)},
             ).all()
-        return {
-            r[0]: {"processed_at": r[1], "items_extracted": r[2]}
-            for r in rows
-        }
+        return {r[0]: {"processed_at": r[1], "items_extracted": r[2]} for r in rows}
 
     def scan_unprocessed_for(
         self,
@@ -157,17 +171,17 @@ class SessionProcessorStatePgRepository:
         if not session_dir.exists():
             return results
 
-        known: dict[str, Optional[datetime]] = {}
+        known: dict[str, tuple[datetime | None, str]] = {}
         with self._engine.connect() as conn:
             rows = conn.execute(
                 sa.text(
-                    """SELECT session_file, processed_at FROM session_processor_state
+                    """SELECT session_file, processed_at, file_hash FROM session_processor_state
                        WHERE processor_name = :p"""
                 ),
                 {"p": processor_name},
             ).all()
-        for sf, pa in rows:
-            known[sf] = pa
+        for sf, pa, fh in rows:
+            known[sf] = (pa, fh)
 
         for user_dir in session_dir.iterdir():
             if not user_dir.is_dir():
@@ -178,7 +192,7 @@ class SessionProcessorStatePgRepository:
                 if key not in known:
                     results.append((username, jsonl_file))
                     continue
-                processed_at = known[key]
+                processed_at, stored_hash = known[key]
                 if processed_at is None:
                     results.append((username, jsonl_file))
                     continue
@@ -189,9 +203,16 @@ class SessionProcessorStatePgRepository:
                     continue
                 # PG TIMESTAMPTZ keeps tz on the round-trip; compare against
                 # a tz-aware mtime so we don't lose precision.
-                mtime = datetime.fromtimestamp(mtime_epoch, tz=timezone.utc)
+                mtime = datetime.fromtimestamp(mtime_epoch, tz=UTC)
                 if processed_at.tzinfo is None:
-                    processed_at = processed_at.replace(tzinfo=timezone.utc)
-                if mtime > processed_at:
+                    processed_at = processed_at.replace(tzinfo=UTC)
+                if mtime >= processed_at:
                     results.append((username, jsonl_file))
+                    continue
+                if (processed_at - mtime) <= _MTIME_SKEW_WINDOW:
+                    try:
+                        if _md5_file(jsonl_file) != stored_hash:
+                            results.append((username, jsonl_file))
+                    except OSError:
+                        results.append((username, jsonl_file))
         return results

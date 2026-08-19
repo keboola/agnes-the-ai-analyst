@@ -99,13 +99,70 @@ For running Agnes on your own VM / bare metal without Terraform. You're responsi
 
 ### TLS (optional)
 
-Caddy runs as the TLS terminator. It reads certs from `/data/state/certs/{fullchain,privkey}.pem` bind-mounted into the container. Two provisioning modes:
+Caddy runs as the TLS terminator, and a single env var — `CADDY_TLS`, passed through from `.env` — picks the certificate regime. The Caddyfile substitutes the value as a directive, so **it must start with `tls `**:
 
-**A. Public internet (Let's Encrypt)** — for this path, override the `Caddyfile` to drop the `tls` directive (so Caddy auto-issues) and skip steps below. Not covered here anymore; see git history prior to the `feat(tls)` change if you need the ACME flow.
+| `CADDY_TLS` | Mode | Use it for |
+|---|---|---|
+| *unset* (default) | **Cert file** — Caddy serves `/data/state/certs/{fullchain,privkey}.pem`, bind-mounted read-only into the container | Corporate CA / self-managed certs (**mode B** below — what the infra repo ships) |
+| `tls ops@example.com` | **Let's Encrypt** — Caddy obtains and renews over ACME; the address gets expiry / problem notices | Public-internet deployments (**mode A** below) |
+| `tls internal` | **Caddy-managed self-signed** | Lab / dev only — every browser visit warns |
 
-**B. Corporate CA / self-managed certs** (recommended, and what the infra repo ships):
+All three run the same `Caddyfile` and the same `tls` compose profile; nothing else in the stack changes.
 
-Two bring-up flows, picked by whether `TLS_PRIVKEY_URL` is set in `.env`:
+#### What the mode does to the analyst install prompt
+
+The install prompt on `/home` (and `/setup`) adapts to the served certificate on its own — there is no switch to flip. `app/web/setup_instructions.py` renders a leading **"0) Trust the Agnes TLS certificate"** step only when `app/web/router.py`'s `_read_agnes_ca_pem` decides the client needs a trust bootstrap. That helper reads the fullchain at `AGNES_TLS_FULLCHAIN_PATH` (default `/data/state/certs/fullchain.pem`) and returns the PEM only when the chain cannot be proven publicly trusted:
+
+- **Let's Encrypt (mode A)** — nothing is written to that path at all (Caddy keeps issued certs in the `caddy_data` volume), and a chain that *is* placed there terminates in a root `certifi` already ships. Either way the helper returns nothing and the prompt renders **without** the trust block: shorter prompt, no `SSL_CERT_FILE` / `NODE_EXTRA_CA_CERTS` exports on analyst machines.
+- **Corporate CA (mode B) or self-signed** — the leaf is self-signed, or the chain terminates in a root no public trust store carries, so the PEM is inlined and the trust block is emitted automatically.
+
+Analysts who onboarded while the instance was still private-CA keep working after a switch to Let's Encrypt: the bundle their prompt built at `~/.agnes/ca-bundle.pem` is the public roots *plus* the private CA, so it validates the new chain too. Their `SSL_CERT_FILE` / `REQUESTS_CA_BUNDLE` / `GIT_SSL_CAINFO` / `NODE_EXTRA_CA_CERTS` exports simply become unnecessary and can be dropped from their shell profile.
+
+#### A. Public internet (Let's Encrypt)
+
+Set the domain and the ACME contact in `.env`:
+
+```
+DOMAIN=agnes.example.com
+CADDY_TLS=tls ops@example.com
+```
+
+then start with the `tls` profile (the `docker-compose.tls.yml` overlay closes host `:8000` so all traffic enters via `:443`):
+
+```bash
+docker compose \
+    -f docker-compose.yml \
+    -f docker-compose.prod.yml \
+    -f docker-compose.tls.yml \
+    --profile tls up -d
+```
+
+Prerequisites for the ACME flow — miss one and Caddy retries issuance in a loop while serving its internal self-signed cert:
+
+- **DNS first.** An `A`/`AAAA` record for `DOMAIN` must resolve to this host's public IP *before* the first start, and stay pointed there for renewals.
+- **Ports 80 and 443 reachable from the public internet.** The HTTP-01 challenge is answered on `:80`; keep `:443` open too (TLS-ALPN fallback, plus the actual service). A firewall that allows only `:443` breaks issuance.
+- **Nothing else terminating TLS in front of Caddy** — no CDN or load balancer holding its own cert for `DOMAIN`, and no other process bound to `:80`/`:443` on the host.
+- **`TLS_FULLCHAIN_URL` / `TLS_PRIVKEY_URL` / `TLS_CSR_SUBJECT` stay unset** — those drive mode B's rotation script, which has no role here.
+- **Keep the `caddy_data` volume across upgrades.** Issued certs and the ACME account live there; wiping it re-issues on every recreate and can hit Let's Encrypt's per-domain rate limits.
+
+##### Verification checklist — switching an existing instance to Let's Encrypt
+
+Run these after the first `up -d` with `CADDY_TLS` set:
+
+1. **The issuer is a public CA.** From any machine that can reach the host:
+
+   ```bash
+   echo | openssl s_client -connect agnes.example.com:443 -servername agnes.example.com 2>/dev/null \
+       | openssl x509 -noout -issuer -subject -dates
+   ```
+
+   An `issuer=` naming a public CA (e.g. `O=Let's Encrypt`) plus a `notAfter` ~90 days out means issuance succeeded. Anything else — a handshake that fails outright, or an issuer naming Caddy's own local authority — means ACME did not complete: check that DNS resolves to this host and `:80` is reachable from outside, then read `docker compose logs caddy` for the challenge error.
+2. **The prompt lost its trust step.** Sign in and open `/setup` (or the install-prompt CTA on `/home`): the rendered prompt must no longer start with `0) Trust the Agnes TLS certificate`, and step 1 must be the plain CLI install. If it still shows, a stale `fullchain.pem` from the previous regime is sitting at `AGNES_TLS_FULLCHAIN_PATH` — remove it (or point the var elsewhere) and reload the page.
+3. **A fresh analyst machine is clean.** On a laptop with no Agnes CA exports in its shell profile, `agnes diagnose` reports healthy end to end — server reachable, catalog readable, no TLS/certificate failures — and `agnes pull` completes without `SSL_CERT_FILE` being set.
+
+#### B. Corporate CA / self-managed certs
+
+Leave `CADDY_TLS` unset — the default, and what the infra repo ships. Two bring-up flows, picked by whether `TLS_PRIVKEY_URL` is set in `.env`:
 
 - **On-VM gen** (preferred for new deployments): leave `TLS_PRIVKEY_URL` empty. On first run, `agnes-tls-rotate.sh` generates an RSA-2048 key + CSR directly into `/data/state/certs/` using the subject string from `TLS_CSR_SUBJECT`. The key never leaves the host; the CSR (`/data/state/certs/cert.csr`) is what you submit to your corporate PKI. Until the CA signs and publishes, rotate falls back to a 30-day self-signed cert against the same key so Caddy can serve :443.
 - **Pre-provisioned key** (legacy / VM-replace-resilient): set `TLS_PRIVKEY_URL=sm://<secret>` (or any supported scheme). Seed the key out-of-band before first rotate. Same real-cert fetch + self-signed fallback applies.
@@ -133,7 +190,7 @@ Both modes converge: once the CA publishes the signed chain at `TLS_FULLCHAIN_UR
    ```
    Submit to your corporate PKI. While waiting, Caddy is already up on :443 with the self-signed fallback.
 
-#### Automatic rotation
+#### Automatic rotation (mode B only)
 
 `scripts/ops/agnes-tls-rotate.sh` is the single entry point — it handles fetch, self-signed fallback, auto-generation on missing key, atomic cert swap, and Caddy reload. Env vars it reads:
 
@@ -721,7 +778,8 @@ via internal git push (or a BYO external repo), reachable at
 
 1. Set `data_apps.enabled: true` in `instance.yaml` (see
    `config/instance.yaml.example` for the full block — runtime image tag,
-   default resource limits, per-user app quota, idle timeout).
+   default resource limits, per-user app quota, idle timeout, container
+   hardening).
 2. Generate the shared secret between the app and the `apps-runner` sidecar
    and put it in `.env`:
 
@@ -735,6 +793,16 @@ via internal git push (or a BYO external repo), reachable at
    ```bash
    docker compose --profile apps up -d
    ```
+
+**Container hardening.** Every app container runs with `cap_drop: ALL`,
+`no-new-privileges` and a process ceiling (`data_apps.container_pids_limit`,
+default 512); none of that needs configuration. `data_apps.container_read_only`
+additionally mounts the container's root filesystem read-only, but ships **off**:
+it needs a tmpfs allowlist verified against your runtime image, and the shipped
+one runs nginx + supervisord, which write to `/var/run`, `/var/log` and
+`/var/cache/nginx` — outside the `/tmp` + `/app` tmpfs Agnes supplies. Turn it
+on only after booting your image with it and extending that list from the real
+failures, or every app crash-loops.
 
 **Subdomain routing (optional).** By default apps are reached at
 `/apps/<slug>/` on the main host. Setting `data_apps.subdomain_base` (e.g.

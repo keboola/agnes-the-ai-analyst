@@ -539,7 +539,7 @@ project/billing pair → `USER_PROJECT_DENIED` on every BigQuery call.
 | 2 | `PUT` with `"cover_image_url": null` does NOT clear the field | Treated as no-change. Send `""` (empty string) to clear. |
 | 3 | PATs are per-instance | Using a token from one instance against another → `HTTP 401 "User not found"` |
 | 4 | `bucket` on a BigQuery `remote` table is display-only | Renaming `bucket` does not affect SQL path resolution; safe to rebrand freely |
-| 5 | `restart_required: true` in server-config response is conservative | Description/bucket PUTs take effect immediately; the flag refers to settings that genuinely require a restart (auth providers, SMTP client, etc.) |
+| 5 | `restart_required` in the server-config response is **per-save, not constant** — it used to be a hardcoded `true` | The same response carries `sections_effect`, a `{section: "live" / "restart" / "deploy"}` map: `restart_required` is `true` iff some patched section is not `live`. Read `sections_effect` to see which one forced it. Sections resolved per request (`instance`, `theme`, `ai`, `mcp`, …) report `live` and need no bounce; sections built once at boot (`auth`, `chat`, `server`, `email`) or read by a separate process (`telegram`, `data_source` — the scheduler and workers keep the pre-save coordinates) report `restart`. Registry PUTs (description/bucket) are a different endpoint and always take effect immediately. |
 | 6 | OpenAPI spec lives at `/openapi.json`, NOT `/api/openapi.json` | The latter returns 404 |
 | 7 | **Package IDs are per-instance** (server-generated `pkg_*`). The same slug may have different IDs on dev vs prod. | Always look up the destination package by **slug**, never reuse a source-instance ID. Table IDs ARE stable across instances. |
 | 8 | `POST /api/admin/data-packages` create response may omit fields that were persisted (`icon`, `color`, `cover_image_url` returned as `null` even though saved). | Don't trust the POST echo — `GET /api/admin/data-packages/{pkg_id}` to verify. |
@@ -1025,6 +1025,20 @@ synced IWT clone for the bind-git file picker.
 
 - /api/admin/bigquery/test-connection
 
+### `/api/admin/doctor` — deployment-gate diagnostics
+
+`POST /api/admin/doctor/new-instance` (admin-only) runs the new-instance
+deployment checks — `login-door`, `email-delivery`, `chat-grant`,
+`agent-scope`, `branding` — and returns
+`{status, checks: [{name, status, audience, detail}]}` using the
+`agnes diagnose` status vocabulary (`ok`/`warning`/`error`/`info`).
+Optional body `{"email_to": "..."}` makes the email-delivery check send a
+real test message through the same send path the login flows use. CLI:
+`agnes admin doctor --new-instance`; the host-side siblings live in
+`scripts/ops/post-deploy-smoke-test.sh`.
+
+- /api/admin/doctor/new-instance
+
 ### `/api/admin/keboola` — Keboola diagnostics
 
 - /api/admin/keboola/test-connection
@@ -1055,9 +1069,12 @@ mutating rather than assumed safe. Exposed names are prefixed per connection, so
 two projects' identically-named tools stay apart, and capped at 64 characters —
 the tool-name limit model APIs enforce. Returns `tools_registered` plus
 `tools_admin_only`, the number of registered tools recorded as mutating: the
-passthrough policy gate refuses those for every non-admin even when granted, and
-on an upstream that annotates nothing that is all of them — the caller needs to
-see that before promising analysts anything. A registration failure returns 502
+passthrough policy gate refuses those unless the caller is an admin or one of
+the caller's groups holds a grant with `allow_mutating=true` on that specific
+tool (`POST /api/admin/mcp-tools/{tool_id}/grants` — schema v121; agent
+profiles ride their owner's groups, still narrowed by connection scope), and
+on an upstream that annotates nothing that is all of them — the caller needs
+to see that before promising analysts anything. A registration failure returns 502
 and rolls back the previous chat-tools state; a failed local config write
 propagates instead of being dressed up as an upstream problem.
 A connection carrying `config.workspace_schema` passes it through as
@@ -1325,6 +1342,13 @@ viewable by the person it was shared with.
 
 - /api/connectors/manifest
 - /api/connectors/params
+- /api/connectors/{slug}/prompt
+
+`/api/connectors/{slug}/prompt` returns one connector's full setup prompt
+(the post-frontmatter SKILL.md body, brand-substituted) for slugs the
+manifest lists. Consumed by `agnes connectors show <slug>` so the install
+prompt can reference connector setup by name instead of inlining every
+body.
 
 `/api/connectors/params` serves per-tenant connector params (the
 `connectors:` overlay of `instance.yaml`, filtered against the seed
@@ -1480,6 +1504,87 @@ Relevance-ranked search uses DuckDB FTS BM25 with an ILIKE fallback.
 - /api/initial-workspace
 - /api/initial-workspace.zip
 - /api/initial-workspace/applied
+
+### `/api/kai` — Embedded kai-agent turn engine (host wiring)
+
+Host-side wiring for an embedded `kai-agent` turn engine (`app/api/kai.py`).
+Enabled only when `KAI_HOST_JWT_SECRET` is set — every route below `503`s with
+`kai_integration_not_configured` otherwise, so an instance that does not embed
+the engine exposes nothing.
+
+- /api/kai/sessions — `POST`, ordinary user auth, **no request body**. Creates
+  the `chat_sessions` row and returns `{chat_id, token, expires_at}`. `token`
+  is the short-lived HS256 session JWT the engine verifies; every identity
+  claim comes from the resolved caller, never from the request, so a caller can
+  only ever mint a token for themselves. `chat_id` is Agnes's — the caller
+  passes it to the engine as `body.id` so the engine's chat row and this
+  session share one key (no cross-database join). Signed with
+  `KAI_HOST_JWT_SECRET` and stamped with `KAI_HOST_JWT_ISSUER` /
+  `KAI_HOST_JWT_AUDIENCE` / `KAI_TENANT_ID`, which must match the engine's
+  `HOST_JWT_*` config. Lifetime is 12 h, inside the engine's 24 h `exp` ceiling.
+- /api/kai/tickets — `POST`, authenticated by the opaque
+  `downstream_credential` carried in that JWT (**not** user auth, and **not** a
+  broker ticket — presenting a `main`/`mcp` ticket here is `401
+  kai_credential_scope_mismatch`, so a sandbox that captured one turn's ticket
+  cannot refresh itself). Called once per turn by the engine's server, never by
+  the sandbox. Returns `{"llm": "<ticket>"}`, plus `"mcp"` when
+  `KAI_BROKER_MCP_ENABLED` is set. Minting retires the session's previous
+  *egress* tickets only — one live set per chat, while the session credential
+  in its own scope survives (the engine has no way to be handed a replacement).
+
+- /api/kai/mcp — `POST`, authenticated by a **`kai_mcp`-scoped broker ticket**
+  (an `llm` ticket is rejected, and so is the native sandbox's `mcp` — see the
+  scope split below). Note the asymmetry with the response key: `/api/kai/tickets`
+  returns this ticket under `"mcp"`, which is the engine's wire name for it, while
+  the broker scope it carries is `kai_mcp`. Forwards the sandbox's verbatim
+  Streamable-HTTP MCP request to Agnes's own MCP server under the ticket's
+  real identity, and streams the response back chunk by chunk over a real
+  HTTP self-call to `AGNES_MCP_INTERNAL_URL` — an in-process ASGI dispatch
+  buffers the whole reply and applies no timeout, which would trip the
+  engine relay's time-to-headers bound on any slow tool (a Streamable-HTTP
+  server may
+  answer as SSE). The brokered identity is a short-lived `mcp-oauth` access
+  token minted for the ticket's user, so the engine reaches exactly the tools
+  and RBAC a Claude Desktop connector would — the broker adds no authority.
+  Point the engine's `HOST_BROKER_MCP_URL` here and set
+  `KAI_BROKER_MCP_ENABLED`.
+- /api/kai/workspace — `GET`, authenticated by the session credential (the
+  engine's *server* calls it once per SDK process spawn; the sandbox never
+  sees it). Returns `200` with a gzipped tar of the caller's workspace tree,
+  or `204` for "no workspace" — the engine treats any other status as a
+  failed turn. The tree is the admin-registered Initial Workspace Template
+  when one is synced, else the bundled default: `CLAUDE.md`, the org
+  `PreToolUse` safety hook, and `.claude/skills/*`. Agnes's own sandbox-image
+  build assets (`e2b-template/`, `docker-sandbox/`) are excluded — they
+  describe how to build a sandbox, not how to work in one.
+
+  `CLAUDE.md` is the **rendered** Workspace Prompt, not the template's static
+  copy — the same document `WorkdirManager` writes over that file when it
+  prepares a native chat sandbox, and the same one `agnes init` fetches from
+  `GET /api/welcome`, RBAC-filtered for the caller. Two exceptions, both
+  inherited from `run_init` rather than specific to the engine: in
+  git-template override mode the registered template's `CLAUDE.md` wins
+  verbatim (the git override and the admin Workspace Prompt are mutually
+  exclusive by design — see
+  [initial-workspace-override.md](initial-workspace-override.md)), and a
+  co-session or a session bound to a scope-limited agent gets the un-filtered
+  bundled text, because the rendered document describes the *owner's*
+  reachable tables and skills. The payload is therefore per-session, but stays
+  byte-stable for a given session and configuration, which is what the
+  engine's re-fetch on every SDK respawn relies on. Per *session* rather than
+  per caller because the rendered document carries a date (`{{ today }}` in
+  the shipped template), so its clock is pinned to the session's `started_at`
+  — otherwise a conversation straddling midnight would rewrite the whole
+  sandbox tree over a date string.
+
+The LLM upstream needs no new route: the engine's in-sandbox relay speaks plain
+pass-through, which is exactly what `/api/broker/anthropic/{subpath}` already
+is. Point the engine's `HOST_BROKER_LLM_URL` at it and the `llm` ticket
+authenticates there in its own dedicated `llm` broker scope — **not** the
+native sandbox's `main`, which also authenticates `/api/broker/agnes-api` and
+would expose the caller's whole non-admin `/api/*` replay surface to the
+sandbox. The real credential is injected there, model-gated, budgeted and
+metered server-side.
 
 ### `/api/knowledge` — Unified knowledge search
 
@@ -1744,7 +1849,7 @@ fanned out into group members' installs and cannot be uninstalled
 
 `DELETE /api/v1/agents/{agent_id}` cascades: every PAT minted for the agent is revoked, every outbound webhook registration (`/api/v1/agents/{slug}/webhooks`) is removed, and every harvested sandbox artifact row + its object-store blob (`/api/v1/sessions/{id}/artifacts`) is deleted. The object-store blob deletes are best-effort — a single failed delete is logged and skipped rather than blocking the agent delete (an orphaned blob under a deleted agent's `agent-artifacts/` prefix is a cheap, non-sensitive leak).
 
-`PUT /api/v1/agents/{agent_id}/scope` — replace an agent's resource-grant set. Each of `plugins_mode`/`connections_mode`/`tables_mode`/`memory_mode` is `'all'` (no narrowing on that axis — the agent's authority passes through as the owner's set) or `'selected'` (narrowed to the accompanying `agent_scope` rows for that axis, e.g. specific table/plugin/connection/memory-domain ids). **This is live-enforced, not advisory**: a `'selected'`-scoped agent's brokered requests are authorized against `(owner grants ∩ agent scope)` via a restricted `AgentPrincipal`, never the owner's full grants — see `docs/superpowers/specs/2026-07-25-agent-scope-live-enforcement-design.md`. An agent PAT is issuable only once every mode is `'selected'` (`403 agent_not_selected_mode` otherwise), so an issuable PAT is always a real restriction of its owner, never a copy of the owner's full authority.
+`PUT /api/v1/agents/{agent_id}/scope` — replace an agent's resource-grant set. Each of `plugins_mode`/`connections_mode`/`tables_mode`/`memory_mode` is `'all'` (no narrowing on that axis — the agent's authority passes through as the owner's set) or `'selected'` (narrowed to the accompanying `agent_scope` rows for that axis, e.g. specific table/plugin/connection/memory-domain ids). **This is live-enforced, not advisory**: a `'selected'`-scoped agent's brokered requests are authorized against `(owner grants ∩ agent scope)` via a restricted `AgentPrincipal`, never the owner's full grants — see `docs/superpowers/specs/2026-07-25-agent-scope-live-enforcement-design.md`. An agent PAT is issuable only once every mode is `'selected'` (`403 agent_not_selected_mode` otherwise), so an issuable PAT is always a real restriction of its owner, never a copy of the owner's full authority. One item type is routing rather than authority: `('slack_channel', <channel_id>)` binds the channel's @mentions to this agent (the Slack surface creates the thread session with this agent's id, prefixes the first turn with a `[slack context: …]` header, and acks the mention with an 👀 reaction) — at most one non-deleted agent may hold a given channel (`409 slack_channel_taken`), and the binding grants no plugin/table/connection reach. **Trust model:** a binding is a deliberately shared surface — any channel member who passes the Slack gates (admin channel allowlist, identity binding, CHAT grant) invokes the agent, and the routed session is created AS THE AGENT'S OWNER end to end: session row, sandbox workspace/rails/personal override, and brokered authority (owner grants ∩ agent scope) all resolve from the owner, exactly like the agent's API runs — never from the mentioning user, whose identity only gates participation and rides along as sender attribution. Any gated member may continue a routed thread. A binding requires a non-passthrough agent (at least one scope mode 'selected'; `400 binding_requires_selected_scope` otherwise, and widening a bound agent to all-'all' is refused with `409 agent_has_slack_binding`) so routed turns always carry the enforced AgentPrincipal — never the owner's plain identity. Bind only channels where that is intended, and narrow the agent's scope accordingly.
 
 - /api/v1/agents
 - /api/v1/agents/{agent_id}

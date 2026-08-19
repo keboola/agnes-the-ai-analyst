@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -23,10 +22,11 @@ DATA_SOURCE_SECRET_NAMES = (
     "SNOWFLAKE_PASSWORD",
     "SNOWFLAKE_PRIVATE_KEY",
     "SNOWFLAKE_PRIVATE_KEY_PASSPHRASE",
+    "DATABRICKS_TOKEN",
 )
 
 
-def datasource_secret(name: str) -> Optional[str]:
+def datasource_secret(name: str) -> str | None:
     """Return the value for ``name`` resolving env > vault > None.
 
     Raises ``ValueError`` for any name outside the datasource allow-list. A
@@ -42,6 +42,6 @@ def datasource_secret(name: str) -> Optional[str]:
         from src.repositories import system_secrets_repo
 
         return system_secrets_repo().get(name)
-    except Exception:
+    except Exception:  # noqa: BLE001 - vault lookup failure is best-effort fallback
         logger.warning("vault lookup for %s failed; treating as unset", name)
         return None

@@ -32,12 +32,16 @@ BANNED_PHRASES: list[str] = [
 
 # Facts that must survive de-escalation — the wording changed, not the
 # underlying information.
+#
+# The list shrank when the prompt went thin (2026-08-19): the workspace
+# triage facts it used to pin (`init-complete`, `agnes update`, the unsafe
+# `$HOME` / `/tmp` directories, `--token-file`) are no longer prompt copy —
+# `agnes onboard` owns those decisions and reports them at runtime. What the
+# prompt still has to say is pinned below.
 REQUIRED_FACTS: list[str] = [
-    "init-complete",
-    "agnes update",
     "$HOME",
-    "/tmp",
     "idempotent",
-    "--token-file",
     "~/.agnes/token",
+    "agnes onboard",
+    "--accept-dir",
 ]

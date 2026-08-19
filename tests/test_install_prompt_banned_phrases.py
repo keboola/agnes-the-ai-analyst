@@ -42,37 +42,36 @@ _FAKE_CA_PEM = "-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----\n"
 
 
 def test_default_render_is_clean():
-    """No connectors at all — the leanest render, pure builder scaffolding."""
+    """The thin default render — pure builder scaffolding."""
     from app.web.setup_instructions import resolve_lines
 
-    joined = "\n".join(resolve_lines("agnes.whl", connector_manifest=[]))
-    _assert_clean(joined, label="default render (no connectors)")
+    joined = "\n".join(resolve_lines("agnes.whl"))
+    _assert_clean(joined, label="default render")
 
 
 def test_ca_render_is_clean():
     """The TLS trust block (step 0) must also read as calm guidance."""
     from app.web.setup_instructions import resolve_lines
 
-    joined = "\n".join(resolve_lines("agnes.whl", connector_manifest=[], ca_pem=_FAKE_CA_PEM))
-    _assert_clean(joined, label="ca render (no connectors)")
+    joined = "\n".join(resolve_lines("agnes.whl", ca_pem=_FAKE_CA_PEM))
+    _assert_clean(joined, label="ca render")
 
 
-def test_fake_connectors_render_is_clean(monkeypatch):
-    """Fake connector entries with deterministic bodies isolate the
-    builder-owned connector scaffolding (Ask lines, headers, trailers)
-    from the bundled seed's own (out-of-scope) SKILL.md prose.
-    """
-    from tests.test_setup_instructions import _connector_entry, _fake_bodies
-
+def test_operator_preamble_render_is_clean():
+    """The one remaining render variant: an operator-authored preamble
+    prepended above the scaffolding. Its own text is operator content, but
+    the scaffolding around it must still pass the guard unchanged."""
     from app.web.setup_instructions import resolve_lines
 
-    _fake_bodies(monkeypatch)
-    manifest = [
-        _connector_entry("connector-xtool", "XTool", required=True),
-        _connector_entry("connector-ztool", "ZTool"),
-    ]
-    joined = "\n".join(resolve_lines("agnes.whl", connector_manifest=manifest))
-    _assert_clean(joined, label="fake-connector render (required + optional)")
+    joined = "\n".join(
+        resolve_lines(
+            "agnes.whl",
+            instance_brand="BrandCo",
+            workspace_dir="BrandCo",
+            custom_preamble="Ask IT before installing anything on a managed laptop.",
+        )
+    )
+    _assert_clean(joined, label="custom-preamble render")
 
 
 def _scan_bundled_seed_file(rel_path: str) -> list[str]:
@@ -166,8 +165,7 @@ def test_bundled_connector_skills_tier3():
             known[skill_dir.name] = sorted(hits & baseline)
 
     assert not new, (
-        "bundled connector SKILL.md file(s) gained banned phrase(s) beyond "
-        f"the recorded known-dirty baseline: {new}"
+        f"bundled connector SKILL.md file(s) gained banned phrase(s) beyond the recorded known-dirty baseline: {new}"
     )
     if known:
         pytest.skip(

@@ -27,9 +27,10 @@ two server-side render paths:
 
 - The **install-prompt** rendered on `/home` (the "paste-into-Claude-Code"
   bootstrap script).
-- The **connector manifest** behind the install prompt's connector steps
-  (mandatory `required: true` installs first, then the optional tiles),
-  plus the per-connector wizard bodies inlined under each tile.
+- The **connector manifest** behind the post-install connector listing
+  (`required: true` entries first, then the optional ones).
+- The **per-connector wizard bodies**, served on demand by
+  `GET /api/connectors/{slug}/prompt` rather than inlined anywhere.
 
 When an Initial Workspace Template is registered, the operator's seed
 beats the bundled snapshot tier-by-tier (the server reads the IWT clone
@@ -95,8 +96,8 @@ before any of this).
 
 Every `workspace/.claude/skills/connector-<slug>/SKILL.md` in the seed
 MUST carry YAML frontmatter with a `connector:` block. The Agnes server
-parses the block to render the install prompt's connector tiles AND the
-`GET /api/connectors/manifest` JSON response.
+parses the block to build the connector listing `agnes onboard` prints
+after setup AND the `GET /api/connectors/manifest` JSON response.
 
 ```yaml
 ---
@@ -112,7 +113,7 @@ connector:
 ---
 
 <SKILL.md body — the wizard prose that Claude Code executes when the
-analyst accepts the tile's "Set up <Vendor> now? (yes/no)" ask>
+analyst asks to set this connector up (e.g. "set up <Vendor>")>
 ```
 
 **Validation rules** (enforced by `src/connectors_manifest.py`):
@@ -124,12 +125,9 @@ analyst accepts the tile's "Set up <Vendor> now? (yes/no)" ask>
 - `vendor_url` MUST start with `http://` or `https://` (anything else,
   including `javascript:`, is silently dropped from the manifest).
 - `required` is `bool()`-coerced (like `requires_oauth_app`) — a truthy
-  value moves the connector out of the optional Y/n tile list into a
-  separate numbered **"Install required tools"** step rendered between
-  diagnose and the optional tiles: no per-tool ask, and the prompt
-  instructs the agent to finish every required tool (its ✅/❌ verify
-  line is echoed in the Confirm summary) before moving on. A bad value
-  never rejects the entry.
+  value marks the connector as mandatory for this instance, so it leads
+  the listing `agnes onboard` prints instead of sitting among the
+  optional ones. A bad value never rejects the entry.
 - Invalid blocks (missing required field, wrong type, parse error) skip
   the entire connector entry with an `audit_log` warning. The rest of
   the manifest still renders — one bad seed commit can't take down
@@ -138,7 +136,7 @@ analyst accepts the tile's "Set up <Vendor> now? (yes/no)" ask>
 Directory names: `connector-` prefix is required. Directories not
 matching `connector-*` are ignored by the manifest scan, so the seed can
 freely host non-connector skills under the same `.claude/skills/` tree
-without polluting the connector tile list.
+without polluting the connector list.
 
 ---
 
@@ -179,9 +177,17 @@ the params file first.
 
 ## 5. `install-prompt/template.md.tmpl` placeholders
 
-The Agnes server substitutes the following placeholders at render time
-(matching what today's Python builder produces — see
-`app/web/setup_instructions.py`):
+The built-in prompt is **thin** (2026-08-19): install the CLI, run
+`agnes onboard`, restart Claude Code, confirm. Orchestration the prompt
+used to spell out — workspace triage, catalog smoke, git/claude
+preflight, marketplace bootstrap, diagnose, connector setup — happens
+inside `agnes onboard`, which reports its own outcome. A seed template
+that overrides the prompt should stay in the same shape; the design
+rationale is in
+`docs/superpowers/specs/2026-08-19-thin-install-prompt-design.md`.
+
+The placeholders the server still substitutes (see
+`app/web/setup_instructions.py::resolve_lines`):
 
 | Placeholder                | Replaced by                                          |
 |----------------------------|------------------------------------------------------|
@@ -192,9 +198,17 @@ The Agnes server substitutes the following placeholders at render time
 | `{instance_brand}`         | Server-side (`instance_brand` from instance.yaml)    |
 | `{tls_trust_block}`        | Server-side — full step 0 content, empty when no CA  |
 | `{install_cli_block}`      | Server-side — CA-aware step 1 body                   |
-| `{marketplace_block}`      | Server-side — plugin-grant-aware step 6 body         |
-| `{connector_tiles}`        | Server-side — generated from manifest scan           |
-| `{ca_bundle_finale_bullet}`| Server-side — extra bullet when `has_ca` is true     |
+
+Retired with the blocks they injected: `{marketplace_block}`,
+`{connector_tiles}`, `{ca_bundle_finale_bullet}`. A template that still
+references them renders them literally (see below), so drop them.
+
+`{wheel_filename}` no longer appears in the built-in body either — step 1
+downloads through the unversioned `/cli/download` endpoint, which always
+serves whichever wheel is current at fetch time instead of the filename
+captured when the prompt was rendered. The substitution is still applied
+to every line, so a template or operator preamble that references the
+filename keeps resolving.
 
 **`{token}` is NOT a placeholder.** The analyst's access token is
 deliberately never embedded in the install-prompt body — it is written to
@@ -205,52 +219,35 @@ the shared `_claude_setup_cta.jinja` partial), so the raw value never
 has to appear in the prompt text or a pasted chat transcript. A seed's
 `template.md.tmpl` MUST NOT reference a `{token}` placeholder or inline a
 literal token/JWT example; the prompt instead carries a guard
-(`test -s ~/.agnes/token`) and reads the file via
-`agnes init --token-file ~/.agnes/token`.
+(`test -s ~/.agnes/token`) and `agnes onboard` reads the file itself.
 
 A missing placeholder is rendered literally (no error). This is
 deliberate — a typo in the template surfaces as visible text in the
 generated install prompt rather than a 500 on `/home`.
 
-Note: `{connector_tiles}` covers only the **optional** tile list. The
-mandatory "Install required tools" step (`required: true` entries) is
-native to the server-side Python renderer and does not flow into a
-git-bound `install-prompt/template.md.tmpl`.
-
 ---
 
-## 6. Tile-block render shape (for `{connector_tiles}`)
+## 6. Connectors are post-install, not prompt content
 
-For each manifest entry, the server renders this exact markdown block:
+The install prompt carries **no** connector tiles. `agnes onboard`
+finishes by listing the connectors this instance offers, and the user
+sets one up afterwards by asking for it. The wizard body is fetched on
+demand by `GET /api/connectors/{slug}/prompt` and never inlined
+anywhere — so the install prompt stays a fixed size no matter how many
+connectors an operator seeds, and a connector nobody asks for costs
+nothing.
 
-```
-   {letter}) {display_name} — {short_summary}
-      Ask: "Set up {display_name} now? (yes/no)"
-      If the user agrees, follow this outline:
+What this means for a seed author:
 
-      {SKILL.md body, indented 6 spaces, frontmatter stripped, {instance_brand} substituted}
-```
-
-`{letter}` is `a`, `b`, `c`, … assigned in **alphabetical order by
-display_name** (case-insensitive). Two operator edits that rename a
-connector reorder the tiles automatically.
-
-Entries with `required: true` render in their own earlier step
-("Install required tools") with a different per-entry shape — no `Ask:`
-line:
-
-```
-   {letter}) {display_name} — {short_summary}
-      Follow this inline prompt:
-
-      {SKILL.md body, same indent/substitution rules as above}
-```
-
-The two blocks letter their tiles independently (each starts at `a`,
-alphabetical within its group). Step numbering is dynamic: an absent
-group drops its step and everything after renumbers, so the prompt
-flows contiguously in all four combinations (no connectors at all /
-only optional / only required / both).
+- The `connector-<slug>/SKILL.md` frontmatter contract (§4) is
+  unchanged, including `required: true` — it is the manifest the
+  post-install listing and the wizard endpoint read.
+- Ordering is still alphabetical by `display_name` (case-insensitive),
+  and `{instance_brand}` is substituted when the endpoint renders the
+  body, as before.
+- Nothing in `install-prompt/template.md.tmpl` needs to enumerate
+  connectors; a template that does is duplicating a list that goes stale
+  the moment the manifest changes.
 
 ---
 
@@ -278,8 +275,9 @@ missing connector body, frontmatter regression) surfaces to the
 operator before any analyst hits `/home`. Severity is split by the
 `required` flag: a missing SKILL.md body is an **error** (blocks the
 "seed is good" claim) for a `required: true` connector and a
-**warning** for an optional one — the renderer itself stays fail-soft
-and just skips the tile either way.
+**warning** for an optional one — it surfaces to the analyst only when
+they ask for that connector, and the install prompt itself no longer
+depends on the manifest at all.
 
 ---
 
@@ -405,7 +403,7 @@ should follow the same rule INSIDE the seed:
   in skill bodies; the server substitutes it at render time. Slugs
   should stay generic (`connector-asana`, not `connector-acme-asana`).
 - **Skill display names can be customized.** `display_name: "Acme Asana"`
-  is fine — that's a UI string in your tile, not a contract.
+  is fine — that's a UI string in the connector listing, not a contract.
 - **Don't reference internal hostnames in seed prose.** Use placeholders
   (`<your-host>`, `example.com`); the Agnes server's substitution covers
   `{server_url}` etc.

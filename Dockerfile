@@ -43,6 +43,17 @@ COPY . .
 #   - tls-fetch.sh — generic URL fetcher (sm:// gs:// https:// file://)
 #   - agnes-state-applier.{sh,service,timer} — DB backend state machine
 #     (applies compose lifecycle changes when /data/state/db-state-target.flag changes)
+#   - scripts/ops/agnes-compose-file.sh — the single COMPOSE_FILE resolver,
+#     SOURCED (not executed) by agnes-auto-upgrade.sh and
+#     agnes-state-applier.sh. Kept under its scripts/ops/ sub-path because
+#     both of them source it as "$COMPOSE_DIR/scripts/ops/…", and the
+#     startup script's recursive `docker cp /opt/agnes-host/.` preserves
+#     that shape. Without it in the image, a fresh VM has no resolver until
+#     agnes-auto-upgrade.sh's GitHub fetch lands one — so on an
+#     egress-restricted host the state machine and the upgrade job would
+#     both be dead permanently.
+#   - post-deploy-smoke-test.sh — deploy gate (docs/ONBOARDING.md step 8):
+#     public API + new-instance doctor + host-side consistency checks
 #   - docker-compose.{yml,prod.yml,host-mount.yml,tls.yml} — host runtime
 #   - Caddyfile — TLS reverse proxy config
 #   - static/maintenance.html — Caddy's handle_errors 502/503 fallback page
@@ -52,13 +63,15 @@ COPY . .
 #   root-owned, mode 0755 across the board, stable path that won't
 #   shift if /app structure refactors. Stable contract for `docker cp`
 #   consumers.
-RUN mkdir -p /opt/agnes-host/static /opt/agnes-host && \
+RUN mkdir -p /opt/agnes-host/static /opt/agnes-host/scripts/ops && \
+    cp /app/scripts/ops/agnes-compose-file.sh /opt/agnes-host/scripts/ops/ && \
     cp /app/scripts/ops/agnes-auto-upgrade.sh \
        /app/scripts/ops/agnes-tls-rotate.sh \
        /app/scripts/ops/agnes-state-applier.sh \
        /app/scripts/ops/agnes-state-applier.service \
        /app/scripts/ops/agnes-state-applier.timer \
        /app/scripts/ops/agnes-state-applier-bootstrap.service \
+       /app/scripts/ops/post-deploy-smoke-test.sh \
        /app/scripts/tls-fetch.sh \
        /opt/agnes-host/ && \
     cp /app/docker-compose.yml /app/docker-compose.prod.yml \
@@ -70,6 +83,7 @@ RUN mkdir -p /opt/agnes-host/static /opt/agnes-host && \
     chmod 0755 /opt/agnes-host/agnes-auto-upgrade.sh \
               /opt/agnes-host/agnes-tls-rotate.sh \
               /opt/agnes-host/agnes-state-applier.sh \
+              /opt/agnes-host/post-deploy-smoke-test.sh \
               /opt/agnes-host/tls-fetch.sh && \
     chmod 0644 /opt/agnes-host/agnes-state-applier.service \
               /opt/agnes-host/agnes-state-applier.timer \
@@ -81,6 +95,7 @@ RUN mkdir -p /opt/agnes-host/static /opt/agnes-host && \
               /opt/agnes-host/docker-compose.postgres.yml \
               /opt/agnes-host/docker-compose.postgres-host-mount.yml \
               /opt/agnes-host/Caddyfile \
+              /opt/agnes-host/scripts/ops/agnes-compose-file.sh \
               /opt/agnes-host/static/maintenance.html
 
 # Build wheel artifact (served at /cli/download)
@@ -102,6 +117,10 @@ RUN useradd --system --uid 999 --create-home --shell /usr/sbin/nologin agnes && 
     mkdir -p /data && chown -R agnes:agnes /data && \
     chown -R agnes:agnes /app
 USER agnes
+
+# Pre-stage the ADBC Snowflake driver in DuckDB's extension directory so the
+# ``snowflake`` community extension can load without a runtime network fetch.
+RUN /app/scripts/install-adbc-driver.sh /app
 
 EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*"]

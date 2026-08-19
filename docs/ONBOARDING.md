@@ -95,7 +95,6 @@ cp terraform/terraform.tfvars.example terraform/terraform.tfvars
 #   runtime_secrets            = ["keboola-storage-token"]  # empty if non-keboola data_source
 #   firewall_ssh_source_ranges = ["35.235.240.0/20"]        # IAP range; "0.0.0.0/0" if public SSH
 #   notification_channel_ids   = ["projects/<p>/notificationChannels/<id>"]
-#   compose_ref                = "main"                     # or a "stable-YYYY.MM.N" tag
 ```
 
 See the [module README](https://github.com/keboola/agnes-the-ai-analyst/tree/main/infra/modules/customer-instance) for the full variable schema.
@@ -148,17 +147,37 @@ prod_instance = {
 }
 ```
 
-Then create a DNS A-record pointing `agnes.<customer>.com` → `prod_ip`. Caddy will auto-issue Let's Encrypt cert.
+Then create a DNS A-record pointing `agnes.<customer>.com` → `prod_ip`. Caddy will auto-issue a Let's Encrypt cert (`CADDY_TLS=tls <ops-email>`; the A-record must exist and ports 80 + 443 must be open *before* first start, or issuance loops). Corporate-CA certs and the self-signed lab mode are the other two regimes — see [DEPLOYMENT.md § TLS](DEPLOYMENT.md#tls-optional) for the full matrix, including why a publicly-trusted cert makes the analyst install prompt drop its TLS-trust step automatically.
 
 ## 8. Smoke test
 
+Run the deploy gate **on the VM** — it checks the public API (health, schema,
+CLI wheel), calls the new-instance doctor (`POST /api/admin/doctor/new-instance`:
+a usable login door exists, email really sends, chat is granted to a group,
+agent scopes intersect owner grants, branding reaches the login page), and
+verifies host-side consistency (`COMPOSE_FILE` ↔ `instance.yaml` database
+backend, TLS predicate agreement). Each doctor check exists because that exact
+thing silently failed on a real deployment.
+
+```bash
+gcloud compute ssh agnes-prod --zone=<zone> --project=<project> --command \
+    'sudo DOCTOR_EMAIL_TO=you@example.com bash /opt/agnes/post-deploy-smoke-test.sh'
+```
+
+The script ships in the image (extracted to `/opt/agnes/` on boot); on a VM
+deployed from an older image, fetch it raw from the repo first. On the VM no
+token is needed — it falls back to `SCHEDULER_API_TOKEN` from
+`/opt/agnes/.env`; run against a remote URL by passing
+`https://agnes.<customer>.com` and an admin PAT as arguments (host-side
+checks are then skipped). Set `DOCTOR_EMAIL_TO` to receive a real test email
+(an HTTP 200 from the send path does NOT prove delivery). The same
+server-side checks are also available as
+`agnes admin doctor --new-instance [--email-to you@example.com]`.
+
+Then trigger the first sync (populates data from Keboola / other source):
+
 ```bash
 PROD_IP=$(cd terraform && terraform output -raw prod_ip)
-
-# Health
-curl "http://$PROD_IP:8000/api/health" | jq '.status'  # "healthy" or "degraded"
-
-# First sync (populates data from Keboola / other source)
 curl -X POST "http://$PROD_IP:8000/api/sync/trigger" \
      -H "Authorization: Bearer $ADMIN_JWT"
 ```
@@ -171,6 +190,39 @@ The `customer-instance` module already provisions:
 - **Host-side watchdog + daily DB backup with restore-verification** (module ≥ the tag introducing `enable_watchdog`; on by default). The watchdog checks container logs every 5 minutes for incident signatures the uptime check cannot see — crash loops, the "zombie" state where `/api/health` stays 200 while every write 500s, WAL-salvage data-loss events — and the daily backup copies `system.duckdb` to `/data/backups/system-duckdb/` and proves the copy restorable. Set `alert_webhook_url` (Slack / Google Chat compatible incoming webhook) to receive alerts; left empty, alerts go to journald + `/var/log/agnes-watchdog.log` on the VM only.
 
 Optional add-on: Slack webhook from Cloud Monitoring for alerts.
+
+## 10. First analyst
+
+Nothing instance-specific has to be handed to analysts — no scripts, no
+credentials over chat. Grant their group its data packages and plugin grants
+first (`/admin/access`), otherwise setup completes correctly but against an empty
+catalog. Then point them at the instance URL and let `/home` do the rest:
+
+1. Sign in with the company email (whichever identity provider `instance.yaml`
+   enables).
+2. Follow the guided steps on `/home` — install Claude Code, create the
+   workspace folder, open a terminal in it, save the login token to
+   `~/.agnes/token`, launch Claude Code there.
+3. Paste the install prompt from the final step. It is deliberately thin: it
+   installs the `agnes` CLI and then runs `agnes onboard --workspace .`, which
+   is the actual setup — workspace-directory check → `agnes init` (workspace
+   files, Claude Code hooks, first `agnes pull`) → catalog smoke test → `git` /
+   `claude` preflight → marketplace registration → `agnes diagnose` → a summary
+   ending in a `NEXT:` block. Idempotent, so a re-run repairs a half-finished
+   workspace instead of duplicating it.
+4. Restart Claude Code as the summary instructs, then start asking questions.
+
+Two things this deliberately does *not* do: it never embeds the analyst's token
+in the prompt text (the token is written to `~/.agnes/token` in step 2 and read
+via `--token-file`), and it does not set up data-source connectors. Connectors
+are conversational and come later — an analyst asks Claude Code to "set up Jira"
+in the workspace, or lists what is available with `agnes connectors list` /
+`agnes connectors show <slug>`.
+
+To verify the path end-to-end yourself, run it once on your own machine against
+the fresh instance: the run should end with `agnes diagnose` healthy, and — on a
+Let's Encrypt instance — with no TLS-trust step in the pasted prompt at all
+(see [DEPLOYMENT.md § TLS](DEPLOYMENT.md#tls-optional)).
 
 ## Ongoing maintenance
 

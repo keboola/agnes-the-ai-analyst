@@ -117,6 +117,15 @@ SPEC = lambda tmp: {
     "mem_limit": "1g",
     "cpus": 1.0,
     "env": {"A": "1"},
+    # Container hardening, as `src/data_apps/spec.py::build_container_spec`
+    # emits it in production: caps/no-new-privileges/pids_limit always on,
+    # read-only rootfs off (so no tmpfs mounts) — see that builder's
+    # `_READ_ONLY_TMPFS` for why read-only is opt-in.
+    "cap_drop": ["ALL"],
+    "security_opt": ["no-new-privileges:true"],
+    "pids_limit": 512,
+    "read_only": False,
+    "tmpfs": {},
 }
 
 
@@ -138,6 +147,88 @@ def test_up_writes_config_and_runs(client):
     assert kw["name"] == "agnes-dataapp-s"
     assert kw["detach"] is True
     assert fake.volumes.names == {"agnes-dataapp-cache-s"}
+
+
+def test_up_uses_a_bounded_restart_policy(client):
+    """Crash-loop guard: the app container must run under a bounded
+    `on-failure` policy, never unbounded `unless-stopped`. The upstream
+    entrypoint is not idempotent (it `git clone`s into `/app` unconditionally,
+    so any restart onto a non-empty `/app` dies), so a data app that fails its
+    first boot would otherwise be restarted forever — externally dead, burning
+    CPU, and never settling into a state reap-idle can reconcile to `error`."""
+    c, fake, tmp = client
+    r = c.post(
+        "/apps/s/up", headers={"X-Runner-Token": "tok"}, json={"spec": SPEC(tmp), "config_json": {"dataApp": {}}}
+    )
+    assert r.status_code == 200
+    _, kw = fake.run_calls[-1]
+    policy = kw["restart_policy"]
+    assert policy["Name"] == "on-failure"
+    assert policy.get("MaximumRetryCount", 0) >= 1
+
+
+class TestContainerHardening:
+    """Defense-in-depth options threaded from the spec into the real
+    docker-py `containers.run` call — never applied to the chat-sandbox path
+    (`/sandboxes/*`, see `tests/test_apps_runner_sandboxes.py`), which
+    legitimately needs broader write access for agent-authored code."""
+
+    def test_up_applies_cap_drop_and_no_new_privileges(self, client):
+        c, fake, tmp = client
+        c.post(
+            "/apps/s/up", headers={"X-Runner-Token": "tok"}, json={"spec": SPEC(tmp), "config_json": {"dataApp": {}}}
+        )
+        _, kw = fake.run_calls[-1]
+        assert kw["cap_drop"] == ["ALL"]
+        assert kw["security_opt"] == ["no-new-privileges:true"]
+
+    def test_up_applies_pids_limit(self, client):
+        c, fake, tmp = client
+        c.post(
+            "/apps/s/up", headers={"X-Runner-Token": "tok"}, json={"spec": SPEC(tmp), "config_json": {"dataApp": {}}}
+        )
+        _, kw = fake.run_calls[-1]
+        assert kw["pids_limit"] == 512
+
+    def test_up_leaves_rootfs_writable_by_default(self, client):
+        """The read-only rootfs is opt-in: its tmpfs list is unverified
+        against the shipped nginx+supervisord runtime image, so the default
+        spec must not mount a read-only rootfs and must add no tmpfs."""
+        c, fake, tmp = client
+        c.post(
+            "/apps/s/up", headers={"X-Runner-Token": "tok"}, json={"spec": SPEC(tmp), "config_json": {"dataApp": {}}}
+        )
+        _, kw = fake.run_calls[-1]
+        assert kw["read_only"] is False
+        assert kw["tmpfs"] == {}
+
+    def test_up_honors_an_operator_enabled_read_only_rootfs(self, client):
+        """When an operator turns `data_apps.container_read_only` on, the
+        spec's `read_only` + `tmpfs` reach docker-py unchanged."""
+        c, fake, tmp = client
+        spec = SPEC(tmp) | {"read_only": True, "tmpfs": {"/tmp": "", "/app": ""}}
+        c.post("/apps/s/up", headers={"X-Runner-Token": "tok"}, json={"spec": spec, "config_json": {"dataApp": {}}})
+        _, kw = fake.run_calls[-1]
+        assert kw["read_only"] is True
+        assert kw["tmpfs"] == {"/tmp": "", "/app": ""}
+
+    def test_up_hardens_a_spec_from_an_older_app_process(self, client):
+        """Mid-upgrade the `app` process can be older than this sidecar and
+        mint a spec with no hardening keys at all. That must still land
+        hardened (and NOT KeyError), with the rootfs left writable."""
+        c, fake, tmp = client
+        spec = {
+            k: v
+            for k, v in SPEC(tmp).items()
+            if k not in ("cap_drop", "security_opt", "pids_limit", "read_only", "tmpfs")
+        }
+        r = c.post("/apps/s/up", headers={"X-Runner-Token": "tok"}, json={"spec": spec, "config_json": {"dataApp": {}}})
+        assert r.status_code == 200
+        _, kw = fake.run_calls[-1]
+        assert kw["cap_drop"] == ["ALL"]
+        assert kw["security_opt"] == ["no-new-privileges:true"]
+        assert kw["pids_limit"] == 512
+        assert kw["read_only"] is False
 
 
 def test_up_rejects_foreign_image(client):

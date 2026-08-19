@@ -189,9 +189,10 @@ def chat_tools(
     if admin_only:
         scope = "All" if admin_only == count else f"{admin_only} of {count}"
         typer.echo(
-            f"{scope} registered tools are recorded as mutating and stay admin-only even when "
-            "granted (no read-only annotation upstream is not a claim of safety). Review any "
-            "that are actually read-only under /admin/mcp-sources."
+            f"{scope} registered tools are recorded as mutating (no read-only annotation "
+            "upstream is not a claim of safety) and stay unreachable for the group until "
+            "an admin opts each one in: `agnes admin mcp tool grant <tool_id> --group <g> "
+            "--allow-mutating`. Review any that are actually read-only under /admin/mcp-sources."
         )
 
 

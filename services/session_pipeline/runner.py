@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -22,7 +23,6 @@ import duckdb
 
 from services.session_pipeline.contract import ProcessorResult, SessionProcessor
 from services.session_pipeline.lib import compute_file_hash
-
 from src.repositories import (
     session_processor_state_repo,
     users_repo,
@@ -221,9 +221,16 @@ def run_processor(
             break
 
         session_key = f"{dir_name}/{jsonl_path.name}"
+
+        # Record the content-observation time before we read the file. Any
+        # append concurrent with or after the read will have an mtime >= this
+        # value, so the next tick sees the file as changed and re-checks the
+        # hash. Sampling after the hash leaves the hashing interval unprotected.
+        read_at = datetime.now(UTC)
+
         try:
             file_hash = compute_file_hash(jsonl_path)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 -- defensive per-session hashing
             logger.warning(
                 "Cannot hash %s for processor=%s: %s",
                 session_key,
@@ -294,6 +301,7 @@ def run_processor(
             username=canonical_username,
             items_count=result.items_count,
             file_hash=file_hash,
+            read_at=read_at,
         )
         stats["processed"] += 1
         stats["items_extracted"] += result.items_count

@@ -504,6 +504,41 @@ class TestCatalogSmoke:
 
 
 # ---------------------------------------------------------------------------
+# Connectors — on-demand connector setup prompt (seed-backed, no DB reads;
+# smoked on both backends anyway so the auth dependency chain is exercised)
+# ---------------------------------------------------------------------------
+
+
+class TestConnectorsPromptSmoke:
+    COVERED_ROUTES = {
+        "GET /api/connectors/{slug}/prompt",
+    }
+
+    def test_prompt_known_slug(self, seeded_app_both):
+        r = seeded_app_both["client"].get(
+            "/api/connectors/connector-asana/prompt",
+            headers=_admin_headers(seeded_app_both),
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["slug"] == "connector-asana"
+        assert body["prompt"]
+        assert "{instance_brand}" not in body["prompt"]
+
+    def test_prompt_unknown_slug_404(self, seeded_app_both):
+        r = seeded_app_both["client"].get(
+            "/api/connectors/connector-nope/prompt",
+            headers=_admin_headers(seeded_app_both),
+        )
+        assert r.status_code == 404
+        assert r.json()["detail"]["kind"] == "unknown_connector"
+
+    def test_prompt_requires_auth(self, seeded_app_both):
+        r = seeded_app_both["client"].get("/api/connectors/connector-asana/prompt")
+        assert r.status_code in (401, 403)
+
+
+# ---------------------------------------------------------------------------
 # Data (requires registered_table_both)
 # ---------------------------------------------------------------------------
 
@@ -913,6 +948,45 @@ class TestAdminRegistrySmoke:
             headers=_admin_headers(seeded_app_both),
         )
         assert r.status_code in (200, 400, 404, 422, 500, 503)
+
+
+# ---------------------------------------------------------------------------
+# Admin Doctor  (new-instance deployment gate)
+# ---------------------------------------------------------------------------
+
+
+class TestAdminDoctorSmoke:
+    COVERED_ROUTES = {
+        "POST /api/admin/doctor/new-instance",
+    }
+
+    def test_new_instance_doctor_report_shape(self, seeded_app_both):
+        """The doctor reads users/groups/grants/agents through the repo
+        factories, so running it on both backends is a genuine parity check —
+        a backend-split read inside any of the five checks would surface here."""
+        r = seeded_app_both["client"].post(
+            "/api/admin/doctor/new-instance",
+            headers=_admin_headers(seeded_app_both),
+            json={},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["status"] in ("ok", "warning", "error")
+        names = [c["name"] for c in body["checks"]]
+        assert names == ["login-door", "email-delivery", "chat-grant", "agent-scope", "branding"]
+        for check in body["checks"]:
+            assert check["status"] in ("ok", "warning", "error", "info")
+            # A crashed check reports itself; a backend-split bug in a repo
+            # read would land here as "check crashed: …" on one backend only.
+            assert "check crashed" not in check["detail"], check
+
+    def test_non_admin_is_403(self, seeded_app_both):
+        r = seeded_app_both["client"].post(
+            "/api/admin/doctor/new-instance",
+            headers=_analyst_headers(seeded_app_both),
+            json={},
+        )
+        assert r.status_code == 403
 
 
 # ---------------------------------------------------------------------------
@@ -1738,6 +1812,18 @@ KNOWN_UNTESTED = {
     # Behaviourally covered in tests/test_broker_data_apps_git.py.
     "GET /api/broker/data-apps.git/{slug}/{path}",
     "POST /api/broker/data-apps.git/{slug}/{path}",
+    # Embedded kai-agent turn engine host wiring — same shape as the broker
+    # routes above: /tickets, /mcp and /workspace are credential/ticket-authed
+    # internal engine routes, and /sessions mints a credential as a side
+    # effect, so none belong in a parameter-free smoke sweep that would either
+    # 401 uninformatively or leave live tokens behind. Behaviour is covered in
+    # tests/test_kai_host.py (claim set, exp ceiling, ticket payload shape,
+    # scope enforcement in both directions, the kill switch on every route,
+    # and the workspace archive contract).
+    "POST /api/kai/sessions",
+    "POST /api/kai/tickets",
+    "POST /api/kai/mcp",
+    "GET /api/kai/workspace",
     # Collections (bring-your-files) — behaviorally covered in the dedicated
     # suites tests/test_api_collections.py (CRUD/upload/search/reingest, RBAC fail-closed,
     # SessionPrincipal) and tests/test_web_library.py (/library pages), plus the
