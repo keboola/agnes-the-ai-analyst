@@ -508,6 +508,7 @@ from app.api.slack import router as slack_router
 from app.api.admin_chat import router as admin_chat_router
 from app.api.notifications_ws import router as notifications_ws_router
 from app.api.broker import router as broker_router
+from app.api.kai import router as kai_router
 from app.instance_config import get_slack_transport
 from services.slack_bot.socket_mode_client import (
     SocketModeDispatcher,
@@ -1202,6 +1203,25 @@ async def lifespan(app):
         except Exception as e:
             logger.warning("Could not seed system groups: %s", e)
 
+        # Seed the chat resource grant for Everyone on first boot. Chat
+        # visibility is gated on an EXPLICIT grant (app.web.router::
+        # _compute_can_chat uses has_explicit_grant, deliberately NOT
+        # can_access — admin god-mode does not reveal chat). A fresh
+        # instance with chat.enabled: true and no grant ships with a fully
+        # working chat backend that nobody, including admins, can see
+        # without hand-typing /chat. See app/chat/grant_seed.py for the
+        # first-boot-vs-revoked reasoning.
+        try:
+            from app.chat.config import load_chat_config
+            from app.chat.grant_seed import seed_everyone_chat_grant
+            from app.secrets import _state_dir as _seed_chat_state_dir
+
+            _chat_cfg_early = load_chat_config(_seed_chat_state_dir() / "instance.yaml")
+            if seed_everyone_chat_grant(chat_enabled=_chat_cfg_early.enabled):
+                logger.info("Seeded chat resource grant for Everyone (fresh instance, chat.enabled=true)")
+        except Exception as e:
+            logger.warning("Could not seed chat resource grant: %s", e)
+
         # Seed the six canonical memory domains into the ACTIVE state backend.
         # On DuckDB the schema ladder already seeds them (fresh-install branch /
         # _v51_to_v52), so ensure_seed no-ops; on Postgres nothing else does —
@@ -1320,7 +1340,33 @@ async def lifespan(app):
                         added_by="app.main:seed_admin",
                     )
             except Exception as e:
-                logger.warning(f"Could not seed admin: {e}")
+                # Loud on purpose (issue: 26h burned on a customer deploy
+                # diagnosing a silent seed failure). "Bootstrap the admin
+                # user" is step 6/9 in docs/ONBOARDING.md — a failed seed
+                # means the fresh instance has NO working way in, and that
+                # used to be visible only by reading container logs on the
+                # VM. ERROR + exc_info puts the traceback in the boot log;
+                # the audit_log row makes it durable and queryable from
+                # /admin/activity (action=startup.seed_admin_failed) even
+                # by an operator who only found the instance later. Still
+                # Exception (never BaseException) — a hard crash here would
+                # take down an instance that may still be reachable by other
+                # means (existing OAuth users, an already-provisioned admin).
+                logger.error("Seed admin failed for %s: %s", seed_email, e, exc_info=True)
+                try:
+                    from src.repositories import audit_repo
+
+                    audit_repo().log(
+                        user_id=None,
+                        action="startup.seed_admin_failed",
+                        resource=seed_email,
+                        result="error",
+                        params={"error": str(e)},
+                    )
+                except Exception:
+                    # A second failure here must never mask the ERROR
+                    # already logged above, nor crash startup.
+                    logger.debug("Could not record seed-admin failure to audit_log", exc_info=True)
 
     # Seed the synthetic scheduler user when SCHEDULER_API_TOKEN is configured,
     # so the very first cron tick after a fresh deploy already has a valid
@@ -1579,39 +1625,30 @@ async def lifespan(app):
                 _server_url = agnes_server_url()
 
                 def _render_workspace_prompt(user_email: str) -> Optional[str]:
-                    """Render the analyst CLAUDE.md (admin Workspace Prompt
-                    override or shipped default), RBAC-filtered for this user —
-                    the same content `agnes init` writes on a laptop via
-                    GET /api/welcome. Returns None on any failure so workdir
-                    init falls back to the bundled static CLAUDE.md."""
-                    try:
-                        from src.db import get_system_db
-                        from src.claude_md import render_claude_md
-                        from src.repositories import use_pg, users_repo
+                    """Render the analyst CLAUDE.md for the chat sandbox.
 
-                        # User read via the factory so it honors use_pg() — a
-                        # direct UserRepository(conn) read the frozen DuckDB
-                        # system file on Postgres instances (#518). The conn
-                        # below is the DuckDB-mode path handed to
-                        # render_claude_md, which routes its own state reads
-                        # through the factory; on Postgres it is None so the
-                        # system DuckDB is never opened (forbidden invariant).
-                        u = users_repo().get_by_email(user_email)
-                        if not u:
-                            return None
-                        conn = None if use_pg() else get_system_db()
-                        try:
-                            # This is the chat sandbox — its filesystem is
-                            # ephemeral and not the analyst's own machine, so
-                            # the rendered prompt must use the sandbox wording
-                            # (e.g. the Charts section's inline-SVG-only rule).
-                            return render_claude_md(conn, user=u, server_url=_server_url, is_sandbox=True)
-                        finally:
-                            if conn is not None:
-                                conn.close()
-                    except Exception:
-                        logger.exception("render workspace prompt failed for %s", user_email)
-                        return None
+                    Delegates so the embedded `kai-agent` turn engine, which
+                    ships the same prompt inside its workspace tarball
+                    (`app/api/kai.py`), cannot drift from what the native
+                    sandbox seeds. Returns None on any failure so workdir init
+                    falls back to the bundled static CLAUDE.md."""
+                    from app.chat.workspace_prompt import render_sandbox_workspace_prompt
+                    from src.db import get_system_db
+                    from src.repositories import use_pg
+
+                    # Conn resolution stays HERE rather than moving into the
+                    # shared helper: the helper opens no connection of its own,
+                    # so it needs no `get_system_db()` grandfather entry, and
+                    # this path keeps the exact behaviour it had — the
+                    # DuckDB-mode conn is handed in, and on Postgres it is None
+                    # so the system DuckDB is never opened (forbidden
+                    # invariant). Devin review on this PR.
+                    conn = None if use_pg() else get_system_db()
+                    try:
+                        return render_sandbox_workspace_prompt(user_email, server_url=_server_url, conn=conn)
+                    finally:
+                        if conn is not None:
+                            conn.close()
 
                 workdir_mgr = WorkdirManager(
                     data_dir=_chat_data_dir,
@@ -2204,6 +2241,12 @@ def create_app() -> FastAPI:
             # the broker's stream-through (#1020) actually reach the sandbox
             # incrementally.
             "/api/broker/anthropic",  # SSE stream — do not gzip
+            # Embedded kai-agent host routes, for both reasons above at once:
+            # /api/kai/mcp proxies a Streamable-HTTP MCP server that may answer
+            # as text/event-stream (buffering it collapses a long tool call
+            # into one burst at the end), and /api/kai/workspace returns an
+            # already-gzipped tarball, where re-compressing only burns CPU.
+            "/api/kai",
             "/cli/wheel/",
             "/cli/download",
             "/marketplace.git",  # git smart-HTTP is self-chunked; double-gzip bloats
@@ -2743,6 +2786,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_chat_router)
     app.include_router(notifications_ws_router)
     app.include_router(broker_router)
+    app.include_router(kai_router)
 
     # Git smart-HTTP endpoint for Claude Code: /marketplace.git/*
     # Native ASGI route that shells out to the real `git http-backend` CLI

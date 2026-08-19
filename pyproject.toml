@@ -1,6 +1,6 @@
 [project]
 name = "agnes-the-ai-analyst"
-version = "0.83.82"
+version = "0.83.85"
 description = "Agnes — self-hosted AI harness for organizations: governed data access, agents as an API, skills marketplace, corporate memory, hosted data apps, and agent surfaces (web chat, Slack, MCP, CLI)"
 requires-python = ">=3.11,<3.14"
 license = {file = "LICENSE"}
@@ -119,6 +119,11 @@ server = [
     # (app/main.py), which prod never sets; dev/staging do. Moved here from the
     # `dev` extra so it lands in the Dockerfile's `.[server]` install.
     "fastapi-debug-toolbar>=0.6.3",
+    # Apache Arrow ADBC driver for DuckDB's ``snowflake`` community extension.
+    # DuckDB searches for the shared library in ``~/.duckdb/extensions/...``;
+    # ``connectors.snowflake.attach.install_snowflake_adbc_driver`` copies it from
+    # the installed package at runtime, but the package must be on disk.
+    "adbc-driver-snowflake>=1.0.0",
     # Web framework (FastAPI). Upper-bounded below 0.137.0: that release
     # regressed APIRouter.include_router so it no longer copies the source
     # router's routes into the app (adds zero routes), leaving create_app()

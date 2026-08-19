@@ -971,6 +971,120 @@ class TestSchedule:
         assert result.exit_code == 0
         assert m.call_args.kwargs["json"]["enabled"] is False
 
+    _SKILLS_RESP = {
+        "skills": [
+            {
+                "marketplace_id": "mp1",
+                "plugin_name": "scout",
+                "skill_name": "scout-briefing",
+                "name": "Scout Briefing",
+                "description": "Prepare the morning briefing.",
+                "invocation": None,
+                "body": "...",
+            },
+            {
+                "marketplace_id": "mp1",
+                "plugin_name": "housekeeping",
+                "skill_name": "cleanup",
+                "name": "Cleanup",
+                "description": "",
+                "invocation": None,
+                "body": "...",
+            },
+            {
+                "marketplace_id": "mp2",
+                "plugin_name": "other-plugin",
+                "skill_name": "cleanup",
+                "name": "Cleanup",
+                "description": "Different plugin, same skill name.",
+                "invocation": None,
+                "body": "...",
+            },
+        ]
+    }
+
+    def test_schedule_add_skill_templates_prompt(self):
+        """--skill resolves against /api/v2/marketplace/skills and sends the
+        same templated prompt the builder UI's Skill dropdown produces —
+        client-side sugar only, the payload stays a plain prompt string."""
+        with (
+            patch("cli.commands.agent.api_get", return_value=_resp(200, self._SKILLS_RESP)) as g,
+            patch("cli.commands.agent.api_post", return_value=_resp(201, dict(self._SCHEDULE_ROW))) as m,
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "agent",
+                    "schedule",
+                    "add",
+                    "research",
+                    "--name",
+                    "morning-briefing",
+                    "--schedule",
+                    "cron 0 7 * * 1-5",
+                    "--skill",
+                    "Scout Briefing",
+                ],
+            )
+        assert result.exit_code == 0
+        assert g.call_args.args[0] == "/api/v2/marketplace/skills"
+        assert m.call_args.kwargs["json"]["prompt"] == "Run the Scout Briefing skill: Prepare the morning briefing."
+
+    def test_schedule_add_skill_without_description_ends_with_period(self):
+        with (
+            patch("cli.commands.agent.api_get", return_value=_resp(200, self._SKILLS_RESP)),
+            patch("cli.commands.agent.api_post", return_value=_resp(201, dict(self._SCHEDULE_ROW))) as m,
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "agent",
+                    "schedule",
+                    "add",
+                    "research",
+                    "--name",
+                    "n",
+                    "--schedule",
+                    "every 1h",
+                    "--skill",
+                    "housekeeping:cleanup",
+                ],
+            )
+        assert result.exit_code == 0
+        assert m.call_args.kwargs["json"]["prompt"] == "Run the Cleanup skill."
+
+    def test_schedule_add_skill_ambiguous_lists_qualified_names(self):
+        """Two plugins ship a skill named 'cleanup' — the bare name must not
+        silently pick one."""
+        with patch("cli.commands.agent.api_get", return_value=_resp(200, self._SKILLS_RESP)):
+            result = runner.invoke(
+                app,
+                ["agent", "schedule", "add", "research", "--name", "n", "--schedule", "every 1h", "--skill", "cleanup"],
+            )
+        assert result.exit_code == 1
+        assert "ambiguous" in result.output
+        assert "housekeeping:cleanup" in result.output
+        assert "other-plugin:cleanup" in result.output
+
+    def test_schedule_add_skill_not_found_lists_available(self):
+        with patch("cli.commands.agent.api_get", return_value=_resp(200, self._SKILLS_RESP)):
+            result = runner.invoke(
+                app,
+                ["agent", "schedule", "add", "research", "--name", "n", "--schedule", "every 1h", "--skill", "nope"],
+            )
+        assert result.exit_code == 1
+        assert "Skill not found: nope" in result.output
+        assert "scout:scout-briefing" in result.output
+
+    def test_schedule_add_requires_exactly_one_of_prompt_and_skill(self):
+        for extra in ([], ["--prompt", "p", "--skill", "cleanup"]):
+            result = runner.invoke(
+                app,
+                ["agent", "schedule", "add", "research", "--name", "n", "--schedule", "every 1h"] + extra,
+            )
+            assert result.exit_code == 1
+            assert "--prompt or --skill" in result.output
+
     def test_schedule_add_invalid_schedule_renders_detail_code(self):
         with patch(
             "cli.commands.agent.api_post",

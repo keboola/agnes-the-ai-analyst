@@ -130,28 +130,18 @@ IMAGE="ghcr.io/keboola/agnes-the-ai-analyst:${AGNES_TAG:-stable}"
 # with spaces and is the modern bash idiom. Functionally identical here
 # since /opt/agnes paths are tame, but it's a cheap habit to keep.
 #
-# The TLS-overlay decision deliberately runs BELOW the config re-fetch
-# (Devin Review caught: this used to live here, evaluating Caddyfile
-# existence against the PRE-fetch state. If the fetch added a
-# previously-missing Caddyfile, this tick's docker compose would still
-# omit `--profile tls` until the next 5-minute tick — a window where
-# the recreate uses the wrong overlay set). Base file list is fine to
-# initialise here because the tls overlay is the only conditional one.
-# COMPOSE_FILE is sourced from /opt/agnes/.env above (startup-script.sh.tpl
-# writes the full ``docker-compose.yml:docker-compose.prod.yml:docker-compose.postgres.yml:docker-compose.host-mount.yml``
-# list so the prod + postgres + host-mount overlays engage by default on
-# every tick — note host-mount loads LAST so its !override on
-# data-migrate.volumes can see the service already defined by
-# docker-compose.postgres.yml). Fall back to the historical prod + host-mount baseline when
-# .env doesn't set it — keeps long-uptime VMs whose .env predates the
-# COMPOSE_FILE line behaving identically.
-#
-# The colon-separated COMPOSE_FILE form is the documented alternative to
-# explicit ``-f`` args (docker.com/compose/reference/envvars/compose_file).
-# The conditional TLS overlay (further down) APPENDS via the same
-# colon-separator so docker compose sees a unified list — interleaving
-# ``-f`` args and a COMPOSE_FILE env var is unspecified behaviour.
-export COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.yml:docker-compose.prod.yml:docker-compose.host-mount.yml}"
+# COMPOSE_FILE here still holds whatever raw value _env_get read from
+# /opt/agnes/.env above (possibly empty, possibly stale — .env is NOT the
+# authoritative source). The actual list is finalized further down, AFTER
+# the config re-fetch below (Devin Review caught a prior version of this
+# comment: the TLS/gcp-logging file checks must run against the
+# POST-fetch state, or a Caddyfile that just landed this tick doesn't
+# engage `--profile tls` until the NEXT tick) via the single shared
+# resolver (scripts/ops/agnes-compose-file.sh), which reads
+# /data/state/instance.yaml directly rather than trusting .env — see that
+# file's header for why: state-applier flips instance.yaml's
+# database.backend but never touches .env, so trusting .env alone lost a
+# backend flip until the next reboot.
 # Fold any COMPOSE_PROFILES from .env (e.g. the m-tier topology's
 # ``COMPOSE_PROFILES=mtier``) into explicit ``--profile`` flags up front. Docker
 # compose ignores COMPOSE_PROFILES entirely the moment ANY ``--profile`` flag is
@@ -188,6 +178,7 @@ CONFIG_FILES=(
   docker-compose.yml docker-compose.prod.yml docker-compose.host-mount.yml
   docker-compose.postgres.yml docker-compose.postgres-host-mount.yml
   docker-compose.tls.yml Caddyfile static/maintenance.html
+  scripts/ops/agnes-compose-file.sh
 )
 hash_config_files() {
   # Sort to keep hash stable across operator add/remove, missing files
@@ -232,6 +223,49 @@ if [ -f /opt/agnes/docker-compose.gcp-logging.yml ]; then
 fi
 CONFIG_AFTER=$(hash_config_files)
 
+# Resolve the authoritative COMPOSE_FILE via the single shared resolver
+# (scripts/ops/agnes-compose-file.sh — just re-fetched above as part of
+# CONFIG_FILES). Evaluated AFTER the config re-fetch so a Caddyfile or
+# gcp-logging overlay that just landed THIS tick is reflected immediately,
+# not on the next one.
+#
+# Sourced by absolute path, and its absence ends the tick rather than
+# being worked around. Two situations produce an absent resolver: the
+# fetch loop above could not reach GitHub on the tick that first delivers
+# it (an instance upgrading from a build that predates this file), or a
+# harness relocated the tree. Neither is worth improvising through —
+# every overlay decision below, TLS included, comes from this file, so a
+# partial run would recreate the stack from a half-known overlay set.
+# Skipping costs one tick; the timer comes back in five minutes.
+RESOLVER="/opt/agnes/scripts/ops/agnes-compose-file.sh"
+if [ ! -f "$RESOLVER" ]; then
+  logger -t agnes-auto-upgrade "ERROR: $RESOLVER missing (fetch failed?) — skipping this tick; the stack is left exactly as it is"
+  exit 0
+fi
+# shellcheck source=./agnes-compose-file.sh
+. "$RESOLVER"
+RESOLVED_COMPOSE_FILE=$(agnes_resolve_compose_file /opt/agnes "$STATE_DIR")
+
+# Reconcile the .env candidate against the authoritative state, rather
+# than picking one of the two wholesale. The overlays the resolver decides
+# on (base/prod/postgres/host-mount/tls/gcp-logging) come from it and only
+# from it, so a backend flip is durable in BOTH directions without a
+# reboot: agnes-state-applier.sh rewrites instance.yaml and moves the
+# side-car but never touches .env, and a stale .env used to bring the stack
+# up without the postgres container (or, after a migration back to DuckDB,
+# with one the persisted state no longer wants). Everything else the
+# candidate carries is preserved in place — docker-compose.dispatcher.yml
+# from startup-script.sh.tpl, an operator's m-tier
+# docker-compose.mtier.yml — because this script cannot know what the
+# deploy layer added and must not delete it. See
+# agnes_compose_file_reconcile for why each half matters.
+RECONCILED_COMPOSE_FILE=$(agnes_compose_file_reconcile "$RESOLVED_COMPOSE_FILE" "${COMPOSE_FILE:-}")
+if [ -n "${COMPOSE_FILE:-}" ] && [ "$RECONCILED_COMPOSE_FILE" != "$COMPOSE_FILE" ]; then
+    MISSING_OVERLAYS=$(agnes_compose_file_missing "$RESOLVED_COMPOSE_FILE" "$COMPOSE_FILE")
+    logger -t agnes-auto-upgrade "WARN: /opt/agnes/.env COMPOSE_FILE ($COMPOSE_FILE) disagrees with the authoritative state (missing: ${MISSING_OVERLAYS:-none}) -- using the reconciled list ($RECONCILED_COMPOSE_FILE) so the stack stays consistent without a reboot"
+fi
+export COMPOSE_FILE="$RECONCILED_COMPOSE_FILE"
+
 # `-s` (size > 0) instead of `-f` — guards against the corner case where
 # rotate.sh wrote a 0-byte cert and exited (or got SIGKILLed mid-write).
 # Bringing up the tls profile against an empty cert would just crash
@@ -239,20 +273,10 @@ CONFIG_AFTER=$(hash_config_files)
 # regenerates real bytes. Same `-s` rule for Caddyfile: without it (or
 # with an empty one) the caddy service crash-loops while the tls overlay
 # has already closed :8000 — net effect is "app unreachable". Skipping
-# the overlay keeps the app on plain :8000 until config lands.
-#
-# Evaluated AFTER the config re-fetch above so a freshly-added or
-# freshly-removed Caddyfile is reflected in this tick's compose set,
-# not the next one.
-if [ -s "$STATE_DIR/certs/fullchain.pem" ] && [ -s "$STATE_DIR/certs/privkey.pem" ] && [ -s Caddyfile ]; then
-    # Append tls overlay onto the colon-separated COMPOSE_FILE list. Idempotent
-    # check guards against the cron tick re-appending across self-update
-    # iterations (unlikely since COMPOSE_FILE is re-sourced from .env each
-    # run, but cheap insurance).
-    case ":$COMPOSE_FILE:" in
-      *:docker-compose.tls.yml:*) : ;;
-      *) export COMPOSE_FILE="$COMPOSE_FILE:docker-compose.tls.yml" ;;
-    esac
+# the overlay keeps the app on plain :8000 until config lands. Uses the
+# same test as agnes_resolve_compose_file above (agnes_tls_active) so the
+# `--profile tls` flag and the compose-file overlay never disagree.
+if agnes_tls_active /opt/agnes "$STATE_DIR"; then
     PROFILE_ARGS+=( --profile tls )
 elif [ -s "$STATE_DIR/certs/fullchain.pem" ] && [ -s "$STATE_DIR/certs/privkey.pem" ]; then
     logger -t agnes-auto-upgrade "WARN: certs present but Caddyfile missing/empty — skipping tls overlay"
@@ -267,18 +291,14 @@ case "$DATA_APPS_ENABLED" in
 esac
 
 # gcplogs overlay — ships container stdout/stderr to GCP Cloud Logging. Gated
-# purely on file presence (mirrors the tls append above): the file is NOT baked
-# into the image and is NOT in CONFIG_FILES, so it lands ONLY when the GCE deploy
-# layer (Terraform startup-script / infra startup.sh) placed it. On non-GCP hosts
-# the file is absent → the overlay is never appended → containers stay on the
-# default json-file driver (gcplogs would otherwise fail without a GCE metadata
-# server). Idempotent case-check guards against re-appending across ticks.
-if [ -f docker-compose.gcp-logging.yml ]; then
-    case ":$COMPOSE_FILE:" in
-      *:docker-compose.gcp-logging.yml:*) : ;;
-      *) export COMPOSE_FILE="$COMPOSE_FILE:docker-compose.gcp-logging.yml" ;;
-    esac
-fi
+# purely on file presence: the file is NOT baked into the image and is NOT
+# in CONFIG_FILES, so it lands ONLY when the GCE deploy layer (Terraform
+# startup-script / infra startup.sh) placed it. On non-GCP hosts the file
+# is absent → the overlay is never appended → containers stay on the
+# default json-file driver (gcplogs would otherwise fail without a GCE
+# metadata server). Folded into RESOLVED_COMPOSE_FILE above (same file-
+# presence check, done once in agnes_resolve_compose_file) — nothing left
+# to do here.
 
 # Docker GC. Deliberately OUTSIDE the drift block below, and ahead of the
 # pull: `docker image prune -f` used to be the last statement inside that

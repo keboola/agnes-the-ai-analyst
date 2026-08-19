@@ -85,6 +85,21 @@ def test_create_and_get_session(sessions):
     assert fetched.surface == Surface.WEB
 
 
+def test_create_session_accepts_a_caller_supplied_id(sessions):
+    """An external turn engine can constrain the id's shape — the embedded
+    ``kai-agent`` engine stores it in a Postgres ``uuid`` column, so the
+    default ``chat_<hex>`` is rejected and the caller must own the key."""
+    s = sessions.create_session(
+        user_email="a@x.com",
+        surface=Surface.WEB,
+        session_id="3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+    )
+    assert s.id == "3f2504e0-4f89-11d3-9a0c-0305e82c3301"
+    fetched = sessions.get_session("3f2504e0-4f89-11d3-9a0c-0305e82c3301")
+    assert fetched is not None
+    assert fetched.user_email == "a@x.com"
+
+
 def test_list_sessions_excludes_archived_by_default(sessions):
     a = sessions.create_session(user_email="u@x.com", surface=Surface.WEB)
     sessions.create_session(user_email="u@x.com", surface=Surface.WEB)
