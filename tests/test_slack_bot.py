@@ -1265,6 +1265,50 @@ def test_mention_cap_hit_gets_ephemeral_not_silence(monkeypatch):
     assert mgr.sent == []
 
 
+def test_mention_cap_hit_on_api_replica_gets_ephemeral_not_silence(monkeypatch):
+    """Same refusal on the api-role replica (`app.state.chat_manager is
+    None`), which reaches the cap through the thin-producer forward.
+
+    `ConcurrencyCapHit` is a plain `Exception`, not a `RuntimeError`, so
+    `_send_or_explain_limit` used to let it unwind into `_run_logged` —
+    which logs and swallows, leaving the mentioner with the 👀 ack and then
+    nothing at all.
+    """
+    import asyncio
+    import services.slack_bot.events as ev
+    from app.chat.manager import ConcurrencyCapHit
+
+    posts = []
+
+    async def _fake_ep(ch, u, txt):
+        posts.append(txt)
+
+    monkeypatch.setattr(ev, "send_ephemeral_to_user", _fake_ep)
+
+    async def _fake_react(channel, ts, emoji):
+        return None
+
+    monkeypatch.setattr(ev, "add_reaction", _fake_react)
+
+    produced = []
+
+    async def _fake_produce(app, **kw):
+        produced.append(kw)
+        raise ConcurrencyCapHit("cap")
+
+    monkeypatch.setattr(ev, "_produce_slack_message", _fake_produce)
+    conn = get_system_db()
+    _ensure_schema(conn)
+    uid = _seed_bound_chat_user(conn)
+    _allow_channel(conn)
+    _seed_channel_bound_agent(conn, owner=uid, slug="router-cap-api")
+
+    app = _FakeApp(conn=conn, mgr=None)  # api-role replica: no ChatManager
+    asyncio.run(ev._handle_mention(app, {"channel": "C_OK", "ts": "9.20", "user": "U_OK", "text": "<@U07BOT> busy"}))
+    assert produced, "the producer forward should have been attempted"
+    assert posts and "at capacity" in posts[-1]
+
+
 def test_mention_binding_skipped_when_owner_lost_chat_grant(monkeypatch):
     """A routed session runs AS the owner, so revoking the owner's CHAT
     access must also stop the binding — mentions degrade to the unrouted

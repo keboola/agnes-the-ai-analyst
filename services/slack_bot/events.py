@@ -73,7 +73,6 @@ async def _run_logged(
                 logger.exception("best-effort Slack failure notice failed")
 
 
-
 #: enforce_sender_limits raises bare RuntimeError with these reason strings —
 #: on a routed thread the limits key on the AGENT OWNER, so a channel member
 #: who tripped nothing themselves needs to be told what happened (the in-band
@@ -85,12 +84,31 @@ _SENDER_LIMIT_MESSAGES = {
     "rate_limit_exceeded": "The agent is receiving too many messages right now — try again in a few minutes.",
 }
 
+#: ConcurrencyCapHit refusal text, shared by both roles that can raise it on a
+#: mention — the gateway's own create_session and the api replica's producer
+#: forward through _send_or_explain_limit. One constant so the two can't drift.
+_AT_CAPACITY_MESSAGE = "The agent is at capacity right now — please try again in a few minutes."
+
 
 async def _send_or_explain_limit(mgr_send, channel: str, slack_user_id: str) -> None:
     """Run one send coroutine; answer a known sender-limit refusal with an
-    ephemeral instead of letting it vanish into the background-task log."""
+    ephemeral instead of letting it vanish into the background-task log.
+
+    ``ConcurrencyCapHit`` is caught alongside the RuntimeError reasons
+    because it is a plain ``Exception``, not a RuntimeError, and the
+    api-replica producer path reaches ``resolve_or_create_slack_session``
+    through here — an uncaught one unwinds into ``_run_logged``, which logs
+    and swallows, leaving the mentioner with the 👀 ack and then silence.
+    Routed threads pool on the AGENT OWNER's cap, so hitting it is routine.
+    Wording is kept identical to the gateway branch's own cap refusal in
+    ``_handle_mention`` — the same refusal must read the same on both roles.
+    """
+    from app.chat.manager import ConcurrencyCapHit
+
     try:
         await mgr_send
+    except ConcurrencyCapHit:
+        await send_ephemeral_to_user(channel, slack_user_id, _AT_CAPACITY_MESSAGE)
     except RuntimeError as exc:
         msg = _SENDER_LIMIT_MESSAGES.get(str(exc))
         if msg is None:
@@ -554,11 +572,7 @@ async def _handle_mention(app, event: dict) -> None:
         # busy bound channel can hit it through no fault of the mentioner —
         # a silent drop (background log only) reads as the bot ignoring
         # people. Say so instead.
-        await send_ephemeral_to_user(
-            channel,
-            slack_user_id,
-            "The agent is at capacity right now — please try again in a few minutes.",
-        )
+        await send_ephemeral_to_user(channel, slack_user_id, _AT_CAPACITY_MESSAGE)
         return
 
     # 8. Attach (NOT awaited — keep the 3s ack budget). wave-2F task 7: skip
