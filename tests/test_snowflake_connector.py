@@ -1472,3 +1472,47 @@ def test_fixing_one_row_clears_its_error_even_while_another_row_is_broken(seeded
         "the corrected row kept its old failure because an unrelated row is broken — "
         f"last_sync_error={row.get('last_sync_error')!r}"
     )
+
+
+def test_rename_edit_attributes_the_rebuild_to_the_new_name(seeded_app, snowflake_instance, monkeypatch):
+    """A PUT that renames the row must hand the rebuild the row's NEW name.
+
+    `sync_state.table_id == table_registry.name` by convention, and
+    `_rebuild_snowflake_remote_extract` attributes its per-table errors from
+    the CURRENT registry rows. Passing `existing["name"]` — the pre-update
+    name — means the old name is absent from `failed_tables` no matter what
+    the rebuild found, so the "not in failed_tables" guard always passes and a
+    rename that left the table broken would clear the only record of the
+    failure. Renames are an anticipated case on this path (the surrounding
+    comment says the rebuild exists so the view picks them up).
+    """
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+
+    monkeypatch.setattr(
+        "connectors.snowflake.extract_init.rebuild_from_registry",
+        MagicMock(return_value={"skipped": False, "tables_registered": 1, "errors": []}),
+    )
+    resp = c.post(
+        "/api/admin/register-table",
+        json=_sf_payload(name="orders_before"),
+        headers=_auth(token),
+    )
+    assert resp.status_code == 201, resp.text
+    table_id = resp.json()["id"]
+
+    seen: list = []
+    monkeypatch.setattr(
+        "app.api.admin._rebuild_snowflake_remote_extract_bg",
+        lambda table_name=None: seen.append(table_name),
+    )
+    resp = c.put(
+        f"/api/admin/registry/{table_id}",
+        json={"name": "orders_after"},
+        headers=_auth(token),
+    )
+    assert resp.status_code == 200, resp.text
+    assert seen == ["orders_after"], (
+        "the rebuild was attributed to the pre-update name; a rename that leaves the "
+        f"table broken would then clear its recorded failure — got {seen!r}"
+    )

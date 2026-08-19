@@ -5515,7 +5515,14 @@ async def update_table(
     if after.get("source_type") == "bigquery":
         _schedule_bq_materialize(background)
     if after.get("source_type") == "snowflake" and after.get("query_mode") == "remote":
-        background.add_task(_rebuild_snowflake_remote_extract_bg, existing.get("name") or table_id)
+        # The POST-update name, not `existing`'s. `sync_state.table_id ==
+        # table_registry.name` by convention, and the rebuild attributes its
+        # per-table errors from the CURRENT registry rows — so on a PUT that
+        # renames the row, the old name is absent from `failed_tables` no
+        # matter what happened, the "not in failed_tables" guard passes, and a
+        # rename that left the table still broken would clear the only record
+        # of the failure. Renames are an anticipated case here (see above).
+        background.add_task(_rebuild_snowflake_remote_extract_bg, after.get("name") or table_id)
 
     from app.api.v2_catalog import invalidate_for_table
 
