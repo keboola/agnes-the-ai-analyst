@@ -341,7 +341,8 @@ def parse_remote_attach_url(url: str) -> dict[str, str]:
 
 
 def _looks_like_key_pair(token: str) -> bool:
-    """Return True when ``token`` is a PEM, JSON-wrapped PEM, or base64 DER key."""
+    """Return True when ``token`` is a PEM, JSON-wrapped PEM, base64 DER key,
+    or a filesystem path pointing at one of those."""
     t = (token or "").strip()
     if "-----BEGIN" in t and "-----END" in t:
         return True
@@ -351,6 +352,7 @@ def _looks_like_key_pair(token: str) -> bool:
         except json.JSONDecodeError:
             return False
         return isinstance(data, dict) and "private_key" in data
+
     # Heuristic for a pasted base64-only DER key (Snowflake keys are long RSA
     # keys; a short base64 password is left to the password path).
     cleaned = re.sub(r"\s+", "", t)
@@ -361,6 +363,16 @@ def _looks_like_key_pair(token: str) -> bool:
                 return decoded and decoded[0] == 0x30
             except (binascii.Error, ValueError):
                 continue
+
+    # A single-line value that resolves to an existing file is likely a
+    # path to a PEM key (common in container/secret-file deployments).
+    if "\n" not in t and len(t) < 4096:
+        try:
+            p = Path(t).expanduser()
+            if p.is_file() and p.stat().st_size < 64 * 1024:
+                return _looks_like_key_pair(p.read_text(encoding="utf-8", errors="strict"))
+        except (OSError, UnicodeError, ValueError):
+            pass
     return False
 
 
@@ -368,14 +380,16 @@ def _private_key_pem_and_passphrase(token: str, passphrase: str | None = None) -
     """Extract and normalize a private key into an unencrypted PKCS#8 PEM.
 
     The DuckDB Snowflake extension accepts an inline value or a file path via
-    ``PRIVATE_KEY_FILE``. We always write the normalized key to a private
-    temp file and pass that path, so the extension never has to guess whether
-    the string is a path or inline PEM.
+    ``PRIVATE_KEY`` or ``PRIVATE_KEY_FILE``. We always write the normalized
+    key to a private temp file and also pass it inline, so the extension can
+    pick whichever option it recognizes and we are not exposed to version- or
+    option-name differences.
 
     This function tolerates pasted PEMs with escaped ``\\n``/``\\r\\n``,
     Windows line endings, PKCS#1 ``RSA PRIVATE KEY`` blocks, encrypted keys,
-    and base64-only DER blobs. The optional passphrase is used to decrypt the
-    key and is not forwarded to the generated SQL.
+    base64-only DER blobs, and filesystem paths pointing at any of the above.
+    The optional passphrase is used to decrypt the key and is not forwarded
+    to the generated SQL.
     """
     raw = (token or "").strip()
     if not raw:
@@ -396,6 +410,16 @@ def _private_key_pem_and_passphrase(token: str, passphrase: str | None = None) -
 
     if not raw.strip():
         raise ValueError("empty snowflake private key")
+
+    # If the value is a single-line filesystem path, read the key from disk.
+    # This is common when the credential is injected as a secret file mount.
+    if "\n" not in raw and len(raw) < 4096:
+        try:
+            p = Path(raw).expanduser()
+            if p.is_file() and p.stat().st_size < 64 * 1024:
+                raw = p.read_text(encoding="utf-8", errors="strict")
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise ValueError(f"snowflake private key file {raw!r} could not be read: {exc}") from exc
 
     # Defense-in-depth: a key should never contain '$', but a pasted value
     # containing it could close a dollar-quoted SQL literal. Reject early.
@@ -444,12 +468,18 @@ def _create_snowflake_secret_sql(
             secret_name,
         )
         _write_private_key_pem(private_key_pem, key_path)
+        # Set both PRIVATE_KEY (inline, dollar-quoted PKCS#8 PEM) and
+        # PRIVATE_KEY_FILE (temp file). Different DuckDB/Snowflake-extension
+        # builds prefer one or the other; the inline value guarantees that an
+        # unrecognized PRIVATE_KEY_FILE option never leaves the driver with
+        # an empty key value to parse.
         return (
             f"CREATE OR REPLACE SECRET {secret_name} ("
             f"TYPE snowflake, "
             f"ACCOUNT '{escape_sql_string_literal(params['account'])}', "
             f"USER '{escape_sql_string_literal(params['user'])}', "
             f"AUTH_TYPE 'key_pair', "
+            f"PRIVATE_KEY $PK${private_key_pem}$PK$, "
             f"PRIVATE_KEY_FILE '{escape_sql_string_literal(str(key_path))}', "
             f"DATABASE '{escape_sql_string_literal(params['database'])}', "
             f"WAREHOUSE '{escape_sql_string_literal(params['warehouse'])}'"
