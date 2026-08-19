@@ -683,6 +683,169 @@ class TestPartitionedTablePreview:
         assert resolve_local_parquet_glob("kbc_empty", "keboola") is None
 
 
+class TestRemoteRowLiveSample:
+    """`query_mode='remote'` rows (non-BQ) preview live through their
+    analytics view instead of being refused outright.
+
+    The orchestrator maintains a view over the re-ATTACHed source for every
+    remote row that resolves locally (`_remote_attach` — Snowflake `sf`,
+    Keboola `kbc`, Databricks with attach_enabled), and `/api/query` already
+    serves these rows through that view; the sample endpoint refusing them
+    was a parity gap with the BigQuery live branch above. When the view
+    cannot serve (attach lost, engine with no local view), the pre-existing
+    by-design refusal stays — enriched with the real failure so the admin is
+    not sent hunting a sync job while the actual error goes unreported.
+    """
+
+    @staticmethod
+    def _register_remote(conn, table_id, *, with_policy=False):
+        from src.repositories.table_registry import TableRegistryRepository
+
+        repo = TableRegistryRepository(conn)
+        repo.register(
+            id=table_id,
+            name=table_id,
+            source_type="snowflake",
+            bucket="GOLD",
+            source_table="BI_X",
+            query_mode="remote",
+        )
+        if with_policy:
+            repo.set_access_policy(table_id, sql=f"SELECT * FROM {table_id}", note="test", updated_by="admin")
+
+    @staticmethod
+    def _create_analytics_view(table_id, rows_sql):
+        """Stand in for the orchestrator: materialize the analytics DB with a
+        relation named like the remote row's view."""
+        import os
+        from pathlib import Path
+
+        import duckdb as _duckdb
+
+        data_dir = Path(os.environ["DATA_DIR"])
+        (data_dir / "analytics").mkdir(parents=True, exist_ok=True)
+        c = _duckdb.connect(str(data_dir / "analytics" / "server.duckdb"))
+        try:
+            c.execute(f'CREATE TABLE "{table_id}" AS {rows_sql}')
+        finally:
+            c.close()
+
+    def test_remote_row_returns_live_rows_from_the_analytics_view(self, reload_db):
+        from app.api import v2_sample
+
+        conn = reload_db.get_system_db()
+        try:
+            _ensure_admin1(conn)
+            self._register_remote(conn, "sf_live")
+            self._create_analytics_view("sf_live", "SELECT 1 AS a, 'x' AS b UNION ALL SELECT 2, 'y'")
+            user = {"id": "admin1", "email": "a@x.com"}
+            data = v2_sample.build_sample(conn, user, "sf_live", n=5, bq=_bq())
+        finally:
+            conn.close()
+        assert data["table_id"] == "sf_live"
+        assert data["source"] == "snowflake"
+        assert len(data["rows"]) == 2
+        assert data["rows"][0] == {"a": 1, "b": "x"}
+
+    def test_n_caps_the_live_rows(self, reload_db):
+        from app.api import v2_sample
+
+        conn = reload_db.get_system_db()
+        try:
+            _ensure_admin1(conn)
+            self._register_remote(conn, "sf_capped")
+            self._create_analytics_view("sf_capped", "SELECT * FROM range(10)")
+            user = {"id": "admin1", "email": "a@x.com"}
+            data = v2_sample.build_sample(conn, user, "sf_capped", n=3, bq=_bq())
+        finally:
+            conn.close()
+        assert len(data["rows"]) == 3
+
+    def test_remote_wins_over_a_stale_parquet_left_by_a_materialized_era(self, reload_db, monkeypatch):
+        """A row flipped materialized→remote can leave its old parquet on
+        disk. `query_mode='remote'` means every read goes live — serving the
+        stale (possibly empty) copy would silently show outdated data, so the
+        mode check must run BEFORE parquet resolution."""
+        from app.api import v2_sample
+
+        monkeypatch.setattr(
+            "app.api.v2_sample.resolve_local_parquet_glob",
+            lambda *a, **kw: pytest.fail("remote row must not resolve a local parquet"),
+            raising=False,
+        )
+        conn = reload_db.get_system_db()
+        try:
+            _ensure_admin1(conn)
+            self._register_remote(conn, "sf_flipped")
+            self._create_analytics_view("sf_flipped", "SELECT 'live' AS origin")
+            user = {"id": "admin1", "email": "a@x.com"}
+            data = v2_sample.build_sample(conn, user, "sf_flipped", n=5, bq=_bq())
+        finally:
+            conn.close()
+        assert data["rows"] == [{"origin": "live"}]
+
+    def test_missing_view_falls_back_to_the_by_design_refusal(self, reload_db):
+        """No analytics view (attach lost, or an engine with no local view):
+        the by-design message survives — including the pointer at the way to
+        actually read the table — plus the real failure, so nothing lies."""
+        from app.api import v2_sample
+
+        conn = reload_db.get_system_db()
+        try:
+            _ensure_admin1(conn)
+            self._register_remote(conn, "sf_noview")
+            user = {"id": "admin1", "email": "a@x.com"}
+            with pytest.raises(v2_sample.TableNotPreviewableError) as exc_info:
+                v2_sample.build_sample(conn, user, "sf_noview", n=5, bq=_bq())
+        finally:
+            conn.close()
+        detail = exc_info.value.detail
+        assert "--remote" in detail
+        assert "query_mode='remote'" in detail
+        assert "first sync" not in detail
+        assert "no synced data yet" not in detail
+        # The real failure is reported, not swallowed behind the reassurance.
+        assert "live sample" in detail
+
+    def test_policied_remote_row_fails_closed_for_a_filtered_caller(self, reload_db, monkeypatch):
+        """Same Task-13 ratchet as the BQ live branch: policy rewrite is not
+        wired into this surface, so a caller the policy would filter must
+        never see the raw live rows."""
+        monkeypatch.setenv("AGNES_ACCESS_POLICIES_ENABLED", "true")
+        from app.api import v2_sample
+
+        monkeypatch.setattr("app.api.v2_sample.can_access_table", lambda user, tid, conn: True)
+        conn = reload_db.get_system_db()
+        try:
+            _ensure_admin1(conn)
+            self._register_remote(conn, "sf_policied", with_policy=True)
+            self._create_analytics_view("sf_policied", "SELECT 'secret' AS s")
+            non_admin = {"id": "viewer1", "email": "viewer@x.com"}
+            with pytest.raises(HTTPException) as exc_info:
+                v2_sample.build_sample(conn, non_admin, "sf_policied", n=2, bq=_bq())
+        finally:
+            conn.close()
+        assert exc_info.value.status_code == 500
+        assert exc_info.value.detail == {"reason": "policy_error", "table": "sf_policied"}
+
+    def test_admin_bypass_on_a_policied_remote_row(self, reload_db, monkeypatch):
+        """Mirrors the BQ branch: `policied_relation` itself decides the
+        admin bypass, so an admin keeps seeing the raw live sample."""
+        monkeypatch.setenv("AGNES_ACCESS_POLICIES_ENABLED", "true")
+        from app.api import v2_sample
+
+        conn = reload_db.get_system_db()
+        try:
+            _ensure_admin1(conn)
+            self._register_remote(conn, "sf_policied_adm", with_policy=True)
+            self._create_analytics_view("sf_policied_adm", "SELECT 'admin-visible' AS s")
+            admin = {"id": "admin1", "email": "admin1@test.com"}
+            data = v2_sample.build_sample(conn, admin, "sf_policied_adm", n=2, bq=_bq())
+        finally:
+            conn.close()
+        assert data["rows"] == [{"s": "admin-visible"}]
+
+
 class TestSampleAccessPolicyBqBranch:
     """Task 13 (§8 ratchet) — the BQ live-query branch of `build_sample` had
     NO access-policy enforcement at all: `_fetch_bq_sample` pushes straight

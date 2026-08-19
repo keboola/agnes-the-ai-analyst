@@ -10,6 +10,19 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+- **Catalog preview now works for `query_mode='remote'` tables.** The sample
+  endpoint (`GET /api/v2/sample/{id}`, feeding the catalog preview and
+  `agnes describe`) refused every non-BigQuery remote row with "never
+  materialized — no sample to preview". It now serves a live sample through
+  the same analytics view `/api/query` uses (`_remote_attach` re-ATTACH), so
+  Snowflake/Keboola/Databricks-with-attach remote rows preview like any other
+  table. The mode check also runs before parquet resolution, so a row flipped
+  materialized→remote no longer previews its stale leftover parquet. Rows
+  with an access policy stay fail-closed on this surface (same ratchet as the
+  BigQuery live branch); when the view cannot serve, the refusal message now
+  carries the real error instead of only the reassurance.
+
 ## [0.83.86] - 2026-08-19
 
 ### Added
