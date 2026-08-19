@@ -2028,14 +2028,19 @@ async def reap_idle_data_apps(
     # running container still reports "running" here regardless of age, so only a
     # genuinely dead ("stopped"/"absent") container is flipped to error.
     #
-    # This works under the runtime's unbounded `unless-stopped` policy, which is
-    # what ships today: a crash-looping container alternates between Docker
-    # `running` and `restarting`, and the runner folds `restarting` into
-    # "stopped", so the loop is detected either way. The consequence is that a
-    # single transient restart also reads dead, which is why a dead reading has
-    # to be confirmed by a second sweep before `error` is written (below). The
-    # bounded `on-failure` policy that would let a doomed container settle
-    # instead of retrying forever is a separate change (#1406).
+    # This works under the runtime's bounded `on-failure` policy
+    # (`MaximumRetryCount: 3`, see `services/apps_runner/api.py::up`), which is
+    # what ships today: while the daemon is still spending that retry budget a
+    # crash-looping container alternates between Docker `running` and
+    # `restarting`, and the runner folds `restarting` into "stopped", so the
+    # loop is caught mid-flight; once the budget is exhausted the doomed
+    # container settles as `exited` and reads "stopped" for good. A single
+    # transient restart also reads dead either way, which is why a dead reading
+    # still has to be confirmed by a second sweep before `error` is written
+    # (below). The bounded policy also means Docker does not bring a container
+    # back after a daemon or host restart, so a previously-live app settles as
+    # `exited` after a reboot, is reconciled to `error` here, and needs an
+    # explicit redeploy — the ingress proxy wakes only `sleeping` rows.
     reconciled: list[str] = []
     for row in repo.list(state="running", limit=100000):
         updated_at = row.get("updated_at")

@@ -140,6 +140,24 @@ def test_up_writes_config_and_runs(client):
     assert fake.volumes.names == {"agnes-dataapp-cache-s"}
 
 
+def test_up_uses_a_bounded_restart_policy(client):
+    """Crash-loop guard: the app container must run under a bounded
+    `on-failure` policy, never unbounded `unless-stopped`. The upstream
+    entrypoint is not idempotent (it `git clone`s into `/app` unconditionally,
+    so any restart onto a non-empty `/app` dies), so a data app that fails its
+    first boot would otherwise be restarted forever — externally dead, burning
+    CPU, and never settling into a state reap-idle can reconcile to `error`."""
+    c, fake, tmp = client
+    r = c.post(
+        "/apps/s/up", headers={"X-Runner-Token": "tok"}, json={"spec": SPEC(tmp), "config_json": {"dataApp": {}}}
+    )
+    assert r.status_code == 200
+    _, kw = fake.run_calls[-1]
+    policy = kw["restart_policy"]
+    assert policy["Name"] == "on-failure"
+    assert policy.get("MaximumRetryCount", 0) >= 1
+
+
 def test_up_rejects_foreign_image(client):
     c, _, tmp = client
     spec = SPEC(tmp) | {"image": "evil/image:1"}
