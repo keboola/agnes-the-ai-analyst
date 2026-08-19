@@ -10,6 +10,61 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+- **"Keboola is not connected" on an instance whose Keboola project is connected.**
+  Registering a table on `/admin/tables` warned that Keboola was unconnected and
+  disabled Discover / List tables / Use-as-base, while the project sat named on
+  the adjacent Sources tab. The guard read `data_source.type` — a scalar from the
+  single-source era, whose `local` default means *unset*, not *local* — to answer
+  a question only the multi-connection registry can answer. One
+  `_connected_sources()` helper now unions both stores plus the per-connector
+  credential probes (Snowflake and Databricks are credentialed instance-side and
+  no registry row is ever seeded for them), and every connectedness claim on the
+  page reads it. The scalar survives only where it still means something: which
+  register modal opens by default, and whether the legacy discover endpoint —
+  which routes by that scalar — is reachable at all.
+- **The fix that warning prescribed did not exist.** It sent the operator to
+  `/admin/server-config → data_source` "to set your token"; that section has no
+  token field, and `KEBOOLA_STORAGE_TOKEN` has no writer in any UI. The copy now
+  points at `/admin/data-sources`, which can complete the job.
+- **Discover had no notion of which project.** The Keboola register/edit drawers
+  gain a project selector and call
+  `GET /api/admin/source-connections/{id}/tables` for the chosen connection,
+  passing its `connection_id` when registering — tables registered from this page
+  were provenance-less, blank in the Project facet and `unlinked` on the Sources
+  page. Instances with no registry connection behave exactly as before.
+- **`/admin/data-sources` claimed "No sources connected yet"** on an instance whose
+  Keboola is configured instance-side, because the card list was built from
+  registry rows only. A connector that can be added on that page is now visible on
+  it, and never duplicates a named project's card.
+- **Instance settings reported a restart they never performed.** Every save
+  returned `restart_required: true` and the page claimed saving restarts the app
+  (~10s downtime); the API only drops the config cache and most settings resolve
+  per request. `POST /api/admin/server-config` now computes the effect from the
+  sections actually patched and returns `sections_effect`, so the confirmation can
+  say a change is already in effect or name the section that forced the bounce.
+  The read-only switch summary surfaces each switch's `effect` and a locked
+  switch's `lock_reason` — both were already in the API response and discarded by
+  the page — and the danger-section list comes from that response instead of a
+  hardcoded copy. An import-time assertion fails the app if a new editable section
+  ships unclassified.
+- **Re-running first-time setup dropped connector coordinates.**
+  `POST /api/admin/configure` replaced the whole `data_source` block with
+  `{type: ...}`, discarding any `snowflake` / `databricks` / `bigquery` settings.
+- **`POST /api/admin/keboola/test-connection` now says which layer it probed**
+  (`scope: "instance"`). On an instance whose real projects live in the registry,
+  "not configured" read as "Keboola is broken"; its hint now points at
+  `/admin/data-sources` when the registry holds Keboola connections.
+
+### Internal
+- `email`, `jira` and `telegram` are classified `restart` in the new effect map as
+  the non-overclaiming answer, not because a restart helps: their runtime
+  consumers read `os.environ` or the static base directly and never the edited
+  overlay, so a save changes nothing either way. Wiring or retiring those sections
+  is deliberately left out of this change.
+- Dropped a dead `registered_tables` template context variable that cost a full
+  `table_registry` scan on every `/admin/tables` load; nothing rendered it.
+
 ## [0.83.56] - 2026-08-18
 
 ### Added
