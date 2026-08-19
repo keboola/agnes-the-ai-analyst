@@ -660,6 +660,19 @@ class KeboolaClient:
                         if gcs_access_token and "storage.googleapis.com" in slice_url:
                             slice_headers["Authorization"] = f"Bearer {gcs_access_token}"
 
+                        # AWS-staged exports list raw s3:// slice URIs, which
+                        # requests cannot fetch at all. Rewrite + SigV4-sign
+                        # through the Storage API client's helper so this path
+                        # and that one cannot drift apart.
+                        if slice_url.startswith("s3://"):
+                            from connectors.keboola.storage_api import KeboolaStorageClient
+
+                            slice_url, slice_headers = KeboolaStorageClient._s3_slice_request(
+                                slice_url,
+                                i,
+                                KeboolaStorageClient._s3_context(file_data),
+                            )
+
                         slice_response = requests.get(slice_url, headers=slice_headers)
                         slice_response.raise_for_status()
 
