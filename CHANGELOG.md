@@ -34,6 +34,25 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   so a mistyped name can be edited rather than re-entered — is marked failed in
   `sync_state` instead of reading `pending` / "never synced" forever, which is
   indistinguishable from a row waiting for its first tick.
+- **Correcting a bad Snowflake schema/table now clears the row's recorded
+  failure.** `PUT /api/admin/registry/{id}` re-runs the remote-extract rebuild,
+  but a success left the previous failure in `sync_state`, so `/admin/sync` and
+  `GET /api/admin/registry` kept serving the old error until the next full
+  orchestrator sweep re-derived state from `_meta` — the fix looked like it had
+  not taken.
+
+### Security
+
+- **A Snowflake private key is no longer echoed into an error message.** The
+  key loader treats a single-line, non-PEM value under 4 KiB as a possible file
+  path; when such a value named a real file that could not be read or decoded,
+  the raised error interpolated the value itself — and the underlying
+  `OSError`'s own text ends with the same string. That message reaches the
+  `register-table` response and (as of this release) the persisted
+  `sync_state.error` that `/admin/sync`, `GET /api/admin/registry` and `agnes
+  admin list-tables` render unredacted. It now names only the failure class and
+  the setting to check; the original exception stays chained for a local
+  traceback.
 
 ## [0.83.86] - 2026-08-19
 

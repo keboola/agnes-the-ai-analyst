@@ -850,6 +850,26 @@ def _persist_materialized_inner_view(
     untouched. Fail-soft — the parquet is the canonical artifact, so a
     registration failure (lock contention, schema drift) is logged and the next
     pass gets another chance.
+
+    How long the registration lives depends on whether the source also has
+    ``query_mode='local'`` rows, and it is worth being precise about it:
+
+    - **Materialized-only source** (the case this fixes): nothing else ever
+      writes this file, so the row and view persist until the next materialize
+      replaces them.
+    - **Mixed local + materialized source**: :func:`run` rebuilds
+      ``extract.duckdb`` from scratch on every extractor pass — it writes a
+      fresh ``extract.duckdb.tmp`` and ``shutil.move``s it over the old file —
+      so a materialized row registered on an earlier tick is wiped by any later
+      pass on which that table is not itself due. In the same tick it is
+      harmless (the materialized pass runs after the subprocess and re-registers
+      what it just published); across ticks the master view is carried by the
+      orchestrator's pre-existing filesystem-fallback pass, which recreates it
+      from ``data/*.parquet`` when a registered materialized row has no ``_meta``
+      entry, until the next materialize restores this one. Making the
+      registration survive that rebuild means teaching :func:`run` to preserve
+      foreign ``_meta`` rows, which is a change to the whole-file swap and not
+      this fix's scope.
     """
     safe_path = str(parquet_path).replace("'", "''")
     try:

@@ -3513,11 +3513,30 @@ def _rebuild_snowflake_remote_extract() -> tuple[bool, str]:
     )
 
 
-def _rebuild_snowflake_remote_extract_bg() -> None:
-    """Fire-and-forget wrapper used by ``update_table`` BackgroundTasks."""
+def _rebuild_snowflake_remote_extract_bg(table_name: Optional[str] = None) -> None:
+    """Fire-and-forget wrapper used by ``update_table`` BackgroundTasks.
+
+    ``table_name`` is the edited row's registry ``name``. Correcting a
+    schema/table that does not exist upstream is the whole point of this edit
+    path, and registration records such a failure on the row (see
+    ``register_table``), so a rebuild that now succeeds has to CLEAR it —
+    otherwise ``GET /api/admin/registry`` and /admin/sync keep serving the old
+    error until the next full orchestrator sweep re-derives ``sync_state`` from
+    ``_meta``, and the fix reads as if it did not take.
+    """
     ok, message = _rebuild_snowflake_remote_extract()
     if ok:
         logger.info("%s", message)
+        if table_name:
+            try:
+                sync_state_repo().clear_error(table_name)
+            except Exception as exc:
+                logger.warning(
+                    "rebuild for %s succeeded but its recorded failure could not be "
+                    "cleared (%s); /admin/sync may show a stale error until the next sweep",
+                    table_name,
+                    exc,
+                )
     else:
         logger.error("%s", message)
 
@@ -4425,11 +4444,12 @@ def register_table(
                 # surfaces say so.
                 try:
                     sync_state_repo().set_error(request.name, message)
-                except Exception:
+                except Exception as exc:
                     logger.warning(
-                        "could not record rebuild failure for %s in sync_state; the 500 "
+                        "could not record rebuild failure for %s in sync_state (%s); the 500 "
                         "response still carries the reason",
                         table_id,
+                        exc,
                     )
                 return JSONResponse(
                     status_code=500,
@@ -5443,7 +5463,7 @@ async def update_table(
     if after.get("source_type") == "bigquery":
         _schedule_bq_materialize(background)
     if after.get("source_type") == "snowflake" and after.get("query_mode") == "remote":
-        background.add_task(_rebuild_snowflake_remote_extract_bg)
+        background.add_task(_rebuild_snowflake_remote_extract_bg, existing.get("name") or table_id)
 
     from app.api.v2_catalog import invalidate_for_table
 
