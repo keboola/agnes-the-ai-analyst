@@ -769,6 +769,28 @@ class TestS3ToHttps:
         with pytest.raises(StorageApiError, match="region"):
             _s3_to_https("s3://bkt/k.csv", _AWS_CREDS, None)
 
+    def test_rejects_slice_pointing_at_a_foreign_bucket(self):
+        # Defense-in-depth: the file detail names the export's own bucket in
+        # `s3Path.bucket`; a manifest entry aiming the signed request at any
+        # other bucket is refused rather than presigned.
+        with pytest.raises(StorageApiError, match="foreign-bucket"):
+            _s3_to_https(
+                "s3://foreign-bucket/k.csv",
+                _AWS_CREDS,
+                "us-east-1",
+                expected_bucket="kbc-sapi-files",
+            )
+
+    def test_expected_bucket_match_passes(self):
+        url = _s3_to_https(
+            "s3://kbc-sapi-files/k.csv",
+            _AWS_CREDS,
+            "us-east-1",
+            expected_bucket="kbc-sapi-files",
+            now=_AWS_NOW,
+        )
+        assert urlsplit(url).netloc == "kbc-sapi-files.s3.us-east-1.amazonaws.com"
+
 
 # ---- sliced AWS download (download_file / download_file_slices) -------------
 
@@ -796,8 +818,23 @@ class TestSlicedAwsDownload:
             "isSliced": sliced,
             "provider": "aws",
             "region": "us-east-1",
+            "s3Path": {"bucket": "kbc-sapi-files", "key": "exp-2"},
             "credentials": dict(_AWS_CREDS),
         }
+
+    def test_slice_aimed_at_foreign_bucket_is_refused(self, tmp_path):
+        # The manifest names a bucket other than the export's own
+        # (file detail `s3Path.bucket`) — refuse instead of signing a
+        # request there.
+        sess = MagicMock()
+        manifest_resp = MagicMock()
+        manifest_resp.json.return_value = {"entries": [{"url": "s3://foreign-bucket/exp-2/slice_0_0_0.csv"}]}
+        manifest_resp.raise_for_status = MagicMock()
+        sess.get.return_value = manifest_resp
+
+        c = KeboolaStorageClient(url="https://kbc", token="t", session=sess)
+        with pytest.raises(StorageApiError, match="foreign-bucket"):
+            c.download_file(self._aws_file_info(), tmp_path / "out.csv")
 
     def test_presigns_each_s3_slice_and_concatenates(self, tmp_path):
         sess = MagicMock()

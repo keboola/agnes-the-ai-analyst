@@ -261,6 +261,7 @@ def _s3_to_https(
     aws_credentials: Optional[dict],
     region: Optional[str],
     *,
+    expected_bucket: Optional[str] = None,
     expires_sec: int = 3600,
     now: Optional[datetime] = None,
 ) -> str:
@@ -292,6 +293,14 @@ def _s3_to_https(
     bucket, _, key = s3_url[5:].partition("/")
     if not bucket or not key:
         raise ValueError(f"malformed s3:// URL: {s3_url!r}")
+    if expected_bucket and bucket != expected_bucket:
+        # Defense-in-depth: the file detail names the export's own bucket in
+        # `s3Path.bucket` — refuse to sign a request aimed anywhere else.
+        raise StorageApiError(
+            f"slice URL points at bucket {bucket!r} but the export's file "
+            f"detail names {expected_bucket!r}; refusing to sign a request "
+            f"for a foreign bucket"
+        )
 
     creds = aws_credentials or {}
     access_key = creds.get("AccessKeyId") or creds.get("accessKeyId")
@@ -760,13 +769,19 @@ class KeboolaStorageClient:
                 abs_credentials=abs_credentials,
                 aws_credentials=file_info.get("credentials") or {},
                 aws_region=file_info.get("region"),
+                aws_expected_bucket=(file_info.get("s3Path") or {}).get("bucket"),
             )
         else:
             if url.startswith("s3://"):
                 # Defensive — observed stacks return presigned HTTPS for the
                 # single-file `url`, but the raw-s3 shape the sliced
                 # manifests exhibit must not crash here either.
-                url = _s3_to_https(url, file_info.get("credentials") or {}, file_info.get("region"))
+                url = _s3_to_https(
+                    url,
+                    file_info.get("credentials") or {},
+                    file_info.get("region"),
+                    expected_bucket=(file_info.get("s3Path") or {}).get("bucket"),
+                )
             self._download_single(url, dest_path, gunzip_on_read=is_gzipped)
         return dest_path
 
@@ -904,6 +919,7 @@ class KeboolaStorageClient:
         abs_credentials: Optional[dict] = None,
         aws_credentials: Optional[dict] = None,
         aws_region: Optional[str] = None,
+        aws_expected_bucket: Optional[str] = None,
     ) -> None:
         """Sliced exports: the file detail's `url` points at a JSON manifest
         whose `entries[].url` lists per-slice locations. Download each slice
@@ -972,7 +988,12 @@ class KeboolaStorageClient:
                     surl = self._azure_to_https(surl, abs_credentials)
                     extra_headers = None
                 elif surl.startswith("s3://"):
-                    surl = _s3_to_https(surl, aws_credentials, aws_region)
+                    surl = _s3_to_https(
+                        surl,
+                        aws_credentials,
+                        aws_region,
+                        expected_bucket=aws_expected_bucket,
+                    )
                     extra_headers = None
                 else:
                     extra_headers = None
@@ -1068,6 +1089,7 @@ class KeboolaStorageClient:
         abs_credentials = file_info.get("absCredentials") or {}
         aws_credentials = file_info.get("credentials") or {}
         aws_region = file_info.get("region")
+        aws_expected_bucket = (file_info.get("s3Path") or {}).get("bucket")
         m = self.session.get(url, timeout=_DEFAULT_SLICE_DOWNLOAD_TIMEOUT_SEC)
         m.raise_for_status()
         manifest = m.json()
@@ -1102,7 +1124,12 @@ class KeboolaStorageClient:
                 surl = self._azure_to_https(surl, abs_credentials)
                 extra_headers = None
             elif surl.startswith("s3://"):
-                surl = _s3_to_https(surl, aws_credentials, aws_region)
+                surl = _s3_to_https(
+                    surl,
+                    aws_credentials,
+                    aws_region,
+                    expected_bucket=aws_expected_bucket,
+                )
                 extra_headers = None
             else:
                 extra_headers = None
