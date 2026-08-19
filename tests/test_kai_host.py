@@ -1163,3 +1163,66 @@ def test_a_cancelled_tool_call_does_not_leak_the_upstream_client():
             asyncio.run(kai_mod.kai_mcp(request=_Request(), row={"session_id": "s1"}))
 
     assert closed == [True], "the upstream client was not closed on cancellation"
+
+
+def test_a_failing_response_close_still_releases_the_connection_pool():
+    """The generator's two closes must not be a sequence of bare awaits.
+
+    Once ownership passes to `_body_iter`, its `finally` is the only place the
+    client is closed. Run as `await upstream.aclose(); await client.aclose()`, a
+    failure of the first strands the client's whole pool — and the likeliest way
+    to reach that cleanup is the consumer disconnecting, i.e. exactly when an
+    `await` inside a `finally` can itself be interrupted.
+    """
+    import asyncio
+
+    import app.api.kai as kai_mod
+
+    closed = []
+
+    class _Upstream:
+        status_code = 200
+        headers = {"content-type": "application/json"}
+
+        async def aiter_bytes(self):
+            yield b"{}"
+
+        async def aclose(self):
+            closed.append("upstream-attempted")
+            raise RuntimeError("connection already gone")
+
+    class _Client:
+        def __init__(self, *a, **kw):
+            pass
+
+        def build_request(self, *a, **kw):
+            return object()
+
+        async def send(self, *a, **kw):
+            return _Upstream()
+
+        async def aclose(self):
+            closed.append("client")
+
+    class _Request:
+        headers = {"content-type": "application/json"}
+
+        async def body(self):
+            return b"{}"
+
+    async def _run():
+        with (
+            mock.patch.object(kai_mod.httpx, "AsyncClient", _Client),
+            mock.patch.object(kai_mod, "_mint_mcp_access_token", lambda _sid: "tok"),
+            mock.patch.object(kai_mod, "_mcp_internal_base", lambda: "http://mcp.invalid"),
+            mock.patch.object(kai_mod, "_require_scope", lambda *a, **k: None),
+        ):
+            resp = await kai_mod.kai_mcp(request=_Request(), row={"session_id": "s1"})
+        # Drain the body the way the ASGI server would.
+        async for _chunk in resp.body_iterator:
+            pass
+
+    asyncio.run(_run())
+    assert closed == ["upstream-attempted", "client"], (
+        f"the client was not closed after the response close failed: {closed}"
+    )

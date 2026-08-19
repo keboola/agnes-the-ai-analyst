@@ -808,8 +808,23 @@ async def kai_mcp(
             async for chunk in upstream.aiter_bytes():
                 yield chunk
         finally:
-            await upstream.aclose()
-            await client.aclose()
+            # Two closes, each in its own arm, for the same reason the `send()`
+            # arm above catches BaseException: once ownership passes to this
+            # generator, this `finally` is the ONLY place the client is closed.
+            # Run as a plain sequence, a failure of the first `await` skipped
+            # the second and stranded the client's whole connection pool — and
+            # the likeliest way to get here is the consumer disconnecting, so
+            # cleanup runs under cancellation where an `await` in a `finally`
+            # can itself be interrupted. The nested `try`/`finally` is what
+            # makes the second attempt unconditional; `suppress(Exception)`
+            # deliberately does not cover `CancelledError`, which must keep
+            # propagating. Found by Devin Review on this PR.
+            try:
+                with contextlib.suppress(Exception):
+                    await upstream.aclose()
+            finally:
+                with contextlib.suppress(Exception):
+                    await client.aclose()
 
     return StreamingResponse(
         _body_iter(),
