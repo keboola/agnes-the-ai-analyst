@@ -25,6 +25,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **The install prompt is caller-independent.** Plugin grants are resolved by `agnes onboard` from the live marketplace manifest rather than baked in at render time. `resolve_lines()` / `render_setup_instructions()` keep their signatures; `plugin_install_names` and `connector_manifest` are accepted and ignored.
 - **`docs/seed-repo-contract.md`: `{marketplace_block}`, `{connector_tiles}` and `{ca_bundle_finale_bullet}` are retired** from the seed install-prompt placeholder set.
 
+### Fixed
+
+- **`agnes onboard --workspace X` now runs every step in X.** The workspace gate and the `init`/`update` convergence honored the flag, but the marketplace bootstrap and the diagnose step did not: `refresh_marketplace` has no workspace parameter and its `target="project"` means "the current directory", and `_step_diagnose` shelled out without a `cwd`. So an operator who ran the command from anywhere other than the workspace bootstrapped the marketplace into the wrong tree and got a health report describing the wrong directory — both steps reporting success, which is what made it invisible. The workspace is now threaded into both.
+
 ## [0.83.85] - 2026-08-19
 
 ### Changed

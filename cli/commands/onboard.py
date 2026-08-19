@@ -167,7 +167,7 @@ def _quiet_stdout(quiet: bool):
     return contextlib.redirect_stdout(io.StringIO()) if quiet else contextlib.nullcontext()
 
 
-def _run_cli(args: list[str], *, timeout: int = 300) -> tuple[int, str]:
+def _run_cli(args: list[str], *, timeout: int = 300, cwd: Path | None = None) -> tuple[int, str]:
     """Invoke this same CLI as a subprocess; return ``(exit_code, stdout)``.
 
     Used where a command is only cleanly reachable as a command (its callback
@@ -182,6 +182,10 @@ def _run_cli(args: list[str], *, timeout: int = 300) -> tuple[int, str]:
         text=True,
         env=env,
         timeout=timeout,
+        # The child must run IN the workspace, not in whatever directory the
+        # operator happened to invoke `agnes onboard --workspace X` from: every
+        # step this helper reaches (`diagnose`) reads workspace-relative state.
+        cwd=str(cwd) if cwd is not None else None,
     )
     return proc.returncode, proc.stdout
 
@@ -343,7 +347,7 @@ def _step_preflight() -> dict:
 # --------------------------------------------------------------------------- #
 # Step 4 — marketplace bootstrap
 # --------------------------------------------------------------------------- #
-def _step_marketplace(*, quiet: bool) -> dict:
+def _step_marketplace(*, workspace: Path, quiet: bool) -> dict:
     from cli.commands.refresh_marketplace import refresh_marketplace
 
     try:
@@ -351,7 +355,13 @@ def _step_marketplace(*, quiet: bool) -> dict:
             # Every parameter passed explicitly: a Typer callback invoked as a
             # plain function receives `OptionInfo` sentinels for anything
             # omitted (`target` normalizes one defensively — don't rely on it).
-            refresh_marketplace(check=False, bootstrap=True, target="project")
+            # `refresh_marketplace` has no workspace parameter and
+            # `target="project"` means "the current directory", so without this
+            # chdir `--workspace X` bootstrapped the marketplace into the
+            # caller's cwd instead — silently, since the command reports success
+            # either way.
+            with contextlib.chdir(workspace):
+                refresh_marketplace(check=False, bootstrap=True, target="project")
         return _row("marketplace", "ok", "plugins cloned / up to date")
     except typer.Exit as exc:
         code = int(getattr(exc, "exit_code", 0) or 0)
@@ -360,16 +370,15 @@ def _step_marketplace(*, quiet: bool) -> dict:
         return _row(
             "marketplace",
             "failed",
-            f"`agnes refresh-marketplace --bootstrap` exited {code} — "
-            "re-run it on its own to see the git output.",
+            f"`agnes refresh-marketplace --bootstrap` exited {code} — re-run it on its own to see the git output.",
         )
 
 
 # --------------------------------------------------------------------------- #
 # Step 5 — diagnose
 # --------------------------------------------------------------------------- #
-def _step_diagnose(*, quiet: bool) -> dict:  # noqa: ARG001 — subprocess is silent already
-    rc, out = _run_cli(["diagnose", "--json"])
+def _step_diagnose(*, workspace: Path, quiet: bool) -> dict:  # noqa: ARG001 — subprocess is silent already
+    rc, out = _run_cli(["diagnose", "--json"], cwd=workspace)
     try:
         overall = json.loads(out).get("overall")
     except ValueError:
@@ -605,8 +614,8 @@ def onboard(
     # --- Steps 2-5: reported, never fatal ---------------------------------
     rows.append(_guarded("catalog", lambda: _step_catalog(quiet=quiet)))
     rows.append(_guarded("preflight", _step_preflight))
-    rows.append(_guarded("marketplace", lambda: _step_marketplace(quiet=quiet)))
-    rows.append(_guarded("diagnose", lambda: _step_diagnose(quiet=quiet)))
+    rows.append(_guarded("marketplace", lambda: _step_marketplace(workspace=workspace, quiet=quiet)))
+    rows.append(_guarded("diagnose", lambda: _step_diagnose(workspace=workspace, quiet=quiet)))
 
     connectors = _fetch_connectors()
     overall = "degraded" if any(r["status"] in ("failed", "warning") for r in rows) else "ok"

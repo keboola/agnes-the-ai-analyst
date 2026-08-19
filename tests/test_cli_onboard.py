@@ -447,7 +447,7 @@ def test_preflight_ok_when_both_present(monkeypatch):
     assert row["status"] == "ok"
 
 
-def test_marketplace_passes_every_refresh_parameter(monkeypatch):
+def test_marketplace_passes_every_refresh_parameter(monkeypatch, tmp_path):
     """Same sentinel hazard as `_run_init`: a Typer callback called as a plain
     function needs its FULL keyword set."""
     from cli.commands.refresh_marketplace import refresh_marketplace
@@ -457,30 +457,30 @@ def test_marketplace_passes_every_refresh_parameter(monkeypatch):
         "cli.commands.refresh_marketplace.refresh_marketplace",
         lambda **kw: captured.update(kw),
     )
-    row = onb._step_marketplace(quiet=True)
+    row = onb._step_marketplace(workspace=tmp_path, quiet=True)
     assert row["status"] == "ok"
     assert set(captured) == set(inspect.signature(refresh_marketplace).parameters)
 
 
-def test_marketplace_failure_is_reported_with_a_next_step(monkeypatch):
+def test_marketplace_failure_is_reported_with_a_next_step(monkeypatch, tmp_path):
     import typer as _typer
 
     monkeypatch.setattr(
         "cli.commands.refresh_marketplace.refresh_marketplace",
         lambda **kw: (_ for _ in ()).throw(_typer.Exit(3)),
     )
-    row = onb._step_marketplace(quiet=True)
+    row = onb._step_marketplace(workspace=tmp_path, quiet=True)
     assert row["status"] == "failed"
     assert "agnes refresh-marketplace" in row["detail"]
 
 
-def test_diagnose_maps_overall_status(monkeypatch):
+def test_diagnose_maps_overall_status(monkeypatch, tmp_path):
     monkeypatch.setattr(onb, "_run_cli", lambda args, **kw: (0, json.dumps({"overall": "healthy"})))
-    assert onb._step_diagnose(quiet=True)["status"] == "ok"
+    assert onb._step_diagnose(workspace=tmp_path, quiet=True)["status"] == "ok"
     monkeypatch.setattr(onb, "_run_cli", lambda args, **kw: (0, json.dumps({"overall": "degraded"})))
-    assert onb._step_diagnose(quiet=True)["status"] == "warning"
+    assert onb._step_diagnose(workspace=tmp_path, quiet=True)["status"] == "warning"
     monkeypatch.setattr(onb, "_run_cli", lambda args, **kw: (1, "not json"))
-    assert onb._step_diagnose(quiet=True)["status"] == "failed"
+    assert onb._step_diagnose(workspace=tmp_path, quiet=True)["status"] == "failed"
 
 
 def _registered_group_names() -> set[str]:
@@ -518,3 +518,34 @@ def test_no_secret_ever_reaches_the_output(tmp_path, monkeypatch, stubbed):
     payload = json.dumps(json.loads(result.stdout))
     assert "--token " not in payload
     assert "Bearer" not in payload
+
+
+def test_workspace_flag_reaches_the_marketplace_and_diagnose_steps():
+    """`--workspace X` must move every step into X, not only the gated ones.
+
+    `refresh_marketplace` has no workspace parameter and its `target="project"`
+    means "the current directory"; `_step_diagnose` shells out to
+    `agnes diagnose`, which reads workspace-relative state. Both used to run in
+    whatever directory the operator invoked `agnes onboard --workspace X` from,
+    so the marketplace was bootstrapped into the wrong tree and the health
+    report described the wrong workspace — both reporting success, which is what
+    made it invisible. Asserted on the signatures and the call sites rather than
+    by running a real bootstrap, which needs a server.
+    """
+    import inspect
+
+    from cli.commands import onboard
+
+    for fn in (onboard._step_marketplace, onboard._step_diagnose):
+        assert "workspace" in inspect.signature(fn).parameters, (
+            f"{fn.__name__} must take the workspace, or --workspace cannot reach it"
+        )
+
+    # `_run_cli` must be able to place the child, and diagnose must use it.
+    assert "cwd" in inspect.signature(onboard._run_cli).parameters
+    src = inspect.getsource(onboard._step_diagnose)
+    assert "cwd=workspace" in src, "diagnose still runs in the caller's cwd"
+
+    # And the marketplace step must actually enter the workspace.
+    src = inspect.getsource(onboard._step_marketplace)
+    assert "chdir(workspace)" in src, "marketplace still bootstraps into the caller's cwd"
