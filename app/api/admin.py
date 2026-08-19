@@ -5,32 +5,35 @@ which checks Admin user_group membership for both OAuth session and PAT
 callers via the same ``_user_group_ids`` lookup.
 """
 
-import json
 import glob
+import json
 import logging
 import math
 import os
 import threading
 from pathlib import Path
+from typing import Any, Dict, List, Optional
 
+import duckdb
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
-from typing import Optional, List, Dict, Any
-import duckdb
 
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
 from app.switches import SWITCHES
+from connectors.databricks.client import validate_workspace_host
 from connectors.snowflake.settings import (
     SF_PRIVATE_KEY_ENV,
     SF_PRIVATE_KEY_PASSPHRASE_ENV,
     SF_TOKEN_ENV,
 )
+from src.audit_helpers import client_kind_from_user
 from src.identifier_validation import (
     is_safe_identifier as _is_safe_identifier,
+)
+from src.identifier_validation import (
     is_safe_quoted_identifier as _is_safe_quoted_identifier,
 )
-
 from src.repositories import (
     audit_repo,
     knowledge_repo,
@@ -42,9 +45,8 @@ from src.repositories import (
     usage_repo,
     user_store_installs_repo,
 )
-from src.audit_helpers import client_kind_from_user
-from src.sql_safe import is_safe_project_id as _is_safe_project_id
 from src.scheduler import is_valid_schedule
+from src.sql_safe import is_safe_project_id as _is_safe_project_id
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -227,6 +229,7 @@ def _normalize_primary_key(v):
 # Devin ANALYSIS_0001 on PR #141 5f649a4 review.
 _URL_BEARING_FIELDS: tuple[tuple[str, ...], ...] = (
     ("data_source", "keboola", "stack_url"),
+    ("data_source", "databricks", "host"),
     ("marketplace", "curators_url"),
     ("auth", "keboola", "stack_url"),
     ("auth", "keboola", "oauth_host"),
@@ -263,6 +266,12 @@ def _validate_urls_in_patch(sections: Dict[str, Dict[str, Any]]) -> None:
                 # PR #1288).
                 if path[:2] == ("auth", "keboola") and not value.lower().startswith("https://"):
                     raise HTTPException(status_code=422, detail=f"{field_name} must be https")
+                if path == ("data_source", "databricks", "host"):
+                    try:
+                        value = validate_workspace_host(value)
+                    except ValueError as exc:
+                        raise HTTPException(status_code=422, detail=f"Invalid {field_name}: {exc}") from exc
+                    node[path[-1]] = value
                 _validate_url_not_private(value, field_name=field_name)
 
 
@@ -2773,7 +2782,7 @@ class RegisterTableRequest(BaseModel):
         same filter shape with a fresh date)."""
         if v in (None, "", []):
             return None
-        from connectors.keboola.where_filters import parse_filters, InvalidFilterError
+        from connectors.keboola.where_filters import InvalidFilterError, parse_filters
 
         try:
             return parse_filters(v)
@@ -3592,7 +3601,7 @@ class UpdateTableRequest(BaseModel):
     def _validate_where_filters(cls, v):
         if v in (None, "", []):
             return None
-        from connectors.keboola.where_filters import parse_filters, InvalidFilterError
+        from connectors.keboola.where_filters import InvalidFilterError, parse_filters
 
         try:
             return parse_filters(v)
@@ -3716,8 +3725,8 @@ async def discover_tables(
         source_type = get_data_source_type()
 
         if source_type == "keboola":
-            from connectors.keboola.client import KeboolaClient
             from app.instance_config import get_value
+            from connectors.keboola.client import KeboolaClient
 
             url = get_value("data_source", "keboola", "stack_url", default="")
             token_env = get_value("data_source", "keboola", "token_env", default="KEBOOLA_STORAGE_TOKEN")
@@ -3753,8 +3762,8 @@ def _discover_bigquery(dataset: Optional[str]) -> Dict[str, Any]:
     the same shape as the Keboola path so the UI doesn't have to branch.
     """
     from connectors.bigquery.access import (
-        get_bq_access,
         BqAccessError,
+        get_bq_access,
         translate_bq_error,
     )
 
@@ -4425,8 +4434,9 @@ def rebuild_registry(
     on synchronous success, 202 if the rebuild exceeds the wall-clock budget and
     continues on a BackgroundTask, 500 if it surfaced errors.
     """
-    from app.instance_config import get_data_source_type
     from fastapi.responses import JSONResponse
+
+    from app.instance_config import get_data_source_type
 
     # The rebuild only makes sense on a BigQuery instance (it rebuilds the BQ
     # extract). On a non-BQ instance rebuild_from_registry would fail with a
@@ -4572,8 +4582,8 @@ def register_table_precheck(
     # see it. Imports kept local to avoid pulling google-cloud-bigquery into
     # the import chain on non-BQ instances.
     try:
-        from google.cloud import bigquery  # noqa: PLC0415
         from google.api_core import exceptions as google_exc  # noqa: PLC0415
+        from google.cloud import bigquery  # noqa: PLC0415
     except ImportError as e:
         raise HTTPException(
             status_code=500,
@@ -7464,16 +7474,16 @@ async def admin_rescan_store_submission(
         _submission_plugin_dir,
         _version_no_for_submission,
     )
+    from app.instance_config import (
+        get_guardrails_enabled,
+        get_guardrails_llm_provider_ready,
+    )
     from src.db import get_system_db
     from src.store_guardrails import run_inline_checks
     from src.store_guardrails.runner import (
         default_api_key_loader,
         default_model_loader,
         run_llm_review,
-    )
-    from app.instance_config import (
-        get_guardrails_enabled,
-        get_guardrails_llm_provider_ready,
     )
 
     subs = store_submissions_repo()
@@ -7728,8 +7738,11 @@ async def admin_download_store_submission_bundle(
     import io as _io
     import zipfile as _zipfile
     from pathlib import Path as _P
+
     from app.api.store import (
         _plugin_dir as _sp_plugin_dir,
+    )
+    from app.api.store import (
         _submission_plugin_dir,
         _version_no_for_submission,
     )

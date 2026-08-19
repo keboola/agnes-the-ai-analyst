@@ -1331,7 +1331,11 @@ class SyncOrchestrator:
         # scope, and the orchestrator must stay importable on an instance that
         # has no Databricks configured at all.
         from connectors.databricks.attach import UC_EXTENSION, attach_unity_catalog
-        from connectors.snowflake.attach import SF_EXTENSION, attach_snowflake
+        from connectors.snowflake.attach import (
+            SF_EXTENSION,
+            attach_snowflake,
+            install_snowflake_adbc_driver,
+        )
 
         for alias, extension, url, token_env in rows:
             # Identifier sanity (defense against weird input). The hard
@@ -1377,6 +1381,10 @@ class SyncOrchestrator:
                     continue
 
                 # #81 Group A.1 — built-ins LOAD only; community needs INSTALL+LOAD.
+                # Snowflake's community extension also needs the ADBC driver shared
+                # library on disk before it will load.
+                if extension == SF_EXTENSION:
+                    install_snowflake_adbc_driver()
                 if is_builtin_extension(extension):
                     conn.execute(f"LOAD {extension};")
                 else:
