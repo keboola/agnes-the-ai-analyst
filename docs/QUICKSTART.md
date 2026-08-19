@@ -91,8 +91,8 @@ looks broken. `--json` emits the same report machine-readably.
 
 Connecting tools (Jira, Asana, Google Workspace, …) is **not** part of first-run
 setup any more. Once the workspace is up, just ask for it in Claude Code ("set up
-Jira") and the connector skill walks you through it. `agnes connector list` shows
-what this instance offers, `agnes connector show <slug>` prints one connector's
+Jira") and the connector skill walks you through it. `agnes connectors list` shows
+what this instance offers, `agnes connectors show <slug>` prints one connector's
 setup instructions.
 
 ### Analysis Workflow
