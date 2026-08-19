@@ -20,6 +20,26 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **The Keboola register drawer didn't make clear that pasting a Table ID and filling Bucket + Source Table are alternatives, not both required.** Added a visual "or fill in directly" divider between them, matching the pattern already used on `/admin/data-sources`.
 - **On the two-step connectors the new field-level validation never fired: BigQuery and Snowflake showed the toast but never the red box.** `/api/admin/register-table/precheck` runs *identical* Pydantic validation to `/register-table` (its own docstring says so), and the BQ/Snowflake confirm step is reachable only once that precheck has returned 200 — so a 422 on a required field always landed in step 1, where nothing mapped it back onto a field, and `BQ_REGISTER_FIELD_MAP` / `SF_REGISTER_FIELD_MAP` in step 2 were unreachable for exactly the errors they exist to place. The single-POST connectors (Keboola, Databricks) were unaffected, which is why the gap was invisible. The precheck failure path now pins the field marks too. Scope, stated plainly because the wiring alone does not deliver it: `register-table` and its precheck report business/shape problems as a plain-string `detail`, and the reachable Pydantic failures come from `@model_validator(mode="after")` hooks whose `loc` is `["body"]` — so no *server*-reported rejection currently names a field, and the red boxes an operator actually sees are the ones the client-side pre-flight checks set. Making the server report field-scoped errors would change a public error shape and is a separate decision; this change removes the wiring gap so both step-1 and step-2 failures route through the same handler once it can fire.
 - **`Use as base` inside a register drawer waited on a dialog the operator could not see.** `confirmModal`/`promptModal` render a `.modal-backdrop` fixed at z-index 1000, but the register drawers on `/admin/tables` are `.ds-drawer` at 1200 and the prefill buttons sit *inside* them — so the dialog the flow then `await`s painted behind the very panel that opened it, leaving a button that looked dead while the promise hung. Raised page-scoped to 1250: clear of the drawer, still under the toast (1300).
+### Added
+- **The "Add data source" wizard can now browse a Snowflake account instead of
+  asking you to type schema and table names.** `GET /api/admin/data-sources/
+  {source_type}/tables` (admin-only, Snowflake today) lists the schemas and
+  tables the configured user can see, and the wizard's Snowflake step renders
+  them as the same schema-grouped checkbox picker the Keboola step uses —
+  filter, select-all and per-schema counts included. Hand-written rows remain
+  underneath for anything the listing cannot reach, and a failed listing
+  degrades to them instead of blocking the step. Snowflake was the last source
+  type whose step was free-text only: nothing validated the strings against the
+  account, and because the registry id is composed as `schema + "_" + table`, a
+  name pasted with its schema prefix already attached silently produced a
+  doubled id (`gold_gold_bi_supply_demand`) pointing at a table that does not
+  exist — which then never heals, since only a re-save re-runs the
+  remote-extract build. Listing is read-only: it attaches, reads
+  `information_schema.tables`, and writes no extract and no registry row. It
+  refuses hosts outside `AGNES_REMOTE_ATTACH_HOST_ALLOWLIST` (the same egress
+  gate the extract build applies) and answers 502 rather than an empty listing
+  when the driver or catalog query fails, so "the account has no tables" is
+  never a lie.
 
 ## [0.83.86] - 2026-08-19
 
