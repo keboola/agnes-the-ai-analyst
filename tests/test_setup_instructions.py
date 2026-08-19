@@ -41,6 +41,22 @@ def test_resolve_lines_substitutes_wheel_filename():
     assert "/cli/download" in joined
 
 
+def test_wheel_filename_substitution_still_applies_to_operator_copy():
+    """The built-in body never emits `{wheel_filename}`, but the
+    substitution still runs over every line so an operator-authored
+    preamble that references it keeps resolving."""
+    from app.web.setup_instructions import resolve_lines
+
+    joined = "\n".join(
+        resolve_lines(
+            "agnes_the_ai_analyst-9.9.9-py3-none-any.whl",
+            custom_preamble="Mirror {wheel_filename} to the internal artifact store first.",
+        )
+    )
+    assert "Mirror agnes_the_ai_analyst-9.9.9-py3-none-any.whl to the internal" in joined
+    assert "{wheel_filename}" not in joined
+
+
 def test_resolve_lines_fallback_filename_is_honoured():
     """Callers pass `'agnes.whl'` when no wheel is on disk; resolve_lines
     still renders cleanly (the value is accepted but unused)."""
