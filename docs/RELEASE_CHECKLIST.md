@@ -5,15 +5,16 @@ applies only when the PR diff intersects the listed files.
 
 ## Bootstrap path changes (mandatory pre-merge)
 
-For any PR touching the analyst-bootstrap path (`agnes init`, `cli/lib/pull.py`,
-`cli/lib/hooks.py`, `app/web/setup_instructions.py`, `/api/welcome`,
-`config/agnes_workspace_template.txt`), run this protocol locally before
-requesting review:
+For any PR touching the analyst-bootstrap path (`agnes init`, `agnes onboard`,
+`cli/lib/pull.py`, `cli/lib/hooks.py`, `app/web/setup_instructions.py`,
+`/api/welcome`, `config/agnes_workspace_template.txt`), run this protocol locally
+before requesting review:
 
 1. `git clean -fdx` in the repo (no build artifacts).
 2. Boot FastAPI locally against a clean test instance state.
-3. Empty terminal in `/tmp/test-analyst-1`. From the web `/setup?role=analyst`,
-   click the analyst tile and copy the paste prompt.
+3. Empty terminal in `/tmp/test-analyst-1`. Sign in, then copy the install prompt
+   from `/home` (or `/setup`) — the thin prompt that installs the CLI and runs
+   `agnes onboard --workspace .`.
 4. Paste into Claude Code and let it run. `tree -a /tmp/test-analyst-1` and
    compare with the expected tree from the design spec
    (`docs/archive/superpowers/specs/2026-05-04-clean-analyst-bootstrap-design.md` §5.2).
