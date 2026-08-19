@@ -140,6 +140,24 @@ def test_tpl_engine_requires_public_origin():
     assert gate < body.index('COMPOSE_FILE_VALUE="$COMPOSE_FILE_VALUE:docker-compose.kai-agent.yml"')
     # No hard abort anywhere in the engine block.
     assert "ERROR: kai_agent_enabled requires" not in body
+    # A caddy VM without a domain derives http://<ip>:8000, which its
+    # firewall does not expose — an origin that RESOLVES but is unreachable
+    # from the sandbox must be skipped as loudly as the empty one.
+    closed_port_guard = body.index("raw :8000 shape on a tls_mode=caddy VM")
+    assert guard < closed_port_guard < url_use
+
+
+def test_main_tf_precondition_covers_required_engine_env():
+    body = (MODULE / "main.tf").read_text()
+    # Enabling the flag with an empty kai_agent_env plans cleanly but
+    # crash-loops the engine at runtime (its env validation requires the
+    # identity and provider keys) — the precondition must catch it at plan
+    # time, like the dispatcher's policies check.
+    assert 'contains(keys(var.kai_agent_env), "HOST_AGENT_IDENTITY")' in body
+    assert 'contains(keys(var.kai_agent_env), "CLOUD_LLM_PROVIDER")' in body
+    # The upstream pair is required only for the anthropic provider.
+    assert 'lookup(var.kai_agent_env, "CLOUD_LLM_PROVIDER", "") != "anthropic"' in body
+    assert 'contains(keys(var.kai_agent_env), "ANTHROPIC_UPSTREAM_API_KEY")' in body
 
 
 def test_tpl_registry_helper_is_best_effort_and_precise():
