@@ -10,6 +10,19 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- **`agnes onboard` — one idempotent command that installs and verifies an analyst workspace end to end.** Workspace-directory gate (refuses home/system dirs, asks for `--accept-dir` on a folder with unrelated content, never creates or changes directories on your behalf), `agnes init` on a fresh workspace or the `agnes update` convergence on an initialized one, catalog smoke test, `git`/`claude` preflight with per-OS install hints, marketplace bootstrap, diagnostics, and a summary listing the instance's connectors plus a `NEXT:` block. `--json` emits the whole run report as one object. Only the init step is fatal; every other failure is reported and the run continues. Safe to re-run.
+- **`agnes connector` as a hidden alias of `agnes connectors`** — same commands, singular spelling.
+- **`docs/DEPLOYMENT.md` documents the three `CADDY_TLS` modes** — cert-file (corporate PKI), Let's Encrypt auto-issue, and Caddy self-signed — including the Let's Encrypt bring-up prerequisites and a switch-over verification checklist, and that the install prompt drops its TLS-trust step automatically once the served chain terminates in a publicly trusted root.
+
+### Changed
+
+- **The Claude Code install prompt is now a thin stub: install the CLI, run `agnes onboard --workspace .`, restart Claude Code, confirm.** Workspace setup, first data pull, marketplace plugins, diagnostics and connector setup are orchestrated by the CLI (which reports its own outcome) instead of being an English program the agent had to interpret. The TLS trust block still renders automatically for instances serving a self-signed / private-CA cert.
+- **Connector setup is post-install and conversational.** `agnes onboard` lists what the instance offers and the user asks for one when they want it (or runs `agnes connectors list` / `agnes connectors show <slug>`). The install prompt no longer carries connector tiles, and rendering it no longer reads the seed's connector manifest — a broken seed can no longer break the prompt.
+- **The install prompt is caller-independent.** Plugin grants are resolved by `agnes onboard` from the live marketplace manifest rather than baked in at render time. `resolve_lines()` / `render_setup_instructions()` keep their signatures; `plugin_install_names` and `connector_manifest` are accepted and ignored.
+- **`docs/seed-repo-contract.md`: `{marketplace_block}`, `{connector_tiles}` and `{ca_bundle_finale_bullet}` are retired** from the seed install-prompt placeholder set.
+
 ## [0.83.84] - 2026-08-19
 
 ### Added
