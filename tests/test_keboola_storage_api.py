@@ -909,6 +909,46 @@ class TestSlicedAwsDownload:
         assert parts.path == "/exp-2/single.csv"
         assert "X-Amz-Signature" in dict(parse_qsl(parts.query))
 
+    def test_sliced_manifest_url_in_s3_form_is_presigned(self, tmp_path):
+        # Defensive parity with the per-slice entries: the file detail's own
+        # `url` (the manifest listing) must survive arriving as raw s3:// too.
+        sess = MagicMock()
+        manifest_resp = MagicMock()
+        manifest_resp.json.return_value = {"entries": [{"url": "s3://kbc-sapi-files/exp-2/slice_0_0_0.csv"}]}
+        manifest_resp.raise_for_status = MagicMock()
+        sess.get.side_effect = [manifest_resp, self._slice_resp([b"col\n"])]
+
+        c = KeboolaStorageClient(url="https://kbc", token="t", session=sess)
+        dest = tmp_path / "out.csv"
+        c.download_file(
+            self._aws_file_info(url="s3://kbc-sapi-files/exp-2/manifest", sliced=True),
+            dest,
+        )
+
+        assert dest.read_bytes() == b"col\n"
+        manifest_call = urlsplit(sess.get.call_args_list[0].args[0])
+        assert manifest_call.scheme == "https"
+        assert manifest_call.netloc == "kbc-sapi-files.s3.us-east-1.amazonaws.com"
+        assert "X-Amz-Signature" in dict(parse_qsl(manifest_call.query))
+
+    def test_download_file_slices_manifest_url_in_s3_form_is_presigned(self, tmp_path):
+        sess = MagicMock()
+        manifest_resp = MagicMock()
+        manifest_resp.json.return_value = {"entries": [{"url": "s3://kbc-sapi-files/exp-2/part.0.parquet"}]}
+        manifest_resp.raise_for_status = MagicMock()
+        sess.get.side_effect = [manifest_resp, self._slice_resp([b"pq0"])]
+
+        c = KeboolaStorageClient(url="https://kbc", token="t", session=sess)
+        paths = c.download_file_slices(
+            self._aws_file_info(url="s3://kbc-sapi-files/exp-2/manifest", sliced=True),
+            tmp_path / "slices",
+        )
+
+        assert [p.read_bytes() for p in paths] == [b"pq0"]
+        manifest_call = urlsplit(sess.get.call_args_list[0].args[0])
+        assert manifest_call.scheme == "https"
+        assert "X-Amz-Signature" in dict(parse_qsl(manifest_call.query))
+
     def test_download_file_slices_presigns_s3_entries(self, tmp_path):
         # The parquet path (per-slice files, no concat) — this is the exact
         # entry point the original InvalidSchema traceback came from.

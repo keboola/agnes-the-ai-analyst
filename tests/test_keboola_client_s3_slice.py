@@ -133,6 +133,31 @@ def test_gzipped_s3_slice_is_gunzipped_despite_presigned_query_string(tmp_path, 
     assert dest.read_text() == '"id","name"\n1,alice\n'
 
 
+def test_sliced_manifest_url_in_s3_form_is_presigned(tmp_path, monkeypatch):
+    """The manifest listing's own URL must survive arriving as raw s3://,
+    not just the per-slice entries inside it."""
+    client = _stub_client(tmp_path, monkeypatch)
+
+    detail = dict(_AWS_FILE_DETAIL)
+    detail["url"] = "s3://bkt/exp/manifest"
+
+    manifest_resp = _json_resp({"entries": [{"url": "s3://bkt/exp/slice-0"}]})
+    slice_resp = MagicMock()
+    slice_resp.raise_for_status = MagicMock()
+    slice_resp.content = b"1,alice\n"
+
+    get_mock = _wire_http(monkeypatch, [_json_resp(detail), manifest_resp, slice_resp])
+
+    dest = tmp_path / "out.csv"
+    client._export_table_with_filters("in.c-x.t", dest, where_filters=[])
+
+    assert dest.read_text() == '"id","name"\n1,alice\n'
+    manifest_call = urlsplit(get_mock.call_args_list[2].args[0])
+    assert manifest_call.scheme == "https"
+    assert manifest_call.netloc == "bkt.s3.us-east-1.amazonaws.com"
+    assert "X-Amz-Signature" in dict(parse_qsl(manifest_call.query))
+
+
 def test_single_file_s3_url_is_presigned(tmp_path, monkeypatch):
     """Non-sliced export whose file-detail `url` arrives as a raw s3:// URI —
     the single-file branch must presign it too, not just the sliced loop."""

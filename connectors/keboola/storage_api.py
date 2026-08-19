@@ -754,6 +754,18 @@ class KeboolaStorageClient:
 
         dest_path.parent.mkdir(parents=True, exist_ok=True)
 
+        if url.startswith("s3://"):
+            # Defensive — observed stacks return presigned HTTPS for the
+            # file detail's own `url` (single file or manifest listing), but
+            # the raw-s3 shape the sliced manifests exhibit must not crash
+            # here either.
+            url = _s3_to_https(
+                url,
+                file_info.get("credentials") or {},
+                file_info.get("region"),
+                expected_bucket=(file_info.get("s3Path") or {}).get("bucket"),
+            )
+
         if is_sliced:
             # GCP sliced manifests carry `gs://` URIs that need an OAuth
             # bearer; Azure carry `azure://` URIs that need a SAS token
@@ -772,16 +784,6 @@ class KeboolaStorageClient:
                 aws_expected_bucket=(file_info.get("s3Path") or {}).get("bucket"),
             )
         else:
-            if url.startswith("s3://"):
-                # Defensive — observed stacks return presigned HTTPS for the
-                # single-file `url`, but the raw-s3 shape the sliced
-                # manifests exhibit must not crash here either.
-                url = _s3_to_https(
-                    url,
-                    file_info.get("credentials") or {},
-                    file_info.get("region"),
-                    expected_bucket=(file_info.get("s3Path") or {}).get("bucket"),
-                )
             self._download_single(url, dest_path, gunzip_on_read=is_gzipped)
         return dest_path
 
@@ -1090,6 +1092,15 @@ class KeboolaStorageClient:
         aws_credentials = file_info.get("credentials") or {}
         aws_region = file_info.get("region")
         aws_expected_bucket = (file_info.get("s3Path") or {}).get("bucket")
+        if url.startswith("s3://"):
+            # Defensive parity with the per-slice entries: the manifest
+            # listing's own URL must survive arriving as raw s3:// too.
+            url = _s3_to_https(
+                url,
+                aws_credentials,
+                aws_region,
+                expected_bucket=aws_expected_bucket,
+            )
         m = self.session.get(url, timeout=_DEFAULT_SLICE_DOWNLOAD_TIMEOUT_SEC)
         m.raise_for_status()
         manifest = m.json()

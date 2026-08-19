@@ -621,6 +621,18 @@ class KeboolaClient:
             # Check if file is sliced (multiple parts)
             is_sliced = file_data.get("isSliced", False)
 
+            if download_url.startswith("s3://"):
+                # Defensive: observed AWS stacks return presigned HTTPS for
+                # the file detail's own url (manifest listing or single
+                # file), but the raw-s3 shape the sliced manifests exhibit
+                # must not crash here either.
+                download_url = _s3_to_https(
+                    download_url,
+                    file_data.get("credentials") or {},
+                    file_data.get("region"),
+                    expected_bucket=(file_data.get("s3Path") or {}).get("bucket"),
+                )
+
             if is_sliced:
                 # Download manifest to get list of slice URLs
                 logger.debug("Downloading sliced file manifest")
@@ -698,16 +710,6 @@ class KeboolaClient:
                             outfile.write(b"\n")
             else:
                 # Single file download
-                if download_url.startswith("s3://"):
-                    # Defensive: observed AWS stacks return presigned HTTPS
-                    # for the non-sliced url, but the raw-s3 shape the sliced
-                    # manifests exhibit must not crash here either.
-                    download_url = _s3_to_https(
-                        download_url,
-                        file_data.get("credentials") or {},
-                        file_data.get("region"),
-                        expected_bucket=(file_data.get("s3Path") or {}).get("bucket"),
-                    )
                 logger.debug(f"Downloading from: {download_url}")
                 download_response = requests.get(download_url, stream=True)
                 download_response.raise_for_status()
