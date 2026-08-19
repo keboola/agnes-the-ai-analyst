@@ -4,14 +4,14 @@ Covers the integration of WorkdirManager.needs_reinit with ChatManager.attach:
 when the marketplace SHA changes between sessions the next attach must trigger
 run_init before spawning the runner.
 """
+
 from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import duckdb
-import pytest
 
 from src.db import _ensure_schema
 from app.chat.config import ChatConfig
@@ -58,11 +58,18 @@ def test_marketplace_sha_debounced(tmp_path):
         marketplace_sha_debounce_seconds=60,
     )
 
-    # Seed a workdir row at sha-1 so needs_reinit doesn't decide it's missing.
+    # Seed a workdir row at sha-1 so needs_reinit doesn't decide it's missing,
+    # plus an on-disk sentinel at the current server_url so the URL check
+    # doesn't decide it's stale.
     repo.upsert_workdir(
-        user_email="u@x", marketplace_sha="sha-1",
-        initial_workspace_sha=None, agnes_version="0.55.0",
+        user_email="u@x",
+        marketplace_sha="sha-1",
+        initial_workspace_sha=None,
+        agnes_version="0.55.0",
     )
+    sentinel = mgr.user_workspace("u@x") / ".claude" / "init-complete"
+    sentinel.parent.mkdir(parents=True)
+    sentinel.write_text("server_url: https://example\n")
 
     # First call → reads SHA.
     assert mgr.needs_reinit("u@x") is False
@@ -103,8 +110,10 @@ def test_marketplace_sha_no_debounce_when_zero(tmp_path):
     )
 
     repo.upsert_workdir(
-        user_email="u@x", marketplace_sha="sha-1",
-        initial_workspace_sha=None, agnes_version="0.55.0",
+        user_email="u@x",
+        marketplace_sha="sha-1",
+        initial_workspace_sha=None,
+        agnes_version="0.55.0",
     )
 
     mgr.needs_reinit("u@x")
@@ -157,8 +166,8 @@ def test_workdir_needs_reinit_on_marketplace_sha_change(tmp_path: Path):
 
     async def _run():
         # First session — initial init
-        s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
-        ws_path = workdir_mgr.ensure_user_workdir("u@x")
+        await mgr.create_session(user_email="u@x", surface=Surface.WEB)
+        workdir_mgr.ensure_user_workdir("u@x")
         # Sentinel must exist and needs_reinit should be False
         assert not workdir_mgr.needs_reinit("u@x")
 
@@ -200,6 +209,63 @@ def test_workdir_needs_reinit_on_version_change(tmp_path: Path):
         get_template_status=lambda: None,
     )
     assert wm_v2.needs_reinit("u@y")
+
+
+def test_workdir_needs_reinit_on_server_url_change(tmp_path: Path):
+    """A workspace initialized under one SERVER_URL must reinit after the
+    instance moves to a new URL — otherwise the rendered CLAUDE.md keeps
+    naming the pre-migration host until an unrelated version bump."""
+    repo = _make_repo(tmp_path)
+    bundled = tmp_path / "bundled"
+    bundled.mkdir(parents=True, exist_ok=True)
+    (bundled / "CLAUDE.md").write_text("d")
+
+    common = dict(
+        data_dir=tmp_path / "data",
+        repo=repo,
+        bundled_template_dir=bundled,
+        agnes_version="0.55.0",
+        get_marketplace_sha=lambda: "sha-1",
+        get_template_status=lambda: None,
+    )
+    wm_old = WorkdirManager(server_url="http://192.0.2.1:8000", **common)
+    wm_old.ensure_user_workdir("u@x")
+    assert not wm_old.needs_reinit("u@x")
+
+    # Operator migrates the instance to a new domain; version and SHA stable.
+    wm_new = WorkdirManager(server_url="https://analyst.example.com", **common)
+    assert wm_new.needs_reinit("u@x")
+
+    # Convergence re-stamps the sentinel; the next check is clean.
+    wm_new.ensure_user_workdir("u@x")
+    assert not wm_new.needs_reinit("u@x")
+
+
+def test_workdir_needs_reinit_when_sentinel_lacks_server_url(tmp_path: Path):
+    """A legacy sentinel without a server_url line reads as unknown →
+    one self-healing reinit re-stamps it."""
+    repo = _make_repo(tmp_path)
+    bundled = tmp_path / "bundled"
+    bundled.mkdir(parents=True, exist_ok=True)
+    (bundled / "CLAUDE.md").write_text("d")
+
+    wm = WorkdirManager(
+        data_dir=tmp_path / "data",
+        repo=repo,
+        bundled_template_dir=bundled,
+        server_url="https://example",
+        agnes_version="0.55.0",
+        get_marketplace_sha=lambda: "sha-1",
+        get_template_status=lambda: None,
+    )
+    wm.ensure_user_workdir("u@x")
+    sentinel = wm.user_workspace("u@x") / ".claude" / "init-complete"
+    lines = [ln for ln in sentinel.read_text().splitlines() if not ln.startswith("server_url:")]
+    sentinel.write_text("\n".join(lines) + "\n")
+
+    assert wm.needs_reinit("u@x")
+    wm.ensure_user_workdir("u@x")
+    assert not wm.needs_reinit("u@x")
 
 
 def test_workdir_no_reinit_needed_when_sha_stable(tmp_path: Path):
