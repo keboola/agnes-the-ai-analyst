@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.83.91] - 2026-08-19
+
 ### Added
 - **The "Add data source" wizard can now browse a Snowflake account instead of
   asking you to type schema and table names.** `GET /api/admin/data-sources/
