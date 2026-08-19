@@ -623,10 +623,22 @@ def create_mock_extract(extracts_dir: Path, source_name: str, tables: list[dict]
         if rows_data and query_mode == "local":
             # Write actual parquet file
             pq_path = str(data_dir / f"{name}.parquet")
-            # Build SQL from data
+            # Build SQL from data, preserving Python scalar types.
             selects = []
             for row in rows_data:
-                vals = ", ".join(f"'{v}' AS {k}" for k, v in row.items())
+                parts = []
+                for k, v in row.items():
+                    if isinstance(v, bool):
+                        parts.append(f"CAST('{v}' AS BOOLEAN) AS {k}")
+                    elif isinstance(v, int):
+                        parts.append(f"CAST('{v}' AS BIGINT) AS {k}")
+                    elif isinstance(v, float):
+                        parts.append(f"CAST('{v}' AS DOUBLE) AS {k}")
+                    elif v is None:
+                        parts.append(f"NULL AS {k}")
+                    else:
+                        parts.append(f"'{v}' AS {k}")
+                vals = ", ".join(parts)
                 selects.append(f"SELECT {vals}")
             union_sql = " UNION ALL ".join(selects)
             conn.execute(f"COPY ({union_sql}) TO '{pq_path}' (FORMAT PARQUET)")
@@ -651,7 +663,14 @@ def create_mock_extract(extracts_dir: Path, source_name: str, tables: list[dict]
 
 
 def write_test_parquet(path: str, data: list[dict]):
-    """Create a parquet file from list of dicts."""
+    """Create a parquet file from list of dicts.
+
+    NB: every value is written as a string. This deliberately does NOT match
+    ``create_mock_extract`` above, which preserves Python scalar types so a
+    fixture can produce a non-VARCHAR column. Fixtures that care about column
+    type — anything exercising type-aware behaviour such as policy redaction —
+    want that helper, not this one.
+    """
     conn = duckdb.connect()
     selects = []
     for row in data:
@@ -662,10 +681,69 @@ def write_test_parquet(path: str, data: list[dict]):
     conn.close()
 
 
-@pytest.fixture
-def seeded_app(e2e_env):
-    """FastAPI TestClient with seeded users + JWT tokens for all four legacy
-    role tokens (admin, km_admin, analyst, viewer).
+@pytest.fixture(scope="session")
+def _shared_seeded_app():
+    """Build the FastAPI app ONCE for the whole test session and hand it to
+    every ``seeded_app`` user.
+
+    ``create_app()`` measured ~343ms warm — ~90 ``include_router`` calls plus
+    middleware setup — against a ~380ms total ``seeded_app`` fixture cost, so
+    rebuilding it per test (9.7k call sites across the suite) was ~90% waste.
+    Every DB access goes through ``get_system_db()`` / the ``*_repo()``
+    factories, which read ``os.environ["DATA_DIR"]`` at CALL time and reopen on
+    path change (see ``src/db.py``), so per-test isolation is unaffected by
+    which app instance served the request — only by which DATA_DIR was active
+    when the request ran, which ``e2e_env`` still sets per-test via
+    ``monkeypatch``.
+
+    TWO THINGS DO BIND TO A DATA_DIR AT CONSTRUCTION, and this fixture is
+    session-scoped without depending on ``e2e_env``, so they bind to whatever
+    DATA_DIR is active when pytest first builds it — NOT to the requesting
+    test's ``tmp_path``:
+
+    - ``/uploads`` is mounted as ``StaticFiles(directory=${DATA_DIR}/uploads)``
+      (``app/main.py``), and the path is frozen into the mount.
+    - the session secret is read from ``${DATA_DIR}/state/.session_secret``
+      (``app/secrets.py::get_session_secret``), so a session cookie signed
+      under one test validates under another.
+
+    No current ``seeded_app`` test GETs ``/uploads/...``, which is why this is
+    invisible today; ``test_shared_app_uploads_binding.py`` is the ratchet that
+    keeps it that way. A test that needs the uploads mount rooted in its own
+    DATA_DIR must use ``seeded_app_fresh``, which builds the app after
+    ``e2e_env`` has run.
+
+    ``load_instance_config(strict=True)`` runs once here, at whatever
+    DATA_DIR is active for the first caller — but the per-test
+    ``_reset_module_caches`` autouse fixture nulls
+    ``app.instance_config._instance_config`` before every test regardless,
+    so every test's first ``get_value()`` call re-reads from ITS OWN
+    DATA_DIR/state/instance.yaml at request time. Boot-time refusal on a
+    corrupt overlay (``InstanceConfigUnreadable``) is exercised by tests that
+    call ``create_app()`` directly, not through this fixture, so that
+    behaviour still gets a fresh app.
+
+    Two attributes DO get mutated post-construction by a couple of tests —
+    ``app.state.chat_config`` (lifespan never runs under a bare
+    ``TestClient(app)``, so tests set it by hand: test_web_admin_nav.py,
+    test_web_chat_empty_state.py) and, defensively, ``app.dependency_overrides``
+    (no current seeded_app test uses it, but the pattern exists elsewhere in
+    this file). ``seeded_app`` snapshots ``app.state`` right after
+    construction and restores both on every test's teardown — see below.
+    """
+    from app.main import create_app
+
+    app = create_app()
+    pristine_state = dict(app.state._state)
+    return app, pristine_state
+
+
+def _seed_users_and_mint_tokens(app) -> dict:
+    """Seed the four legacy-role test users + mint their JWTs against
+    ``app``, and wrap it in a ``TestClient``. Shared body for ``seeded_app``
+    (session-shared app) and ``seeded_app_fresh`` (function-scoped fresh
+    app) — everything except the app object itself is identical between
+    them.
 
     v13: roles are no longer the auth source of truth. The admin user is
     placed in the Admin user_group; the others are Everyone-only members.
@@ -676,7 +754,6 @@ def seeded_app(e2e_env):
     from fastapi.testclient import TestClient
 
     from app.auth.jwt import create_access_token
-    from app.main import create_app
     from src.db import SYSTEM_ADMIN_GROUP, get_system_db
     from src.repositories.user_group_members import UserGroupMembersRepository
     from src.repositories.users import UserRepository
@@ -696,21 +773,80 @@ def seeded_app(e2e_env):
     )
     conn.close()
 
-    app = create_app()
-    client = TestClient(app)
-    admin_token = create_access_token("admin1", "admin@test.com")
-    km_admin_token = create_access_token("km_admin1", "km@test.com")
-    analyst_token = create_access_token("analyst1", "analyst@test.com")
-    viewer_token = create_access_token("viewer1", "viewer@test.com")
-
     return {
-        "client": client,
-        "admin_token": admin_token,
-        "km_admin_token": km_admin_token,
-        "analyst_token": analyst_token,
-        "viewer_token": viewer_token,
-        "env": e2e_env,
+        "client": TestClient(app),
+        "admin_token": create_access_token("admin1", "admin@test.com"),
+        "km_admin_token": create_access_token("km_admin1", "km@test.com"),
+        "analyst_token": create_access_token("analyst1", "analyst@test.com"),
+        "viewer_token": create_access_token("viewer1", "viewer@test.com"),
     }
+
+
+@pytest.fixture
+def seeded_app(e2e_env, _shared_seeded_app):
+    """FastAPI TestClient with seeded users + JWT tokens for all four legacy
+    role tokens (admin, km_admin, analyst, viewer).
+
+    The FastAPI app object is session-shared (``_shared_seeded_app``) — only
+    the DB seed, DATA_DIR and TestClient below are fresh per test. Teardown
+    restores ``app.state`` to its pristine post-``create_app()`` snapshot and
+    clears ``app.dependency_overrides``, so a test that mutates either (e.g.
+    setting ``app.state.chat_config`` because lifespan never runs under a
+    bare ``TestClient``) cannot leak into the next test.
+
+    Do NOT enter this fixture's ``client`` as a context manager (``with
+    seeded_app["client"] as client:``) — that runs the real ASGI *lifespan*,
+    which starts the streamable MCP session manager
+    (``app/api/mcp_streamable.py``). The SDK allows that manager's
+    ``run()`` to be entered at most once per instance and never restarted;
+    since the app (and therefore its one ``mcp_streamable_instance``) is now
+    shared across the whole session, a second lifespan entry on a later test
+    finds the task group already torn down from the first and raises
+    ``RuntimeError: Task group is not initialized`` (or a stale-event-loop
+    error on the manager's internal locks). Tests that must run lifespan
+    themselves — driving a live JSON-RPC call over ``/api/mcp/http`` —
+    use ``seeded_app_fresh`` instead (see
+    tests/test_mcp_oauth_handshake.py).
+    """
+    app, pristine_state = _shared_seeded_app
+    result = _seed_users_and_mint_tokens(app)
+    result["env"] = e2e_env
+
+    yield result
+
+    # Undo any per-test mutation of the shared app so the next test sees the
+    # same object `create_app()` produced. `app.state` is backed by a plain
+    # dict (starlette.datastructures.State._state) — clear + refill rather
+    # than reassign so any closure that already captured `app.state` still
+    # sees the restored values.
+    app.state._state.clear()
+    app.state._state.update(pristine_state)
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def seeded_app_fresh(e2e_env):
+    """Same shape as ``seeded_app`` (seeded users, four role tokens,
+    TestClient) but builds its OWN fresh ``create_app()`` instead of reusing
+    the session-shared one.
+
+    For tests that must run the app's ASGI *lifespan* themselves (``with
+    seeded_app_fresh["client"] as client:``) — currently only the handful in
+    tests/test_mcp_oauth_handshake.py that drive a real JSON-RPC call over
+    the streamable MCP mount. The SDK's ``StreamableHTTPSessionManager.run()``
+    may be entered at most once per instance and cannot be restarted after
+    its context exits (see ``app/api/mcp_streamable.py::
+    streamable_session_manager_lifespan``), so those tests need a private
+    app/session-manager instance, not the one every other ``seeded_app``
+    test shares. Everything else should keep using ``seeded_app`` for the
+    speed win — see ``_shared_seeded_app``.
+    """
+    from app.main import create_app
+
+    app = create_app()
+    result = _seed_users_and_mint_tokens(app)
+    result["env"] = e2e_env
+    return result
 
 
 @pytest.fixture

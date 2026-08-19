@@ -415,8 +415,15 @@ def test_a_payload_that_regroups_across_months_is_skipped(tree, monkeypatch) -> 
     real_build = jira_incremental._build_issue_payload
     calls = {"n": 0}
 
-    def _shifting(issue_key, raw_dir, attachments_dir):
-        payload = real_build(issue_key, raw_dir, attachments_dir)
+    # `**kwargs` rather than a fixed signature: the grouping pass passes
+    # `warn_unresolved=False`, and a stub that does not accept it raises
+    # TypeError into `transform_issues`' per-key `except Exception`. The two
+    # assertions below would then still hold — nothing was grouped, so nothing
+    # was written — and this guard would pass while never once exercising the
+    # month-shift it exists to catch. `calls["n"]` is asserted for the same
+    # reason: it is what distinguishes "the guard fired" from "the stub died".
+    def _shifting(issue_key, raw_dir, attachments_dir, **kwargs):
+        payload = real_build(issue_key, raw_dir, attachments_dir, **kwargs)
         calls["n"] += 1
         if calls["n"] > 1:  # pass 2, under the lock, resolves differently
             payload.month_key = "2030-01"
@@ -425,6 +432,11 @@ def test_a_payload_that_regroups_across_months_is_skipped(tree, monkeypatch) -> 
     monkeypatch.setattr(jira_incremental, "_build_issue_payload", _shifting)
     applied = jira_incremental.transform_issues(["PROJ-1501"], raw_dir=raw, output_dir=out)
 
+    assert calls["n"] >= 2, (
+        f"the stub ran {calls['n']} time(s) -- both passes must reach it, or the "
+        "month-shift this test exists for never happened and the assertions below "
+        "are satisfied by the payload simply never being built"
+    )
     assert applied == [], "a regrouped payload must not report as applied"
     assert not (out / "issues").exists(), "wrote under the pass-1 month the payload no longer belongs to"
 

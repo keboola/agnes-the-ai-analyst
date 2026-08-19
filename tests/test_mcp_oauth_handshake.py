@@ -182,13 +182,16 @@ def test_dynamic_client_registration(seeded_app):
     assert "http://localhost:9999/callback" in reg["redirect_uris"]
 
 
-def test_full_authorization_code_flow(seeded_app):
-    admin_token = seeded_app["admin_token"]
+def test_full_authorization_code_flow(seeded_app_fresh):
+    admin_token = seeded_app_fresh["admin_token"]
     redirect_uri = "http://localhost:9999/callback"
 
     # Enter the TestClient context so the app lifespan runs — the streamable
-    # MCP session manager must be active for the step-5 JSON-RPC call.
-    with seeded_app["client"] as client:
+    # MCP session manager must be active for the step-5 JSON-RPC call. Needs
+    # its own `create_app()` (seeded_app_fresh, not the shared seeded_app):
+    # the SDK's session manager can only run() once per instance (see
+    # tests/conftest.py::seeded_app's docstring).
+    with seeded_app_fresh["client"] as client:
         _run_full_flow(client, admin_token, redirect_uri)
 
 
@@ -548,7 +551,7 @@ def test_create_app_keeps_streamable_mcp_on_localhost_http(seeded_app, monkeypat
     assert app.state.mcp_streamable_instance is not None
 
 
-def test_oauth_load_exposes_raw_not_hash_so_delete_and_revoke_work(seeded_app):
+def test_oauth_load_exposes_raw_not_hash_so_delete_and_revoke_work(seeded_app_fresh):
     """Double-hash guard (audit M4 / Devin #863).
 
     Codes/tokens are hashed at rest, but the provider's load_* methods must
@@ -565,7 +568,7 @@ def test_oauth_load_exposes_raw_not_hash_so_delete_and_revoke_work(seeded_app):
     from app.auth.mcp_oauth import AgnesMCPOAuthProvider
     from src.repositories import oauth_clients_repo
 
-    with seeded_app["client"]:
+    with seeded_app_fresh["client"]:
         repo = oauth_clients_repo()
         prov = AgnesMCPOAuthProvider()
         repo.upsert_client(
@@ -691,7 +694,7 @@ def test_registration_with_auth_method_none_issues_no_secret(seeded_app):
     assert reg.get("token_endpoint_auth_method") == "none"
 
 
-def test_public_client_revokes_access_token(seeded_app):
+def test_public_client_revokes_access_token(seeded_app_fresh):
     """RFC 7009: a public PKCE client (auth method 'none' — what Claude Code
     registers as) revokes its own access token with ``token=…&client_id=…``.
 
@@ -700,13 +703,18 @@ def test_public_client_revokes_access_token(seeded_app):
     ("client_secret: Field required") before revocation runs; still broken
     upstream as of mcp 2.0.0, hence the patched route in mcp_streamable.py.
     After revocation the token must stop authenticating MCP JSON-RPC calls.
+
+    Uses ``seeded_app_fresh`` (own ``create_app()``), not the shared
+    ``seeded_app`` — this drives a live JSON-RPC call, which needs the
+    streamable MCP session manager's lifespan to actually run, and the SDK
+    only allows that once per instance (see tests/conftest.py).
     """
     import asyncio
 
     from app.auth.mcp_oauth import AgnesMCPOAuthProvider
 
-    admin_token = seeded_app["admin_token"]
-    with seeded_app["client"] as client:
+    admin_token = seeded_app_fresh["admin_token"]
+    with seeded_app_fresh["client"] as client:
         reg = _register_client(client, auth_method="none")
         tok = _authorize_and_mint(client, admin_token, reg)
         access_token = tok["access_token"]
@@ -729,7 +737,7 @@ def test_public_client_revokes_access_token(seeded_app):
         assert r.status_code == 401, f"revoked token must not authenticate: {r.status_code}"
 
 
-def test_public_client_revocation_accepts_empty_client_secret(seeded_app):
+def test_public_client_revocation_accepts_empty_client_secret(seeded_app_fresh):
     """Some clients post ``client_secret=`` (empty) rather than omitting it.
 
     The lenient model fixes the *absent* key; this pins the empty-string
@@ -739,13 +747,16 @@ def test_public_client_revocation_accepts_empty_client_secret(seeded_app):
     public client has none, so the empty value never reaches a comparison.
     Pinned because "" vs absent is a real client-behavior difference and the
     existing token-flow test already posts it against /token.
+
+    Uses ``seeded_app_fresh`` for the same reason as
+    ``test_public_client_revokes_access_token`` above — see its docstring.
     """
     import asyncio
 
     from app.auth.mcp_oauth import AgnesMCPOAuthProvider
 
-    admin_token = seeded_app["admin_token"]
-    with seeded_app["client"] as client:
+    admin_token = seeded_app_fresh["admin_token"]
+    with seeded_app_fresh["client"] as client:
         reg = _register_client(client, auth_method="none")
         tok = _authorize_and_mint(client, admin_token, reg)
         access_token = tok["access_token"]
