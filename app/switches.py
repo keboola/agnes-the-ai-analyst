@@ -261,7 +261,7 @@ SWITCHES: tuple[Switch, ...] = (
         ),
         description=(
             "Let the embedded kai-agent engine's sandbox reach this instance's own MCP server, by "
-            "issuing the `mcp` ticket scope alongside the `llm` one. Off by default: the engine "
+            "issuing the `kai_mcp` ticket scope alongside the `llm` one. Off by default: the engine "
             "then registers no host MCP server and runs on its built-in tools only. Turning it on "
             "gives the agent the caller's own tool surface — the tools that caller could invoke "
             "themselves, under their own stack and grants, never an admin's."

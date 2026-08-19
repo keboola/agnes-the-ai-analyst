@@ -18,10 +18,12 @@ three:
   needs, once per turn. This is the same ``chat_broker_tickets`` machinery the
   native chat relay uses (``src/repositories/ticket.py``) — the engine's
   ``llm`` scope maps onto a broker scope of the same name and its ``mcp`` scope
-  onto ``mcp``. Deliberately NOT the native sandbox's ``main``: that scope also
-  authenticates ``/api/broker/agnes-api``, so reusing it would hand the engine's
-  sandbox the caller's whole non-admin ``/api/*`` replay surface rather than LLM
-  egress. ``anthropic_proxy`` accepts both.
+  onto ``kai_mcp``. Note the asymmetry: the engine's wire key stays ``mcp``, the
+  broker scope it carries does not, and ``_EGRESS_SCOPES`` is the single place
+  that mapping lives. Deliberately NOT the native sandbox's ``main``: that scope
+  also authenticates ``/api/broker/agnes-api``, so reusing it would hand the
+  engine's sandbox the caller's whole non-admin ``/api/*`` replay surface rather
+  than LLM egress. ``anthropic_proxy`` accepts both.
 - **Brokers.** The LLM one was already built: ``/api/broker/anthropic/{subpath}``
   (``app/api/broker.py``) is a plain pass-through that authenticates a
   ``main``-scoped ticket over ``Authorization: Bearer`` and injects the real
@@ -51,7 +53,7 @@ Deployment config (all env, like the rest of the broker's upstream wiring):
 - ``KAI_TENANT_ID`` — the ``tenant`` claim, i.e. the engine's ``projectId``
   tenant key. One value per deployment; every chat row the engine writes is
   scoped by it.
-- ``KAI_BROKER_MCP_ENABLED`` — issue the ``mcp`` ticket scope, i.e. let the
+- ``KAI_BROKER_MCP_ENABLED`` — issue the ``kai_mcp`` ticket scope, i.e. let the
   engine's sandbox reach ``/api/kai/mcp``. Unset means the engine registers no
   host MCP server and the agent runs with its built-in tools only.
 """
@@ -157,7 +159,7 @@ def _tenant_id() -> str:
 
 
 def _broker_mcp_enabled() -> bool:
-    """Whether this instance issues the ``mcp`` ticket scope.
+    """Whether this instance issues the ``kai_mcp`` ticket scope.
 
     Routed through :func:`app.instance_config.feature_enabled` rather than a
     bare ``os.environ`` read, because a switch is the one place where "any
@@ -641,11 +643,19 @@ def _mint_mcp_access_token(session_id: str) -> str:
     to recompute per request. Refusing is therefore the only honest answer, and
     it is the same call ``_ticket_owner_for_git`` makes for the same reason —
     a write with "no notion of a partial identity" fails closed rather than
-    silently widening to the owner. Reachable because ANY ``mcp``-scoped ticket
-    satisfies this route and the native chat runner mints one for every chat
-    sandbox (``app/chat/manager.py``), so without this a co-session guest or a
-    scoped agent could borrow its owner's whole tool surface. Found by Devin
-    Review on this PR.
+    silently widening to the owner.
+
+    On reachability, corrected: this once read "ANY ``mcp``-scoped ticket
+    satisfies this route", which was true only while the engine and the native
+    relay shared a scope. Confining the tool ticket to ``kai_mcp`` closed that
+    path — the native runner mints ``{main, mcp, data_apps}``
+    (``app/chat/manager.py``) and none of them reach here. The guards below stay
+    because the remaining path is narrower but real: a row created by
+    ``/api/kai/sessions`` can BECOME a co-session, or acquire a scope-limited
+    agent, while ``/api/kai/tickets`` keeps minting ``kai_mcp`` against it. So
+    the identity this route bakes into a registered bearer token must still be
+    refused rather than resolved to the owner. Guards found by Devin Review on
+    this PR; the stale reachability claim likewise.
     """
     import time as _time
     import uuid as _uuid
@@ -747,8 +757,10 @@ async def kai_mcp(
     """Forward the engine sandbox's MCP request to Agnes's own MCP server,
     under the ticket's real identity.
 
-    Scope-gated on ``mcp``: an ``llm``-scoped ticket cannot reach the tool
-    surface, mirroring `_require_scope` on every other broker route.
+    Scope-gated on ``kai_mcp``: neither an ``llm``-scoped ticket nor the native
+    sandbox's ``mcp`` can reach the tool surface, mirroring `_require_scope` on
+    every other broker route. ``kai_mcp`` and not ``mcp`` because that native
+    scope also authenticates ``/api/broker/agnes-mcp``.
 
     The response streams chunk by chunk. A Streamable-HTTP server answers
     either as JSON or as an SSE stream, and a tool that takes a while to

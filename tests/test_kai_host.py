@@ -1226,3 +1226,57 @@ def test_a_failing_response_close_still_releases_the_connection_pool():
     assert closed == ["upstream-attempted", "client"], (
         f"the client was not closed after the response close failed: {closed}"
     )
+
+
+def test_every_reader_facing_surface_names_the_scope_the_route_enforces():
+    """The enforced scope and the documented scope must not drift apart.
+
+    This PR renamed the tool ticket's broker scope from `mcp` to `kai_mcp` to
+    stop it opening `/api/broker/agnes-mcp`, and the rename was finished in the
+    code long before it was finished in the prose. Three separate review rounds
+    found leftovers: two docstrings describing a ticket collision that the
+    confinement had already closed, then five reader-facing places still telling
+    an integrator to mint `mcp` — which the route answers with a 401.
+
+    So this pins the direction of truth: `_EGRESS_SCOPES` is the mapping, and no
+    human-facing description may contradict it. The engine's WIRE KEY is still
+    `mcp`, which is why the check is written against the phrases that name a
+    *scope* rather than against the bare word.
+    """
+    from pathlib import Path
+
+    import app.api.kai as kai_mod
+
+    assert kai_mod._EGRESS_SCOPES["mcp"] == "kai_mcp", (
+        "the engine's wire key `mcp` must map onto the confined broker scope"
+    )
+
+    # Phrasings that assert a SCOPE. Each was a real leftover found in review.
+    stale = (
+        "scope-gated on ``mcp``",
+        "`mcp`-scoped broker ticket",
+        "the `mcp` ticket scope",
+        "the ``mcp`` ticket scope",
+        "``mcp`` scope\n  onto ``mcp``",
+    )
+    surfaces = (
+        "app/api/kai.py",
+        "app/switches.py",
+        "docs/api-reference.md",
+        "docs/feature-flags.md",
+    )
+    for rel in surfaces:
+        text = Path(rel).read_text(encoding="utf-8")
+        # Quoting a corrected claim is allowed; asserting it is not.
+        prose = text.replace('this once read "ANY ``mcp``-scoped ticket', "")
+        for phrase in stale:
+            assert phrase.lower() not in prose.lower(), (
+                f"{rel} still describes the tool route's scope as `mcp`; the route "
+                f"enforces `kai_mcp` and refuses `mcp` with a 401 ({phrase!r})"
+            )
+
+    # And the two operator-facing surfaces must name the real scope.
+    for rel in ("app/switches.py", "docs/feature-flags.md"):
+        assert "kai_mcp" in Path(rel).read_text(encoding="utf-8"), (
+            f"{rel} must name the `kai_mcp` scope an operator's switch actually issues"
+        )

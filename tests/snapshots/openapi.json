@@ -35211,7 +35211,7 @@
     },
     "/api/kai/mcp": {
       "post": {
-        "description": "Forward the engine sandbox's MCP request to Agnes's own MCP server,\nunder the ticket's real identity.\n\nScope-gated on ``mcp``: an ``llm``-scoped ticket cannot reach the tool\nsurface, mirroring `_require_scope` on every other broker route.\n\nThe response streams chunk by chunk. A Streamable-HTTP server answers\neither as JSON or as an SSE stream, and a tool that takes a while to\nproduce its result must not be buffered whole \u2014 the same mistake the\nAnthropic proxy had to fix for token deltas, and here it additionally\ncollides with the engine relay's time-to-headers bound (see\n`_mcp_internal_base` for why this is a real HTTP hop and not an in-process\nASGI dispatch).",
+        "description": "Forward the engine sandbox's MCP request to Agnes's own MCP server,\nunder the ticket's real identity.\n\nScope-gated on ``kai_mcp``: neither an ``llm``-scoped ticket nor the native\nsandbox's ``mcp`` can reach the tool surface, mirroring `_require_scope` on\nevery other broker route. ``kai_mcp`` and not ``mcp`` because that native\nscope also authenticates ``/api/broker/agnes-mcp``.\n\nThe response streams chunk by chunk. A Streamable-HTTP server answers\neither as JSON or as an SSE stream, and a tool that takes a while to\nproduce its result must not be buffered whole \u2014 the same mistake the\nAnthropic proxy had to fix for token deltas, and here it additionally\ncollides with the engine relay's time-to-headers bound (see\n`_mcp_internal_base` for why this is a real HTTP hop and not an in-process\nASGI dispatch).",
         "operationId": "kai_mcp_api_kai_mcp_post",
         "responses": {
           "200": {

@@ -1528,8 +1528,11 @@ the engine exposes nothing.
   *egress* tickets only — one live set per chat, while the session credential
   in its own scope survives (the engine has no way to be handed a replacement).
 
-- /api/kai/mcp — `POST`, authenticated by an **`mcp`-scoped broker ticket**
-  (an `llm` ticket is rejected). Forwards the sandbox's verbatim
+- /api/kai/mcp — `POST`, authenticated by a **`kai_mcp`-scoped broker ticket**
+  (an `llm` ticket is rejected, and so is the native sandbox's `mcp` — see the
+  scope split below). Note the asymmetry with the response key: `/api/kai/tickets`
+  returns this ticket under `"mcp"`, which is the engine's wire name for it, while
+  the broker scope it carries is `kai_mcp`. Forwards the sandbox's verbatim
   Streamable-HTTP MCP request to Agnes's own MCP server under the ticket's
   real identity, and streams the response back chunk by chunk over a real
   HTTP self-call to `AGNES_MCP_INTERNAL_URL` — an in-process ASGI dispatch
