@@ -57,16 +57,16 @@ def test_ca_render_is_clean():
     _assert_clean(joined, label="ca render (no connectors)")
 
 
-def test_fake_connectors_render_is_clean(monkeypatch):
-    """Fake connector entries with deterministic bodies isolate the
-    builder-owned connector scaffolding (Ask lines, headers, trailers)
-    from the bundled seed's own (out-of-scope) SKILL.md prose.
+def test_fake_connectors_render_is_clean():
+    """Fake connector entries isolate the builder-owned connector
+    scaffolding (tiles, headers, trailers) from the bundled seed's own
+    (out-of-scope) SKILL.md prose — bodies are no longer inlined, so the
+    scaffolding is all this render contains.
     """
-    from tests.test_setup_instructions import _connector_entry, _fake_bodies
+    from tests.test_setup_instructions import _connector_entry
 
     from app.web.setup_instructions import resolve_lines
 
-    _fake_bodies(monkeypatch)
     manifest = [
         _connector_entry("connector-xtool", "XTool", required=True),
         _connector_entry("connector-ztool", "ZTool"),
@@ -166,8 +166,7 @@ def test_bundled_connector_skills_tier3():
             known[skill_dir.name] = sorted(hits & baseline)
 
     assert not new, (
-        "bundled connector SKILL.md file(s) gained banned phrase(s) beyond "
-        f"the recorded known-dirty baseline: {new}"
+        f"bundled connector SKILL.md file(s) gained banned phrase(s) beyond the recorded known-dirty baseline: {new}"
     )
     if known:
         pytest.skip(

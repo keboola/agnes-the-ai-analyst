@@ -19,10 +19,36 @@ SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,38}[a-z0-9]$")
 # `GET /apps/detail/{slug}` web route — its own sub-paths (e.g.
 # `/apps/detail/style.css`) would be swallowed by that route instead of
 # reaching the proxy. Add any future literal `/apps/<segment>` route here.
-RESERVED_SLUGS = frozenset({"detail"})
+#
+# "git" is reserved for a different and worse reason: it is not a route but a
+# directory. Every app's bare repo lives at `${DATA_DIR}/apps/git/<slug>.git`
+# (`src.data_apps.git_repos.repo_path`), while an app's own config directory is
+# `${DATA_DIR}/apps/<slug>` — so for slug "git" those two are the same path, and
+# `_rmtree_config_dir` deleting "this app's config" would take every other
+# app's git history with it.
+RESERVED_SLUGS = frozenset({"detail", "git"})
 LIVE_BRANCH = "agnes-live"
 NETWORK = "agnes-apps"
 AGNES_INTERNAL_URL = "http://app:8000"
+
+#: Anti-fork-bomb ceiling applied to every data-app container unless an
+#: operator overrides ``data_apps.container_pids_limit`` in instance.yaml.
+#: The runtime image's own process tree (nginx + supervisord + the app
+#: process + its dependency installer) is a handful of processes; 512 is
+#: generous headroom without leaving a compromised app free to fork-bomb
+#: the host.
+_DEFAULT_PIDS_LIMIT = 512
+
+#: tmpfs mounts supplied ONLY when a read-only rootfs is switched on
+#: (``data_apps.container_read_only``, off by default — see
+#: :func:`build_container_spec`). This list is the *unverified* half of the
+#: sandbox hardening: nobody has booted the shipped runtime image with
+#: ``read_only=True``, and its in-container nginx + supervisord write
+#: outside both paths below — at least ``/var/run/nginx.pid``,
+#: ``/var/log/{nginx,supervisor}``, ``/var/cache/nginx`` and
+#: ``/var/run/supervisor.sock``. Whoever turns the knob on has to boot the
+#: image and extend this list from what actually fails.
+_READ_ONLY_TMPFS = {"/tmp": "", "/app": ""}
 
 
 def _embed_credentials(url: str, username: str, password: str) -> str:
@@ -112,6 +138,7 @@ def build_container_spec(app_row: dict, *, defaults: dict, data_dir: str) -> dic
         cpus = float(cpu_str)
     except ValueError as exc:
         raise ValueError(f"data app {slug}: invalid cpu_limit '{cpu_str}': {exc}") from exc
+    read_only = bool(defaults.get("container_read_only", False))
     return {
         "name": f"agnes-dataapp-{slug}",
         "image": image,
@@ -122,4 +149,28 @@ def build_container_spec(app_row: dict, *, defaults: dict, data_dir: str) -> dic
         "mem_limit": app_row.get("mem_limit") or defaults["default_mem_limit"],
         "cpus": cpus,
         "env": env,
+        # Defense-in-depth for an internet-facing web server, mirroring the
+        # posture `services/apps_runner/sandbox_api.py` already applies to
+        # chat sandboxes (cap_drop / no-new-privileges / pids_limit): a data
+        # app needs none of the Linux capabilities Docker grants by default,
+        # must gain none through a setuid binary, and a compromised one must
+        # not be able to fork-bomb the host. Instance-wide, never per-app
+        # overridable — an app author picking their own sandbox escape hatch
+        # would defeat the point.
+        "cap_drop": ["ALL"],
+        "security_opt": ["no-new-privileges:true"],
+        "pids_limit": int(defaults.get("container_pids_limit") or _DEFAULT_PIDS_LIMIT),
+        # Read-only root filesystem: OFF by default, deliberately. A read-only
+        # rootfs needs a tmpfs list verified against the shipped runtime
+        # image, and nobody has booted it that way — that image runs nginx +
+        # supervisord, which write to `/var/run`, `/var/log` and
+        # `/var/cache/nginx`, none of which `_READ_ONLY_TMPFS` covers — so
+        # switching it on blind would very likely crash-loop every hosted
+        # app. The knob stays so an operator who HAS booted the image (and
+        # extended `_READ_ONLY_TMPFS` from what actually failed) can turn it
+        # on; until then the rest of the hardening above ships alone. tmpfs
+        # is supplied only in that opt-in case, so the default spec mounts
+        # nothing extra and keeps today's filesystem behavior exactly.
+        "read_only": read_only,
+        "tmpfs": dict(_READ_ONLY_TMPFS) if read_only else {},
     }

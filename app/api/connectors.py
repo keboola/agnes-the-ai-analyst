@@ -30,11 +30,11 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from app.auth.dependencies import get_current_user
-from src.connectors_manifest import ConnectorEntry, load_manifest
+from src.connectors_manifest import ConnectorEntry, load_connector_body, load_manifest
 from src.initial_workspace import is_configured
 
 logger = logging.getLogger(__name__)
@@ -78,6 +78,25 @@ class ConnectorsManifestResponse(BaseModel):
     # reserved for the case where a deployer strips the bundle (and we
     # want the API to say so loudly).
     source: str = "bundled"
+
+
+class ConnectorPromptResponse(BaseModel):
+    """One connector's full setup prompt — the post-frontmatter SKILL.md
+    body, brand-substituted. Consumed by ``agnes connectors show <slug>``
+    so the install prompt can reference connector setup by name instead
+    of inlining every body (issue: 76 % of the rendered install prompt
+    was connector bodies the user may never run)."""
+
+    schema_version: int = SCHEMA_VERSION
+    slug: str
+    display_name: str
+    short_summary: str
+    estimated_minutes: int
+    required: bool = False
+    prompt: str
+    # "iwt" when the operator's Initial Workspace Template clone provided
+    # the SKILL.md, "bundled" for the wheel's snapshot fallback.
+    source: str
 
 
 class ConnectorsParamsResponse(BaseModel):
@@ -126,6 +145,77 @@ async def get_manifest(
     source = "iwt" if is_configured() else "bundled"
     return ConnectorsManifestResponse(
         connectors=[_entry_to_meta(e) for e in entries],
+        source=source,
+    )
+
+
+@router.get(
+    "/api/connectors/{slug}/prompt",
+    response_model=ConnectorPromptResponse,
+)
+async def get_connector_prompt(
+    slug: str,
+    user: dict = Depends(get_current_user),  # noqa: ARG001 — auth gate only
+):
+    """Return one connector's setup prompt (SKILL.md body, brand-substituted).
+
+    The manifest is the registry gate: a slug that ``load_manifest()``
+    did not emit is a 404 — this endpoint never resolves seed paths from
+    caller input directly, so traversal-shaped slugs die here too.
+
+    Substitution set: ``{instance_brand}`` only, which is what
+    ``docs/seed-repo-contract.md`` §6 promises a connector body gets. Note
+    the divergence from an inlined body's old path: ``resolve_lines`` in
+    ``app/web/setup_instructions.py`` also replaced ``{wheel_filename}``,
+    ``{server_host}`` and ``{workspace_dir}``, so an operator seed that used
+    one of those inside a ``SKILL.md`` would now print the literal
+    placeholder. No bundled body does, and the contract never offered them
+    here.
+
+    TODO: if a seed ever needs those, they have to be plumbed in rather than
+    copied — ``server_host`` and ``workspace_dir`` are derivable from the
+    request and instance config, but ``wheel_filename`` comes from CLI
+    release resolution that only the ``/home`` render path performs. Decide
+    the intended set before widening it, and state it in §6.
+    """
+    from app.instance_config import get_instance_brand
+
+    entries = load_manifest()
+    entry = next((e for e in entries if e.slug == slug), None)
+    if entry is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "kind": "unknown_connector",
+                "hint": (
+                    f"No connector named {slug!r} on this instance. "
+                    "Run `agnes connectors list` to see what is available."
+                ),
+            },
+        )
+    loaded = load_connector_body(slug)
+    if loaded is None:
+        # Manifest entry exists but the body file vanished between the
+        # scan and this read — an operator seed problem, not a caller bug.
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "kind": "connector_body_missing",
+                "hint": (
+                    f"The seed lists {slug} but its SKILL.md body is missing — "
+                    "ask the instance admin to re-sync the Initial Workspace "
+                    "Template."
+                ),
+            },
+        )
+    body, source = loaded
+    return ConnectorPromptResponse(
+        slug=entry.slug,
+        display_name=entry.display_name,
+        short_summary=entry.short_summary,
+        estimated_minutes=entry.estimated_minutes,
+        required=entry.required,
+        prompt=body.replace("{instance_brand}", get_instance_brand()),
         source=source,
     )
 

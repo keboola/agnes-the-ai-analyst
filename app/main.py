@@ -399,6 +399,7 @@ from app.api.me import router as me_router
 from app.api.me_stats import router as me_stats_router
 from app.api.admin import router as admin_router
 from app.api.admin_bigquery_test import router as admin_bigquery_test_router
+from app.api.admin_doctor import router as admin_doctor_router
 from app.api.admin_keboola_test import router as admin_keboola_test_router
 from app.api.attachments import router as attachments_router
 from app.api.jira_webhooks import router as jira_webhooks_router
@@ -994,6 +995,30 @@ async def lifespan(app):
             _register_ducklake_readyz_check()
         except Exception:
             logger.exception("ducklake readyz-check registration failed at startup (non-fatal)")
+
+        # Community extensions that `query_mode='remote'` rows need must be on
+        # disk before the first query: the query path LOADs without INSTALL (so
+        # a read-only query never reaches the network), and DuckDB's extension
+        # directory does not survive a container recreate. Without this, every
+        # restart left remote rows answering `Catalog "<alias>" does not exist`
+        # until someone re-saved the registration by hand — the ATTACH is
+        # skipped silently, so nothing in the response said why.
+        try:
+            from src.remote_extension_prewarm import prewarm_from_env
+
+            _prewarm = prewarm_from_env()
+            if _prewarm["installed"] or _prewarm["failed"] or _prewarm["refused"]:
+                logger.info(
+                    "remote-attach extension prewarm: installed=%s failed=%s refused=%s",
+                    _prewarm["installed"],
+                    _prewarm["failed"],
+                    _prewarm["refused"],
+                )
+        except Exception:
+            logger.exception(
+                "remote-attach extension prewarm failed at startup (non-fatal; remote "
+                "rows may answer 'Catalog does not exist' until their extension installs)"
+            )
 
         try:
             from src.analytics_backend import analytics_backend
@@ -2566,6 +2591,7 @@ def create_app() -> FastAPI:
     app.include_router(telegram_router)
     app.include_router(admin_router)
     app.include_router(admin_bigquery_test_router)
+    app.include_router(admin_doctor_router)
     app.include_router(admin_keboola_test_router)
     app.include_router(access_router)
     app.include_router(me_access_router)

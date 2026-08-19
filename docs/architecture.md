@@ -606,6 +606,16 @@ client, via an owner-scoped token injected as `AGNES_TOKEN` — never through a
 mounted parquet. See spec §8 for the full rationale and the owner-inherited
 access model this implies for sharing.
 
+**Container hardening** (spec §10): every data-app container runs
+`cap_drop: ALL`, `no-new-privileges` and a `pids_limit`
+(`data_apps.container_pids_limit`, default 512) — never applied to the
+chat-sandbox path, which needs broader write access for agent-authored code.
+A read-only root filesystem (`data_apps.container_read_only`) is available but
+**off by default**: it needs a tmpfs allowlist verified against the shipped
+runtime image, whose nginx + supervisord write outside the `/tmp` + `/app`
+tmpfs the spec builder currently supplies, so turning it on unverified would
+crash-loop every hosted app.
+
 ---
 
 ## Background Jobs

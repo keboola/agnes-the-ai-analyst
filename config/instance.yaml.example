@@ -983,6 +983,19 @@ data_apps:
   default_mem_limit: 1g
   default_cpus: 1.0
   max_apps_per_user: 3
+  # Container-hardening posture, instance-wide (not per-app overridable).
+  # `cap_drop: ALL` and `no-new-privileges` are always applied and have no
+  # knob. Only these two are configurable:
+  container_pids_limit: 512     # anti fork-bomb ceiling
+  container_read_only: false    # read-only container rootfs. OFF by default:
+                                # the shipped runtime image runs nginx +
+                                # supervisord, which write to /var/run,
+                                # /var/log and /var/cache/nginx — paths the
+                                # tmpfs list in src/data_apps/spec.py does NOT
+                                # cover. Turn it on only after booting your
+                                # runtime image with it and extending that
+                                # list from what actually failed; otherwise
+                                # every hosted app crash-loops.
 
 
 # Authoring Studio (chat-assisted builders at /admin/studio for skills,

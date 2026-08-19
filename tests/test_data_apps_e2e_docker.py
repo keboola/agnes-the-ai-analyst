@@ -186,6 +186,19 @@ def test_flask_fixture_app_boots_and_wakes(tmp_path, monkeypatch, docker_availab
         "mem_limit": "1g",
         "cpus": 1.0,
         "env": {},
+        # Same hardening `src/data_apps/spec.py::build_container_spec` emits in
+        # production — this is the one place with a real Docker daemon and the
+        # real runtime image, so it is also the live proof that cap_drop/
+        # no-new-privileges/pids_limit still boot the upstream entrypoint's
+        # clone-and-install sequence. `read_only` stays False, matching the
+        # shipped default: the tmpfs list a read-only rootfs would need is
+        # unverified against this image's nginx + supervisord. Flip it here
+        # first (with an extended tmpfs list) when verifying that knob.
+        "cap_drop": ["ALL"],
+        "security_opt": ["no-new-privileges:true"],
+        "pids_limit": 512,
+        "read_only": False,
+        "tmpfs": {},
         # test-only escape hatch — see up()'s docstring in services/apps_runner/api.py
         "ports": {"8888/tcp": MAPPED_PORT},
     }

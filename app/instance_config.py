@@ -1220,6 +1220,26 @@ def get_workspace_dir_name() -> str:
     return derived or "Agnes"
 
 
+def get_workspace_launcher_word() -> str:
+    """The one word an analyst types to open their workspace.
+
+    ``agnes init`` installs a launcher script under this name (see
+    ``cli/lib/shortcut.py``), derived from the workspace folder name stripped
+    to lowercase alphanumerics. The install guide has to name the same word,
+    so both sides derive it the same way here rather than each approximating
+    it — lowercasing the folder name alone is only equivalent while that name
+    is already alphanumeric, which the brand-derived default is but an
+    explicit ``AGNES_WORKSPACE_DIR_NAME`` override need not be.
+
+    Not covered: the CLI appends an ``ai`` suffix when the word would shadow
+    a shell built-in or a command the toolchain needs (``agnes``, ``claude``).
+    That check reads the *client's* PATH, so the server cannot predict it.
+    """
+    from src.launcher_word import launcher_word
+
+    return launcher_word(get_workspace_dir_name())
+
+
 def get_instance_admin_email() -> str:
     """Operator-facing contact address shown in user-side prompts that
     suggest the user reach out to their Agnes admin (e.g. the /home GWS
@@ -1388,6 +1408,11 @@ _DATA_APPS_ENV_DEFAULTS = {
     "default_mem_limit": "1g",
     "default_cpus": 1.0,
     "max_apps_per_user": 3,
+    # Mirrors `app/api/data_apps.py::_CONFIG_DEFAULTS` — read-only rootfs off
+    # by default (its tmpfs list is unverified against the shipped runtime
+    # image), fork-bomb ceiling on.
+    "container_read_only": False,
+    "container_pids_limit": 512,
 }
 
 

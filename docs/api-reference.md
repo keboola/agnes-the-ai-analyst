@@ -539,7 +539,7 @@ project/billing pair → `USER_PROJECT_DENIED` on every BigQuery call.
 | 2 | `PUT` with `"cover_image_url": null` does NOT clear the field | Treated as no-change. Send `""` (empty string) to clear. |
 | 3 | PATs are per-instance | Using a token from one instance against another → `HTTP 401 "User not found"` |
 | 4 | `bucket` on a BigQuery `remote` table is display-only | Renaming `bucket` does not affect SQL path resolution; safe to rebrand freely |
-| 5 | `restart_required: true` in server-config response is conservative | Description/bucket PUTs take effect immediately; the flag refers to settings that genuinely require a restart (auth providers, SMTP client, etc.) |
+| 5 | `restart_required` in the server-config response is **per-save, not constant** — it used to be a hardcoded `true` | The same response carries `sections_effect`, a `{section: "live" / "restart" / "deploy"}` map: `restart_required` is `true` iff some patched section is not `live`. Read `sections_effect` to see which one forced it. Sections resolved per request (`instance`, `theme`, `ai`, `mcp`, …) report `live` and need no bounce; sections built once at boot (`auth`, `chat`, `server`, `email`) or read by a separate process (`telegram`, `data_source` — the scheduler and workers keep the pre-save coordinates) report `restart`. Registry PUTs (description/bucket) are a different endpoint and always take effect immediately. |
 | 6 | OpenAPI spec lives at `/openapi.json`, NOT `/api/openapi.json` | The latter returns 404 |
 | 7 | **Package IDs are per-instance** (server-generated `pkg_*`). The same slug may have different IDs on dev vs prod. | Always look up the destination package by **slug**, never reuse a source-instance ID. Table IDs ARE stable across instances. |
 | 8 | `POST /api/admin/data-packages` create response may omit fields that were persisted (`icon`, `color`, `cover_image_url` returned as `null` even though saved). | Don't trust the POST echo — `GET /api/admin/data-packages/{pkg_id}` to verify. |
@@ -1024,6 +1024,20 @@ synced IWT clone for the bind-git file picker.
 
 - /api/admin/bigquery/test-connection
 
+### `/api/admin/doctor` — deployment-gate diagnostics
+
+`POST /api/admin/doctor/new-instance` (admin-only) runs the new-instance
+deployment checks — `login-door`, `email-delivery`, `chat-grant`,
+`agent-scope`, `branding` — and returns
+`{status, checks: [{name, status, audience, detail}]}` using the
+`agnes diagnose` status vocabulary (`ok`/`warning`/`error`/`info`).
+Optional body `{"email_to": "..."}` makes the email-delivery check send a
+real test message through the same send path the login flows use. CLI:
+`agnes admin doctor --new-instance`; the host-side siblings live in
+`scripts/ops/post-deploy-smoke-test.sh`.
+
+- /api/admin/doctor/new-instance
+
 ### `/api/admin/keboola` — Keboola diagnostics
 
 - /api/admin/keboola/test-connection
@@ -1324,6 +1338,13 @@ viewable by the person it was shared with.
 
 - /api/connectors/manifest
 - /api/connectors/params
+- /api/connectors/{slug}/prompt
+
+`/api/connectors/{slug}/prompt` returns one connector's full setup prompt
+(the post-frontmatter SKILL.md body, brand-substituted) for slugs the
+manifest lists. Consumed by `agnes connectors show <slug>` so the install
+prompt can reference connector setup by name instead of inlining every
+body.
 
 `/api/connectors/params` serves per-tenant connector params (the
 `connectors:` overlay of `instance.yaml`, filtered against the seed

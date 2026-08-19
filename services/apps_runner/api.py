@@ -234,12 +234,48 @@ def up(slug: str, payload: dict = Body(...), x_runner_token: str | None = Header
         environment=spec["env"],
         mem_limit=spec["mem_limit"],
         nano_cpus=int(float(spec["cpus"]) * 1e9),
+        # Defense-in-depth, built by `src/data_apps/spec.py::build_container_spec`:
+        # no Linux capabilities, no privilege escalation, and a fork-bomb
+        # ceiling. Read with `.get()` and secure fallbacks so a spec minted by
+        # an older `app` process mid-upgrade still gets the hardening rather
+        # than a KeyError. Never applied to the chat-sandbox path
+        # (`services/apps_runner/sandbox_api.py::sandbox_up`), which
+        # legitimately needs broader privileges for agent-authored code.
+        cap_drop=spec.get("cap_drop") or ["ALL"],
+        security_opt=spec.get("security_opt") or ["no-new-privileges:true"],
+        pids_limit=int(spec.get("pids_limit") or 512),
+        # A read-only rootfs is opt-in and OFF by default — its tmpfs list is
+        # unverified against the shipped nginx+supervisord image (see
+        # `_READ_ONLY_TMPFS` in the spec builder), so it is the operator's
+        # switch, not a default. Absent from the spec means off.
+        read_only=bool(spec.get("read_only", False)),
+        tmpfs=spec.get("tmpfs") or {},
         ports=spec.get("ports"),
         volumes={
             _resolve_host_path(str(cfg_dir)): {"bind": "/data", "mode": "rw"},
             spec["cache_volume"]: {"bind": "/home/app/.cache", "mode": "rw"},
         },
-        restart_policy={"Name": "unless-stopped"},
+        # Bounded on-failure, NOT unbounded unless-stopped. The upstream
+        # runtime entrypoint is not idempotent — it `git clone`s into `/app`
+        # unconditionally, so any restart onto a non-empty `/app` dies with
+        # "destination path already exists". Under `unless-stopped` that is an
+        # infinite crash loop: the app is externally dead (nginx never
+        # listens), it burns CPU forever, and nothing surfaces the failure.
+        # After MaximumRetryCount the daemon gives up, the container settles as
+        # `exited` (→ `status()` reports "stopped"), and the reap-idle
+        # reconcile scan flips the row to `error`. Trade-off: a healthy
+        # container is no longer auto-restarted across a daemon/VM reboot — it
+        # survives the reboot as `exited`, so the reconcile scan marks its row
+        # `error` and the app needs an explicit redeploy; the next request does
+        # NOT rebuild it, because the ingress proxy only wakes `sleeping` rows
+        # and renders `error` without re-checking. `unless-stopped` was no
+        # better across a reboot: the daemon restarted the container straight
+        # into the non-idempotent clone above, so the app came back
+        # crash-looping rather than serving. Reconciling a dead container to
+        # `sleeping` instead would restore wake-on-request self-healing, but it
+        # would also hide a genuine crash loop behind a silent wake-retry
+        # cycle; surfacing the failure is the deliberate choice here.
+        restart_policy={"Name": "on-failure", "MaximumRetryCount": 3},
     )
     return {"status": "started"}
 
