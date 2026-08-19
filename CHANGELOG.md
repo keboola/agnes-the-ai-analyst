@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.83.82] - 2026-08-19
+
 ### Fixed
 
 - **A fresh instance with chat enabled shipped with chat invisible to everyone, including admins.** Chat visibility is gated on an *explicit* `(group, chat, chat)` resource grant — `_compute_can_chat` reads `has_explicit_grant`, deliberately not `can_access`, so admin god-mode does not reveal it (that part is by design and unchanged). Nothing created that grant on a new deploy, so an instance with `chat.enabled: true` had a fully working chat backend that nobody could reach without hand-typing `/chat`: no rail entry, and the landing page redirected elsewhere. Diagnosing it costs hours precisely because every layer looks healthy. The grant is now seeded for the `Everyone` group the first time an instance boots with chat enabled. A marker file on the state volume (beside the generated `.session_secret`) records that the seed ran, so a grant an admin later revokes is never silently restored — `resource_grants` has no provenance column, and without the marker "never seeded" and "deliberately revoked" are indistinguishable. Booting with chat disabled writes no marker, so turning chat on later still seeds it once. **An existing instance is never widened by the upgrade:** the marker is younger than the instances it has to reason about, so on the first boot after upgrading to this build a long-running instance has none either — a pre-existing `(chat, chat)` grant for any group is therefore treated as proof that a human already decided who gets chat, nothing is seeded, and the marker is written so the question stays settled. Only an instance with no chat grant at all gets the `Everyone` seed.
