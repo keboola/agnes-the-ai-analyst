@@ -688,13 +688,30 @@ def _shared_seeded_app():
 
     ``create_app()`` measured ~343ms warm — ~90 ``include_router`` calls plus
     middleware setup — against a ~380ms total ``seeded_app`` fixture cost, so
-    rebuilding it per test (9.7k call sites across the suite) was ~90% waste:
-    the app object itself does not bind to a DATA_DIR. Every DB access goes
-    through ``get_system_db()`` / the ``*_repo()`` factories, which read
-    ``os.environ["DATA_DIR"]`` at CALL time and reopen on path change (see
-    ``src/db.py``), so per-test isolation is unaffected by which app instance
-    served the request — only by which DATA_DIR was active when the request
-    ran, which ``e2e_env`` still sets per-test via ``monkeypatch``.
+    rebuilding it per test (9.7k call sites across the suite) was ~90% waste.
+    Every DB access goes through ``get_system_db()`` / the ``*_repo()``
+    factories, which read ``os.environ["DATA_DIR"]`` at CALL time and reopen on
+    path change (see ``src/db.py``), so per-test isolation is unaffected by
+    which app instance served the request — only by which DATA_DIR was active
+    when the request ran, which ``e2e_env`` still sets per-test via
+    ``monkeypatch``.
+
+    TWO THINGS DO BIND TO A DATA_DIR AT CONSTRUCTION, and this fixture is
+    session-scoped without depending on ``e2e_env``, so they bind to whatever
+    DATA_DIR is active when pytest first builds it — NOT to the requesting
+    test's ``tmp_path``:
+
+    - ``/uploads`` is mounted as ``StaticFiles(directory=${DATA_DIR}/uploads)``
+      (``app/main.py``), and the path is frozen into the mount.
+    - the session secret is read from ``${DATA_DIR}/state/.session_secret``
+      (``app/secrets.py::get_session_secret``), so a session cookie signed
+      under one test validates under another.
+
+    No current ``seeded_app`` test GETs ``/uploads/...``, which is why this is
+    invisible today; ``test_shared_app_uploads_binding.py`` is the ratchet that
+    keeps it that way. A test that needs the uploads mount rooted in its own
+    DATA_DIR must use ``seeded_app_fresh``, which builds the app after
+    ``e2e_env`` has run.
 
     ``load_instance_config(strict=True)`` runs once here, at whatever
     DATA_DIR is active for the first caller — but the per-test
