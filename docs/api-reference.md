@@ -1504,6 +1504,87 @@ Relevance-ranked search uses DuckDB FTS BM25 with an ILIKE fallback.
 - /api/initial-workspace.zip
 - /api/initial-workspace/applied
 
+### `/api/kai` — Embedded kai-agent turn engine (host wiring)
+
+Host-side wiring for an embedded `kai-agent` turn engine (`app/api/kai.py`).
+Enabled only when `KAI_HOST_JWT_SECRET` is set — every route below `503`s with
+`kai_integration_not_configured` otherwise, so an instance that does not embed
+the engine exposes nothing.
+
+- /api/kai/sessions — `POST`, ordinary user auth, **no request body**. Creates
+  the `chat_sessions` row and returns `{chat_id, token, expires_at}`. `token`
+  is the short-lived HS256 session JWT the engine verifies; every identity
+  claim comes from the resolved caller, never from the request, so a caller can
+  only ever mint a token for themselves. `chat_id` is Agnes's — the caller
+  passes it to the engine as `body.id` so the engine's chat row and this
+  session share one key (no cross-database join). Signed with
+  `KAI_HOST_JWT_SECRET` and stamped with `KAI_HOST_JWT_ISSUER` /
+  `KAI_HOST_JWT_AUDIENCE` / `KAI_TENANT_ID`, which must match the engine's
+  `HOST_JWT_*` config. Lifetime is 12 h, inside the engine's 24 h `exp` ceiling.
+- /api/kai/tickets — `POST`, authenticated by the opaque
+  `downstream_credential` carried in that JWT (**not** user auth, and **not** a
+  broker ticket — presenting a `main`/`mcp` ticket here is `401
+  kai_credential_scope_mismatch`, so a sandbox that captured one turn's ticket
+  cannot refresh itself). Called once per turn by the engine's server, never by
+  the sandbox. Returns `{"llm": "<ticket>"}`, plus `"mcp"` when
+  `KAI_BROKER_MCP_ENABLED` is set. Minting retires the session's previous
+  *egress* tickets only — one live set per chat, while the session credential
+  in its own scope survives (the engine has no way to be handed a replacement).
+
+- /api/kai/mcp — `POST`, authenticated by a **`kai_mcp`-scoped broker ticket**
+  (an `llm` ticket is rejected, and so is the native sandbox's `mcp` — see the
+  scope split below). Note the asymmetry with the response key: `/api/kai/tickets`
+  returns this ticket under `"mcp"`, which is the engine's wire name for it, while
+  the broker scope it carries is `kai_mcp`. Forwards the sandbox's verbatim
+  Streamable-HTTP MCP request to Agnes's own MCP server under the ticket's
+  real identity, and streams the response back chunk by chunk over a real
+  HTTP self-call to `AGNES_MCP_INTERNAL_URL` — an in-process ASGI dispatch
+  buffers the whole reply and applies no timeout, which would trip the
+  engine relay's time-to-headers bound on any slow tool (a Streamable-HTTP
+  server may
+  answer as SSE). The brokered identity is a short-lived `mcp-oauth` access
+  token minted for the ticket's user, so the engine reaches exactly the tools
+  and RBAC a Claude Desktop connector would — the broker adds no authority.
+  Point the engine's `HOST_BROKER_MCP_URL` here and set
+  `KAI_BROKER_MCP_ENABLED`.
+- /api/kai/workspace — `GET`, authenticated by the session credential (the
+  engine's *server* calls it once per SDK process spawn; the sandbox never
+  sees it). Returns `200` with a gzipped tar of the caller's workspace tree,
+  or `204` for "no workspace" — the engine treats any other status as a
+  failed turn. The tree is the admin-registered Initial Workspace Template
+  when one is synced, else the bundled default: `CLAUDE.md`, the org
+  `PreToolUse` safety hook, and `.claude/skills/*`. Agnes's own sandbox-image
+  build assets (`e2b-template/`, `docker-sandbox/`) are excluded — they
+  describe how to build a sandbox, not how to work in one.
+
+  `CLAUDE.md` is the **rendered** Workspace Prompt, not the template's static
+  copy — the same document `WorkdirManager` writes over that file when it
+  prepares a native chat sandbox, and the same one `agnes init` fetches from
+  `GET /api/welcome`, RBAC-filtered for the caller. Two exceptions, both
+  inherited from `run_init` rather than specific to the engine: in
+  git-template override mode the registered template's `CLAUDE.md` wins
+  verbatim (the git override and the admin Workspace Prompt are mutually
+  exclusive by design — see
+  [initial-workspace-override.md](initial-workspace-override.md)), and a
+  co-session or a session bound to a scope-limited agent gets the un-filtered
+  bundled text, because the rendered document describes the *owner's*
+  reachable tables and skills. The payload is therefore per-session, but stays
+  byte-stable for a given session and configuration, which is what the
+  engine's re-fetch on every SDK respawn relies on. Per *session* rather than
+  per caller because the rendered document carries a date (`{{ today }}` in
+  the shipped template), so its clock is pinned to the session's `started_at`
+  — otherwise a conversation straddling midnight would rewrite the whole
+  sandbox tree over a date string.
+
+The LLM upstream needs no new route: the engine's in-sandbox relay speaks plain
+pass-through, which is exactly what `/api/broker/anthropic/{subpath}` already
+is. Point the engine's `HOST_BROKER_LLM_URL` at it and the `llm` ticket
+authenticates there in its own dedicated `llm` broker scope — **not** the
+native sandbox's `main`, which also authenticates `/api/broker/agnes-api` and
+would expose the caller's whole non-admin `/api/*` replay surface to the
+sandbox. The real credential is injected there, model-gated, budgeted and
+metered server-side.
+
 ### `/api/knowledge` — Unified knowledge search
 
 - /api/knowledge/search — one query fanned out across document Collections

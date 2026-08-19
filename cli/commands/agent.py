@@ -771,6 +771,51 @@ def schedule_list(
         _print_schedule(row)
 
 
+def _skill_templated_prompt(skill: str) -> str:
+    """Resolve ``skill`` against ``GET /api/v2/marketplace/skills`` and render
+    the same prompt template the builder UI's Skill dropdown uses. Pure
+    client-side sugar — the API payload stays a plain ``prompt`` string.
+
+    Matches (case-insensitively) on a skill's display ``name``, its directory
+    ``skill_name``, or the qualified ``<plugin_name>:<skill_name>`` — the
+    qualified form disambiguates when two plugins ship a same-named skill.
+    """
+    resp = api_get("/api/v2/marketplace/skills")
+    if resp.status_code != 200:
+        _fail(resp)
+    entries = resp.json().get("skills", [])
+    want = skill.strip().lower()
+    matches = [
+        s
+        for s in entries
+        if want
+        in {
+            (s.get("name") or "").lower(),
+            (s.get("skill_name") or "").lower(),
+            f"{s.get('plugin_name')}:{s.get('skill_name')}".lower(),
+        }
+    ]
+    if not matches:
+        typer.echo(f"Skill not found: {skill}.", err=True)
+        if entries:
+            names = sorted({f"{s.get('plugin_name')}:{s.get('skill_name')}" for s in entries})
+            typer.echo("Available skills: " + ", ".join(names), err=True)
+        else:
+            typer.echo("No marketplace skills are available to you.", err=True)
+        raise typer.Exit(1)
+    if len({(s.get("plugin_name"), s.get("skill_name")) for s in matches}) > 1:
+        names = sorted({f"{s.get('plugin_name')}:{s.get('skill_name')}" for s in matches})
+        typer.echo(
+            f"Skill name '{skill}' is ambiguous — qualify it as one of: " + ", ".join(names),
+            err=True,
+        )
+        raise typer.Exit(1)
+    entry = matches[0]
+    label = entry.get("name") or entry.get("skill_name")
+    description = (entry.get("description") or "").strip()
+    return f"Run the {label} skill" + (f": {description}" if description else ".")
+
+
 @schedule_app.command("add")
 def schedule_add(
     slug: str = typer.Argument(..., help="Agent slug"),
@@ -780,11 +825,26 @@ def schedule_add(
         "--schedule",
         help="'every Nm'/'every Nh', 'daily HH:MM[,HH:MM]' (UTC), or 'cron <5-field expr>' (UTC)",
     ),
-    prompt: str = typer.Option(..., "--prompt", help="Prompt sent to the agent on each fire"),
+    prompt: Optional[str] = typer.Option(None, "--prompt", help="Prompt sent to the agent on each fire"),
+    skill: Optional[str] = typer.Option(
+        None,
+        "--skill",
+        help="Template the prompt from a marketplace skill ('<name>' or '<plugin>:<skill>'); "
+        "mutually exclusive with --prompt",
+    ),
     disabled: bool = typer.Option(False, "--disabled", help="Create the schedule disabled"),
     as_json: bool = typer.Option(False, "--json"),
 ):
     """Add a scheduled run for an agent."""
+    if (prompt is None) == (skill is None):
+        typer.echo(
+            "Provide exactly one of --prompt or --skill (--skill only templates a starting prompt; "
+            "to tweak it, pass the full text via --prompt).",
+            err=True,
+        )
+        raise typer.Exit(1)
+    if prompt is None:
+        prompt = _skill_templated_prompt(skill)  # type: ignore[arg-type]  # exactly-one guard above
     payload = {"name": name, "schedule": schedule, "prompt": prompt, "enabled": not disabled}
     resp = api_post(f"/api/v1/agents/{slug}/schedules", json=payload)
     if resp.status_code != 201:
