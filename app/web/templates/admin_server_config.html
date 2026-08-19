@@ -1,4 +1,5 @@
 {% extends "base_admin.html" %}
+{% import "macros/_icon.html" as ico %}
 {% block title %}Instance settings — {{ config.INSTANCE_NAME }}{% endblock %}
 
 {% block head_extra %}
@@ -404,7 +405,8 @@
           does: <strong>live</strong> applies on save, <strong>restart</strong>
           needs the app bounced, <strong>deploy</strong> is set by the
           container/env at startup and can't be changed here at all. A
-          🔒 next to a flag's name means it's locked — hover it for why.
+          {{ ico.icon('lock', size=14) }} next to a flag's name means it's
+          locked — hover it for why.
         </div>
       </div>
     </header>
@@ -496,6 +498,10 @@ const SECTION_META = {
 // this can't drift from the source of truth. `loadConfig()` reassigns this
 // once the payload arrives; the literal pair here is only a fallback for an
 // older API that doesn't send the field yet.
+// Same lock mark the legend above uses, rendered once by the icon macro —
+// the page must not spell an emoji out as an HTML entity to dodge the guard.
+const LOCK_ICON = {{ ico.icon('lock', size=14)|string|tojson }};
+
 let DANGER_SECTIONS = new Set(["auth", "server"]);
 
 // ── Banner ─────────────────────────────────────────────────────────────
@@ -1105,7 +1111,7 @@ function renderFeatureFlags(flags) {
     // to guess. Kept compact: a hover tooltip on a small lock glyph, not an
     // extra visible column.
     const lockBadge = f.editable === false
-      ? `<span title="${escHtml(f.lock_reason || "Not editable via this UI")}" style="cursor: help; color: var(--ds-text-secondary, #9ca3af); margin-left: 4px;">&#128274;</span>`
+      ? `<span title="${escHtml(f.lock_reason || "Not editable via this UI")}" style="cursor: help; color: var(--ds-text-secondary, #9ca3af); margin-left: 4px;">${LOCK_ICON}</span>`
       : "";
     return `
     <tr>
