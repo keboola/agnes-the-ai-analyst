@@ -258,9 +258,31 @@ def _create_session_and_credential(user_email: str) -> tuple[str, str]:
     now closed by construction rather than by policy: a turn touches
     `{llm, kai_mcp}` (`_EGRESS_SCOPES` values) and a native web-chat sandbox
     holds `{main, mcp, data_apps}` (`app/chat/manager.py`). The sets are
-    disjoint with the tool switch on or off, so neither runtime's rotation can
-    reach the other's tickets. Nothing here revokes the literal `mcp` scope;
-    the only `"mcp"` left in this module is the engine-facing dict KEY.
+    disjoint with the tool switch on or off, so the engine's *rotation*
+    (`revoke_session_scopes`, scope-limited) cannot reach a native ticket.
+    Nothing here revokes the literal `mcp` scope; the only `"mcp"` left in this
+    module is the engine-facing dict KEY.
+
+    **The other direction is NOT symmetric, and that is deliberate.** An
+    earlier version of this note said "neither runtime's rotation can reach the
+    other's tickets", which invited the reading that the isolation runs both
+    ways. It does not. The native side's `revoke_session` is scope-BLIND — it
+    deletes every scope for the id except `SWEEP_EXEMPT_SCOPES` — so opening,
+    resuming or killing a native sandbox on a shared id does delete the
+    engine's live `llm` / `kai_mcp` tickets, and an engine turn already in
+    flight then gets `401 invalid_or_expired_ticket` from the broker until the
+    next turn re-mints. One interrupted answer, self-healing.
+
+    Sparing the engine's egress scopes too would trade that for something
+    worse. `/api/broker/anthropic` authenticates an `llm` ticket without
+    checking that the session row still exists — only `/api/kai/*` does, via
+    `_require_session_credential` — so today it is precisely this blind sweep,
+    reached through `kill()` on permanent delete, that stops a deleted
+    conversation's ticket from spending the instance's LLM budget for the rest
+    of its TTL. Making the sweep selective would reopen that, and the honest
+    fix is a session-existence check on the broker's hot path, not a wider
+    exemption here. The interruption is the cheaper failure, so it is accepted
+    and documented rather than traded away. Found by Devin Review on this PR.
 
     That disjointness is a side effect of confining the tool ticket to
     `kai_mcp`, not an independent guarantee — reusing a native scope here would

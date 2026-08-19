@@ -1280,3 +1280,47 @@ def test_every_reader_facing_surface_names_the_scope_the_route_enforces():
         assert "kai_mcp" in Path(rel).read_text(encoding="utf-8"), (
             f"{rel} must name the `kai_mcp` scope an operator's switch actually issues"
         )
+
+
+def test_a_native_sweep_does_reach_the_engines_egress_tickets_on_purpose(seeded_app, kai_env):
+    """The isolation between the two runtimes is one-way, deliberately.
+
+    The engine's rotation is scope-limited and cannot touch a native sandbox's
+    tickets. The native sweep is scope-BLIND and *can* touch the engine's: it
+    deletes every scope for the id except `SWEEP_EXEMPT_SCOPES`. That costs one
+    interrupted engine turn when someone opens the same conversation in web
+    chat, and it is kept because `/api/broker/anthropic` does not check that the
+    session row still exists — so this sweep, reached via `kill()` on permanent
+    delete, is what stops a deleted conversation's `llm` ticket from spending
+    budget for the rest of its TTL.
+
+    Pinned so that "fix the interruption" cannot quietly become "leave a usable
+    LLM ticket behind after a delete". Anyone widening the exemption must make
+    this test fail and go read why.
+    """
+    from src.repositories import ticket_repo
+
+    body = _mint_session(seeded_app)
+    credential = _claims(body["token"])["downstream_credential"]
+    chat_id = body["chat_id"]
+
+    resp = seeded_app["client"].post("/api/kai/tickets", headers={"Authorization": f"Bearer {credential}"})
+    assert resp.status_code == 200
+    egress = resp.json()
+    assert "llm" in egress
+
+    repo = ticket_repo()
+    assert repo.resolve(egress["llm"]) is not None
+
+    # The native sandbox lifecycle sweep, exactly as app/chat/manager.py calls it.
+    repo.revoke_session(chat_id)
+
+    assert repo.resolve(egress["llm"]) is None, (
+        "the native sweep must still reach the engine's egress tickets — that is "
+        "what protects the LLM budget after a conversation is deleted"
+    )
+    # ...while the session credential itself survives, or the engine would be
+    # cut off for good with no channel to hand it a replacement.
+    assert repo.resolve(credential) is not None, (
+        "SWEEP_EXEMPT_SCOPES must keep the long-lived credential out of the sweep"
+    )
