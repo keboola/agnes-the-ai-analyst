@@ -780,6 +780,18 @@ KAI_AGENT_MATERIALIZE=1
 if [ -z "$SERVER_URL" ]; then
     echo "WARN: kai-agent engine SKIPPED this boot — no resolvable public origin (set a domain on the instance, or the GCE metadata read failed); reboot or recreate to retry" >&2
     KAI_AGENT_MATERIALIZE=0
+elif [ "$TLS_MODE" = "caddy" ] && [ -z "$DOMAIN" ]; then
+    # A caddy VM without a domain derives http://<external-ip>:8000, but the
+    # web_raw firewall rule only tags tls_mode != "caddy" VMs — so :8000 is
+    # CLOSED and the sandbox could never reach the broker. As loud as the
+    # empty case, and for the same reason: a URL that resolves but is
+    # unreachable fails every conversation with nothing saying why.
+    case "$SERVER_URL" in
+        http://*:8000*)
+            echo "WARN: kai-agent engine SKIPPED this boot — SERVER_URL ($SERVER_URL) is the raw :8000 shape on a tls_mode=caddy VM, whose firewall does not expose that port; set a domain (or hand-set a reachable SERVER_URL in /opt/agnes/.env) and reboot" >&2
+            KAI_AGENT_MATERIALIZE=0
+            ;;
+    esac
 fi
 if [ "$KAI_AGENT_MATERIALIZE" = "1" ]; then
 
