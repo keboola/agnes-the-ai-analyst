@@ -8,9 +8,11 @@ from __future__ import annotations
 import hashlib
 import secrets
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence
 
 import sqlalchemy as sa
+
+from src.repositories.ticket import SWEEP_EXEMPT_SCOPES
 from sqlalchemy.engine import Engine
 
 
@@ -75,8 +77,29 @@ class TicketPgRepository:
             )
 
     def revoke_session(self, session_id: str) -> None:
+        """Sweep the session's egress tickets, leaving the long-lived
+        credentials in ``SWEEP_EXEMPT_SCOPES`` alone — see the DuckDB sibling
+        for why."""
         with self._engine.begin() as conn:
             conn.execute(
-                sa.text("DELETE FROM chat_broker_tickets WHERE session_id = :session_id"),
-                {"session_id": session_id},
+                sa.text(
+                    "DELETE FROM chat_broker_tickets WHERE session_id = :session_id "
+                    "AND scope NOT IN :exempt"
+                ).bindparams(sa.bindparam("exempt", expanding=True)),
+                {"session_id": session_id, "exempt": sorted(SWEEP_EXEMPT_SCOPES)},
+            )
+
+    def revoke_session_scopes(self, session_id: str, scopes: Sequence[str]) -> None:
+        """Revoke only the session's tickets in ``scopes``. See the DuckDB
+        sibling's docstring for why a scope-blind sweep is wrong for callers
+        that mix a long-lived session credential with rotating egress tickets.
+
+        An empty ``scopes`` deletes nothing — fail safe.
+        """
+        if not scopes:
+            return
+        with self._engine.begin() as conn:
+            conn.execute(
+                sa.text("DELETE FROM chat_broker_tickets WHERE session_id = :session_id AND scope = ANY(:scopes)"),
+                {"session_id": session_id, "scopes": list(scopes)},
             )

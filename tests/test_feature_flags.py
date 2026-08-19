@@ -102,6 +102,7 @@ class TestFeatureFlagsRegistry:
             "access_policies",
             "keboola_token_header",
             "keboola_multi_project_mode",
+            "kai_broker_mcp_enabled",
         }
 
     def test_every_entry_resolves(self, monkeypatch):
@@ -250,6 +251,7 @@ class TestServerConfigFeatureFlagsInventory:
             "access_policies",
             "keboola_token_header",
             "keboola_multi_project_mode",
+            "kai_broker_mcp_enabled",
         }
         # The experience preset leads as a string-valued informational row.
         assert flags[0]["name"] == "instance.experience"

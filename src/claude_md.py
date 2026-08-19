@@ -90,7 +90,7 @@ def _missing_table_excs() -> "tuple[type[BaseException], ...]":
     return excs
 
 
-def _list_tables(conn: duckdb.DuckDBPyConnection, *, user: dict) -> list[dict[str, Any]]:
+def _list_tables(conn: duckdb.DuckDBPyConnection | None, *, user: dict) -> list[dict[str, Any]]:
     """Return registered tables filtered by the calling user's RBAC grants.
 
     For admins, returns all tables. For non-admins, returns only tables the
@@ -115,7 +115,7 @@ def _list_tables(conn: duckdb.DuckDBPyConnection, *, user: dict) -> list[dict[st
     ]
 
 
-def _metrics_summary(conn: duckdb.DuckDBPyConnection, *, user: dict) -> dict[str, Any]:
+def _metrics_summary(conn: duckdb.DuckDBPyConnection | None, *, user: dict) -> dict[str, Any]:
     """Count/categories for metrics the calling user's table-stack grants
     cover — same gate as GET /api/metrics (app/api/metrics.py:_first_inaccessible_table).
     A metric with no table_name/tables (nothing to gate) is always visible.
@@ -137,7 +137,7 @@ def _metrics_summary(conn: duckdb.DuckDBPyConnection, *, user: dict) -> dict[str
     }
 
 
-def _has_semantic_layer(conn: duckdb.DuckDBPyConnection, *, user: dict[str, Any]) -> bool:
+def _has_semantic_layer(conn: duckdb.DuckDBPyConnection | None, *, user: dict[str, Any]) -> bool:
     """True iff the calling user can read at least one ``status='valid'``
     semantic model — same RBAC tier as ``GET /api/semantic-models/search``
     (``app/api/semantic_models.py::_can_read_model``: admin, a grant on the
@@ -157,12 +157,19 @@ def _has_semantic_layer(conn: duckdb.DuckDBPyConnection, *, user: dict[str, Any]
         # absent on a half-migrated database — the whole onboarding document
         # must degrade to "no section", not error (mirrors _metrics_summary;
         # Devin review on #1398).
-        return any(row.get("status") == "valid" and _can_read_model(user, row, conn) for row in rows)
+        # `conn` may be None on Postgres (see this module's entry points). The
+        # callee's annotation has not caught up, and it is reached only inside
+        # the guard above, which degrades to "no section" — so widening
+        # `app/api/semantic_models._can_read_model` is left to whoever owns it.
+        return any(
+            row.get("status") == "valid" and _can_read_model(user, row, conn)  # type: ignore[arg-type]
+            for row in rows
+        )
     except _missing_table_excs():
         return False
 
 
-def _marketplaces_for_user(conn: duckdb.DuckDBPyConnection, user: dict[str, Any]) -> list[dict[str, Any]]:
+def _marketplaces_for_user(conn: duckdb.DuckDBPyConnection | None, user: dict[str, Any]) -> list[dict[str, Any]]:
     """Return marketplaces with the plugins the user is allowed to see.
 
     Delegates RBAC filtering entirely to resolve_allowed_plugins, which
@@ -175,7 +182,9 @@ def _marketplaces_for_user(conn: duckdb.DuckDBPyConnection, user: dict[str, Any]
     try:
         from src.marketplace_filter import resolve_allowed_plugins
 
-        allowed = resolve_allowed_plugins(conn, user)
+        # Same as above: None-tolerant in practice (this whole block is wrapped),
+        # annotation not yet widened at the callee.
+        allowed = resolve_allowed_plugins(conn, user)  # type: ignore[arg-type]
     except Exception:
         logger.exception("_marketplaces_for_user: marketplace plugin resolution failed")
         return []
@@ -207,13 +216,28 @@ def _marketplaces_for_user(conn: duckdb.DuckDBPyConnection, user: dict[str, Any]
 
 
 def build_claude_md_context(
-    conn: duckdb.DuckDBPyConnection,
+    # Accepts ``None`` for the same reason ``render_claude_md`` does. It DOES
+    # pass the conn on (``_list_tables``, ``_metrics_summary``,
+    # ``_has_semantic_layer``, ``_marketplaces_for_user``) — an earlier version
+    # of this comment claimed otherwise, from a grep whose range collapsed on
+    # its own end pattern. What is true is that every one of those tolerates
+    # ``None`` and falls through to the repository factory
+    # (``get_accessible_tables``'s conn is Optional, and the marketplace read
+    # is wrapped), which is why Postgres has passed ``None`` here since #518.
+    conn: duckdb.DuckDBPyConnection | None,
     *,
     user: dict[str, Any],
     server_url: str,
     is_sandbox: bool = False,
+    now: datetime | None = None,
 ) -> dict[str, Any]:
     """Compose the Jinja2 render context for the CLAUDE.md template. Pure, no side effects.
+
+    ``now`` pins the clock the template renders (``{{ now }}``, ``{{ today }}``).
+    The default is the wall clock, which is right for a document written once at
+    workspace init. A caller that must produce the SAME bytes for the same
+    inputs has to pin it: the shipped template ends with "generated
+    {{ today }}", so an unpinned render changes at every UTC date rollover.
 
     ``is_sandbox`` distinguishes the two surfaces that render this same
     template: the ephemeral chat sandbox (``app/main.py``'s
@@ -224,7 +248,7 @@ def build_claude_md_context(
     for the former; template sections that need to say something different
     for a laptop workspace branch on this flag.
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc) if now is None else now
     parsed = urlparse(server_url)
     return {
         "instance": {
@@ -273,13 +297,21 @@ def compute_default_claude_md(
 
 
 def render_claude_md(
-    conn: duckdb.DuckDBPyConnection,
+    # Optional because Postgres instances pass ``None``: the function routes
+    # its own state reads through the repository factory, so on PG there is no
+    # system DuckDB to open (opening it there is a forbidden invariant). Both
+    # sandbox callers have always passed None on PG; the annotation had simply
+    # not caught up.
+    conn: duckdb.DuckDBPyConnection | None,
     *,
     user: dict[str, Any],
     server_url: str,
     is_sandbox: bool = False,
+    now: datetime | None = None,
 ) -> str:
     """Resolve the active template (override or default) and render it for the given user.
+
+    ``now`` pins the rendered clock — see :func:`build_claude_md_context`.
 
     When an admin override is set, renders it via Jinja2 (StrictUndefined, autoescape=False).
     When no override is set, renders the shipped default template.
@@ -302,4 +334,6 @@ def render_claude_md(
     source = content if content else _load_default_template()
     env = make_prompt_env()
     template = env.from_string(source)
-    return template.render(**build_claude_md_context(conn, user=user, server_url=server_url, is_sandbox=is_sandbox))
+    return template.render(
+        **build_claude_md_context(conn, user=user, server_url=server_url, is_sandbox=is_sandbox, now=now)
+    )
