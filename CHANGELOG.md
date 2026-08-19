@@ -10,6 +10,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- **Repointing a data source now names the tables it will break, and asks first.** `POST /api/admin/server-config` answers **409 `connection_change_affects_registrations`** when a patch changes a *connection-identity* leaf under `data_source.<source>` — Snowflake's `account`/`database`/`warehouse`/`user`/`role`/`auth_type`/credential-pointer, BigQuery's `project`/`billing_project`/`location`, Databricks' `host`/`warehouse_id`/`catalog`/`token_env`, Keboola's `stack_url`/`token_env` — while registrations of that source exist. The body carries the changed coordinates, the affected-table count and a sample; `confirm_connection_change: true` applies it. `POST /api/admin/configure` (the setup wizard) is gated the same way — it writes the same block, so leaving it out would keep a second unguarded door open. The `/admin/server-config` editor raises a confirmation dialog with the same detail. Tuning knobs in the same block (scan caps, timeouts, pool sizes) and first-time setup are unaffected.
+
+  Why it earns a gate: a registration resolves its upstream against the instance's one connection per source, and the result is baked into the extract's `_remote_attach.url` and into each remote view's `sf."SCHEMA"."TABLE"`. Repointing invalidates every existing row of that source at once, and the failure is invisible from the operator's seat — remote reads fail at bind time deep inside a query, materialized syncs fail at COPY time, and `last_sync_status` keeps reporting the last *successful* run.
+
 ## [0.83.86] - 2026-08-19
 
 ### Added
