@@ -136,11 +136,15 @@ def _cleanup_snowflake_key_dir() -> None:
 atexit.register(_cleanup_snowflake_key_dir)
 
 
+def _safe_key_path_part(s: str) -> str:
+    """Sanitize a string for use in a temp key file name."""
+    return re.sub(r"[^A-Za-z0-9_-]+", "_", s).strip("_")[:32] or "x"
+
+
 def _private_key_file_path(private_key_pem: str, account: str, user: str, secret_name: str) -> Path:
     """Return a deterministic, per-process file path for a normalized PEM key."""
     digest = hashlib.sha256(f"{account}:{user}:{secret_name}:{private_key_pem}".encode()).hexdigest()[:24]
-    safe_part = lambda s: re.sub(r"[^A-Za-z0-9_-]+", "_", s).strip("_")[:32] or "x"
-    return _snowflake_key_dir() / f"{safe_part(secret_name)}-{safe_part(account)}-{safe_part(user)}-{digest}.pem"
+    return _snowflake_key_dir() / f"{_safe_key_path_part(secret_name)}-{_safe_key_path_part(account)}-{_safe_key_path_part(user)}-{digest}.pem"
 
 
 def _write_private_key_pem(pem: str, path: Path) -> None:
@@ -383,7 +387,7 @@ def _looks_like_key_pair(token: str) -> bool:
             p = Path(t).expanduser()
             if p.is_file() and p.stat().st_size < 64 * 1024:
                 return _looks_like_key_pair(p.read_text(encoding="utf-8", errors="strict"))
-        except (OSError, UnicodeError, ValueError):
+        except (OSError, RuntimeError, UnicodeError, ValueError):
             pass
     return False
 
@@ -431,7 +435,7 @@ def _private_key_pem_and_passphrase(token: str, passphrase: str | None = None) -
             p = Path(raw).expanduser()
             if p.is_file() and p.stat().st_size < 64 * 1024:
                 raw = p.read_text(encoding="utf-8", errors="strict")
-        except (OSError, UnicodeError, ValueError) as exc:
+        except (OSError, RuntimeError, UnicodeError, ValueError) as exc:
             raise ValueError(f"snowflake private key file {raw!r} could not be read: {exc}") from exc
 
     # Defense-in-depth: a key should never contain '$', but a pasted value

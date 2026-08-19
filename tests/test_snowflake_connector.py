@@ -16,6 +16,8 @@ from connectors.snowflake.attach import (
     SF_ALIAS,
     SF_EXTENSION,
     SF_TOKEN_ENV,
+    _looks_like_key_pair,
+    _private_key_pem_and_passphrase,
     attach_snowflake,
     build_remote_attach_url,
     parse_remote_attach_url,
@@ -1092,3 +1094,30 @@ def test_attach_snowflake_key_pair_normalizes_pasted_keys(monkeypatch, pkcs8_pem
         assert "-----BEGIN PRIVATE KEY-----" in content, label
         assert "-----END PRIVATE KEY-----" in content, label
         key_path.unlink()
+
+
+def test_attach_snowflake_password_starting_with_tilde_is_not_a_key_path(monkeypatch):
+    """A password that happens to start with an unexpandable ~<user> prefix must be
+    treated as a password, not as a private-key filesystem path."""
+    monkeypatch.setenv("AGNES_REMOTE_ATTACH_HOST_ALLOWLIST", SF_HOST)
+    monkeypatch.setenv("SNOWFLAKE_PASSWORD", "~nonuser-secret")
+    conn = MagicMock()
+    url = build_remote_attach_url(
+        SF_SETTINGS["account"],
+        SF_SETTINGS["database"],
+        SF_SETTINGS["warehouse"],
+        SF_SETTINGS["user"],
+    )
+    attach_snowflake(conn, alias=SF_ALIAS, url=url, token="~nonuser-secret")
+    secret_call = next(c[0][0] for c in conn.execute.call_args_list if "CREATE OR REPLACE SECRET" in str(c[0][0]))
+    assert "AUTH_TYPE 'key_pair'" not in secret_call
+    assert "PRIVATE_KEY" not in secret_call
+    assert "PASSWORD '~nonuser-secret'" in secret_call
+
+
+def test_private_key_path_that_cannot_be_expanded_raises_valueerror():
+    """A JSON-wrapped private key whose value is an unexpandable ~<user> path must
+    raise a clear ValueError, not an uncaught RuntimeError."""
+    assert not _looks_like_key_pair("~nonuser")
+    with pytest.raises(ValueError, match="could not be read"):
+        _private_key_pem_and_passphrase('{"private_key": "~nonuser"}')
