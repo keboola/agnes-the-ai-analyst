@@ -54,7 +54,9 @@ _RETIRED_PLACEHOLDERS = (
     "{token}",
 )
 
-_PLACEHOLDER_RE = re.compile(r"\{[a-z][a-z0-9_]*\}")
+# Negative lookaround keeps Jinja expressions out: `{{today}}` written
+# without spaces would otherwise match its inner `{today}` pair.
+_PLACEHOLDER_RE = re.compile(r"(?<!\{)\{[a-z][a-z0-9_]*\}(?!\})")
 
 
 def _template_text() -> str:

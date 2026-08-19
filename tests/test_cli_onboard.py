@@ -707,3 +707,18 @@ def test_convergence_errors_degrade_the_run(tmp_path, monkeypatch, stubbed):
     payload = json.loads(result.stdout)
     assert payload["steps"][0]["status"] == "warning"
     assert payload["overall"] != "ok"
+
+
+def test_generic_project_without_agnes_marker_is_unrelated(tmp_path):
+    """`CLAUDE.md`, `server/`, `user/`, `.gitignore` are generic names a random
+    checkout may hold; without an Agnes marker (`.claude`/`.agnes`) they must
+    still read as unrelated content, not buy a silent install."""
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".gitignore").write_text("x", encoding="utf-8")
+    (tmp_path / "README.md").write_text("x", encoding="utf-8")
+    (tmp_path / "CLAUDE.md").write_text("# some other project\n", encoding="utf-8")
+    (tmp_path / "server").mkdir()
+    (tmp_path / "user").mkdir()
+    verdict, detail = onb.classify_workspace_dir(tmp_path)
+    assert verdict == onb.DIR_UNRELATED
+    assert "CLAUDE.md" in detail

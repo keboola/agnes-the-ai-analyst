@@ -1162,3 +1162,38 @@ def test_dry_run_scans_bound_template_for_unwired_placeholders(monkeypatch):
     assert any(
         "{connector_tiles}" in w and "custom.md.tmpl" in w for w in summary["warnings"]
     ), summary["warnings"]
+
+
+def test_dry_run_editor_mode_warning_is_qualified(monkeypatch):
+    """In editor mode the seed template is not rendered — the unwired-
+    placeholder warning must say so instead of claiming analysts see it."""
+    from app.api import initial_workspace as api
+    from src import initial_workspace as iw
+
+    def fake_resolve(rel):
+        if rel == "install-prompt/template.md.tmpl":
+            return ("Install via {install_cli_block}", "iwt")
+        return None
+
+    monkeypatch.setattr("src.connectors_manifest.load_manifest", lambda: [])
+    monkeypatch.setattr(iw, "resolve_seed_file", fake_resolve)
+    summary = api._compute_render_dry_run()
+    hits = [w for w in summary["warnings"] if "{install_cli_block}" in w]
+    assert hits and "does not currently render" in hits[0], summary["warnings"]
+
+
+def test_dry_run_tight_jinja_variables_are_not_flagged(monkeypatch):
+    """`{{today}}` without spaces is a substituted Jinja variable, not an
+    unwired single-brace placeholder."""
+    from app.api import initial_workspace as api
+    from src import initial_workspace as iw
+
+    def fake_resolve(rel):
+        if rel == "install-prompt/template.md.tmpl":
+            return ("Rendered on {{today}} for {{instance.name}} at {server_url}", "iwt")
+        return None
+
+    monkeypatch.setattr("src.connectors_manifest.load_manifest", lambda: [])
+    monkeypatch.setattr(iw, "resolve_seed_file", fake_resolve)
+    summary = api._compute_render_dry_run()
+    assert not any("render literally" in w for w in summary["warnings"]), summary["warnings"]
