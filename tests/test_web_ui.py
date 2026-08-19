@@ -324,29 +324,28 @@ class TestClaudeSetupPreview:
         assert "/cli/download" in body
         assert "/cli/wheel/" not in body
         assert "/cli/agnes.whl" not in body
-        # Unified always-on layout (minimal form): step 1 install,
-        # step 2 init, step 3 catalog, step 4 marketplace, step 5 diagnose.
+        # Thin layout: step 1 install, step 2 onboard, step 3 restart,
+        # step 4 confirm. Diagnose/marketplace/catalog now run inside
+        # `agnes onboard`, so they are not steps on the page any more.
         assert "1) Install the CLI" in body
-        assert "5) Run diagnostics" in body
-        assert "agnes diagnose" in body
-        # `agnes init` is now the mandatory bootstrap step.
-        assert "agnes init" in body
-        # The generated /setup prompt's "Log in" / "Verify the login"
-        # admin-only headers are gone (agnes init subsumes them).
-        # `agnes auth whoami` survives as a static manual-install
+        assert "2) Set up the" in body
+        assert "agnes onboard" in body
+        assert "4) Confirm:" in body
+        assert "5) Run diagnostics" not in body
+        # Superseded prompt headers are gone (`agnes onboard` subsumes
+        # them). `agnes auth whoami` survives as a static manual-install
         # example elsewhere on the page (not in the generated prompt).
+        assert "agnes init" not in body
         assert "2) Log in" not in body
         assert "3) Verify the login" not in body
 
     def test_install_preview_unified_layout(self, web_client, admin_cookie):
         """The clipboard payload (SETUP_INSTRUCTIONS_TEMPLATE JS array)
-        carries the unified layout for every caller — admin-vs-analyst
-        is no longer a layout branch. Marketplace + Atlassian MCP blocks
-        are always emitted (Fix B + Fix C in 2026-05-10 init-report
-        response): the user-facing one-liner is `agnes refresh-marketplace
-        --bootstrap` (the literal `claude plugin marketplace add` shows up
-        only as a documentation comment listing what the binary does
-        internally, never as an instruction to run by hand)."""
+        carries the same thin prompt for every caller — admin-vs-analyst
+        is no longer a layout branch, and neither are plugin grants: the
+        marketplace bootstrap, the diagnose run and the connector setup
+        all happen inside `agnes onboard`, off the live manifest, so the
+        payload has no per-caller content left."""
         import re
 
         resp = web_client.get("/setup", cookies=admin_cookie)
@@ -359,20 +358,19 @@ class TestClaudeSetupPreview:
         )
         assert match, "SETUP_INSTRUCTIONS_TEMPLATE array missing"
         clipboard = match.group(1)
-        assert "agnes init" in clipboard
-        # User runs the bootstrap one-liner, not raw `claude plugin
-        # marketplace add` — the latter is an internal step described in a
-        # comment block, never an action line to run.
-        assert "agnes refresh-marketplace --bootstrap" in clipboard
-        # Connector bodies are fetched on demand, never inlined into the
-        # clipboard payload (the Atlassian MCP registration lives inside
-        # the fetched SKILL.md body).
-        assert "agnes connectors show connector-atlassian" in clipboard
+        assert "agnes onboard" in clipboard
+        # The orchestration verbs the prompt used to spell out are the
+        # CLI's business now — none of them may reappear as prompt lines.
+        assert "agnes init" not in clipboard
+        assert "agnes refresh-marketplace" not in clipboard
+        assert "agnes diagnose" not in clipboard
+        # Connector bodies were never inlined and are not even referenced
+        # now (the Atlassian MCP registration lives inside the SKILL.md
+        # body the user pulls up after setup).
+        assert "agnes connectors show" not in clipboard
         assert "claude mcp add --transport sse atlassian" not in clipboard
         # Legacy admin-only auth verbs are gone from the generated prompt.
         assert "agnes auth import-token" not in clipboard
-        # `agnes auth whoami` was the old admin step 3; subsumed by
-        # `agnes init` + `agnes catalog` smoke verify.
         assert "3) Verify the login" not in clipboard
         assert "2) Log in" not in clipboard
 
