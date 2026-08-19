@@ -877,21 +877,33 @@ class KeboolaStorageClient:
         if slice_url.startswith("azure://"):
             return self._azure_to_https(slice_url, abs_credentials), None
         if slice_url.startswith("s3://"):
-            region = s3_context.get("region") or ""
-            https_url, bucket, _key = self._s3_to_https(slice_url, region)
-            expected = (s3_context.get("s3Path") or {}).get("bucket")
-            # The manifest is fetched from Keboola, but its contents are not
-            # ours to trust blindly: a slice pointing at some other bucket
-            # would aim the export's credentials at a target the export does
-            # not cover. Refuse rather than sign.
-            if expected and bucket != expected:
-                raise StorageApiError(
-                    f"slice {index} names bucket {bucket!r} but the export lives in "
-                    f"{expected!r}; refusing to sign a request outside the export"
-                )
-            headers = self._s3_auth_headers(https_url, region, s3_context.get("credentials") or {})
-            return https_url, headers
+            return self._s3_slice_request(slice_url, index, s3_context)
         return slice_url, None
+
+    @classmethod
+    def _s3_slice_request(cls, s3_url: str, index: int, s3_context: dict) -> tuple[str, dict]:
+        """Rewrite + sign one ``s3://`` slice: ``(https_url, auth_headers)``.
+
+        Split out of ``_prepare_slice_request`` so the legacy SDK client
+        (``connectors/keboola/client.py``, still the download path for
+        incremental and partitioned syncs) signs AWS slices through this
+        exact code rather than growing a second implementation — the bucket
+        check and header signing below are the security-relevant half.
+        """
+        region = s3_context.get("region") or ""
+        https_url, bucket, _key = cls._s3_to_https(s3_url, region)
+        expected = (s3_context.get("s3Path") or {}).get("bucket")
+        # The manifest is fetched from Keboola, but its contents are not
+        # ours to trust blindly: a slice pointing at some other bucket
+        # would aim the export's credentials at a target the export does
+        # not cover. Refuse rather than sign.
+        if expected and bucket != expected:
+            raise StorageApiError(
+                f"slice {index} names bucket {bucket!r} but the export lives in "
+                f"{expected!r}; refusing to sign a request outside the export"
+            )
+        headers = cls._s3_auth_headers(https_url, region, s3_context.get("credentials") or {})
+        return https_url, headers
 
     @staticmethod
     def _s3_context(file_info: dict) -> dict:
