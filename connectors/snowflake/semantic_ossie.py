@@ -202,6 +202,27 @@ def _group(rows: Iterable[Mapping[str, Any]]) -> Dict[tuple, Dict[str, Any]]:
     return grouped
 
 
+def _parse_extension(raw: Any) -> Optional[Dict[str, Any]]:
+    """Parse an ``EXTENSION`` row's JSON payload, or ``None``.
+
+    ``EXTENSION`` is not in the documented object_kind vocabulary but a live
+    account emits one (name ``CA``, Cortex Analyst) carrying the declared time
+    dimensions and every relationship's join_type — data that appears nowhere
+    else in the DESCRIBE output. Upstream JSON is not something to stake a
+    whole document on, so a malformed payload costs its annotations and
+    nothing more.
+    """
+    text = _text(raw)
+    if not text:
+        return None
+    try:
+        payload = json.loads(text)
+    except (ValueError, TypeError):
+        logger.warning("Snowflake semantic adapter: EXTENSION payload is not valid JSON; annotations dropped")
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
 def _compose_dataset(name: str, props: Mapping[str, Any]) -> Dict[str, Any]:
     base = [
         _text(props.get("BASE_TABLE_DATABASE_NAME")),
@@ -234,7 +255,7 @@ def _compose_dataset(name: str, props: Mapping[str, Any]) -> Dict[str, Any]:
     return out
 
 
-def _compose_field(name: str, kind: str, props: Mapping[str, Any]) -> Dict[str, Any]:
+def _compose_field(name: str, kind: str, props: Mapping[str, Any], *, is_time: bool = False) -> Dict[str, Any]:
     expression = _text(props.get("EXPRESSION")) or quote_ident(name)
     out: Dict[str, Any] = {
         "name": name,
@@ -252,9 +273,18 @@ def _compose_field(name: str, kind: str, props: Mapping[str, Any]) -> Dict[str, 
     # attribute. `access_modifier` is Snowflake's PRIVATE marker: a private
     # fact is queryable only through the metrics built on it, so dropping the
     # label would present it as ordinary public surface.
+    if is_time:
+        # Snowflake declared this a time dimension. The schema's own default
+        # infers `is_time` from a temporal datatype, which is not the same
+        # thing: a year-grain Integer is a time dimension too, and only the
+        # declaration says so.
+        out["dimension"] = {"is_time": True}
+
     extension: Dict[str, Any] = {"object_kind": kind}
     access = _text(props.get("ACCESS_MODIFIER"))
-    if access:
+    if access and access.upper() != "PUBLIC":
+        # PUBLIC is the default and a live view stamps it on every single
+        # field; restating it there would bury the PRIVATE ones that matter.
         extension["access_modifier"] = access
     out["custom_extensions"] = [_custom_extension(extension)]
     return out
@@ -282,13 +312,15 @@ def _compose_metric(name: str, kind: str, table: str, props: Mapping[str, Any]) 
     if table:
         extension["table"] = table
     access = _text(props.get("ACCESS_MODIFIER"))
-    if access:
+    if access and access.upper() != "PUBLIC":
         extension["access_modifier"] = access
     out["custom_extensions"] = [_custom_extension(extension)]
     return out
 
 
-def _compose_relationship(name: str, props: Mapping[str, Any], index: int) -> Optional[Dict[str, Any]]:
+def _compose_relationship(
+    name: str, props: Mapping[str, Any], index: int, *, join_type: str = ""
+) -> Optional[Dict[str, Any]]:
     from_table = _text(props.get("TABLE"))
     to_table = _text(props.get("REF_TABLE"))
     from_columns = _split_columns(props.get("FOREIGN_KEY"))
@@ -301,13 +333,19 @@ def _compose_relationship(name: str, props: Mapping[str, Any], index: int) -> Op
             name,
         )
         return None
-    return {
+    out: Dict[str, Any] = {
         "name": name or f"relationship_{index}",
         "from": from_table,
         "to": to_table,
         "from_columns": from_columns,
         "to_columns": to_columns,
     }
+    if join_type:
+        # Ossie's Relationship has no join-type slot, and DESCRIBE carries this
+        # nowhere else — an inner join and a left join are different questions,
+        # so it rides custom_extensions rather than being dropped.
+        out["custom_extensions"] = [_custom_extension({"join_type": join_type})]
+    return out
 
 
 def compose_document(view: Mapping[str, Any], rows: Iterable[Mapping[str, Any]]) -> Optional[str]:
@@ -319,6 +357,32 @@ def compose_document(view: Mapping[str, Any], rows: Iterable[Mapping[str, Any]])
     """
     grouped = _group(rows)
     fqn = _fqn(view)
+
+    # Extensions first, in their own pass: they annotate fields and
+    # relationships composed below, and DESCRIBE row order is not a contract.
+    extensions: Dict[str, Any] = {}
+    for (kind, name, _parent), props in grouped.items():
+        if kind == "EXTENSION":
+            payload = _parse_extension(props.get("VALUE"))
+            if payload is not None:
+                extensions[name or f"extension_{len(extensions) + 1}"] = payload
+
+    time_dimensions: Dict[str, set] = {}
+    join_types: Dict[str, str] = {}
+    for payload in extensions.values():
+        for table in payload.get("tables") or []:
+            if not isinstance(table, dict):
+                continue
+            names = {
+                _text(d.get("name"))
+                for d in (table.get("time_dimensions") or [])
+                if isinstance(d, dict) and d.get("name")
+            }
+            if names:
+                time_dimensions.setdefault(_text(table.get("name")), set()).update(names)
+        for relationship in payload.get("relationships") or []:
+            if isinstance(relationship, dict) and relationship.get("name") and relationship.get("join_type"):
+                join_types[_text(relationship["name"])] = _text(relationship["join_type"])
 
     datasets: Dict[str, Dict[str, Any]] = {}
     fields_by_table: Dict[str, List[Dict[str, Any]]] = {}
@@ -333,15 +397,21 @@ def compose_document(view: Mapping[str, Any], rows: Iterable[Mapping[str, Any]])
             datasets[name] = _compose_dataset(name, props)
         elif kind in _FIELD_KINDS and name:
             table = parent or _text(props.get("TABLE"))
-            fields_by_table.setdefault(table, []).append(_compose_field(name, kind, props))
+            fields_by_table.setdefault(table, []).append(
+                _compose_field(name, kind, props, is_time=name in time_dimensions.get(table, ()))
+            )
         elif kind in _METRIC_KINDS and name:
             metric = _compose_metric(name, kind, parent or _text(props.get("TABLE")), props)
             if metric:
                 metrics.append(metric)
         elif kind == "RELATIONSHIP" and name:
-            relationship = _compose_relationship(name, props, len(relationships) + 1)
+            relationship = _compose_relationship(
+                name, props, len(relationships) + 1, join_type=join_types.get(name, "")
+            )
             if relationship:
                 relationships.append(relationship)
+        elif kind == "EXTENSION":
+            continue  # already collected above
         elif kind == "CUSTOM_INSTRUCTIONS":
             custom_instructions.update({k: v for k, v in props.items() if v is not None})
         elif kind == "AI_VERIFIED_QUERY":
@@ -395,6 +465,10 @@ def compose_document(view: Mapping[str, Any], rows: Iterable[Mapping[str, Any]])
         extension["custom_instructions"] = custom_instructions
     if verified_queries:
         extension["ai_verified_queries"] = verified_queries
+    if extensions:
+        # Carried whole, not just the two keys read above: this is the only
+        # copy, and the payload's shape is upstream's to change.
+        extension["extensions"] = extensions
     semantic_model["custom_extensions"] = [_custom_extension(extension)]
 
     document = {"version": SPEC_VERSION, "semantic_model": [semantic_model]}
