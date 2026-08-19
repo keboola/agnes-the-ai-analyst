@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- **Creating a schedule no longer writes into another agent's panel when the builder moves on mid-request.** The Schedules panel's create POST could settle after a newer schedules load took over (opening a different agent, or reopening the same one): its success arm pushed the created row into whatever list the panel rendered by then, and its error arm wrote the stale failure into the new agent's form. Both arms now drop a superseded continuation using the same generation token the loads already use — the created row still exists on the server and renders on the next open.
+
 ## [0.83.86] - 2026-08-19
 
 ### Added
