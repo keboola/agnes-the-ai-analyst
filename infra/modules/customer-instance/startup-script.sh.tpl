@@ -763,6 +763,18 @@ case "$KAI_AGENT_IMAGE_HOST" in
     *pkg.dev) gcloud auth configure-docker "$KAI_AGENT_IMAGE_HOST" --quiet ;;
 esac
 
+# An engine without a public origin cannot serve a single turn: its E2B
+# sandbox must reach the LLM broker from the public internet. SERVER_URL is
+# legitimately empty when the VM has no domain AND the metadata read for the
+# external IP failed — pasting that into the URL below would configure the
+# broker as "/api/broker/anthropic" and every conversation would fail with
+# nothing in the boot log saying why. Same loud posture as the secret
+# fetches above: a config-time impossibility fails the boot visibly.
+if [ -z "$SERVER_URL" ]; then
+    echo "ERROR: kai_agent_enabled requires a resolvable public origin (set a domain on the instance, or ensure the GCE metadata server is reachable) — SERVER_URL is empty" >&2
+    exit 1
+fi
+
 # The engine's env. Derived URLs split by who calls them: the E2B sandbox
 # egresses to the LLM broker from the public internet, so that URL must be
 # the deployment's public origin (SERVER_URL — a domain-less plain-HTTP VM
@@ -798,6 +810,15 @@ services:
     image: $${KAI_AGENT_IMAGE}
     restart: always
     env_file: /opt/agnes/kai-agent/.env
+    # Bounded like the app/scheduler containers (heavy work happens in the
+    # remote E2B sandbox, not here), and hardened like the data-app
+    # containers: caps are ceilings, not reservations, and the defaults are
+    # overridable via /opt/agnes/.env without a template change.
+    mem_limit: $${KAI_AGENT_MEM_LIMIT:-2g}
+    cpus: $${KAI_AGENT_CPUS:-1.0}
+    pids_limit: 512
+    security_opt:
+      - no-new-privileges:true
     ports:
       - "127.0.0.1:3001:3000" # host-side testing via SSH tunnel; the app uses compose DNS
     depends_on:
@@ -811,6 +832,9 @@ services:
     working_dir: /app/apps/kai-agent
     command: ["node", "dist/db/migrate.js"]
     env_file: /opt/agnes/kai-agent/.env
+    mem_limit: $${KAI_AGENT_MEM_LIMIT:-2g}
+    security_opt:
+      - no-new-privileges:true
     depends_on:
       kai-agent-pg:
         condition: service_healthy
@@ -821,6 +845,12 @@ services:
       POSTGRES_USER: kai
       POSTGRES_PASSWORD: $${KAI_AGENT_PG_PASSWORD}
       POSTGRES_DB: kai_agent
+    # no-new-privileges is safe here: the entrypoint drops root -> postgres
+    # via setuid()/su-exec syscalls, which no_new_privs does not restrict
+    # (it blocks GAINING privilege across execve, not shedding it).
+    mem_limit: $${KAI_AGENT_PG_MEM_LIMIT:-1g}
+    security_opt:
+      - no-new-privileges:true
     volumes:
       - /data/kai-agent-postgres:/var/lib/postgresql/data
     healthcheck:
@@ -948,6 +978,18 @@ COMPOSE_FILE_DEFAULT="docker-compose.yml:docker-compose.prod.yml:docker-compose.
 # shellcheck disable=SC1091
 set -a; . "$APP_DIR/.env"; set +a
 export COMPOSE_FILE="$${COMPOSE_FILE:-$COMPOSE_FILE_DEFAULT}"
+%{ if kai_agent_enabled ~}
+# The engine overlay is OPTIONAL and must never gate the machine: its
+# one-shot migrate is a hard start condition for the engine SERVICE, so an
+# unpullable engine image or a failed migration would fail the strict
+# pull/up below and abort this script BEFORE the auto-upgrade cron and the
+# watchdog are installed — an engine-enabled VM would then sit half
+# provisioned while the app looks healthy. Pull + start the BASE stack
+# strictly first (overlay stripped; it was appended last in section 4c),
+# then bring the engine up tolerantly after the strict block.
+KAI_FULL_COMPOSE_FILE="$COMPOSE_FILE"
+export COMPOSE_FILE="$${COMPOSE_FILE%:docker-compose.kai-agent.yml}"
+%{ endif ~}
 
 docker compose $COMPOSE_PROFILES_ARG pull
 %{ if data_apps_enabled ~}
@@ -984,6 +1026,17 @@ if [ "$COMPOSE_UP_OK" != "1" ]; then
     echo "ERROR: docker compose up failed after 3 attempts"
     exit 1
 fi
+%{ if kai_agent_enabled ~}
+# Now the engine, tolerantly: the base stack (incl. Caddy/TLS) is up, and the
+# sections below (auto-upgrade cron, watchdog) must install regardless of the
+# engine's fate. On failure the .env keeps the FULL list, so the next
+# auto-upgrade tick (and any operator `docker compose up -d`) retries the
+# engine with no state to repair.
+export COMPOSE_FILE="$KAI_FULL_COMPOSE_FILE"
+if ! docker compose $COMPOSE_PROFILES_ARG pull || ! docker compose $COMPOSE_PROFILES_ARG up -d; then
+    echo "WARN: kai-agent engine sidecar failed to pull or start; base stack is up — fix the engine image/migration and re-run docker compose up -d (or wait for the auto-upgrade tick)" >&2
+fi
+%{ endif ~}
 
 # --- 6. Auto-upgrade via cron (pulls new image digest on $UPGRADE_SCHEDULE) ---
 if [ "$UPGRADE_MODE" = "auto" ]; then
