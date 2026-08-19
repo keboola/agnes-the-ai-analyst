@@ -51,6 +51,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   orchestrator sweep re-derived state from `_meta` — the fix looked like it had
   not taken.
 
+- **A per-user chat workspace re-initializes when the instance's `SERVER_URL` changes.** `WorkdirManager.needs_reinit()` compared only the marketplace SHA and the Agnes version, so a workspace initialized under one URL kept serving a rendered `CLAUDE.md` naming the pre-migration host after an operator moved the instance to a new domain — the in-sandbox agent read the mismatch as a phishing indicator, and the workspace only converged when the next version bump happened to force a re-init. The server URL recorded in the `.claude/init-complete` sentinel (new reader: `src/initial_workspace.py::read_sentinel_server_url`) is now part of the re-init decision; a sentinel predating the `server_url` line triggers one self-healing re-init that re-stamps it.
+
 ### Security
 
 - **A Snowflake private key is no longer echoed into an error message.** The
