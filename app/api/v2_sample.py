@@ -194,6 +194,10 @@ def _fetch_remote_view_sample(table_id: str, row: dict, n: int) -> list[dict]:
     attach), or a currently-broken ATTACH, surfaces as a query error — mapped
     back to the by-design :class:`TableNotPreviewableError`, with the real
     failure prepended so the admin is not reassured past an actual outage.
+    Including the engine's error text discloses nothing new: the caller has
+    already passed ``can_access_table`` for this row, and ``/api/query``
+    hands the same caller the identical engine error verbatim for the same
+    table.
     """
     from src.db import get_analytics_db_readonly
     from src.identifier_validation import validate_identifier
