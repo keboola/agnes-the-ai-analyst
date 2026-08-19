@@ -10,6 +10,21 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.83.76] - 2026-08-19
+
+### Removed
+
+- **The SendGrid SDK mail branch is gone; SMTP relay is the only mail transport.** The `sendgrid` package was never a declared dependency, so the SDK path in the magic-link and password providers always died on `ImportError` — while `SENDGRID_API_KEY` alone made the availability predicates advertise email sign-in in the login UI, turning every magic-link/reset/invite send into a silent dead end. The env key no longer counts as a configured transport; SendGrid keeps working through its SMTP relay (`SMTP_HOST=smtp.sendgrid.net`, `SMTP_USER=apikey`).
+
+### Fixed
+
+- **A configured-but-failing mail transport no longer answers success.** `POST /auth/email/send-link` (and its web form), `POST /auth/password/reset` and `POST /auth/password/setup/request` used to answer the generic "check your email" even when SMTP delivery raised — the person waited for a mail that was never sent. A failed send now logs the error and returns HTTP 500 (the web form redirects to the login page with an explanatory banner). Anti-enumeration is preserved: unknown addresses attempt no send and keep the generic success.
+
+### Changed
+
+- **One sender key for outgoing auth mail: `SMTP_FROM`.** The SendGrid branch read `EMAIL_FROM_ADDRESS` while the SMTP branch read `SMTP_FROM`; the SMTP sender now falls back to `EMAIL_FROM_ADDRESS` when `SMTP_FROM` is unset, so deployments configured under either key keep their sender.
+- **`email.from_address` in `instance.yaml` is finally read.** The config template ships that key and `docs/CONFIGURATION.md` documents it, but sender resolution went through the environment only — so an operator who configured just the YAML kept sending as `noreply@example.com`, with nothing to notice. `SMTP_FROM` and the legacy `EMAIL_FROM_ADDRESS` still win, so no existing deployment's sender changes; this only makes an already-advertised knob work. The template's own placeholder is not treated as a configured value, and an unreadable `instance.yaml` falls back rather than turning every magic link into a 500. `email.from_name` is marked NOT IMPLEMENTED in the template instead — the SMTP transport sends a bare address with no display name, and the rest of the `email:` block is env-backed by the `"${SMTP_HOST}"`-style convention already visible there.
+
 ## [0.83.75] - 2026-08-18
 
 ### Fixed

@@ -337,6 +337,47 @@ class TestSetupRequest:
 # ---- POST /auth/password/setup/confirm ----
 
 
+class _BoomSMTP:
+    """smtplib.SMTP stand-in whose connect always fails."""
+
+    def __init__(self, *args, **kwargs):
+        raise OSError("connection refused (test)")
+
+
+class TestMailSendFailureIsSurfaced:
+    """A configured SMTP transport that fails must not render the
+    'Check your email' success page — the person would wait for a mail that
+    was never sent and nothing would surface the misconfiguration."""
+
+    def test_reset_request_send_failure_is_an_error(self, app_client, fresh_db, monkeypatch):
+        _seed_user("forgot@test.com")
+        monkeypatch.setenv("SMTP_HOST", "smtp.test.invalid")
+        monkeypatch.setattr("smtplib.SMTP", _BoomSMTP)
+        resp = app_client.post("/auth/password/reset", data={"email": "forgot@test.com"})
+        assert resp.status_code == 500
+        assert "Check your email" not in resp.text
+
+    def test_reset_request_unknown_email_keeps_generic_success(self, app_client, fresh_db, monkeypatch):
+        """Anti-enumeration: no account → no send attempt → generic success."""
+        monkeypatch.setenv("SMTP_HOST", "smtp.test.invalid")
+        monkeypatch.setattr("smtplib.SMTP", _BoomSMTP)
+        resp = app_client.post("/auth/password/reset", data={"email": "ghost@test.com"})
+        assert resp.status_code == 200
+
+    def test_setup_request_send_failure_is_an_error(self, app_client, fresh_db, monkeypatch):
+        _seed_user("invited@test.com")  # no password yet → pre-approved for setup
+        monkeypatch.setenv("SMTP_HOST", "smtp.test.invalid")
+        monkeypatch.setattr("smtplib.SMTP", _BoomSMTP)
+        resp = app_client.post("/auth/password/setup/request", data={"email": "invited@test.com"})
+        assert resp.status_code == 500
+
+    def test_setup_request_unknown_email_keeps_generic_success(self, app_client, fresh_db, monkeypatch):
+        monkeypatch.setenv("SMTP_HOST", "smtp.test.invalid")
+        monkeypatch.setattr("smtplib.SMTP", _BoomSMTP)
+        resp = app_client.post("/auth/password/setup/request", data={"email": "who@test.com"})
+        assert resp.status_code == 200
+
+
 class TestSetupConfirm:
     def test_valid_token_sets_password_and_logs_in(self, app_client, fresh_db):
         _seed_user(
