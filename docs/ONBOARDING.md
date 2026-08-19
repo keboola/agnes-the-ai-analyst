@@ -148,7 +148,7 @@ prod_instance = {
 }
 ```
 
-Then create a DNS A-record pointing `agnes.<customer>.com` → `prod_ip`. Caddy will auto-issue Let's Encrypt cert.
+Then create a DNS A-record pointing `agnes.<customer>.com` → `prod_ip`. Caddy will auto-issue a Let's Encrypt cert (`CADDY_TLS=tls <ops-email>`; the A-record must exist and ports 80 + 443 must be open *before* first start, or issuance loops). Corporate-CA certs and the self-signed lab mode are the other two regimes — see [DEPLOYMENT.md § TLS](DEPLOYMENT.md#tls-optional) for the full matrix, including why a publicly-trusted cert makes the analyst install prompt drop its TLS-trust step automatically.
 
 ## 8. Smoke test
 
@@ -191,6 +191,39 @@ The `customer-instance` module already provisions:
 - **Host-side watchdog + daily DB backup with restore-verification** (module ≥ the tag introducing `enable_watchdog`; on by default). The watchdog checks container logs every 5 minutes for incident signatures the uptime check cannot see — crash loops, the "zombie" state where `/api/health` stays 200 while every write 500s, WAL-salvage data-loss events — and the daily backup copies `system.duckdb` to `/data/backups/system-duckdb/` and proves the copy restorable. Set `alert_webhook_url` (Slack / Google Chat compatible incoming webhook) to receive alerts; left empty, alerts go to journald + `/var/log/agnes-watchdog.log` on the VM only.
 
 Optional add-on: Slack webhook from Cloud Monitoring for alerts.
+
+## 10. First analyst
+
+Nothing instance-specific has to be handed to analysts — no scripts, no
+credentials over chat. Grant their group its data packages and plugin grants
+first (`/admin/access`), otherwise setup completes correctly but against an empty
+catalog. Then point them at the instance URL and let `/home` do the rest:
+
+1. Sign in with the company email (whichever identity provider `instance.yaml`
+   enables).
+2. Follow the guided steps on `/home` — install Claude Code, create the
+   workspace folder, open a terminal in it, save the login token to
+   `~/.agnes/token`, launch Claude Code there.
+3. Paste the install prompt from the final step. It is deliberately thin: it
+   installs the `agnes` CLI and then runs `agnes onboard --workspace .`, which
+   is the actual setup — workspace-directory check → `agnes init` (workspace
+   files, Claude Code hooks, first `agnes pull`) → catalog smoke test → `git` /
+   `claude` preflight → marketplace registration → `agnes diagnose` → a summary
+   ending in a `NEXT:` block. Idempotent, so a re-run repairs a half-finished
+   workspace instead of duplicating it.
+4. Restart Claude Code as the summary instructs, then start asking questions.
+
+Two things this deliberately does *not* do: it never embeds the analyst's token
+in the prompt text (the token is written to `~/.agnes/token` in step 2 and read
+via `--token-file`), and it does not set up data-source connectors. Connectors
+are conversational and come later — an analyst asks Claude Code to "set up Jira"
+in the workspace, or lists what is available with `agnes connector list` /
+`agnes connector show <slug>`.
+
+To verify the path end-to-end yourself, run it once on your own machine against
+the fresh instance: the run should end with `agnes diagnose` healthy, and — on a
+Let's Encrypt instance — with no TLS-trust step in the pasted prompt at all
+(see [DEPLOYMENT.md § TLS](DEPLOYMENT.md#tls-optional)).
 
 ## Ongoing maintenance
 
