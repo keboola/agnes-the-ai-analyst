@@ -832,6 +832,30 @@ def is_override_workspace(workspace: Path) -> bool:
     return False
 
 
+def read_sentinel_server_url(workspace: Path) -> Optional[str]:
+    """Read the ``server_url`` recorded in ``.claude/init-complete``.
+
+    Returns ``None`` when the sentinel is missing or unreadable, or when it
+    carries no ``server_url`` line (sentinels written before the key existed).
+    Same whitespace-tolerant line parsing as :func:`is_override_workspace`.
+    """
+    sentinel = workspace / ".claude" / "init-complete"
+    if not sentinel.exists():
+        return None
+    try:
+        text = sentinel.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or ":" not in stripped:
+            continue
+        key, _, value = stripped.partition(":")
+        if key.strip().lower() == "server_url":
+            return value.strip()
+    return None
+
+
 def initialize_workspace_from_template(
     workspace: Path,
     template_zip_bytes: bytes,

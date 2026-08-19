@@ -13,6 +13,7 @@ from src.initial_workspace import (
     TemplateStatus,
     initialize_default_workspace,
     initialize_workspace_from_template,
+    read_sentinel_server_url,
 )
 
 from app.chat.persistence import ChatRepository
@@ -236,6 +237,16 @@ class WorkdirManager:
         if row.marketplace_sha != self._current_marketplace_sha():
             return True
         if row.agnes_version_at_init != self._agnes_version:
+            return True
+        # The rendered CLAUDE.md names the server URL, so a workspace
+        # initialized under one URL goes stale the moment the operator moves
+        # the instance to another — the in-sandbox agent then reads the
+        # mismatch between its rails and the host it's reached on as a
+        # phishing indicator. The URL at init time lives in the
+        # ``.claude/init-complete`` sentinel (written by both init modes);
+        # ``None`` means a pre-server_url sentinel or a missing/unreadable
+        # one, and a single self-healing reinit re-stamps it.
+        if read_sentinel_server_url(self.user_workspace(user_email)) != self._server_url:
             return True
         return False
 
