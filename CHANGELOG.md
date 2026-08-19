@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.83.88] - 2026-08-19
+
 ### Added
 
 - **Snowflake semantic views can be imported into the semantic layer** — a new `snowflake_semantic` adapter composes one Apache Ossie document per semantic view (logical tables → datasets, dimensions/facts → fields, metrics → metrics, `FOREIGN_KEY`/`REF_KEY` → relationships, plus the view's own AI instructions and verified queries). Register it as a `connection`-kind source: `agnes admin semantic-source add --kind connection --name "Snowflake semantic views" --adapter snowflake_semantic`; optional `config` scope keys are `database`, `schema` and `like`. Credentials are never taken from the source row — they resolve from the instance's Snowflake connection, and egress stays gated by the existing host allowlist and SECRET. Every imported expression is tagged `SNOWFLAKE`, so it is readable in Agnes but deliberately **not** runnable locally: `src/semantic/dialect.py` refuses to splice a warehouse-specific fragment into a DuckDB query. Declared time dimensions become `dimension.is_time` and each relationship's `join_type` is preserved — both come from an `EXTENSION` row that Snowflake's SQL reference does not document and that carries them nowhere else.
