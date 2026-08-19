@@ -221,9 +221,16 @@ def run_processor(
             break
 
         session_key = f"{dir_name}/{jsonl_path.name}"
+
+        # Record the content-observation time before we read the file. Any
+        # append concurrent with or after the read will have an mtime >= this
+        # value, so the next tick sees the file as changed and re-checks the
+        # hash. Sampling after the hash leaves the hashing interval unprotected.
+        read_at = datetime.now(UTC)
+
         try:
             file_hash = compute_file_hash(jsonl_path)
-        except OSError as e:
+        except Exception as e:  # noqa: BLE001 -- defensive per-session hashing
             logger.warning(
                 "Cannot hash %s for processor=%s: %s",
                 session_key,
@@ -233,12 +240,6 @@ def run_processor(
             stats["errors"] += 1
             stats["errors_detail"].append({"session": session_key, "error": str(e)})
             continue
-
-        # Record the content-observation time now, before the (potentially slow)
-        # processor runs. Any append after this moment must be visible on the
-        # next tick; storing the completion time would make live-appended
-        # sessions look already-up-to-date and skip them forever.
-        read_at = datetime.now(UTC)
 
         # Hash-aware skip: scan_unprocessed_for returns every candidate; we
         # do the authoritative is_processed check here so the runner is the
