@@ -4952,11 +4952,15 @@
             }
             return Object.assign({}, common, { source_query: sourceQuery });
         }
-        // Whole — synthesize SELECT * FROM kbc."bucket"."table".
+        // Whole — bucket + source_table with NO source_query. A Keboola
+        // materialized row exports through the Storage API, whose filter is a
+        // JSON spec, not SQL: `RegisterTableRequest._check_mode_query_coherence`
+        // rejects a source_query starting with SELECT/WITH outright, and
+        // `connectors/keboola/extractor.py` raises on the same shape at sync
+        // time. A NULL source_query is exactly what "full-table export" means.
         return Object.assign({}, common, {
             bucket: bucket,
             source_table: sourceTable,
-            source_query: 'SELECT * FROM kbc."' + bucket + '"."' + sourceTable + '"',
         });
     }
 
@@ -5582,10 +5586,14 @@
                 source_query: (document.getElementById('editKbSourceQuery').value || '').trim(),
             });
         }
+        // Whole — no source_query, for the same reason as the register form:
+        // Keboola materialized takes a JSON filter spec or nothing at all.
+        // UpdateTableRequest happens to accept SQL here where
+        // RegisterTableRequest refuses it, so the edit form was the one path
+        // that could persist a row the extractor then fails to sync.
         return Object.assign({}, common, {
             bucket: bucket,
             source_table: sourceTable,
-            source_query: 'SELECT * FROM kbc."' + bucket + '"."' + sourceTable + '"',
         });
     }
 

@@ -11,6 +11,7 @@ in the rendered HTML for a `data_source_type='bigquery'` deployment.
 """
 
 import pytest
+from pydantic import ValidationError
 
 
 def _auth(token):
@@ -516,3 +517,49 @@ def test_nested_confirm_prompt_dialog_outranks_the_register_drawer(seeded_app, b
         "confirmModal/promptModal are opened from inside the register drawers"
     )
     assert backdrop_z < toast_z, f".modal-backdrop ({backdrop_z}) must stay under .toast ({toast_z})"
+
+
+def test_keboola_whole_table_payload_is_not_rejected_by_the_register_validator(seeded_app, monkeypatch):
+    """The Keboola drawer's DEFAULT mode must post a payload the server accepts.
+
+    `_buildKeboolaPayload` / `_buildKeboolaEditPayload` synthesized
+    ``SELECT * FROM kbc."<bucket>"."<table>"`` into ``source_query`` for the
+    whole-table branch, but a Keboola *materialized* row exports through the
+    Storage API, whose filter is a JSON spec — so
+    ``RegisterTableRequest._check_mode_query_coherence`` refuses a
+    source_query starting with SELECT/WITH ("must be a JSON filter spec …,
+    not SQL"), and `connectors/keboola/extractor.py` raises on the same shape
+    at sync time. "Whole table (extension)" is the pre-checked radio, so every
+    default Keboola registration 422d; before `_apiErrorMessage` landed the
+    operator saw that as the literal string "[object Object]", which is how a
+    dead register path stayed invisible.
+
+    Both halves are pinned: the model must still reject the synthesized SQL
+    (so this is not silently "fixed" by relaxing the server), and neither
+    payload builder may produce it.
+    """
+    from app.api.admin import RegisterTableRequest
+
+    with pytest.raises(ValidationError) as exc:
+        RegisterTableRequest(
+            name="orders",
+            source_type="keboola",
+            query_mode="materialized",
+            bucket="in.c-sales",
+            source_table="orders",
+            source_query='SELECT * FROM kbc."in.c-sales"."orders"',
+        )
+    assert "JSON filter spec" in str(exc.value)
+
+    c = seeded_app["client"]
+    html = c.get("/admin/tables", headers=_auth(seeded_app["admin_token"])).text
+
+    for fn in ("function _buildKeboolaPayload(", "function _buildKeboolaEditPayload("):
+        start = html.index(fn)
+        end = html.index("\n    function ", start + len(fn))
+        body = html[start:end]
+        assert "SELECT * FROM kbc." not in body, (
+            f"{fn} still synthesizes SQL into source_query for the whole-table "
+            "branch — the server rejects exactly that payload, so the drawer's "
+            "default mode cannot register anything"
+        )
