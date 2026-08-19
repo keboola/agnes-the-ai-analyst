@@ -346,20 +346,38 @@ def _token_precheck_lines() -> list[str]:
     Deliberately NOT a numbered step — "0)" belongs to the TLS trust block,
     which is gated on `ca_pem` and must be free to claim that number.
 
-    Two outcomes need different moves, and telling them apart is a judgment
-    call the CLI can't make for the agent: on a FRESH install a missing file
+    Two outcomes need different moves: on a FRESH install a missing file
     means the token never landed (stop, send the user back to the guide); on
     a RECONCILE it is expected, because the first run consumed and deleted
     it after saving the credential to `~/.config/agnes/token.json`.
+
+    What tells them apart is NOT the existence of `token.json`. That file
+    holds `{"access_token", "email"}` and nothing else — it never records
+    which server the credential belongs to (`cli/config.py::save_token`) —
+    and there is exactly one of it per machine. So on a laptop already
+    signed in to a different Agnes deployment it exists and proves nothing
+    about this one. The earlier wording ("an earlier run already saved the
+    credential, so just continue") turned that into a false "already
+    configured" and sent the agent past a genuinely missing credential;
+    installs read it back as a check written to pass when it should stop.
+
+    The server *is* recorded, in `config.yaml`'s `server:` key
+    (`cli/config.py::get_server_url` reads it), so that is what the check
+    reads. Deliberately a judgment the agent makes by comparing two strings
+    rather than a one-liner that exits non-zero: the CLI isn't installed yet
+    at this point in the prompt (step 1 installs it), so `agnes auth
+    whoami` — which would answer this directly — is not available here.
     """
     return [
         "Before you start, confirm the login token file is in place:",
         '   test -s ~/.agnes/token && echo "token present" || echo "token missing"',
         "",
-        "   Missing on a fresh install: stop, and send the user to",
-        "   {server_url}/home step 4 — the step that saves it. Missing while",
-        "   ~/.config/agnes/token.json already exists: an earlier run already",
-        "   saved the credential, so just continue.",
+        "   Present: continue. Missing: check which server this machine is signed",
+        "   in to — ~/.config/agnes/token.json holds a token and an email, never a server:",
+        "      grep -m1 '^server:' ~/.config/agnes/config.yaml 2>/dev/null",
+        "   {server_url} → an earlier run saved the credential and removed the",
+        "   file; continue. Another server, or none → not signed in to",
+        "   {server_url}: stop, send the user to {server_url}/home step 4.",
         "",
     ]
 

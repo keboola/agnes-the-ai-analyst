@@ -290,6 +290,41 @@ def test_token_precheck_block():
     assert "0) Check" not in joined
 
 
+def test_token_precheck_does_not_treat_token_json_as_proof_of_this_server():
+    """A missing token file must not be waved through by `token.json` alone.
+
+    `token.json` holds only `{access_token, email}` — never the server — and
+    there is one per machine, so on a laptop already signed in to a different
+    Agnes deployment it exists and says nothing about this one. The old
+    wording ("an earlier run already saved the credential, so just continue")
+    turned that into a false "already configured" and walked the agent past a
+    genuinely absent credential. The branch must key on the server recorded
+    in `config.yaml` instead, and the mismatch case must stop.
+    """
+    from app.web.setup_instructions import resolve_lines
+
+    joined = "\n".join(resolve_lines("agnes.whl"))
+
+    # The false-positive wording is gone, with no equivalent.
+    assert "so just continue" not in joined
+    assert "an earlier run already" not in joined
+
+    # The check reads the server, which is the only value that discriminates.
+    assert "~/.config/agnes/config.yaml" in joined
+    assert "^server:" in joined
+
+    # Both outcomes are spelled out, and the mismatch one stops rather than
+    # continuing.
+    assert "{server_url} → an earlier run saved the credential" in joined
+    assert "Another server, or none" in joined
+    assert "not signed in to" in joined
+    assert "stop, send the user to {server_url}/home step 4" in joined
+
+    # The reason token.json is insufficient is stated, so the next editor
+    # doesn't reintroduce the shortcut.
+    assert "never a server" in joined
+
+
 def test_preamble_carries_no_pre_emptive_trust_assertion():
     """The preamble must not answer a trust question on the reader's behalf.
 

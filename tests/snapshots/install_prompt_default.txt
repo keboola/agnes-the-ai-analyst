@@ -19,10 +19,12 @@ verification.
 Before you start, confirm the login token file is in place:
    test -s ~/.agnes/token && echo "token present" || echo "token missing"
 
-   Missing on a fresh install: stop, and send the user to
-   {server_url}/home step 4 — the step that saves it. Missing while
-   ~/.config/agnes/token.json already exists: an earlier run already
-   saved the credential, so just continue.
+   Present: continue. Missing: check which server this machine is signed
+   in to — ~/.config/agnes/token.json holds a token and an email, never a server:
+      grep -m1 '^server:' ~/.config/agnes/config.yaml 2>/dev/null
+   {server_url} → an earlier run saved the credential and removed the
+   file; continue. Another server, or none → not signed in to
+   {server_url}: stop, send the user to {server_url}/home step 4.
 
 1) Install the CLI:
    TMPDIR_WHEEL=$(mktemp -d -t agnes_cli.XXXXXX)
