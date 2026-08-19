@@ -22,6 +22,8 @@ script=$repo_root/scripts/ops/agnes-state-applier.sh
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/data/state/db-jobs" "$tmp/opt/agnes"
+mkdir -p "$tmp/opt/agnes/scripts/ops"
+cp "$repo_root/scripts/ops/agnes-compose-file.sh" "$tmp/opt/agnes/scripts/ops/agnes-compose-file.sh"
 echo "AGNES_TAG=stable" > "$tmp/opt/agnes/.env"
 touch "$tmp/opt/agnes/docker-compose.yml" \
       "$tmp/opt/agnes/docker-compose.prod.yml" \
@@ -285,6 +287,8 @@ echo "OK: applier touched tick file (Phase 4)"
 # it failed/expired without invoking the migrator.
 tmp2=$(mktemp -d)
 mkdir -p "$tmp2/data/state/db-jobs" "$tmp2/opt/agnes"
+mkdir -p "$tmp2/opt/agnes/scripts/ops"
+cp "$repo_root/scripts/ops/agnes-compose-file.sh" "$tmp2/opt/agnes/scripts/ops/agnes-compose-file.sh"
 echo "AGNES_TAG=stable" > "$tmp2/opt/agnes/.env"
 touch "$tmp2/opt/agnes/docker-compose.yml" \
       "$tmp2/opt/agnes/docker-compose.prod.yml" \
@@ -351,6 +355,8 @@ echo "OK: B.2 pending-job expiry (H8)"
 # rollback lands on a non-side_car state.
 tmp3=$(mktemp -d)
 mkdir -p "$tmp3/data/state/db-jobs" "$tmp3/opt/agnes"
+mkdir -p "$tmp3/opt/agnes/scripts/ops"
+cp "$repo_root/scripts/ops/agnes-compose-file.sh" "$tmp3/opt/agnes/scripts/ops/agnes-compose-file.sh"
 echo "AGNES_TAG=stable" > "$tmp3/opt/agnes/.env"
 touch "$tmp3/opt/agnes/docker-compose.yml" \
       "$tmp3/opt/agnes/docker-compose.prod.yml" \
@@ -447,6 +453,8 @@ echo "OK: B.3 cloud→side_car failure clears FLAG (DR rollback)"
 # instance.yaml to the target backend.
 tmp4=$(mktemp -d)
 mkdir -p "$tmp4/data/state/db-jobs" "$tmp4/opt/agnes"
+mkdir -p "$tmp4/opt/agnes/scripts/ops"
+cp "$repo_root/scripts/ops/agnes-compose-file.sh" "$tmp4/opt/agnes/scripts/ops/agnes-compose-file.sh"
 echo "AGNES_TAG=stable" > "$tmp4/opt/agnes/.env"
 touch "$tmp4/opt/agnes/docker-compose.yml" \
       "$tmp4/opt/agnes/docker-compose.prod.yml" \
@@ -540,6 +548,8 @@ echo "OK: C.2 migrator subprocess watchdog (H5 applier side)"
 # error through the read block and the ERR trap fires.
 tmp5=$(mktemp -d)
 mkdir -p "$tmp5/data/state/db-jobs" "$tmp5/opt/agnes"
+mkdir -p "$tmp5/opt/agnes/scripts/ops"
+cp "$repo_root/scripts/ops/agnes-compose-file.sh" "$tmp5/opt/agnes/scripts/ops/agnes-compose-file.sh"
 echo "AGNES_TAG=stable" > "$tmp5/opt/agnes/.env"
 touch "$tmp5/opt/agnes/docker-compose.yml" \
       "$tmp5/opt/agnes/docker-compose.prod.yml" \

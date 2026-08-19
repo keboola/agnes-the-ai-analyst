@@ -61,11 +61,12 @@
             </form>
 
             <div class="login-links">
-                <form method="POST" action="/auth/password/reset" class="reset-form">
-                    <input type="hidden" name="email" value="{{ email|default('', true) }}" id="reset-email">
-                    {{ ds.button('Forgot Password?', variant='ghost',
-                                 type='submit', klass='btn-link') }}
-                </form>
+                {# A plain link to the request page — a hidden-email POST here
+                   used to submit an empty address (and render a false "Check
+                   your email") whenever the user clicked this before typing
+                   their email into the sign-in form above. #}
+                {{ ds.button('Forgot Password?', variant='ghost',
+                             href='/auth/password/reset', klass='btn-link') }}
             </div>
         </div>
 
@@ -133,11 +134,6 @@ document.querySelectorAll('.auth-tab').forEach(tab => {
         const firstInput = document.getElementById(tabId + '-tab').querySelector('input');
         if (firstInput) firstInput.focus();
     });
-});
-
-// Keep reset email in sync with login email
-document.getElementById('email-signin').addEventListener('input', function() {
-    document.getElementById('reset-email').value = this.value;
 });
 
 // Sync emails between tabs

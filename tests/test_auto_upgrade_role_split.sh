@@ -219,6 +219,13 @@ make_sandboxed_script() {
     local tmp=$1
     mkdir -p "$tmp/opt/agnes"
 
+    # The script sources the shared compose-overlay resolver from
+    # /opt/agnes/scripts/ops (delivered by the same config fetch) and skips
+    # the tick when it is absent, so the sandbox has to provide it or every
+    # scenario below exits early without exercising anything.
+    mkdir -p "$tmp/opt/agnes/scripts/ops"
+    cp "$(dirname "$script")/agnes-compose-file.sh" "$tmp/opt/agnes/scripts/ops/agnes-compose-file.sh"
+
     local sandboxed=$tmp/agnes-auto-upgrade.sh
     sed \
         -e "s|/opt/agnes|$tmp/opt/agnes|g" \
