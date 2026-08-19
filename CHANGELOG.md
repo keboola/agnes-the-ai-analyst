@@ -10,6 +10,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- **Snowflake semantic views can be imported into the semantic layer** — a new `snowflake_semantic` adapter composes one Apache Ossie document per semantic view (logical tables → datasets, dimensions/facts → fields, metrics → metrics, `FOREIGN_KEY`/`REF_KEY` → relationships, plus the view's own AI instructions and verified queries). Register it as a `connection`-kind source: `agnes admin semantic-source add --kind connection --name "Snowflake semantic views" --adapter snowflake_semantic`; optional `config` scope keys are `database`, `schema` and `like`. Credentials are never taken from the source row — they resolve from the instance's Snowflake connection, and egress stays gated by the existing host allowlist and SECRET. Every imported expression is tagged `SNOWFLAKE`, so it is readable in Agnes but deliberately **not** runnable locally: `src/semantic/dialect.py` refuses to splice a warehouse-specific fragment into a DuckDB query.
+
+### Changed
+
+- **An unknown semantic-source adapter is now refused at registration** (`400`, naming the adapters that do exist) instead of registering successfully and failing on the first sync.
+
+### Fixed
+
+- **The Snowflake panel on `/admin/data-sources` no longer points semantic views at the table registry.** It claimed "for custom SQL, partitioning or semantic views, use Tables → Register new table", but a semantic view is not a registerable table and that form rejects Snowflake-flavour SQL outright — an admin following the hint hit a dead end. It now points at the semantic-layer page and states that the imported metric SQL is not locally runnable.
+
 ## [0.83.86] - 2026-08-19
 
 ### Added
