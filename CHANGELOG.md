@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.83.88] - 2026-08-19
+
 ### Fixed
 
 - **The install prompt no longer reads as prompt injection to the agent that executes it.** The bundled seed's `install-prompt/template.md.tmpl` and the `connector-asana` / `connector-atlassian` SKILL.md bodies dropped the force-style phrasing (`REFUSE`, `PROCEED SILENTLY`, "verbatim", "Treat empty/Enter as YES") and the inline names of TLS-verification-disabling flags — text that matches prompt-injection / TLS-interception patterns and stalls a coding agent's safety classifier mid-install. Same steps, same commands, same order; only the wording is now ordinary guidance to a person. The paragraph telling the agent to prefix a blocked `agnes` command with `!` to bypass its own command classifier is gone — a blocked command is now reported to the user, who re-runs it or approves the permission prompt. `tests/test_install_prompt_banned_phrases.py` drops the tier 2/3 known-dirty baselines and their `pytest.skip` branches, so all three tiers are enforced and a reintroduced phrase fails the guard.
