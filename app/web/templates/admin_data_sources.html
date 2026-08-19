@@ -2883,8 +2883,14 @@ async function _saveDatabricksAndContinue() {
     if (u.username || u.password) {
       throw new Error("Databricks host must not contain userinfo (user:pass@).");
     }
-    if ((u.pathname && u.pathname !== "/") || u.search || u.hash) {
-      throw new Error("Databricks host must be a bare workspace URL with no path, query, or fragment.");
+    if (u.pathname && u.pathname !== "/") {
+      throw new Error("Databricks host must be a bare workspace URL with no path.");
+    }
+    if (u.search) {
+      throw new Error("Databricks host must be a bare workspace URL. Remove the query string, for example the trailing ?o=... copied from the browser.");
+    }
+    if (u.hash) {
+      throw new Error("Databricks host must be a bare workspace URL with no #fragment.");
     }
     // Reconstruct bare https://hostname[:port]
     host = `https://${u.hostname}${u.port ? ":" + u.port : ""}`;
