@@ -88,9 +88,22 @@ _SENDER_LIMIT_MESSAGES = {
 
 async def _send_or_explain_limit(mgr_send, channel: str, slack_user_id: str) -> None:
     """Run one send coroutine; answer a known sender-limit refusal with an
-    ephemeral instead of letting it vanish into the background-task log."""
+    ephemeral instead of letting it vanish into the background-task log.
+
+    Also translates ``ConcurrencyCapHit`` (a plain Exception, NOT a
+    RuntimeError): the api-replica producer path creates the session inside
+    ``_produce_slack_message``, so the capacity refusal surfaces here rather
+    than at the gateway path's explicit create_session catch."""
+    from app.chat.manager import ConcurrencyCapHit
+
     try:
         await mgr_send
+    except ConcurrencyCapHit:
+        await send_ephemeral_to_user(
+            channel,
+            slack_user_id,
+            "The agent is at capacity right now — please try again in a few minutes.",
+        )
     except RuntimeError as exc:
         msg = _SENDER_LIMIT_MESSAGES.get(str(exc))
         if msg is None:
@@ -474,6 +487,42 @@ async def _handle_mention(app, event: dict) -> None:
         # agent: this mention does not run the currently-bound agent.
         bound_agent = None
         routed_session_user = None
+
+    if service_thread and bound_agent is None:
+        # Continuing a service thread whose agent is NOT the currently-bound,
+        # just-validated one (channel unbound, rebound elsewhere, or the
+        # binding refused above): re-run the same safeguards against the
+        # STORED agent, or revoking the owner's CHAT grant / widening the
+        # agent to all-'all' after unbinding would stop new threads while
+        # existing ones kept running under the owner's identity.
+        from src.agent_scope_intersection import agent_is_passthrough as _is_passthrough
+
+        stale_reason = None
+        stored_agent = None
+        try:
+            stored_agent = agents_repo().get_by_id(str(existing_agent_id))
+        except Exception:
+            logger.exception("stored agent lookup failed for service thread %s", existing.id)
+        if stored_agent is None or stored_agent.get("deleted_at") is not None:
+            stale_reason = "agent deleted"
+        elif _is_passthrough(stored_agent):
+            stale_reason = "agent widened to all-'all'"
+        else:
+            stored_owner = users_repo().get_by_id(str(stored_agent["owner_user_id"]))
+            if stored_owner is None or not stored_owner.get("email"):
+                stale_reason = "owner unresolvable"
+            elif not can_access(stored_owner["id"], ResourceType.CHAT.value, "chat", conn):
+                stale_reason = "owner lost the CHAT grant"
+        if stale_reason is not None:
+            logger.warning(
+                "service thread %s refused: agent %s — %s", existing.id, existing_agent_id, stale_reason
+            )
+            await send_ephemeral_to_user(
+                channel,
+                slack_user_id,
+                "This thread's agent is no longer available — start a new thread.",
+            )
+            return
 
     # The identity the session row (and everything keyed off it) belongs to.
     # (routed_session_user is non-None exactly when bound_agent survived all

@@ -1214,12 +1214,26 @@ def test_mention_service_thread_survives_unbinding(monkeypatch):
     _ensure_schema(conn)
     _seed_bound_chat_user(conn)
     _allow_channel(conn)
-    # NO binding for C_OK in this test — but a service thread exists.
+    # NO binding for C_OK in this test — but a service thread exists whose
+    # stored agent is real, scoped, and whose owner still holds CHAT.
+    from src.repositories import agents_repo
+
     conn.execute("INSERT INTO users(id, email, name) VALUES ('uid_boss5', 'boss5@x', 'Boss') ON CONFLICT DO NOTHING")
+    _egid = conn.execute("SELECT id FROM user_groups WHERE name='Everyone'").fetchone()[0]
+    conn.execute(
+        "INSERT INTO user_group_members(user_id, group_id, source) VALUES ('uid_boss5', ?, 'system_seed') "
+        "ON CONFLICT DO NOTHING",
+        [_egid],
+    )
+    agents_repo().create(
+        id="ag_unbound", owner_user_id="uid_boss5", name="Unbound", slug="router-unbound",
+        plugins_mode="selected", connections_mode="selected",
+        tables_mode="selected", memory_mode="selected",
+    )
     conn.execute(
         "INSERT INTO chat_sessions(id, user_email, surface, slack_channel_id, "
         "slack_thread_ts, title, started_at, agent_id) VALUES "
-        "('s_unbound', 'boss5@x', 'slack_thread', 'C_OK', '9.13', NULL, current_timestamp, 'ag_gone')"
+        "('s_unbound', 'boss5@x', 'slack_thread', 'C_OK', '9.13', NULL, current_timestamp, 'ag_unbound')"
     )
     conn.execute(
         "INSERT INTO chat_messages(id, session_id, role, content) VALUES ('m_unbound1', 's_unbound', 'user', 'hi')"
@@ -1387,6 +1401,77 @@ def test_mention_unknown_runtime_error_still_raises(monkeypatch):
     app = _FakeApp(conn=conn, mgr=mgr)
     with pytest.raises(RuntimeError, match="something_else_entirely"):
         asyncio.run(ev._handle_mention(app, {"channel": "C_OK", "ts": "9.18", "user": "U_OK", "text": "<@U07BOT> hi"}))
+
+
+def test_mention_service_thread_with_deleted_agent_is_refused(monkeypatch):
+    """Continuing a service thread re-validates the STORED agent: a deleted
+    (or never-existing) agent refuses politely instead of running the thread
+    under a stale identity (Devin Review on this PR)."""
+    import asyncio
+    import services.slack_bot.events as ev
+
+    posts = []
+
+    async def _fake_ep(ch, u, txt):
+        posts.append(txt)
+
+    monkeypatch.setattr(ev, "send_ephemeral_to_user", _fake_ep)
+
+    async def _fake_react(channel, ts, emoji):
+        return None
+
+    monkeypatch.setattr(ev, "add_reaction", _fake_react)
+    conn = get_system_db()
+    _ensure_schema(conn)
+    _seed_bound_chat_user(conn)
+    _allow_channel(conn)
+    conn.execute(
+        "INSERT INTO chat_sessions(id, user_email, surface, slack_channel_id, "
+        "slack_thread_ts, title, started_at, agent_id) VALUES "
+        "('s_stale', 'ghost@x', 'slack_thread', 'C_OK', '9.19', NULL, current_timestamp, 'ag_never_existed')"
+    )
+    mgr = _FakeMgr()
+    app = _FakeApp(conn=conn, mgr=mgr)
+    asyncio.run(ev._handle_mention(app, {"channel": "C_OK", "ts": "9.19", "user": "U_OK", "text": "<@U07BOT> hi"}))
+    assert posts and "no longer available" in posts[-1]
+    assert mgr.sent == [] and mgr.created == []
+
+
+def test_mention_service_thread_with_widened_agent_is_refused(monkeypatch):
+    """Unbind-then-widen-to-all-'all' must not leave existing service
+    threads running under the owner's plain identity — continuation is
+    refused once the stored agent is passthrough."""
+    import asyncio
+    import services.slack_bot.events as ev
+    from src.repositories import agents_repo
+
+    posts = []
+
+    async def _fake_ep(ch, u, txt):
+        posts.append(txt)
+
+    monkeypatch.setattr(ev, "send_ephemeral_to_user", _fake_ep)
+
+    async def _fake_react(channel, ts, emoji):
+        return None
+
+    monkeypatch.setattr(ev, "add_reaction", _fake_react)
+    conn = get_system_db()
+    _ensure_schema(conn)
+    _seed_bound_chat_user(conn)
+    _allow_channel(conn)
+    conn.execute("INSERT INTO users(id, email, name) VALUES ('uid_boss6', 'boss6@x', 'Boss') ON CONFLICT DO NOTHING")
+    agents_repo().create(id="ag_widened", owner_user_id="uid_boss6", name="Wide", slug="router-widened")
+    conn.execute(
+        "INSERT INTO chat_sessions(id, user_email, surface, slack_channel_id, "
+        "slack_thread_ts, title, started_at, agent_id) VALUES "
+        "('s_widened', 'boss6@x', 'slack_thread', 'C_OK', '9.20', NULL, current_timestamp, 'ag_widened')"
+    )
+    mgr = _FakeMgr()
+    app = _FakeApp(conn=conn, mgr=mgr)
+    asyncio.run(ev._handle_mention(app, {"channel": "C_OK", "ts": "9.20", "user": "U_OK", "text": "<@U07BOT> hi"}))
+    assert posts and "no longer available" in posts[-1]
+    assert mgr.sent == []
 
 
 def test_mention_attach_not_awaited_returns_under_budget(monkeypatch):
