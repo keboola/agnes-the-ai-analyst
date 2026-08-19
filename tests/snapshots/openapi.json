@@ -1840,6 +1840,11 @@
             ],
             "title": "Bigquery Project"
           },
+          "confirm_connection_change": {
+            "default": false,
+            "title": "Confirm Connection Change",
+            "type": "boolean"
+          },
           "data_source": {
             "title": "Data Source",
             "type": "string"
@@ -7985,8 +7990,14 @@
         "type": "object"
       },
       "ServerConfigUpdateRequest": {
-        "description": "Patch payload for POST /api/admin/server-config.\n\nOnly the sections listed in `_EDITABLE_SECTIONS` are accepted; anything\nelse is rejected with 400. `confirm_danger` must be true if the patch\ntouches any danger-zone section (auth.*, server.*).",
+        "description": "Patch payload for POST /api/admin/server-config.\n\nOnly the sections listed in `_EDITABLE_SECTIONS` are accepted; anything\nelse is rejected with 400. `confirm_danger` must be true if the patch\ntouches any danger-zone section (auth.*, server.*), and\n`confirm_connection_change` must be true to repoint a data source that\nalready has registrations.",
         "properties": {
+          "confirm_connection_change": {
+            "default": false,
+            "description": "Must be true to repoint a data_source connection that registered tables already resolve against (see 409 connection_change_affects_registrations)",
+            "title": "Confirm Connection Change",
+            "type": "boolean"
+          },
           "confirm_danger": {
             "default": false,
             "description": "Must be true to apply changes touching auth.* or server.*",
@@ -11138,7 +11149,7 @@
   "info": {
     "description": "Self-hosted AI harness: governed data access, skills marketplace, corporate memory, and agent workspaces",
     "title": "AI Harness",
-    "version": "0.83.49"
+    "version": "0.83.86"
   },
   "openapi": "3.1.0",
   "paths": {
