@@ -54,7 +54,9 @@ _RETIRED_PLACEHOLDERS = (
     "{token}",
 )
 
-_PLACEHOLDER_RE = re.compile(r"\{[a-z][a-z0-9_]*\}")
+# Negative look-around: the inner brace of tight Jinja (`{{today}}`) is not a
+# single-brace placeholder. Mirrors the scan in app/api/initial_workspace.py.
+_PLACEHOLDER_RE = re.compile(r"(?<!\{)\{[a-z][a-z0-9_]*\}(?!\})")
 
 
 def _template_text() -> str:

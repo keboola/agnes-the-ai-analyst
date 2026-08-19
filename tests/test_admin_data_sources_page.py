@@ -964,3 +964,25 @@ class TestDatabricksWizardCredentialAndRestartNotice:
         handler = handler[: handler.index("connectAndValidate();")]
         assert "if (_dbxSaveDone) {" in handler
         assert 'window.location.href = "/admin/tables"' in handler
+
+
+def test_register_error_text_is_not_html_escaped_before_textcontent(seeded_app):
+    """`_registerErrorText` output goes to `textContent`, so it must not be
+    `_esc`'d first.
+
+    `textContent` escapes by assignment; running the string through `_esc`
+    beforehand double-escapes it, so the upstream reason this surface exists to
+    relay — `Catalog Error: Table with name X does not exist! Did you mean "Y"?`
+    — reaches the operator as `Did you mean &quot;Y&quot;?`. Not an XSS risk
+    (every one of the three sinks is `textContent`, never `innerHTML`), just a
+    mangled message on the one line that matters. The single-row path already
+    omits `_esc`; the two bulk-register paths did not.
+    """
+    c = seeded_app["client"]
+    html = c.get("/admin/data-sources", headers={"Authorization": f"Bearer {seeded_app['admin_token']}"}).text
+    assert "_esc(_registerErrorText(" not in html, (
+        "a register-error string is HTML-escaped before being assigned to "
+        "textContent — the operator sees &quot; entities instead of the quoted "
+        "identifier the server suggested"
+    )
+    assert "_registerErrorText(" in html, "guard has nothing to check — helper is gone"

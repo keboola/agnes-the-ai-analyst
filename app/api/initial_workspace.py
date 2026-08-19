@@ -778,24 +778,27 @@ def _compute_render_dry_run() -> dict:
         # (docs/seed-repo-contract.md §5), so a retired or unwired
         # single-brace placeholder renders literally into the analyst's
         # prompt. Surface that to the operator here.
-        from src.initial_workspace import PROMPT_SEED_PATHS, resolve_seed_file
+        from src.initial_workspace import resolve_seed_file
 
-        # Scan the file the prompt is actually bound to when a custom
-        # git_path is set (same resolution rule as the `{token}` probe
-        # above) — the canonical template matters only when it is the one
-        # analysts get.
-        scan_path = (
-            bound_git_path
-            if bound_git_path is not None
-            else PROMPT_SEED_PATHS["install"]
-        )
-        tmpl = resolve_seed_file(scan_path)
+        # Scan the file the prompt is actually bound to — and ONLY that file.
+        # `_install_prompt_bound_git_path()` returns None in editor mode
+        # (`source_mode != "git"`), where the prompt is rendered from the DB and
+        # the canonical seed template reaches no analyst at all; scanning it
+        # there produced a "will render literally" warning about text nobody is
+        # served, which is what the comment this replaces already said the rule
+        # should be.
+        scan_path = bound_git_path
+        tmpl = resolve_seed_file(scan_path) if scan_path is not None else None
         if tmpl is not None:
             tmpl_text, _tmpl_source = tmpl
             unwired = sorted(
                 {
                     name
-                    for name in re.findall(r"\{[a-z][a-z0-9_]*\}", tmpl_text)
+                    # Negative look-around so the INNER brace of tight Jinja
+                    # (`{{today}}`, no spaces) is not read as a single-brace
+                    # placeholder. The spaced form `{{ today }}` never matched;
+                    # the tight one did, which made the warning look arbitrary.
+                    for name in re.findall(r"(?<!\{)\{[a-z][a-z0-9_]*\}(?!\})", tmpl_text)
                     if name != "{server_url}"
                 }
             )

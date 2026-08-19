@@ -246,7 +246,12 @@ class WorkdirManager:
         # ``.claude/init-complete`` sentinel (written by both init modes);
         # ``None`` means a pre-server_url sentinel or a missing/unreadable
         # one, and a single self-healing reinit re-stamps it.
-        if read_sentinel_server_url(self.user_workspace(user_email)) != self._server_url:
+        # ``.strip()`` on our side too: the sentinel READER strips, so a
+        # SERVER_URL carrying stray whitespace would compare unequal forever
+        # and reinit the workspace on every single attach. Wasteful rather than
+        # destructive (the init path only overwrites template-owned files), but
+        # a malformed env var should not cost a full template copy per session.
+        if read_sentinel_server_url(self.user_workspace(user_email)) != self._server_url.strip():
             return True
         return False
 

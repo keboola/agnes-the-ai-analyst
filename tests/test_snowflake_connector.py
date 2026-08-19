@@ -967,7 +967,7 @@ def test_admin_register_snowflake_rebuild_error_is_visible_twice(seeded_app, sno
                 "errors": [
                     {
                         "table": "orders_typo",
-                        "error": 'Catalog Error: Table with name BI_TYPO does not exist!',
+                        "error": "Catalog Error: Table with name BI_TYPO does not exist!",
                     }
                 ],
             }
@@ -1023,7 +1023,9 @@ def test_fixing_a_bad_snowflake_name_clears_the_recorded_failure(seeded_app, sno
     )
     resp = c.post("/api/admin/register-table", json=_sf_payload(name="orders_fix"), headers=_auth(token))
     assert resp.status_code == 500, resp.text
-    row = next(t for t in c.get("/api/admin/registry", headers=_auth(token)).json()["tables"] if t["id"] == "orders_fix")
+    row = next(
+        t for t in c.get("/api/admin/registry", headers=_auth(token)).json()["tables"] if t["id"] == "orders_fix"
+    )
     assert row["last_sync_status"] == "error"
 
     # 2. the admin corrects the name; this rebuild succeeds
@@ -1038,7 +1040,9 @@ def test_fixing_a_bad_snowflake_name_clears_the_recorded_failure(seeded_app, sno
     )
     assert resp.status_code == 200, resp.text
 
-    row = next(t for t in c.get("/api/admin/registry", headers=_auth(token)).json()["tables"] if t["id"] == "orders_fix")
+    row = next(
+        t for t in c.get("/api/admin/registry", headers=_auth(token)).json()["tables"] if t["id"] == "orders_fix"
+    )
     assert row["last_sync_status"] != "error", row
     assert not (row["last_sync_error"] or ""), row
 
@@ -1295,3 +1299,54 @@ def test_private_key_path_that_cannot_be_expanded_raises_valueerror(monkeypatch)
 
     with pytest.raises(ValueError, match="could not be read"):
         _private_key_pem_and_passphrase("~no_such_user_42/snowflake_key.pem")
+
+
+def test_another_rows_rebuild_error_does_not_mark_the_new_row_failed(seeded_app, snowflake_instance, monkeypatch):
+    """A healthy new row must not inherit somebody else's rebuild failure.
+
+    `rebuild_from_registry` walks EVERY `query_mode='remote'` Snowflake row, not
+    just the one being registered, and `_rebuild_snowflake_remote_extract`
+    collapses all per-table errors into one aggregate string. Stamping that
+    string on `request.name` therefore marked the row the operator just added
+    as `error` — quoting a completely different table's name — whenever any
+    pre-existing row was broken. On an instance that already has a few phantom
+    rows (the live case this change set came from) every subsequent valid
+    registration read as failed until the next orchestrator sweep re-derived
+    state from `_meta`.
+
+    The 500 itself is deliberately left alone here: the extract rebuild really
+    did fail, so telling the caller "something went wrong" is not the lie — the
+    lie was pinning it on their row.
+    """
+    monkeypatch.setattr(
+        "connectors.snowflake.extract_init.rebuild_from_registry",
+        MagicMock(
+            return_value={
+                "skipped": False,
+                "tables_registered": 1,
+                "errors": [
+                    {
+                        "table": "other_broken_row",
+                        "error": "Catalog Error: Table with name BI_GONE does not exist!",
+                    }
+                ],
+            }
+        ),
+    )
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    resp = c.post(
+        "/api/admin/register-table",
+        json=_sf_payload(name="orders_good"),
+        headers=_auth(token),
+    )
+    assert resp.status_code == 500, resp.text
+
+    reg = c.get("/api/admin/registry", headers=_auth(token)).json()
+    row = next(t for t in reg["tables"] if t["id"] == "orders_good")
+    assert row["last_sync_status"] != "error", (
+        "the newly registered row was marked failed by another row's error; "
+        f"last_sync_error={row.get('last_sync_error')!r}"
+    )
+    assert "BI_GONE" not in (row.get("last_sync_error") or "")
+    assert "other_broken_row" not in (row.get("last_sync_error") or "")

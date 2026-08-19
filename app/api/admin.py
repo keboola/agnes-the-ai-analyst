@@ -3468,12 +3468,20 @@ def _validate_snowflake_register_payload(req: "RegisterTableRequest") -> None:
         return
 
 
-def _rebuild_snowflake_remote_extract() -> tuple[bool, str]:
+def _rebuild_snowflake_remote_extract() -> tuple[bool, str, set[str]]:
     """Rebuild ``extracts/snowflake/extract.duckdb`` for remote rows.
 
-    Returns ``(ok, message)``. ``ok=False`` is reserved for a *hard* failure
-    (an exception, or per-table errors) — a skipped rebuild is a message, so a
-    benign skip never turns a successful registration into a 500.
+    Returns ``(ok, message, failed_tables)``. ``ok=False`` is reserved for a
+    *hard* failure (an exception, or per-table errors) — a skipped rebuild is a
+    message, so a benign skip never turns a successful registration into a 500.
+
+    ``failed_tables`` names the registry rows the rebuild could not build.
+    ``rebuild_from_registry`` walks EVERY remote row, not just the one being
+    registered, so the aggregate message routinely describes somebody else's
+    broken row; a caller that records the failure against a specific row must
+    check this set first or it marks a healthy new row as failed. Empty on a
+    hard exception, where there is no per-table attribution to be had and the
+    rebuild genuinely failed for every row.
     """
     from connectors.snowflake.extract_init import rebuild_from_registry
 
@@ -3481,7 +3489,7 @@ def _rebuild_snowflake_remote_extract() -> tuple[bool, str]:
         result = rebuild_from_registry()
     except Exception as exc:
         logger.exception("snowflake remote extract rebuild failed")
-        return (False, f"snowflake remote extract rebuild failed: {exc}")
+        return (False, f"snowflake remote extract rebuild failed: {exc}", set())
 
     if result.get("skipped"):
         # A *skipped* rebuild is a message, never a failed registration —
@@ -3500,16 +3508,19 @@ def _rebuild_snowflake_remote_extract() -> tuple[bool, str]:
                 "snowflake remote extract skipped: Snowflake is not configured, so the "
                 "sf catalog was not attached. Set data_source.snowflake.* + the password "
                 "env/vault secret, then POST /api/sync/trigger to build the extract.",
+                set(),
             )
-        return (True, f"snowflake remote extract skipped: {reason}")
+        return (True, f"snowflake remote extract skipped: {reason}", set())
 
     errors = result.get("errors") or []
     if errors:
-        return (False, f"snowflake remote extract rebuilt with errors: {errors}")
+        failed = {str(e.get("table")) for e in errors if isinstance(e, dict) and e.get("table")}
+        return (False, f"snowflake remote extract rebuilt with errors: {errors}", failed)
 
     return (
         True,
         f"snowflake remote extract rebuilt; {result.get('tables_registered', 0)} table(s) registered",
+        set(),
     )
 
 
@@ -3524,7 +3535,7 @@ def _rebuild_snowflake_remote_extract_bg(table_name: Optional[str] = None) -> No
     error until the next full orchestrator sweep re-derives ``sync_state`` from
     ``_meta``, and the fix reads as if it did not take.
     """
-    ok, message = _rebuild_snowflake_remote_extract()
+    ok, message, _failed = _rebuild_snowflake_remote_extract()
     if ok:
         logger.info("%s", message)
         if table_name:
@@ -4431,7 +4442,7 @@ def register_table(
             # Snowflake remote rows need a local extract.duckdb with the
             # _remote_attach row and per-table views so the orchestrator can
             # ATTACH the sf catalog and create master views.
-            ok, message = _rebuild_snowflake_remote_extract()
+            ok, message, failed_tables = _rebuild_snowflake_remote_extract()
             if not ok:
                 # The row stays registered on purpose — the usual cause is a
                 # mistyped schema/table, and editing the existing row beats
@@ -4442,15 +4453,25 @@ def register_table(
                 # "this name does not exist upstream" from "waiting for the
                 # first tick". Record the failure against the row so both
                 # surfaces say so.
-                try:
-                    sync_state_repo().set_error(request.name, message)
-                except Exception as exc:
-                    logger.warning(
-                        "could not record rebuild failure for %s in sync_state (%s); the 500 "
-                        "response still carries the reason",
-                        table_id,
-                        exc,
-                    )
+                # …but ONLY when this row is the one that failed. The rebuild
+                # walks every registered remote row, so a single pre-existing
+                # broken row (a schema dropped upstream, say) otherwise stamps
+                # its error onto every healthy table registered afterwards —
+                # the operator reads "error" plus somebody else's table name on
+                # a row that is in fact fine, until the next orchestrator sweep
+                # re-derives state from _meta. An empty `failed_tables` means a
+                # hard exception with no per-table attribution, where the
+                # rebuild did fail for this row too.
+                if not failed_tables or request.name in failed_tables:
+                    try:
+                        sync_state_repo().set_error(request.name, message)
+                    except Exception as exc:
+                        logger.warning(
+                            "could not record rebuild failure for %s in sync_state (%s); the 500 "
+                            "response still carries the reason",
+                            table_id,
+                            exc,
+                        )
                 return JSONResponse(
                     status_code=500,
                     content={

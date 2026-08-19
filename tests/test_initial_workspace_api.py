@@ -1121,6 +1121,14 @@ def test_dry_run_warns_on_unwired_template_placeholder(monkeypatch):
 
     monkeypatch.setattr("src.connectors_manifest.load_manifest", lambda: [])
     monkeypatch.setattr(iw, "resolve_seed_file", fake_resolve)
+    # Pin git mode explicitly, as this test's own docstring requires: the scan
+    # covers the file the prompt is BOUND to, and in editor mode the canonical
+    # template reaches no analyst, so there is nothing there to warn about. This
+    # used to pass on an implicit fallback that scanned it regardless of mode.
+    monkeypatch.setattr(
+        "src.repositories.welcome_template_repo",
+        lambda: _FakePromptMetaRepo({"source_mode": "git", "git_path": None}),
+    )
     summary = api._compute_render_dry_run()
     assert summary["ok"] is True
     assert any("{install_cli_block}" in w for w in summary["warnings"]), summary["warnings"]
@@ -1159,6 +1167,59 @@ def test_dry_run_scans_bound_template_for_unwired_placeholders(monkeypatch):
         lambda: _FakePromptMetaRepo({"source_mode": "git", "git_path": "install-prompt/custom.md.tmpl"}),
     )
     summary = api._compute_render_dry_run()
-    assert any(
-        "{connector_tiles}" in w and "custom.md.tmpl" in w for w in summary["warnings"]
-    ), summary["warnings"]
+    assert any("{connector_tiles}" in w and "custom.md.tmpl" in w for w in summary["warnings"]), summary["warnings"]
+
+
+def test_dry_run_skips_the_unwired_placeholder_scan_in_editor_mode(monkeypatch):
+    """Editor mode renders the prompt from the DB, so the canonical seed
+    template reaches no analyst — scanning it for unwired placeholders warned
+    about text nobody is served.
+
+    `_install_prompt_bound_git_path()` returns None when `source_mode != "git"`,
+    and the scan used to fall back to `PROMPT_SEED_PATHS["install"]` in exactly
+    that case — the opposite of what the comment above it stated ("the canonical
+    template matters only when it is the one analysts get"). The `{token}` probe
+    is a separate check and still warns here; only the "will render literally"
+    scan is skipped.
+    """
+    import src.initial_workspace as iw
+
+    from app.api import initial_workspace as api
+
+    monkeypatch.setattr("src.connectors_manifest.load_manifest", lambda: [])
+    monkeypatch.setattr(iw, "resolve_seed_file", lambda rel: ("hello {unwired_thing} world", "iwt"))
+    monkeypatch.setattr(
+        "src.repositories.welcome_template_repo",
+        lambda: _FakePromptMetaRepo({"source_mode": "editor", "git_path": None}),
+    )
+    summary = api._compute_render_dry_run()
+    assert summary["errors"] == []
+    assert not any("render literally" in w for w in summary["warnings"]), summary["warnings"]
+
+
+def test_dry_run_does_not_flag_tight_jinja_as_an_unwired_placeholder(monkeypatch):
+    """`{{today}}` is Jinja, not a single-brace placeholder.
+
+    The scan's regex matched the INNER brace of the space-less form, so a
+    git-bound template using `{{today}}` was reported as referencing
+    `{today}` — "will render literally" — while the spaced `{{ today }}` and
+    dotted `{{server.url}}` escaped, which made the warning look arbitrary.
+    A genuine `{unwired_thing}` must still be reported.
+    """
+    import src.initial_workspace as iw
+
+    from app.api import initial_workspace as api
+
+    monkeypatch.setattr("src.connectors_manifest.load_manifest", lambda: [])
+    monkeypatch.setattr(
+        "src.repositories.welcome_template_repo",
+        lambda: _FakePromptMetaRepo({"source_mode": "git", "git_path": "install-prompt/custom.md.tmpl"}),
+    )
+
+    monkeypatch.setattr(iw, "resolve_seed_file", lambda rel: ("as of {{today}} on {{server.url}}", "iwt"))
+    summary = api._compute_render_dry_run()
+    assert not any("render literally" in w for w in summary["warnings"]), summary["warnings"]
+
+    monkeypatch.setattr(iw, "resolve_seed_file", lambda rel: ("hello {unwired_thing}", "iwt"))
+    summary = api._compute_render_dry_run()
+    assert any("{unwired_thing}" in w for w in summary["warnings"]), summary["warnings"]

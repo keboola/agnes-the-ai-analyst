@@ -120,6 +120,7 @@ def is_initialized_workspace(workspace: Path) -> bool:
     except OSError:
         return False
 
+
 # How many unrelated entries to name before summarizing the rest.
 _MAX_LISTED_ENTRIES = 8
 
@@ -291,8 +292,6 @@ def _run_update() -> dict:
     ``{"early_exit": True}``; a NON-zero exit is a real failure and is
     re-raised with a legible message (bare ``Exit: 3`` tells nobody anything).
     """
-    import click
-
     from cli.commands.update import update as update_cmd
 
     buf = io.StringIO()
@@ -300,7 +299,12 @@ def _run_update() -> dict:
     try:
         with contextlib.redirect_stdout(buf):
             update_cmd(quiet=False, as_json=True)
-    except click.exceptions.Exit as exc:  # typer.Exit is a subclass
+    # `typer.Exit`, NOT `click.exceptions.Exit`: typer vendors its own copy of
+    # click (`typer._click`), so the two are unrelated classes and
+    # `issubclass(typer.Exit, click.exceptions.Exit)` is False. Catching the
+    # click one let every `typer.Exit` escape into the caller's catch-all,
+    # which is exactly the fatal-abort this branch exists to prevent.
+    except typer.Exit as exc:
         code = int(getattr(exc, "exit_code", 0) or 0)
         if code != 0:
             raise RuntimeError(
