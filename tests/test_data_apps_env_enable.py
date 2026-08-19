@@ -40,8 +40,15 @@ def test_env_enables_and_backfills_defaults(no_yaml_data_apps, monkeypatch, raw)
         "default_cpus",
         "default_idle_timeout_s",
         "max_apps_per_user",
+        # Container hardening — `build_container_spec` reads these two by key
+        # off this same block (the rest of the posture has no knob).
+        "container_read_only",
+        "container_pids_limit",
     ):
         assert k in cfg, k
+    # Read-only rootfs must stay OFF in the env-backfilled defaults: its
+    # tmpfs list is unverified against the shipped runtime image.
+    assert cfg["container_read_only"] is False
 
 
 @pytest.mark.parametrize("raw", ["0", "false", "no", "off", ""])

@@ -462,7 +462,24 @@ invariants (CONTRIBUTING.md sync-map rows):
 - **Resource limits:** per-app `mem_limit`/`cpus` with instance defaults
   (`data_apps.default_mem_limit`, default `1g` / `1.0`), plus a per-user app
   quota (`data_apps.max_apps_per_user`, default 3; Admin exempt) enforced at
-  create.
+  create, plus a fork-bomb `pids_limit` (`data_apps.container_pids_limit`,
+  default 512).
+- **Container hardening:** every data-app container runs `cap_drop: ALL` and
+  `no-new-privileges` (both unconditional, no knob) alongside that
+  `pids_limit`, mirroring the posture `services/apps_runner/sandbox_api.py`
+  already applies to chat sandboxes — never applied to that path, which needs
+  broader write access for agent-authored code. A compromised app therefore
+  cannot escalate privileges, gains no capabilities Docker doesn't already
+  withhold by default, and cannot fork-bomb the host. A read-only root
+  filesystem is the one piece **off by default** (`data_apps.container_read_only`):
+  it needs a tmpfs allowlist verified against the shipped runtime image, whose
+  in-container nginx + supervisord write to `/var/run`, `/var/log` and
+  `/var/cache/nginx` — paths the current `_READ_ONLY_TMPFS` list
+  (`/tmp` + `/app`, the entrypoint's clone-and-install target) does not cover.
+  Enabling it blind would crash-loop every hosted app, so the knob waits on
+  someone booting the image with it and extending the list from the real
+  failures; `tests/test_data_apps_e2e_docker.py` is where that verification
+  belongs.
 - **Tokens:** the app service token is a normal PAT — revocable in the
   existing token UI, `sha256`-stored, rotated per deploy, audited. Broker
   tickets are TTL-bound and scope-checked per request.

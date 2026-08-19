@@ -1408,6 +1408,11 @@ _DATA_APPS_ENV_DEFAULTS = {
     "default_mem_limit": "1g",
     "default_cpus": 1.0,
     "max_apps_per_user": 3,
+    # Mirrors `app/api/data_apps.py::_CONFIG_DEFAULTS` — read-only rootfs off
+    # by default (its tmpfs list is unverified against the shipped runtime
+    # image), fork-bomb ceiling on.
+    "container_read_only": False,
+    "container_pids_limit": 512,
 }
 
 

@@ -10,6 +10,27 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.83.80] - 2026-08-19
+
+### Fixed
+
+- **A crash-looping data-app container stops burning CPU forever.** The runtime container ran under `restart_policy: unless-stopped`, and the upstream entrypoint is not idempotent — it `git clone`s into `/app` unconditionally, so any restart onto a non-empty `/app` dies with "destination path already exists". The result was an infinite restart loop against a boot that could never succeed (the limitation recorded under 0.79.x is now fixed rather than documented). App containers now start with a bounded `on-failure` policy (`MaximumRetryCount: 3`), so the daemon gives up and the container settles as `exited` — which the `POST /api/data-apps/reap-idle` reconcile scan already flips to `error`. **Operator note:** Docker does not bring `on-failure` containers back after a daemon or host restart, so after a reboot every previously-live app settles as `exited`, is reconciled to `error`, and needs an explicit redeploy — the ingress proxy wakes only `sleeping` rows and renders `error` without re-checking. That is not an availability regression (under `unless-stopped` a reboot restarted the container straight into the non-idempotent clone, so the app came back crash-looping rather than serving), but it does mean a reboot needs a redeploy pass instead of healing itself. Restoring wake-on-request self-healing needs the reconcile scan to tell "host rebooted" from "retry budget exhausted" — Docker's `RestartCount`/`ExitCode`, i.e. a runner status-contract change — which is deliberately left to a follow-up rather than decided here.
+- **"Keboola is not connected" on an instance whose Keboola project is connected.**
+- **The fix that warning prescribed did not exist.** It sent the operator to
+- **Discover had no notion of which project.** The Keboola register/edit drawers
+- **`/admin/data-sources` claimed "No sources connected yet"** on an instance whose
+- **Instance settings reported a restart they never performed.** Every save
+- **…and a connection-settings save is `restart`, not `live`.** The new effect map
+- **Registering a Keboola table no longer suggests every table in the project.**
+- **The one-click Databricks register shortcut works again on credentialed
+- **Re-running first-time setup dropped connector coordinates.**
+- **`POST /api/admin/keboola/test-connection` now says which layer it probed**
+
+### Security
+
+- **Hosted data-app containers are now sandbox-hardened.** Every data-app container gets `cap_drop: ALL`, `no-new-privileges` and a `pids_limit` (default 512, `data_apps.container_pids_limit`) — an internet-facing web server running user/AI-authored code needs none of the Linux capabilities Docker grants by default, must gain none through a setuid binary, and must not be able to fork-bomb the host. Instance-wide and never per-app overridable; never applied to the chat-sandbox path, which legitimately needs broader write access for agent-authored code. A read-only root filesystem is available as `data_apps.container_read_only` but ships **off**: a read-only rootfs needs a tmpfs allowlist verified against the shipped runtime image, and that image's own nginx + supervisord write outside the `/tmp` + `/app` tmpfs the spec builder supplies (at least `/var/run/nginx.pid`, `/var/log/{nginx,supervisor}`, `/var/cache/nginx`, `/var/run/supervisor.sock`), so enabling it unverified would very likely crash-loop every hosted app. The knob is there for an operator who has booted their runtime image with it and extended that list from the real failures — `tests/test_data_apps_e2e_docker.py`, the one test with a real daemon and the real image, is where that verification belongs. With it off no tmpfs is mounted at all, so the default filesystem behavior is unchanged.
+
+
 ## [0.83.79] - 2026-08-19
 
 ### Added
