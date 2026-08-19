@@ -1227,6 +1227,19 @@ const API_CONNECTIONS = "/api/admin/source-connections";
 const API_REGISTER_TABLE = "/api/admin/register-table";
 const API_SERVER_CONFIG = "/api/admin/server-config";
 
+// Error text for a failed register-table call. `register-table` answers a
+// FAILED remote-extract rebuild with 500 + `{status:"rebuild_failed", detail,
+// message}` — the upstream reason (e.g. `Catalog Error: Table with name X does
+// not exist! Did you mean "Y"?`) is the single most useful thing on the page,
+// and reading only `detail` used to render a bare "✗ failed" for any endpoint
+// that put it under `message`. Falls back through both keys, then to a
+// non-empty default.
+function _registerErrorText(body) {
+  const b = body || {};
+  const text = typeof b.detail === "string" ? b.detail : typeof b.message === "string" ? b.message : "";
+  return text || "failed";
+}
+
 function _esc(s) {
   return (s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
@@ -2376,7 +2389,7 @@ async function registerSelected(connId, errElId) {
         });
       } else {
         const body = await r.json().catch(() => ({}));
-        statusEl.textContent = "✗ " + (body.detail || "failed");
+        statusEl.textContent = "✗ " + (_registerErrorText(body));
         statusEl.className = "ds-table-status fail";
         failCount++;
       }
@@ -3335,7 +3348,7 @@ async function _registerBqRows() {
         });
       } else {
         const b = await resp.json().catch(() => ({}));
-        r.statusEl.textContent = "✗ " + _esc(typeof b.detail === "string" ? b.detail : "failed");
+        r.statusEl.textContent = "✗ " + _esc(_registerErrorText(b));
         r.statusEl.className = "ds-table-status fail";
         failed++;
       }
@@ -3439,7 +3452,7 @@ async function _registerSfRows() {
         registered.push({ id: name, name: r.table, bucket: r.schema });
       } else {
         const b = await resp.json().catch(() => ({}));
-        r.statusEl.textContent = "✗ " + _esc(typeof b.detail === "string" ? b.detail : "failed");
+        r.statusEl.textContent = "✗ " + _esc(_registerErrorText(b));
         r.statusEl.className = "ds-table-status fail";
         failed++;
       }

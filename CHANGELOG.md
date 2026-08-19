@@ -10,8 +10,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
-## [0.83.89] - 2026-08-19
-
 ### Changed
 
 - **The bundled reference install-prompt template is thin and self-contained.** `src/_bundled_seed/install-prompt/template.md.tmpl` mirrors the thin default (install the CLI inline, `agnes onboard`, restart, confirm) and references only what a forked template can actually use: `{server_url}` plus the Jinja `{{ ... }}` context. `docs/seed-repo-contract.md` §5 now documents that contract, and a new guard test keeps retired/unwired placeholders out of the bundle. Bundled-seed provenance (`.source_ref`) is refreshed to the current upstream tip.
@@ -22,6 +20,49 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **`agnes onboard` refuses a `--workspace` target that does not exist** (exit 23) instead of letting `agnes init` create it while later steps resolved paths against an unclassified directory — the command never creates directories on the user's behalf.
 - **Re-running `agnes onboard` in a workspace it already created no longer demands `--accept-dir`.** The directory gate recognizes the `.claude/init-complete` sentinel (checked after the home/system-dir refusal, so a stray sentinel can't bless `$HOME`), and the allowlist covers the artefacts an interrupted init leaves behind.
 - **A benign `agnes update` early-out no longer aborts `agnes onboard` as a failed init.** `typer.Exit(0)` (the single-instance lock held by the background SessionStart refresh) is reported as "another update is already running"; a non-zero exit stays fatal with a legible message. A convergence that reported failed stages now marks the init row `warning` and degrades the report's `overall` instead of reading as "already configured".
+
+- **Keboola `query_mode='materialized'` tables were registered, reported
+  `last_sync=ok` with a row count, and could not be read.** `materialize_query`
+  published the parquet but never registered it in the source's
+  `extract.duckdb`, and `SyncOrchestrator.rebuild()` only ever walks `_meta` —
+  so no master view was created and every read 400d with "registered as
+  query_mode='materialized' but is not yet materialized in this instance's
+  analytics views". On an instance whose Keboola rows were ALL materialized
+  there was no `extract.duckdb` at all, so the orchestrator skipped the entire
+  source behind a debug-level log line and nothing surfaced to the operator.
+  The Keboola connector now writes the `_meta` row + inner view like BigQuery,
+  Snowflake and Databricks already did (creating `extract.duckdb` when absent,
+  which the other three can assume exists), fail-soft so a registration hiccup
+  never loses a published parquet.
+- **A failed Snowflake table registration now says why, in both places an
+  operator looks.** `POST /api/admin/register-table` answered a failed
+  remote-extract rebuild with 500 + `{status: "rebuild_failed", message: …}`;
+  the admin UI reads `detail`, so the real reason (`Catalog Error: Table with
+  name X does not exist! Did you mean "Y"?`) was thrown away and the wizard
+  showed a bare "✗ failed". The response now carries the reason under `detail`
+  as well, the UI falls back through both keys, and the row — kept on purpose
+  so a mistyped name can be edited rather than re-entered — is marked failed in
+  `sync_state` instead of reading `pending` / "never synced" forever, which is
+  indistinguishable from a row waiting for its first tick.
+- **Correcting a bad Snowflake schema/table now clears the row's recorded
+  failure.** `PUT /api/admin/registry/{id}` re-runs the remote-extract rebuild,
+  but a success left the previous failure in `sync_state`, so `/admin/sync` and
+  `GET /api/admin/registry` kept serving the old error until the next full
+  orchestrator sweep re-derived state from `_meta` — the fix looked like it had
+  not taken.
+
+### Security
+
+- **A Snowflake private key is no longer echoed into an error message.** The
+  key loader treats a single-line, non-PEM value under 4 KiB as a possible file
+  path; when such a value named a real file that could not be read or decoded,
+  the raised error interpolated the value itself — and the underlying
+  `OSError`'s own text ends with the same string. That message reaches the
+  `register-table` response and (as of this release) the persisted
+  `sync_state.error` that `/admin/sync`, `GET /api/admin/registry` and `agnes
+  admin list-tables` render unredacted. It now names only the failure class and
+  the setting to check; the original exception stays chained for a local
+  traceback.
 
 ## [0.83.88] - 2026-08-19
 
