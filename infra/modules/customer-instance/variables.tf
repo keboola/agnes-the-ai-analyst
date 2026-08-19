@@ -113,6 +113,14 @@ variable "prod_instance" {
     # dev-first rollout doesn't touch prod. Brings up the apps-runner sidecar +
     # the AGNES_DATA_APPS_ENABLED env override on that VM's .env only.
     data_apps_enabled = optional(bool, false)
+    # Opt-in embedded kai-agent turn engine on this VM (app >= the /api/kai
+    # host wiring, app/api/kai.py). Per-VM (like dispatcher_enabled) so a
+    # dev-first rollout doesn't touch prod. Brings up the engine + its own
+    # Postgres as extra compose services AND writes KAI_HOST_JWT_SECRET into
+    # that VM's app .env, enabling the /api/kai/* host surface — both halves
+    # of the shared-secret pair come from one Secret Manager secret, so they
+    # cannot drift. Requires the module-level kai_agent_* variables.
+    kai_agent_enabled = optional(bool, false)
 
     # --- Vendor-neutral per-instance branding (all OPTIONAL) ---
     # Written into the VM's /data/state/instance.yaml on FIRST boot only. The
@@ -273,6 +281,9 @@ variable "dev_instances" {
     dispatcher_enabled  = optional(bool, false)
     # Per-VM hosted data apps — see prod_instance for the rationale.
     data_apps_enabled = optional(bool, false)
+    # Per-VM embedded kai-agent turn engine — see prod_instance for the
+    # rationale. Same "must be on the type" rule as the fields above.
+    kai_agent_enabled = optional(bool, false)
     # See prod_instance for the rationale; same default.
     upgrade_schedule = optional(string, "*/5 * * * *")
 
@@ -576,6 +587,83 @@ variable "dispatcher_vertex_sa_secret" {
   EOT
   type        = string
   default     = ""
+}
+
+variable "kai_agent_image" {
+  description = <<-EOT
+    Full image ref (with tag) of the kai-agent turn engine, e.g.
+    "<region>-docker.pkg.dev/<project>/<repo>/kai-agent:<tag>". Pin to an
+    immutable tag — the engine runs as an extra compose service on any VM
+    whose instance object sets `kai_agent_enabled = true`, and the
+    agnes-auto-upgrade tick re-pulls it every cycle, so a floating tag makes
+    rollouts non-reproducible.
+
+    Registry access: when the image lives in GCP Artifact Registry
+    (*-docker.pkg.dev) the startup script runs `gcloud auth configure-docker`
+    for that host, so the VM's own service account authenticates the pull —
+    grant it artifactregistry.reader on the repository. Any other private
+    registry needs pre-authenticated pull access on the VM (not provided by
+    this module).
+
+    Required (with the other kai_agent_* variables) when any instance enables
+    the engine.
+  EOT
+  type        = string
+  default     = ""
+}
+
+variable "kai_agent_jwt_secret" {
+  description = <<-EOT
+    Secret Manager secret name holding the HS256 secret shared between the
+    Agnes host surface and the engine (>= 32 chars — the engine refuses
+    shorter; mint with `openssl rand -hex 32`). On every VM with
+    `kai_agent_enabled = true` the startup script writes the SAME fetched
+    value to both halves of the pair: KAI_HOST_JWT_SECRET in the app's .env
+    (enabling the /api/kai/* host routes — unset, they answer 503) and
+    HOST_JWT_SECRET in the engine's env, so the two can never drift. Module
+    grants the VM SA secretAccessor; the fetch fails LOUDLY at boot when the
+    engine is enabled. Required when any instance enables the engine.
+  EOT
+  type        = string
+  default     = ""
+}
+
+variable "kai_agent_e2b_key_secret" {
+  description = <<-EOT
+    Secret Manager secret name holding the E2B API key the engine spawns its
+    sandboxes with (the engine's E2B_API_KEY — may name the same secret the
+    app's own cloud chat uses via runtime_secret_env). Module grants the VM SA
+    secretAccessor; fetch fails loudly at boot when the engine is enabled.
+    Required when any instance enables the engine.
+  EOT
+  type        = string
+  default     = ""
+}
+
+variable "kai_agent_env" {
+  description = <<-EOT
+    Extra environment for the engine container, written verbatim into its env
+    file AFTER the derived lines — env_file gives later duplicate keys
+    precedence, so entries here can also override a derived value (e.g. a
+    split-horizon HOST_BROKER_TICKET_URL). Deployment-owned, like
+    dispatcher_policies. NON-SENSITIVE values only: the map lands in Terraform
+    state and on the VM in plaintext.
+
+    The module derives HOST_MODULE/HOST_JWT_*/HOST_BROKER_LLM_URL/
+    HOST_BROKER_TICKET_URL/HOST_WORKSPACE_URL/POSTGRES_URL/E2B_API_KEY; the
+    engine additionally requires from this map at minimum:
+      HOST_AGENT_IDENTITY  — the agent's persona line (host copy)
+      CLOUD_LLM_PROVIDER   — "anthropic" for a broker-fronted engine, plus its
+      ANTHROPIC_UPSTREAM_URL / ANTHROPIC_UPSTREAM_API_KEY — required by the
+        engine's env validation even though the jwt host path never reads
+        them (all LLM traffic transits the Agnes broker); placeholders are
+        fine and expected.
+    Optional extras: LLM_MODEL_NAME, HOST_BROKER_MCP_URL (point it at
+    $SERVER_URL/api/kai/mcp only when the instance also enables the app-side
+    `kai.broker_mcp_enabled` switch), LOG_LEVEL, ...
+  EOT
+  type        = map(string)
+  default     = {}
 }
 
 variable "alert_webhook_url" {

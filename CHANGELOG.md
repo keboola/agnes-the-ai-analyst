@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- **Infra (customer-instance module): a VM can now run the embedded `kai-agent` turn engine as compose sidecars.** A per-VM `kai_agent_enabled` field on `prod_instance` / `dev_instances[*]` (an `optional(bool, false)` like `dispatcher_enabled`, so a dev-first rollout can't flip prod) brings up the engine plus its own Postgres — with a one-shot schema migrate between them — as extra compose services riding `COMPOSE_FILE`, and writes **both halves of the shared HS256 secret from one Secret Manager secret**: `KAI_HOST_JWT_SECRET` into the app's `.env` (enabling the `/api/kai/*` host surface added in 0.83.83) and `HOST_JWT_SECRET` into the engine's env, so the pair can never drift. Module-wide config: `kai_agent_image` (pinned ref; `*-docker.pkg.dev` images authenticate through the VM SA via `gcloud auth configure-docker`, other private registries need pre-authenticated pull access), `kai_agent_jwt_secret` + `kai_agent_e2b_key_secret` (Secret Manager names, fetched loudly at boot, `secretAccessor` granted only while some instance enables the engine, minus names already granted via `runtime_secret_env` — the duplicate IAM binding would error the apply), and `kai_agent_env` (verbatim extra engine env, appended after the derived lines so it can override them). Derived engine env splits URLs by caller: the E2B sandbox egresses to `$SERVER_URL/api/broker/anthropic` from the public internet while the ticket + workspace fetches ride compose DNS to the app; the engine Postgres password follows the dispatcher ledger's keyfile-on-data-disk precedence so a VM recreate can't lock the engine out of its surviving database. The engine listens on host loopback `127.0.0.1:3001` only. Consumed by a new `infra-v1.23.0` module tag.
+
 ## [0.83.83] - 2026-08-19
 
 ### Added
