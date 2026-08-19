@@ -270,6 +270,34 @@ def build_schema_uncached(
             "clustered_by": [],
             "where_dialect_hints": DIALECT_HINTS,
         }
+    elif source_type == "snowflake" and query_mode == "remote":
+        # Same shape as the Databricks branch above and for the same reason: a
+        # remote Snowflake row has no parquet, so the local branch below would
+        # 404 — and the CLI renders that as "not found in the registry" on a
+        # table that is registered and answers `agnes query --remote` fine.
+        # Flavor stays `duckdb`: unlike Databricks there is no per-query ship
+        # to the warehouse, the analyst queries the ATTACHed `sf` catalog.
+        from connectors.snowflake.remote import fetch_schema as snowflake_fetch_schema
+        from connectors.snowflake.settings import resolve_snowflake_settings
+
+        settings = resolve_snowflake_settings()
+        if settings is None:
+            raise NotFound(table_id)
+        try:
+            columns = snowflake_fetch_schema(row, settings=settings)
+        except ValueError:
+            raise
+        except Exception as exc:
+            raise ValueError(f"snowflake schema lookup failed: {exc}") from exc
+        payload = {
+            "table_id": table_id,
+            "source_type": source_type,
+            "sql_flavor": "duckdb",
+            "columns": columns,
+            "partition_by": None,
+            "clustered_by": [],
+            "where_dialect_hints": {},
+        }
     else:
         # Local source — read schema from the parquet via DuckDB. Resolve the
         # parquet by source-name-agnostic lookup: the extract directory is not
