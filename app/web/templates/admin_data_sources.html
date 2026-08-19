@@ -2492,7 +2492,7 @@ function _setWizSource(src) {
     _updateSfAuthUI();
   } else if (src === "databricks") {
     connectBtn.style.display = _wizardStep === 1 ? "" : "none";
-    connectBtn.textContent = "Save & continue";
+    connectBtn.textContent = _dbxSaveDone ? "Continue to Tables →" : "Save & continue";
     _loadDbxConfigAndStatus();
   } else {
     // csv / jira are guidance, not forms — nothing to submit.
@@ -2802,7 +2802,13 @@ function _renderDbxSavedNotice() {
     .join("");
   host.style.display = _dbxSavedNotices.length ? "block" : "none";
   const btn = document.getElementById("ds-wizard-connect-btn");
-  if (btn && _dbxSaveDone) btn.textContent = "Continue to Tables →";
+  if (btn) btn.textContent = _dbxSaveDone ? "Continue to Tables →" : "Save & continue";
+}
+
+function _resetDbxSaveDone() {
+  _dbxSaveDone = false;
+  _dbxSavedNotices = [];
+  _renderDbxSavedNotice();
 }
 
 async function _loadDbxConfigAndStatus() {
@@ -2850,6 +2856,7 @@ function _renderDbxCredStatus(host) {
 
 async function _saveDatabricksAndContinue() {
   const err = document.getElementById("ds-wizard-error");
+  err.style.display = "none";
   const host = document.getElementById("ds-dbx-host").value.trim();
   const warehouse = document.getElementById("ds-dbx-warehouse").value.trim();
   const catalog = document.getElementById("ds-dbx-catalog").value.trim();
@@ -2860,7 +2867,7 @@ async function _saveDatabricksAndContinue() {
     return;
   }
   if ((!_dbxCredStatus || !_dbxCredStatus.has_value) && !token) {
-    err.textContent = "Databricks token is required. Paste it below or set DATABRICKS_TOKEN in Instance secrets.";
+    err.textContent = `Databricks token is required. Paste it below or set ${_esc(_dbxTokenEnv)} in Instance secrets.`;
     err.style.display = "block";
     return;
   }
@@ -3873,7 +3880,10 @@ document.getElementById("ds-sf-password").addEventListener("input", () => _rende
 document.getElementById("ds-sf-private-key").addEventListener("input", () => _renderSfCredStatus(null, "key"));
 
 // Update the Databricks credential status badge as the admin types.
-document.getElementById("ds-dbx-token").addEventListener("input", () => _renderDbxCredStatus(null));
+document.getElementById("ds-dbx-token").addEventListener("input", () => { _renderDbxCredStatus(null); _resetDbxSaveDone(); });
+document.getElementById("ds-dbx-host").addEventListener("input", _resetDbxSaveDone);
+document.getElementById("ds-dbx-warehouse").addEventListener("input", _resetDbxSaveDone);
+document.getElementById("ds-dbx-catalog").addEventListener("input", _resetDbxSaveDone);
 
 /* The steps strip as a back button. Nothing is re-fetched and nothing is
    re-rendered: every screen's state lives where it was left — the connect

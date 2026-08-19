@@ -2,6 +2,8 @@
 
 import base64
 import os
+import re
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import duckdb
@@ -25,7 +27,6 @@ from connectors.snowflake.extractor import (
     split_bucket,
 )
 from connectors.snowflake.settings import resolve_snowflake_settings
-
 
 SF_SETTINGS = {
     "account": "xy12345",
@@ -220,12 +221,14 @@ def _make_stub_duckdb_conn():
 
         def execute(self, sql, *args):
             upper = sql.strip().upper()
-            if (
-                upper.startswith("INSTALL")
-                or upper.startswith("LOAD")
-                or upper.startswith("CREATE SECRET")
-                or upper.startswith("CREATE OR REPLACE SECRET")
-                or upper.startswith("ATTACH")
+            if upper.startswith(
+                (
+                    "INSTALL",
+                    "LOAD",
+                    "CREATE SECRET",
+                    "CREATE OR REPLACE SECRET",
+                    "ATTACH",
+                )
             ):
                 return MagicMock()
             return self._real.execute(sql, *args)
@@ -1019,8 +1022,8 @@ def test_attach_snowflake_refuses_a_key_carrying_the_dollar_quote_tag(monkeypatc
 
 
 def test_attach_snowflake_key_pair_decrypts_and_normalizes_to_pkcs8(monkeypatch, encrypted_pkcs8_pem):
-    """An encrypted PEM plus passphrase is decrypted and re-emitted as an
-    unencrypted PKCS#8 PEM; the passphrase is consumed and not forwarded."""
+    """An encrypted PEM plus passphrase is decrypted and written as an
+    unencrypted PKCS#8 PEM file; the passphrase is consumed and not forwarded."""
     monkeypatch.setenv("AGNES_REMOTE_ATTACH_HOST_ALLOWLIST", SF_HOST)
     conn = MagicMock()
     url = build_remote_attach_url(
@@ -1032,10 +1035,19 @@ def test_attach_snowflake_key_pair_decrypts_and_normalizes_to_pkcs8(monkeypatch,
     attach_snowflake(conn, alias=SF_ALIAS, url=url, token=encrypted_pkcs8_pem, passphrase="it's secret")
     secret_call = next(c[0][0] for c in conn.execute.call_args_list if "CREATE OR REPLACE SECRET" in str(c[0][0]))
     assert "AUTH_TYPE 'key_pair'" in secret_call
-    assert "-----BEGIN PRIVATE KEY-----" in secret_call
-    assert "-----END PRIVATE KEY-----" in secret_call
-    assert encrypted_pkcs8_pem not in secret_call
+    assert "PRIVATE_KEY_FILE '" in secret_call
     assert "PRIVATE_KEY_PASSPHRASE" not in secret_call
+    assert encrypted_pkcs8_pem not in secret_call
+
+    m = re.search(r"PRIVATE_KEY_FILE '([^']+)'", secret_call)
+    assert m, "PRIVATE_KEY_FILE path missing from CREATE SECRET"
+    key_path = Path(m.group(1))
+    assert key_path.suffix == ".pem"
+    assert key_path.is_file()
+    content = key_path.read_text()
+    assert "-----BEGIN PRIVATE KEY-----" in content
+    assert "-----END PRIVATE KEY-----" in content
+    key_path.unlink()
 
 
 def test_attach_snowflake_key_pair_normalizes_pasted_keys(monkeypatch, pkcs8_pem, pkcs1_pem, sample_rsa_key):
@@ -1068,6 +1080,15 @@ def test_attach_snowflake_key_pair_normalizes_pasted_keys(monkeypatch, pkcs8_pem
         attach_snowflake(conn, alias=SF_ALIAS, url=url, token=token)
         secret_call = next(c[0][0] for c in conn.execute.call_args_list if "CREATE OR REPLACE SECRET" in str(c[0][0]))
         assert "AUTH_TYPE 'key_pair'" in secret_call, label
-        assert "-----BEGIN PRIVATE KEY-----" in secret_call, label
-        assert "-----END PRIVATE KEY-----" in secret_call, label
+        assert "PRIVATE_KEY_FILE '" in secret_call, label
         assert "PRIVATE_KEY_PASSPHRASE" not in secret_call, label
+
+        m = re.search(r"PRIVATE_KEY_FILE '([^']+)'", secret_call)
+        assert m, f"PRIVATE_KEY_FILE path missing from CREATE SECRET: {label}"
+        key_path = Path(m.group(1))
+        assert key_path.suffix == ".pem", label
+        assert key_path.is_file(), label
+        content = key_path.read_text()
+        assert "-----BEGIN PRIVATE KEY-----" in content, label
+        assert "-----END PRIVATE KEY-----" in content, label
+        key_path.unlink()

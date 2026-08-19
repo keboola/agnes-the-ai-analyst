@@ -1,34 +1,32 @@
 """Admin commands — agnes admin."""
 
 import json
-from typing import Optional
 
 import typer
 
-from cli.client import api_get, api_post, api_delete, api_put
+from cli.client import api_delete, api_get, api_post, api_put
 from cli.commands.admin_activity import activity_app
 from cli.commands.admin_analytics import analytics_app as admin_analytics_app
-from cli.commands.admin_connection import admin_connection_app
 from cli.commands.admin_ask import app as admin_ask_app
 from cli.commands.admin_autodoc import autodoc_tables
+from cli.commands.admin_connection import admin_connection_app
 from cli.commands.admin_data_package import admin_data_package_app
 from cli.commands.admin_data_semantics import admin_data_semantics_app
 from cli.commands.admin_digest import admin_digest_app
 from cli.commands.admin_jobs import admin_jobs_app
 from cli.commands.admin_mcp import mcp_app as admin_mcp_app
 from cli.commands.admin_memory_domain import admin_memory_domain_app
+from cli.commands.admin_metrics import admin_metrics_app
+from cli.commands.admin_news import admin_news_app
 from cli.commands.admin_semantic_layer import admin_semantic_layer_app
 from cli.commands.admin_semantic_model import admin_semantic_model_app
 from cli.commands.admin_semantic_source import admin_semantic_source_app
-from cli.commands.admin_skills import admin_skills_app
-from cli.commands.admin_metrics import admin_metrics_app
-from cli.commands.db import db_app as admin_db_app
-from cli.commands.admin_news import admin_news_app
 from cli.commands.admin_sessions import sessions_app as admin_sessions_app
+from cli.commands.admin_skills import admin_skills_app
 from cli.commands.admin_store import admin_store_app
 from cli.commands.admin_usage import app as admin_usage_app
+from cli.commands.db import db_app as admin_db_app
 from cli.commands.memory_admin import memory_admin_app
-
 from src.repositories import (
     column_metadata_repo,
     user_group_members_repo,
@@ -136,13 +134,15 @@ def remove_user(user_id: str = typer.Argument(..., help="User ID to remove")):
 @admin_app.command("register-table")
 def register_table(
     name: str = typer.Argument(..., help="Table display name (DuckDB view name for BQ)"),
-    source_type: str = typer.Option("keboola", help="Source type: keboola | bigquery | jira | local | databricks | snowflake"),
+    source_type: str = typer.Option(
+        "keboola", help="Source type: keboola | bigquery | jira | local | databricks | snowflake"
+    ),
     bucket: str = typer.Option(
         "",
         help="Source bucket (Keboola), dataset (BigQuery), or schema (Databricks; 'catalog.schema' overrides the default catalog)",
     ),
     source_table: str = typer.Option("", help="Source table name in the bucket/dataset/schema"),
-    query_mode: Optional[str] = typer.Option(
+    query_mode: str | None = typer.Option(
         None,
         help="Query mode: local | remote | materialized (default: local for keboola/jira/local, materialized for databricks/snowflake, remote for bigquery)",
     ),
@@ -448,8 +448,9 @@ def discover_and_register(
     as_json: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
     """Discover all tables from source and register them."""
-    import httpx
     import os
+
+    import httpx
 
     if source_type not in ("keboola", "bigquery"):
         typer.echo(
@@ -695,7 +696,7 @@ def update_table(
         "--source-type",
         help="Change source type. Rare — most edits keep this fixed.",
     ),
-    server_only: Optional[bool] = typer.Option(
+    server_only: bool | None = typer.Option(
         None,
         "--server-only/--no-server-only",
         help=(
@@ -722,7 +723,7 @@ def update_table(
         "--policy-note",
         help="Why this access policy exists. Required whenever --policy sets a non-empty body.",
     ),
-    policy_mapping: Optional[bool] = typer.Option(
+    policy_mapping: bool | None = typer.Option(
         None,
         "--policy-mapping/--no-policy-mapping",
         help=(

@@ -9,39 +9,47 @@ allowlist before creating the SECRET and ATTACHing the catalog.
 
 from __future__ import annotations
 
+import atexit
 import base64
+import binascii
+import hashlib
 import json
 import logging
 import os
 import re
 import shutil
 import sys
+import tempfile
+import threading
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 
 from src.orchestrator_security import escape_sql_string_literal, is_attach_host_allowed
 
 logger = logging.getLogger(__name__)
 
-# Dollar-quote tag for the PEM inside CREATE SECRET. Named once so the guard in
-# `_private_key_pem_and_passphrase` and the SQL below can never drift apart.
-_DOLLAR_TAG = "$PK$"
-
 SF_ALIAS = "sf"
 SF_EXTENSION = "snowflake"
 SF_TOKEN_ENV = "SNOWFLAKE_PASSWORD"
+
+_ADBC_DRIVER_NAMES = (
+    "libadbc_driver_snowflake.so",
+    "libadbc_driver_snowflake.dylib",
+    "adbc_driver_snowflake.dll",
+)
+
+_driver_missing_logged = False
 
 # Account strings can include region/location separators and dots.
 _SAFE_ACCOUNT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 # Database/warehouse/user/role are Snowflake identifiers; keep the regex
 # linear-time and conservative.
 _SAFE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_-]+$")
-_PEM_BLOCK_RE = re.compile(
-    r"(-----BEGIN [A-Z0-9 _]+-----)\s*(.*?)\s*(-----END [A-Z0-9 _]+-----)",
-    re.DOTALL,
-)
+
+_private_key_write_lock = threading.Lock()
 
 
 def _normalize_key_text(text: str) -> str:
@@ -52,29 +60,35 @@ def _normalize_key_text(text: str) -> str:
 
 
 def _load_private_key(data: bytes, passphrase: str | None = None):
-    """Load a PEM or DER private key, optionally decrypting it."""
-    password = passphrase.encode("utf-8") if passphrase else None
+    """Load an RSA private key from PEM or DER bytes, optionally decrypting it."""
+    password = passphrase.encode() if passphrase else None
 
     if b"-----BEGIN" in data:
         try:
-            return serialization.load_pem_private_key(data, password=password)
+            key = serialization.load_pem_private_key(data, password=password)
         except TypeError as exc:
             msg = str(exc)
             if "Password was given but private key is not encrypted" in msg:
-                return serialization.load_pem_private_key(data, password=None)
-            raise ValueError(msg) from exc
-        except Exception as exc:
+                key = serialization.load_pem_private_key(data, password=None)
+            else:
+                raise ValueError(msg) from exc
+        except (ValueError, binascii.Error) as exc:
             raise ValueError(f"could not parse PEM private key: {exc}") from exc
+    else:
+        try:
+            key = serialization.load_der_private_key(data, password=password)
+        except TypeError as exc:
+            msg = str(exc)
+            if "Password was given but private key is not encrypted" in msg:
+                key = serialization.load_der_private_key(data, password=None)
+            else:
+                raise ValueError(msg) from exc
+        except (ValueError, binascii.Error) as exc:
+            raise ValueError(f"could not parse DER private key: {exc}") from exc
 
-    try:
-        return serialization.load_der_private_key(data, password=password)
-    except TypeError as exc:
-        msg = str(exc)
-        if "Password was given but private key is not encrypted" in msg:
-            return serialization.load_der_private_key(data, password=None)
-        raise ValueError(msg) from exc
-    except Exception as exc:
-        raise ValueError(f"could not parse DER private key: {exc}") from exc
+    if not isinstance(key, rsa.RSAPrivateKey):
+        raise TypeError(f"snowflake private key must be an RSA key, got {type(key).__name__}")
+    return key
 
 
 def _serialize_unencrypted_pkcs8_pem(key) -> str:
@@ -94,35 +108,56 @@ def _try_decode_base64_key(text: str) -> bytes:
     for candidate in (cleaned, cleaned.replace("-", "+").replace("_", "/")):
         try:
             return base64.b64decode(candidate, validate=True)
-        except Exception:
+        except (binascii.Error, ValueError):
             continue
     raise ValueError("not a valid base64 key")
 
 
-def _reformat_pem_body(s: str) -> str:
-    """Rewrap a single-line base64 PEM body to 64-char lines.
+def _snowflake_key_dir() -> Path:
+    """Return a per-process, user-private directory for temporary PEM key files."""
+    d = Path(tempfile.gettempdir()) / "agnes-snowflake-keys" / f"pid-{os.getpid()}"
+    d.mkdir(parents=True, exist_ok=True)
+    d.chmod(0o700)
+    return d
 
-    Encrypted PKCS#1 blocks that carry header lines (``Proc-Type:``) are left
-    untouched so the header formatting is not corrupted.
-    """
 
-    def repl(m: re.Match[str]) -> str:
-        begin, body, end = m.group(1), m.group(2), m.group(3)
-        if ":" in body:
-            return m.group(0)
-        cleaned = re.sub(r"\s+", "", body)
-        if not re.fullmatch(r"[A-Za-z0-9+/=]+", cleaned):
-            return m.group(0)
-        wrapped = "\n".join(cleaned[i : i + 64] for i in range(0, len(cleaned), 64))
-        return f"{begin}\n{wrapped}\n{end}"
+def _cleanup_snowflake_key_dir() -> None:
+    d = Path(tempfile.gettempdir()) / "agnes-snowflake-keys" / f"pid-{os.getpid()}"
+    if d.exists():
+        shutil.rmtree(d, ignore_errors=True)
 
-    return _PEM_BLOCK_RE.sub(repl, s)
+
+atexit.register(_cleanup_snowflake_key_dir)
+
+
+def _private_key_file_path(private_key_pem: str, account: str, user: str, secret_name: str) -> Path:
+    """Return a deterministic, per-process file path for a normalized PEM key."""
+    digest = hashlib.sha256(f"{account}:{user}:{secret_name}:{private_key_pem}".encode()).hexdigest()[:24]
+    safe_part = lambda s: re.sub(r"[^A-Za-z0-9_-]+", "_", s).strip("_")[:32] or "x"
+    return _snowflake_key_dir() / f"{safe_part(secret_name)}-{safe_part(account)}-{safe_part(user)}-{digest}.pem"
+
+
+def _write_private_key_pem(pem: str, path: Path) -> None:
+    """Atomically write a PKCS#8 PEM to a private file, creating its directory."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.chmod(0o700)
+    tmp = path.parent / f".{path.name}.{os.getpid()}.tmp"
+    with _private_key_write_lock:
+        try:
+            tmp.write_text(pem, encoding="ascii")
+            tmp.chmod(0o600)
+            tmp.replace(path)
+        except OSError:
+            if tmp.exists():
+                tmp.unlink(missing_ok=True)
+            raise
 
 
 def _duckdb_extension_dir() -> Path:
     """Return the DuckDB community-extension directory for this version/platform."""
-    import duckdb
     import platform as _platform
+
+    import duckdb
 
     machine = _platform.machine().lower()
     system = sys.platform
@@ -147,29 +182,28 @@ def _find_adbc_driver_library() -> Path | None:
     """Locate the ADBC Snowflake shared library shipped with ``adbc-driver-snowflake``."""
     try:
         import adbc_driver_snowflake
+    except ImportError:
+        adbc_driver_snowflake = None
 
+    if adbc_driver_snowflake is not None:
         pkg_dir = Path(adbc_driver_snowflake.__file__).parent
-        for name in (
-            "libadbc_driver_snowflake.so",
-            "libadbc_driver_snowflake.dylib",
-            "adbc_driver_snowflake.dll",
-        ):
+        for name in _ADBC_DRIVER_NAMES:
             candidate = pkg_dir / name
-            if candidate.exists():
+            if candidate.is_file():
                 return candidate
-    except Exception:
-        pass
 
     for p in os.environ.get("LD_LIBRARY_PATH", "").split(os.pathsep):
-        for name in ("libadbc_driver_snowflake.so", "libadbc_driver_snowflake.dylib", "adbc_driver_snowflake.dll"):
+        if not p:
+            continue
+        for name in _ADBC_DRIVER_NAMES:
             candidate = Path(p) / name
-            if candidate.exists():
+            if candidate.is_file():
                 return candidate
 
     for p in ("/usr/local/lib", "/usr/lib"):
-        for name in ("libadbc_driver_snowflake.so", "libadbc_driver_snowflake.dylib", "adbc_driver_snowflake.dll"):
+        for name in _ADBC_DRIVER_NAMES:
             candidate = Path(p) / name
-            if candidate.exists():
+            if candidate.is_file():
                 return candidate
     return None
 
@@ -185,14 +219,21 @@ def install_snowflake_adbc_driver(*, missing_ok: bool = True) -> None:
     present it returns immediately.
     """
     ext_dir = _duckdb_extension_dir()
+    for name in _ADBC_DRIVER_NAMES:
+        if (ext_dir / name).is_file():
+            return
+
     source = _find_adbc_driver_library()
 
     if source is None:
         if missing_ok:
-            logger.warning(
-                "adbc_driver_snowflake not found; Snowflake extension may fail to load. "
-                "Install it (scripts/install-adbc-driver.sh) or set LD_LIBRARY_PATH."
-            )
+            global _driver_missing_logged
+            if not _driver_missing_logged:
+                logger.warning(
+                    "adbc_driver_snowflake not found; Snowflake extension may fail to load. "
+                    "Install it (scripts/install-adbc-driver.sh) or set LD_LIBRARY_PATH."
+                )
+                _driver_missing_logged = True
             return
         raise RuntimeError(
             "ADBC Snowflake driver not found. Install it with scripts/install-adbc-driver.sh "
@@ -200,17 +241,14 @@ def install_snowflake_adbc_driver(*, missing_ok: bool = True) -> None:
         )
 
     target = ext_dir / source.name
-    if target.exists():
-        return
-
     ext_dir.mkdir(parents=True, exist_ok=True)
-    tmp_target = target.with_suffix(f"{target.suffix}.tmp")
+    tmp_target = ext_dir / f".{source.name}.{os.getpid()}.tmp"
     try:
         shutil.copy2(source, tmp_target)
         os.replace(tmp_target, target)
         logger.info("Copied ADBC Snowflake driver to %s", target)
-    except Exception:
-        if tmp_target.exists():
+    except OSError:
+        if tmp_target.is_file():
             tmp_target.unlink(missing_ok=True)
         raise
 
@@ -321,7 +359,7 @@ def _looks_like_key_pair(token: str) -> bool:
             try:
                 decoded = base64.b64decode(candidate, validate=True)
                 return decoded and decoded[0] == 0x30
-            except Exception:
+            except (binascii.Error, ValueError):
                 continue
     return False
 
@@ -329,8 +367,12 @@ def _looks_like_key_pair(token: str) -> bool:
 def _private_key_pem_and_passphrase(token: str, passphrase: str | None = None) -> tuple[str, str | None]:
     """Extract and normalize a private key into an unencrypted PKCS#8 PEM.
 
-    The DuckDB Snowflake ADBC driver only accepts unencrypted PKCS#8 inline
-    keys. This function tolerates pasted PEMs with escaped ``\\n``/``\\r\\n``,
+    The DuckDB Snowflake extension accepts an inline value or a file path via
+    ``PRIVATE_KEY_FILE``. We always write the normalized key to a private
+    temp file and pass that path, so the extension never has to guess whether
+    the string is a path or inline PEM.
+
+    This function tolerates pasted PEMs with escaped ``\\n``/``\\r\\n``,
     Windows line endings, PKCS#1 ``RSA PRIVATE KEY`` blocks, encrypted keys,
     and base64-only DER blobs. The optional passphrase is used to decrypt the
     key and is not forwarded to the generated SQL.
@@ -355,20 +397,17 @@ def _private_key_pem_and_passphrase(token: str, passphrase: str | None = None) -
     if not raw.strip():
         raise ValueError("empty snowflake private key")
 
-    # The PEM goes into the CREATE SECRET statement inside `$PK$ … $PK$`
-    # dollar-quoting. A key whose text contains that tag would close the literal
-    # early and inject the rest of itself as SQL into a statement that carries
-    # a credential. A real key never contains `$`.
-    if _DOLLAR_TAG in raw:
+    # Defense-in-depth: a key should never contain '$', but a pasted value
+    # containing it could close a dollar-quoted SQL literal. Reject early.
+    if "$" in raw:
         raise ValueError("snowflake private key contains the SQL dollar-quote tag; refusing to build a secret")
 
     text = _normalize_key_text(raw)
 
     if "-----BEGIN" in text and "-----END" in text:
-        pem_text = _reformat_pem_body(text)
         try:
-            key = _load_private_key(pem_text.encode("utf-8"), passphrase)
-        except ValueError as exc:
+            key = _load_private_key(text.encode(), passphrase)
+        except (ValueError, TypeError) as exc:
             raise ValueError(f"snowflake private key is not a valid PEM/DER key: {exc}") from exc
         return _serialize_unencrypted_pkcs8_pem(key), None
 
@@ -379,7 +418,7 @@ def _private_key_pem_and_passphrase(token: str, passphrase: str | None = None) -
 
     try:
         key = _load_private_key(der, passphrase)
-    except ValueError as exc:
+    except (ValueError, TypeError) as exc:
         raise ValueError(f"snowflake private key is not a valid PEM/DER key: {exc}") from exc
 
     return _serialize_unencrypted_pkcs8_pem(key), None
@@ -397,21 +436,24 @@ def _create_snowflake_secret_sql(
         role_sql = f", ROLE '{escape_sql_string_literal(params['role'])}'"
 
     if _looks_like_key_pair(token):
-        private_key_pem, key_passphrase = _private_key_pem_and_passphrase(token, passphrase)
-        passphrase_sql = ""
-        if key_passphrase:
-            passphrase_sql = f", PRIVATE_KEY_PASSPHRASE '{escape_sql_string_literal(key_passphrase)}'"
+        private_key_pem, _ = _private_key_pem_and_passphrase(token, passphrase)
+        key_path = _private_key_file_path(
+            private_key_pem,
+            params["account"],
+            params["user"],
+            secret_name,
+        )
+        _write_private_key_pem(private_key_pem, key_path)
         return (
             f"CREATE OR REPLACE SECRET {secret_name} ("
             f"TYPE snowflake, "
             f"ACCOUNT '{escape_sql_string_literal(params['account'])}', "
             f"USER '{escape_sql_string_literal(params['user'])}', "
             f"AUTH_TYPE 'key_pair', "
-            f"PRIVATE_KEY {_DOLLAR_TAG}{private_key_pem}{_DOLLAR_TAG}, "
+            f"PRIVATE_KEY_FILE '{escape_sql_string_literal(str(key_path))}', "
             f"DATABASE '{escape_sql_string_literal(params['database'])}', "
             f"WAREHOUSE '{escape_sql_string_literal(params['warehouse'])}'"
-            f"{role_sql}"
-            f"{passphrase_sql})"
+            f"{role_sql})"
         )
 
     return (
