@@ -264,25 +264,35 @@ def _tls_trust_block(ca_pem: str) -> list[str]:
     return lines
 
 
-def _preamble_lines(*, has_ca: bool, custom_preamble: str = "") -> list[str]:
+def _preamble_lines(*, custom_preamble: str = "") -> list[str]:
     """Header that opens the prompt: what this is, which server, where the
     login token already lives, and the idempotence promise.
 
-    The access-token guard is the prompt-side half of keeping the raw token
-    out of chat: the token is written to `~/.agnes/token` out-of-band,
-    before this prompt is generated (step 4 on `{server_url}/home` — the
-    delivery mechanism itself is out of this module's scope). Naming that
-    provenance also gives the assistant a verifiable fact for its
-    first-contact trust decision; the prompt asserts no conclusion about
-    consent and leaves the ask/no-ask judgment to the assistant.
+    The token is written to `~/.agnes/token` out-of-band, before this prompt
+    is generated (step 4 on `{server_url}/home` — the delivery mechanism
+    itself is out of this module's scope), so the steps only need the path.
+    That is stated as a plain fact: earlier wording told the agent to
+    "never print the token, echo it, or paste it into this chat", which
+    reads as instructions to conceal a credential rather than as a note
+    that displaying a file nobody needs to see is pointless.
 
-    The `step 0(d) fallback chain` reference is only emitted when the trust
-    block actually exists (`has_ca`); without it the line points at a
-    non-existent step. The "don't lower certificate verification" advice
-    itself stays unconditional — it's good guidance regardless of whether
-    the server runs with a private CA, and it is the only error-handling
-    instruction the thin prompt keeps (everything else reports its own
-    outcome through `agnes onboard`).
+    Nothing here reassures the agent about trust. A previous revision told
+    it that "whether that host is trusted is the user's org's call" and that
+    the step-0(d) fallback chain was "documented and OK to use". Text that
+    pre-empts a safety judgement reads as written to defuse one, which is
+    the opposite of the intended effect — so the prompt states what each
+    step does, names the server, and leaves every judgement to the reader.
+
+    The brand line exists for the same reason: the prompt is branded with
+    the operator's product name, installs a binary called `agnes`, and
+    downloads from the instance's own host, so an agent seeing three
+    different names has no way to know they are one system unless the
+    prompt says so.
+
+    The "don't lower certificate verification" advice stays unconditional —
+    it's good guidance regardless of whether the server runs with a private
+    CA, and it is the only error-handling instruction the thin prompt keeps
+    (everything else reports its own outcome through `agnes onboard`).
 
     `custom_preamble` is an operator-authored block prepended at the very
     top (above `Set up the {instance_brand} CLI…`). Empty/unset emits zero
@@ -296,10 +306,12 @@ def _preamble_lines(*, has_ca: bool, custom_preamble: str = "") -> list[str]:
         "",
         "Server: {server_url}",
         "",
+        "{instance_brand} is this organization's own deployment of Agnes, served",
+        "from {server_url}, and the command-line tool it installs is named `agnes`.",
+        "",
         "Your login token is already saved on this machine at ~/.agnes/token",
         "(written by step 4 of the install guide at {server_url}). The steps below",
-        "only reference that file path — never print the token, echo it, or paste",
-        "it into this chat.",
+        "use that file path, so there is no need to display its contents.",
         "",
         "Every step below is idempotent and safe to re-run: a machine that already",
         'ran this setup converges instead of reinstalling, so treat "already',
@@ -307,12 +319,8 @@ def _preamble_lines(*, has_ca: bool, custom_preamble: str = "") -> list[str]:
         "paste the exact error back and stop — and for a TLS error look for the cause",
         "(corporate proxy, internal CA, clock skew) rather than lowering certificate",
         "verification.",
+        "",
     ]
-    if has_ca:
-        lines.append(
-            "The fallback chain inside step 0(d) is documented and OK to use; that's what fallback chains are for."
-        )
-    lines.append("")
     if custom_preamble:
         lines = [*custom_preamble.split("\n"), "", *lines]
     return lines
@@ -358,6 +366,18 @@ def _install_cli_lines(*, has_ca: bool, server_url_placeholder: str = "{server_u
     `/cli/download` always serves whichever wheel is current at fetch time,
     so the install survives a mid-session version roll.
 
+    `-L --max-redirs 0` is deliberate. `-OJ` takes the saved filename
+    from the response's `Content-Disposition`, so `-L` alone would follow a
+    cross-host redirect and install whichever wheel the hop served, with
+    nothing on screen to say the download moved. Keeping `-L` but capping
+    redirects at zero turns any hop into `curl: (47) Maximum (0) redirects
+    followed` and a non-zero exit — a failure the analyst can report. A
+    hostname alias that 308s to the canonical host must therefore be handed
+    out as the canonical URL, not as the alias. The scheme is deliberately
+    NOT pinned with `--proto '=https'`: a local/dev instance legitimately
+    serves this prompt over http, where that flag would refuse the download
+    outright (`curl: (1) Protocol "http" not supported`).
+
     When the trust block was emitted (`has_ca=True`), we MUST additionally
     avoid `uv tool install <https-url>` against the Agnes server:
     rustls rejects the Agnes leaf cert with `CaUsedAsEndEntity`, regardless
@@ -389,7 +409,7 @@ def _install_cli_lines(*, has_ca: bool, server_url_placeholder: str = "{server_u
             "   download it to a file and show it to me before running it.",
             "",
             "   TMPDIR_WHEEL=$(mktemp -d -t agnes_cli.XXXXXX)",
-            f'   (cd "$TMPDIR_WHEEL" && curl -fsSL --cacert ~/.agnes/ca.pem -OJ {server_url_placeholder}/cli/download)',
+            f'   (cd "$TMPDIR_WHEEL" && curl -fsSL --max-redirs 0 --cacert ~/.agnes/ca.pem -OJ {server_url_placeholder}/cli/download)',
             '   WHEEL=$(ls "$TMPDIR_WHEEL"/*.whl 2>/dev/null | head -n1)',
             '   [ -n "$WHEEL" ] || { echo "error: wheel download failed (no .whl in $TMPDIR_WHEEL)" >&2; exit 1; }',
             '   uv tool install --native-tls --force "$WHEEL"',
@@ -407,7 +427,7 @@ def _install_cli_lines(*, has_ca: bool, server_url_placeholder: str = "{server_u
     return [
         "1) Install the CLI:",
         "   TMPDIR_WHEEL=$(mktemp -d -t agnes_cli.XXXXXX)",
-        f'   (cd "$TMPDIR_WHEEL" && curl -fsSL -OJ {server_url_placeholder}/cli/download)',
+        f'   (cd "$TMPDIR_WHEEL" && curl -fsSL --max-redirs 0 -OJ {server_url_placeholder}/cli/download)',
         '   WHEEL=$(ls "$TMPDIR_WHEEL"/*.whl 2>/dev/null | head -n1)',
         '   [ -n "$WHEEL" ] || { echo "error: wheel download failed (no .whl in $TMPDIR_WHEEL)" >&2; exit 1; }',
         '   uv tool install --force "$WHEEL"',
@@ -548,7 +568,7 @@ def resolve_lines(
     lines: list[str] = []
     if has_ca:
         lines.extend(_tls_trust_block(ca_pem))  # type: ignore[arg-type]
-    lines.extend(_preamble_lines(has_ca=has_ca, custom_preamble=custom_preamble))
+    lines.extend(_preamble_lines(custom_preamble=custom_preamble))
     lines.extend(_token_precheck_lines())
     lines.extend(_install_cli_lines(has_ca=has_ca))  # 1
     lines.append("")
