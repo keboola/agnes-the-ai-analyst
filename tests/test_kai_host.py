@@ -1242,6 +1242,14 @@ def test_every_reader_facing_surface_names_the_scope_the_route_enforces():
     human-facing description may contradict it. The engine's WIRE KEY is still
     `mcp`, which is why the check is written against the phrases that name a
     *scope* rather than against the bare word.
+
+    Twice now this guard has been narrower than the drift. It first omitted
+    CHANGELOG.md, so the release notes — the surface an integrator is most
+    likely to read — kept telling them to mint `mcp`; and its literal phrases
+    did not survive markdown emphasis, so "gated on the **`mcp`** ticket scope"
+    slipped past the "the `mcp` ticket scope" probe. Emphasis is therefore
+    stripped before matching, and every surface that describes this route to a
+    human is in the list.
     """
     from pathlib import Path
 
@@ -1258,19 +1266,30 @@ def test_every_reader_facing_surface_names_the_scope_the_route_enforces():
         "the `mcp` ticket scope",
         "the ``mcp`` ticket scope",
         "``mcp`` scope\n  onto ``mcp``",
+        # Survived the first version of this guard: emphasis broke the probe
+        # above, and CHANGELOG.md was not a surface.
+        "gated on the `mcp` ticket scope",
+        "adds the optional `mcp` scope",
+        "any `mcp`-scoped ticket reaches this route",
     )
     surfaces = (
         "app/api/kai.py",
         "app/switches.py",
         "docs/api-reference.md",
         "docs/feature-flags.md",
+        "CHANGELOG.md",
     )
+
+    def normalize(text: str) -> str:
+        """Strip markdown emphasis so a bolded scope name cannot hide from a probe."""
+        return text.replace("*", "").replace("_", "")
+
     for rel in surfaces:
         text = Path(rel).read_text(encoding="utf-8")
         # Quoting a corrected claim is allowed; asserting it is not.
-        prose = text.replace('this once read "ANY ``mcp``-scoped ticket', "")
+        prose = normalize(text.replace('this once read "ANY ``mcp``-scoped ticket', ""))
         for phrase in stale:
-            assert phrase.lower() not in prose.lower(), (
+            assert normalize(phrase).lower() not in prose.lower(), (
                 f"{rel} still describes the tool route's scope as `mcp`; the route "
                 f"enforces `kai_mcp` and refuses `mcp` with a 401 ({phrase!r})"
             )
