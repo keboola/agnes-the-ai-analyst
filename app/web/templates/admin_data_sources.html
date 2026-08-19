@@ -1964,7 +1964,7 @@ async function grantChatTools(id, sourceId) {
       // A grant does not reach a mutating tool — the passthrough gate refuses
       // those for every non-admin regardless, so promising reach here would
       // be false for exactly the tools an analyst would notice missing.
-      const gated = body.admin_only ? ` ${body.admin_only} are mutating and stay admin-only.` : "";
+      const gated = body.admin_only ? ` ${body.admin_only} are mutating and stay locked until opted in per tool (agnes admin mcp tool grant <tool_id> --group <g> --allow-mutating).` : "";
       const off = body.skipped_disabled ? ` ${body.skipped_disabled} disabled tools were skipped.` : "";
       showToast(`Granted ${body.granted} of ${body.total} tools${extra}.${gated}${off}`, true);
     } else {
@@ -2001,7 +2001,7 @@ async function toggleChatTools(id, isOn, resync) {
           : (resync
               ? "Token re-synced."
               : `Chat tools on — ${n === undefined ? "tools" : n + " tools"} registered. Grant them under Admin -> MCP sources to make them reachable.`
-                + (allAdminOnly ? " All are recorded as mutating (no read-only annotations upstream), and mutating tools stay admin-only even when granted." : "")),
+                + (allAdminOnly ? " All are recorded as mutating (no read-only annotations upstream); mutating tools stay locked for a group until an admin opts each in per tool (allow_mutating on the tool grant)." : "")),
         true,
       );
       await loadConnections();

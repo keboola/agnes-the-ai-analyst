@@ -287,6 +287,14 @@ class UpdateToolRequest(BaseModel):
 
 class AddGrantRequest(BaseModel):
     group_id: str
+    # v121: opt this group into the tool's MUTATING surface. Tri-state:
+    # omitted (None) leaves an existing grant's flag unchanged (a new grant
+    # lands read-only); an explicit true/false sets it — re-POSTing with a
+    # value is the edit path. Consumed by the per-tool endpoint only; the
+    # source-wide bulk grant is deliberately read-only (opting a group into
+    # every write tool of an upstream in one action is too coarse an act to
+    # be one flag away).
+    allow_mutating: Optional[bool] = None
 
 
 # ---------------------------------------------------------------------------
@@ -1952,6 +1960,9 @@ async def get_mcp_tool(
         raise HTTPException(status_code=404, detail="mcp_tool_not_found")
     out = _serialize_tool(row)
     out["grants"] = repo.grants_for_tool(tool_id)
+    # v121: same grants with their allow_mutating flags. `grants` (bare ids)
+    # stays for existing consumers.
+    out["grant_rows"] = repo.grant_rows_for_tool(tool_id)
     return out
 
 
@@ -2106,6 +2117,24 @@ async def add_mcp_source_grant(
     src = mcp_sources_repo().get(source_id)
     if src is None:
         raise HTTPException(status_code=404, detail="mcp_source_not_found")
+    if payload.allow_mutating is not None:
+        # Shared body model with the per-tool endpoint — but the bulk grant is
+        # deliberately read-only (see AddGrantRequest). Silently ignoring the
+        # field would tell an admin they opened write access across a server
+        # when nothing was opened; refuse loudly and point at the per-tool
+        # opt-in instead.
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "allow_mutating_not_supported_here",
+                "message": (
+                    "The source-wide grant is read-only by design. Opt groups into "
+                    "mutating tools one at a time: POST /api/admin/mcp-tools/{tool_id}/grants "
+                    "with allow_mutating, or `agnes admin mcp tool grant <tool_id> "
+                    "--group <g> --allow-mutating`."
+                ),
+            },
+        )
     group_id = (payload.group_id or "").strip()
     if not group_id:
         raise HTTPException(status_code=400, detail="group_id is required")
@@ -2168,11 +2197,12 @@ async def add_mcp_source_grant(
         "granted": len(granted),
         "already_granted": len(already),
         "total": len(tools),
-        # A grant does not make a `mutating=True` tool reachable — the
-        # passthrough policy gate refuses those for every non-admin regardless.
-        # On an upstream that annotates nothing that is ALL of them, so
-        # reporting only "granted 37 of 37" would promise the group an access
-        # they do not have. Same reasoning as `tools_admin_only` on enable.
+        # This bulk grant is deliberately read-only: a `mutating=True` tool
+        # stays unreachable for the group until the admin opts it in per tool
+        # (POST /mcp-tools/{id}/grants with allow_mutating=true — v121). On an
+        # upstream that annotates nothing that is ALL of them, so reporting
+        # only "granted 37 of 37" would promise the group an access they do
+        # not have. Same reasoning as `tools_admin_only` on enable.
         "admin_only": sum(1 for t in tools if t.get("mutating")),
         # Said out loud rather than silently omitted: "granted 5 of 5" over a
         # source with three switched-off tools reads as complete coverage.
@@ -2217,7 +2247,10 @@ async def add_mcp_tool_grant(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Grant a user group access to the tool. Idempotent (ON CONFLICT DO NOTHING)."""
+    """Grant a user group access to the tool. Idempotent; re-POSTing an
+    existing grant with an explicit ``allow_mutating`` updates the flag in
+    place (the flag is part of the grant, so the re-POST is the edit path),
+    while omitting it leaves an existing grant's flag untouched."""
     repo = tool_registry_repo()
     if not repo.get(tool_id):
         raise HTTPException(status_code=404, detail="mcp_tool_not_found")
@@ -2231,17 +2264,28 @@ async def add_mcp_tool_grant(
     if not user_groups_repo().get(group_id):
         raise HTTPException(status_code=404, detail="user_group_not_found")
     try:
-        repo.add_grant(tool_id, group_id)
+        repo.add_grant(tool_id, group_id, allow_mutating=payload.allow_mutating)
     except duckdb.ConstraintException as exc:
         raise HTTPException(status_code=409, detail=str(exc))
+    # Report the STORED flag, not the request's: with allow_mutating omitted
+    # (None) an existing grant keeps whatever it had.
+    stored = next(
+        (g["allow_mutating"] for g in repo.grant_rows_for_tool(tool_id) if g["group_id"] == group_id),
+        False,
+    )
     _audit(
         conn,
         user["id"],
         "mcp_tool.grant.add",
         f"mcp_tool:{tool_id}",
-        {"group_id": group_id},
+        {"group_id": group_id, "allow_mutating": stored},
     )
-    return {"granted": True, "tool_id": tool_id, "group_id": group_id}
+    return {
+        "granted": True,
+        "tool_id": tool_id,
+        "group_id": group_id,
+        "allow_mutating": stored,
+    }
 
 
 @router.delete("/mcp-tools/{tool_id}/grants/{group_id}", status_code=204)

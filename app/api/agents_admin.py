@@ -61,7 +61,12 @@ _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 _RESERVED_SLUGS = frozenset({"default"})
 
 _SELECTED_MODE_FIELDS = ("plugins_mode", "connections_mode", "tables_mode", "memory_mode")
-_ITEM_TYPES = frozenset({"plugin", "connection", "table", "memory_domain"})
+# `slack_channel` is a ROUTING item, not a data-authority one: holding
+# ('slack_channel', <channel_id>) makes @mentions in that channel run this
+# agent (services/slack_bot/events.py). The scope-intersection axes each read
+# their own item_type, so a binding grants no plugin/table/connection reach.
+# At most one non-deleted agent may hold a given channel — enforced below.
+_ITEM_TYPES = frozenset({"plugin", "connection", "table", "memory_domain", "slack_channel"})
 
 _SCOPE_MODE_VALUES = frozenset({"all", "selected"})
 _MEMORY_WRITE_MODE_VALUES = frozenset({"off", "propose", "auto"})
@@ -294,7 +299,12 @@ async def get_agent(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     row = _load_agent(agent_id, user, conn, require_owner=False)
-    return _serialize(row)
+    out = _serialize(row)
+    # Detail view carries the scope items so callers (the CLI's replace-not-
+    # merge warning, the wiring runbooks) can see what a scope PUT would drop
+    # without a second bespoke endpoint. List view stays lean.
+    out["scope"] = agents_repo().get_scope(agent_id)
+    return out
 
 
 @router.put("/{agent_id}")
@@ -337,6 +347,24 @@ async def update_agent(
             "agent_has_live_tokens",
             "revoke agent tokens before widening scope to 'all'",
         )
+    if widened_to_all:
+        # Same after-the-fact widening hazard as the PAT rule above, for
+        # Slack bindings: a binding is refused on an all-'all' agent at
+        # scope-PUT time, but widening every mode AFTER binding would land
+        # in the same place — channel turns riding the owner's plain
+        # identity. Re-check here.
+        current = agents_repo().get_by_id(agent_id) or {}
+        effective = {f: updates.get(f, current.get(f)) for f in _SELECTED_MODE_FIELDS}
+        if all(v == "all" for v in effective.values()) and any(
+            i.get("item_type") == "slack_channel" for i in agents_repo().get_scope(agent_id)
+        ):
+            raise _err(
+                409,
+                "agent_has_slack_binding",
+                "remove the agent's slack_channel binding(s) before widening every "
+                "scope mode to 'all' — a bound channel must never run turns under "
+                "the owner's plain identity",
+            )
 
     if updates:
         agents_repo().update(agent_id, **updates)
@@ -443,6 +471,47 @@ async def set_agent_scope(
             continue
         seen.add(key)
         items.append(key)
+
+    has_binding = any(item_type == "slack_channel" for item_type, _ in items)
+    if has_binding:
+        from src.agent_scope_intersection import agent_is_passthrough
+
+        agent_row = agents_repo().get_by_id(agent_id)
+        if agent_row is not None and agent_is_passthrough(agent_row):
+            # A routed session runs AS the owner; for an all-'all' agent the
+            # broker's passthrough optimization would mint the owner's PLAIN
+            # identity (admin short-circuit included) — binding one would
+            # lend every gated channel member the owner's full authority.
+            # Require at least one 'selected' mode so routed turns always
+            # carry the enforced AgentPrincipal.
+            raise _err(
+                400,
+                "binding_requires_selected_scope",
+                "an agent with every scope mode set to 'all' cannot hold a slack_channel "
+                "binding — set at least one of plugins/connections/tables/memory to "
+                "'selected' first, so channel turns run under the enforced agent scope "
+                "instead of the owner's plain identity",
+            )
+
+    for item_type, item_id in items:
+        if item_type != "slack_channel":
+            continue
+        holder = agents_repo().agent_for_scope_item("slack_channel", item_id)
+        if holder is not None and holder["id"] != agent_id:
+            # Name the holder only when the caller could see it anyway
+            # (their own agent, or an admin) — the module invariant is that
+            # a foreign agent's existence/slug is never leaked, and the slug
+            # doubles as the public /responses address.
+            if holder.get("owner_user_id") == user["id"] or is_user_admin(user["id"]):
+                who = f"agent '{holder.get('slug') or holder['id']}'"
+            else:
+                who = "another user's agent"
+            raise _err(
+                409,
+                "slack_channel_taken",
+                f"slack channel '{item_id}' is already bound to {who} — "
+                f"unbind it there first (one agent per channel)",
+            )
 
     agents_repo().set_scope(agent_id, items)
     _audit(user["id"], "agent.scope.set", agent_id, {"count": len(items)})
