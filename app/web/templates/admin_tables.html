@@ -3,7 +3,7 @@
 
 {% block title %}Table Management - {{ config.INSTANCE_NAME }}{% endblock %}
 
-{% block body_attrs %}data-source-type="{{ data_source_type }}" data-connected-source-types="{{ (connected_source_types or []) | join(',') }}"{% endblock %}
+{% block body_attrs %}data-source-type="{{ data_source_type }}" data-connected-source-types="{{ (connected_source_types or []) | join(',') }}" data-access-policies-enabled="{{ 'true' if access_policies_enabled else 'false' }}"{% endblock %}
 
 {% block head_extra %}
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -4138,6 +4138,17 @@
                 </button>
             </div>
             <div class="modal-body">
+                <div class="form-hint form-hint--warn" id="apFeatureDisabledWarning" style="display:none;">
+                    <!-- Filled by _apRenderFeatureDisabledWarning() — shown
+                         whenever this instance has access_policies.enabled
+                         off. The Builder/Advanced SQL/Preview stay fully
+                         usable either way (an admin can draft/preview a
+                         policy before enabling the feature org-wide), but
+                         Save is rejected server-side while it's off — said
+                         here BEFORE the admin builds anything, not only
+                         after a rejected PUT. -->
+                </div>
+
                 <div class="form-hint form-hint--warn" id="apInterlockWarning" style="display:none;">
                     <!-- Filled by _apRenderInterlockWarning() — mirrors the
                          onEditBqAccessModeChange() pattern: computed and
@@ -4504,6 +4515,11 @@
     // scalar above names ONE default type and cannot answer "is X connected?".
     var CONNECTED_SOURCE_TYPES = (document.body.dataset.connectedSourceTypes || '')
         .split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+    // Whether this instance has access_policies.enabled=true (see
+    // app/web/router.py::admin_tables) — the access-policy editor's
+    // Builder/Preview stay usable regardless; only saving a non-null
+    // policy is gated on this.
+    var ACCESS_POLICIES_ENABLED = document.body.dataset.accessPoliciesEnabled === 'true';
 
     // The end of each table's chain: which package carries it and how many
     // people that reaches ({table_id: {packages: [{id, name}], people}}).
@@ -6750,6 +6766,7 @@
         _apRowCombine = 'and';
         _apRenderCompileWarnings([]);
         _apRenderRowRules();
+        _apRenderFeatureDisabledWarning();
         _apRenderInterlockWarning();
         _apLoadHistory(table.id);
         apSwitchTab('builder');
@@ -6761,6 +6778,25 @@
         document.getElementById('accessPolicyModal').classList.remove('active');
         _apTable = null;
         if (_apCompileTimer) { clearTimeout(_apCompileTimer); _apCompileTimer = null; }
+    }
+
+    // Shown whenever this instance has access_policies.enabled=false — said
+    // up front, not only after a rejected Save. The Builder/Advanced SQL/
+    // Preview stay fully usable either way (drafting/previewing a policy
+    // never attaches one), so this never disables anything, it only
+    // explains why Save itself will be refused (apSavePolicy() enforces the
+    // actual gate).
+    function _apRenderFeatureDisabledWarning() {
+        var warn = document.getElementById('apFeatureDisabledWarning');
+        if (ACCESS_POLICIES_ENABLED) {
+            warn.style.display = 'none';
+            warn.textContent = '';
+            return;
+        }
+        warn.textContent = 'Access policies are disabled on this instance — you can build and preview a '
+            + 'policy here, but Save is disabled until an admin turns on access_policies.enabled in '
+            + 'Server Config.';
+        warn.style.display = '';
     }
 
     // Inline interlock warning (design doc §3.1/§13) — computed and shown
@@ -7170,6 +7206,16 @@
         if (sql && !note) {
             _apShowSaveError('access_policy_note is required whenever a policy is attached -- explain why '
                 + 'this policy exists so the next admin to find it knows whether it is safe to change.');
+            return;
+        }
+
+        // Fail fast client-side, same posture as the note check above: the
+        // API rejects this the same way (access_policies_disabled). Never
+        // blocks CLEARING (sql empty) -- that stays a safety valve
+        // regardless of this flag, same as the server enforces it.
+        if (sql && !ACCESS_POLICIES_ENABLED) {
+            _apShowSaveError('access_policies_disabled: access policies are not enabled on this instance -- '
+                + 'ask an admin to turn on access_policies.enabled in Server Config before attaching one.');
             return;
         }
 

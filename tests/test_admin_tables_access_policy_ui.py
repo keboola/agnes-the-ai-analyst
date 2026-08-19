@@ -382,6 +382,42 @@ def test_save_confirms_before_storing_a_policy_that_filters_or_masks_nothing(see
     assert "Save anyway" in fn
 
 
+def test_feature_disabled_banner_reflects_the_server_flag(seeded_app, monkeypatch):
+    """The Builder/Advanced SQL/Preview stay usable regardless of
+    access_policies.enabled -- only Save is gated -- but the modal must say
+    so up front (data-access-policies-enabled body attribute + a banner
+    computed from it), not only after a rejected PUT."""
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+
+    r = c.get("/admin/tables", headers=_auth(token))
+    body = r.text
+    assert 'data-access-policies-enabled="false"' in body
+    assert 'id="apFeatureDisabledWarning"' in body
+    assert "function _apRenderFeatureDisabledWarning" in body
+    assert "_apRenderFeatureDisabledWarning();" in body
+    assert "var ACCESS_POLICIES_ENABLED = document.body.dataset.accessPoliciesEnabled" in body
+
+    monkeypatch.setenv("AGNES_ACCESS_POLICIES_ENABLED", "1")
+    r2 = c.get("/admin/tables", headers=_auth(token))
+    assert 'data-access-policies-enabled="true"' in r2.text
+
+
+def test_save_is_blocked_client_side_when_the_feature_flag_is_off(seeded_app):
+    """apSavePolicy() must fail fast on the same condition the API rejects
+    (access_policies_disabled) instead of only discovering it from a
+    rejected PUT -- mirroring the existing note-required fail-fast check.
+    Must never gate an empty sql (clearing a policy is a safety valve
+    regardless of this flag, same as the server enforces it)."""
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = c.get("/admin/tables", headers=_auth(token))
+    body = r.text
+    fn = body[body.index("async function apSavePolicy") : body.index("async function apClearPolicy")]
+    assert "if (sql && !ACCESS_POLICIES_ENABLED)" in fn
+    assert "access_policies_disabled" in fn
+
+
 def test_preview_all_groups_button_is_wired_to_the_new_endpoint(seeded_app):
     """review-plan P1.4: a "Preview all groups" action next to the
     single-persona preview sweeps every real group through the same policy

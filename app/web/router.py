@@ -6632,7 +6632,7 @@ async def admin_tables(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    from app.instance_config import get_data_source_type
+    from app.instance_config import feature_enabled, get_data_source_type
 
     repo = table_registry_repo()
     tables = repo.list_all()
@@ -6644,6 +6644,14 @@ async def admin_tables(
         user=user,
         registered_tables=tables,
         data_source_type=data_source_type,
+        # review plan follow-up: the access-policy editor's Builder/Preview
+        # stay usable regardless of this flag (an admin can draft/preview a
+        # policy before enabling the feature org-wide) but SAVING a non-null
+        # policy is rejected server-side when it's off. Passed here so the
+        # modal can say so up front instead of only after a rejected PUT.
+        access_policies_enabled=feature_enabled(
+            "access_policies", "enabled", env_var="AGNES_ACCESS_POLICIES_ENABLED", default=False
+        ),
         # The end of each table's chain — which package carries it and how
         # many people that reaches. The page hydrates its rows client-side
         # from /api/admin/registry, but reach is a grants × group-membership
