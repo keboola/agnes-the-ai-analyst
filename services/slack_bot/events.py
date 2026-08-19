@@ -432,7 +432,7 @@ async def _handle_mention(app, event: dict) -> None:
         # attribution; it must NOT shape the workspace, or the same bound
         # agent would present different rails per invoker and pick up an
         # arbitrary channel member's personal CLAUDE.local.md as standing
-        # instructions (Devin Review on this PR).
+        # instructions.
         from src.agent_scope_intersection import agent_is_passthrough
 
         if agent_is_passthrough(bound_agent):

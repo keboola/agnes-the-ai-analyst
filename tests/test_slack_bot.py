@@ -909,9 +909,14 @@ def _seed_channel_bound_agent(conn, channel="C_OK", *, owner="uid_U_OK", slug="r
     # an all-'all' agent would ride the owner's plain identity and is
     # refused by both the API guard and the routing-time defense.
     agents_repo().create(
-        id=agent_id, owner_user_id=owner, name="Router", slug=slug,
-        plugins_mode="selected", connections_mode="selected",
-        tables_mode="selected", memory_mode="selected",
+        id=agent_id,
+        owner_user_id=owner,
+        name="Router",
+        slug=slug,
+        plugins_mode="selected",
+        connections_mode="selected",
+        tables_mode="selected",
+        memory_mode="selected",
     )
     agents_repo().set_scope(agent_id, [("slack_channel", channel)])
     return agent_id
@@ -938,7 +943,9 @@ def test_mention_routed_channel_gets_agent_header_and_reaction(monkeypatch):
     agent_id = _seed_channel_bound_agent(conn, owner=uid)
     mgr = _FakeMgr()
     app = _FakeApp(conn=conn, mgr=mgr)
-    asyncio.run(ev._handle_mention(app, {"channel": "C_OK", "ts": "9.5", "user": "U_OK", "text": "<@U07BOT> draft this"}))
+    asyncio.run(
+        ev._handle_mention(app, {"channel": "C_OK", "ts": "9.5", "user": "U_OK", "text": "<@U07BOT> draft this"})
+    )
     assert mgr.created and mgr.create_kwargs[0].get("agent_id") == agent_id
     assert mgr.sent
     sent_text = mgr.sent[0][1]
@@ -1000,7 +1007,9 @@ def test_mention_routed_existing_thread_with_messages_gets_no_second_header(monk
     )
     mgr = _FakeMgr()
     app = _FakeApp(conn=conn, mgr=mgr)
-    asyncio.run(ev._handle_mention(app, {"channel": "C_OK", "ts": "9.7", "user": "U_OK", "text": "<@U07BOT> follow-up"}))
+    asyncio.run(
+        ev._handle_mention(app, {"channel": "C_OK", "ts": "9.7", "user": "U_OK", "text": "<@U07BOT> follow-up"})
+    )
     # No second slack-context header — but follow-ups on a shared routed
     # thread carry sender attribution so the agent knows WHO is asking.
     assert mgr.sent and mgr.sent[0][1] == "[slack sender=<@U_OK>]\nfollow-up"
@@ -1010,8 +1019,8 @@ def test_mention_routed_existing_thread_with_messages_gets_no_second_header(monk
 def test_mention_routed_zero_message_session_still_gets_header(monkeypatch):
     """A first mention that timed out on startup persists the session row
     but delivers nothing — the RETRY must still carry the slack-context
-    header, or the agent permanently never learns its channel/thread ids
-    (Devin Review on this PR). Keyed on message_count == 0, not row absence."""
+    header, or the agent permanently never learns its channel/thread ids.
+    Keyed on message_count == 0, not row absence."""
     import asyncio
     import services.slack_bot.events as ev
 
@@ -1043,8 +1052,8 @@ def test_mention_routed_but_foreign_thread_rejected_without_ack(monkeypatch):
     """An ack on a mention we then refuse promises an answer that never
     comes: the ownership gate runs BEFORE the 👀 reaction, so a mention on a
     pre-existing AGENT-LESS thread (owned by a human who is not the bound
-    agent's owner) gets the ephemeral rejection and no acknowledgement mark
-    (Devin Review on this PR)."""
+    agent's owner) gets the ephemeral rejection and no acknowledgement
+    mark."""
     import asyncio
     import services.slack_bot.events as ev
 
@@ -1084,8 +1093,7 @@ def test_mention_routed_session_runs_as_the_agents_owner(monkeypatch):
     """A routed session is created AS THE AGENT'S OWNER — session row, sink
     owner, and (downstream) sandbox workspace all key off one identity, so
     the same bound agent presents identical rails regardless of who mentions
-    it and never inherits a mentioner's personal CLAUDE.local.md (Devin
-    Review on this PR)."""
+    it and never inherits a mentioner's personal CLAUDE.local.md."""
     import asyncio
     import services.slack_bot.events as ev
 
@@ -1163,8 +1171,7 @@ def test_mention_routed_thread_continued_by_second_gated_user(monkeypatch):
 def test_mention_prebinding_human_thread_keeps_working_for_its_starter(monkeypatch):
     """A binding governs NEW threads only: a thread started before the
     channel was bound still belongs to its human starter, runs unrouted (no
-    header, no ack), and is NOT hijacked or bricked by the binding (Devin
-    Review on this PR)."""
+    header, no ack), and is NOT hijacked or bricked by the binding."""
     import asyncio
     import services.slack_bot.events as ev
 
@@ -1460,8 +1467,7 @@ def test_mention_passthrough_agent_binding_is_never_routed(monkeypatch):
 def test_mention_sender_limit_gets_ephemeral_not_silence(monkeypatch):
     """A sender-limit refusal (daily budget / session tokens / rate — keyed
     on the AGENT OWNER for routed threads) answers the mentioner with an
-    ephemeral instead of vanishing into the background-task log (Devin
-    Review on this PR)."""
+    ephemeral instead of vanishing into the background-task log."""
     import asyncio
     import services.slack_bot.events as ev
 

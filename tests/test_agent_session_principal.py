@@ -134,7 +134,7 @@ def test_broker_all_agent_on_foreign_session_takes_enforced_path(e2e_env):
     (a Slack channel binding routes the MENTIONER's session to the owner's
     agent) must mint an agent-session JWT: the plain-identity fall-through
     would run the turn with the mentioning user's own authority — admin
-    short-circuit included (Devin Review on this PR)."""
+    short-circuit included."""
     from app.api.broker import _mint_identity_jwt
 
     owner_id, _owner_email = _make_user()

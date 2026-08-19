@@ -1944,7 +1944,7 @@ class TestBulkSourceGrant(TestChatToolsEndpoint):
     def test_bulk_grant_refuses_allow_mutating(self, seeded_app):
         """The source-wide grant is read-only by design; a request that asks
         for write access across a whole server must be refused loudly, not
-        silently accepted with nothing opened (Devin Review on this PR)."""
+        silently accepted with nothing opened."""
         c, token = seeded_app["client"], seeded_app["admin_token"]
         _, source_id = self._enabled_source(c, token, "kbc-bulk-mutrefuse")
         gid = self._group()
