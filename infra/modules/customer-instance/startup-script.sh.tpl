@@ -793,6 +793,19 @@ elif [ "$TLS_MODE" = "caddy" ] && [ -z "$DOMAIN" ]; then
             ;;
     esac
 fi
+if [ "$KAI_AGENT_MATERIALIZE" = "0" ] && [ -f "$APP_DIR/docker-compose.kai-agent.yml" ]; then
+    # A PREVIOUS boot materialized the engine. Left alone, its containers
+    # would keep running under restart:always with that boot's env (stale
+    # broker URL; a stale HOST_JWT_SECRET if the secret rotated) while the
+    # .env rewrite below drops the overlay from COMPOSE_FILE — live but
+    # outside compose management, and the tick's retry would not see them.
+    # Converge a skipped boot to a clean "engine off" state instead. The old
+    # .env is still on disk here (the rewrite happens after this block), so
+    # compose can interpolate the overlay's variables for the teardown.
+    (cd "$APP_DIR" && docker compose -f docker-compose.kai-agent.yml down --timeout 30 2>/dev/null) \
+        || echo "WARN: could not tear down the previous boot's kai-agent containers — check 'docker ps' by hand" >&2
+    rm -f "$APP_DIR/docker-compose.kai-agent.yml"
+fi
 if [ "$KAI_AGENT_MATERIALIZE" = "1" ]; then
 
 # The engine's env. Derived URLs split by who calls them: the E2B sandbox
