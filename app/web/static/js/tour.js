@@ -100,14 +100,15 @@ export const TOURS = {
       revealHost: { container: '[data-lib-sec]', toggle: '[data-sec-toggle]' },
       // Only if no group turns out to have an Add control at all — a Library
       // where everything is already in-stack has nothing left to add, and the
-      // filter is then the honest thing to point at.
-      fallbackSelector: '#lib-stack-toggle, [data-stack-badge]',
-      extraSpotlight: ['#lib-stack-toggle'],
+      // Scope control is then the honest thing to point at (it replaced the
+      // "In stack only" toggle when /stack folded into the Library).
+      fallbackSelector: '#lib-scope, [data-stack-badge]',
+      extraSpotlight: ['#lib-scope'],
       title: 'Put it in your stack and I can use it',
       desc: 'Your Library is everything available to you. Your stack is the smaller set your chat agent actually draws on — that\'s what keeps answers fast and on topic. Click Add on a row and it joins your stack.',
       points: [
         'It counts from your very next question — no reload, no waiting.',
-        '"In stack" above filters the list down to what I\'m using right now.',
+        'The Scope control above ("Yours") filters the list down to what I\'m using right now.',
         'Items your admin marked required are always on and can\'t be removed.',
       ],
     },

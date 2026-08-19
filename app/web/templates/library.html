@@ -119,6 +119,15 @@
                 data-origin="{{ c.origin }}"
                 data-requirement="{{ c.requirement }}"
                 data-stack="{{ c.stack_state }}"
+                {# SCOPE — the question the Marketplace and the Catalog used to
+                   answer on pages of their own ("what is there" vs "what have
+                   I got"). It is one axis of this list, not two destinations,
+                   so it is a segmented control on the bar rather than a
+                   separate browse surface. Derived here rather than in the
+                   router: it is a projection of two facts the row already
+                   carries, and a third server-side field could disagree with
+                   them. #}
+                data-scope="{{ 'mine' if (c.stack_state == 'in_stack' or c.ownership == 'mine') else 'available' }}"
                 data-tag="{{ c.tags | join('|') }}"
                 data-owner="{{ c.owner_key }}"
                 data-name="{{ c.title|lower }}"
@@ -562,6 +571,13 @@
   .lib-new__menu { position: absolute; top: calc(100% + 6px); right: 0; z-index: 40; min-width: 214px; padding: 6px; background: var(--ds-surface); border: 1px solid var(--ds-border); border-radius: 12px; box-shadow: var(--ds-shadow-md); }
   .lib-new__menu[hidden] { display: none; }
   .lib-new__item { display: flex; align-items: center; gap: 10px; width: 100%; padding: 9px 10px; border: none; background: none; border-radius: 8px; font: inherit; font-size: 13.5px; font-weight: 500; color: var(--ds-text-primary); text-align: left; text-decoration: none; cursor: pointer; }
+  /* The heading is the warning. An item saying "Build a skill" cannot tell you
+     that publishing it reaches everyone, and an item saying "Upload a file"
+     cannot tell you that it does not — so the two groups are named for who
+     ends up seeing the result. */
+  .lib-new__cap { padding: 9px 10px 5px; font-size: 10px; letter-spacing: .1em; text-transform: uppercase; font-weight: 700; color: var(--ds-text-muted); }
+  .lib-new__sep { border-top: 1px solid var(--ds-border-light); margin: 5px 0; }
+  .lib-new__item small { display: block; font-weight: 400; font-size: 11.5px; color: var(--ds-text-muted); }
   .lib-new__item:hover { background: color-mix(in srgb, var(--ds-text-primary) 6%, transparent); color: var(--ds-primary); }
   .lib-new__item svg { width: 17px; height: 17px; flex-shrink: 0; color: var(--ds-text-secondary); }
   .lib-new__item:hover svg { color: var(--ds-primary); }
@@ -1748,6 +1764,31 @@
   <div class="fbar-dock"><span class="fbar-dock__veil" aria-hidden="true"></span><div class="fbar-dock__card">
   <div class="fbar-chips fbar-chips--center" id="lib-chips" hidden></div>
   <div class="fbar" role="group" aria-label="Search, filter and sort library">
+    {# ── SCOPE ────────────────────────────────────────────────────────────
+       The axis the Marketplace and the Catalog used to be pages for.
+
+       Both existed to answer "what is out there that I could add", against
+       lists the Library already renders — every approved skill and plugin,
+       every data package, memory domain and recipe granted to the caller.
+       Two extra destinations for one filter of one list is what split the
+       "what do I have / what can I add" answer across three pages, and it is
+       why `Install from the marketplace` had to live in a menu called
+       "+ Add": the rail had retired the nav entry and nothing else linked it.
+
+       So it is a segment, first control on the bar, before the search that
+       narrows within it. `all` is the wildcard — arriving at the Library
+       still shows everything, which is what the page is for.
+
+       Replaces the "In stack only" pressed-state toggle: that was the same
+       question with one of its three answers missing ("what is NOT mine
+       yet"), and two controls for one question is the mistake the
+       marketplace shelves already made once. #}
+    <div class="fbar-seg" id="lib-scope" role="group" aria-label="Scope">
+      <button type="button" class="fbar-seg__btn is-active" data-seg="all" aria-selected="true">All</button>
+      <button type="button" class="fbar-seg__btn" data-seg="mine" aria-selected="false">Yours</button>
+      <button type="button" class="fbar-seg__btn" data-seg="available" aria-selected="false">Available to add</button>
+    </div>
+
     {# The bar's own `role="search"` landmark. It sits inside a `group` rather
        than fronting one, which is why the landmark rides this box: a search
        field with no landmark of its own is unreachable by landmark navigation. #}
@@ -1822,16 +1863,13 @@
        category options in the menu show. Rendered only when flipping it would
        change the list (`library_stack_toggle`: something is in the Stack and
        something isn't), so it never sits there as a no-op. #}
-    {% if library_stack_toggle %}
-    <button type="button" class="fbar-toggle" id="lib-stack-toggle"
-            data-facet="stack" data-facet-value="in_stack" aria-pressed="false"
-            data-tip="Items your Default agent can use in Chat."
-            aria-label="In stack only — items your Default agent can use in Chat">
-      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 8.5 12 4l9 4.5-9 4.5-9-4.5Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="m3 12.5 9 4.5 9-4.5M3 16.5l9 4.5 9-4.5" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
-      <span>In stack only</span>
-      <span class="fbar-toggle__n">{{ library_in_stack_count }}</span>
-    </button>
-    {% endif %}
+    {# The "In stack only" pressed-state toggle that used to sit here is now the
+       Scope segment at the head of the bar (`#lib-scope`). It asked a binary of
+       a three-answer question — All / Yours / Available to add — and the
+       missing answer, "what could I add", was the one the Marketplace and the
+       Catalog existed as separate pages to give. `library_stack_toggle` and
+       `library_in_stack_count` still ride the context for the count badge
+       elsewhere on the page. #}
 
     {# Sorting for GRID view. In table view the column headers own it (see the
        <thead> below) and this control hides — two live readouts of one order
@@ -1904,6 +1942,14 @@
         <svg class="lib-new__caret" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m6 9 6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
       </button>
       <div class="lib-new__menu" id="lib-new-menu" role="menu" aria-label="Add to your library" hidden>
+        {# Grouped by BLAST RADIUS, not by role. Publishing a skill, a plugin or
+           an agent template already reaches other people — a store entity goes
+           live at `visibility_status='approved'`, readable by everyone it is
+           shared with — while an uploaded file is private until it is shared.
+           One menu was mixing "add for me" with "add for everyone" and giving
+           no signal which was which; the headings carry what a bare item could
+           not. #}
+        <div class="lib-new__cap">Create for the workspace</div>
         <a class="lib-new__item" href="/skills?type=skill" role="menuitem">
           <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M10 4.6a2 2 0 0 1 4 0c0 .5.4 1 1 1h2.4V8c0 .6.4 1 1 1a2 2 0 0 1 0 4c-.6 0-1 .4-1 1v2.4H15c-.6 0-1 .4-1 1a2 2 0 0 1-4 0c0-.6-.4-1-1-1H6.6V14c0-.6-.5-1-1-1a2 2 0 0 1 0-4c.5 0 1-.4 1-1V5.6H9c.6 0 1-.5 1-1Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
           <span>Build a skill</span>
@@ -1919,26 +1965,35 @@
           <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4" y="8" width="16" height="12" rx="3.5" stroke="currentColor" stroke-width="1.7"/><path d="M12 4.2v3.8M8.5 20v1.5M15.5 20v1.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="9.3" cy="13.5" r="1.1" fill="currentColor"/><circle cx="14.7" cy="13.5" r="1.1" fill="currentColor"/></svg>
           <span>Build an agent template</span>
         </a>
+        {# A data package is the fourth thing you can create FOR the workspace,
+           and the only one gated on admin — it is the unit governed data
+           reaches analysts through, so authoring one is an instance decision.
+           It opens the same shared drawer /admin/data-packages does. #}
+        {% if user.is_admin %}
+        <button type="button" class="lib-new__item" role="menuitem" data-new-package>
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3 20 7v10l-8 4-8-4V7l8-4Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M12 11 20 7M12 11v10M12 11 4 7" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
+          <span>New data package<small>Governed tables analysts can query</small></span>
+        </button>
+        {% endif %}
+        <div class="lib-new__sep"></div>
+        <div class="lib-new__cap">Just for you</div>
         <button type="button" class="lib-new__item" role="menuitem" data-new-upload>
           <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 16V5m0 0L8 9m4-4 4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M5 15v3a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
           <span>Upload a file</span>
         </button>
-        {# The two "add something that already exists" paths, after the four
-           build/upload ones. Under the rail chrome THESE ROWS ARE THE ONLY WAY
-           to /marketplace and /catalog: the rail retired both nav entries in
-           favor of exactly this menu (see the IA note in _app_rail.html), and
-           it renders no global search box — so removing either row strands a
-           live surface (tests/test_web_nav_user_parity.py guards them). The
-           topnav chrome keeps its own flat links; there this is just a
-           shortcut. #}
-        <a class="lib-new__item" href="/marketplace" role="menuitem">
-          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 8h16l-1.2 11a2 2 0 0 1-2 1.8H7.2a2 2 0 0 1-2-1.8L4 8Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M8.5 10V6.5a3.5 3.5 0 0 1 7 0V10" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
-          <span>Install from the marketplace</span>
-        </a>
-        <a class="lib-new__item" href="/catalog" role="menuitem">
-          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><ellipse cx="12" cy="5.5" rx="7.5" ry="2.8" stroke="currentColor" stroke-width="1.7"/><path d="M4.5 5.5v13c0 1.5 3.4 2.8 7.5 2.8s7.5-1.3 7.5-2.8v-13" stroke="currentColor" stroke-width="1.7"/><path d="M4.5 12c0 1.5 3.4 2.8 7.5 2.8s7.5-1.3 7.5-2.8" stroke="currentColor" stroke-width="1.7"/></svg>
-          <span>Add shared data &amp; recipes</span>
-        </a>
+        {# The two "add something that already exists" rows — `Install from the
+           marketplace` and `Add shared data & recipes` — are GONE, and with
+           them the last reason /marketplace and /catalog were destinations.
+
+           They were never a considered part of "+ Add": PR #1276 put them here
+           to stop two live pages being orphans after the rail redesign retired
+           their nav entries. Acquisition is not a create verb, and a menu that
+           mixes "build a new thing" with "go to another page and look at
+           things" is the reason this menu could not say what it was for.
+
+           Both pages now 302 into this list (router: catalog/marketplace), and
+           the question they answered is the Scope segment at the head of the
+           bar. #}
       </div>
     </div>
   </div>
@@ -2249,6 +2304,13 @@
 {% endblock %}
 
 {% block scripts %}
+{% if user.is_admin %}
+{# The shared create/edit drawer, for "+ Add → New data package". Admin-only:
+   a reader who cannot create one never downloads the form. #}
+<link rel="stylesheet" href="{{ static_url('css/drawer.css') }}">
+<link rel="stylesheet" href="{{ static_url('css/package_drawer.css') }}">
+<script src="{{ static_url('js/components/package_drawer.js') }}"></script>
+{% endif %}
 <script src="{{ static_url('js/components/ds_dropdown.js') }}" defer></script>
 <script src="{{ static_url('js/filter_toolbar.js') }}"></script>
 <script src="{{ static_url('js/components/share_dialog.js') }}"></script>
@@ -2835,14 +2897,14 @@
       // flat set for search/sort and defers grouping to the sections config.
       rows: '[data-lib-sec] tr[data-item-id]:not([data-parent-id])',
       search: { el: '#lib-search', attr: 'data-search' },
+      // Scope — All / Yours / Available to add. `all` is the wildcard, so the
+      // page still opens on everything. This replaced an "In stack only"
+      // pressed-state toggle, which was the same question with one of its
+      // three answers missing: there was no way to ask for what is NOT yours
+      // yet, which is precisely what the Marketplace and the Catalog were
+      // separate pages for.
+      segments: { container: '#lib-scope', name: 'seg', attr: 'data-scope' },
       facets: [
-        // Toggle, not a category, and it lives ON the bar rather than in the
-        // menu: `control` points at the pressed-state button between Filter and
-        // Sort, on = keep only `data-stack="in_stack"` rows. The button is its
-        // own readout, so the engine keeps this facet out of the Filter badge
-        // and the chip row (see filter_toolbar.js).
-        { key: 'stack', attr: 'data-stack', label: 'In stack only', toggle: true,
-          control: '#lib-stack-toggle' },
         { key: 'requirement', attr: 'data-requirement', label: 'Access' },
         { key: 'tag', attr: 'data-tag', label: 'Tag', multi: true },
         { key: 'owner', attr: 'data-owner', label: 'Owner' },
@@ -3055,10 +3117,22 @@
   //    rather than unfolding items the Stack doesn't contain. Not persisted,
   //    same as ?section= above: a hand-off for this arrival, not a preference
   //    the caller set.
+  // `?scope=` — where the retired Catalog and Marketplace browse pages land.
+  // Pressed before the STACK_ONLY branch below so an old `?stack=in_stack`
+  // link cannot fight a newer `?scope=` one on the same URL.
+  const SCOPE = {{ (library_scope or '') | tojson }};
+  if (SCOPE) {
+    const seg = document.querySelector('#lib-scope [data-seg="' + SCOPE + '"]');
+    if (seg && !seg.classList.contains('is-active')) seg.click();
+  }
+
   const STACK_ONLY = {{ (library_stack_only or False) | tojson }};
-  if (STACK_ONLY) {
-    const stackBtn = document.getElementById('lib-stack-toggle');
-    if (stackBtn && stackBtn.getAttribute('aria-pressed') !== 'true') stackBtn.click();
+  if (STACK_ONLY && !SCOPE) {
+    // `?stack=in_stack` is the older spelling of the Yours segment — the /stack
+    // retirement redirect and the chat empty state both still send it, so it
+    // presses the segment rather than 404ing on a control that no longer exists.
+    const yoursSeg = document.querySelector('#lib-scope [data-seg="mine"]');
+    if (yoursSeg && !yoursSeg.classList.contains('is-active')) yoursSeg.click();
     document.querySelectorAll('[data-lib-sec]').forEach(sec => {
       const key = sec.dataset.libSec;
       if (!key || sec.hidden) return;
@@ -4177,6 +4251,14 @@
   function closeUpload() { if (uploadModal) uploadModal.hidden = true; }
   function uploadShowErr(msg) { uploadErr.textContent = msg; uploadErr.hidden = false; }
   document.querySelectorAll('[data-new-upload]').forEach(b => b.addEventListener('click', openUpload));
+
+  // "New data package" (admin) — the same shared drawer /admin/data-packages
+  // and /admin/tables open. Reload on create so the new package appears in the
+  // Data packages band it was just added to.
+  document.querySelectorAll('[data-new-package]').forEach(b => b.addEventListener('click', () => {
+    if (!window.AgnesPackageDrawer) return;
+    window.AgnesPackageDrawer.open({ onCreated: () => window.location.reload() });
+  }));
   document.querySelectorAll('[data-close-upload]').forEach(b => b.addEventListener('click', closeUpload));
   document.addEventListener('keydown', e => {
     if (e.key !== 'Escape') return;

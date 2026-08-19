@@ -35,7 +35,7 @@ wheels = [
 
 [[package]]
 name = "agnes-the-ai-analyst"
-version = "0.83.33"
+version = "0.83.47"
 source = { editable = "." }
 dependencies = [
     { name = "alembic" },
@@ -45,6 +45,7 @@ dependencies = [
     { name = "cachetools" },
     { name = "certifi" },
     { name = "claude-agent-sdk" },
+    { name = "cryptography" },
     { name = "docker" },
     { name = "duckdb" },
     { name = "dulwich" },
@@ -160,6 +161,7 @@ requires-dist = [
     { name = "cachetools", specifier = ">=5.3.0" },
     { name = "certifi", specifier = ">=2024.2.2" },
     { name = "claude-agent-sdk", specifier = ">=0.2.87,<0.3.0" },
+    { name = "cryptography", specifier = ">=42.0.0" },
     { name = "docker", specifier = ">=7.1.0" },
     { name = "docling", marker = "extra == 'docling'", specifier = ">=2.0" },
     { name = "duckdb", specifier = ">=1.5.2" },

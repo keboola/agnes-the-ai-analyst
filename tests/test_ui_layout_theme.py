@@ -139,7 +139,6 @@ class TestResolvers:
 
         assert get_experience() == "redesign"
 
-
     def test_default_footer_is_config_driven_not_keboola(self, web_client, admin_cookie, monkeypatch):
         """Default (blue/topnav) instances render the shared config-driven
         footer and no vendor credit. Regression guard for the #896 footer leak.
@@ -162,6 +161,7 @@ class TestResolvers:
         assert "<b>Keboola</b>" not in resp.text
         # No credit configured → no attribution line invented.
         assert "Deployed by" not in resp.text
+
 
 class TestRedesignIsTheOnlyExperience:
     """The redesign contract this wave installs: rail is unconditional, and
@@ -377,33 +377,38 @@ class TestRailOptIn:
         assert "In stack only" not in menu, "the stack toggle must not also sit in the Filter menu"
         assert "fbar-menu__toggle" not in text, "retired in-menu toggle markup"
 
-        # Order on the bar: Filter · In stack only · Sort. The toggle narrows the
-        # list like Filter does, so it reads before the ordering control.
+        # Order on the bar: Scope · Filter · Sort. Scope answers "whose is
+        # this" before Filter narrows within it and Sort orders the result, so
+        # it reads first — and the Stack question ("what can the default agent
+        # use?") is its `Yours` segment.
         positions = [
+            text.index('id="lib-scope"'),
             text.index('id="lib-filter-btn"'),
-            text.index('id="lib-stack-toggle"'),
             text.index('id="lib-sort"'),
         ]
-        assert positions == sorted(positions), "stack toggle must sit between Filter and Sort"
+        assert positions == sorted(positions), "scope must lead the bar, before Filter and Sort"
 
-    def test_stack_toggle_is_wired_as_an_external_facet(self, web_client, admin_cookie, monkeypatch):
-        """The toolbar button is driven by the shared engine as an ordinary
-        facet with `control`, not by page-local click handlers — so clearing and
-        resetting keep working. Because the button shows its own state, the
-        engine must leave it out of the Filter badge count and the chip row;
-        those two exclusions are the whole reason the move is not a regression
-        in discoverability."""
+    def test_scope_is_a_segment_not_a_binary_toggle(self, web_client, admin_cookie, monkeypatch):
+        """Scope is All / Yours / Available to add, on the bar.
+
+        This used to pin an "In stack only" pressed-state toggle wired as an
+        engine facet with `control`. That control asked a binary of a
+        three-answer question, and the answer it could not give — "what is
+        NOT mine yet" — is exactly what the Marketplace and the Catalog were
+        separate browse pages for. Folding those two into this list (see
+        REDIRECTED_UNDER_RAIL) is what makes the third segment necessary, and
+        having it is what makes the fold honest.
+        """
         text = web_client.get("/library", cookies=admin_cookie).text
-        assert "control: '#lib-stack-toggle'" in text
-
-        js = web_client.get("/static/js/filter_toolbar.js").text
-        # Excluded from the Filter button's badge...
-        assert "return f.control ? n : n + facetState[f.key].size;" in js
-        # ...and from the chip row.
-        assert "if (f.control) return;" in js
-        # State is pushed back onto the button from the one funnel every
-        # mutation goes through, so Clear all / reset can't desync it.
-        assert "syncExternalControls" in js
+        assert 'id="lib-scope"' in text, "the scope segment must be on the bar"
+        for value in ("all", "mine", "available"):
+            assert f'data-seg="{value}"' in text, value
+        # Driven by the shared engine's own segmented control, not page-local
+        # click handlers — so Clear all and reset keep working.
+        assert "segments: { container: '#lib-scope', name: 'seg', attr: 'data-scope' }" in text
+        # The control it replaced is gone, not merely hidden: two controls for
+        # one question is the mistake the marketplace shelves already made.
+        assert 'id="lib-stack-toggle"' not in text
 
     def test_rail_has_no_studio_or_marketplace_entry(self, web_client, admin_cookie, monkeypatch):
         """Studio is retired from the rail and Marketplace is no longer a rail
@@ -450,25 +455,19 @@ class TestRailOptIn:
         assert 'id="global-search"' in text
         assert 'id="globalSearchResults"' in text
 
-    def test_rail_catalog_renders_unified_page(self, web_client, admin_cookie, monkeypatch):
-        """Under the rail layout /catalog is the unified browse surface
-        (kind tabs over one grid); the caller's own holdings live on
-        /library — including its "In stack only" toggle, My Stack's
-        replacement (#1088; see test_library_answers_the_stack_question_in_its_toolbar
-        above and tests/test_web_library.py for that surface's coverage)."""
-        resp = web_client.get("/catalog", cookies=admin_cookie)
-        assert resp.status_code == 200
-        for anchor in (
-            'data-kind="data"',
-            'data-kind="plugins"',
-            'data-kind="memory"',
-            'data-kind="recipes"',
-            'class="uc-kindtabs"',
-        ):
-            assert anchor in resp.text, f"unified catalog is missing {anchor}"
-        # Uploads (file collections) are private user resources — they
-        # live in the caller's Library, not in the shared Catalog.
-        assert 'data-kind="library"' not in resp.text
+    def test_rail_catalog_folds_into_the_library(self, web_client, admin_cookie, monkeypatch):
+        """/catalog is no longer a browse surface.
+
+        It rendered kind tabs (Data · Plugins · Memory · Recipes) over one
+        grid of rows the Library already lists in full, off the same
+        `StackResolver.browse()` — two destinations for one list. It now 302s
+        into the Library with the Scope segment set to `available`, which is
+        the question its tabs were really asking. Every detail route beneath
+        it is untouched; this folded the shell only.
+        """
+        resp = web_client.get("/catalog", cookies=admin_cookie, follow_redirects=False)
+        assert resp.status_code == 302
+        assert resp.headers["location"] == "/library?scope=available"
 
     def test_library_page_hosts_uploads(self, web_client, admin_cookie, monkeypatch):
         """The caller's things live on /library — the renamed, widened former
@@ -1830,18 +1829,31 @@ class TestSharedDetailLayout:
                 f"{path} leaked the paper-only trust marker into the default theme"
             )
 
-    def test_overflow_menu_holds_the_secondary_action(self, web_client, admin_cookie, monkeypatch):
-        """One prominent action per header; the admin errand moves into the
-        overflow menu (a <details>, so it needs no JavaScript to open)."""
+    def test_the_admin_errand_lives_in_the_rail_not_the_header(self, web_client, admin_cookie, monkeypatch):
+        """One prominent action per header, and the admin errand offered ONCE.
+
+        This used to pin the errand inside the reader's overflow menu, which
+        made "manage this package" a menu item that navigated to
+        `/admin/tables?edit_package=` — the Tables lens, a page about something
+        else. Managing the thing you are standing on now has its own labelled
+        home in the rail (`detail.manage`), and it edits in place through the
+        shared drawer. The overflow menu keeps only what it always promised:
+        the actions a READER has that are not what they came to do.
+
+        The invariant the old test was really protecting is unchanged and still
+        asserted here — the action is offered in exactly one place, and the
+        header is not it.
+        """
         monkeypatch.setenv("AGNES_INSTANCE_THEME", "paper")
         self._package("menu-detail-pkg")
         text = web_client.get("/catalog/p/menu-detail-pkg", cookies=admin_cookie).text
-        assert '<details class="detail-menu">' in text
-        assert 'class="detail-menu__item' in text
-        assert "Edit package metadata" in text
-        # The header's icon-button spelling of the same action is gone, so the
-        # action is not offered twice.
+        assert "data-manage" in text, "the rail must carry the governance cluster"
+        assert 'id="pkg-edit-btn"' in text, "and its in-place editor"
+        # Neither of the two older spellings survives, so it is offered once.
         assert 'class="detail-edit-icon"' not in text
+        assert "Edit package metadata" not in text
+        # And it no longer answers "edit this" by leaving for the Tables lens.
+        assert "/admin/tables?edit_package=" not in text
 
 
 class TestResourceColourTokens:
@@ -2023,11 +2035,23 @@ class TestRedesignedPageContracts:
         assert 'id="lib-search"' in resp.text
         assert "Your collections" not in resp.text
 
-    def test_marketplace_is_one_browse_shelf(self, web_client, admin_cookie, monkeypatch):
-        resp = web_client.get("/marketplace", cookies=admin_cookie)
-        assert resp.status_code == 200
-        assert "data-count-browse" in resp.text
-        assert 'data-tab="flea"' not in resp.text
+    def test_marketplace_browse_folds_into_the_library(self, web_client, admin_cookie, monkeypatch):
+        """The Marketplace browse shell folds into the Library.
+
+        Its Browse and My Stack tabs were "everything there is" and "what I
+        have" over store entities and curated plugins the Library already
+        lists — the same pair the Library's Scope segment now asks of one
+        list. `?tab=my` maps to Scope=Yours so an old link lands where it
+        meant to. The store itself is untouched: every detail, edit and
+        submission route under /marketplace still renders.
+        """
+        resp = web_client.get("/marketplace", cookies=admin_cookie, follow_redirects=False)
+        assert resp.status_code == 302
+        assert resp.headers["location"] == "/library?scope=available"
+
+        mine = web_client.get("/marketplace?tab=my", cookies=admin_cookie, follow_redirects=False)
+        assert mine.status_code == 302
+        assert mine.headers["location"] == "/library?scope=mine"
 
     def _chat(self, web_client, admin_cookie):
         """GET /chat with chat enabled AND explicitly granted to the Admin

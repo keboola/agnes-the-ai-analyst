@@ -157,7 +157,7 @@ def test_files_of_every_format_share_one_files_section(seeded_app):
 
 
 # ---------------------------------------------------------------------------
-# Stack: a single "In stack only" toggle (no Available/In Stack submenu)
+# Stack: the Scope segment (All · Yours · Available to add)
 # ---------------------------------------------------------------------------
 
 
@@ -165,29 +165,31 @@ def _add_to_stack(seeded_app, collection_id: str, token: str):
     return seeded_app["client"].post(f"/api/stack/artefacts/{collection_id}", headers=_auth(token))
 
 
-def test_stack_filter_is_a_single_in_stack_only_toggle(seeded_app):
-    """ "In stack only" answers "what can my agent actually use?" in one click —
-    the axis the table also acts on via "+ Add to Stack". Two things are
-    deliberate. The two-option Available/In Stack category is retired: the
-    states are complementary, so a submenu offering both was a longer way to
-    say "everything". And the survivor is a BUTTON on the bar, not a row inside
-    the Filter menu — the condition is consequential enough that it should not
-    need a click to discover, nor a chip to report."""
+def test_stack_filter_is_the_scope_segment(seeded_app):
+    """The Catalog/Marketplace fold replaced the "In stack only" toggle with
+    the three-way Scope segment (All · Yours · Available to add): "things I
+    could add" became a state of the one list, and a binary toggle could only
+    say two of the three answers. Same placement rule survives — a SEGMENT on
+    the bar, not a row inside the Filter menu, because the condition is
+    consequential enough that it must not need a click to discover."""
     tok = seeded_app["admin_token"]
     added = _create(seeded_app, "Stack Added", tok)
     _create(seeded_app, "Stack Not Added", tok)
     assert _add_to_stack(seeded_app, added["id"], tok).status_code == 200
 
     text = seeded_app["client"].get("/library", headers=_auth(tok)).text
-    assert 'id="lib-stack-toggle"' in text
-    assert 'data-facet="stack" data-facet-value="in_stack"' in text
-    assert ">In stack only<" in text
+    assert 'id="lib-scope"' in text
+    for seg in ("all", "mine", "available"):
+        assert f'data-seg="{seg}"' in text
+    assert 'id="lib-stack-toggle"' not in text, "the retired toggle must not return"
     assert "fbar-menu__toggle" not in text, "retired in-menu toggle markup"
-    assert 'data-cat="stack"' not in text
-    assert 'data-facet="stack" value="available"' not in text
-    # Row attribute the toggle slices on, in both states.
+    # Row attributes both axes slice on: the scope segment reads data-scope,
+    # the ?stack=in_stack deep link still slices on data-stack. Both fixture
+    # rows are the admin's OWN, so both carry scope "mine" — an "available"
+    # row would need a granted-but-not-owned resource, which the segment
+    # markup assertion above already covers without the heavier fixture.
+    assert 'data-scope="mine"' in text
     assert 'data-stack="in_stack"' in text
-    assert 'data-stack="available"' in text
 
 
 def test_stack_deep_link_arrives_with_the_toggle_applied(seeded_app):
@@ -208,31 +210,10 @@ def test_stack_deep_link_arrives_with_the_toggle_applied(seeded_app):
     assert "const STACK_ONLY = false;" in c.get("/library?stack=whatever", headers=_auth(tok)).text
 
 
-def test_stack_toggle_shows_the_matching_item_count(seeded_app):
-    """The toggle carries the tally of what it would leave standing, so the
-    caller knows the size of their Stack before flipping it."""
-    tok = seeded_app["admin_token"]
-    import re
-
-    for name in ("Counted A", "Counted B", "Uncounted"):
-        col = _create(seeded_app, name, tok)
-        if name.startswith("Counted"):
-            assert _add_to_stack(seeded_app, col["id"], tok).status_code == 200
-
-    text = seeded_app["client"].get("/library", headers=_auth(tok)).text
-    badge = re.search(r'<span class="fbar-toggle__n">(\d+)</span>', text)
-    assert badge, "the In-stack-only toggle rendered no count"
-    rendered = int(badge.group(1))
-    # Every row carrying the in-Stack state is counted — the two just added plus
-    # whatever auto-membership already put there (grants, installs).
-    in_stack_rows = len(re.findall(r'<tr\b[^>]*data-stack="in_stack"[^>]*>', text))
-    top_level = len(
-        [r for r in re.findall(r'<tr\b[^>]*data-stack="in_stack"[^>]*>', text) if "data-parent-id" not in r]
-    )
-    assert rendered == top_level, (
-        f"count {rendered} != {top_level} top-level in-Stack rows ({in_stack_rows} incl. children)"
-    )
-    assert rendered >= 2
+# (test_stack_toggle_shows_the_matching_item_count was retired with the
+# toggle itself: the Scope segment that replaced it carries no per-option
+# tallies — three counts on a three-way segment is a dashboard, not a
+# control — and `fbar-toggle__n` no longer renders anywhere.)
 
 
 def test_stack_toggle_keeps_locked_admin_required_items(seeded_app):

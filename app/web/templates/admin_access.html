@@ -584,6 +584,13 @@
   .ax-chip.ok { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); border-color: var(--ds-accent-success-line); }
   .ax-chip.no { background: var(--ds-accent-danger-bg); color: var(--ds-accent-danger-ink); border-color: var(--ds-accent-danger-line); }
   .ax-chip.info { background: var(--ds-accent-info-bg); color: var(--ds-accent-info-ink); }
+  /* A grant whose target no longer exists. It used to render through the
+     ok-chip path with a raw id as its "name" — a green false positive in
+     the one lens built for compliance questions. */
+  .ax-chip.warn { background: var(--ds-accent-warn-bg); color: var(--ds-accent-warn-ink); border-color: var(--ds-accent-warn-line); }
+  /* Row names that ARE somewhere: quiet in place, honest on hover. */
+  .ax-name__link { color: inherit; text-decoration: none; }
+  .ax-name__link:hover { color: var(--ds-primary); text-decoration: underline; text-underline-offset: 2px; }
 
   .ax-chain { margin: 6px 0 0; padding: 0; list-style: none; }
   .ax-chain li {
@@ -1174,14 +1181,27 @@
       return blocks.length > 1 || blocks.some((b) => b.name && b.name !== t.type_display);
     };
 
+    // The page whose job is "who gets WHAT" must be able to answer "what IS
+    // that?" without a six-step detour through Data. Kinds with an
+    // id-addressable page get a link on the row name; the rest stay text —
+    // a link that needs a slug this projection doesn't carry would 404.
+    const ENTITY_HREF = {
+      data_package: (id) => `/admin/data-packages/${encodeURIComponent(id)}`,
+      table: (id) => `/catalog/t/${encodeURIComponent(id)}`,
+    };
+
     const itemRow = (t, i) => {
       const grant = grantOf(selectedGroup, t.type_key, i.resource_id);
       const tier = grant ? (grant.requirement === "required" ? "required" : "available") : null;
+      const hrefFn = ENTITY_HREF[t.type_key];
+      const nameHtml = hrefFn
+        ? `<a class="ax-name__link" href="${hrefFn(i.resource_id)}">${esc(i.name || i.resource_id)}</a>`
+        : esc(i.name || i.resource_id);
       return `
       <tr data-type="${esc(t.type_key)}" data-rid="${esc(i.resource_id)}"${grant ? ' class="is-granted"' : ""}>
         <td class="ax-chk"><input type="checkbox" ${grant ? "checked" : ""} aria-label="Grant ${esc(i.name || i.resource_id)}"></td>
         <td class="ax-name">
-          <b>${esc(i.name || i.resource_id)}</b>${!isNested(t) && i._block && i._block !== t.type_display ? `<span class="blk"> · ${esc(i._block)}</span>` : ""}
+          <b>${nameHtml}</b>${!isNested(t) && i._block && i._block !== t.type_display ? `<span class="blk"> · ${esc(i._block)}</span>` : ""}
           ${i.description ? `<br><span class="desc">${esc(String(i.description).slice(0, 90))}</span>` : ""}
         </td>
         <td class="ax-acc">
@@ -1780,8 +1800,20 @@
   /* ── Narrowing the grant tree ─────────────────────────────────────────
      The filter the retired detail page had. Both controls re-render rather
      than hide rows, so the per-section counts stay true to what is showing. */
+  /* The working set (filter text + scope) survives leaving for an entity
+     page and coming back — the commonest interruption on this page is
+     "what IS that row?", and returning to a reset tree made every careful
+     grant decision cost the search twice. Same store and same reasoning as
+     SELECTED_KEY above: this sitting, not forever. */
+  const WORKSET_KEY = "agnes.admin.access.workset";
+  function rememberWorkset() {
+    try {
+      sessionStorage.setItem(WORKSET_KEY, JSON.stringify({ f: resourceFilter, s: accessScope }));
+    } catch (e) { /* private mode */ }
+  }
   el("ax-rfind").addEventListener("input", (e) => {
     resourceFilter = e.target.value;
+    rememberWorkset();
     renderResources();
   });
   /* The scope segments. `.fbar-seg` is the app's segmented control, so this
@@ -1792,6 +1824,7 @@
     accessScope = btn.dataset.scope;
     el("ax-scope").querySelectorAll("[data-scope]").forEach((b) =>
       b.classList.toggle("is-active", b.dataset.scope === accessScope));
+    rememberWorkset();
     renderResources();
   });
 
@@ -1977,6 +2010,15 @@
 
   el("ax-sim-user").addEventListener("change", async (e) => {
     const uid = e.target.value;
+    // The picked person lives in the URL (?user=) so the preview survives a
+    // round trip — "Share it →" leaves for the package page and its back
+    // link returns HERE, to the same person, already resolved. replaceState:
+    // re-picking is a refinement of the same view, not a history entry.
+    const url = new URL(window.location.href);
+    url.searchParams.set("lens", "simulate");
+    if (uid) url.searchParams.set("user", uid);
+    else url.searchParams.delete("user");
+    history.replaceState(null, "", url);
     const out = el("ax-sim-out");
     const detailBtn = el("ax-sim-detail");
     if (!uid) {
@@ -2030,6 +2072,33 @@
     const packages = items.filter((i) => i.resource_type === "data_package");
     const others = items.filter((i) => i.resource_type !== "data_package");
 
+    // A grant row whose target the projection no longer lists is a DANGLING
+    // grant (package deleted, grant left behind) — the one thing this lens
+    // must not paint green. Split them out before the chips are built.
+    const live = packages.filter((p) => idx.has(`data_package:${p.resource_id}`));
+    const dangling = packages.filter((p) => !idx.has(`data_package:${p.resource_id}`));
+
+    // Tier, joined from the same access-overview this page already holds:
+    // "can use" is a weaker answer than the one the pane's own lede promises
+    // ("membership to grant to tier"). required via any of their groups wins
+    // — one Automatic grant lands it in the stack regardless of the others.
+    const tierOf = (p) => {
+      const viaIds = new Set((p.via_groups || []).map((g) => g.group_id));
+      const rows = ((overview && overview.grants) || []).filter(
+        (g) => g.resource_type === "data_package"
+            && g.resource_id === p.resource_id
+            && viaIds.has(g.group_id),
+      );
+      if (!rows.length) return null;
+      return rows.some((g) => g.requirement === "required") ? "required" : "available";
+    };
+    const tierText = (p) => {
+      const t = tierOf(p);
+      return t === "required" ? " · Automatic — in their stack"
+           : t === "available" ? " · Optional — must add it"
+           : "";
+    };
+
     // What is NOT shared with them — the half a grant list cannot show, and
     // the reason someone opens this page at all.
     const allPackages = ((overview && overview.resources) || [])
@@ -2040,8 +2109,9 @@
 
     const groupNames = memberships.map((g) => g.name || g.group_name || g.id).filter(Boolean);
     const chips = [
-      ...packages.slice(0, 6).map((p) => `<span class="ax-chip ok">Can use: ${esc(nameOf(p))}</span>`),
+      ...live.slice(0, 6).map((p) => `<span class="ax-chip ok">Can use: ${esc(nameOf(p))}${tierText(p)}</span>`),
       ...missing.slice(0, 4).map((p) => `<span class="ax-chip no">Cannot use: ${esc(p.name)}</span>`),
+      ...dangling.map((p) => `<span class="ax-chip warn">Dangling grant: ${esc(p.resource_id)} — target deleted or unlisted</span>`),
     ];
     if (eff.is_admin) {
       chips.unshift(`<span class="ax-chip info">Admin — reaches everything regardless of grants</span>`);
@@ -2067,10 +2137,22 @@
     }
 
     // Data packages, one row each and named — the spine of the question.
-    for (const p of packages) {
+    for (const p of live) {
       const via = (p.via_groups || []).map((g) => esc(g.group_name || g.group_id)).join(", ");
       chain.push(`<li><b>${esc(nameOf(p))}</b> <span class="muted">(data package)</span>
-        — via ${via ? `<b>${via}</b>` : "<span class=\"muted\">a group</span>"}</li>`);
+        — via ${via ? `<b>${via}</b>` : "<span class=\"muted\">a group</span>"}${esc(tierText(p))}</li>`);
+    }
+
+    // Dangling grants get a stop row with the fix one click away — the group
+    // whose grant is stale is named in the row itself.
+    for (const p of dangling) {
+      const g0 = (p.via_groups || [])[0];
+      const fixHref = g0 && g0.group_id
+        ? `/admin/access?group=${encodeURIComponent(g0.group_id)}`
+        : "/admin/access";
+      chain.push(`<li class="stop"><b>${esc(p.resource_id)}</b> — a grant via
+        <b>${esc(g0 ? (g0.group_name || g0.group_id) : "a group")}</b> points at a package that
+        no longer exists. <a href="${fixHref}">Fix the grant →</a></li>`);
     }
 
     // Everything else FOLDED PER TYPE. Listing eight collection rows
@@ -2108,8 +2190,12 @@
     }
 
     for (const p of missing.slice(0, 3)) {
+      // Straight to the package's OWN page, carrying who you came for — the
+      // old link landed on the package INDEX and dropped the person, so the
+      // fix started over from a card grid. ?from=simulate&user= renders a
+      // context banner + a one-click way back to this exact preview.
       chain.push(`<li class="stop"><b>${esc(p.name)}</b> is not shared with any group they are in.
-        <a href="/admin/data-packages">Share it →</a></li>`);
+        <a href="/admin/data-packages/${encodeURIComponent(p.resource_id)}?from=simulate&user=${encodeURIComponent(uid)}">Share it →</a></li>`);
     }
 
     chain.push(`<li><b>Delivery:</b> a granted package reaches their machine on the next
@@ -2180,9 +2266,39 @@
     if (PICK) {
       resourceFilter = PICK.id;
       el("ax-rfind").value = PICK.id;
+    } else {
+      // Restore this sitting's working set (filter + scope). A ?resource=
+      // arrival outranks it — that caller asked for a specific narrowing.
+      try {
+        const ws = JSON.parse(sessionStorage.getItem(WORKSET_KEY) || "null");
+        if (ws) {
+          resourceFilter = ws.f || "";
+          el("ax-rfind").value = resourceFilter;
+          if (ws.s === "granted" || ws.s === "all") {
+            accessScope = ws.s;
+            el("ax-scope").querySelectorAll("[data-scope]").forEach((b) =>
+              b.classList.toggle("is-active", b.dataset.scope === accessScope));
+          }
+        }
+      } catch (e) { /* corrupt store → default view */ }
     }
     renderPick();
     await repaint();
+    // `?user=` — the Simulate deep link. A package page's "Preview access"
+    // and the stop rows' round trips arrive with the person pre-resolved
+    // instead of "Pick a person…". Validated against the loaded list the
+    // same way `?group=` is above.
+    if (LENS === "sim") {
+      const wantedUser = params.get("user");
+      if (wantedUser) {
+        await loadUsers();
+        const sel = el("ax-sim-user");
+        if ([...sel.options].some((o) => o.value === wantedUser)) {
+          sel.value = wantedUser;
+          sel.dispatchEvent(new Event("change"));
+        }
+      }
+    }
     // The pre-tabs deep link. Now that Simulate is a URL, the hash is just an
     // older spelling of it — rewrite rather than keep a second way in.
     if (window.location.hash === "#simulate") {

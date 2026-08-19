@@ -2872,6 +2872,30 @@ def create_app() -> FastAPI:
 
         title = _ERROR_TITLES.get(code, "Error")
         user = await _resolve_error_user(request)
+        # A non-admin opening an admin entity URL (a teammate copied their
+        # own address bar) used to dead-end on a generic 403 — but the
+        # id→slug mapping is one repo read, so the page can bridge to the
+        # surface the caller IS allowed to try. The catalog page enforces
+        # its own grant check, so this reveals only what that page's 403
+        # already reveals (data packages are the deliberately-403,
+        # existence-visible kind — collections 404 instead).
+        bridge = None
+        if code == 403:
+            import re as _re
+
+            m = _re.match(r"^/admin/data-packages/([\w\-]+)$", request.url.path)
+            if m:
+                try:
+                    from src.repositories import data_packages_repo as _dp_repo
+
+                    _pkg = _dp_repo().get(m.group(1))
+                    if _pkg and _pkg.get("slug"):
+                        bridge = {
+                            "href": f"/catalog/p/{_pkg['slug']}",
+                            "name": _pkg.get("name") or _pkg["slug"],
+                        }
+                except Exception:  # noqa: BLE001 — the bridge is chrome; the 403 must render regardless
+                    bridge = None
         ctx = _build_context(
             request,
             user=user,
@@ -2879,6 +2903,7 @@ def create_app() -> FastAPI:
             title=title,
             message=message,
             path=request.url.path,
+            bridge=bridge,
             traceback=traceback_str,
             request_id=request_id_var.get(),
         )

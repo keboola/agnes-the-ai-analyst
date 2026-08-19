@@ -931,6 +931,11 @@
             ],
             "title": "Photo"
           },
+          "publisher_kind": {
+            "default": "user",
+            "title": "Publisher Kind",
+            "type": "string"
+          },
           "tagline": {
             "anyOf": [
               {
@@ -2508,6 +2513,15 @@
               }
             ],
             "title": "Precheck Verdict Token"
+          },
+          "publisher_kind": {
+            "default": "user",
+            "enum": [
+              "user",
+              "organization"
+            ],
+            "title": "Publisher Kind",
+            "type": "string"
           },
           "skill_md": {
             "title": "Skill Md",
@@ -10948,7 +10962,7 @@
   "info": {
     "description": "Self-hosted AI harness: governed data access, skills marketplace, corporate memory, and agent workspaces",
     "title": "AI Harness",
-    "version": "0.83.23"
+    "version": "0.83.47"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -50098,6 +50112,7 @@
     },
     "/catalog": {
       "get": {
+        "description": "The Catalog is folded into the Library.\n\nIt browsed the same rows the Library already renders \u2014 data packages,\nmemory domains, marketplace plugins and recipes, off the same\n``StackResolver.browse()`` \u2014 sliced by kind tabs where the Library groups\nby type into collapsible sections. Two destinations for one list, which is\nthe split the Library/Memory/Data-apps merge already named as the problem\n(spec 2026-08-12) and never got round to closing here.\n\nThe one thing this page had that the list did not is the \"what could I\nadd\" question, which is now the Library's Scope segment.\n\n302, not 308, so a reversal is not cached permanently \u2014 same reasoning as\nthe /corporate-memory, /apps and /stack retirements. The route stays\nregistered so bookmarks and old links do not 404, and every detail route\nunder it (``/catalog/p/{slug}``, ``/catalog/t/{id}``, ``/catalog/r/{slug}``,\n``/catalog/semantics``) is untouched: this folds the browse SHELL only.",
         "operationId": "catalog_catalog_get",
         "parameters": [
           {
@@ -51442,6 +51457,7 @@
     },
     "/marketplace": {
       "get": {
+        "description": "The Marketplace browse is folded into the Library.\n\nIts two tabs were Browse and My Stack \u2014 \"everything there is\" and \"what I\nhave\" \u2014 over store entities and curated plugins the Library already lists\nin full (`store_entities_repo().list(visibility_status=['approved'])`, plus\nevery granted `marketplace_plugin`). That is the same list under a second\nroof, and the tab pair is the same question the Library's Scope segment now\nasks of one list.\n\n`?tab=my` maps to Scope=Yours so an old link lands where it meant to.\n\n302 and the route stays registered, per the /corporate-memory, /apps and\n/stack retirements. Every detail and sub-route is untouched \u2014\n`/marketplace/curated/{...}`, `/marketplace/flea/{id}`, the edit pages \u2014\nbecause this folds the browse SHELL, not the store.",
         "operationId": "marketplace_listing_marketplace_get",
         "parameters": [
           {
