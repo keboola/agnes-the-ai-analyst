@@ -728,16 +728,13 @@ What would you like to do?
     </section>
 
     {# Connectors `<details data-section="connectors">` block removed —
-       the install-hero's Step 4 clipboard payload (rendered via
-       `_claude_setup_instructions.jinja` inside the "Or paste manually"
-       fallback) already inlines the same Asana / GWS / Atlassian
-       prompts from app/web/connector_prompts.py via
-       app/web/setup_instructions.py::_connectors_block. Showing them
-       a second time as standalone cards duplicated UX without adding
-       reach — the install script visits them all in sequence. Brief
-       mention in the install-hero lead paragraph above covers the
-       benefits ("third-party tools (Asana, Google Workspace,
-       Atlassian)"); deep ops live in /setup-advanced. #}
+       it duplicated the connector setup the install flow already
+       covered. Since the install prompt went thin (2026-08-19) connector
+       setup is conversational and post-install: `agnes onboard` ends by
+       listing what this instance offers, and the user asks for one when
+       they want it. Brief mention in the install-hero lead paragraph
+       above covers the benefits ("third-party tools (Asana, Google
+       Workspace, Atlassian)"); deep ops live in /setup-advanced. #}
 
     <section class="browse-section" id="look-around">
         <div class="eyebrow">{{ instance_brand_short }} workspace</div>

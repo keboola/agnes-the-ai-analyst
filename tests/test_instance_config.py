@@ -175,11 +175,11 @@ class TestInstanceBrand:
         )
         assert "Set up the Foundry AI CLI on this machine." in joined
         # Brand + workspace_dir thread through step 2's suggested-folder
-        # copy (the decision tree itself moved into the CLI's
-        # unsafe_workspace guard). The default-path mention renders as
-        # `~/Desktop/...` (tilde), not `$HOME/Desktop/...`.
+        # copy (the directory decision itself lives in `agnes onboard`).
+        # The default-path mention renders as `~/Desktop/...` (tilde), not
+        # `$HOME/Desktop/...`.
         assert "~/Desktop/FoundryAI" in joined
-        assert "Set up the Foundry AI workspace in the current directory." in joined
+        assert "2) Set up the Foundry AI workspace in the current directory:" in joined
         assert "Foundry AI workspace is ready" in joined
         # No raw placeholders survive substitution.
         assert "{instance_brand}" not in joined
@@ -197,7 +197,7 @@ class TestInstanceBrand:
         # Default path renders as `~/Desktop/Agnes` (tilde) inside step 2's
         # suggested-folder copy.
         assert "~/Desktop/Agnes" in joined
-        assert "Set up the Agnes workspace in the current directory." in joined
+        assert "2) Set up the Agnes workspace in the current directory:" in joined
         assert "Agnes workspace is ready" in joined
         mod._instance_config = None
 
