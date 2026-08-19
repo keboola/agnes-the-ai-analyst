@@ -147,6 +147,33 @@ async def respond_via_response_url(response_url: str, body: dict) -> None:
         await client.post(response_url, json=body)
 
 
+async def add_reaction(channel: str, ts: str, emoji: str) -> None:
+    """Best-effort emoji reaction on a message (reactions.add).
+
+    Used as the instant acknowledgement when a mention routes to a bound
+    agent profile — the session spawn takes seconds, the reaction must not.
+    Failures (missing `reactions:write` scope, already_reacted, deleted
+    message) are logged and swallowed: an ack must never block or fail the
+    session path it decorates.
+    """
+    token = slack_secret("SLACK_BOT_TOKEN")
+    if not token:
+        logger.error("SLACK_BOT_TOKEN missing — cannot react")
+        return
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(
+                "https://slack.com/api/reactions.add",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"channel": channel, "timestamp": ts, "name": emoji},
+            )
+        body = resp.json()
+        if not body.get("ok") and body.get("error") != "already_reacted":
+            logger.warning("reactions.add failed for %s/%s: %s", channel, ts, body.get("error"))
+    except Exception:
+        logger.warning("reactions.add errored for %s/%s", channel, ts, exc_info=True)
+
+
 async def send_thread_reply(channel: str, thread_ts: str, text: str) -> None:
     token = slack_secret("SLACK_BOT_TOKEN")
     if not token:

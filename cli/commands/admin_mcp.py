@@ -416,8 +416,51 @@ def source_grant(
         )
     if body.get("admin_only"):
         typer.echo(
-            f"{body['admin_only']} of them are mutating and stay admin-only — a grant "
-            "does not make those reachable for analysts."
+            f"{body['admin_only']} of them are mutating and stay unreachable for the group — "
+            "opt in per tool with `agnes admin mcp tool grant <tool_id> --group <g> --allow-mutating`."
+        )
+
+
+@tool_app.command("grant")
+def tool_grant(
+    tool_id: str = typer.Argument(..., help="Tool id from `agnes admin mcp tool list`"),
+    group: str = typer.Option(..., "--group", help="User group id to grant (or revoke with --revoke)"),
+    allow_mutating: Optional[bool] = typer.Option(
+        None,
+        "--allow-mutating/--no-allow-mutating",
+        help="Opt the group into (or out of) this tool's MUTATING surface (v121). "
+        "Omit both flags to leave an existing grant's setting unchanged "
+        "(a brand-new grant lands read-only).",
+    ),
+    revoke: bool = typer.Option(False, "--revoke", help="Revoke instead of grant"),
+):
+    """Grant (or revoke) ONE tool to a user group.
+
+    The per-tool counterpart of `source grant`, and the only place a group
+    can be opted into a mutating tool: a plain grant is read-only; with
+    `--allow-mutating` members (and agent profiles owned by them, still
+    narrowed by the agent's connection scope) may invoke the tool even
+    though its registry row is marked mutating. Re-running with an explicit
+    `--allow-mutating`/`--no-allow-mutating` updates the existing grant in
+    place; omitting both leaves it unchanged.
+    """
+    if revoke:
+        resp = api_delete(f"/api/admin/mcp-tools/{tool_id}/grants/{group}")
+        if resp.status_code not in (200, 204):
+            _fail(resp)
+        typer.echo(f"Revoked group {group} from tool {tool_id}")
+        return
+    resp = api_post(
+        f"/api/admin/mcp-tools/{tool_id}/grants",
+        json={"group_id": group, "allow_mutating": allow_mutating},
+    )
+    if resp.status_code not in (200, 201):
+        _fail(resp)
+    if allow_mutating is None:
+        typer.echo(f"Granted tool {tool_id} to {group} (mutating setting unchanged; new grants are read-only)")
+    else:
+        typer.echo(
+            f"Granted tool {tool_id} to {group}" + (" (mutating allowed)" if allow_mutating else " (read-only)")
         )
 
 
