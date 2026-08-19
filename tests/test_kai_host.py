@@ -264,6 +264,37 @@ def test_tickets_returns_the_payload_shape_the_engine_validates(seeded_app, kai_
     assert all(isinstance(v, str) and v for v in payload.values())
 
 
+def test_revoking_chat_access_stops_the_credential_within_one_turn(seeded_app, kai_env):
+    """The chat grant is standing authority, not a one-time admission ticket.
+
+    The gate on ``POST /api/kai/sessions`` bounds who may *start* a session. On
+    its own that leaves an admin who revokes a user's chat access stopping
+    native chat at once — the 13 gated routes in ``app/api/chat.py`` — while an
+    already-issued kai credential keeps minting ``llm`` tickets and reaching
+    tools for the rest of its 12 h life. ``_require_session_credential``
+    re-checks the grant where it reads the session row, so ``/tickets``,
+    ``/mcp`` and ``/workspace`` are covered by construction.
+    """
+    from src.repositories import resource_grants_repo
+
+    credential = _claims(_mint_session(seeded_app)["token"])["downstream_credential"]
+    client = seeded_app["client"]
+    auth = {"Authorization": f"Bearer {credential}"}
+
+    # Works while the grant stands.
+    assert client.post("/api/kai/tickets", headers=auth).status_code == 200
+
+    # The admin revokes chat instance-wide (the analyst holds it only through
+    # the Everyone group `chat_grant` put them in).
+    assert resource_grants_repo().delete_by_resource("chat", "chat") >= 1
+
+    resp = client.post("/api/kai/tickets", headers=auth)
+    assert resp.status_code == 403, resp.text
+    assert resp.json()["detail"] == "chat_access_revoked"
+    # The same credential must not get a workspace either.
+    assert client.get("/api/kai/workspace", headers=auth).status_code == 403
+
+
 def test_llm_ticket_authenticates_the_main_scoped_broker_route(seeded_app, kai_env):
     """The engine's ``llm`` scope must land on a ticket the existing LLM broker
     route accepts — that route is the whole reason no new LLM route is needed."""

@@ -83,7 +83,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.api.broker import _require_scope, require_broker_ticket
-from app.auth.access import require_resource_access
+from app.auth.access import can_access, require_resource_access
 from app.auth.dependencies import reject_keboola_header_credential
 from app.chat.types import Surface
 from app.resource_types import ResourceType
@@ -435,11 +435,22 @@ def _require_session_credential(request: Request) -> Dict[str, Any]:
     # conversation left the engine able to mint fresh upstream tickets and
     # spend the instance's LLM budget under that user's name for the rest of
     # the credential's 12 h life. Checked here rather than per route so
-    # `/tickets` and `/workspace` are both covered by construction. Found by
-    # Devin Review on this PR.
+    # `/tickets` and `/workspace` are both covered by construction.
     session = chat_session_repo().get_session(row["session_id"])
     if session is None:
         raise HTTPException(status_code=401, detail="kai_session_gone")
+    # The chat grant is standing authority, not a one-time admission ticket.
+    # Gating session creation alone only bounds who may *start*: an admin who
+    # then revokes a user's chat access stops native chat at once (the 13 gated
+    # routes in `app/api/chat.py`) while this credential keeps minting `llm`
+    # tickets and reaching tools for the rest of its 12 h life. Re-checked here,
+    # where the session row is read anyway, so `/tickets`, `/mcp` and
+    # `/workspace` are covered by construction rather than per route.
+    from src.repositories import users_repo
+
+    owner = users_repo().get_by_email(session.user_email)
+    if owner is None or not can_access(str(owner["id"]), ResourceType.CHAT.value, "chat"):
+        raise HTTPException(status_code=403, detail="chat_access_revoked")
     # Carried on the row so `/workspace` renders this caller's prompt without a
     # second read of the session it just proved exists — and, more to the
     # point, so the identity a route acts on is the one the credential was
