@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -769,17 +770,44 @@ def _compute_render_dry_run() -> dict:
                         f"{entry.slug}` will fail until the seed is fixed"
                     )
 
-        # Confirm the renderer can build a complete document end-to-end
-        # using the synced content. Failures here catch unicode / format
-        # regressions the manifest validator misses.
-        from app.web.setup_instructions import resolve_lines
+        # The built-in prompt renderer no longer reads seed content
+        # (the thin prompt ignores the connector manifest), so rendering
+        # it here would validate nothing about the sync. What a seed CAN
+        # break now is a forked install-prompt template: on the git-bound
+        # path only `{server_url}` and the Jinja context are substituted
+        # (docs/seed-repo-contract.md §5), so a retired or unwired
+        # single-brace placeholder renders literally into the analyst's
+        # prompt. Surface that to the operator here.
+        from src.initial_workspace import PROMPT_SEED_PATHS, resolve_seed_file
 
-        resolve_lines(
-            "agnes.whl",
-            connector_manifest=manifest,
-            server_host="example.invalid",
-            instance_brand="Agnes",
+        # Scan the file the prompt is actually bound to when a custom
+        # git_path is set (same resolution rule as the `{token}` probe
+        # above) — the canonical template matters only when it is the one
+        # analysts get.
+        scan_path = (
+            bound_git_path
+            if bound_git_path is not None
+            else PROMPT_SEED_PATHS["install"]
         )
+        tmpl = resolve_seed_file(scan_path)
+        if tmpl is not None:
+            tmpl_text, _tmpl_source = tmpl
+            unwired = sorted(
+                {
+                    name
+                    for name in re.findall(r"\{[a-z][a-z0-9_]*\}", tmpl_text)
+                    if name != "{server_url}"
+                }
+            )
+            if unwired:
+                summary["warnings"].append(
+                    f"{scan_path} (install prompt) references placeholder(s) "
+                    f"{', '.join(unwired)} that nothing substitutes on the "
+                    "git-bound prompt path — they will render literally in "
+                    "the analyst's prompt (only {server_url} and Jinja "
+                    "{{ ... }} context are replaced; see "
+                    "docs/seed-repo-contract.md section 5)"
+                )
     except Exception as e:
         summary["ok"] = False
         summary["errors"].append(f"render dry-run raised: {e!r}")
