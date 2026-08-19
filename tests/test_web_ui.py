@@ -317,10 +317,12 @@ class TestClaudeSetupPreview:
         assert 'class="placeholder-token"' not in body
         assert "{token}" not in body
         assert "eyJ" not in body
-        # Setup payload text substituted with real server URL. The wheel URL
-        # must be under /cli/wheel/ (uv tool install rejects a bare .whl alias
-        # because it validates the PEP 427 filename in the URL before fetch).
-        assert "/cli/wheel/" in body
+        # Setup payload text substituted with real server URL. Step 1
+        # downloads via the unversioned /cli/download endpoint (immune to a
+        # mid-session server version roll), not a filename-pinned
+        # /cli/wheel/<name> URL.
+        assert "/cli/download" in body
+        assert "/cli/wheel/" not in body
         assert "/cli/agnes.whl" not in body
         # Unified always-on layout (Fix B + Fix C in 2026-05-10 init-report
         # response): preflight + marketplace + Atlassian MCP all unconditional.

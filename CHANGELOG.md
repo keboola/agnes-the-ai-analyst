@@ -10,6 +10,27 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.83.71] - 2026-08-18
+
+### Changed
+
+- **The analyst CLI wheel no longer bundles server-only dependencies** — the web framework, BigQuery/gRPC SDKs, the chat runner's agent SDK, Postgres drivers, and roughly two dozen other packages that only `app/`/`services/`/`connectors/` code imports moved from `[project.dependencies]` into the `server` extra. `uv tool install`ing the wheel now pulls ~18 core packages instead of ~49, shrinking a first-time install. Server deployments are unaffected — the Docker image installs `.[server]`, which still carries every one of them.
+- **`agnes init` skips materialized-mode tables on its first pull by default.** A single multi-GB scheduled-query parquet could otherwise stall an otherwise-instant first-time workspace bootstrap for tens of minutes; lighter tables still sync immediately. Fetch materialized tables on demand with a later `agnes pull`, or force the full first pull with `agnes init --materialize`. The pre-existing `--skip-materialize` flag still works (it's now the default, so passing it is a no-op).
+
+### Fixed
+
+- **The machine setup prompt's CLI install step no longer 404s when the server upgrades mid-session.** It downloaded via a version-pinned `/cli/wheel/<filename>` URL captured when the prompt was *rendered*; if the server's wheel changed before the user actually ran the command, that URL 404d. It now downloads via the unversioned `/cli/download` endpoint (`curl -OJ`, which honours `Content-Disposition` to save the real filename) and installs from the local file — the same pattern `/cli/install.sh` already used. The `/install` page's manual-install section and `docs/HEADLESS_USAGE.md`'s CI example were reconciled to the same shape; the docs example was additionally fixed since it referenced the removed `agnes.whl` bareword alias, which always 404d.
+- **`agnes init`'s end-of-run summary counts the rows it actually skipped.** It read `parquets_total` as "materialized rows skipped", but that counter is incremented after the skip branch returns, so it is the number of tables the run *considered*: an analyst with three ordinary tables and no materialized ones was told three rows had been skipped while those three sat in their workspace, and the note was suppressed entirely on the instance it exists for (everything materialized → count zero → the bare "0/0" issue #257 set out to prevent). `PullResult` carries `materialized_skipped` now, and the fetched count is reported honestly rather than hardcoded to zero.
+- **The manual install commands no longer match every wheel in the folder.** `/cli/download` sends `Content-Disposition` with the real PEP-427 filename, so `./agnes_the_ai_analyst-*.whl` already matched whatever the browser saved; `./*.whl` in a shared downloads folder makes `uv tool install` error on multiple positional args and `pip install` silently install the lot.
+- **The documented contributor setup boots the app again.** With the web framework and friends moved into the `server` extra, `uv pip install ".[dev]"` can no longer import `app.main`; `CLAUDE.md`, `docs/QUICKSTART.md` and `docs/development.md` now say `.[dev,server]`. CI was unaffected (it installs `.[dev,server]`), so this only ever hit someone following the docs.
+
+### Internal
+
+- **A packaging guard now asserts server-only dependencies (`claude-agent-sdk`, `fastapi`, `sqlalchemy`, `psycopg`, `google-cloud-bigquery`, …) stay out of the CLI wheel**, and that the CI `cli-wheel-clean-install` job's clean-room install also can't import `claude_agent_sdk`/`fastapi` — mirroring the existing `kbcstorage` regression guard.
+- **The skipped-materialized count now matches what `--materialize` would actually fetch.** It was incremented before the stack filter and before the `server_only` check, so a materialized row outside the analyst's stack, or one the server never distributes, still counted — and the summary then pointed them at a re-run that would not fetch it either. Counted after both filters now.
+- **The setup prompt's install step fails loudly when the wheel download fails.** Both branches took `WHEEL=$(ls …)` from a listing that can legitimately come back empty and ran `uv tool install "$WHEEL"` with no check, so a 404 from `/cli/download` surfaced as a confusing install error instead of the real cause. They now carry the same guard `/cli/install.sh` already had — the prompt is pasted into a shell that is not necessarily running under `set -e`, and the `curl` sits in a subshell whose status nothing inspects.
+- **`README.md`'s contributor setup installs `.[dev,server]` like the other three docs.** It was the one surface missed when the web framework moved into the `server` extra, so anyone following the README hit an import failure on the very next line (`uvicorn app.main:app --reload`).
+
 ## [0.83.70] - 2026-08-18
 
 ### Internal

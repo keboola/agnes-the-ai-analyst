@@ -1,9 +1,14 @@
 """Tests for the setup-instructions template + resolver.
 
-`uv tool install` validates the PEP 427 filename in the URL path before
-fetching, so our setup snippet cannot use a stable alias like `agnes.whl`.
-These tests pin the wheel-filename substitution behavior, the marketplace
-block layout, and the cross-platform TLS trust block (`ca_pem` path).
+Step 1 downloads the CLI wheel via the unversioned `/cli/download` endpoint
+(`curl -OJ`, immune to a mid-session server version roll — see
+`_install_cli_lines`'s docstring) and installs from the local file, so
+`{wheel_filename}` is no longer inlined into a URL there.
+`resolve_lines()`/`render_setup_instructions()` still accept the
+`wheel_filename` parameter for backward compatibility with existing callers,
+but it's now a no-op substitution (nothing in the rendered body contains the
+placeholder). These tests pin that behavior, the marketplace block layout,
+and the cross-platform TLS trust block (`ca_pem` path).
 
 The trust-block tests assert behaviors that came out of a real-world
 multi-machine setup pass — see the v2 design notes in the module docstring
@@ -15,21 +20,27 @@ curl-then-local-install around rustls' `CaUsedAsEndEntity`).
 
 
 def test_resolve_lines_substitutes_wheel_filename():
+    """`wheel_filename` is accepted for backward compatibility, but step 1
+    downloads via the unversioned `/cli/download` endpoint instead of
+    pinning the filename into a `/cli/wheel/<name>` URL."""
     from app.web.setup_instructions import resolve_lines
 
     lines = resolve_lines("agnes_the_ai_analyst-2.0.0-py3-none-any.whl")
     joined = "\n".join(lines)
     assert "{wheel_filename}" not in joined
-    assert "/cli/wheel/agnes_the_ai_analyst-2.0.0-py3-none-any.whl" in joined
+    assert "/cli/wheel/" not in joined
+    assert "/cli/download" in joined
 
 
 def test_resolve_lines_fallback_filename_is_honoured():
-    """Callers pass `'agnes.whl'` when no wheel is on disk; substitution still works."""
+    """Callers pass `'agnes.whl'` when no wheel is on disk; resolve_lines
+    still renders cleanly (the value is accepted but unused — see module
+    docstring)."""
     from app.web.setup_instructions import resolve_lines
 
     lines = resolve_lines("agnes.whl")
     assert "{wheel_filename}" not in "\n".join(lines)
-    assert any("/cli/wheel/agnes.whl" in line for line in lines)
+    assert any("/cli/download" in line for line in lines)
 
 
 def test_render_setup_instructions_wires_all_placeholders():
@@ -43,7 +54,7 @@ def test_render_setup_instructions_wires_all_placeholders():
     assert "{server_url}" not in out
     assert "{token}" not in out
     assert "{wheel_filename}" not in out
-    assert "https://agnes.example.com/cli/wheel/agnes_the_ai_analyst-2.0.0-py3-none-any.whl" in out
+    assert "https://agnes.example.com/cli/download" in out
     # The token is delivered out-of-band (written to ~/.agnes/token before
     # this prompt is generated) — its raw value must NEVER appear in the
     # rendered text, even though the `token` kwarg is still accepted for
@@ -537,25 +548,29 @@ def test_resolve_lines_with_ca_pem_uses_combined_bundle_for_replace_envs():
 
 
 def test_resolve_lines_with_ca_pem_switches_step_one_to_curl_then_local_install():
-    """Step 1's install path differs by has_ca:
-    - has_ca=True  → curl-then-local-install (avoids rustls CaUsedAsEndEntity)
-    - has_ca=False → direct `uv tool install <https-url>` (legacy)
+    """Step 1 always downloads via /cli/download into a local file first;
+    has_ca only changes whether curl carries --cacert and whether uv gets
+    --native-tls (avoids rustls CaUsedAsEndEntity):
+    - has_ca=True  → curl --cacert ... | uv tool install --native-tls
+    - has_ca=False → curl ... | uv tool install (no cert flags)
     """
     from app.web.setup_instructions import resolve_lines
 
     joined_ca = "\n".join(resolve_lines("agnes-1.0-py3-none-any.whl", ca_pem=_FAKE_CA_PEM))
-    # curl-with-cacert downloads the wheel locally...
-    assert "curl -fsSL --cacert ~/.agnes/ca.pem" in joined_ca
-    assert "WHEEL=/tmp/agnes-1.0-py3-none-any.whl" in joined_ca
+    # curl-with-cacert downloads the wheel locally via /cli/download...
+    assert "curl -fsSL --cacert ~/.agnes/ca.pem -OJ {server_url}/cli/download" in joined_ca
+    assert "TMPDIR_WHEEL=$(mktemp -d -t agnes_cli.XXXXXX)" in joined_ca
     # ...then uv installs from the local file with --native-tls.
     assert 'uv tool install --native-tls --force "$WHEEL"' in joined_ca
-    # The direct `uv tool install <server-url>` form must NOT appear in the ca_pem path.
-    assert "uv tool install --force {server_url}/cli/wheel/" not in joined_ca
+    # The pinned `/cli/wheel/<name>` URL form must NOT appear in the ca_pem path.
+    assert "/cli/wheel/" not in joined_ca
 
-    # No-ca_pem path keeps the legacy direct install.
+    # No-ca_pem path also downloads via /cli/download, but without cert flags.
     joined_plain = "\n".join(resolve_lines("agnes-1.0-py3-none-any.whl"))
-    assert "uv tool install --force {server_url}/cli/wheel/agnes-1.0-py3-none-any.whl" in joined_plain
+    assert "curl -fsSL -OJ {server_url}/cli/download" in joined_plain
+    assert 'uv tool install --force "$WHEEL"' in joined_plain
     assert "curl -fsSL --cacert" not in joined_plain
+    assert "/cli/wheel/" not in joined_plain
     assert "uv tool install --native-tls" not in joined_plain
 
 
@@ -726,8 +741,11 @@ def test_render_setup_instructions_propagates_ca_pem():
     assert "{server_url}" not in out
     assert "{token}" not in out
     assert "T-CA" not in out
-    # Curl-then-local-install path is rendered (with placeholders resolved).
-    assert "https://agnes.example.com/cli/wheel/agnes-1.0-py3-none-any.whl" in out
+    # Curl-then-local-install path is rendered (with placeholders resolved),
+    # downloading via the unversioned /cli/download endpoint — not a
+    # wheel_filename-pinned /cli/wheel/<name> URL.
+    assert "https://agnes.example.com/cli/download" in out
+    assert "/cli/wheel/" not in out
     assert 'uv tool install --native-tls --force "$WHEEL"' in out
 
 
@@ -833,8 +851,9 @@ def test_unified_flow_uses_only_agnes_verbs():
 
 
 def test_install_page_uses_versioned_wheel_url(monkeypatch, tmp_path):
-    """End-to-end: the /install preview must render the PEP 427 wheel URL,
-    so a user copy-pasting the snippet gets a URL `uv tool install` accepts."""
+    """End-to-end: the /setup preview must render the version-resilient
+    /cli/download install path (immune to a mid-session server version
+    roll), not a wheel_filename-pinned /cli/wheel/<name> URL."""
     wheel = tmp_path / "agnes_the_ai_analyst-2.0.0-py3-none-any.whl"
     wheel.write_bytes(b"PK\x03\x04")
     monkeypatch.setenv("AGNES_CLI_DIST_DIR", str(tmp_path))
@@ -845,7 +864,8 @@ def test_install_page_uses_versioned_wheel_url(monkeypatch, tmp_path):
     client = TestClient(app)
     resp = client.get("/setup", headers={"host": "agnes.test", "Accept": "text/html"})
     assert resp.status_code == 200
-    assert "/cli/wheel/agnes_the_ai_analyst-2.0.0-py3-none-any.whl" in resp.text
+    assert "/cli/download" in resp.text
+    assert "/cli/wheel/" not in resp.text
     # The bare alias must no longer appear in the rendered snippet.
     assert "/cli/agnes.whl" not in resp.text
 

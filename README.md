@@ -138,7 +138,7 @@ The scheduler runs the query through the DuckDB BigQuery extension on each tick 
 python3 -m venv .venv && source .venv/bin/activate
 
 # Install dependencies
-uv pip install ".[dev]"
+uv pip install ".[dev,server]"
 
 # Run FastAPI locally with hot reload
 uvicorn app.main:app --reload

@@ -162,9 +162,19 @@ jobs:
               sys.exit("REGRESSION: kbcstorage leaked into the CLI wheel — should be in [server] extra only")
           except ImportError:
               pass
+          # Server-only deps re-tiered out of core (onboarding-speed slim-down):
+          # a web framework and the chat runner's agent SDK have no business in
+          # an analyst's CLI-only install. Same regression class as kbcstorage
+          # above, different offenders.
+          for mod, label in (("claude_agent_sdk", "claude-agent-sdk"), ("fastapi", "fastapi")):
+              try:
+                  __import__(mod)
+                  sys.exit(f"REGRESSION: {label} leaked into the CLI wheel — should be in [server] extra only")
+              except ImportError:
+                  pass
           maj, minor = (int(x) for x in urllib3.__version__.split(".")[:2])
           assert (maj, minor) >= (2, 7), f"urllib3 too old: {urllib3.__version__}"
-          print(f"OK: kbcstorage absent, urllib3 {urllib3.__version__}")
+          print(f"OK: kbcstorage/claude-agent-sdk/fastapi absent, urllib3 {urllib3.__version__}")
           PY
 
       - name: Smoke install in fresh python:3.13-slim
