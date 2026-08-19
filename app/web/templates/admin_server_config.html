@@ -442,6 +442,25 @@
   </div>
 </div>
 
+<!-- Connection-repoint confirmation modal. Raised by the API's 409
+     `connection_change_affects_registrations` — see _guard_connection_repoint
+     in app/api/admin.py for why this change needs its own confirmation
+     separate from the danger-zone one. -->
+<div class="modal-backdrop" id="repoint-modal" role="dialog" aria-modal="true" aria-labelledby="repoint-title">
+  <div class="modal-card" style="max-width: 560px;">
+    <h3 id="repoint-title">This repoints a live data source</h3>
+    <p class="sub" id="repoint-sub"></p>
+    <div class="diff-list" id="repoint-diff"></div>
+    <p class="sub" id="repoint-sample"></p>
+    <p class="sub"><strong>Save anyway?</strong> Existing tables will not be re-registered for you, and a failing one reports its last <em>successful</em> sync until the next run — so the instance can look healthy while its data goes stale.</p>
+    <div class="modal-actions">
+      {{ ds.button('Cancel', variant='secondary',
+                   attrs='data-close-modal="repoint-modal"') }}
+      {{ ds.button('Yes, repoint', variant='danger', id='repoint-confirm-btn') }}
+    </div>
+  </div>
+</div>
+
 <script>
 const CFG_API = "/api/admin/server-config";
 
@@ -1576,18 +1595,25 @@ function diffPreview(section, patch) {
 }
 
 function confirmDanger(section, patch) {
+  const rows = diffPreview(section, patch);
+  const sub = `You're about to change the <strong>${escHtml(section)}</strong> section. ` +
+    `This is flagged as danger-zone — a typo here can lock you out or break OAuth callbacks.`;
+  document.getElementById("danger-sub").innerHTML = sub;
+  document.getElementById("danger-diff").innerHTML = rows.length
+    ? rows.map(r => `<div class="diff-row"><span class="path">${escHtml(r.path)}</span> &mdash; ${escHtml(JSON.stringify(r.before))} &rarr; <strong>${escHtml(JSON.stringify(r.after))}</strong></div>`).join("")
+    : `<em>No visible diff (secret fields are masked in this preview).</em>`;
+  return awaitModalConfirm("danger-modal", "danger-confirm-btn");
+}
+
+// Confirm-dialog plumbing shared by the danger-zone and connection-repoint
+// modals: resolves true on the confirm button, false on cancel or backdrop
+// click, and always unbinds so a second save doesn't stack listeners.
+function awaitModalConfirm(modalId, confirmBtnId) {
   return new Promise(resolve => {
-    const rows = diffPreview(section, patch);
-    const sub = `You're about to change the <strong>${escHtml(section)}</strong> section. ` +
-      `This is flagged as danger-zone — a typo here can lock you out or break OAuth callbacks.`;
-    document.getElementById("danger-sub").innerHTML = sub;
-    document.getElementById("danger-diff").innerHTML = rows.length
-      ? rows.map(r => `<div class="diff-row"><span class="path">${escHtml(r.path)}</span> &mdash; ${escHtml(JSON.stringify(r.before))} &rarr; <strong>${escHtml(JSON.stringify(r.after))}</strong></div>`).join("")
-      : `<em>No visible diff (secret fields are masked in this preview).</em>`;
-    const btn = document.getElementById("danger-confirm-btn");
-    const modalEl = document.getElementById("danger-modal");
-    const cancelBtns = document.querySelectorAll('#danger-modal [data-close-modal]');
-    const onOk = () => { closeModal("danger-modal"); cleanup(); resolve(true); };
+    const btn = document.getElementById(confirmBtnId);
+    const modalEl = document.getElementById(modalId);
+    const cancelBtns = document.querySelectorAll(`#${modalId} [data-close-modal]`);
+    const onOk = () => { closeModal(modalId); cleanup(); resolve(true); };
     const onCancel = () => { cleanup(); resolve(false); };
     // Backdrop click visually closes via the global handler at the top of the
     // file, but that handler doesn't know about the Promise — without this
@@ -1601,8 +1627,34 @@ function confirmDanger(section, patch) {
     btn.addEventListener("click", onOk, { once: true });
     modalEl.addEventListener("click", onBackdrop);
     cancelBtns.forEach(b => b.addEventListener("click", onCancel, { once: true }));
-    openModal("danger-modal");
+    openModal(modalId);
   });
+}
+
+// Blast-radius dialog for the API's 409. `detail` is server-supplied, so
+// every interpolated field goes through escHtml before it reaches innerHTML.
+function confirmRepoint(detail) {
+  const changes = (detail.changes || []).map(c =>
+    `<div class="diff-row"><span class="path">${escHtml(c.field)}</span> &mdash; ` +
+    `${escHtml(JSON.stringify(c.before))} &rarr; <strong>${escHtml(JSON.stringify(c.after))}</strong></div>`
+  ).join("");
+  document.getElementById("repoint-sub").innerHTML =
+    `<strong>${escHtml(String(detail.affected_tables))}</strong> registered table(s) resolve against the current ` +
+    `<strong>${escHtml(String(detail.source))}</strong> connection. They keep naming the old database/schema and ` +
+    `will stop resolving after this change — re-register them, or make sure the new upstream carries the same names.`;
+  document.getElementById("repoint-diff").innerHTML = changes ||
+    `<em>No visible diff (secret fields are masked in this preview).</em>`;
+  const sample = detail.sample_tables || [];
+  document.getElementById("repoint-sample").textContent =
+    sample.length ? `For example: ${sample.join(", ")}` : "";
+  return awaitModalConfirm("repoint-modal", "repoint-confirm-btn");
+}
+
+// `detail` is a string on most errors but an object on the repoint 409 —
+// without this a dict detail renders as the literal "[object Object]".
+function detailText(detail) {
+  if (detail == null) return "";
+  return typeof detail === "string" ? detail : (detail.hint || JSON.stringify(detail));
 }
 
 // Honest post-save messaging. POST /api/admin/server-config ships
@@ -1629,16 +1681,29 @@ function saveResultMessage(section, data) {
   return `${base} Restart the app for the change to take effect.`;
 }
 
-async function postPatch(section, patch, confirmDanger) {
+async function postPatch(section, patch, confirmDanger, confirmConnectionChange) {
   try {
     const r = await fetch(CFG_API, {
       method: "POST", credentials: "include",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sections: { [section]: patch }, confirm_danger: confirmDanger }),
+      body: JSON.stringify({
+        sections: { [section]: patch },
+        confirm_danger: confirmDanger,
+        confirm_connection_change: !!confirmConnectionChange,
+      }),
     });
     const data = await r.json().catch(() => ({}));
     if (!r.ok) {
-      showBanner(`Save failed: ${data.detail || r.statusText}`, "error");
+      // The repoint guard answers 409 with the blast radius instead of
+      // applying the patch — show it, and re-send only if the operator says so.
+      if (r.status === 409 && data.detail && data.detail.error === "connection_change_affects_registrations") {
+        if (await confirmRepoint(data.detail)) {
+          return postPatch(section, patch, confirmDanger, true);
+        }
+        showBanner("Cancelled — the connection was left unchanged.", "");
+        return;
+      }
+      showBanner(`Save failed: ${detailText(data.detail) || r.statusText}`, "error");
       return;
     }
     showBanner(saveResultMessage(section, data), "success");
