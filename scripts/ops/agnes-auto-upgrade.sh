@@ -353,6 +353,19 @@ if [ -n "$DATA_APPS_RUNTIME_IMAGE" ]; then
     esac
 fi
 
+# Retry the optional kai-agent engine on EVERY tick, not only when drift is
+# detected: an engine that failed at boot (bad image, failed migrate) would
+# otherwise stay down until something unrelated about the machine changed,
+# because the drift-gated recreate below never fires on a no-change tick.
+# Targeted at the engine service so this cannot recreate app services and
+# bypass the sync-defer guard below — compose starts the engine's own
+# dependencies (its postgres + one-shot migrate) with it, and is a no-op
+# when the engine is already up. Tolerant, same posture as the pull above.
+if [[ ":$COMPOSE_FILE:" == *":docker-compose.kai-agent.yml:"* ]]; then
+    docker compose ${PROFILE_ARGS[@]+"${PROFILE_ARGS[@]}"} up -d kai-agent >/dev/null 2>&1 \
+        || logger -t agnes-auto-upgrade "WARN: kai-agent engine sidecar failed to start; retrying next tick"
+fi
+
 # ---------------------------------------------------------------------------
 # Role-split (m-tier) rolling-recreate support (spec §3.8/§3.9).
 #
