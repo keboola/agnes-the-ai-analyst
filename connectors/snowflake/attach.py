@@ -417,9 +417,10 @@ def _private_key_pem_and_passphrase(token: str, passphrase: str | None = None) -
     if not raw.strip():
         raise ValueError("empty snowflake private key")
 
-    # If the value is a single-line filesystem path, read the key from disk.
-    # This is common when the credential is injected as a secret file mount.
-    if "\n" not in raw and len(raw) < 4096:
+    # If the value is a single-line filesystem path (and not an inline PEM
+    # with escaped \n), read the key from disk. This is common when the
+    # credential is injected as a secret file mount.
+    if "\n" not in raw and "-----BEGIN" not in raw and "-----END" not in raw and len(raw) < 4096:
         try:
             p = Path(raw).expanduser()
             if p.is_file() and p.stat().st_size < 64 * 1024:
