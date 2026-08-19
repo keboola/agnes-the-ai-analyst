@@ -1090,8 +1090,11 @@
           <div class="ds-wsl-opt">
             <div class="ds-wsl-opt__head" style="cursor:default;">Live or materialized, cost-guarded</div>
             <p style="margin-left:0;">Tables you add here can be <strong>live</strong> (remote, every query runs in Snowflake) or <strong>materialized</strong>
-               (a scheduled copy to parquet). For custom SQL, partitioning or semantic views, use
+               (a scheduled copy to parquet). For custom SQL or partitioning, use
                <a href="/admin/tables">Tables → Register new table</a>.</p>
+            <p style="margin-left:0;">Snowflake <strong>semantic views</strong> are not tables. Import their definitions —
+               logical tables, relationships, metrics — on the <a href="/admin/semantic-layer">Semantic layer</a> page.
+               Their metric SQL is Snowflake-flavour, so Agnes reads it but will not run it locally.</p>
           </div>
         </div>
 
