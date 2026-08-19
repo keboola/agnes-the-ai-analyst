@@ -69,26 +69,42 @@ _env_get() {
 AGNES_TAG="$(_env_get AGNES_TAG)"
 export AGNES_TAG
 
-# Compose chain reused for every invocation. Mirrors the layering in
-# agnes-auto-upgrade.sh so this daemon plays well with the existing -f
-# argument style on provisioned VMs (no COMPOSE_FILE env coupling).
-COMPOSE_FILES=( -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.host-mount.yml )
-# gcplogs overlay — ships container logs to GCP Cloud Logging on GCE VMs.
-# Guarded on file presence so a legacy VM whose image predates the overlay
-# degrades gracefully to the default json-file driver rather than failing the
-# state-apply with "no such file".
-if [ -f "$COMPOSE_DIR/docker-compose.gcp-logging.yml" ]; then
-    COMPOSE_FILES+=( -f docker-compose.gcp-logging.yml )
+# Compose chain reused for every invocation, resolved through the single
+# shared resolver (scripts/ops/agnes-compose-file.sh) so this daemon can
+# never disagree with agnes-auto-upgrade.sh / startup-script.sh.tpl on the
+# overlay list or its order again (a hardcoded array here previously
+# appended the postgres overlays AFTER docker-compose.host-mount.yml,
+# the inverse of the order docker-compose.postgres-host-mount.yml's
+# !override needs).
+#
+# TARGET (the lifecycle flag), not instance.yaml's database.backend, is
+# the authoritative input HERE: the flag flips to side-car-enabled (and
+# the postgres container must come up) BEFORE instance.yaml leaves the
+# transient *_in_progress value — see agnes-compose-file.sh's docstring.
+#
+# Absence is handled rather than crashed through: under `set -e` a missing
+# file here aborts the tick before the heartbeat is even interpretable, so
+# the operator sees a failing timer with no statement of what is wrong. The
+# resolver ships in the image (Dockerfile bakes it into
+# /opt/agnes-host/scripts/ops/), so the only way to be without one is a VM
+# whose $APP_DIR predates it — mid-upgrade, until the next boot or the next
+# agnes-auto-upgrade.sh tick re-fetches it. Say so and exit cleanly; the
+# timer is back in 30s. Every decision below depends on the resolver, so
+# improvising a partial overlay list would be worse than waiting.
+RESOLVER="$COMPOSE_DIR/scripts/ops/agnes-compose-file.sh"
+if [ ! -f "$RESOLVER" ]; then
+    logger -t agnes-state-applier "ERROR: $RESOLVER missing — skipping this tick; the stack is left exactly as it is"
+    exit 0
 fi
-if [ -f "$COMPOSE_DIR/docker-compose.tls.yml" ] && [ -d /data/state/certs ]; then
-    COMPOSE_FILES+=( -f docker-compose.tls.yml )
-fi
+# shellcheck source=./agnes-compose-file.sh
+. "$RESOLVER"
 case "$TARGET" in
-    side-car-enabled)
-        COMPOSE_FILES+=( -f docker-compose.postgres.yml -f docker-compose.postgres-host-mount.yml )
-        ;;
+    side-car-enabled) _ACF_BACKEND=side_car ;;
+    *) _ACF_BACKEND=duckdb ;;
 esac
-dc() { docker compose "${COMPOSE_FILES[@]}" "$@"; }
+export COMPOSE_FILE
+COMPOSE_FILE=$(agnes_resolve_compose_file "$COMPOSE_DIR" /data/state "$_ACF_BACKEND")
+dc() { docker compose "$@"; }
 
 # --- Pending-job detection ------------------------------------------------
 # A job file with status=pending is the signal that the API endpoint

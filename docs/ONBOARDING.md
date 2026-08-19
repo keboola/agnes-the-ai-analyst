@@ -95,7 +95,6 @@ cp terraform/terraform.tfvars.example terraform/terraform.tfvars
 #   runtime_secrets            = ["keboola-storage-token"]  # empty if non-keboola data_source
 #   firewall_ssh_source_ranges = ["35.235.240.0/20"]        # IAP range; "0.0.0.0/0" if public SSH
 #   notification_channel_ids   = ["projects/<p>/notificationChannels/<id>"]
-#   compose_ref                = "main"                     # or a "stable-YYYY.MM.N" tag
 ```
 
 See the [module README](https://github.com/keboola/agnes-the-ai-analyst/tree/main/infra/modules/customer-instance) for the full variable schema.

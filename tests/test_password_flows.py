@@ -110,10 +110,24 @@ class TestResetGet:
         assert 'value="reset-me@test.com"' in resp.text
         assert 'value="abc"' in resp.text
 
-    def test_redirects_without_params(self, app_client, fresh_db):
+    def test_renders_request_form_without_params(self, app_client, fresh_db):
+        """No token → the 'enter your email' request form, not a redirect.
+
+        The login page's Forgot Password link lands here; before this page
+        existed the only way to request a reset was a hidden-email POST from
+        the login form, which silently submitted an empty address."""
         resp = app_client.get("/auth/password/reset")
-        assert resp.status_code == 302
-        assert resp.headers["location"].endswith("/login/password")
+        assert resp.status_code == 200
+        assert 'name="email"' in resp.text
+        assert 'action="/auth/password/reset"' in resp.text
+        # It's the request form, not the set-new-password form.
+        assert 'name="confirm_password"' not in resp.text
+
+    def test_email_without_token_renders_request_form(self, app_client, fresh_db):
+        resp = app_client.get("/auth/password/reset", params={"email": "someone@test.com"})
+        assert resp.status_code == 200
+        assert 'name="confirm_password"' not in resp.text
+        assert 'value="someone@test.com"' in resp.text
 
 
 class TestSetupGet:
@@ -165,9 +179,25 @@ class TestResetRequest:
         assert resp.status_code == 200
         assert "Check your email" in resp.text
 
-    def test_empty_email_same_response(self, app_client, fresh_db):
+    def test_empty_email_reasks_instead_of_lying(self, app_client, fresh_db):
+        """Empty submission: nothing could have been sent, so 'Check your
+        email' would be false. Re-render the request form and ask for the
+        address — an empty email reveals nothing, so anti-enumeration does
+        not apply here."""
         resp = app_client.post("/auth/password/reset", data={"email": ""})
         assert resp.status_code == 200
+        assert "Check your email" not in resp.text
+        assert 'name="email"' in resp.text
+        assert 'action="/auth/password/reset"' in resp.text
+
+    def test_login_page_links_to_reset_page(self, app_client, fresh_db):
+        """Forgot Password is a plain link to the request page — not a POST
+        of a hidden email field that submits empty when the user clicks it
+        before typing their address into the sign-in form."""
+        resp = app_client.get("/login/password")
+        assert resp.status_code == 200
+        assert 'href="/auth/password/reset"' in resp.text
+        assert 'id="reset-email"' not in resp.text
 
 
 # ---- POST /auth/password/reset/confirm ----
