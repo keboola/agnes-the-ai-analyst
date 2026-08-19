@@ -10,6 +10,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+- **Keboola tables can now be registered as live (`query_mode='remote'`) from
+  the Add-data wizard.** Each row in the bucket browser carries a
+  live/materialized select (shown once the table is checked, defaulting to
+  materialized — the previous hardcoded behavior). Live rows resolve through
+  the Keboola DuckDB extension at query time via `_remote_attach`, exactly
+  like rows registered through the API; previously the wizard forced every
+  Keboola table to `materialized` and remote registration was API/CLI-only.
+
 ## [0.83.84] - 2026-08-19
 
 ### Added

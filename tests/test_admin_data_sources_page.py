@@ -221,6 +221,26 @@ class TestWizardRegisterPayloadContract:
         # The regression: full table id sent as source_table.
         assert "source_table: cb.dataset.tableId" not in tpl
 
+    def test_keboola_rows_carry_a_per_row_mode_select(self):
+        """The Keboola picker must offer live vs materialized per row.
+
+        The pre-fix wizard hardcoded `query_mode: "materialized"` for every
+        Keboola row, so live (`remote`) Keboola tables were API-only even
+        though the backend accepts them. The payload must read the row's
+        select, defaulting to materialized so an untouched row behaves
+        exactly as before.
+        """
+        tpl = self._template_text()
+        # The per-row control, rendered inside the bucket-browser row…
+        picker_row = tpl.split('data-table-bare="${_esc(bare)}"', 1)[1].split("ds-bucket-group", 1)[0]
+        assert "data-kb-mode" in picker_row
+        assert '<option value="materialized" selected>' in picker_row
+        assert '<option value="remote">' in picker_row
+        # …and the payload reads it, keeping the old behavior as fallback.
+        assert 'query_mode: modeSel ? modeSel.value : "materialized"' in tpl
+        # The regression: the mode hardcoded in the register payload.
+        assert 'query_mode: "materialized",' not in tpl
+
     def test_scoped_token_note_wired(self):
         """Bucket-scoped tokens get a partial listing — the picker must say so."""
         tpl = self._template_text()
