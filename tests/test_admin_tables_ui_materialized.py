@@ -9,6 +9,7 @@ Structural-only test (no headless browser): loads the template through the
 running app and asserts the expected element ids + attributes are present
 in the rendered HTML for a `data_source_type='bigquery'` deployment.
 """
+
 import pytest
 
 
@@ -32,6 +33,7 @@ def bq_instance(monkeypatch):
         raising=False,
     )
     from app.instance_config import reset_cache
+
     reset_cache()
     yield fake_cfg
     reset_cache()
@@ -91,7 +93,7 @@ def test_admin_tables_renders_two_question_radio_form(seeded_app, bq_instance):
     # field-scope check on the modal id instead of the deleted
     # tab-content section.
     bq_modal_start = html.index('id="registerBqModal"')
-    bq_modal_end = html.index('</div>\n            </div>', bq_modal_start)
+    bq_modal_end = html.index("</div>\n            </div>", bq_modal_start)
     bq_modal = html[bq_modal_start:bq_modal_end]
     assert 'name="bqAccessMode"' in bq_modal
     assert 'id="bqDataset"' in bq_modal
@@ -167,9 +169,11 @@ def test_keboola_register_form_has_three_question_radio(seeded_app, monkeypatch)
     fake_cfg = {"data_source": {"type": "keboola", "keboola": {}}}
     monkeypatch.setattr(
         "app.instance_config.load_instance_config",
-        lambda: fake_cfg, raising=False,
+        lambda: fake_cfg,
+        raising=False,
     )
     from app.instance_config import reset_cache
+
     reset_cache()
     try:
         c = seeded_app["client"]
@@ -196,15 +200,14 @@ def test_keboola_register_form_has_three_question_radio(seeded_app, monkeypatch)
         assert 'id="kbSourceTable"' in kb_tab
         # Custom-SQL textarea + Use-table-as-base prefill button.
         assert 'id="kbSourceQuery"' in kb_tab
-        assert 'kbPrefillFromTable' in html or "prefillFromKeboolaTable('kbSourceQuery')" in html
+        assert "kbPrefillFromTable" in html or "prefillFromKeboolaTable('kbSourceQuery')" in html
 
         # Sync Schedule input.
         assert 'id="kbSyncSchedule"' in kb_tab
 
         # v26: Sync Strategy dropdown re-added (inside the Direct-extract panel)
         assert 'id="kbStrategy"' in kb_tab
-        assert 'class="form-group kb-direct-only"' in kb_tab or \
-               'kb-direct-only' in kb_tab
+        assert 'class="form-group kb-direct-only"' in kb_tab or "kb-direct-only" in kb_tab
 
         # Primary Key — under <details>Advanced.
         assert 'id="kbPrimaryKey"' in kb_tab
@@ -212,8 +215,8 @@ def test_keboola_register_form_has_three_question_radio(seeded_app, monkeypatch)
         assert ">Advanced" in kb_tab
 
         # Discover datasets / List tables buttons.
-        assert 'kbDiscoverBuckets' in html or "discoverKeboolaBuckets(" in html
-        assert 'kbListTables' in html or "discoverKeboolaTables(" in html
+        assert "kbDiscoverBuckets" in html or "discoverKeboolaBuckets(" in html
+        assert "kbListTables" in html or "discoverKeboolaTables(" in html
     finally:
         reset_cache()
 
@@ -224,9 +227,11 @@ def test_keboola_register_payload_maps_to_materialized(seeded_app, monkeypatch):
     fake_cfg = {"data_source": {"type": "keboola", "keboola": {}}}
     monkeypatch.setattr(
         "app.instance_config.load_instance_config",
-        lambda: fake_cfg, raising=False,
+        lambda: fake_cfg,
+        raising=False,
     )
     from app.instance_config import reset_cache
+
     reset_cache()
     try:
         c = seeded_app["client"]
@@ -258,9 +263,11 @@ def test_keboola_edit_modal_parity(seeded_app, monkeypatch):
     fake_cfg = {"data_source": {"type": "keboola", "keboola": {}}}
     monkeypatch.setattr(
         "app.instance_config.load_instance_config",
-        lambda: fake_cfg, raising=False,
+        lambda: fake_cfg,
+        raising=False,
     )
     from app.instance_config import reset_cache
+
     reset_cache()
     try:
         c = seeded_app["client"]
@@ -279,7 +286,7 @@ def test_keboola_edit_modal_parity(seeded_app, monkeypatch):
         assert "prefillFromKeboolaTable('editKbSourceQuery')" in html
         # v26: Strategy dropdown re-added inside Direct-extract panel
         assert 'id="editKbStrategy"' in html
-        assert 'editkb-direct-only' in html
+        assert "editkb-direct-only" in html
         assert 'id="editKbPrimaryKey"' in html
     finally:
         reset_cache()
@@ -302,26 +309,42 @@ def test_bq_edit_modal_renders_as_dom_overlay(seeded_app, bq_instance):
     if 'id="editModal"' in html:
         edit_modal_start = html.index('id="editModal"')
         # rough lookahead: scan until the next modal-overlay sibling or </body>
-        edit_modal_end = html.index('id="toast"', edit_modal_start) \
-            if 'id="toast"' in html[edit_modal_start:] else len(html)
+        edit_modal_end = (
+            html.index('id="toast"', edit_modal_start) if 'id="toast"' in html[edit_modal_start:] else len(html)
+        )
         edit_modal = html[edit_modal_start:edit_modal_end]
         assert 'id="editBqDataset"' not in edit_modal  # BQ fields aren't here anymore
 
 
 def test_keboola_discover_buttons_disabled_on_bigquery_instance(seeded_app, monkeypatch):
-    """C1 / #405: Discover/List/Use-as-base buttons in the Keboola tab render
-    DISABLED with an explanatory tooltip (rather than being hidden) when the
-    instance's data_source.type isn't keboola. /api/admin/discover-tables
-    routes by instance type and would return BQ data on a BQ instance, so the
-    buttons must stay inert — `disabled` (no onclick) guarantees that while
-    still telling the admin why."""
+    """C1 / #405, migrated for the one-signal fix (see
+    test_admin_tables_connectedness.py): Discover/List/Use-as-base buttons
+    in the Keboola tab render DISABLED with an explanatory tooltip (rather
+    than being hidden) when Keboola is unreachable by BOTH routes — no
+    `source_connections` registry row (none in this fixture) AND a
+    non-keboola `data_source.type` scalar.
+
+    Pre-fix this asserted on `data_source_type != 'keboola'` ALONE, which
+    pinned the reported bug: it fired even on instances with a Keboola
+    project connected through the registry, on the adjacent Sources tab.
+    The guard now reads `connected_sources` (the sibling-shipped union of
+    the registry + the legacy scalar + instance-side credential probes) —
+    this test asserts the case where that list genuinely omits 'keboola',
+    injected explicitly via `_inject_ctx` so the assertion doesn't
+    silently depend on whether app/web/router.py has shipped the real key
+    yet (`setdefault` — a real value always wins over the shim)."""
+    from tests.test_admin_tables_connectedness import _inject_ctx
+
     fake_cfg = {"data_source": {"type": "bigquery", "bigquery": {"project": "p"}}}
     monkeypatch.setattr(
         "app.instance_config.load_instance_config",
-        lambda: fake_cfg, raising=False,
+        lambda: fake_cfg,
+        raising=False,
     )
     from app.instance_config import reset_cache
+
     reset_cache()
+    _inject_ctx(monkeypatch, connected_sources=["bigquery"])
     try:
         c = seeded_app["client"]
         token = seeded_app["admin_token"]
@@ -333,12 +356,16 @@ def test_keboola_discover_buttons_disabled_on_bigquery_instance(seeded_app, monk
         # #405: the buttons now render (visible) but disabled, carrying a
         # tooltip that explains Keboola isn't connected.
         assert 'data-tooltip="Keboola not connected' in html
+        # #347 follow-up: the tooltip's advice must be FOLLOWABLE — the old
+        # copy pointed at a token field /admin/server-config never had.
+        assert "connect a project in Data sources" in html
+        assert "set token in Instance settings" not in html
         # The functional guarantee that actually matters: no live call sites
-        # on a non-keboola instance, so a click can never reach
-        # /api/admin/discover-tables. Match the actual CALL SITES, not the
-        # function definitions or JS comments that reference the names
-        # verbatim (#347 moved several helpers out from under the keboola
-        # Jinja guard, so they're defined as dead code on every instance).
+        # on an unreachable instance, so a click can never reach either
+        # discover endpoint. Match the actual CALL SITES, not the function
+        # definitions or JS comments that reference the names verbatim
+        # (#347 moved several helpers out from under the keboola Jinja
+        # guard, so they're defined as dead code on every instance).
         assert 'onclick="discoverKeboolaBuckets(' not in html
         assert 'onclick="discoverKeboolaTables(' not in html
         assert 'onclick="prefillFromKeboolaTable(' not in html
@@ -351,9 +378,11 @@ def test_keboola_discover_buttons_visible_on_keboola_instance(seeded_app, monkey
     fake_cfg = {"data_source": {"type": "keboola", "keboola": {}}}
     monkeypatch.setattr(
         "app.instance_config.load_instance_config",
-        lambda: fake_cfg, raising=False,
+        lambda: fake_cfg,
+        raising=False,
     )
     from app.instance_config import reset_cache
+
     reset_cache()
     try:
         c = seeded_app["client"]
@@ -399,6 +428,7 @@ def test_admin_tables_keboola_branch_unchanged(seeded_app, monkeypatch):
         raising=False,
     )
     from app.instance_config import reset_cache
+
     reset_cache()
 
     c = seeded_app["client"]
