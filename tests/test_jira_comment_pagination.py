@@ -1,11 +1,12 @@
 """Tests for Jira comment-pagination completion (issue #1257).
 
-Jira's issue endpoint embeds ``fields.comment.comments`` capped at 100,
-oldest-first. An issue with more than 100 comments therefore arrives missing
-its NEWEST comments unless the fetch layer pages through the comment
-endpoint for the remainder — and because every later full-refetch
-(``fields=*all``) re-hits the same 100-comment cap, the gap never heals on
-its own.
+Jira's issue endpoint embeds ``fields.comment.comments`` capped at 100. The
+embedded window is the NEWEST 100 (``fields.comment.startAt == total - 100``),
+so an issue over the cap arrives missing its OLDEST comments, and because every
+later full-refetch (``fields=*all``) re-hits the same cap, the gap never heals
+on its own. These tests exercise the completion step against synthetic payloads;
+see ``complete_issue_comments`` for the known gap in which oldest comments the
+paging actually reaches.
 
 Covers both ingestion paths that share the ``complete_issue_comments`` fetch
 seam: the batch/full extract (``JiraBackfill.fetch_issue``) and the webhook
@@ -23,8 +24,17 @@ BASE_URL = "https://mycompany.atlassian.net/rest/api/3"
 AUTH = ("bot@mycompany.com", "test-token")
 
 
-def _comment(comment_id: str) -> dict:
-    return {
+def _comment(comment_id: str, *, jsd_public: bool | None = True) -> dict:
+    """A comment as Jira serializes one.
+
+    ``jsdPublic`` is part of that shape — present on every comment across every
+    fetch shape measured for the `public_visibility` column — and this fixture
+    predates the column, so it used to omit it. That mattered once
+    `_embedded_comments_are_complete` started requiring the flag: a fixture
+    without it models a payload Jira does not actually send. Pass
+    ``jsd_public=None`` to model one that lacks it deliberately.
+    """
+    comment = {
         "id": comment_id,
         "author": {"emailAddress": f"{comment_id}@example.com", "displayName": comment_id},
         "updateAuthor": {"emailAddress": f"{comment_id}@example.com", "displayName": comment_id},
@@ -32,6 +42,9 @@ def _comment(comment_id: str) -> dict:
         "created": "2026-01-01T00:00:00.000+0000",
         "updated": "2026-01-01T00:00:00.000+0000",
     }
+    if jsd_public is not None:
+        comment["jsdPublic"] = jsd_public
+    return comment
 
 
 def _issue_with_comments(total: int, embedded: int, issue_key: str = "PROJ-1") -> dict:
@@ -978,6 +991,28 @@ class TestWebhookFallbackPayloadIsNotAuthoritative:
         payload = self._run_fallback(tmp_path, embedded)
 
         assert "_comments_incomplete" not in payload
+
+    def test_complete_thread_whose_comments_lack_the_visibility_flag_is_marked(self, tmp_path):
+        """Length is not the only kind of incompleteness once a column is read
+        off each comment. The write here is an issue-scoped delete-then-insert,
+        so a comment with no boolean `jsdPublic` replaces an already-observed
+        `public_visibility` with NULL. Preserving the stored rows and healing on
+        the next successful refetch is the safe direction — the same call this
+        class already makes for a short thread."""
+        embedded = {
+            "key": "PROJ-703",
+            "id": "10003",
+            "fields": {
+                "comment": {
+                    "total": 2,
+                    "comments": [_comment("c0"), _comment("c1", jsd_public=None)],
+                }
+            },
+        }
+
+        payload = self._run_fallback(tmp_path, embedded)
+
+        assert payload.get("_comments_incomplete") is True
 
     def test_payload_without_comment_field_is_marked_incomplete(self, tmp_path):
         embedded = {"key": "PROJ-702", "id": "10002", "fields": {"summary": "no comment field"}}
