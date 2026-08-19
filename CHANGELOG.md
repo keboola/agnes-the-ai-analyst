@@ -10,12 +10,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
-## [0.83.88] - 2026-08-19
-
-### Fixed
-
-- **Every release since 0.83.86 failed its post-merge smoke test and rolled `:stable` back automatically.** `scripts/smoke-test.sh` step 11 required `/home` to contain the bundled connectors' frontmatter display name `Atlassian (Jira / Confluence)` and a finale roll-call listing all three. 0.83.86's thin install prompt removed both **on purpose** — connector setup moved into `agnes onboard`, whose step 6 reads `GET /api/connectors/manifest` and prints what the instance offers — and `tests/test_web_home_page.py::test_connectors_section_removed_from_home` pins that removal. So the suite asserted the tiles were gone while the release gate asserted they were present, and 0.83.86 and 0.83.87 both shipped, failed smoke, and reverted `:stable` to the last good image (tracking issues opened automatically). The gate now checks the surviving contract — the page renders and still names Asana / Google Workspace / Atlassian in its own copy — plus the manifest endpoint the coverage moved to, so nothing is merely deleted to get green.
-- **The same drift can no longer wait for a release to be discovered.** Step 11 ran only after a merge to `main`, against the built image, so its assertions were invisible to every PR. `test_release_smoke_gate_assertions_hold_against_the_shipped_page` mirrors them into the pre-merge suite.
 ### Added
 
 - **Snowflake semantic views can be imported into the semantic layer** — a new `snowflake_semantic` adapter composes one Apache Ossie document per semantic view (logical tables → datasets, dimensions/facts → fields, metrics → metrics, `FOREIGN_KEY`/`REF_KEY` → relationships, plus the view's own AI instructions and verified queries). Register it as a `connection`-kind source: `agnes admin semantic-source add --kind connection --name "Snowflake semantic views" --adapter snowflake_semantic`; optional `config` scope keys are `database`, `schema` and `like`. Credentials are never taken from the source row — they resolve from the instance's Snowflake connection, and egress stays gated by the existing host allowlist and SECRET. Every imported expression is tagged `SNOWFLAKE`, so it is readable in Agnes but deliberately **not** runnable locally: `src/semantic/dialect.py` refuses to splice a warehouse-specific fragment into a DuckDB query. Declared time dimensions become `dimension.is_time` and each relationship's `join_type` is preserved — both come from an `EXTENSION` row that Snowflake's SQL reference does not document and that carries them nowhere else.
@@ -28,6 +22,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 - **The Snowflake panel on `/admin/data-sources` no longer points semantic views at the table registry.** It claimed "for custom SQL, partitioning or semantic views, use Tables → Register new table", but a semantic view is not a registerable table and that form rejects Snowflake-flavour SQL outright — an admin following the hint hit a dead end. It now points at the semantic-layer page and states that the imported metric SQL is not locally runnable.
 
+## [0.83.88] - 2026-08-19
+
+### Fixed
+
+- **Every release since 0.83.86 failed its post-merge smoke test and rolled `:stable` back automatically.** `scripts/smoke-test.sh` step 11 required `/home` to contain the bundled connectors' frontmatter display name `Atlassian (Jira / Confluence)` and a finale roll-call listing all three. 0.83.86's thin install prompt removed both **on purpose** — connector setup moved into `agnes onboard`, whose step 6 reads `GET /api/connectors/manifest` and prints what the instance offers — and `tests/test_web_home_page.py::test_connectors_section_removed_from_home` pins that removal. So the suite asserted the tiles were gone while the release gate asserted they were present, and 0.83.86 and 0.83.87 both shipped, failed smoke, and reverted `:stable` to the last good image (tracking issues opened automatically). The gate now checks the surviving contract — the page renders and still names Asana / Google Workspace / Atlassian in its own copy — plus the manifest endpoint the coverage moved to, so nothing is merely deleted to get green.
+- **The same drift can no longer wait for a release to be discovered.** Step 11 ran only after a merge to `main`, against the built image, so its assertions were invisible to every PR. `test_release_smoke_gate_assertions_hold_against_the_shipped_page` mirrors them into the pre-merge suite.
 ## [0.83.87] - 2026-08-19
 
 ### Fixed
