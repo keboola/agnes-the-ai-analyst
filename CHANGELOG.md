@@ -10,6 +10,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- **Session pipeline no longer skips a jsonl that is appended while `process_session` is running or while its hash is being computed.** `services/session_pipeline/runner.py` records `read_at = datetime.now(UTC)` before `compute_file_hash(jsonl_path)` and passes it to `SessionProcessorStateRepository.mark_processed(..., read_at=read_at)`. Both DuckDB and Postgres repositories accept the new optional `read_at` and store it as `processed_at`. This closes the mtime-vs-`processed_at` race where a slow hash or processor appends to the file mid-run, the file mtime ends up older than `processed_at`, and the next tick drops the file without re-checking the hash.
+- **The Databricks `/admin/data-sources` wizard rejects malformed workspace hosts client-side.** It now parses the host with `new URL`, forbids missing hostname, userinfo, path, query, and fragment, and reconstructs a bare `https://hostname[:port]`. Save failures also surface the server's `detail`/`message` instead of a generic HTTP error.
+
+### Changed
+
+- **`cli/skills/agnes-table-registration.md` no longer recommends `agnes admin discover-and-register --source-type=bigquery`.** Bulk discovery is Keboola-only; the skill now points to `agnes admin register-table` for BigQuery, Databricks, and Snowflake with concrete examples.
+
 ## [0.83.83] - 2026-08-19
 
 ### Added
