@@ -10,6 +10,26 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.83.80] - 2026-08-19
+
+### Fixed
+
+- **A crash-looping data-app container stops burning CPU forever.** The runtime container ran under `restart_policy: unless-stopped`, and the upstream entrypoint is not idempotent — it `git clone`s into `/app` unconditionally, so any restart onto a non-empty `/app` dies with "destination path already exists". The result was an infinite restart loop against a boot that could never succeed (the limitation recorded under 0.79.x is now fixed rather than documented). App containers now start with a bounded `on-failure` policy (`MaximumRetryCount: 3`), so the daemon gives up and the container settles as `exited` — which the `POST /api/data-apps/reap-idle` reconcile scan already flips to `error`. **Operator note:** Docker does not bring `on-failure` containers back after a daemon or host restart, so after a reboot every previously-live app settles as `exited`, is reconciled to `error`, and needs an explicit redeploy — the ingress proxy wakes only `sleeping` rows and renders `error` without re-checking. That is not an availability regression (under `unless-stopped` a reboot restarted the container straight into the non-idempotent clone, so the app came back crash-looping rather than serving), but it does mean a reboot needs a redeploy pass instead of healing itself. Restoring wake-on-request self-healing needs the reconcile scan to tell "host rebooted" from "retry budget exhausted" — Docker's `RestartCount`/`ExitCode`, i.e. a runner status-contract change — which is deliberately left to a follow-up rather than decided here.
+- **"Keboola is not connected" on an instance whose Keboola project is connected.**
+- **The fix that warning prescribed did not exist.** It sent the operator to
+- **Discover had no notion of which project.** The Keboola register/edit drawers
+- **`/admin/data-sources` claimed "No sources connected yet"** on an instance whose
+- **Instance settings reported a restart they never performed.** Every save
+- **…and a connection-settings save is `restart`, not `live`.** The new effect map
+- **Registering a Keboola table no longer suggests every table in the project.**
+- **The one-click Databricks register shortcut works again on credentialed
+- **Re-running first-time setup dropped connector coordinates.**
+- **`POST /api/admin/keboola/test-connection` now says which layer it probed**
+
+### Security
+
+- **Hosted data-app containers are now sandbox-hardened.** Every data-app container gets `cap_drop: ALL`, `no-new-privileges` and a `pids_limit` (default 512, `data_apps.container_pids_limit`) — an internet-facing web server running user/AI-authored code needs none of the Linux capabilities Docker grants by default, must gain none through a setuid binary, and must not be able to fork-bomb the host. Instance-wide and never per-app overridable; never applied to the chat-sandbox path, which legitimately needs broader write access for agent-authored code. A read-only root filesystem is available as `data_apps.container_read_only` but ships **off**: a read-only rootfs needs a tmpfs allowlist verified against the shipped runtime image, and that image's own nginx + supervisord write outside the `/tmp` + `/app` tmpfs the spec builder supplies (at least `/var/run/nginx.pid`, `/var/log/{nginx,supervisor}`, `/var/cache/nginx`, `/var/run/supervisor.sock`), so enabling it unverified would very likely crash-loop every hosted app. The knob is there for an operator who has booted their runtime image with it and extended that list from the real failures — `tests/test_data_apps_e2e_docker.py`, the one test with a real daemon and the real image, is where that verification belongs. With it off no tmpfs is mounted at all, so the default filesystem behavior is unchanged.
+
 ## [0.83.79] - 2026-08-19
 
 ### Added
@@ -34,13 +54,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 - **The install guide now names the launcher `agnes init` actually creates.** The page that tells a new analyst to "type one word" to open their workspace derived that word by lowercasing the workspace folder name, while the CLI derives it by stripping the name to alphanumerics and then dodging collisions. The two agreed only by luck. On a **stock instance** they didn't: brand `Agnes` gives folder `Agnes`, whose launcher would shadow the `agnes` CLI, so the CLI installs `agnesai` (#783) — and the page said `agnes`, an instruction that looks like it worked (the data CLI exists and prints its help) while never opening the workspace. The same split hit any operator whose explicit `AGNES_WORKSPACE_DIR_NAME` was not already alphanumeric: `"My Team AI"` was documented as `my team ai` against a `myteamai` on disk. Both derivations now come from one place (`src/launcher_word.py`, in `src/` because `cli/` imports from it and never the reverse), covered by a test that walks folder names through the server and the CLI and asserts they land on the same word. The folder keeps whatever formatting the operator chose — only the *command* is sanitized. Beyond this fix, the CLI still skips a shortcut whose name is taken by another executable on the analyst's own PATH; that check reads the client machine and no server-rendered page can predict it.
 - **A `query_mode='remote'` table no longer breaks on every restart.** The query path LOADs the DuckDB extension a remote row needs without INSTALLing it — deliberately, so a read-only query never reaches the network — but DuckDB installs community extensions into a directory a container recreate wipes. So after any restart (a nightly auto-upgrade is enough) the LOAD failed, the ATTACH was **skipped silently**, and every query against that row answered `Catalog "sf" does not exist` with nothing to say why; re-saving the registration by hand appeared to fix it, because that path runs the connector's own ATTACH, which does INSTALL. Startup now installs what the extracts' `_remote_attach` rows ask for, before the first query. Built-ins are skipped, an extension outside the allowlist is refused (the extract is connector-supplied input and does not get to choose what gets installed), and any failure is logged and stepped over rather than blocking the process — a network blip degrades to the old behaviour instead of a boot loop.
-### Security
-
-- **Hosted data-app containers are now sandbox-hardened.** Every data-app container gets `cap_drop: ALL`, `no-new-privileges` and a `pids_limit` (default 512, `data_apps.container_pids_limit`) — an internet-facing web server running user/AI-authored code needs none of the Linux capabilities Docker grants by default, must gain none through a setuid binary, and must not be able to fork-bomb the host. Instance-wide and never per-app overridable; never applied to the chat-sandbox path, which legitimately needs broader write access for agent-authored code. A read-only root filesystem is available as `data_apps.container_read_only` but ships **off**: a read-only rootfs needs a tmpfs allowlist verified against the shipped runtime image, and that image's own nginx + supervisord write outside the `/tmp` + `/app` tmpfs the spec builder supplies (at least `/var/run/nginx.pid`, `/var/log/{nginx,supervisor}`, `/var/cache/nginx`, `/var/run/supervisor.sock`), so enabling it unverified would very likely crash-loop every hosted app. The knob is there for an operator who has booted their runtime image with it and extended that list from the real failures — `tests/test_data_apps_e2e_docker.py`, the one test with a real daemon and the real image, is where that verification belongs. With it off no tmpfs is mounted at all, so the default filesystem behavior is unchanged.
-
-### Fixed
-
-- **A crash-looping data-app container stops burning CPU forever.** The runtime container ran under `restart_policy: unless-stopped`, and the upstream entrypoint is not idempotent — it `git clone`s into `/app` unconditionally, so any restart onto a non-empty `/app` dies with "destination path already exists". The result was an infinite restart loop against a boot that could never succeed (the limitation recorded under 0.79.x is now fixed rather than documented). App containers now start with a bounded `on-failure` policy (`MaximumRetryCount: 3`), so the daemon gives up and the container settles as `exited` — which the `POST /api/data-apps/reap-idle` reconcile scan already flips to `error`. **Operator note:** Docker does not bring `on-failure` containers back after a daemon or host restart, so after a reboot every previously-live app settles as `exited`, is reconciled to `error`, and needs an explicit redeploy — the ingress proxy wakes only `sleeping` rows and renders `error` without re-checking. That is not an availability regression (under `unless-stopped` a reboot restarted the container straight into the non-idempotent clone, so the app came back crash-looping rather than serving), but it does mean a reboot needs a redeploy pass instead of healing itself. Restoring wake-on-request self-healing needs the reconcile scan to tell "host rebooted" from "retry budget exhausted" — Docker's `RestartCount`/`ExitCode`, i.e. a runner status-contract change — which is deliberately left to a follow-up rather than decided here.
 
 ## [0.83.77] - 2026-08-19
 
@@ -70,70 +83,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **Registering a secondary data source no longer 422s on a `csv`/`local` instance or when the source is configured only through the named-connections registry.** `POST /api/admin/register-table`'s "source_type not configured" guard consulted only the legacy `instance.yaml` (`data_source.type` + `data_source.<type>` block), so a keboola/bigquery table whose connection was added via `/admin/data-sources` (the `source_connections` registry — the source of truth per the 2026-06-12 named-connections design) was still rejected with a message telling the operator to edit `instance.yaml`. The guard now accepts any `source_type` that has a `source_connections` row, and treats the documented `csv` alias for `local` as the same bootstrap-permissive primary — a `csv` primary previously rejected every secondary-source registration that a `local` primary accepts. A `source_type` with no connection, no `data_source.<type>` block, and a non-local/csv primary still 422s.
 
 ## [0.83.74] - 2026-08-18
-- **"Keboola is not connected" on an instance whose Keboola project is connected.**
-  Registering a table on `/admin/tables` warned that Keboola was unconnected and
-  disabled Discover / List tables / Use-as-base, while the project sat named on
-  the adjacent Sources tab. The guard read `data_source.type` — a scalar from the
-  single-source era, whose `local` default means *unset*, not *local* — to answer
-  a question only the multi-connection registry can answer. One
-  `_connected_sources()` helper now unions both stores plus the per-connector
-  credential probes (Snowflake and Databricks are credentialed instance-side and
-  no registry row is ever seeded for them), and every connectedness claim on the
-  page reads it. The scalar survives only where it still means something: which
-  register modal opens by default, and whether the legacy discover endpoint —
-  which routes by that scalar — is reachable at all.
-- **The fix that warning prescribed did not exist.** It sent the operator to
-  `/admin/server-config → data_source` "to set your token"; that section has no
-  token field, and `KEBOOLA_STORAGE_TOKEN` has no writer in any UI. The copy now
-  points at `/admin/data-sources`, which can complete the job.
-- **Discover had no notion of which project.** The Keboola register/edit drawers
-  gain a project selector and call
-  `GET /api/admin/source-connections/{id}/tables` for the chosen connection,
-  passing its `connection_id` when registering — tables registered from this page
-  were provenance-less, blank in the Project facet and `unlinked` on the Sources
-  page. Instances with no registry connection behave exactly as before.
-- **`/admin/data-sources` claimed "No sources connected yet"** on an instance whose
-  Keboola is configured instance-side, because the card list was built from
-  registry rows only. A connector that can be added on that page is now visible on
-  it, and never duplicates a named project's card.
-- **Instance settings reported a restart they never performed.** Every save
-  returned `restart_required: true` and the page claimed saving restarts the app
-  (~10s downtime); the API only drops the config cache and most settings resolve
-  per request. `POST /api/admin/server-config` now computes the effect from the
-  sections actually patched and returns `sections_effect`, so the confirmation can
-  say a change is already in effect or name the section that forced the bounce.
-  The read-only switch summary surfaces each switch's `effect` and a locked
-  switch's `lock_reason` — both were already in the API response and discarded by
-  the page — and the danger-section list comes from that response instead of a
-  hardcoded copy. An import-time assertion fails the app if a new editable section
-  ships unclassified.
-- **…and a connection-settings save is `restart`, not `live`.** The new effect map
-  classified `data_source` as fully live because this process re-reads it per call —
-  but the save only drops the *in-process* config cache, and role-split deployments
-  run the scheduler and workers as separate processes that keep extracting against
-  the pre-save coordinates until bounced. It is now `restart`, on the same
-  cross-process reasoning as `telegram`, which also restores the Snowflake connect
-  wizard's own "only this process has re-read them" warning — that banner reads
-  `restart_required` off this response and had become unreachable.
-- **Registering a Keboola table no longer suggests every table in the project.**
-  When the tables lookup could not find the bucket the admin typed, the register /
-  edit drawers fell back to flattening every bucket's table list, and the caller's
-  filter passes any row that carries no bucket id of its own — so a mistyped bucket
-  offered the whole project as suggestions for it. An unknown bucket now offers
-  nothing.
-- **The one-click Databricks register shortcut works again on credentialed
-  instances.** It fires when Databricks is the only source anyone registered, but
-  the connectedness rewrite pointed it at the new reachability union — so any
-  instance that also had, say, a BigQuery service account in the vault lost the
-  shortcut and had to go through the dropdown. It reads the registry-only list
-  again; the two questions now have two signals.
-- **Re-running first-time setup dropped connector coordinates.**
-  `POST /api/admin/configure` replaced the whole `data_source` block with
-  `{type: ...}`, discarding any `snowflake` / `databricks` / `bigquery` settings.
-- **`POST /api/admin/keboola/test-connection` now says which layer it probed**
-  (`scope: "instance"`). On an instance whose real projects live in the registry,
-  "not configured" read as "Keboola is broken"; its hint now points at
-  `/admin/data-sources` when the registry holds Keboola connections.
 
 ### Internal
 
