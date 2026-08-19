@@ -51,7 +51,7 @@ def test_seeds_grant_on_fresh_instance_when_chat_enabled(_env):
 
     everyone_id = _everyone_group_id()
 
-    seeded = seed_everyone_chat_grant(everyone_group_preexisted=False, chat_enabled=True)
+    seeded = seed_everyone_chat_grant(chat_enabled=True)
 
     assert seeded is True, f"[{_env}] must report having seeded the grant"
     assert resource_grants_repo().has_grant([everyone_id], "chat", "chat"), (
@@ -65,34 +65,30 @@ def test_does_not_seed_when_chat_disabled(_env):
 
     everyone_id = _everyone_group_id()
 
-    seeded = seed_everyone_chat_grant(everyone_group_preexisted=False, chat_enabled=False)
+    seeded = seed_everyone_chat_grant(chat_enabled=False)
 
     assert seeded is False, f"[{_env}] must not seed when chat is disabled"
     assert not resource_grants_repo().has_grant([everyone_id], "chat", "chat")
 
 
 def test_does_not_reseed_after_admin_revokes_it(_env):
-    """Once Everyone already existed before this boot (i.e. NOT the
-    instance's first boot), an admin who revoked the chat grant must never
-    see it silently reappear on the next restart."""
+    """Once the grant has been seeded, an admin who revokes it must never
+    see it silently reappear on the next restart — the marker file records
+    that we already seeded, which `resource_grants` alone cannot express."""
     from app.chat.grant_seed import seed_everyone_chat_grant
     from src.repositories import resource_grants_repo
 
     everyone_id = _everyone_group_id()
 
-    # Simulate: seeded once (a previous fresh boot), then an admin revoked it.
-    grant_id = resource_grants_repo().create(
-        group_id=everyone_id,
-        resource_type="chat",
-        resource_id="chat",
-        assigned_by="admin",
-    )
-    resource_grants_repo().delete(grant_id)
+    # Seed once (writes the marker), then have an admin revoke the grant.
+    assert seed_everyone_chat_grant(chat_enabled=True) is True
+    grants = resource_grants_repo().list_all(resource_type="chat", group_id=everyone_id)
+    resource_grants_repo().delete(grants[0]["id"])
     assert not resource_grants_repo().has_grant([everyone_id], "chat", "chat")
 
-    # Not the first boot (everyone_group_preexisted=True) -> must not reseed,
-    # even though chat is enabled and no chat grant currently exists.
-    seeded = seed_everyone_chat_grant(everyone_group_preexisted=True, chat_enabled=True)
+    # Next boot: chat is still enabled and no chat grant exists, but the
+    # marker says we already seeded — so this must NOT bring it back.
+    seeded = seed_everyone_chat_grant(chat_enabled=True)
 
     assert seeded is False, f"[{_env}] must not re-add a grant an admin deliberately revoked"
     assert not resource_grants_repo().has_grant([everyone_id], "chat", "chat")
@@ -104,8 +100,8 @@ def test_idempotent_double_seed_does_not_duplicate(_env):
 
     everyone_id = _everyone_group_id()
 
-    seed_everyone_chat_grant(everyone_group_preexisted=False, chat_enabled=True)
-    seed_everyone_chat_grant(everyone_group_preexisted=False, chat_enabled=True)
+    seed_everyone_chat_grant(chat_enabled=True)
+    seed_everyone_chat_grant(chat_enabled=True)
 
     grants = resource_grants_repo().list_all(resource_type="chat", group_id=everyone_id)
     assert len(grants) == 1, f"[{_env}] repeated seed calls must not duplicate the grant row"

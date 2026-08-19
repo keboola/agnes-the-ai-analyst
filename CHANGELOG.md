@@ -10,6 +10,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- **A fresh instance with chat enabled shipped with chat invisible to everyone, including admins.** Chat visibility is gated on an *explicit* `(group, chat, chat)` resource grant — `_compute_can_chat` reads `has_explicit_grant`, deliberately not `can_access`, so admin god-mode does not reveal it (that part is by design and unchanged). Nothing created that grant on a new deploy, so an instance with `chat.enabled: true` had a fully working chat backend that nobody could reach without hand-typing `/chat`: no rail entry, and the landing page redirected elsewhere. Diagnosing it costs hours precisely because every layer looks healthy. The grant is now seeded for the `Everyone` group the first time an instance boots with chat enabled. A marker file on the state volume (beside the generated `.session_secret`) records that the seed ran, so a grant an admin later revokes is never silently restored — `resource_grants` has no provenance column, and without the marker "never seeded" and "deliberately revoked" are indistinguishable. Booting with chat disabled writes no marker, so turning chat on later still seeds it once.
+- **Seed-admin failures were invisible.** Every failure in the startup seed block was swallowed into `logger.warning`. "Bootstrap the admin user" is step 6 of 9 in `docs/ONBOARDING.md`, so a failed seed leaves a brand-new instance with no way in — and the only evidence was a warning in the container log. Failures are now logged at ERROR with the exception and recorded where a diagnostic surface can read them. A failed seed still does not abort startup: an instance that is otherwise reachable should not be taken down by it.
+
 ## [0.83.70] - 2026-08-18
 
 ### Internal
