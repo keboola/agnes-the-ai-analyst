@@ -10,6 +10,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Changed
+
+- **The default install prompt shrank ~6× (554 → 163 lines, ~14k → ~2k tokens) — connector setup is now fetched on demand instead of inlined.** 76 % of the rendered prompt was the three connector SKILL.md bodies, pasted into every setup even when the user declined every tool. The connectors steps now list one tile per tool and fetch a body only on a yes, via the new `agnes connectors list` / `agnes connectors show <slug>` commands (backed by `GET /api/connectors/{slug}/prompt`, manifest-gated). The install-location decision tree (~65 lines of prose) moved into the CLI: `agnes init` itself refuses `$HOME`, filesystem roots and system directories with a typed `unsafe_workspace` error and an actionable hint. The git/claude preflight folded into the marketplace step's header; the token-file triage collapsed into a three-bullet outcome table on the init step. Every de-escalation and security lock survives: token never printed or pasted, provenance paragraph, no-TLS-downgrade guidance, out-of-band token delivery via `--token-file`. Step numbering shifts (Confirm is now step 8 in the default layout); admin overrides of the install prompt are unaffected.
+
+### Added
+
+- **`agnes connectors` — discover and read connector setup prompts from the terminal.** `agnes connectors list` shows the instance's connector manifest (display name, summary, estimated minutes, required/optional, manifest origin); `agnes connectors show <slug>` prints one connector's full setup prompt (the post-frontmatter SKILL.md body, brand-substituted server-side). New REST surface: `GET /api/connectors/{slug}/prompt` — 404s on slugs outside the manifest (the manifest is the registry gate, so traversal-shaped slugs never reach the filesystem) and on manifest entries whose body is missing from the seed.
+- **`agnes init` refuses unsafe workspace directories.** Initializing into `$HOME`, a filesystem root, or a system directory (`/tmp`, `/etc`, `/usr`, `/var`, `/opt`, `/root`, `/bin`, `/sbin`, `/boot`, `/sys`, `/proc` — compared on resolved paths, so macOS' `/tmp → /private/tmp` alias can't dodge the list) now fails fast with a typed `unsafe_workspace` error before any network call or filesystem write, telling the user to create a workspace folder and re-run from there. Subdirectories are unaffected. The already-initialized refusal now also points at `agnes update` as the converging next step, not just `--force`.
+
 ## [0.83.72] - 2026-08-18
 
 ### Internal
@@ -37,7 +46,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **The skipped-materialized count now matches what `--materialize` would actually fetch.** It was incremented before the stack filter and before the `server_only` check, so a materialized row outside the analyst's stack, or one the server never distributes, still counted — and the summary then pointed them at a re-run that would not fetch it either. Counted after both filters now.
 - **The setup prompt's install step fails loudly when the wheel download fails.** Both branches took `WHEEL=$(ls …)` from a listing that can legitimately come back empty and ran `uv tool install "$WHEEL"` with no check, so a 404 from `/cli/download` surfaced as a confusing install error instead of the real cause. They now carry the same guard `/cli/install.sh` already had — the prompt is pasted into a shell that is not necessarily running under `set -e`, and the `curl` sits in a subshell whose status nothing inspects.
 - **`README.md`'s contributor setup installs `.[dev,server]` like the other three docs.** It was the one surface missed when the web framework moved into the `server` extra, so anyone following the README hit an import failure on the very next line (`uvicorn app.main:app --reload`).
-
 ## [0.83.70] - 2026-08-18
 
 ### Internal

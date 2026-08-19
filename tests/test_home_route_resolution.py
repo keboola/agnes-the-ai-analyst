@@ -196,54 +196,42 @@ def test_gws_oauth_half_configured_falls_back(fresh_db, monkeypatch):
     assert get_gws_oauth_credentials()["configured"] is False
 
 
-def test_home_renders_gws_oauth_app_branch(fresh_db, monkeypatch):
-    """In the A1.2 seed-driven renderer, the GWS SKILL.md body always
-    describes BOTH branches (operator-OAuth-app and manual GCP
-    walkthrough) — the skill checks `~/.claude/agnes/.env` at install
-    time to pick the right one. Pin both landmarks here.
+def test_gws_body_describes_both_branches(fresh_db, monkeypatch):
+    """The GWS SKILL.md body always describes BOTH branches
+    (operator-OAuth-app and manual GCP walkthrough) — the skill checks
+    `~/.claude/agnes/.env` at install time to pick the right one. The
+    /home install prompt no longer inlines connector bodies (they are
+    fetched via `agnes connectors show` / GET /api/connectors/{slug}/prompt),
+    so the landmarks are pinned on the body loader the endpoint uses.
 
-    Behaviour change from pre-A1.2: server no longer substitutes literal
-    client_id / client_secret values into the rendered /home HTML. Those
-    values now flow through `agnes init` into `<workspace>/.claude/agnes/.env`
-    (wired up in A1.3) where the seed skill reads them at install time.
+    Behaviour unchanged from A1.2 either way: literal client_id /
+    client_secret values never render into HTML; they flow through
+    `agnes init` into `<workspace>/.claude/agnes/.env`.
     """
-    import html as _html
-
     monkeypatch.setenv("AGNES_GWS_CLIENT_ID", "123456789012-abcd5678efgh.apps.googleusercontent.com")
     monkeypatch.setenv("AGNES_GWS_CLIENT_SECRET", "GOCSPX-secret-xyz")
 
-    from src.db import get_system_db, close_system_db
+    from src.connectors_manifest import load_connector_body
 
-    conn = get_system_db()
-    try:
-        _, sess = _make_user_and_session(conn)
-    finally:
-        conn.close()
-        close_system_db()
-
-    c = _client()
-    resp = c.get("/home", cookies={"access_token": sess})
-    assert resp.status_code == 200
-    body = _html.unescape(resp.text)
+    loaded = load_connector_body("connector-gws")
+    assert loaded is not None
+    body, _source = loaded
     # Operator-OAuth-app branch landmark — the inlined client_secret.json
     # schema block references the per-tenant .env file.
     assert "~/.config/gws/client_secret.json" in body
     assert "AGNES_GWS_CLIENT_ID" in body
-    # Full read+write scopes — no --readonly flag (Agnes needs Drive/Gmail
-    # write so the agent can create, edit, and send on the user's behalf).
+    # Full read+write scopes — no --readonly flag.
     assert "gws auth login --readonly" not in body
-    assert "OAUTHLIB_INSECURE_TRANSPORT=1 gws auth login" in body
-    # Old env-var approach should not leak back in (Claude Code security
-    # layer redacts env vars whose name contains 'SECRET' from non-
-    # interactive subshells, so the file-write path is the canonical one).
-    assert "export GOOGLE_WORKSPACE_CLI_CLIENT_SECRET=" not in body
+    # Manual branch present too.
+    assert "offer the operator path" in body
+    assert "run `gws auth setup` for me" in body
+    # No leaked client_id placeholder.
+    assert "GOOGLE_WORKSPACE_CLI_CLIENT_ID=" not in body
+    # And the /home page itself must NOT inline the body (that was 76 %
+    # of the install prompt) nor leak any secret value.
+    import html as _html
 
-
-def test_home_renders_manual_gws_branch_when_unset(fresh_db, monkeypatch):
-    monkeypatch.delenv("AGNES_GWS_CLIENT_ID", raising=False)
-    monkeypatch.delenv("AGNES_GWS_CLIENT_SECRET", raising=False)
-
-    from src.db import get_system_db, close_system_db
+    from src.db import close_system_db, get_system_db
 
     conn = get_system_db()
     try:
@@ -255,12 +243,10 @@ def test_home_renders_manual_gws_branch_when_unset(fresh_db, monkeypatch):
     c = _client()
     resp = c.get("/home", cookies={"access_token": sess})
     assert resp.status_code == 200
-    body = resp.text
-    # Operator-first path renders before the manual walkthrough
-    assert "offer the operator path" in body
-    assert "run `gws auth setup` for me" in body
-    # No leaked client_id placeholder
-    assert "GOOGLE_WORKSPACE_CLI_CLIENT_ID=" not in body
+    page = _html.unescape(resp.text)
+    assert "GOCSPX-secret-xyz" not in page
+    assert "~/.config/gws/client_secret.json" not in page
+    assert "agnes connectors show connector-gws" in page
 
 
 def test_home_automode_default_show(fresh_db, monkeypatch):
@@ -497,19 +483,14 @@ def test_atlassian_base_url_strips_trailing_wiki(fresh_db, monkeypatch):
 
 
 def test_atlassian_skill_asks_for_url_in_v1():
-    """In the A1.2 seed-driven renderer, the Atlassian SKILL.md asks the
-    user for their Atlassian Cloud site URL unconditionally. The
-    operator-baked-URL feature (previously substituted server-side via
-    ``atlassian_prompt(base_url=...)``) moves to runtime in B1b: the
-    skill will read ``~/.claude/agnes/.env`` for ``ATLASSIAN_BASE_URL``
-    and skip the ask when present. Until then, document the v1 behaviour
-    explicitly so a future regression catches at this pin.
-    """
-    from src import connectors_manifest as cm
+    """The Atlassian SKILL.md asks the user for their Atlassian Cloud
+    site URL unconditionally (the operator-baked-URL feature moves to
+    runtime via ~/.claude/agnes/.env). Pinned on the body loader that
+    GET /api/connectors/{slug}/prompt serves — bodies are no longer
+    inlined into the rendered install prompt."""
+    from src.connectors_manifest import load_connector_body
 
-    from app.web.setup_instructions import resolve_lines
-
-    cm.invalidate_cache()
-    joined = "\n".join(resolve_lines("agnes.whl"))
-    # The bundled Atlassian SKILL.md asks the user for the site URL.
-    assert "Ask me for my Atlassian Cloud site URL" in joined
+    loaded = load_connector_body("connector-atlassian")
+    assert loaded is not None
+    body, _source = loaded
+    assert "Ask me for my Atlassian Cloud site URL" in body
