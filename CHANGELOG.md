@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.83.90] - 2026-08-19
+
 ### Fixed
 - **Keboola `query_mode='materialized'` tables were registered, reported
   `last_sync=ok` with a row count, and could not be read.** `materialize_query`
