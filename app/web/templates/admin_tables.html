@@ -5586,14 +5586,21 @@
                 source_query: (document.getElementById('editKbSourceQuery').value || '').trim(),
             });
         }
-        // Whole — no source_query, for the same reason as the register form:
-        // Keboola materialized takes a JSON filter spec or nothing at all.
-        // UpdateTableRequest happens to accept SQL here where
-        // RegisterTableRequest refuses it, so the edit form was the one path
-        // that could persist a row the extractor then fails to sync.
+        // Whole — an EXPLICIT null, not an omitted key. Keboola materialized
+        // takes a JSON filter spec or nothing at all (same reason as the
+        // register form), but `update_table` overlays
+        // `model_dump(exclude_unset=True)` onto the stored row, so *omitting*
+        // source_query means "keep whatever is there". Switching a row from
+        // custom back to whole table would then keep exporting the old filter
+        // — or, for a row carrying the legacy synthesized
+        // `SELECT * FROM kbc."b"."t"`, wedge the PUT on the merged-record
+        // guard with no way to clear it from this drawer. Explicit null is
+        // accepted by UpdateTableRequest and persists as NULL, which is what
+        // "full-table export" means; an empty string is rejected.
         return Object.assign({}, common, {
             bucket: bucket,
             source_table: sourceTable,
+            source_query: null,
         });
     }
 

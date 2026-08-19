@@ -558,8 +558,82 @@ def test_keboola_whole_table_payload_is_not_rejected_by_the_register_validator(s
         start = html.index(fn)
         end = html.index("\n    function ", start + len(fn))
         body = html[start:end]
-        assert "SELECT * FROM kbc." not in body, (
+        # Anchored on the assignment, not the bare string: the surrounding
+        # comments legitimately name the payload this guard forbids.
+        assert "source_query: 'SELECT * FROM kbc." not in body, (
             f"{fn} still synthesizes SQL into source_query for the whole-table "
             "branch — the server rejects exactly that payload, so the drawer's "
             "default mode cannot register anything"
         )
+
+
+def test_keboola_edit_back_to_whole_table_clears_the_stored_source_query(seeded_app, monkeypatch):
+    """Switching a Keboola row back to "Whole table" must CLEAR source_query.
+
+    `update_table` overlays `request.model_dump(exclude_unset=True)` onto the
+    stored row, so an *omitted* `source_query` means "keep the existing value",
+    not "clear it". A row edited from custom back to whole table would then
+    keep exporting the old filter spec while the drawer claimed a full-table
+    copy — and a row still carrying the legacy synthesized
+    ``SELECT * FROM kbc."b"."t"`` would wedge every PUT on the merged-record
+    guard (`app/api/admin.py`, "must be a JSON filter spec"), unfixable from
+    this drawer, because neither branch could clear the field. An explicit
+    ``null`` is accepted by `UpdateTableRequest` and persists as NULL; an empty
+    string is rejected outright.
+    """
+    fake_cfg = {"data_source": {"type": "keboola", "keboola": {}}}
+    monkeypatch.setattr(
+        "app.instance_config.load_instance_config",
+        lambda: fake_cfg,
+        raising=False,
+    )
+    from app.instance_config import reset_cache
+
+    reset_cache()
+    try:
+        c = seeded_app["client"]
+        auth = _auth(seeded_app["admin_token"])
+
+        r = c.post(
+            "/api/admin/register-table",
+            headers=auth,
+            json={
+                "name": "orders_filtered",
+                "source_type": "keboola",
+                "query_mode": "materialized",
+                "bucket": "in.c-sales",
+                "source_table": "orders",
+                "source_query": '{"columns": ["id", "created_at"]}',
+            },
+        )
+        assert r.status_code == 201, r.text
+        table_id = r.json()["id"]
+
+        # Exactly what _buildKeboolaEditPayload's whole-table branch posts.
+        r = c.put(
+            f"/api/admin/registry/{table_id}",
+            headers=auth,
+            json={
+                "query_mode": "materialized",
+                "bucket": "in.c-sales",
+                "source_table": "orders",
+                "source_query": None,
+            },
+        )
+        assert r.status_code == 200, r.text
+
+        rows = c.get("/api/admin/registry", headers=auth).json()
+        row = next(t for t in (rows if isinstance(rows, list) else rows["tables"]) if t["id"] == table_id)
+        assert not (row.get("source_query") or "").strip(), (
+            f"switching back to whole-table left the previous filter spec on the row — got {row.get('source_query')!r}"
+        )
+
+        html = c.get("/admin/tables", headers=auth).text
+        start = html.index("function _buildKeboolaEditPayload(")
+        end = html.index("\n    function ", start)
+        assert "source_query: null," in html[start:end], (
+            "_buildKeboolaEditPayload's whole-table branch must send an EXPLICIT null; "
+            "omitting the key makes the PUT keep the stored value"
+        )
+    finally:
+        reset_cache()
