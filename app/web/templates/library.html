@@ -393,7 +393,7 @@
                     {# Already usable by the default agent. A REMOVABLE membership
                        — one the caller created, on an artefact, skill or plugin —
                        is a button that reports the status at rest and offers
-                       "Remove from Stack" on hover or keyboard focus, in the same
+                       "Remove from stack" on hover or keyboard focus, in the same
                        box so the row never shifts. A membership the caller did
                        not create (an admin grant) stays a plain status. #}
                     {% if c.stack_removable %}
@@ -409,19 +409,19 @@
                             {% if c.stack_remove_endpoint %}data-stack-remove-endpoint="{{ c.stack_remove_endpoint }}"{% endif %}
                             {% if c.stack_body %}data-stack-body="{{ c.stack_body }}"{% endif %}
                             title="{{ c.stack_title }}"
-                            aria-label="{{ c.title }} is in your Stack. Remove it from your Stack">
+                            aria-label="{{ c.title }} is in your stack. Remove it from your Stack">
                       <span class="lib-stackpill__rest">
                         <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 13l4 4L19 7" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                        In Stack
+                        In stack
                       </span>
                       <span class="lib-stackpill__alt">
                         <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 12h14" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>
-                        Remove from Stack
+                        Remove from stack
                       </span>
                     </button>
                     {% else %}
                     {# In the Stack and not removable. Every such row says the
-                       same thing about membership — "In Stack", because it is
+                       same thing about membership — "In stack", because it is
                        — and a LOCK marks the ones the caller cannot drop.
                        Which rows those are depends on the kind, because
                        "granted" and "in my Stack" are the same fact for some
@@ -441,7 +441,7 @@
                        that a REMOVABLE pill shows at rest, so the two were
                        indistinguishable until you hovered one. The tier is an
                        attribute of the membership, not a separate state — it
-                       lives in the tooltip and the Optional/Required facet. #}
+                       lives in the tooltip and the Access facet (Automatic/Optional). #}
                     {% set _locked = c.stack_locked %}
                     {# `data-tip`, not `title`, for the SAME reason the trust
                        markers use it (see the note up in the Name cell): this
@@ -463,7 +463,7 @@
                     <span class="lib-stackpill lib-instack lib-instack--fixed {% if _locked %}lib-instack--locked{% endif %}"
                           data-stack-badge="{{ c.id }}" role="img"
                           data-tip="{{ c.stack_title }}"
-                          aria-label="{{ c.stack_pill or 'In Stack' }}. {{ c.stack_title }}">
+                          aria-label="{{ c.stack_pill or 'In stack' }}. {{ c.stack_title }}">
                       <span class="lib-stackpill__rest">
                         {% if _locked %}
                         {# A lock, not a checkmark: the checkmark says "done, and
@@ -472,7 +472,7 @@
                         {% else %}
                         <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 13l4 4L19 7" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
                         {% endif %}
-                        {{ c.stack_pill or 'In Stack' }}
+                        {{ c.stack_pill or 'In stack' }}
                       </span>
                     </span>
                     {% endif %}
@@ -494,7 +494,7 @@
                             aria-label="Add {{ c.title }} to your Stack">
                       <span class="lib-stackpill__rest">
                         <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
-                        Add to Stack
+                        Add to stack
                       </span>
                     </button>
                     {% endif %}
@@ -1105,16 +1105,16 @@
   .lib-cell-actions { text-align: right; }
   .lib-cell-actions-inner { display: flex; align-items: center; justify-content: flex-end; }
   .lib-slot { display: flex; align-items: center; justify-content: flex-end; flex: none; }
-  /* Wide enough for the LONGEST label the slot ever shows ("Remove from Stack",
-     the hover state of In Stack) — that's what makes all three states the same
+  /* Wide enough for the LONGEST label the slot ever shows ("Remove from stack",
+     the hover state of In stack) — that's what makes all three states the same
      size instead of the row resizing under the pointer. */
   .lib-slot--stack { width: 142px; }
 
   /* ── Stack: one action, one status, one size ──
      `.lib-stackpill` is the shared box (identical height, padding, border and
      font), so the in-place swap can't move the row. The two states then read
-     differently ON PURPOSE — by TINT, not by outline: "Add to Stack" is a
-     primary-tinted BUTTON that deepens on hover; "In Stack" is a success-tinted
+     differently ON PURPOSE — by TINT, not by outline: "Add to stack" is a
+     primary-tinted BUTTON that deepens on hover; "In stack" is a success-tinted
      STATUS with a check and a default cursor — nothing to press. Neither wears
      a border: a row of outlined controls down the actions column drew a second
      grid inside the table, competing with the row rules for structure, and
@@ -1127,7 +1127,7 @@
   .lib-stackpill { display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; height: 26px; padding: 0 10px; font: inherit; font-size: 11.5px; font-weight: 600; letter-spacing: 0.01em; white-space: nowrap; border: 1px solid transparent; border-radius: var(--ds-radius-btn); }
   .lib-stackpill svg { width: 12px; height: 12px; flex: none; }
   /* Every pill fills the slot, so NOTHING about the geometry changes across the
-     three states (Add to Stack / In Stack / Remove from Stack) — only colour,
+     three states (Add to stack / In stack / Remove from stack) — only colour,
      icon and words. The slot is sized for the longest label. */
   .lib-slot--stack .lib-stackpill { width: 100%; }
   /* Rest ⇄ alternate label, swapped on hover/focus. Both lay out identically and
@@ -1137,13 +1137,13 @@
   .lib-stackpill__alt { display: none; }
   .lib-stackpill[disabled] { opacity: .55; cursor: progress; }
 
-  /* Add to Stack — the default ACTION for anything not in the Stack. Borderless
-     on a primary tint, exactly as In Stack is borderless on a success tint. */
+  /* Add to stack — the default ACTION for anything not in the Stack. Borderless
+     on a primary tint, exactly as In stack is borderless on a success tint. */
   .lib-addstack { color: var(--ds-primary); background: var(--ds-primary-light); cursor: pointer; }
   .lib-addstack:hover { background: color-mix(in srgb, var(--ds-primary) 20%, var(--ds-surface)); }
   .lib-addstack:focus-visible { outline: var(--ds-focus-outline); outline-offset: var(--ds-focus-outline-offset); }
 
-  /* In Stack — a STATUS at rest: success tint, a check, no border. */
+  /* In stack — a STATUS at rest: success tint, a check, no border. */
   .lib-instack { color: var(--ds-accent-success-ink); background: var(--ds-accent-success-bg); }
   /* A granted or installed item has no membership of its own to drop, so its
      status is exactly that — not a button. `help` rather than `default`: it
@@ -1157,7 +1157,7 @@
      pills for meaning, on the one pill that has no meaning to offer beyond
      "not yours to touch". The lock glyph still separates it from the success
      check of a REMOVABLE pill, and the tier still lives in the tooltip and the
-     Optional/Required facet.
+     Access facet (Automatic/Optional).
 
      It takes the reference chip's border along with its fill — the one place
      the column's borderless rule bends, and not decoration: the row's own
@@ -1739,7 +1739,7 @@
            list should be the one describing the list. (The stack toggle is
            excluded here — its own button shows its state.) Hidden when empty,
            so the card is a single row until a filter is applied.
-         Row 2 (.fbar) — search · Filter menu (Optional/Required, Tags, Owner,
+         Row 2 (.fbar) — search · Filter menu (Access, Tags, Owner,
            Source facets) · "In stack only" toggle · sort · table⇄grid view
            toggle · the "+ Add" menu.
 
@@ -1825,7 +1825,7 @@
         <label class="fbar-menu__opt"><input type="checkbox" data-facet="availability" value="available"><span class="fbar-menu__opt-text">Not in stack yet</span><span class="fbar-menu__opt-n">{{ library_available_count }}</span></label>
         {% endif %}
         {% set _cats = [
-             ('requirement', 'Optional / Required', library_requirements),
+             ('requirement', 'Access', library_requirements),
              ('tag', 'Tags', library_tags),
              ('owner', 'Owner', library_owners),
              ('origin', 'Source', library_origins),
@@ -3213,9 +3213,9 @@
   }
 
   // ── Stack membership, both directions, in place ─────────────────────────
-  //    "Add to Stack" is the default action for anything not in the Stack; an
-  //    item that IS in it reports "✓ In Stack" and, on hover or keyboard focus,
-  //    offers "Remove from Stack" in the same box. Both directions swap the
+  //    "Add to stack" is the default action for anything not in the Stack; an
+  //    item that IS in it reports "✓ In stack" and, on hover or keyboard focus,
+  //    offers "Remove from stack" in the same box. Both directions swap the
   //    control in place (no reload) and keep `data-stack` truthful so the Stack
   //    facet and its chip never disagree with what the row shows.
   //
@@ -3241,9 +3241,9 @@
       (body ? 'data-stack-body="' + esc(body) + '" ' : '') +
       (removeEndpoint ? 'data-stack-remove-endpoint="' + esc(removeEndpoint) + '" ' : '') +
       'title="In your Stack — click to remove it" ' +
-      'aria-label="' + esc(title) + ' is in your Stack. Remove it from your Stack">' +
-      '<span class="lib-stackpill__rest">' + STACK_CHECK_SVG + 'In Stack</span>' +
-      '<span class="lib-stackpill__alt">' + STACK_MINUS_SVG + 'Remove from Stack</span>' +
+      'aria-label="' + esc(title) + ' is in your stack. Remove it from your Stack">' +
+      '<span class="lib-stackpill__rest">' + STACK_CHECK_SVG + 'In stack</span>' +
+      '<span class="lib-stackpill__alt">' + STACK_MINUS_SVG + 'Remove from stack</span>' +
       '</button>';
   }
   // A child file shows its folder's membership as a plain status: Stack
@@ -3253,9 +3253,9 @@
     // status has nothing but its tooltip to offer on hover, so it must not be
     // the one that waits for the OS delay.
     return '<span class="lib-stackpill lib-instack lib-instack--fixed" data-stack-badge="' + id + '" ' +
-      'role="img" data-tip="Its collection is in your Stack" ' +
-      'aria-label="In Stack. Its collection is in your Stack">' +
-      '<span class="lib-stackpill__rest">' + STACK_CHECK_SVG + 'In Stack</span></span>';
+      'role="img" data-tip="Its collection is in your stack" ' +
+      'aria-label="In stack. Its collection is in your stack">' +
+      '<span class="lib-stackpill__rest">' + STACK_CHECK_SVG + 'In stack</span></span>';
   }
   function addToStackHtml(id, title, endpoint, body, removeEndpoint) {
     return '<button type="button" class="lib-stackpill lib-addstack" data-add-to-stack="' + id + '" ' +
@@ -3264,7 +3264,7 @@
       (removeEndpoint ? 'data-stack-remove-endpoint="' + esc(removeEndpoint) + '" ' : '') +
       'title="Let the default agent use ' + esc(title) + '" ' +
       'aria-label="Add ' + esc(title) + ' to your Stack">' +
-      '<span class="lib-stackpill__rest">' + STACK_PLUS_SVG + 'Add to Stack</span>' +
+      '<span class="lib-stackpill__rest">' + STACK_PLUS_SVG + 'Add to stack</span>' +
       '</button>';
   }
   function esc(s) {

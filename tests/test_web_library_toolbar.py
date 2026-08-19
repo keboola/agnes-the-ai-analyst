@@ -285,7 +285,7 @@ def test_stack_state_is_visible_on_every_row(seeded_app):
 
 def test_granted_resources_report_in_stack_not_addable(seeded_app, monkeypatch):
     """Auto-membership (opt-in): a grant on the caller's group puts a resource
-    in their Stack with no action, so those rows say "In Stack" and offer no
+    in their Stack with no action, so those rows say "In stack" and offer no
     Add. The classic default renders granted-but-unsubscribed rows as
     not-a-member (tests/test_web_library.py::
     test_library_available_grant_classic_is_not_claimed_in_stack)."""
@@ -429,7 +429,7 @@ def test_long_category_gets_its_own_search_field(seeded_app):
     a search field (and a "No matches" line) into any popover holding more than
     CAT_SEARCH_MIN options. Injected from the row count in JS, never authored in
     a template, so every page and every future facet inherits it; a short
-    category (Optional / Required) stays a plain list."""
+    category (the Access facet's two options) stays a plain list."""
     js = seeded_app["client"].get("/static/js/filter_toolbar.js").text
     assert "var CAT_SEARCH_MIN = 10;" in js
     assert "function setupCatSearch(cat)" in js

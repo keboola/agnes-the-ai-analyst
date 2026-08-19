@@ -2035,7 +2035,7 @@ _SKILL_VISIBILITY: dict[str, tuple[str, str]] = {
 #: making the same promise, and ``tests/test_web_library.py`` asserts them
 #: verbatim so the shipped copy cannot drift from the spec.
 _LOCKED_STACK_TOOLTIP = "Required by your admin and cannot be removed from your stack."
-_GRANTED_STACK_TOOLTIP = "Granted to your group — only an admin can remove it from your Stack."
+_GRANTED_STACK_TOOLTIP = "Granted to your group — only an admin can remove it from your stack."
 
 
 def _library_row_base(
@@ -2080,16 +2080,16 @@ def _library_row_base(
         # EVERY row that can be filtered carries one of the two — a row with no
         # state would be silently dropped by the "In stack only" toggle while its
         # own pill claimed membership. The row renders the state as the
-        # presence/absence of the "In Stack" badge, so the filter never hides
+        # presence/absence of the "In stack" badge, so the filter never hides
         # anything for an invisible reason.
         "stack_state": "",
         "stack_title": "",
         # What the pill READS on the row, kept separate from ``stack_state`` so
         # the wording can differ from the filtered value. Empty → the template
-        # falls back to "In Stack".
+        # falls back to "In stack".
         "stack_pill": "",
         # Membership the caller cannot drop — any group grant, whichever tier.
-        # It reads the SAME "In Stack" as any other member (it is one) and is
+        # It reads the SAME "In stack" as any other member (it is one) and is
         # marked by a LOCK plus a tooltip naming who *can* remove it. The tier
         # is an attribute of the membership, not a different state, and the
         # separate Optional/Required facet is where the tier is filterable.
@@ -2120,14 +2120,16 @@ def _library_row_base(
         "meta_text": meta_text,
         "share_type": share_type,
         "shareable": share_type is not None,
-        # Facet fields. ``requirement`` is the grant tier an admin set
-        # ("required" = mandatory, everything else optional). ``tags`` reuses
+        # Facet fields. ``requirement`` is the grant tier an admin set, shown
+        # in the vocabulary every admin surface speaks: "required" (the API
+        # enum) reads **Automatic** — in members' stacks without an add —
+        # and everything else reads **Optional**. ``tags`` reuses
         # whatever the source registry already carries (data-package tags,
         # store-entity category) — no generic tagging table exists, so kinds
         # without tags simply never match a Tags filter. ``owner_key`` is the
         # stable value the Owner facet groups on (the label is what's shown).
         "requirement": requirement,
-        "requirement_label": "Required" if requirement == "required" else "Optional",
+        "requirement_label": "Automatic" if requirement == "required" else "Optional",
         "tags": tags or [],
         "owner_key": owner_key or "",
         "search": " ".join(s for s in (title, description, type_label, owner_label, extra_search) if s).lower(),
@@ -2230,8 +2232,8 @@ async def library_page(
             return "workspace"
         return "shared"
 
-    # Artefacts already in the caller's Stack — drives the "Add to Stack" vs
-    # quiet "In Stack" badge on artefact rows.
+    # Artefacts already in the caller's Stack — drives the "Add to stack" vs
+    # quiet "In stack" badge on artefact rows.
     try:
         in_stack_ids = set(user_stack_subscriptions_repo().list_for_user(uid, ct))
     except Exception as e:
@@ -2328,7 +2330,7 @@ async def library_page(
             # pill is a real toggle and the template supplies the button copy.
             # This value is what the *child* rows fall back to — a file inside
             # a folder shows its folder's state as a plain badge.
-            row["stack_pill"] = "In Stack"
+            row["stack_pill"] = "In stack"
             # Membership here is a `user_stack_subscriptions` row, and it is the
             # caller's to add or drop either way. Children deliberately inherit
             # neither flag: Stack membership is per collection, so a file inside a
@@ -2545,7 +2547,7 @@ async def library_page(
             items[-1]["stack_endpoint"] = f"/api/store/entities/{s['id']}/install"
             if _inst:
                 items[-1]["stack_state"] = "in_stack"
-                items[-1]["stack_pill"] = "In Stack"
+                items[-1]["stack_pill"] = "In stack"
                 items[-1]["stack_removable"] = True
                 items[-1]["stack_title"] = "The default agent can use this — click to remove it"
             else:
@@ -2636,7 +2638,7 @@ async def library_page(
         # (Devin Review on #1199): under auto-membership every granted row IS
         # in the Stack (``in_stack`` arrives True, rendering exactly as
         # before); under the classic default a granted-but-unsubscribed
-        # ``available`` resource is NOT a member — claiming "In Stack" there
+        # ``available`` resource is NOT a member — claiming "In stack" there
         # would label rows the agent cannot actually query (membership also
         # drives ``get_accessible_tables``). Callers whose membership
         # genuinely is the grant (recipes, plugins) omit the argument.
@@ -2650,7 +2652,7 @@ async def library_page(
             import json as _json
 
             items[-1]["stack_state"] = "in_stack"
-            items[-1]["stack_pill"] = "In Stack"
+            items[-1]["stack_pill"] = "In stack"
             items[-1]["stack_removable"] = True
             # Remove is a path-param DELETE; re-add (after a remove, without
             # a reload) POSTs the generic subscribe endpoint with a body —
@@ -2658,11 +2660,11 @@ async def library_page(
             items[-1]["stack_endpoint"] = "/api/stack/subscribe"
             items[-1]["stack_body"] = _json.dumps({"resource_type": type_key, "resource_id": item_id})
             items[-1]["stack_remove_endpoint"] = f"/api/stack/subscription/{type_key}/{item_id}"
-            items[-1]["stack_title"] = "Added by you — click to remove it from your Stack"
+            items[-1]["stack_title"] = "Added by you — click to remove it from your stack"
         elif in_stack:
             items[-1]["stack_state"] = "in_stack"
             # Every non-droppable member row says the same thing about
-            # membership — "In Stack" — and is LOCKED: there is no per-user
+            # membership — "In stack" — and is LOCKED: there is no per-user
             # membership to drop, only a grant an admin can revoke (required
             # tier, or auto-membership where the grant IS the membership).
             # The lock is driven by *droppability*, not by the grant tier:
@@ -2670,7 +2672,7 @@ async def library_page(
             # left an optional grant rendering the success-tinted check that
             # a REMOVABLE row wears at rest. The tier stays legible in the
             # tooltip and the Optional/Required facet.
-            items[-1]["stack_pill"] = "In Stack"
+            items[-1]["stack_pill"] = "In stack"
             items[-1]["stack_locked"] = True
             if requirement == "required":
                 items[-1]["stack_title"] = _LOCKED_STACK_TOOLTIP
@@ -2692,7 +2694,7 @@ async def library_page(
             items[-1]["stack_endpoint"] = "/api/stack/subscribe"
             items[-1]["stack_body"] = _json.dumps({"resource_type": type_key, "resource_id": item_id})
             items[-1]["stack_remove_endpoint"] = f"/api/stack/subscription/{type_key}/{item_id}"
-            items[-1]["stack_title"] = "Granted to you, but not in your Stack — add it to make it queryable"
+            items[-1]["stack_title"] = "Granted to you, but not in your stack — add it to make it queryable"
 
     # Governed data packages + memory domains — StackResolver.browse() is
     # exactly "required ∪ available for my groups" for these two types.
@@ -2836,7 +2838,7 @@ async def library_page(
             # tier and never subscribed is genuinely absent from the caller's
             # served set — its skills and commands are NOT loaded in their
             # Claude Code. Treating the grant as membership (as this did) made
-            # the Library claim a locked "In Stack" for every eligible plugin:
+            # the Library claim a locked "In stack" for every eligible plugin:
             # it contradicted both the /marketplace card and the agent's own
             # `marketplace_search`, and — because the row rendered locked — it
             # removed the only affordance that could have fixed the state.
@@ -2899,7 +2901,7 @@ async def library_page(
                 locked = bool(pl.get("is_system")) or key in plugin_required
                 if key in plugin_in_stack:
                     row["stack_state"] = "in_stack"
-                    row["stack_pill"] = "In Stack"
+                    row["stack_pill"] = "In stack"
                     row["stack_locked"] = locked
                     row["stack_removable"] = not locked
                     row["stack_title"] = (
@@ -2941,7 +2943,7 @@ async def library_page(
             # Installing a store item IS its Stack membership, and the caller may
             # undo it — the same install endpoint, removed.
             items[-1]["stack_state"] = "in_stack"
-            items[-1]["stack_pill"] = "In Stack"
+            items[-1]["stack_pill"] = "In stack"
             items[-1]["stack_removable"] = True
             items[-1]["stack_endpoint"] = f"/api/store/entities/{inst['id']}/install"
             items[-1]["stack_title"] = "The default agent can use this — click to remove it"
@@ -3078,7 +3080,7 @@ async def library_page(
     # readable by everyone unconditionally. Modelled as inventory they had to
     # neuter all four of the table's columns at once — Owner said "Your
     # workspace" (true of nothing in particular), Sharing said "Workspace" but
-    # refused to change, Stack said "In Stack" but locked, Actions was empty —
+    # refused to change, Stack said "In stack" but locked, Actions was empty —
     # and four special-cased columns is the table saying the object is not one
     # of its rows. A data package looks similar but is genuinely different:
     # access to it VARIES per caller, which is what makes it "what I have".
@@ -3380,7 +3382,7 @@ async def library_page(
         ),
         # Arrive with "In stack only" already pressed — /library?stack=in_stack.
         # The chat empty state's Stack status line ("Using N knowledge sources
-        # and M capabilities from your Stack") points here instead of at
+        # and M capabilities from your stack") points here instead of at
         # the de-railed /stack page (#1088); this list spans every kind that
         # page did, and the toggle narrows it to what the line counts. The value
         # is compared against the facet's one legal value, so what reaches the
@@ -8808,7 +8810,7 @@ async def chat_page(
         return RedirectResponse("/")
     # Rail pre-conversation state = the Dashboard (issue #896): greeting,
     # the real composer, a "Using N knowledge sources and M capabilities
-    # from your Stack" context line, activity panels, and
+    # from your stack" context line, activity panels, and
     # guided task starters — rendered by chat.html's rail empty-state
     # blocks and hidden the moment a conversation starts. The counts are
     # the caller's ACTUAL Stack contents (same reads as the /stack page

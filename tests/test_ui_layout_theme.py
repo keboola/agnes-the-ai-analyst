@@ -1602,7 +1602,7 @@ class TestStackWorkspace:
     already renders every kind it did off the same StackResolver.browse()
     call. This class used to pin the page's own DOM (a two-group `stk-*`
     table: Required vs. Added by you); that markup no longer exists, so the
-    business semantics it guarded — a required-tier grant reads "In Stack"
+    business semantics it guarded — a required-tier grant reads "In stack"
     but LOCKED with no remove affordance, an optional self-subscription is
     removable — are folded into the Library's own suite instead:
     ``tests/test_web_library.py::test_library_required_grant_is_locked_in_stack``
