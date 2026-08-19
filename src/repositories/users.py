@@ -6,6 +6,89 @@ from typing import Any, Optional, List, Dict
 import duckdb
 
 
+# The report projects these columns and no others. `users` also carries
+# `password_hash`, `setup_token` and `reset_token`: a `SELECT *` here would put
+# password hashes and live one-time-link tokens into `--json`, which an operator
+# reconciling accounts is likely to redirect to a file or paste into a ticket.
+# `last_pull_at` and `has_password` earn their place — they are how you tell
+# which duplicate is the one actually in use.
+DUPLICATE_REPORT_COLUMNS = (
+    "id",
+    "email",
+    "name",
+    "active",
+    "created_at",
+    "updated_at",
+    "deactivated_at",
+    "deactivated_by",
+    "onboarded",
+    "last_pull_at",
+)
+
+_DUPLICATE_SELECT = ", ".join(DUPLICATE_REPORT_COLUMNS) + ", (password_hash IS NOT NULL) AS has_password"
+
+# The fold that decides what counts as "the same address" is done in Python, not
+# SQL, and the row set is deliberately unfiltered.
+#
+# The obvious shape — GROUP BY lower(trim(email)) HAVING COUNT(*) > 1 — is
+# subtly wrong, because SQL `trim()` strips spaces ONLY. A pair padded with a
+# tab or a newline lands in two group keys of one row each, `HAVING` drops both,
+# and the collision is never reported: exactly the unreachable-row class this
+# report exists for, silently missing. Python's `str.strip()` covers all
+# whitespace, so folding there makes the two backends agree by construction
+# rather than by matching two dialects' idea of `trim` — the property that
+# failed here once already.
+#
+# The cost is reading the users table whole. This is an operator diagnostic run
+# by hand against an org-sized table, so that is the right trade for a fold that
+# cannot drift.
+_DUPLICATE_SQL = f"SELECT {_DUPLICATE_SELECT} FROM users"
+
+
+def _order_key(row: Dict[str, Any]):
+    """``ORDER BY created_at NULLS LAST, id`` — the get_by_email_ci tie-break,
+    in Python. The ``0`` stands in for a missing timestamp and is only ever
+    compared against another ``0``: the leading flag differs first whenever one
+    side is NULL, so a datetime is never compared with an int."""
+    ts = row.get("created_at")
+    return (ts is None, ts if ts is not None else 0, str(row.get("id") or ""))
+
+
+def _group_case_variants(rows) -> List[Dict[str, Any]]:
+    """Fold a stream of user rows into duplicate groups.
+
+    Shared by the DuckDB and Postgres repositories, and it does the whole job —
+    folding, ordering and the >1 filter — so the two backends cannot disagree
+    about which rows collide. Takes rows in any order.
+
+    ``resolved_id`` is the row a sign-in actually lands on, and that is NOT
+    simply the first row of the group. ``get_by_email_ci`` matches
+    ``lower(email)`` without trimming, so a stored address carrying whitespace
+    matches nothing at all — the caller strips its *input*, not the column. Such
+    a row is reachable by no door, which is why it is grouped here (it is the
+    same address to a person) and flagged rather than treated as the winner.
+    A group where every row is padded has ``resolved_id = None``: nobody can
+    sign in to that address.
+    """
+    by_address: Dict[str, List[Dict[str, Any]]] = {}
+    for row in rows:
+        by_address.setdefault((row.get("email") or "").strip().lower(), []).append(row)
+
+    groups: List[Dict[str, Any]] = [
+        {"email": folded, "users": sorted(rows_, key=_order_key)}
+        for folded, rows_ in sorted(by_address.items())
+        if len(rows_) > 1
+    ]
+    for g in groups:
+        g["count"] = len(g["users"])
+        for u in g["users"]:
+            # The exact predicate get_by_email_ci runs, evaluated per row.
+            u["unreachable_by_sign_in"] = (u.get("email") or "").lower() != g["email"]
+        reachable = [u for u in g["users"] if not u["unreachable_by_sign_in"]]
+        g["resolved_id"] = reachable[0]["id"] if reachable else None
+    return groups
+
+
 class UserRepository:
     def __init__(self, conn: duckdb.DuckDBPyConnection):
         self.conn = conn
@@ -61,12 +144,66 @@ class UserRepository:
         it, Google passes the raw ``email`` claim through — would otherwise get
         two accounts. Backs ``app.auth.provisioning.ensure_user``. Historic
         rows may already differ only in case: the OLDEST wins, so the answer is
-        deterministic and the original account keeps the identity."""
+        deterministic and the original account keeps the identity. ``created_at``
+        is not unique — rows written together tie — so ``id`` breaks the tie and
+        both engines land on the same row.
+
+        The ordering deliberately does NOT prefer an active row. Callers feed
+        this row straight into a deactivated gate, and ranking active rows
+        first would mean an operator who disables the account they can see
+        silently hands the person the other, still-enabled variant — a
+        different account id with different group memberships. A stale disabled
+        variant shadowing the live account is the opposite failure, and it is
+        the safe one: a wrongly-refused sign-in is visible and fixable, a
+        bypassed deactivation is neither. Instances carrying such duplicates
+        want a reconciliation pass; a read-only report that lists them is the
+        queued follow-up."""
         result = self.conn.execute(
-            "SELECT * FROM users WHERE lower(email) = lower(?) ORDER BY created_at NULLS LAST LIMIT 1",
+            "SELECT * FROM users WHERE lower(email) = lower(?) ORDER BY created_at NULLS LAST, id LIMIT 1",
             [email],
         ).fetchone()
         return self._row_to_dict(result)
+
+    def list_by_email_ci(self, email: str) -> List[Dict[str, Any]]:
+        """Every row whose email matches case-insensitively, oldest first.
+
+        ``get_by_email_ci`` answers "which account is this address" and so
+        returns exactly one row. This answers "which rows collide on this
+        address" — needed wherever a specific row must be identified by
+        something other than the address (the reset-token peek) and by the
+        operator-facing duplicate report."""
+        rows = self.conn.execute(
+            "SELECT * FROM users WHERE lower(email) = lower(?) ORDER BY created_at NULLS LAST, id",
+            [email],
+        ).fetchall()
+        return [d for d in (self._row_to_dict(r) for r in rows) if d is not None]
+
+    def list_case_variant_duplicates(self) -> List[Dict[str, Any]]:
+        """Every address held by more than one account, grouped.
+
+        The reconciliation report queued by :meth:`get_by_email_ci`. That
+        method has to pick ONE row when case variants coexist, and it picks the
+        oldest — deterministic, but it means a person can own a second account
+        that no sign-in will ever resolve to, and an operator who deactivates
+        the row they can see may not have disabled the identity at all. Nothing
+        surfaces that today; ``users`` is UNIQUE on ``email``, so the collision
+        is invisible to every constraint and every list view sorted by address.
+
+        Returns one entry per colliding address::
+
+            {"email": <folded address>, "count": N, "resolved_id": <id>,
+             "users": [<full row>, ...]}
+
+        ``users`` is ordered exactly as :meth:`get_by_email_ci` orders, so
+        ``users[0]`` is the row that sign-in resolves to and ``resolved_id``
+        names it without the caller re-deriving the tie-break. Groups come back
+        ordered by folded address so two runs — and two backends — agree.
+
+        Read-only by design: which row to keep is a judgement call (group
+        memberships, PATs and sessions hang off the id), so this reports and
+        the operator merges."""
+        rows = self.conn.execute(_DUPLICATE_SQL).fetchall()
+        return _group_case_variants(d for d in (self._row_to_dict(r) for r in rows) if d is not None)
 
     def get_by_email_prefix(self, local_part: str) -> Optional[Dict[str, Any]]:
         """Resolve the single user whose email's local part (before ``@``)
@@ -223,10 +360,19 @@ class UserRepository:
         values = list(updates.values()) + [id]
         self.conn.execute(f"UPDATE users SET {set_clause} WHERE id = ?", values)
 
-    def consume_reset_token(self, *, email: str, token: str, cutoff, consume_id: str) -> bool:
+    def consume_reset_token(self, *, email: str, token: str, cutoff, consume_id: str) -> Optional[str]:
         """Atomically consume a password-reset token: stamp it with ``consume_id``
-        iff it is the valid, unexpired token for an active ``email``. Returns True
-        iff THIS call won the race (mirrors the magic-link CAS). Goes through the
+        iff it is the valid, unexpired token for an active ``email`` (matched
+        case-insensitively, like every other identity read).
+
+        Returns the id of the row it stamped, or ``None`` when this call did not
+        win (truthy/falsy either way, so a boolean caller still reads correctly).
+        Returning the ROW is what keeps token ownership and identity resolution
+        on the same account: the CAS finds whichever case variant actually holds
+        the token, while ``get_by_email_ci`` deterministically returns the
+        oldest — and a token minted by user id (admin-issued reset) can live on
+        a newer variant. Resolving the account by address after the CAS would
+        then mint a session for an account the token was never issued for. Goes through the
         repo (not a raw connection) so it runs on the ACTIVE backend — a raw
         DuckDB cursor here silently failed on Postgres instances.
 
@@ -238,7 +384,7 @@ class UserRepository:
         try:
             self.conn.execute(
                 "UPDATE users SET reset_token = ?, reset_token_created = NULL "
-                "WHERE email = ? AND reset_token = ? AND reset_token_created IS NOT NULL "
+                "WHERE lower(email) = lower(?) AND reset_token = ? AND reset_token_created IS NOT NULL "
                 "AND reset_token_created >= ? AND active = TRUE",
                 [consume_id, email, token, cutoff],
             )
@@ -247,8 +393,16 @@ class UserRepository:
             if "conflict" in err or "transaction" in err:
                 return False
             raise
-        row = self.conn.execute("SELECT reset_token FROM users WHERE email = ?", [email]).fetchone()
-        return bool(row and row[0] == consume_id)
+        # Match on the stamp, not on "the row for this email": the address is
+        # matched case-insensitively (the sign-in paths resolve identity with
+        # get_by_email_ci, so the token was minted on whichever case-variant row
+        # is the account), and a bare per-email SELECT would read an arbitrary
+        # one of several variants and report a loss.
+        row = self.conn.execute(
+            "SELECT id FROM users WHERE lower(email) = lower(?) AND reset_token = ?",
+            [email, consume_id],
+        ).fetchone()
+        return row[0] if row else None
 
     def count_admins(self, active_only: bool = True) -> int:
         """Count active users in the Admin system group."""

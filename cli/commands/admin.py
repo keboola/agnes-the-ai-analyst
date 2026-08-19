@@ -1600,6 +1600,7 @@ def break_glass_grant_admin(
 
     from src.db import SYSTEM_ADMIN_GROUP, get_system_db
     from src.repositories import use_pg
+    from src.user_identity import normalize_email
 
     if not yes:
         confirm = typer.confirm(
@@ -1627,13 +1628,18 @@ def break_glass_grant_admin(
             )
             raise typer.Exit(2)
 
-        existing = users.get_by_email(email)
+        # Normalize BEFORE the read: get_by_email_ci folds case in SQL but does
+        # NOT trim, so a padded argument would miss the existing row and then
+        # fail the UNIQUE(email) constraint on insert — the last-resort admin
+        # recovery dying on a stray space.
+        normalized = normalize_email(email)
+        existing = users.get_by_email_ci(normalized)
         if existing is None:
             user_id = _uuid.uuid4().hex
             users.create(
                 id=user_id,
-                email=email,
-                name=email.split("@", 1)[0],
+                email=normalized,
+                name=normalized.split("@", 1)[0],
             )
             typer.echo(f"Created user {email} (id={user_id[:8]}…)")
         else:
@@ -1656,3 +1662,109 @@ def break_glass_grant_admin(
                 conn.close()
             except Exception:
                 pass
+
+
+@admin_app.command("duplicate-accounts")
+def duplicate_accounts(
+    limit: int = typer.Option(0, "--limit", help="Show at most N colliding addresses (0 = all)"),
+    as_json: bool = typer.Option(False, "--json", help="Emit the full report as JSON"),
+) -> None:
+    """Report accounts whose emails differ only in case.
+
+    `users` is UNIQUE on `email`, so `Ann@corp.com` and `ann@corp.com` are two
+    perfectly legal rows that no constraint objects to and no address-sorted
+    list view puts side by side. Sign-in resolves such a collision through
+    `get_by_email_ci`, which picks the OLDEST row — deterministic, but it means
+    a person can own an account nothing will ever sign them in to, and an
+    operator who deactivates the row they happened to find may not have
+    disabled the identity at all. This names every collision and marks which
+    row sign-in actually reaches.
+
+    Two classes of collision are reported, because both are the same address
+    to a person: rows differing only in case, and rows differing only by
+    surrounding whitespace. The second is worse — `get_by_email_ci` folds case
+    but does NOT trim the column, so a stored ` ann@corp.com` is reached by no
+    address anyone can type, and such a row is marked unreachable rather than
+    ever named as the resolved one. A LONE padded row is equally unreachable but
+    is not a duplicate, so it is out of this report's scope.
+
+    Read-only. Which row to keep is a judgement call — group memberships,
+    PATs, sessions and audit history hang off the id — so this reports and the
+    operator merges. `--json` carries an explicit column projection, never the
+    whole row: `users` also holds `password_hash` and live one-time-link
+    tokens, and this output is meant to be pasted into a ticket.
+
+    Reads the active state backend directly through the repository factory
+    rather than an API endpoint, like `break-glass`: it is an operator
+    diagnostic for whoever is about to run the reconciliation, and that person
+    already has database access.
+    """
+    from src.db import get_system_db
+    from src.repositories import use_pg
+
+    conn = None if use_pg() else get_system_db()
+    try:
+        groups = users_repo().list_case_variant_duplicates()
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    shown = groups[:limit] if limit > 0 else groups
+
+    if as_json:
+        typer.echo(
+            json.dumps(
+                {"total_addresses": len(groups), "shown": len(shown), "duplicates": shown},
+                indent=2,
+                default=str,
+            )
+        )
+        return
+
+    if not groups:
+        typer.echo("No case-variant duplicate accounts found.")
+        return
+
+    typer.echo(f"{len(groups)} address(es) held by more than one account:\n")
+    for g in shown:
+        typer.echo(f"  {g['email']}  ({g['count']} accounts)")
+        if g["resolved_id"] is None:
+            typer.echo("      !! no row here is reachable by sign-in — every variant is padded")
+        for u in g["users"]:
+            if u["id"] == g["resolved_id"]:
+                resolves = "← sign-in resolves here"
+            elif u.get("unreachable_by_sign_in"):
+                # Stored with surrounding whitespace. The doors normalize their
+                # INPUT but the lookup does not trim the column, so no address
+                # anyone can type reaches this row at all.
+                resolves = "← unreachable: address stored with whitespace"
+            else:
+                resolves = ""
+            state = "active" if u.get("active", True) else "DEACTIVATED"
+            # Full id, not the 8-char prefix `list-users` shows: this report
+            # exists to be acted on, and the reconciliation below addresses
+            # rows BY ID precisely because the address is ambiguous here.
+            typer.echo(f"      {u['email']:34s} {state:12s} {u['id']}  {resolves}")
+        typer.echo("")
+
+    if limit > 0 and len(groups) > len(shown):
+        typer.echo(f"… {len(groups) - len(shown)} more (raise --limit or use --json for all).\n")
+
+    typer.echo(
+        "To reconcile: KEEP the row marked 'sign-in resolves here', re-grant its\n"
+        "groups with `agnes admin group add-member`, then deactivate the other\n"
+        "with `agnes admin deactivate <id>` — by id, because `deactivate <email>`\n"
+        "matches one exact spelling, which is the ambiguity this report is about.\n"
+        "Deactivating the row sign-in does NOT resolve to leaves the identity\n"
+        "reachable.\n"
+        "\n"
+        "Keeping the OTHER row is not supported by these commands: `group\n"
+        "add-member` takes an address and the server resolves it the same way\n"
+        "sign-in does, so the grant lands on the marked row no matter which one\n"
+        "you meant. Deactivating the marked row first does not redirect it — the\n"
+        "lookup ignores active state deliberately, so a disabled row still wins.\n"
+        "If you must keep the other row, move the data at the database level."
+    )

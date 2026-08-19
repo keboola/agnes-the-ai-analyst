@@ -194,6 +194,42 @@ class TestUsersCRUD:
         )
         assert resp.status_code == 409
 
+    def test_create_user_stores_the_address_normalized(self, seeded_client):
+        """Admin-created rows are the main source of the case-variant duplicates
+        the OAuth path then has to reconcile — normalize on the way in."""
+        client, admin_token, _ = seeded_client
+        resp = client.post(
+            "/api/users",
+            json={"email": "  Mixed.Case@Acme.com  ", "name": "Mixed"},
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert resp.status_code == 201, resp.text
+        assert resp.json()["email"] == "mixed.case@acme.com"
+
+    def test_create_duplicate_user_is_refused_regardless_of_case(self, seeded_client):
+        client, admin_token, _ = seeded_client
+        resp = client.post(
+            "/api/users",
+            json={"email": "ADMIN@Acme.com", "name": "Duplicate"},
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert resp.status_code == 409, resp.text
+
+    def test_create_user_refuses_a_non_address(self, seeded_client):
+        """``normalize_email`` collapses whitespace-only input to the empty
+        string, and the payload's ``email`` is a plain ``str`` — so without a
+        shape check an admin could create a row whose identity is "" (or any
+        non-address), which then matches nothing and breaks every lookup that
+        assumes an address."""
+        client, admin_token, _ = seeded_client
+        for bad in ("   ", "", "not-an-address"):
+            resp = client.post(
+                "/api/users",
+                json={"email": bad, "name": "Bad"},
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
+            assert resp.status_code == 422, f"{bad!r} → {resp.status_code}: {resp.text}"
+
     def test_delete_user(self, seeded_client):
         client, admin_token, _ = seeded_client
         resp = client.delete(

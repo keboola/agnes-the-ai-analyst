@@ -259,9 +259,12 @@
 </section>
 {% endmacro %}
 
-{# ── Ask-Agnes action button (assistant-green) ──────────────────────── #}
-{% macro ask_agnes(question, label='Ask Agnes') %}
-<a class="detail-ask" href="/chat?q={{ question | urlencode }}" title="Ask Agnes about this">
+{# ── Ask-brand action button (assistant-green). Default label/title read
+   `instance_brand_short` off the caller's context (every importer uses
+   `with context`) so a rebranded instance never shows the literal "Agnes"
+   here. #}
+{% macro ask_agnes(question, label='Ask ' ~ (instance_brand_short or 'Agnes')) %}
+<a class="detail-ask" href="/chat?q={{ question | urlencode }}" title="Ask {{ instance_brand_short or 'Agnes' }} about this">
   {{ ico('spark') }}{{ label }}
 </a>
 {% endmacro %}

@@ -75,11 +75,13 @@ Set the env var in `.env`/Terraform, or the YAML path in `instance.yaml`.
 | Product brand string (hero copy, CTAs, setup script) | `AGNES_INSTANCE_BRAND` | `instance.brand` | `Agnes` | `get_instance_brand()` |
 | Short brand for mid-sentence body copy; when it differs from the full brand, the `/home` hero appends "Call me {short}." | `AGNES_INSTANCE_BRAND_SHORT` | `instance.brand_short` | derived (= `instance.brand`) | `get_instance_brand_short()` |
 | Inline `<svg>` logo for the header brand slot | `AGNES_INSTANCE_LOGO_SVG` | `instance.logo_svg` | `""` (text brand) | `get_instance_logo_svg()` |
+| Favicon href (`<link rel="icon">`). A `data:` URI or absolute URL is used as-is; anything else is resolved as a static asset under `app/web/static/` (same cache-busting `static_url()` every other asset gets) | `AGNES_INSTANCE_FAVICON` | `instance.favicon` | `img/agnes-orb.png` (resolved via `static_url()`) | `get_instance_favicon()` |
 | Experience preset — retired as a choice (Wave 0, 2026-08): `redesign` is the only valid value and the default; the old `classic` value (or any other unrecognised string) falls back to `redesign`, with a one-time startup warning naming the ignored setting. Historically flipped the DEFAULTS of `instance.theme` and `features.stack_auto_membership`; per-knob settings still win | `AGNES_INSTANCE_EXPERIENCE` | `instance.experience` | `redesign` | `get_experience()` |
 | UI theme/palette (`blue`/`navy`/`dark`/`auto`/`paper`) — still a live, independent axis; an explicit choice always wins | `AGNES_INSTANCE_THEME` | `instance.theme` | `paper` (explicit `blue`/`navy`/`dark`/`auto` still wins) | `get_instance_theme()` |
 | Chrome layout — retired (Wave 0, 2026-08): the rail chrome (fixed left sidebar) is the only chrome; `topnav` no longer exists. A configured value is tolerated but inert — ignored with a one-time startup warning | `AGNES_UI_LAYOUT` (ignored) | `instance.ui_layout` (ignored) | `rail` (always) | `get_ui_layout()` |
 | Stack membership mode (auto-membership vs. the classic subscribe model); an explicit `false` still wins over the default | `AGNES_STACK_AUTO_MEMBERSHIP` | `features.stack_auto_membership` | `true` (explicit `false` still wins) | `get_stack_auto_membership()` |
 | Analyst workspace folder name (`~/<name>`) | `AGNES_WORKSPACE_DIR_NAME` | `instance.workspace_dir` | derived from brand (non-alphanumerics stripped) | `get_workspace_dir_name()` |
+| The one word an analyst types to open that workspace — what `agnes init` installs as a launcher and what the install guide tells them to type. Derived, not configurable: the folder name stripped to lowercase alphanumerics, plus an `ai` suffix when the word would shadow a shell built-in or the `agnes`/`claude` binaries. Shared with the CLI via `src/launcher_word.py` | — (derived) | — (derived) | derived from the workspace folder name | `get_workspace_launcher_word()` |
 | Operator-injected HTML/JS blocks (analytics, widgets) | — | `instance.custom_scripts` | `[]` | `get_custom_scripts()` |
 | Hide individual `/login` feature cards (keys: `data`, `marketplace`, `mcp`, `memory`, `anywhere`; list or comma-string) | `AGNES_INSTANCE_HIDE_LOGIN_FEATURES` | `instance.hide_login_features` | `""` (nothing hidden) | `get_hidden_login_features()` |
 | Expose the authoring Studio (`/admin/studio*` incl. the admin moderation queue, plus the public suggestion API). `false` hides the nav/palette entries, redirects the routes home, and 403s the suggestion API | `AGNES_STUDIO_ENABLED` | `studio.enabled` | `true` | `get_studio_enabled()` |
@@ -161,6 +163,7 @@ instance:
   copyright: "Acme Corp"         # Footer credit, "Deployed by …" (get_instance_copyright)
   brand: "Acme Analyst"          # Product brand string (get_instance_brand)
   brand_short: "Acme"            # Short brand for body copy (get_instance_brand_short)
+  favicon: "img/my-icon.png"     # Favicon href — static path, data: URI, or absolute URL (get_instance_favicon)
   theme: "blue"                  # UI palette (get_instance_theme); default is "paper" since Wave 0 (2026-08); "blue" opts out explicitly
   # ui_layout is retired (Wave 0, 2026-08) — rail is the only chrome; a configured value is ignored
   home_route: "/home"            # Landing after auth (get_home_route)
@@ -192,6 +195,14 @@ email:
 Used for magic link authentication. Without SMTP configured, magic links are
 shown directly in the browser (development mode). Compatible with any SMTP relay
 (Gmail, Mailgun, SendGrid SMTP, etc.).
+
+SMTP is the **only** mail transport. Providers with an HTTP API are used
+through their SMTP relay — e.g. for SendGrid set `SMTP_HOST=smtp.sendgrid.net`
+with your API key as `SMTP_PASSWORD` (user `apikey`). The former SendGrid SDK
+integration (`SENDGRID_API_KEY`) was removed: the SDK was never installed, so
+that path only ever failed, and the key no longer counts as a configured mail
+transport. The sender address comes from `SMTP_FROM` (the legacy
+`EMAIL_FROM_ADDRESS` is still honored as a fallback).
 
 ### Server
 
@@ -286,10 +297,11 @@ values. Never commit `.env`.
 | `MICROSOFT_TENANT_ID` | Microsoft Entra ID directory (tenant) ID — a GUID or a verified domain. Multi-tenant endpoints (`common` / `organizations` / `consumers`) are refused; see [`auth-microsoft-oauth.md`](auth-microsoft-oauth.md) |
 | `MICROSOFT_CLIENT_ID` | Microsoft Entra ID application (client) ID |
 | `MICROSOFT_CLIENT_SECRET` | Microsoft Entra ID client secret value. All three are required for Microsoft sign-in and are read at process start |
-| `SMTP_HOST` | SMTP relay host for magic link emails |
+| `SMTP_HOST` | SMTP relay host for magic link / password-reset / invite emails. The only mail transport — for SendGrid use `smtp.sendgrid.net` |
 | `SMTP_PORT` | SMTP port (587 for STARTTLS, 465 for SSL) |
 | `SMTP_USER` | SMTP username |
 | `SMTP_PASSWORD` | SMTP password |
+| `SMTP_FROM` | Sender address for outgoing auth mail (default `noreply@example.com`). Legacy `EMAIL_FROM_ADDRESS` is honored as a fallback |
 | `TELEGRAM_BOT_TOKEN` | For Telegram notifications |
 | `ANTHROPIC_API_KEY` | For Corporate Memory AI extraction AND `agnes admin ask` (LLM text-to-SQL on telemetry). Without this, both features show a clear 503 error and skip silently. |
 | `LLM_API_KEY` | API key for LLM proxy (LiteLLM, OpenRouter, etc.) |

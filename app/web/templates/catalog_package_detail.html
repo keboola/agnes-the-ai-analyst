@@ -360,9 +360,9 @@
   {% endif %}
 {{ detail.section_close() }}
 
-{# ── Example questions you can ask Agnes ───────────────────── #}
+{# ── Example questions you can ask the assistant ───────────────────── #}
 {% if pkg.example_questions %}
-{{ detail.section_open('Example questions you can ask Agnes', icon='spark') }}
+{{ detail.section_open('Example questions you can ask ' ~ (instance_brand_short or 'Agnes'), icon='spark') }}
   {{ detail.questions(pkg.example_questions) }}
 {{ detail.section_close() }}
 {% endif %}

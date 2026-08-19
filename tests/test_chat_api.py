@@ -7,6 +7,7 @@ get_current_user dependency to inject a test user dict.
 
 from __future__ import annotations
 
+from datetime import UTC
 from unittest.mock import AsyncMock, MagicMock
 
 import duckdb
@@ -14,12 +15,11 @@ import pytest
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
-from src.db import _ensure_schema
-from app.chat.persistence import ChatRepository
+from app.auth.dependencies import get_current_user
 from app.chat.config import ChatConfig
 from app.chat.manager import ChatManager
-from app.auth.dependencies import get_current_user
-
+from app.chat.persistence import ChatRepository
+from src.db import _ensure_schema
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -216,14 +216,14 @@ def test_reissue_ticket_404_for_other_users_session(api_client: TestClient, logg
 # ---------------------------------------------------------------------------
 
 
-def _make_app_with_fake_provider() -> "FastAPI":
+def _make_app_with_fake_provider() -> FastAPI:
     """Like _make_app but wires a real FakeProvider so attach/detach_sink work."""
+    import duckdb
     from fastapi import FastAPI
+
     from app.api.chat import router as chat_router
     from app.chat.config import ChatConfig
     from app.chat.workdir import WorkdirManager
-
-    import duckdb
     from src.db import _ensure_schema
     from tests.chat_fakes import FakeProvider
 
@@ -328,9 +328,8 @@ def test_ws_stream_closes_4503_on_coordination_unavailable(fake_provider_client:
 
     monkeypatch.setattr(chat_mod, "_consume_ticket", _raise)
 
-    with pytest.raises(WebSocketDisconnect) as excinfo:
-        with fake_provider_client.websocket_connect(ws_url) as ws:
-            ws.receive_json()
+    with pytest.raises(WebSocketDisconnect) as excinfo, fake_provider_client.websocket_connect(ws_url) as ws:
+        ws.receive_json()
     assert excinfo.value.code == 4503
 
 
@@ -340,10 +339,10 @@ def test_sessions_list_exposes_paused(fake_provider_client: TestClient):
     chat_id = created["id"]
 
     # Directly set paused_at on the repo row to simulate a paused session.
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     repo = fake_provider_client.app.state.chat_repo
-    repo.set_sandbox_paused_at(chat_id, datetime.now(timezone.utc))
+    repo.set_sandbox_paused_at(chat_id, datetime.now(UTC))
 
     r = fake_provider_client.get("/api/chat/sessions")
     assert r.status_code == 200
@@ -623,6 +622,7 @@ def test_put_journey_can_reset_explicit_false(api_client: TestClient, logged_in_
             "explored_stack": True,
             "catalog_discovered": True,
             "use_anywhere": True,
+            "agent_created": True,
         },
     )
 
@@ -634,6 +634,7 @@ def test_put_journey_can_reset_explicit_false(api_client: TestClient, logged_in_
             "explored_stack": False,
             "catalog_discovered": False,
             "use_anywhere": False,
+            "agent_created": False,
         },
     )
     assert r.status_code == 200

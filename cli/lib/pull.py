@@ -63,6 +63,10 @@ class PullResult:
       pruned this run because the table left the authorized typed (v49)
       stack. Always 0 against a pre-v49 server that emits no typed sections.
     - `parquets_total`: count of non-remote tables visible in the manifest.
+    - `materialized_skipped`: how many `query_mode='materialized'` rows this
+      run left alone because `skip_materialize` was set. Deliberately NOT part
+      of `parquets_total` — a caller reporting "N fetched of M" must not count
+      rows it never attempted.
     - `rules_count`: number of `km_*.md` files written to `.claude/rules/`.
     - `knowledge_updated`: count of per-collection `user/knowledge/<corpus_id>.duckdb`
       artifacts actually re-downloaded this run (K3, #798).
@@ -103,6 +107,7 @@ class PullResult:
     tables_updated: int = 0
     tables_removed: int = 0
     parquets_total: int = 0
+    materialized_skipped: int = 0
     rules_count: int = 0
     knowledge_updated: int = 0
     knowledge_removed: int = 0
@@ -1013,20 +1018,36 @@ def run_pull(
         to_download: list[str] = []
         partitioned_tids: list[str] = []
         non_remote_total = 0
+        materialized_skipped = 0
         parquet_dir = workspace / "server" / "parquet"
         for tid, info in server_tables.items():
             if info.get("query_mode") == "remote":
-                continue
-            if skip_materialize and info.get("query_mode") == "materialized":
-                # Operator opt-out for first-init. Materialized rows are
-                # still discoverable via `agnes catalog` and queryable
-                # the next time `agnes pull` runs without --skip-materialize.
                 continue
             # #506 — when typed sections are present, the stack is the unit of
             # access: never download a flat-dict table the typed stack omits
             # (admin god-mode over-list). Pre-v49 servers have
             # `authorized_names is None` → no filter.
             if authorized_names is not None and tid not in authorized_names:
+                continue
+            if skip_materialize and info.get("query_mode") == "materialized":
+                # Operator opt-out for first-init. Materialized rows are
+                # still discoverable via `agnes catalog` and queryable
+                # the next time `agnes pull` runs without --skip-materialize.
+                #
+                # Counted separately, NOT into `non_remote_total`: that counter
+                # feeds `parquets_total`, which means "non-remote tables this
+                # run considered", and adding skipped rows to it would make the
+                # X/Y summary claim they were fetched. The caller needs the two
+                # apart to say what happened (`cli/commands/init.py`).
+                #
+                # Placement is load-bearing. This sits AFTER the stack filter
+                # and excludes `server_only`, because the number is printed as
+                # "re-run with --materialize to fetch these": a row outside the
+                # analyst's stack, or one the server never distributes, would
+                # not be fetched by that re-run either, so counting it sends
+                # them after data they cannot have.
+                if not info.get("server_only"):
+                    materialized_skipped += 1
                 continue
             non_remote_total += 1
             # #607 — server_only tables are kept fresh server-side and stay
@@ -1062,6 +1083,7 @@ def run_pull(
             if server_hash != local_hash or tid not in local_tables or not server_hash or not target.exists():
                 to_download.append(tid)
         result.parquets_total = non_remote_total
+        result.materialized_skipped = materialized_skipped
 
         # 3. Dry-run short-circuit — touch nothing on disk.
         if dry_run:

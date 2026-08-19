@@ -48,8 +48,11 @@ distribution mirror, and the api-role write conversions) map onto:
   the original synchronous/BackgroundTask paths are unchanged there.
 - ``agent_response``     (LIGHT) — Task 9's background/sync-timeout-degrade
   path for ``POST /api/v1/agents/{slug}/responses``. Enqueued by
-  ``app/api/agent_runtime.py``, never by the scheduler. Two
-  ``payload["mode"]`` shapes:
+  ``app/api/agent_runtime.py``, and since v120 also by the agent-schedules
+  sweep (``app/api/agent_schedules.py`` — scheduler-driven, always
+  ``mode="fresh"`` under the agent owner's identity, with a backlog guard
+  so a topology where this kind never registers can't stack queued jobs).
+  Two ``payload["mode"]`` shapes:
 
   - ``"fresh"`` — ``background: true`` was requested up front. Runs
     ``app.chat.headless.run_one_shot`` (fresh session, sends the prompt).

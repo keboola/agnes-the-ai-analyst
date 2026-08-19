@@ -25,9 +25,18 @@ logger = logging.getLogger(__name__)
 
 # Vendor name under which Agnes rides its own concepts (glossary entries,
 # keywords, constraints — see Task 13) through Ossie's generic
-# `custom_extensions` escape hatch. Matches the convention the Keboola
-# metastore adapter uses for the same purpose.
-_GLOSSARY_VENDOR = "AGNES"
+# `custom_extensions` escape hatch. The Keboola metastore adapter emits it as
+# the canonical `AGNES`, but the comparison casefolds — matching the read side
+# (src/semantic_validation.py, app/web/semantic_layer_view.py) so a
+# hand-authored document is not silently dropped from the flat projection for
+# spelling the tag `agnes`. Stored casefolded for direct comparison.
+_GLOSSARY_VENDOR = "agnes"
+
+
+def _is_agnes_vendor(vendor_name) -> bool:
+    """Case-insensitive match against the Agnes vendor tag — the same
+    casefolded posture the query validator and the browse view take."""
+    return isinstance(vendor_name, str) and vendor_name.casefold() == _GLOSSARY_VENDOR
 
 
 def _agnes_payload(obj: dict) -> dict:
@@ -41,7 +50,7 @@ def _agnes_payload(obj: dict) -> dict:
     """
     merged: dict = {}
     for ext in obj.get("custom_extensions") or []:
-        if ext.get("vendor_name") != _GLOSSARY_VENDOR:
+        if not _is_agnes_vendor(ext.get("vendor_name")):
             continue
         try:
             data = json.loads(ext.get("data") or "")
@@ -280,7 +289,7 @@ def _glossary_entries(model: dict) -> list[dict]:
     """
     entries: list[dict] = []
     for ext in model.get("custom_extensions") or []:
-        if ext.get("vendor_name") != _GLOSSARY_VENDOR:
+        if not _is_agnes_vendor(ext.get("vendor_name")):
             continue
         raw = ext.get("data")
         if not raw:

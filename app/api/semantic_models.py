@@ -24,6 +24,7 @@ source is the only way to make a change stick.
 from __future__ import annotations
 
 import hashlib
+import json
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -36,6 +37,8 @@ from app.auth.dependencies import _get_db, get_current_user
 from app.resource_types import ResourceType
 from src.repositories import semantic_model_repo, semantic_source_repo
 from src.semantic.document_validation import validate_document
+from src.semantic_context import get_semantic_context as _get_semantic_context
+from src.semantic_context import get_semantic_schema as _get_semantic_schema
 from src.semantic_validation import validate_query
 
 router = APIRouter(tags=["semantic-models"])
@@ -360,7 +363,9 @@ _NO_MODEL_MESSAGE = (
 )
 
 
-def _accessible_valid_documents(user: dict, conn: duckdb.DuckDBPyConnection) -> list[dict[str, Any]]:
+def _accessible_valid_documents(
+    user: dict, conn: duckdb.DuckDBPyConnection, model_refs: Optional[set[str]] = None
+) -> list[dict[str, Any]]:
     """The individual model dicts (``document_json["semantic_model"]``
     entries) of every ``status='valid'`` semantic-model row ``user`` may
     read.
@@ -378,6 +383,9 @@ def _accessible_valid_documents(user: dict, conn: duckdb.DuckDBPyConnection) -> 
     the validator, which unions its detection across all of them.
     """
     documents: list[dict[str, Any]] = []
+    # Case-folded once, not per row (the match below is case-insensitive like
+    # object-id matching).
+    refs_cf = {str(r).casefold() for r in model_refs} if model_refs is not None else None
     for row in semantic_model_repo().list_all():
         if row.get("status") != "valid" or not row.get("document_json"):
             continue
@@ -386,7 +394,23 @@ def _accessible_valid_documents(user: dict, conn: duckdb.DuckDBPyConnection) -> 
         models = row["document_json"].get("semantic_model")
         if not isinstance(models, list):
             continue
-        documents.extend(m for m in models if isinstance(m, dict))
+        model_dicts = [m for m in models if isinstance(m, dict)]
+        if refs_cf is None:
+            documents.extend(model_dicts)
+            continue
+        # `model_refs` restricts to specific models, case-insensitively (like
+        # object-id matching, so `--model Retail` works as `--id ORDERS` does).
+        # An id (`<source>/<source_ref>/<slug>`) or slug match selects the WHOLE
+        # row; a match on a document model NAME narrows to THAT model entry only
+        # — a multi-model row must not leak the models the caller didn't ask
+        # for, and the `model` label each object carries is that name. Accepting
+        # the name at all is what lets that returned label round-trip back into
+        # `model_ids` (Devin review on #1398).
+        if (str(row.get("id") or "")).casefold() in refs_cf or (str(row.get("slug") or "")).casefold() in refs_cf:
+            documents.extend(model_dicts)
+            continue
+        matched = [m for m in model_dicts if str(m.get("name") or "").casefold() in refs_cf]
+        documents.extend(matched)
     return documents
 
 
@@ -413,3 +437,71 @@ async def validate_semantic_query(
     result = validate_query(body.sql, documents, expected=body.expected, target_engine=body.target_engine)
     result["available"] = True
     return result
+
+
+# ---------------------------------------------------------------------------
+# Public: agent read-parity tools (parity spec §4/§5) — get_semantic_context
+# and get_semantic_schema. Same RBAC tier as search/export/validate-query (a
+# Data Package or direct model grant, not admin-only): read tier, analysts
+# and agents are the audience.
+# ---------------------------------------------------------------------------
+
+
+@router.get("/api/semantic-models/context")
+async def get_semantic_context_endpoint(
+    selections: str = Query(
+        ...,
+        description=(
+            'JSON list of {"semantic_type": "dataset"|"metric"|"relationship", "ids": [...]?} objects. '
+            "Absent/empty ids returns every object of that type compactly; explicit ids return full attributes."
+        ),
+    ),
+    model_ids: Optional[list[str]] = Query(
+        None,
+        description=(
+            "Restrict to these models by id, slug, or model name (the `model` label each object "
+            "carries; repeatable, case-insensitive); default = every accessible model."
+        ),
+    ),
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Typed context lookup over the caller's accessible semantic models —
+    the ``get_semantic_context`` parity tool.
+
+    Wraps the pure ``src.semantic_context.get_semantic_context`` over the
+    same ``_accessible_valid_documents`` RBAC tier as search/export/
+    validate-query. An empty result (no accessible model, or no object of
+    the requested type/id) is not an error — this endpoint has no
+    misleading "all clear" to gate against, unlike ``validate-query``.
+    """
+    try:
+        parsed_selections = json.loads(selections)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"selections is not valid JSON: {exc}") from exc
+    if not isinstance(parsed_selections, list):
+        raise HTTPException(status_code=400, detail="selections must be a JSON list of {semantic_type, ids?} objects")
+
+    documents = _accessible_valid_documents(user, conn, model_refs=set(model_ids) if model_ids else None)
+    return _get_semantic_context(documents, parsed_selections)
+
+
+@router.get("/api/semantic-models/schema")
+async def get_semantic_schema_endpoint(
+    semantic_types: list[str] = Query(
+        ..., description="Object types to describe: dataset, metric, relationship (repeatable)."
+    ),
+    user: dict = Depends(get_current_user),
+):
+    """The vendored Apache Ossie JSON Schema for the requested object types —
+    the ``get_semantic_schema`` parity tool.
+
+    Not RBAC-gated on any model (there is nothing model-specific to hide —
+    it reflects the schema every model is validated against), only on
+    ``get_current_user`` — any authenticated user, same floor as the rest of
+    this read surface. Served straight from
+    ``src.semantic.document_validation``'s vendored, pinned schema, never a
+    hand-written copy.
+    """
+    del user  # authentication-only dependency — nothing model-specific to gate on
+    return _get_semantic_schema(semantic_types)

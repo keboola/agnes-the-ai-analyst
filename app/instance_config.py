@@ -914,6 +914,45 @@ def get_instance_logo_svg() -> str:
     return (raw or "").strip()
 
 
+def get_instance_favicon() -> str:
+    """Favicon href for ``<link rel="icon">`` — resolved to a value templates
+    can drop in directly, unlike :func:`get_instance_logo_svg` (raw markup)
+    or the CSS/JS asset helpers (which take a bare relative path and expect
+    the *template* to call ``static_url()`` on it).
+
+    Contract:
+      - A value containing ``"://"`` or starting with ``"data:"`` (an
+        absolute URL or a data-URI) is returned AS-IS — the operator is
+        pointing at an externally-hosted icon or embedding one inline.
+      - Any other non-empty value is treated as a path under
+        ``app/web/static/`` and resolved through the same
+        ``app.web.router._static_url`` helper the templates already use for
+        every other static asset (adds the ``?v=<mtime>`` cache-buster).
+      - Unset (env AND YAML both empty) resolves the built-in
+        ``img/agnes-orb.png`` asset through that same helper — byte-identical
+        to the ``<link>`` this replaces.
+
+    Resolution: ``AGNES_INSTANCE_FAVICON`` env > ``instance.favicon`` YAML >
+    the built-in ``img/agnes-orb.png`` asset. Mirrors :func:`get_instance_logo_svg`.
+
+    Lazy-imports ``_static_url`` from ``app.web.router`` — a module-level
+    import would be circular (``app.web.router`` imports this module at load
+    time); by the time a request reaches this resolver, the app has already
+    finished importing. Same pattern as ``src.welcome_template``'s import of
+    ``app.web.router._read_agnes_ca_pem``.
+    """
+    raw = os.environ.get("AGNES_INSTANCE_FAVICON")
+    if raw is None:
+        raw = get_value("instance", "favicon", default="")
+    value = (raw or "").strip()
+    if value.startswith("data:") or "://" in value:
+        return value
+
+    from app.web.router import _static_url
+
+    return _static_url(value or "img/agnes-orb.png")
+
+
 def get_instance_overview() -> str:
     """Operator-authored Overview body rendered on ``/home``. Markdown is
     NOT auto-converted — operators paste HTML (matches the existing
@@ -1181,6 +1220,26 @@ def get_workspace_dir_name() -> str:
     return derived or "Agnes"
 
 
+def get_workspace_launcher_word() -> str:
+    """The one word an analyst types to open their workspace.
+
+    ``agnes init`` installs a launcher script under this name (see
+    ``cli/lib/shortcut.py``), derived from the workspace folder name stripped
+    to lowercase alphanumerics. The install guide has to name the same word,
+    so both sides derive it the same way here rather than each approximating
+    it — lowercasing the folder name alone is only equivalent while that name
+    is already alphanumeric, which the brand-derived default is but an
+    explicit ``AGNES_WORKSPACE_DIR_NAME`` override need not be.
+
+    Not covered: the CLI appends an ``ai`` suffix when the word would shadow
+    a shell built-in or a command the toolchain needs (``agnes``, ``claude``).
+    That check reads the *client's* PATH, so the server cannot predict it.
+    """
+    from src.launcher_word import launcher_word
+
+    return launcher_word(get_workspace_dir_name())
+
+
 def get_instance_admin_email() -> str:
     """Operator-facing contact address shown in user-side prompts that
     suggest the user reach out to their Agnes admin (e.g. the /home GWS
@@ -1251,9 +1310,17 @@ def get_sync_interval() -> str:
 
 
 def get_allowed_domains() -> list:
+    """Sign-in domain allowlist, lower-cased.
+
+    Domains are case-insensitive (DNS), but the OAuth providers compare this
+    list against an address claim with ``in`` — and Microsoft lower-cases the
+    resolved claim before doing so. Folding here means ``allowed_domain:
+    "Acme.com"`` doesn't refuse every Microsoft sign-in while leaving Google
+    working; the callers fold the claim's domain to match.
+    """
     domain = get_value("auth", "allowed_domain", default="")
     if domain:
-        return [d.strip() for d in domain.split(",") if d.strip()]
+        return [d.strip().lower() for d in domain.split(",") if d.strip()]
     return []
 
 

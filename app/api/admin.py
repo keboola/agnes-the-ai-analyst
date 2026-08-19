@@ -21,7 +21,11 @@ import duckdb
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
 from app.switches import SWITCHES
-from connectors.snowflake.settings import SF_TOKEN_ENV
+from connectors.snowflake.settings import (
+    SF_PRIVATE_KEY_ENV,
+    SF_PRIVATE_KEY_PASSPHRASE_ENV,
+    SF_TOKEN_ENV,
+)
 from src.identifier_validation import (
     is_safe_identifier as _is_safe_identifier,
     is_safe_quoted_identifier as _is_safe_quoted_identifier,
@@ -1017,8 +1021,9 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
             "hint": (
                 "Snowflake connection (query_mode='remote' rows resolved locally by the "
                 "DuckDB snowflake extension + query_mode='materialized' rows written to "
-                "parquet on the scheduler tick). The password comes from the env var named "
-                "by token_env / the vault secret of the same name, never from YAML."
+                "parquet on the scheduler tick). Use auth_type 'password' (default) with "
+                "token_env / SNOWFLAKE_PASSWORD, or 'key_pair' with private_key_env / "
+                "SNOWFLAKE_PRIVATE_KEY. Credential values are env/vault-backed, never from YAML."
             ),
             "fields": {
                 "account": {
@@ -1057,14 +1062,44 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
                     "kind": "string",
                     "hint": ("Optional Snowflake role to assume. Empty = the user's default role."),
                 },
+                "auth_type": {
+                    "kind": "select",
+                    "options": ["password", "key_pair"],
+                    "default": "password",
+                    "hint": (
+                        "Authentication method: 'password' or 'key_pair'. With key_pair, "
+                        "set private_key_env / private_key_passphrase_env instead of token_env."
+                    ),
+                },
                 "token_env": {
                     "kind": "string",
                     "default": SF_TOKEN_ENV,
                     "hint": (
                         "Name of the environment variable holding the Snowflake password "
-                        "(the name, never the password itself). Falls back to the vault "
-                        "secret of the same name when the env var is unset. Default "
-                        "SNOWFLAKE_PASSWORD."
+                        "(the name, never the password itself). Used when auth_type is "
+                        "'password'. Falls back to the vault secret of the same name when "
+                        "the env var is unset. Default SNOWFLAKE_PASSWORD."
+                    ),
+                },
+                "private_key_env": {
+                    "kind": "string",
+                    "default": SF_PRIVATE_KEY_ENV,
+                    "hint": (
+                        "Name of the environment variable holding the Snowflake private key "
+                        "for key-pair auth (the name, never the key itself). The value may "
+                        "be a PEM string or JSON with {private_key, passphrase?}. Used when "
+                        "auth_type is 'key_pair'. Falls back to the vault secret of the same "
+                        "name. Default SNOWFLAKE_PRIVATE_KEY."
+                    ),
+                },
+                "private_key_passphrase_env": {
+                    "kind": "string",
+                    "default": SF_PRIVATE_KEY_PASSPHRASE_ENV,
+                    "hint": (
+                        "Name of the environment variable holding the optional passphrase "
+                        "for the Snowflake private key. Used when auth_type is 'key_pair' "
+                        "and the private key is encrypted. Falls back to the vault secret "
+                        "of the same name. Default SNOWFLAKE_PRIVATE_KEY_PASSPHRASE."
                     ),
                 },
                 "max_bytes_per_materialize": {
@@ -3245,7 +3280,8 @@ def _validate_snowflake_register_payload(req: "RegisterTableRequest") -> None:
             status_code=400,
             detail=(
                 "snowflake: data_source.snowflake.* is not configured; "
-                "set account, user, database, warehouse and the SNOWFLAKE_PASSWORD env / vault secret "
+                "set account, user, database, warehouse and either the SNOWFLAKE_PASSWORD env / vault secret "
+                "(password auth) or the SNOWFLAKE_PRIVATE_KEY env / vault secret (key-pair auth) "
                 "via instance.yaml or /admin/server-config first"
             ),
         )
@@ -3390,21 +3426,26 @@ def _validate_source_type_configured(source_type: Optional[str]) -> None:
 
     A source_type is considered configured when:
 
+    - a named ``source_connections`` row of that type exists — the registry
+      is the source of truth (spec 2026-06-12); a connection added via
+      /admin/data-sources lets that type register regardless of the legacy
+      ``data_source.type``, OR
     - it matches the instance's primary ``data_source.type``, OR
     - a non-empty ``data_source.<source_type>`` block exists in the
-      effective `instance.yaml` (multi-source instances), OR
+      effective `instance.yaml` (legacy first-boot seed), OR
     - it's in the small allowlist of types that don't sit under
       `data_source.*` at all (Jira, local — see
       ``_SOURCE_TYPES_INDEPENDENT_OF_DATA_SOURCE``).
 
-    Special case: when the configured primary is ``'local'`` (the default
-    when an instance is freshly bootstrapped and no `data_source.type` has
-    been set yet), the validator stays permissive — refusing registrations
-    here would block the first-time-setup workflow where the operator
-    registers a few tables against a not-yet-fully-configured instance.
-    The misconfiguration that this validator targets is the *explicit
-    mismatch*: `type=bigquery` instance + `source_type=keboola` payload
-    with no `data_source.keboola.*` block. That case still 422s.
+    Special case: when the configured primary is ``'local'`` (or its
+    documented alias ``'csv'`` — the default when an instance is freshly
+    bootstrapped and no `data_source.type` has been set yet), the validator
+    stays permissive — refusing registrations here would block the
+    first-time-setup workflow where the operator registers a few tables
+    against a not-yet-fully-configured instance. The misconfiguration that
+    this validator targets is the *explicit mismatch*: `type=bigquery`
+    instance + `source_type=keboola` payload with no keboola connection and
+    no `data_source.keboola.*` block. That case still 422s.
 
     A bare/None source_type is tolerated for backward compat with legacy
     CLI scripts; the route resolves it later against
@@ -3421,21 +3462,32 @@ def _validate_source_type_configured(source_type: Optional[str]) -> None:
     if source_type == configured_primary:
         return
 
-    # Multi-source: accept if a non-empty `data_source.<source_type>` block
-    # exists. Empty dict / None / "" all count as "not configured".
+    # Registry is the source of truth (spec 2026-06-12): a configured
+    # `source_connections` row of this type means the row can sync, regardless
+    # of the legacy `data_source.type`. Checked before the instance.yaml
+    # fallbacks below — a keboola connection added via /admin/data-sources must
+    # let keboola tables register even on a bigquery-primary instance.
+    from src.repositories import source_connections_repo
+
+    if source_connections_repo().list(source_type=source_type):
+        return
+
+    # Legacy fallback (instance.yaml is a first-boot seed, not the authority):
+    # accept if a non-empty `data_source.<source_type>` block exists. Empty
+    # dict / None / "" all count as "not configured".
     secondary_block = get_value("data_source", source_type, default=None)
     if secondary_block:
         # Truthy non-empty dict / mapping / scalar — treat as configured.
         return
 
-    # Bootstrap-friendliness: a primary of 'local' means the instance hasn't
-    # been pointed at a real source yet (or has been deliberately set to
-    # local-only). Don't gate registrations in that state — the operator is
-    # likely in the middle of first-time setup and will fill in the config
-    # next. The check still fires when primary is an actual source type
-    # (bigquery / keboola) and the requested source_type doesn't match
-    # AND has no secondary block.
-    if configured_primary == "local":
+    # Bootstrap-friendliness: a primary of 'local' (or its documented alias
+    # 'csv') means the instance hasn't been pointed at a real source yet (or
+    # has been deliberately set to local-only). Don't gate registrations in
+    # that state — the operator is likely in the middle of first-time setup
+    # and will fill in the config next. The check still fires when primary is
+    # an actual source type (bigquery / keboola) and the requested source_type
+    # doesn't match AND has no connection or secondary block.
+    if configured_primary in ("local", "csv"):
         return
 
     raise HTTPException(
@@ -5665,13 +5717,20 @@ async def preview_table_policy(
     }
 
 
-def _policy_builder_describe(name: str) -> list:
+def _policy_builder_describe(name: str) -> Optional[list]:
     """``DESCRIBE {name}`` on the read-only analytics connection -- the
     same query ``preview_table_policy`` already runs (line ~5054),
     factored out here because both new builder endpoints below need it:
     Task 2's columns list wants types too, Task 3's compile just wants the
     names. Never trusts a caller-supplied name -- every caller resolves
     ``name`` from the registry row first, never from the URL/body.
+
+    ``None`` when the DESCRIBE itself failed, which is NOT the same as a table
+    with no columns: this runs on a fresh read-only analytics connection where a
+    ``query_mode='remote'`` view's external catalog is not re-ATTACHed, so a
+    failure here is the ordinary outcome for exactly the remote rows a policy is
+    most often written for. Callers that report "no columns" to a human must be
+    able to tell the two apart.
     """
     from src.db import get_analytics_db_readonly
     from src.sql_ident import quote_ident
@@ -5681,7 +5740,8 @@ def _policy_builder_describe(name: str) -> list:
         try:
             return analytics_conn.execute(f"DESCRIBE {quote_ident(name)}").fetchall()
         except Exception:
-            return []
+            logger.info("policy builder: DESCRIBE %s failed; schema unavailable", name, exc_info=True)
+            return None
     finally:
         analytics_conn.close()
 
@@ -5747,7 +5807,12 @@ async def policy_builder_columns(
     name = row.get("name") or table_id
     eligible = row.get("query_mode") == "remote" or bool(row.get("server_only"))
 
-    base_rows = _policy_builder_describe(name)
+    # `None` = the DESCRIBE failed (see the helper): the builder needs that
+    # distinction to explain an empty list, instead of showing "No columns
+    # found" for a table whose schema simply cannot be read from here and only
+    # surfacing the real reason once a compile is attempted.
+    described = _policy_builder_describe(name)
+    base_rows = described or []
 
     # A profile may be keyed by the registry id or the table name depending
     # on when/how it was saved (mirrors `catalog.py::get_table_profile`'s own
@@ -5772,7 +5837,12 @@ async def policy_builder_columns(
 
     mapping_tables = [r["name"] for r in table_registry_repo().list_all() if r.get("policy_mapping") and r.get("name")]
 
-    return {"columns": columns, "mapping_tables": mapping_tables, "eligible": eligible}
+    return {
+        "columns": columns,
+        "mapping_tables": mapping_tables,
+        "eligible": eligible,
+        "schema_available": described is not None,
+    }
 
 
 class PolicyCompileRequest(BaseModel):
@@ -5813,7 +5883,14 @@ async def policy_builder_compile(
         raise HTTPException(status_code=404, detail="Table not found")
 
     name = row.get("name") or table_id
-    columns = [c[0] for c in _policy_builder_describe(name)]
+    describe_rows = _policy_builder_describe(name)
+    if not describe_rows:
+        raise HTTPException(
+            status_code=422,
+            detail="policy_builder_schema_unavailable: the table schema could not be read; "
+            "ensure the table is materialized or remote before building a policy.",
+        )
+    columns = [{"name": c[0], "type": c[1]} for c in describe_rows]
 
     from src.access_policy_compile import compile_policy
 

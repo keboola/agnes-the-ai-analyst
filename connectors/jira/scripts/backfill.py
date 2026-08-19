@@ -31,11 +31,11 @@ import logging
 import os
 import sys
 import time
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Iterator
 
 import httpx
 from dotenv import load_dotenv
@@ -43,6 +43,8 @@ from dotenv import load_dotenv
 from app.logging_config import setup_logging
 from connectors.jira.service import (
     JiraFetchError,
+    _incomplete_marker_path,
+    _sync_incomplete_marker,
     complete_issue_comments,
     sweep_stale_attachment_staging,
 )
@@ -90,32 +92,6 @@ class Config:
             jira_api_token=os.environ["JIRA_API_TOKEN"],
             data_dir=Path(os.environ.get("JIRA_DATA_DIR", "/data/src_data/raw/jira")),
         )
-
-
-def _incomplete_marker_path(json_path: Path) -> Path:
-    """Sidecar marker path for an issue JSON's ``_comments_incomplete`` state.
-
-    A dedicated file next to the JSON — rather than a key inside it — so
-    ``--skip-existing`` can answer "does this issue need a re-fetch?" with a
-    single ``stat()``, the same cost as the pre-pagination ``json_path.exists()``
-    check it replaces. ``_comments_incomplete`` is added to the dict well
-    after ``fields`` (often the largest part of a ``fields=*all`` payload),
-    so it sits late in the file — a bounded read from the front would
-    routinely miss it, and parsing the whole file to find it is exactly the
-    six-figure-issue-count cost this sidecar avoids (Devin Review on #1283).
-    """
-    return json_path.with_suffix(json_path.suffix + ".incomplete")
-
-
-def _sync_incomplete_marker(json_path: Path, issue_data: dict) -> None:
-    """Create/remove the sidecar marker to match ``issue_data``'s current
-    ``_comments_incomplete`` state. Called right after writing *json_path*.
-    """
-    marker_path = _incomplete_marker_path(json_path)
-    if issue_data.get("_comments_incomplete") is True:
-        marker_path.touch(exist_ok=True)
-    else:
-        marker_path.unlink(missing_ok=True)
 
 
 def _needs_refetch(json_path: Path) -> bool:
@@ -411,7 +387,7 @@ class JiraBackfill:
             return None
 
         # Add sync metadata
-        issue_data["_synced_at"] = datetime.now(timezone.utc).isoformat()
+        issue_data["_synced_at"] = datetime.now(UTC).isoformat()
 
         file_path = self.issues_dir / f"{issue_key}.json"
 
@@ -421,8 +397,13 @@ class JiraBackfill:
             # Keep the sidecar marker in sync with this write's incomplete
             # state (set it when _comments_incomplete is True, clear it
             # otherwise) so _needs_refetch can answer with a stat instead of
-            # parsing the JSON body (Devin Review on #1283).
-            _sync_incomplete_marker(file_path, issue_data)
+            # parsing the JSON body (Devin Review on #1283). Best-effort: a
+            # marker failure (e.g. a file owned by another process's OS user)
+            # must not turn a successfully saved issue into a "failed" one.
+            try:
+                _sync_incomplete_marker(file_path, issue_data)
+            except OSError as marker_err:
+                logger.warning(f"Could not sync .incomplete marker for {issue_key}: {marker_err}")
             return file_path
         except Exception as e:
             logger.error(f"Failed to save {issue_key}: {e}")

@@ -159,8 +159,10 @@ class TestEmailAuth:
         """Web-form variant renders the 'check your email' page (the door
         that /login/email now points at) instead of JSON. The POST refuses
         without a mail transport (is_available reads env per call), so one
-        is configured here; no email is ever sent."""
+        is configured here; the SMTP delivery itself is faked (a real failed
+        send now surfaces as an error instead of rendering this page)."""
         monkeypatch.setenv("SMTP_HOST", "smtp.test.invalid")
+        monkeypatch.setattr("smtplib.SMTP", _recording_smtp([]))
         resp = client.post("/auth/email/send-link/web", data={"email": "ml@test.com"})
         assert resp.status_code == 200
         assert "Check Your Email" in resp.text
@@ -223,6 +225,280 @@ class TestEmailAuth:
         failures = results.count(401)
         assert successes == 1, f"Expected exactly 1 success, got {successes} (results: {results})"
         assert failures == 1, f"Expected exactly 1 failure, got {failures} (results: {results})"
+
+
+class _BoomSMTP:
+    """smtplib.SMTP stand-in whose connect always fails."""
+
+    def __init__(self, *args, **kwargs):
+        raise OSError("connection refused (test)")
+
+
+def _recording_smtp(sent: list):
+    """smtplib.SMTP stand-in that records messages instead of delivering."""
+
+    class FakeSMTP:
+        def __init__(self, host, port):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def starttls(self):
+            pass
+
+        def login(self, user, password):
+            pass
+
+        def send_message(self, msg):
+            sent.append(msg)
+
+    return FakeSMTP
+
+
+class TestEmailSendFailureIsSurfaced:
+    """A configured mail transport that fails to deliver must not answer 200.
+
+    The trap this pins: a transport that looks configured but fails on every
+    send used to leave the endpoint answering the generic success message, so
+    the person waits for a mail that was never sent and nothing surfaces the
+    misconfiguration.
+    """
+
+    def test_send_link_smtp_failure_returns_500(self, client, monkeypatch):
+        monkeypatch.delenv("LOCAL_DEV_MODE", raising=False)
+        monkeypatch.setenv("SMTP_HOST", "smtp.test.invalid")
+        monkeypatch.setattr("smtplib.SMTP", _BoomSMTP)
+        resp = client.post("/auth/email/send-link", json={"email": "ml@test.com"})
+        assert resp.status_code == 500
+
+    def test_send_link_web_smtp_failure_shows_error(self, client, monkeypatch):
+        monkeypatch.delenv("LOCAL_DEV_MODE", raising=False)
+        monkeypatch.setenv("SMTP_HOST", "smtp.test.invalid")
+        monkeypatch.setattr("smtplib.SMTP", _BoomSMTP)
+        resp = client.post("/auth/email/send-link/web", data={"email": "ml@test.com"}, follow_redirects=False)
+        assert resp.status_code == 303
+        assert "error=email_send_failed" in resp.headers["location"]
+
+    def test_send_link_smtp_failure_unknown_address_keeps_generic_200(self, client, monkeypatch):
+        """Anti-enumeration: an unknown address attempts no send, so the
+        failure path must not fire and the generic success stays."""
+        monkeypatch.delenv("LOCAL_DEV_MODE", raising=False)
+        monkeypatch.setenv("SMTP_HOST", "smtp.test.invalid")
+        monkeypatch.setattr("smtplib.SMTP", _BoomSMTP)
+        resp = client.post("/auth/email/send-link", json={"email": "nobody@test.com"})
+        assert resp.status_code == 200
+        assert "If this email" in resp.json()["message"]
+
+
+class TestSendGridSdkRemoved:
+    """SENDGRID_API_KEY must not count as a mail transport anywhere.
+
+    The SDK branch is gone: the `sendgrid` package was never a declared
+    dependency, so that path always raised ImportError at send time while the
+    availability predicates kept advertising email sign-in. SendGrid still
+    works as an ordinary SMTP relay (SMTP_HOST=smtp.sendgrid.net).
+    """
+
+    def test_email_provider_not_available_on_sendgrid_key_alone(self, monkeypatch):
+        from app.auth.providers import email as email_mod
+
+        monkeypatch.delenv("LOCAL_DEV_MODE", raising=False)
+        monkeypatch.delenv("SMTP_HOST", raising=False)
+        monkeypatch.setenv("SENDGRID_API_KEY", "SG.test-key")
+        assert email_mod.is_available() is False
+        assert email_mod._has_email_transport() is False
+
+    def test_password_transport_predicate_ignores_sendgrid_key(self, monkeypatch):
+        from app.auth.providers import password as pw_mod
+
+        monkeypatch.delenv("SMTP_HOST", raising=False)
+        monkeypatch.setenv("SENDGRID_API_KEY", "SG.test-key")
+        assert pw_mod._has_email_transport() is False
+
+
+class TestSenderAddressUnified:
+    """One sender key — SMTP_FROM — with the SendGrid-era EMAIL_FROM_ADDRESS
+    honored as a backward-compatible fallback so existing deployments keep
+    their configured sender."""
+
+    def _send_and_capture(self, client, monkeypatch):
+        sent: list = []
+        monkeypatch.setattr("smtplib.SMTP", _recording_smtp(sent))
+        monkeypatch.delenv("LOCAL_DEV_MODE", raising=False)
+        monkeypatch.setenv("SMTP_HOST", "smtp.example.com")
+        resp = client.post("/auth/email/send-link", json={"email": "ml@test.com"})
+        assert resp.status_code == 200, resp.text
+        assert len(sent) == 1, "expected exactly one delivered message"
+        return sent[0]
+
+    def test_smtp_from_wins_over_legacy_key(self, client, monkeypatch):
+        monkeypatch.setenv("SMTP_FROM", "canonical@example.com")
+        monkeypatch.setenv("EMAIL_FROM_ADDRESS", "legacy@example.com")
+        msg = self._send_and_capture(client, monkeypatch)
+        assert msg["From"] == "canonical@example.com"
+
+    def test_legacy_email_from_address_is_a_fallback(self, client, monkeypatch):
+        monkeypatch.delenv("SMTP_FROM", raising=False)
+        monkeypatch.setenv("EMAIL_FROM_ADDRESS", "legacy@example.com")
+        msg = self._send_and_capture(client, monkeypatch)
+        assert msg["From"] == "legacy@example.com"
+
+
+class TestEmailCaseInsensitiveSignIn:
+    """One identity, one account — on the way IN as well as at provisioning.
+
+    Rows created before normalization landed (or by an admin who typed the
+    address as the person writes it) store mixed case. ``get_by_email`` is an
+    exact match on both backends, so those users could sign in through OAuth —
+    which resolves case-insensitively — and be told "invalid email or password"
+    by the very same instance when they typed the address themselves.
+    """
+
+    def test_password_login_matches_stored_row_regardless_of_case(self, client):
+        r = client.post("/auth/password/login", json={"email": "PW@Test.com", "password": "testpass123"})
+        assert r.status_code == 200, r.text
+        assert "access_token" in r.json()
+
+    def test_token_endpoint_matches_stored_row_regardless_of_case(self, client):
+        r = client.post("/auth/token", json={"email": "PW@TEST.COM", "password": "testpass123"})
+        assert r.status_code == 200, r.text
+
+    def test_magic_link_is_issued_for_a_case_variant_address(self, client):
+        """The anti-enumeration response is identical either way, so assert on
+        the side effect: a token is minted on the stored row."""
+        from src.db import get_system_db
+
+        r = client.post("/auth/email/send-link", json={"email": "ML@Test.com"})
+        assert r.status_code == 200, r.text
+        conn = get_system_db()
+        try:
+            row = conn.execute("SELECT reset_token FROM users WHERE id = 'ml1'").fetchone()
+        finally:
+            conn.close()
+        assert row is not None and row[0], "no magic-link token minted for the case-variant address"
+
+    def test_magic_link_verifies_with_a_case_variant_address(self, client):
+        """End to end: the CAS that consumes the token has to fold case too,
+        or the link mints fine and then refuses to open."""
+        from datetime import datetime, timezone
+
+        from src.db import get_system_db
+
+        conn = get_system_db()
+        try:
+            conn.execute(
+                "UPDATE users SET reset_token = ?, reset_token_created = ? WHERE id = 'ml1'",
+                [hash_token("magic-abc"), datetime.now(timezone.utc)],
+            )
+        finally:
+            conn.close()
+        r = client.post("/auth/email/verify", json={"email": "ML@Test.com", "token": "magic-abc"})
+        assert r.status_code == 200, r.text
+
+
+class TestSignInIgnoresSurroundingWhitespace:
+    """A pasted address carries whitespace, and every entry point has to
+    tolerate it identically.
+
+    ``ensure_user`` strips, and so did the web magic-link form — but the JSON
+    ``/send-link``, ``/auth/token`` and the password handlers passed the raw
+    field straight to the lookup, so the same address succeeded or failed
+    depending on which door it came through. Stripping (not lower-casing —
+    case is SQL's job) at each entry point is what makes them agree.
+    """
+
+    def test_token_endpoint_tolerates_padding(self, client):
+        r = client.post("/auth/token", json={"email": "  pw@test.com  ", "password": "testpass123"})
+        assert r.status_code == 200, r.text
+
+    def test_password_login_tolerates_padding(self, client):
+        r = client.post("/auth/password/login", json={"email": "  pw@test.com ", "password": "testpass123"})
+        assert r.status_code == 200, r.text
+
+    def test_json_magic_link_tolerates_padding(self, client):
+        from src.db import get_system_db
+
+        r = client.post("/auth/email/send-link", json={"email": "  ml@test.com  "})
+        assert r.status_code == 200, r.text
+        conn = get_system_db()
+        try:
+            row = conn.execute("SELECT reset_token FROM users WHERE id = 'ml1'").fetchone()
+        finally:
+            conn.close()
+        assert row is not None and row[0], "padded address minted no magic-link token"
+
+
+class TestTokenOwnershipDecidesIdentity:
+    """A one-time link belongs to the row that HOLDS the token.
+
+    The compare-and-swap matches ``lower(email) = ? AND reset_token = ?``, so it
+    finds whichever case variant actually holds the token, while
+    ``get_by_email_ci`` deterministically returns the OLDEST. An admin-issued
+    reset mints the token by user id, so it can live on a newer variant — and
+    resolving the account by address after the CAS would then mint a session
+    for an account the token was never issued for, carrying that account's
+    group memberships.
+    """
+
+    @pytest.fixture
+    def variants(self, client):
+        """Two case-variant rows; the magic-link token sits on the NEWER one."""
+        from datetime import datetime, timezone
+
+        from src.db import get_system_db
+        from src.repositories.users import UserRepository
+
+        conn = get_system_db()
+        try:
+            repo = UserRepository(conn)
+            repo.create(id="dup-old", email="dup@test.com", name="Old")
+            repo.create(id="dup-new", email="Dup@Test.com", name="New")
+            conn.execute("UPDATE users SET created_at = ? WHERE id = ?", ["2025-01-01 00:00:00", "dup-old"])
+            conn.execute("UPDATE users SET created_at = ? WHERE id = ?", ["2026-06-01 00:00:00", "dup-new"])
+            repo.update(id="dup-new", reset_token=hash_token("tok-abc"), reset_token_created=datetime.now(timezone.utc))
+        finally:
+            conn.close()
+        return client
+
+    def test_magic_link_signs_in_the_account_the_token_belongs_to(self, variants):
+        import jwt as pyjwt
+
+        r = variants.post("/auth/email/verify", json={"email": "dup@test.com", "token": "tok-abc"})
+        assert r.status_code == 200, r.text
+        claims = pyjwt.decode(r.json()["access_token"], options={"verify_signature": False})
+        assert claims.get("sub") == "dup-new", "session minted for the wrong account"
+
+    def test_reset_form_accepts_a_link_whose_token_is_on_a_case_variant(self, variants):
+        """The pre-check peeked with ``get_by_email_ci`` (oldest wins), so a
+        genuinely valid admin-issued link rendered "Invalid or expired"."""
+        r = variants.post(
+            "/auth/password/reset/confirm",
+            data={
+                "email": "dup@test.com",
+                "token": "tok-abc",
+                "password": "brand-new-password-1",
+                "confirm_password": "brand-new-password-1",
+            },
+        )
+        assert r.status_code == 200, r.text
+        assert "Invalid or expired reset link" not in r.text
+
+        # And the password landed on the row that held the token.
+        from src.db import get_system_db
+
+        conn = get_system_db()
+        try:
+            rows = dict(
+                conn.execute("SELECT id, password_hash FROM users WHERE id IN ('dup-old','dup-new')").fetchall()
+            )
+        finally:
+            conn.close()
+        assert rows["dup-new"], "password was not set on the token's own account"
+        assert not rows["dup-old"], "password landed on the wrong account"
 
 
 class TestGoogleOAuth:
@@ -289,6 +565,25 @@ class TestMicrosoftTenantValidation:
         monkeypatch.setattr(ms, "MICROSOFT_TENANT_ID", reserved)
         assert ms.is_available() is False
         assert any("multi-tenant" in w for w in ms.startup_warnings())
+
+    @pytest.mark.parametrize(
+        "guid",
+        [
+            "9188040d-6c67-4c5b-b112-36a304b66dad",  # "personal Microsoft accounts"
+            "9188040D-6C67-4C5B-B112-36A304B66DAD",  # same, uppercase
+            "f8cdef31-a31e-4b4a-93e4-5f571e91255a",  # the other well-known consumer tenant
+        ],
+    )
+    def test_well_known_consumer_tenant_guids_are_refused(self, guid):
+        """Refusing the reserved *names* is not enough. Microsoft publishes
+        GUIDs for the consumer tenants, and a discovery URL built from one is
+        functionally ``consumers`` — the exact configuration the name check
+        exists to prevent, reached by spelling it differently."""
+        from app.auth.providers import microsoft as ms
+
+        problem = ms.tenant_id_error(guid)
+        assert problem, f"{guid!r} must be refused"
+        assert "multi-tenant" in problem
 
     def test_guid_tenant_is_available(self, monkeypatch):
         from app.auth.providers import microsoft as ms
@@ -526,6 +821,36 @@ class TestLocalDevGroupsParser:
             '[{"name":"no-id"},{"id":"eng@x.com","name":"Eng"},"string-not-object"]',
         )
         assert get_local_dev_groups() == [{"id": "eng@x.com", "name": "Eng"}]
+
+
+class TestLocalDevUserLookup:
+    """Startup seeds the dev account through ``normalize_email`` (lower-cased),
+    so the request-time read has to fold case too — otherwise a mixed-case
+    ``LOCAL_DEV_USER_EMAIL`` seeds a row the auto-login can never find and dev
+    mode silently stops logging anybody in."""
+
+    def test_dev_user_resolves_when_configured_address_has_capitals(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-32chars-minimum!!!!!")
+        monkeypatch.setenv("LOCAL_DEV_MODE", "1")
+        monkeypatch.setenv("LOCAL_DEV_USER_EMAIL", "Dev@LocalHost")
+
+        from src.db import get_system_db
+        from src.repositories.users import UserRepository
+        from src.user_identity import normalize_email
+
+        conn = get_system_db()
+        try:
+            # Exactly what the startup seed writes.
+            UserRepository(conn).create(id="dev1", email=normalize_email("Dev@LocalHost"), name="Admin")
+        finally:
+            conn.close()
+
+        from app.auth.dependencies import _get_local_dev_user
+
+        user = _get_local_dev_user()
+        assert user is not None, "dev auto-login could not find the account startup seeded"
+        assert user["id"] == "dev1"
 
 
 @pytest.mark.skip(
@@ -967,3 +1292,66 @@ class TestGoogleOAuthFullFlow:
     def test_google_callback_api_error_handled(self, tmp_path, monkeypatch):
         """Google OAuth callback must handle API errors gracefully."""
         pass
+
+
+class TestSmtpSenderResolution:
+    """`email.from_address` is shipped by `config/instance.yaml.example` and
+    documented in `docs/CONFIGURATION.md`, but nothing read it — an operator who
+    configured only the YAML kept sending as `noreply@example.com`, with no
+    error to notice. Env stays ahead of it so no existing deployment's sender
+    changes.
+    """
+
+    @staticmethod
+    def _clear_env(monkeypatch):
+        monkeypatch.delenv("SMTP_FROM", raising=False)
+        monkeypatch.delenv("EMAIL_FROM_ADDRESS", raising=False)
+
+    def test_smtp_from_env_wins_over_yaml(self, monkeypatch):
+        from app.auth import _common
+
+        monkeypatch.setenv("SMTP_FROM", "env@corp.example")
+        monkeypatch.setattr("app.instance_config.get_value", lambda *k, **kw: "yaml@corp.example", raising=False)
+        assert _common.smtp_from_address() == "env@corp.example"
+
+    def test_legacy_env_key_still_wins_over_yaml(self, monkeypatch):
+        """`EMAIL_FROM_ADDRESS` was the removed SendGrid branch's key. A
+        deployment carrying it must not have its sender changed by a YAML value
+        it never intended to activate."""
+        from app.auth import _common
+
+        self._clear_env(monkeypatch)
+        monkeypatch.setenv("EMAIL_FROM_ADDRESS", "legacy@corp.example")
+        monkeypatch.setattr("app.instance_config.get_value", lambda *k, **kw: "yaml@corp.example", raising=False)
+        assert _common.smtp_from_address() == "legacy@corp.example"
+
+    def test_yaml_from_address_is_honored_when_no_env_is_set(self, monkeypatch):
+        from app.auth import _common
+
+        self._clear_env(monkeypatch)
+        monkeypatch.setattr("app.instance_config.get_value", lambda *k, **kw: "yaml@corp.example", raising=False)
+        assert _common.smtp_from_address() == "yaml@corp.example"
+
+    def test_the_templates_own_placeholder_is_not_treated_as_configured(self, monkeypatch):
+        """`instance.yaml.example` ships the literal `noreply@example.com`. A
+        copied-but-unedited template must not read as a deliberate choice — the
+        answer is the same either way, but treating it as configured would make
+        the fallback chain lie about where the value came from."""
+        from app.auth import _common
+
+        self._clear_env(monkeypatch)
+        monkeypatch.setattr("app.instance_config.get_value", lambda *k, **kw: "noreply@example.com", raising=False)
+        assert _common.smtp_from_address() == "noreply@example.com"
+
+    def test_an_unreadable_instance_config_does_not_break_sending(self, monkeypatch):
+        """Resolving a sender must not be the thing that raises: a corrupt or
+        absent instance.yaml would otherwise turn every magic link into a 500."""
+        from app.auth import _common
+
+        self._clear_env(monkeypatch)
+
+        def _boom(*_a, **_kw):
+            raise RuntimeError("instance.yaml unreadable")
+
+        monkeypatch.setattr("app.instance_config.get_value", _boom, raising=False)
+        assert _common.smtp_from_address() == "noreply@example.com"

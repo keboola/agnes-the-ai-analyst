@@ -415,6 +415,7 @@ from app.api.agent_runtime import router as agent_runtime_router  # noqa: E402
 from app.api.agent_sessions import router as agent_sessions_router  # noqa: E402
 from app.api.agent_webhooks import router as agent_webhooks_router  # noqa: E402
 from app.api.agent_memory import router as agent_memory_router  # noqa: E402
+from app.api.agent_schedules import router as agent_schedules_router  # noqa: E402
 from app.api.v2_catalog import router as v2_catalog_router
 from app.api.v2_schema import router as v2_schema_router
 from app.api.v2_sample import router as v2_sample_router
@@ -994,6 +995,30 @@ async def lifespan(app):
         except Exception:
             logger.exception("ducklake readyz-check registration failed at startup (non-fatal)")
 
+        # Community extensions that `query_mode='remote'` rows need must be on
+        # disk before the first query: the query path LOADs without INSTALL (so
+        # a read-only query never reaches the network), and DuckDB's extension
+        # directory does not survive a container recreate. Without this, every
+        # restart left remote rows answering `Catalog "<alias>" does not exist`
+        # until someone re-saved the registration by hand — the ATTACH is
+        # skipped silently, so nothing in the response said why.
+        try:
+            from src.remote_extension_prewarm import prewarm_from_env
+
+            _prewarm = prewarm_from_env()
+            if _prewarm["installed"] or _prewarm["failed"] or _prewarm["refused"]:
+                logger.info(
+                    "remote-attach extension prewarm: installed=%s failed=%s refused=%s",
+                    _prewarm["installed"],
+                    _prewarm["failed"],
+                    _prewarm["refused"],
+                )
+        except Exception:
+            logger.exception(
+                "remote-attach extension prewarm failed at startup (non-fatal; remote "
+                "rows may answer 'Catalog does not exist' until their extension installs)"
+            )
+
         try:
             from src.analytics_backend import analytics_backend
 
@@ -1221,7 +1246,15 @@ async def lifespan(app):
         # block the worker.
         from app.auth.dependencies import is_local_dev_mode, get_local_dev_email
 
-        seed_email = os.environ.get("SEED_ADMIN_EMAIL") or (get_local_dev_email() if is_local_dev_mode() else None)
+        from src.user_identity import normalize_email
+
+        # Normalized on the way in: this is an account-CREATING path, and a
+        # mixed-case SEED_ADMIN_EMAIL over an existing normalized row used to
+        # mint a second account and put Admin/Everyone on the copy the person
+        # never signs in as (every auth door resolves the OLDEST match).
+        seed_email = normalize_email(
+            os.environ.get("SEED_ADMIN_EMAIL") or (get_local_dev_email() if is_local_dev_mode() else None) or ""
+        )
         if seed_email:
             try:
                 from src.db import SYSTEM_ADMIN_GROUP, SYSTEM_EVERYONE_GROUP
@@ -1235,7 +1268,7 @@ async def lifespan(app):
                     from argon2 import PasswordHasher
 
                     password_hash = PasswordHasher().hash(seed_password)
-                existing = repo.get_by_email(seed_email)
+                existing = repo.get_by_email_ci(seed_email)
                 if not existing:
                     import uuid
 
@@ -2028,16 +2061,18 @@ def create_app() -> FastAPI:
             response.headers["X-Agnes-Min-Version"] = MIN_COMPAT_CLI_VERSION
             response.headers["X-Agnes-Accepts"] = SERVER_CAPABILITIES
         # Server-rendered HTML must not be heuristically cached by the browser.
-        # The setup hero (/home, /setup, /install) bakes build-pinned values
-        # into the markup at render time — most importantly the current wheel
-        # filename, served from the version-pinned `/cli/wheel/{name}` endpoint
-        # that 404s for any name but the wheel currently on disk. Without an
-        # explicit directive a browser reuses the cached document, so after a
-        # redeploy a user is handed a stale page whose baked wheel URL now 404s
-        # (the new build replaced the wheel). `no-store` forces a fresh render
-        # on every load. Scoped to text/html so JSON APIs and the
-        # immutable-cached static / marketplace-image assets are untouched; an
-        # explicit Cache-Control set by a route still wins.
+        # The setup hero (/home, /setup, /install) bakes render-time values
+        # into the markup — RBAC-filtered plugin grants, the live connector
+        # manifest, the operator's instance brand/host. (The install prompt's
+        # CLI step used to also bake a version-pinned `/cli/wheel/{name}` URL
+        # that 404s the moment the server upgrades between render and
+        # execution; it now downloads via the unversioned `/cli/download`
+        # endpoint instead, which is immune to that race — but the page as a
+        # whole still isn't safe to cache.) Without an explicit directive a
+        # browser reuses a stale cached document across a redeploy. `no-store`
+        # forces a fresh render on every load. Scoped to text/html so JSON
+        # APIs and the immutable-cached static / marketplace-image assets are
+        # untouched; an explicit Cache-Control set by a route still wins.
         ctype = response.headers.get("content-type", "")
         if ctype.startswith("text/html") and "cache-control" not in response.headers:
             response.headers["Cache-Control"] = "no-store"
@@ -2576,6 +2611,7 @@ def create_app() -> FastAPI:
     app.include_router(agent_sessions_router)
     app.include_router(agent_webhooks_router)
     app.include_router(agent_memory_router)
+    app.include_router(agent_schedules_router)
     app.include_router(v2_catalog_router)
     app.include_router(v2_schema_router)
     app.include_router(v2_sample_router)

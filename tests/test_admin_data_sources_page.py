@@ -757,3 +757,112 @@ class TestSourceCardHierarchy:
         # item above it.
         assert "apg-menu__item--danger" in body
         assert "apg-menu__sep" in body
+
+
+class TestSnowflakeWizardCredentialNames:
+    """The wizard's Snowflake pane stores credentials under an env-var name it
+    reads back from `GET /api/admin/server-config` — which redacts exactly
+    those keys (see
+    `test_admin_server_config.py::test_get_redacts_the_snowflake_credential_env_NAMES`).
+    Trusting that read put the `***` sentinel in the PUT path, so once
+    Snowflake had been configured through the wizard no credential could be
+    stored or rotated through it again."""
+
+    def _template(self):
+        from pathlib import Path
+
+        import app.web.router as web_router
+
+        return (Path(web_router.__file__).parent / "templates" / "admin_data_sources.html").read_text()
+
+    def test_env_names_from_the_config_read_are_shape_checked(self):
+        src = self._template()
+        assert "_sfEnvNameOr(sf.token_env," in src
+        assert "_sfEnvNameOr(sf.private_key_env," in src
+        assert "_sfEnvNameOr(sf.private_key_passphrase_env," in src
+        # The unguarded form is what shipped the bug — it must not come back.
+        assert "sf.token_env || " not in src
+        assert "sf.private_key_env || " not in src
+        assert "sf.private_key_passphrase_env || " not in src
+
+    def test_the_shape_check_rejects_the_redaction_sentinel(self):
+        """`***` and `<empty>` are the two sentinels `_mask` produces; neither
+        is a legal env-var name, so the guard's regex must reject both."""
+        import re
+
+        src = self._template()
+        m = re.search(r"const _ENV_NAME_RE = /(.+?)/;", src)
+        assert m, "the env-name shape guard is gone"
+        pattern = re.compile(m.group(1))
+        for sentinel in ("***", "<empty>", ""):
+            assert not pattern.match(sentinel), f"{sentinel!r} must not pass as an env-var name"
+        for legal in ("SNOWFLAKE_PASSWORD", "SNOWFLAKE_PRIVATE_KEY", "_x9"):
+            assert pattern.match(legal), f"{legal!r} must pass as an env-var name"
+
+    def test_the_save_never_writes_a_credential_env_name_back(self):
+        """`token_env` / `private_key_env` / `private_key_passphrase_env` come
+        back from the config read redacted, so the wizard cannot know which name
+        is configured. Writing its fallback back would REPLACE an operator's
+        custom name with the default and break every Snowflake query and sync.
+
+        (Before the shape guard the wizard POSTed the `***` sentinel, which
+        `_strip_redacted_sentinels` dropped server-side — a harmless no-op. A
+        plausible-looking default is not, which is what makes this a write the
+        wizard must not perform at all.)
+
+        Nothing is lost: `resolve_snowflake_settings` defaults each name to
+        exactly what the wizard stores the credential under."""
+        src = self._template()
+        save = src[src.index("async function _saveSnowflakeAndContinue") : src.index("function openWizard")]
+        assert "sf.token_env" not in save
+        assert "sf.private_key_env" not in save
+        assert "sf.private_key_passphrase_env" not in save
+
+    def test_the_save_omits_a_blank_role_rather_than_clearing_it(self):
+        """`POST /api/admin/server-config` deep-merges per leaf, so a
+        present-but-empty `role` overwrites a stored one — and the prefill is
+        empty whenever the config read failed."""
+        src = self._template()
+        save = src[src.index("async function _saveSnowflakeAndContinue") : src.index("function openWizard")]
+        assert "if (role) sf.role = role;" in save
+        assert "warehouse, role," not in save
+
+    def test_the_stored_under_note_fires_on_a_save_not_on_every_page_open(self):
+        """`token_env` is redacted on every instance that has ever configured
+        Snowflake, so a note keyed on "the name was unreadable" alone would fire
+        for the majority that use the default names — noise that trains
+        operators to ignore it. It is keyed on a credential having actually been
+        stored, and says which name it went under."""
+        src = self._template()
+        render = src[src.index("function _renderSfCredStatus") : src.index("async function _saveSnowflakeAndContinue")]
+        assert "_sfStoredUnderNote" not in render, "the note is back on the badge, where it fires unconditionally"
+        save = src[src.index("async function _saveSnowflakeAndContinue") : src.index("function openWizard")]
+        assert save.count("storedUnder.push(") == 3, "a stored credential is not recorded for every kind"
+        banner = src[src.index("function _renderSfRowsEditor") :]
+        assert "_sfStoredUnderNote(_sfStoredUnder)" in banner
+        assert "_sfStoredUnder = [];" in src[src.index("function openWizard") :]
+
+    def test_a_server_config_save_surfaces_restart_required(self):
+        """`POST /api/admin/server-config` answers `restart_required: true` and
+        resets only the in-process config cache. This wizard is the first
+        server-config writer outside /admin/server-config, so dropping that
+        field left a role-split deployment registering tables against a config
+        the scheduler had not re-read, with nothing saying so."""
+        src = self._template()
+        save = src.index("_saveSnowflakeAndContinue")
+        assert "_sfRestartRequired = !!savedCfg.restart_required;" in src[save:]
+        # ...and it has to reach the operator, not just a variable.
+        assert "_sfRestartRequired" in src[src.index("_renderSfRowsEditor") :]
+        # Reset per wizard open, so a later source cannot inherit the note.
+        assert "_sfRestartRequired = false;" in src[src.index("function openWizard") :]
+
+    def test_a_saved_credential_box_is_cleared_before_the_badge_is_redrawn(self):
+        """`_renderSfCredStatus` reads "ready to save" off a non-empty input,
+        so redrawing before clearing reports a stored credential as pending."""
+        src = self._template()
+        for input_id, kind in (("ds-sf-password", "password"), ("ds-sf-private-key", "key")):
+            clear = src.index(
+                f'document.getElementById("{input_id}").value = "";', src.index("_saveSnowflakeAndContinue")
+            )
+            render = src.index(f'_renderSfCredStatus(null, "{kind}");', src.index("_saveSnowflakeAndContinue"))
+            assert clear < render, f"{input_id} is cleared after the badge is redrawn"

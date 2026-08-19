@@ -3094,6 +3094,34 @@
         "title": "CreateRecipeRequest",
         "type": "object"
       },
+      "CreateScheduleRequest": {
+        "properties": {
+          "enabled": {
+            "default": true,
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "prompt": {
+            "title": "Prompt",
+            "type": "string"
+          },
+          "schedule": {
+            "title": "Schedule",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "schedule",
+          "prompt"
+        ],
+        "title": "CreateScheduleRequest",
+        "type": "object"
+      },
       "CreateSessionBody": {
         "properties": {
           "agent_slug": {
@@ -4697,6 +4725,17 @@
       "JourneyUpdateBody": {
         "description": "Partial update \u2014 every field optional; only the ones present change.",
         "properties": {
+          "agent_created": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Created"
+          },
           "catalog_discovered": {
             "anyOf": [
               {
@@ -9831,6 +9870,56 @@
           }
         },
         "title": "UpdateRecipeRequest",
+        "type": "object"
+      },
+      "UpdateScheduleRequest": {
+        "properties": {
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "prompt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prompt"
+          },
+          "schedule": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Schedule"
+          }
+        },
+        "title": "UpdateScheduleRequest",
         "type": "object"
       },
       "UpdateTableRequest": {
@@ -41882,6 +41971,160 @@
         ]
       }
     },
+    "/api/semantic-models/context": {
+      "get": {
+        "description": "Typed context lookup over the caller's accessible semantic models \u2014\nthe ``get_semantic_context`` parity tool.\n\nWraps the pure ``src.semantic_context.get_semantic_context`` over the\nsame ``_accessible_valid_documents`` RBAC tier as search/export/\nvalidate-query. An empty result (no accessible model, or no object of\nthe requested type/id) is not an error \u2014 this endpoint has no\nmisleading \"all clear\" to gate against, unlike ``validate-query``.",
+        "operationId": "get_semantic_context_endpoint_api_semantic_models_context_get",
+        "parameters": [
+          {
+            "description": "JSON list of {\"semantic_type\": \"dataset\"|\"metric\"|\"relationship\", \"ids\": [...]?} objects. Absent/empty ids returns every object of that type compactly; explicit ids return full attributes.",
+            "in": "query",
+            "name": "selections",
+            "required": true,
+            "schema": {
+              "description": "JSON list of {\"semantic_type\": \"dataset\"|\"metric\"|\"relationship\", \"ids\": [...]?} objects. Absent/empty ids returns every object of that type compactly; explicit ids return full attributes.",
+              "title": "Selections",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Restrict to these models by id, slug, or model name (the `model` label each object carries; repeatable, case-insensitive); default = every accessible model.",
+            "in": "query",
+            "name": "model_ids",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Restrict to these models by id, slug, or model name (the `model` label each object carries; repeatable, case-insensitive); default = every accessible model.",
+              "title": "Model Ids"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Semantic Context Endpoint",
+        "tags": [
+          "semantic-models"
+        ]
+      }
+    },
+    "/api/semantic-models/schema": {
+      "get": {
+        "description": "The vendored Apache Ossie JSON Schema for the requested object types \u2014\nthe ``get_semantic_schema`` parity tool.\n\nNot RBAC-gated on any model (there is nothing model-specific to hide \u2014\nit reflects the schema every model is validated against), only on\n``get_current_user`` \u2014 any authenticated user, same floor as the rest of\nthis read surface. Served straight from\n``src.semantic.document_validation``'s vendored, pinned schema, never a\nhand-written copy.",
+        "operationId": "get_semantic_schema_endpoint_api_semantic_models_schema_get",
+        "parameters": [
+          {
+            "description": "Object types to describe: dataset, metric, relationship (repeatable).",
+            "in": "query",
+            "name": "semantic_types",
+            "required": true,
+            "schema": {
+              "description": "Object types to describe: dataset, metric, relationship (repeatable).",
+              "items": {
+                "type": "string"
+              },
+              "title": "Semantic Types",
+              "type": "array"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Semantic Schema Endpoint",
+        "tags": [
+          "semantic-models"
+        ]
+      }
+    },
     "/api/semantic-models/search": {
       "get": {
         "description": "Case-insensitive substring search over slug/name/description, RBAC\nfiltered to models linked to a Data Package the caller can access\n(admins see everything).",
@@ -46663,6 +46906,60 @@
         ]
       }
     },
+    "/api/v1/agents/run-due": {
+      "post": {
+        "description": "Fire every enabled schedule whose cadence says it is due.\n\nGated like every other scheduler-driven sweep (`require_admin` \u2014 the\nscheduler's shared-secret token resolves to a synthetic Admin-group\nuser, see `app.auth.scheduler_token`). Scheduler row: `agents:run-due`\nin `services/scheduler/__main__.py`, `every 1m`, gated on\n`SCHEDULER_AGENT_SCHEDULES` (default on).",
+        "operationId": "run_due_agent_schedules_api_v1_agents_run_due_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Run Due Agent Schedules",
+        "tags": [
+          "agent-schedules"
+        ]
+      }
+    },
     "/api/v1/agents/{agent_id}": {
       "delete": {
         "operationId": "delete_agent_api_v1_agents__agent_id__delete",
@@ -47290,6 +47587,283 @@
         "summary": "Create Agent Response",
         "tags": [
           "agent-runtime"
+        ]
+      }
+    },
+    "/api/v1/agents/{slug}/schedules": {
+      "get": {
+        "operationId": "list_schedules_api_v1_agents__slug__schedules_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Schedules",
+        "tags": [
+          "agent-schedules"
+        ]
+      },
+      "post": {
+        "operationId": "create_schedule_api_v1_agents__slug__schedules_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateScheduleRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Schedule",
+        "tags": [
+          "agent-schedules"
+        ]
+      }
+    },
+    "/api/v1/agents/{slug}/schedules/{schedule_id}": {
+      "delete": {
+        "operationId": "delete_schedule_api_v1_agents__slug__schedules__schedule_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "schedule_id",
+            "required": true,
+            "schema": {
+              "title": "Schedule Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Schedule",
+        "tags": [
+          "agent-schedules"
+        ]
+      },
+      "patch": {
+        "operationId": "update_schedule_api_v1_agents__slug__schedules__schedule_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "schedule_id",
+            "required": true,
+            "schema": {
+              "title": "Schedule Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateScheduleRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Schedule",
+        "tags": [
+          "agent-schedules"
         ]
       }
     },
@@ -49113,7 +49687,7 @@
     },
     "/auth/email/send-link": {
       "post": {
-        "description": "Send a magic link to the user's email.\n\nWhen SMTP/SendGrid is not configured, or LOCAL_DEV_MODE=1, the link is\nlogged to stderr and returned in the response body so a developer can\nclick it without an email transport.",
+        "description": "Send a magic link to the user's email.\n\nWhen SMTP is not configured, or LOCAL_DEV_MODE=1, the link is\nlogged to stderr and returned in the response body so a developer can\nclick it without an email transport.",
         "operationId": "send_magic_link_auth_email_send_link_post",
         "requestBody": {
           "content": {
@@ -49553,7 +50127,7 @@
         ]
       },
       "post": {
-        "description": "Request a password-reset link. Anti-enumeration: same response regardless.\n\nRate limited at the same 5/min as ``/auth/email/send-link`` \u2014 the\nattack surface is identical (single IP rotates random recipient\naddresses, anti-enumeration response shape masks which addresses\nlanded, attacker burns SMTP / SendGrid quota + spams real users).",
+        "description": "Request a password-reset link. Anti-enumeration: same response regardless.\n\nRate limited at the same 5/min as ``/auth/email/send-link`` \u2014 the\nattack surface is identical (single IP rotates random recipient\naddresses, anti-enumeration response shape masks which addresses\nlanded, attacker burns SMTP relay quota + spams real users).",
         "operationId": "reset_request_auth_password_reset_post",
         "requestBody": {
           "content": {
@@ -53025,6 +53599,203 @@
         "summary": "Readyz",
         "tags": [
           "probes"
+        ]
+      }
+    },
+    "/semantic-layer": {
+      "get": {
+        "description": "Level 1 \u2014 every semantic model the caller can read, with its object\ncounts, SQL dialect(s) and validation status.\n\nA ``status='invalid'`` row still lists (an invalid import must be\nvisible, not silent) and renders its stored ``validation_errors``\ninstead of object counts, since an invalid document's ``document_json``\nmay be stale or absent.",
+        "operationId": "semantic_layer_list_semantic_layer_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Semantic Layer List",
+        "tags": [
+          "web"
+        ]
+      }
+    },
+    "/semantic-layer/{slug}": {
+      "get": {
+        "description": "Level 2 \u2014 one model, one tab per object type (datasets default).\n\n``q`` is the cross-link prefilter carried from another tab (a metric\nrow links to its constraints with ``?tab=constraints&q=<metric name>``,\na dataset row links to its metrics with ``?tab=metrics&q=<dataset\nname>``) \u2014 a plain case-insensitive substring match scoped to whichever\ntab is active, not a new search endpoint.",
+        "operationId": "semantic_layer_detail_semantic_layer__slug__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tab",
+            "required": false,
+            "schema": {
+              "default": "datasets",
+              "title": "Tab",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Q",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Semantic Layer Detail",
+        "tags": [
+          "web"
+        ]
+      }
+    },
+    "/semantic-layer/{slug}/{object_id}": {
+      "get": {
+        "description": "Level 3 \u2014 one object, rendering everything the flat projection drops:\na dataset's ``fields[]`` as a Name/Type/Role/Description table, the\n``ai_context`` block in five groups (keywords, synonyms, anti_keywords,\nhints, warnings), a metric's SQL fragment(s) with their dialect, a\nrelationship with both sides linked.\n\n``object_id`` is ``\"<type>:<name>\"`` \u2014 a ``:path`` parameter, not a single\nsegment, so a ``name``/``term`` carrying a ``/`` (a glossary phrase like\n\"ARR/MRR\") is captured whole instead of 404ing; ``partition(\":\")`` splits\non the FIRST colon, so a colon in the name survives too. ``type`` one of\ndataset/metric/relationship/constraint/ glossary, ``name`` the object's\n``name`` (``term`` for glossary),\ncase-insensitively matched.",
+        "operationId": "semantic_layer_object_semantic_layer__slug___object_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "object_id",
+            "required": true,
+            "schema": {
+              "title": "Object Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Semantic Layer Object",
+        "tags": [
+          "web"
         ]
       }
     },
