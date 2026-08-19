@@ -592,6 +592,36 @@
   .ax-name__link { color: inherit; text-decoration: none; }
   .ax-name__link:hover { color: var(--ds-primary); text-decoration: underline; text-underline-offset: 2px; }
 
+  /* ── "What their Library shows" — the Library-shaped preview panel. A
+     compact render of the target's shared bands (same StackResolver.browse
+     projection the /library page uses), so the Simulate lens shows the
+     RESULT above the why-chain. Reads as a quiet card: band label + count,
+     one row per resource, the state chip reusing the .ax-chip vocabulary. */
+  .ax-preview {
+    margin: 12px 0 4px;
+    padding: 12px 14px;
+    background: var(--ds-surface);
+    border: 1px solid var(--ds-border);
+    border-radius: 10px;
+  }
+  .ax-preview__head {
+    font-size: 11px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.4px; color: var(--ds-text-muted); margin-bottom: 8px;
+  }
+  .ax-preview__band + .ax-preview__band { margin-top: 10px; }
+  .ax-preview__label { font-size: 12.5px; font-weight: 600; color: var(--ds-text-secondary); }
+  .ax-preview__n { font-weight: 700; color: var(--ds-text-muted); font-size: 11.5px; margin-left: 2px; }
+  .ax-preview__rows { list-style: none; margin: 4px 0 0; padding: 0; }
+  .ax-preview__row {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    padding: 5px 0; font-size: 13px; color: var(--ds-text-primary);
+    border-top: 1px solid var(--ds-border-light);
+  }
+  .ax-preview__row:first-child { border-top: 0; }
+  .ax-preview__name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ax-preview__name a { color: inherit; text-decoration: none; }
+  .ax-preview__name a:hover { color: var(--ds-primary); text-decoration: underline; text-underline-offset: 2px; }
+
   .ax-chain { margin: 6px 0 0; padding: 0; list-style: none; }
   .ax-chain li {
     position: relative; margin-left: 8px; padding: 9px 0 9px 18px;
@@ -2030,13 +2060,18 @@
     detailBtn.href = `/admin/users/${encodeURIComponent(uid)}`;
     out.innerHTML = `<div class="ax-empty">Resolving…</div>`;
     try {
-      const [effResp, memResp] = await Promise.all([
+      const [effResp, memResp, prevResp] = await Promise.all([
         fetch(`${ADMIN_USERS_API}/${encodeURIComponent(uid)}/effective-access`, { credentials: "include" }),
         fetch(`${ADMIN_USERS_API}/${encodeURIComponent(uid)}/memberships`, { credentials: "include" }),
+        // The RESULT half: what their Library actually shows (the chain
+        // below is the why). Failure degrades to no panel, never to a
+        // broken simulation.
+        fetch(`${ADMIN_USERS_API}/${encodeURIComponent(uid)}/library-preview`, { credentials: "include" }),
       ]);
       const eff = effResp.ok ? await effResp.json() : { items: [], is_admin: false };
       const mem = memResp.ok ? await memResp.json() : [];
-      renderSimulation(uid, eff, Array.isArray(mem) ? mem : (mem.groups || []));
+      const preview = prevResp.ok ? await prevResp.json() : null;
+      renderSimulation(uid, eff, Array.isArray(mem) ? mem : (mem.groups || []), preview);
     } catch (err) {
       out.innerHTML = `<div class="ax-empty">Could not resolve this person's access (${esc(err.message)}).</div>`;
     }
@@ -2060,7 +2095,39 @@
     return idx;
   }
 
-  function renderSimulation(uid, eff, memberships) {
+  // The Library-shaped preview panel — the RESULT the chain explains. Rows
+  // come from the same StackResolver.browse projection the /library page
+  // renders for the person, so this cannot drift from what they'd see; the
+  // state chip speaks the product's one vocabulary: "In stack · Automatic"
+  // (a required-tier grant), "In stack" (added/auto), "Not in stack yet ·
+  // Optional" (classic mode, not subscribed — granted but not delivered).
+  function renderLibraryPreview(preview, uid) {
+    if (!preview || !Array.isArray(preview.sections)) return "";
+    if (!preview.sections.length) {
+      return `<div class="ax-preview"><div class="ax-preview__head">What their Library shows</div>
+        <div class="ax-empty">The shared bands of their Library are empty — nothing granted yet.</div></div>`;
+    }
+    const bands = preview.sections.map((sec) => {
+      const rows = (sec.items || []).map((it) => {
+        const state = it.requirement === "required"
+          ? `<span class="ax-chip ok" title="Automatic — in their stack; only an admin changes this">In stack · Automatic</span>`
+          : it.in_stack
+            ? `<span class="ax-chip ok" title="${it.materialized ? "In their stack and downloaded on their next pull" : "In their stack"}">In stack</span>`
+            : `<span class="ax-chip info" title="Optional — granted, but they haven't added it to their stack">Not in stack yet · Optional</span>`;
+        const name = it.href
+          ? `<a href="${esc(it.href)}?from=admin&user=${encodeURIComponent(uid)}">${esc(it.name)}</a>`
+          : esc(it.name);
+        return `<li class="ax-preview__row"><span class="ax-preview__name">${name}</span>${state}</li>`;
+      }).join("");
+      return `<div class="ax-preview__band">
+        <div class="ax-preview__label">${esc(sec.label)} <span class="ax-preview__n">${(sec.items || []).length}</span></div>
+        <ul class="ax-preview__rows">${rows}</ul></div>`;
+    }).join("");
+    return `<div class="ax-preview">
+      <div class="ax-preview__head">What their Library shows</div>${bands}</div>`;
+  }
+
+  function renderSimulation(uid, eff, memberships, preview) {
     const person = users.find((u) => u.id === uid) || {};
     const items = eff.items || [];
     const idx = resourceIndex();
@@ -2092,10 +2159,16 @@
       if (!rows.length) return null;
       return rows.some((g) => g.requirement === "required") ? "required" : "available";
     };
+    // Optional's suffix words by MEMBERSHIP MODE (the preview reports which
+    // one it computed under): under auto-membership every grant already IS a
+    // stack membership, so "must add it" — the classic-mode fact — would
+    // contradict the Library-shaped panel right below these chips. When the
+    // preview failed to load the mode is unknown; classic is the default.
+    const simMode = preview && preview.mode;
     const tierText = (p) => {
       const t = tierOf(p);
       return t === "required" ? " · Automatic — in their stack"
-           : t === "available" ? " · Optional — must add it"
+           : t === "available" ? (simMode === "auto" ? " · Optional — in their stack" : " · Optional — must add it")
            : "";
     };
 
@@ -2203,6 +2276,7 @@
 
     el("ax-sim-out").innerHTML =
       `<div class="ax-chips">${chips.join("") || '<span class="ax-chip no">Nothing shared with them yet</span>'}</div>
+       ${renderLibraryPreview(preview, uid)}
        <ul class="ax-chain">${chain.join("")}</ul>`;
   }
 

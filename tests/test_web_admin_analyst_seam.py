@@ -242,3 +242,70 @@ class TestPublisherKindAtCreate:
         )
         assert r.status_code == 201, r.text
         assert r.json().get("publisher_kind") == "organization"
+
+
+class TestTheLibraryShapedPreview:
+    """Simulate's third piece: beside the why-chain, a Library-shaped panel
+    showing what the person's /library actually renders — computed by the
+    SAME StackResolver.browse projection that page uses (grants-based, no
+    admin god-mode), so the preview cannot drift from the page it predicts.
+    The rows speak the product's one access vocabulary: "In stack ·
+    Automatic", "In stack", "Not in stack yet · Optional"."""
+
+    API = "/api/admin/users/{uid}/library-preview"
+
+    def test_the_endpoint_is_admin_only(self, seeded_app) -> None:
+        c = seeded_app["client"]
+        r = c.get(self.API.format(uid="analyst1"), headers=_auth(seeded_app["analyst_token"]))
+        assert r.status_code in (401, 403), r.text
+
+    def test_an_unknown_person_is_a_404_not_an_empty_preview(self, seeded_app) -> None:
+        c = seeded_app["client"]
+        r = c.get(self.API.format(uid="u_nobody"), headers=_auth(seeded_app["admin_token"]))
+        assert r.status_code == 404, r.text
+
+    def test_an_unsubscribed_available_grant_is_granted_not_delivered(self, seeded_app) -> None:
+        """An available grant the person never subscribed to is the state the
+        preview exists to expose: granted ≠ delivered. ``materialized`` is
+        False in EVERY membership mode until they subscribe; ``in_stack``
+        follows the instance's mode (auto: every grant is a membership;
+        classic: not until subscribed), and the preview reports which mode
+        it computed under so the pane words the state honestly."""
+        pkg_id = _make_package(seeded_app, "seam-preview-pkg", granted=True)
+        c = seeded_app["client"]
+        r = c.get(self.API.format(uid="analyst1"), headers=_auth(seeded_app["admin_token"]))
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["mode"] in ("auto", "classic")
+        packages = next(s for s in body["sections"] if s["kind"] == "data_package")
+        row = next(i for i in packages["items"] if i["id"] == pkg_id)
+        assert row["requirement"] == "available"
+        assert row["materialized"] is False
+        assert row["in_stack"] is (body["mode"] == "auto")
+        # The row links to the analyst page the preview is a projection of.
+        assert row["href"] == "/catalog/p/seam-preview-pkg"
+
+    def test_a_subscription_flips_the_row_into_the_stack(self, seeded_app) -> None:
+        pkg_id = _make_package(seeded_app, "seam-preview-sub", granted=True)
+        c = seeded_app["client"]
+        sub = c.post(
+            "/api/stack/subscribe",
+            headers=_auth(seeded_app["analyst_token"]),
+            json={"resource_type": "data_package", "resource_id": pkg_id},
+        )
+        assert sub.status_code in (200, 201), sub.text
+        r = c.get(self.API.format(uid="analyst1"), headers=_auth(seeded_app["admin_token"]))
+        packages = next(s for s in r.json()["sections"] if s["kind"] == "data_package")
+        row = next(i for i in packages["items"] if i["id"] == pkg_id)
+        assert row["in_stack"] is True
+        assert row["materialized"] is True
+
+    def test_the_pane_fetches_and_renders_the_preview(self) -> None:
+        """Template hooks: the Simulate lens fetches the endpoint and renders
+        the panel in the standardized vocabulary."""
+        src = ACCESS.read_text()
+        assert "/library-preview" in src
+        assert "ax-preview" in src
+        assert "What their Library shows" in src
+        assert "In stack · Automatic" in src
+        assert "Not in stack yet · Optional" in src

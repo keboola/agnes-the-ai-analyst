@@ -593,6 +593,14 @@ _KEBOOLA_LOGIN_PROJECTS_REASON = (
 )
 
 _EXEMPT: dict[str, str] = {
+    "/api/admin/users/{user_id}/library-preview": (
+        "feeds the Simulate lens's Library-shaped preview on /admin/access — "
+        "a projection of another person's /library page, meaningful only "
+        "beside the why-chain that pane renders around it. The sibling "
+        "/effective-access is grandfathered REST-only for the same reason. "
+        "If an `agnes admin simulate <user>` CLI ever lands, this should "
+        "join its cohort rather than stay exempt"
+    ),
     "/api/auth/keboola/projects": _KEBOOLA_LOGIN_PROJECTS_REASON,
     "/api/admin/mcp-tools/{tool_id}/projection-map": (
         "names which of a lister tool's columns carry an app's id, URL and "

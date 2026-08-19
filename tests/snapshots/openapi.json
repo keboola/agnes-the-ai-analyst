@@ -4872,6 +4872,98 @@
         "title": "KnobEntry",
         "type": "object"
       },
+      "LibraryPreviewItem": {
+        "description": "One row of a person's Library, as the Simulate lens previews it.",
+        "properties": {
+          "href": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Href"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "in_stack": {
+            "title": "In Stack",
+            "type": "boolean"
+          },
+          "materialized": {
+            "title": "Materialized",
+            "type": "boolean"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "requirement": {
+            "title": "Requirement",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "requirement",
+          "in_stack",
+          "materialized"
+        ],
+        "title": "LibraryPreviewItem",
+        "type": "object"
+      },
+      "LibraryPreviewResponse": {
+        "properties": {
+          "mode": {
+            "title": "Mode",
+            "type": "string"
+          },
+          "sections": {
+            "items": {
+              "$ref": "#/components/schemas/LibraryPreviewSection"
+            },
+            "title": "Sections",
+            "type": "array"
+          }
+        },
+        "required": [
+          "mode",
+          "sections"
+        ],
+        "title": "LibraryPreviewResponse",
+        "type": "object"
+      },
+      "LibraryPreviewSection": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/LibraryPreviewItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "label",
+          "items"
+        ],
+        "title": "LibraryPreviewSection",
+        "type": "object"
+      },
       "LintAuditBody": {
         "description": "Body for ``POST /lint-audit``. ``force`` bypasses the self-guard.",
         "properties": {
@@ -11051,7 +11143,7 @@
   "info": {
     "description": "Self-hosted AI harness: governed data access, skills marketplace, corporate memory, and agent workspaces",
     "title": "AI Harness",
-    "version": "0.83.47"
+    "version": "0.83.78"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -28957,6 +29049,71 @@
           }
         },
         "summary": "User Effective Access",
+        "tags": [
+          "access"
+        ]
+      }
+    },
+    "/api/admin/users/{user_id}/library-preview": {
+      "get": {
+        "description": "What the person's Library actually shows \u2014 the RESULT, where\n/effective-access is the why.\n\nComputed by ``StackResolver.browse``, the same grants-based projection\nthe /library page renders the target's shared bands from \u2014 deliberately\nNOT ``browse_admin`` and NOT a re-derivation from the grant rows, so\nthis preview cannot drift from the page it claims to predict (the\nLibrary's contract is no admin god-mode, and that applies to a preview\nOF a person just as it does to the person themselves). Covers the two\ngoverned kinds the resolver serves to the Library (data packages,\nmemory domains); the other granted kinds keep their per-type fold in\nthe Simulate chain.",
+        "operationId": "user_library_preview_api_admin_users__user_id__library_preview_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "title": "User Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LibraryPreviewResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "User Library Preview",
         "tags": [
           "access"
         ]
@@ -50686,7 +50843,7 @@
     },
     "/catalog": {
       "get": {
-        "description": "The Catalog is folded into the Library.\n\nIt browsed the same rows the Library already renders \u2014 data packages,\nmemory domains, marketplace plugins and recipes, off the same\n``StackResolver.browse()`` \u2014 sliced by kind tabs where the Library groups\nby type into collapsible sections. Two destinations for one list, which is\nthe split the Library/Memory/Data-apps merge already named as the problem\n(spec 2026-08-12) and never got round to closing here.\n\nThe one thing this page had that the list did not is the \"what could I\nadd\" question, which is now the Library's Scope segment.\n\n302, not 308, so a reversal is not cached permanently \u2014 same reasoning as\nthe /corporate-memory, /apps and /stack retirements. The route stays\nregistered so bookmarks and old links do not 404, and every detail route\nunder it (``/catalog/p/{slug}``, ``/catalog/t/{id}``, ``/catalog/r/{slug}``,\n``/catalog/semantics``) is untouched: this folds the browse SHELL only.",
+        "description": "The Catalog is folded into the Library.\n\nIt browsed the same rows the Library already renders \u2014 data packages,\nmemory domains, marketplace plugins and recipes, off the same\n``StackResolver.browse()`` \u2014 sliced by kind tabs where the Library groups\nby type into collapsible sections. Two destinations for one list, which is\nthe split the Library/Memory/Data-apps merge already named as the problem\n(spec 2026-08-12) and never got round to closing here.\n\nThe one thing this page had that the list did not is the \"what could I\nadd\" question, which is now the Library's \"Not in stack yet\" filter \u2014\nthe `?scope=available` this sends arrives with that toggle applied.\n\n302, not 308, so a reversal is not cached permanently \u2014 same reasoning as\nthe /corporate-memory, /apps and /stack retirements. The route stays\nregistered so bookmarks and old links do not 404, and every detail route\nunder it (``/catalog/p/{slug}``, ``/catalog/t/{id}``, ``/catalog/r/{slug}``,\n``/catalog/semantics``) is untouched: this folds the browse SHELL only.",
         "operationId": "catalog_catalog_get",
         "parameters": [
           {
@@ -52031,7 +52188,7 @@
     },
     "/marketplace": {
       "get": {
-        "description": "The Marketplace browse is folded into the Library.\n\nIts two tabs were Browse and My Stack \u2014 \"everything there is\" and \"what I\nhave\" \u2014 over store entities and curated plugins the Library already lists\nin full (`store_entities_repo().list(visibility_status=['approved'])`, plus\nevery granted `marketplace_plugin`). That is the same list under a second\nroof, and the tab pair is the same question the Library's Scope segment now\nasks of one list.\n\n`?tab=my` maps to Scope=Yours so an old link lands where it meant to.\n\n302 and the route stays registered, per the /corporate-memory, /apps and\n/stack retirements. Every detail and sub-route is untouched \u2014\n`/marketplace/curated/{...}`, `/marketplace/flea/{id}`, the edit pages \u2014\nbecause this folds the browse SHELL, not the store.",
+        "description": "The Marketplace browse is folded into the Library.\n\nIts two tabs were Browse and My Stack \u2014 \"everything there is\" and \"what I\nhave\" \u2014 over store entities and curated plugins the Library already lists\nin full (`store_entities_repo().list(visibility_status=['approved'])`, plus\nevery granted `marketplace_plugin`). That is the same list under a second\nroof, and the tab pair is the same question the Library now asks of one\nlist: `?tab=my` maps to `scope=mine` (the In stack segment) and the\ndefault browse tab to `scope=available` (the \"Not in stack yet\" filter),\nso an old link lands where it meant to.\n\n302 and the route stays registered, per the /corporate-memory, /apps and\n/stack retirements. Every detail and sub-route is untouched \u2014\n`/marketplace/curated/{...}`, `/marketplace/flea/{id}`, the edit pages \u2014\nbecause this folds the browse SHELL, not the store.",
         "operationId": "marketplace_listing_marketplace_get",
         "parameters": [
           {
