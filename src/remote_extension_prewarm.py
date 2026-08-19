@@ -25,8 +25,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-import duckdb
-
+from src.duckdb_conn import _open_duckdb
 from src.orchestrator_security import get_allowed_extensions, is_builtin_extension
 
 logger = logging.getLogger(__name__)
@@ -38,7 +37,7 @@ def _install_extension(extension: str) -> None:
     Its own short-lived in-memory connection: installing is a filesystem side
     effect, so a later ``LOAD`` on any connection in this container finds it.
     """
-    conn = duckdb.connect()
+    conn = _open_duckdb(":memory:")
     try:
         conn.execute(f"INSTALL {extension} FROM community")
     finally:
@@ -65,7 +64,7 @@ def prewarm_remote_attach_extensions(extracts_dir: Path) -> dict[str, list[str]]
         if not db_file.exists():
             continue
         try:
-            ro = duckdb.connect(str(db_file), read_only=True)
+            ro = _open_duckdb(str(db_file), read_only=True)
         except Exception as exc:  # noqa: BLE001 - an unreadable extract is not fatal
             logger.debug("prewarm: cannot open %s: %s", db_file, exc)
             continue
