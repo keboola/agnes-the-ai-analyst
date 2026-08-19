@@ -41,7 +41,11 @@ def _fail(resp) -> None:
 def add_source(
     kind: str = typer.Option(..., "--kind", help="git | upload | connection"),
     name: str = typer.Option(..., "--name", help="Display name"),
-    adapter: str = typer.Option("native", "--adapter", help="Adapter name (default: native)"),
+    adapter: str = typer.Option(
+        "native",
+        "--adapter",
+        help="Adapter: native | keboola_metastore | snowflake_semantic (default: native)",
+    ),
     repo_url: Optional[str] = typer.Option(None, "--repo-url", help="git: repository URL"),
     ref: Optional[str] = typer.Option(None, "--ref", help="git: branch/tag (default: repo default)"),
     glob: Optional[str] = typer.Option(None, "--glob", help="git: glob for document files (default: **/*.yaml)"),
