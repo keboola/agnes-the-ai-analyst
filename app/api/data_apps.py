@@ -139,6 +139,15 @@ _CONFIG_DEFAULTS = {
     "default_mem_limit": "1g",
     "default_cpus": 1.0,
     "max_apps_per_user": 3,
+    # Container-hardening posture — instance-wide, never per-app-overridable
+    # (an app author choosing their own sandbox escape hatch would defeat the
+    # point). `cap_drop: ALL` / `no-new-privileges` are unconditional and have
+    # no knob; only these two are configurable. `container_read_only` is off
+    # by default because the read-only rootfs needs a tmpfs list verified
+    # against the shipped nginx+supervisord runtime image — see
+    # `src/data_apps/spec.py::build_container_spec`.
+    "container_read_only": False,
+    "container_pids_limit": 512,
 }
 
 # `POST /api/data-apps` quota-check-then-create serialization. Short TTL —

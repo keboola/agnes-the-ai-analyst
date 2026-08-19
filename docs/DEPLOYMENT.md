@@ -721,7 +721,8 @@ via internal git push (or a BYO external repo), reachable at
 
 1. Set `data_apps.enabled: true` in `instance.yaml` (see
    `config/instance.yaml.example` for the full block — runtime image tag,
-   default resource limits, per-user app quota, idle timeout).
+   default resource limits, per-user app quota, idle timeout, container
+   hardening).
 2. Generate the shared secret between the app and the `apps-runner` sidecar
    and put it in `.env`:
 
@@ -735,6 +736,16 @@ via internal git push (or a BYO external repo), reachable at
    ```bash
    docker compose --profile apps up -d
    ```
+
+**Container hardening.** Every app container runs with `cap_drop: ALL`,
+`no-new-privileges` and a process ceiling (`data_apps.container_pids_limit`,
+default 512); none of that needs configuration. `data_apps.container_read_only`
+additionally mounts the container's root filesystem read-only, but ships **off**:
+it needs a tmpfs allowlist verified against your runtime image, and the shipped
+one runs nginx + supervisord, which write to `/var/run`, `/var/log` and
+`/var/cache/nginx` — outside the `/tmp` + `/app` tmpfs Agnes supplies. Turn it
+on only after booting your image with it and extending that list from the real
+failures, or every app crash-loops.
 
 **Subdomain routing (optional).** By default apps are reached at
 `/apps/<slug>/` on the main host. Setting `data_apps.subdomain_base` (e.g.

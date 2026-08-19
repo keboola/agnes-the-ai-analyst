@@ -234,6 +234,22 @@ def up(slug: str, payload: dict = Body(...), x_runner_token: str | None = Header
         environment=spec["env"],
         mem_limit=spec["mem_limit"],
         nano_cpus=int(float(spec["cpus"]) * 1e9),
+        # Defense-in-depth, built by `src/data_apps/spec.py::build_container_spec`:
+        # no Linux capabilities, no privilege escalation, and a fork-bomb
+        # ceiling. Read with `.get()` and secure fallbacks so a spec minted by
+        # an older `app` process mid-upgrade still gets the hardening rather
+        # than a KeyError. Never applied to the chat-sandbox path
+        # (`services/apps_runner/sandbox_api.py::sandbox_up`), which
+        # legitimately needs broader privileges for agent-authored code.
+        cap_drop=spec.get("cap_drop") or ["ALL"],
+        security_opt=spec.get("security_opt") or ["no-new-privileges:true"],
+        pids_limit=int(spec.get("pids_limit") or 512),
+        # A read-only rootfs is opt-in and OFF by default — its tmpfs list is
+        # unverified against the shipped nginx+supervisord image (see
+        # `_READ_ONLY_TMPFS` in the spec builder), so it is the operator's
+        # switch, not a default. Absent from the spec means off.
+        read_only=bool(spec.get("read_only", False)),
+        tmpfs=spec.get("tmpfs") or {},
         ports=spec.get("ports"),
         volumes={
             _resolve_host_path(str(cfg_dir)): {"bind": "/data", "mode": "rw"},
