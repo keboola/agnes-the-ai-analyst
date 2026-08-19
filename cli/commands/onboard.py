@@ -77,11 +77,13 @@ EXIT_INIT_FAILED = 1
 EXIT_CONFIG = 1
 EXIT_UNSAFE_DIR = 21
 EXIT_UNRELATED_DIR = 22
+EXIT_MISSING_DIR = 23
 
 # Directory verdicts.
 DIR_UNSAFE = "unsafe"
 DIR_PREPARED = "prepared"
 DIR_UNRELATED = "unrelated"
+DIR_MISSING = "missing"
 
 # Artefacts a *prepared* workspace folder may already hold. Anything else is
 # unrelated content and needs an explicit `--accept-dir`. `bash.exe.stackdump`
@@ -160,11 +162,20 @@ def classify_workspace_dir(workspace: Path) -> tuple[str, str]:
     if is_initialized_workspace(resolved):
         return DIR_PREPARED, ""
 
+    if not resolved.is_dir():
+        # The command never creates a directory — a target that does not
+        # exist must be refused here, NOT deferred: `agnes init` would create
+        # it and succeed while our own cwd (which later steps write into)
+        # stayed wherever the user happened to be — a directory this gate
+        # never classified.
+        return DIR_MISSING, "does not exist"
+
     try:
         entries = sorted(p.name for p in resolved.iterdir())
     except OSError:
-        # Unreadable or missing: not our call to make here. Treat as prepared
-        # and let `agnes init` produce the real filesystem error.
+        # Exists but unreadable: not our call to make here. Treat as
+        # prepared — the fatal `os.chdir` right after the gate surfaces the
+        # real permission error before anything can be written elsewhere.
         return DIR_PREPARED, ""
 
     unrelated = [name for name in entries if name not in PREPARED_ALLOWLIST]
@@ -607,6 +618,21 @@ def onboard(
                 "  mkdir -p ~/Desktop/agnes-workspace && cd ~/Desktop/agnes-workspace",
             ],
         )
+    if verdict == DIR_MISSING:
+        _emit_refusal(
+            as_json=as_json,
+            workspace=workspace,
+            verdict=verdict,
+            detail=dir_detail,
+            code=EXIT_MISSING_DIR,
+            lines=[
+                f"{workspace} does not exist.",
+                "`agnes onboard` never creates a directory on your behalf.",
+                "NEXT: create the folder yourself, then re-run — for example:",
+                f"  mkdir -p {workspace} && cd {workspace} && agnes onboard",
+                "Nothing was created or changed.",
+            ],
+        )
     if verdict == DIR_UNRELATED and not accept_dir:
         _emit_refusal(
             as_json=as_json,
@@ -635,11 +661,15 @@ def onboard(
     # still never `cd` the user's shell and never create a directory.
     try:
         os.chdir(workspace)
-    except OSError:
-        # Missing or unreadable — not an error to invent here (step 0 defers
-        # those to `agnes init`, which produces the real filesystem error and
-        # aborts the run before any later step can write anything).
-        pass
+    except OSError as exc:
+        # FATAL: if this process cannot enter the directory the gate
+        # approved, no later step is safe — they would write into whatever
+        # directory we happen to be in, one the gate never classified.
+        typer.echo(
+            f"error: cannot enter {workspace}: {exc}. Nothing was created or changed.",
+            err=True,
+        )
+        raise typer.Exit(EXIT_MISSING_DIR) from exc
 
     # --- Config: fail fast rather than invent a server --------------------
     resolved_server = _resolve_server_url(server_url)

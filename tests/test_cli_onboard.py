@@ -703,3 +703,54 @@ def test_no_secret_ever_reaches_the_output(tmp_path, monkeypatch, stubbed):
     payload = json.dumps(json.loads(result.stdout))
     assert "--token " not in payload
     assert "Bearer" not in payload
+
+
+class TestMissingWorkspaceDir:
+    def test_missing_dir_is_refused_with_exit_23(self, tmp_path, monkeypatch, stubbed):
+        """A --workspace target that does not exist is refused outright —
+        the command never creates directories, and deferring to `agnes init`
+        (which WOULD create it) leaves this process's cwd unclassified for
+        every later step."""
+        from typer.testing import CliRunner
+
+        from cli.commands.onboard import EXIT_MISSING_DIR, onboard_app
+
+        monkeypatch.chdir(tmp_path)
+        target = tmp_path / "never-created"
+        result = CliRunner().invoke(onboard_app, ["--workspace", str(target)])
+        assert result.exit_code == EXIT_MISSING_DIR
+        assert not target.exists()
+        assert "does not exist" in result.output
+        assert "mkdir -p" in result.output
+
+    def test_classify_missing_dir(self, tmp_path):
+        from cli.commands.onboard import DIR_MISSING, classify_workspace_dir
+
+        verdict, detail = classify_workspace_dir(tmp_path / "ghost")
+        assert verdict == DIR_MISSING
+        assert "does not exist" in detail
+
+    def test_chdir_failure_is_fatal(self, tmp_path, monkeypatch, stubbed):
+        """If entering the gate-approved directory fails, the run must stop —
+        continuing would let later steps write into an unclassified cwd."""
+        import os as _os
+
+        from typer.testing import CliRunner
+
+        from cli.commands import onboard as onb
+        from cli.commands.onboard import EXIT_MISSING_DIR, onboard_app
+
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        real_chdir = _os.chdir
+
+        def failing_chdir(path):
+            if str(path) == str(ws):
+                raise OSError("simulated permission denied")
+            return real_chdir(path)
+
+        monkeypatch.setattr(onb.os, "chdir", failing_chdir)
+        monkeypatch.chdir(tmp_path)
+        result = CliRunner().invoke(onboard_app, ["--workspace", str(ws)])
+        assert result.exit_code == EXIT_MISSING_DIR
+        assert "cannot enter" in result.output

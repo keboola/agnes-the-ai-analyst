@@ -780,7 +780,16 @@ def _compute_render_dry_run() -> dict:
         # prompt. Surface that to the operator here.
         from src.initial_workspace import PROMPT_SEED_PATHS, resolve_seed_file
 
-        tmpl = resolve_seed_file(PROMPT_SEED_PATHS["install"])
+        # Scan the file the prompt is actually bound to when a custom
+        # git_path is set (same resolution rule as the `{token}` probe
+        # above) — the canonical template matters only when it is the one
+        # analysts get.
+        scan_path = (
+            bound_git_path
+            if bound_git_path is not None
+            else PROMPT_SEED_PATHS["install"]
+        )
+        tmpl = resolve_seed_file(scan_path)
         if tmpl is not None:
             tmpl_text, _tmpl_source = tmpl
             unwired = sorted(
@@ -792,7 +801,7 @@ def _compute_render_dry_run() -> dict:
             )
             if unwired:
                 summary["warnings"].append(
-                    "install-prompt template references placeholder(s) "
+                    f"{scan_path} (install prompt) references placeholder(s) "
                     f"{', '.join(unwired)} that nothing substitutes on the "
                     "git-bound prompt path — they will render literally in "
                     "the analyst's prompt (only {server_url} and Jinja "
