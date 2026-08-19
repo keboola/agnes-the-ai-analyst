@@ -288,6 +288,21 @@ class AgentsRepository:
         ).fetchall()
         return self._rows_to_dicts(rows)
 
+    def agent_for_scope_item(self, item_type: str, item_id: str) -> Optional[Dict[str, Any]]:
+        """The non-deleted agent holding scope item ``(item_type, item_id)``,
+        or None. Routing lookup (e.g. Slack `slack_channel` bindings) — the
+        API layer enforces at most one non-deleted holder per item, so a
+        deterministic single row is returned (oldest first on the off chance
+        a deleted-then-rebound race left two)."""
+        row = self.conn.execute(
+            """SELECT a.* FROM agents a
+                 JOIN agent_scope s ON s.agent_id = a.id
+                WHERE s.item_type = ? AND s.item_id = ? AND a.deleted_at IS NULL
+                ORDER BY a.created_at LIMIT 1""",
+            [item_type, item_id],
+        ).fetchone()
+        return self._row_to_dict(row)
+
     def record_scope_snapshot(self, id: str, session_id: str, agent_id: str, effective_scope: str) -> None:
         self.conn.execute(
             """INSERT INTO agent_scope_snapshots

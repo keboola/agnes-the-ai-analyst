@@ -3,6 +3,17 @@
     "schemas": {
       "AddGrantRequest": {
         "properties": {
+          "allow_mutating": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allow Mutating"
+          },
           "group_id": {
             "title": "Group Id",
             "type": "string"
@@ -20118,7 +20129,7 @@
     },
     "/api/admin/mcp-tools/{tool_id}/grants": {
       "post": {
-        "description": "Grant a user group access to the tool. Idempotent (ON CONFLICT DO NOTHING).",
+        "description": "Grant a user group access to the tool. Idempotent; re-POSTing an\nexisting grant with an explicit ``allow_mutating`` updates the flag in\nplace (the flag is part of the grant, so the re-POST is the edit path),\nwhile omitting it leaves an existing grant's flag untouched.",
         "operationId": "add_mcp_tool_grant_api_admin_mcp_tools__tool_id__grants_post",
         "parameters": [
           {

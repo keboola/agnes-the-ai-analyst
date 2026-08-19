@@ -14,7 +14,7 @@ from services.slack_bot.binding import (
     is_channel_allowlisted,
     lookup_user_email,
 )
-from services.slack_bot.sender import send_ephemeral_to_user, send_thread_reply
+from services.slack_bot.sender import add_reaction, send_ephemeral_to_user, send_thread_reply
 from services.slack_bot.sink import SlackSinkBridge
 
 logger = logging.getLogger(__name__)
@@ -73,6 +73,31 @@ async def _run_logged(
                 logger.exception("best-effort Slack failure notice failed")
 
 
+
+#: enforce_sender_limits raises bare RuntimeError with these reason strings —
+#: on a routed thread the limits key on the AGENT OWNER, so a channel member
+#: who tripped nothing themselves needs to be told what happened (the in-band
+#: sink error frame covers only the locally-attached path; the cross-gateway
+#: forward and the api-replica producer have no local sink).
+_SENDER_LIMIT_MESSAGES = {
+    "daily_budget_exhausted": "The agent's daily spend cap is reached — try again tomorrow.",
+    "max_session_tokens_exhausted": "This thread hit its session token cap — start a new thread.",
+    "rate_limit_exceeded": "The agent is receiving too many messages right now — try again in a few minutes.",
+}
+
+
+async def _send_or_explain_limit(mgr_send, channel: str, slack_user_id: str) -> None:
+    """Run one send coroutine; answer a known sender-limit refusal with an
+    ephemeral instead of letting it vanish into the background-task log."""
+    try:
+        await mgr_send
+    except RuntimeError as exc:
+        msg = _SENDER_LIMIT_MESSAGES.get(str(exc))
+        if msg is None:
+            raise
+        await send_ephemeral_to_user(channel, slack_user_id, msg)
+
+
 async def dispatch_event(app, event: dict[str, Any]) -> None:
     etype = event.get("type")
     if etype == "message":
@@ -121,7 +146,9 @@ def _has_slack_sink(mgr, chat_id: str, channel: str) -> bool:
     return False
 
 
-async def _produce_slack_message(app, *, user_email: str, surface, channel: str, thread_ts: str, text: str) -> None:
+async def _produce_slack_message(
+    app, *, user_email: str, surface, channel: str, thread_ts: str, text: str, agent_id: Optional[str] = None
+) -> None:
     """Thin-producer forward for a Slack message handled on a process with
     NO ChatManager — i.e. an api-role replica, where ``app.state.
     chat_manager`` is ``None`` because only ``Role.GATEWAY`` processes
@@ -156,6 +183,7 @@ async def _produce_slack_message(app, *, user_email: str, surface, channel: str,
         surface=surface,
         slack_channel_id=channel,
         slack_thread_ts=thread_ts if surface == Surface.SLACK_THREAD else None,
+        agent_id=agent_id,
     )
     await chat_manager_mod.produce_inbound_user_message(
         repo,
@@ -363,43 +391,175 @@ async def _handle_mention(app, event: dict) -> None:
         )
         return
 
-    # 6. Thread session: reuse or create; reject if owned by someone else.
+    # 5b. Channel→agent binding: an agent holding scope item
+    # ('slack_channel', <channel_id>) owns mentions in this channel — the
+    # session runs with that agent's persona, scope, and budget. Unbound
+    # channels keep the agent-less behavior bit-for-bit. Best-effort: a
+    # routing lookup failure degrades to unrouted rather than dropping the
+    # mention.
+    from src.repositories import agents_repo
+
+    bound_agent = None
+    routed_session_user: Optional[str] = None
+    try:
+        bound_agent = agents_repo().agent_for_scope_item("slack_channel", channel)
+    except Exception:
+        logger.exception("slack_channel binding lookup failed for %s — continuing unrouted", channel)
+    if bound_agent is not None:
+        # A routed session runs AS THE AGENT'S OWNER end to end — session
+        # row, sandbox workspace, rails, personal override, and brokered
+        # authority all resolve from one identity, exactly like the agent's
+        # API/scheduled runs. The mentioner's identity gates participation
+        # (allowlist + binding + CHAT above) and rides along as sender
+        # attribution; it must NOT shape the workspace, or the same bound
+        # agent would present different rails per invoker and pick up an
+        # arbitrary channel member's personal CLAUDE.local.md as standing
+        # instructions (Devin Review on this PR).
+        from src.agent_scope_intersection import agent_is_passthrough
+
+        if agent_is_passthrough(bound_agent):
+            # Defense in depth for rows predating the API-side guard: an
+            # all-'all' agent's routed turns would ride the owner's PLAIN
+            # identity via the broker's passthrough optimization — never
+            # route to one.
+            logger.warning(
+                "slack_channel binding for %s skipped: agent %s has every scope mode 'all'",
+                channel,
+                bound_agent.get("id"),
+            )
+            bound_agent = None
+        owner_row = None if bound_agent is None else users_repo().get_by_id(str(bound_agent["owner_user_id"]))
+        if bound_agent is None:
+            pass
+        elif owner_row is None or not owner_row.get("email"):
+            logger.warning(
+                "slack_channel binding for %s points at agent %s with no resolvable owner — continuing unrouted",
+                channel,
+                bound_agent.get("id"),
+            )
+            bound_agent = None
+        elif not can_access(owner_row["id"], ResourceType.CHAT.value, "chat", conn):
+            # The routed session runs AS the owner, so the owner's CHAT grant
+            # is the authority that matters here — revoking a user's chat
+            # access must also stop their agent's channel turns, or the
+            # binding would keep spawning sessions under a revoked identity.
+            logger.warning(
+                "slack_channel binding for %s skipped: agent %s's owner no longer holds the CHAT grant",
+                channel,
+                bound_agent.get("id"),
+            )
+            bound_agent = None
+        else:
+            routed_session_user = owner_row["email"]
+
+    # 6. Thread session: reuse or create. The dedupe is per (channel,
+    # thread_ts) regardless of user, so which identity a mention runs as is
+    # decided by the EXISTING row first and the binding second — a binding
+    # governs NEW threads only:
+    #   - existing SERVICE thread (agent_id set — only routing creates these
+    #     on the Slack surface): shared; any gated member continues it, even
+    #     after the channel is unbound (the session keeps its stored agent).
+    #   - existing HUMAN thread (no agent_id — e.g. started before the
+    #     channel was bound): belongs to its starter, exactly as pre-binding;
+    #     the mention runs unrouted so the starter's thread keeps working.
+    #   - no existing thread: the binding routes it (owner-owned session).
     mgr = app.state.chat_manager
     from app.chat.types import Surface
 
     existing = repo.get_slack_thread_session(channel, thread_ts)
-    if existing is not None and existing.user_email != user_email:
-        # Resolved through the factory (not a raw query on the DuckDB-typed
-        # conn) so the owner's slack_user_id is read from whichever backend
-        # is active.
+    existing_agent_id = getattr(existing, "agent_id", None) if existing is not None else None
+    service_thread = existing_agent_id is not None
+    if existing is not None and bound_agent is not None and existing_agent_id != bound_agent["id"]:
+        # Pre-binding human thread, or a thread routed to a previously-bound
+        # agent: this mention does not run the currently-bound agent.
+        bound_agent = None
+        routed_session_user = None
+
+    # The identity the session row (and everything keyed off it) belongs to.
+    # (routed_session_user is non-None exactly when bound_agent survived all
+    # the routing checks above — the two are set and cleared together.)
+    session_user = routed_session_user if routed_session_user is not None else user_email
+
+    if existing is not None and not service_thread and existing.user_email != user_email:
+        # Human thread owned by someone else. Resolved through the factory
+        # (not a raw query on the DuckDB-typed conn) so the owner's
+        # slack_user_id is read from whichever backend is active.
         owner_row = users_repo().get_by_email(existing.user_email)
         owner_slack_id = owner_row.get("slack_user_id") if owner_row else None
         owner_ref = f"<@{owner_slack_id}>" if owner_slack_id else "another user"
         await send_ephemeral_to_user(channel, slack_user_id, f"This thread belongs to {owner_ref}.")
         return
 
+    if bound_agent is not None or service_thread:
+        # Instant acknowledgement on the mentioning message, before the
+        # (seconds-long) session spawn — but AFTER every gate that can still
+        # refuse the mention (allowlist, identity, CHAT grant, thread
+        # ownership above): an ack on a mention we then reject would promise
+        # an answer that never comes. Fire-and-forget; add_reaction swallows
+        # its own failures.
+        _schedule(add_reaction(channel, event["ts"], "eyes"))
+
     # 7. Strip our own mention token. (Before session creation so the
     # api-role thin-producer branch below can forward the cleaned text.)
     clean = _strip_bot_mention(text, bot_user_id)
 
+    # 7b. Routed sessions get a one-time context header on their FIRST turn
+    # so an agent granted Slack tools can operate on the correct thread —
+    # the sandbox otherwise never learns channel/ts identifiers. Keyed on
+    # "no message ever delivered", not on row existence: create_session
+    # persists the row BEFORE the liveness wait, so a first mention that
+    # times out on startup leaves a zero-message session behind and the
+    # retry must still carry the header. A pre-binding session with real
+    # messages gets none (dedupe wins over the binding).
+    if (bound_agent is not None or service_thread) and (existing is None or (existing.message_count or 0) == 0):
+        clean = (
+            f"[slack context: channel={channel} thread_ts={thread_ts} "
+            f"message_ts={event['ts']} sender=<@{slack_user_id}>]\n{clean}"
+        )
+    elif bound_agent is not None or service_thread:
+        # Follow-up turn on a shared routed thread: the session belongs to
+        # the agent's owner, so without attribution the agent cannot tell
+        # WHO is asking (the reviewer requesting a revision vs. the author).
+        clean = f"[slack sender=<@{slack_user_id}>]\n{clean}"
+
     if mgr is None:
         # api-role replica (no ChatManager in this process): thin-producer
         # forward — see _handle_dm's twin branch and _produce_slack_message.
-        await _produce_slack_message(
-            app,
-            user_email=user_email,
-            surface=Surface.SLACK_THREAD,
-            channel=channel,
-            thread_ts=thread_ts,
-            text=clean,
+        await _send_or_explain_limit(
+            _produce_slack_message(
+                app,
+                user_email=session_user,
+                surface=Surface.SLACK_THREAD,
+                channel=channel,
+                thread_ts=thread_ts,
+                text=clean,
+                agent_id=bound_agent["id"] if bound_agent else None,
+            ),
+            channel,
+            slack_user_id,
         )
         return
-    session = await mgr.create_session(
-        user_email=user_email,
-        surface=Surface.SLACK_THREAD,
-        slack_channel_id=channel,
-        slack_thread_ts=thread_ts,
-    )
+    from app.chat.manager import ConcurrencyCapHit
+
+    try:
+        session = await mgr.create_session(
+            user_email=session_user,
+            surface=Surface.SLACK_THREAD,
+            slack_channel_id=channel,
+            slack_thread_ts=thread_ts,
+            agent_id=bound_agent["id"] if bound_agent else None,
+        )
+    except ConcurrencyCapHit:
+        # Routed sessions pool on the AGENT OWNER's concurrency cap, so a
+        # busy bound channel can hit it through no fault of the mentioner —
+        # a silent drop (background log only) reads as the bot ignoring
+        # people. Say so instead.
+        await send_ephemeral_to_user(
+            channel,
+            slack_user_id,
+            "The agent is at capacity right now — please try again in a few minutes.",
+        )
+        return
 
     # 8. Attach (NOT awaited — keep the 3s ack budget). wave-2F task 7: skip
     # entirely when a different, still-live gateway already owns this
@@ -407,10 +567,14 @@ async def _handle_mention(app, event: dict) -> None:
     # here would otherwise trigger a cross-gateway takeover; slack_origin
     # rides the forwarded envelope so the OWNER re-establishes the sink.
     if await _owned_by_other_gateway(session.id):
-        await mgr.send_user_message(
-            session.id,
-            clean,
-            slack_origin={"channel": channel, "thread_ts": thread_ts},
+        await _send_or_explain_limit(
+            mgr.send_user_message(
+                session.id,
+                clean,
+                slack_origin={"channel": channel, "thread_ts": thread_ts},
+            ),
+            channel,
+            slack_user_id,
         )
         return
     if not _is_attached(mgr, session.id):
@@ -418,7 +582,7 @@ async def _handle_mention(app, event: dict) -> None:
             channel=channel,
             thread_ts=thread_ts,
             chat_id=session.id,
-            owner=user_email,
+            owner=session.user_email,
             web_base=getattr(app.state, "public_url", ""),
         )
         _schedule(mgr.attach(session.id, sink))
@@ -438,11 +602,14 @@ async def _handle_mention(app, event: dict) -> None:
             channel=channel,
             thread_ts=thread_ts,
             chat_id=session.id,
-            owner=user_email,
+            owner=session.user_email,
             web_base=getattr(app.state, "public_url", ""),
         )
         _schedule(mgr.attach(session.id, sink))
 
     # 9. Inject the user turn. send_user_message(chat_id, text) — no sender_email
     #    (per-sender attribution arrives with Phase 5a's multi-sink refactor).
-    await mgr.send_user_message(session.id, clean)
+    #    A sender-limit refusal (keyed on the session owner — the AGENT owner
+    #    for routed threads) is answered with an ephemeral; the attached sink
+    #    also posts the in-band error frame to the thread.
+    await _send_or_explain_limit(mgr.send_user_message(session.id, clean), channel, slack_user_id)
