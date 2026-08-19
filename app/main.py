@@ -1202,6 +1202,25 @@ async def lifespan(app):
         except Exception as e:
             logger.warning("Could not seed system groups: %s", e)
 
+        # Seed the chat resource grant for Everyone on first boot. Chat
+        # visibility is gated on an EXPLICIT grant (app.web.router::
+        # _compute_can_chat uses has_explicit_grant, deliberately NOT
+        # can_access — admin god-mode does not reveal chat). A fresh
+        # instance with chat.enabled: true and no grant ships with a fully
+        # working chat backend that nobody, including admins, can see
+        # without hand-typing /chat. See app/chat/grant_seed.py for the
+        # first-boot-vs-revoked reasoning.
+        try:
+            from app.chat.config import load_chat_config
+            from app.chat.grant_seed import seed_everyone_chat_grant
+            from app.secrets import _state_dir as _seed_chat_state_dir
+
+            _chat_cfg_early = load_chat_config(_seed_chat_state_dir() / "instance.yaml")
+            if seed_everyone_chat_grant(chat_enabled=_chat_cfg_early.enabled):
+                logger.info("Seeded chat resource grant for Everyone (fresh instance, chat.enabled=true)")
+        except Exception as e:
+            logger.warning("Could not seed chat resource grant: %s", e)
+
         # Seed the six canonical memory domains into the ACTIVE state backend.
         # On DuckDB the schema ladder already seeds them (fresh-install branch /
         # _v51_to_v52), so ensure_seed no-ops; on Postgres nothing else does —
@@ -1320,7 +1339,33 @@ async def lifespan(app):
                         added_by="app.main:seed_admin",
                     )
             except Exception as e:
-                logger.warning(f"Could not seed admin: {e}")
+                # Loud on purpose (issue: 26h burned on a customer deploy
+                # diagnosing a silent seed failure). "Bootstrap the admin
+                # user" is step 6/9 in docs/ONBOARDING.md — a failed seed
+                # means the fresh instance has NO working way in, and that
+                # used to be visible only by reading container logs on the
+                # VM. ERROR + exc_info puts the traceback in the boot log;
+                # the audit_log row makes it durable and queryable from
+                # /admin/activity (action=startup.seed_admin_failed) even
+                # by an operator who only found the instance later. Still
+                # Exception (never BaseException) — a hard crash here would
+                # take down an instance that may still be reachable by other
+                # means (existing OAuth users, an already-provisioned admin).
+                logger.error("Seed admin failed for %s: %s", seed_email, e, exc_info=True)
+                try:
+                    from src.repositories import audit_repo
+
+                    audit_repo().log(
+                        user_id=None,
+                        action="startup.seed_admin_failed",
+                        resource=seed_email,
+                        result="error",
+                        params={"error": str(e)},
+                    )
+                except Exception:
+                    # A second failure here must never mask the ERROR
+                    # already logged above, nor crash startup.
+                    logger.debug("Could not record seed-admin failure to audit_log", exc_info=True)
 
     # Seed the synthetic scheduler user when SCHEDULER_API_TOKEN is configured,
     # so the very first cron tick after a fresh deploy already has a valid
