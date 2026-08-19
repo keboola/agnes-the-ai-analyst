@@ -686,3 +686,48 @@ def test_welcome_support_independent_of_overview(fresh_db, monkeypatch):
         assert_element(body, "div", class_="home-hero-footnotes")
     assert_element(body, "div", class_="home-hero-support")
     assert "SUPPORT_ONLY_MARKER" in body
+
+
+def test_release_smoke_gate_assertions_hold_against_the_shipped_page(fresh_db):
+    """Pin the two things `scripts/smoke-test.sh` step 11 greps for.
+
+    That gate runs only *after* a merge to `main`, against the freshly
+    built image — so when the page's contract changes underneath it, the
+    first sign is a failed release plus an automatic `:stable` rollback,
+    not a red PR. That is exactly what happened in 0.83.86: the thin
+    install prompt removed the connector tiles and the finale roll-call
+    (deliberately, pinned by `test_connectors_section_removed_from_home`
+    directly above), the smoke gate still required both, and two
+    consecutive releases rolled back before anyone read the smoke log.
+
+    This test moves that gate's assertions into the pre-merge suite so
+    the same drift fails on the PR instead. Keep it in step with
+    `scripts/smoke-test.sh` step 11 — if you change one, change both.
+    """
+    from src.db import get_system_db, close_system_db
+
+    conn = get_system_db()
+    try:
+        _, sess = _make_user_and_session(conn, onboarded=False)
+    finally:
+        conn.close()
+        close_system_db()
+
+    c = _client()
+    body = c.get("/home", cookies={"access_token": sess}).text
+    assert body.strip(), "/home rendered empty — the smoke gate reads this as a renderer crash"
+    for name in ("Asana", "Google Workspace", "Atlassian"):
+        assert name in body, (
+            f"/home no longer names {name!r}; scripts/smoke-test.sh step 11 greps for it "
+            "and will fail the release with an automatic :stable rollback"
+        )
+
+    # Where the connector roll-call moved: `agnes onboard` step 6 reads
+    # this endpoint (cli/commands/onboard.py::_fetch_connectors).
+    resp = c.get("/api/connectors/manifest", cookies={"access_token": sess})
+    assert resp.status_code == 200, resp.text
+    connectors = resp.json().get("connectors")
+    assert isinstance(connectors, list) and connectors, (
+        "the bundled connector manifest is empty — `agnes onboard` would tell the "
+        "operator this instance offers nothing to set up"
+    )
