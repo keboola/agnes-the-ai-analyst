@@ -10,6 +10,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- **A DuckDB→Postgres migration on a customer VM was undone by the next auto-upgrade tick, five minutes later.** Three pieces of code assembled the docker-compose overlay list independently and disagreed: the startup script derived it from `instance.yaml`'s `database.backend` and wrote it to `/opt/agnes/.env` (VM create/reboot only), `agnes-auto-upgrade.sh` trusted whatever was already in `.env` with a fallback that omitted the Postgres overlays entirely, and `agnes-state-applier.sh` built its own hardcoded `-f` array. The state applier performs the migration — it flips `database.backend` to `side_car` but never touched `.env`, so the next auto-upgrade recreated the stack **without the Postgres container** while the app was still configured for `postgres:5432`. The migration only became durable after a full VM reboot, where the startup script recomputed the value. `scripts/ops/agnes-compose-file.sh` is now the single resolver both host scripts call, so a backend flip takes effect without a reboot and the no-`.env` fallback can no longer drop Postgres. An operator who hand-set `COMPOSE_FILE` is still honored, with a logged warning rather than a silent override.
+- **Overlay ordering in the state applier was inverted.** `docker-compose.host-mount.yml` must load last so its `volumes: !override` on `data-migrate` can see the service `docker-compose.postgres.yml` defines; the applier appended the Postgres overlays after it. Correct by construction now that both scripts share the resolver.
+
+### Removed
+
+- **`compose_ref` is retired — it never pinned anything.** The module variable was threaded to the VM as `COMPOSE_REF` and then never read, while `docs/ONBOARDING.md` advertised it to new operators as the way to pin compose files to a `stable-YYYY.MM.N` tag. An operator could set it, plan and apply cleanly, and believe their compose files were pinned when nothing was. The variable stays **declared** with a validation that rejects any non-empty value, so an existing root fails at plan time with a message naming the retirement instead of continuing to pin nothing — the same treatment `ui_layout` and `experience` already get. Pin `image_tag` instead; compose files are extracted from that image.
+
 ## [0.83.70] - 2026-08-18
 
 ### Internal
