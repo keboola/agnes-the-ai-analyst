@@ -4626,6 +4626,7 @@
         // tolerate either an empty call or a {bucket, source_table, ...}
         // shape from a hypothetical future prefill.
         table = table || {};
+        _clearAllFieldErrors(document.getElementById('registerBqModal'));
         document.getElementById('bqDataset').value = table.bucket || '';
         document.getElementById('bqSourceTable').value = table.source_table || table.name || '';
         document.getElementById('bqViewName').value = table.name || '';
@@ -4657,6 +4658,7 @@
         // (Q2='whole'); the kb-source-table fields are visible.
         var modal = document.getElementById('registerKeboolaModal');
         if (!modal) return;
+        _clearAllFieldErrors(modal);
         var radio = modal.querySelector('input[name="kbSyncMode"][value="whole"]');
         if (radio) radio.checked = true;
         ['kbViewName', 'kbBucket', 'kbSourceTable', 'kbSourceQuery',
@@ -4708,6 +4710,7 @@
         table = table || {};
         var modal = document.getElementById('registerSnowflakeModal');
         if (!modal) return;
+        _clearAllFieldErrors(modal);
         var accessRadio = modal.querySelector('input[name="sfAccessMode"][value="live"]');
         if (accessRadio) accessRadio.checked = true;
         var syncRadio = modal.querySelector('input[name="sfSyncMode"][value="whole"]');
@@ -5101,6 +5104,96 @@
         group.style.display = '';
     }
 
+    // Normalizes a failed-fetch response body into one readable string.
+    // FastAPI's automatic 422 validation errors put `detail` as an ARRAY of
+    // {loc, msg, type} objects — passing that straight to `new Error()` (or
+    // string-concatenating it) renders as "[object Object]" instead of the
+    // actual reason, which is exactly what an admin needs to fix a bad
+    // register-table payload. Also unwraps the {error, kind, details} shape
+    // BqAccess raises for config/auth failures. Deliberately OUTSIDE the
+    // Keboola-only guard below: BigQuery/Databricks/Snowflake register and
+    // edit-save call this on every instance, Keboola-connected or not.
+    function _apiErrorMessage(d, fallback) {
+        var detail = d && d.detail;
+        if (typeof detail === 'string' && detail) return detail;
+        if (Array.isArray(detail) && detail.length) {
+            return detail.map(function(e) {
+                if (e && typeof e === 'object') {
+                    var loc = Array.isArray(e.loc) ? e.loc.filter(function(p) { return p !== 'body'; }).join('.') : '';
+                    return (loc ? loc + ': ' : '') + (e.msg || JSON.stringify(e));
+                }
+                return String(e);
+            }).join('; ');
+        }
+        if (detail && typeof detail === 'object') {
+            return detail.error || detail.message || detail.msg || JSON.stringify(detail);
+        }
+        return (d && d.error) || (d && d.message) || fallback;
+    }
+
+    // Pins a validation error onto the actual input — red border + an
+    // inline message right under it — instead of leaving the operator to
+    // map a toast's field name back to a label by eye. Self-clears on the
+    // field's next edit. Also outside the guard — used by every connector's
+    // register form, not just Keboola's.
+    function _clearFieldError(el) {
+        if (!el) return;
+        el.classList.remove('field-invalid');
+        if (el._fieldErrorHint) { el._fieldErrorHint.remove(); el._fieldErrorHint = null; }
+    }
+
+    function _setFieldError(el, message) {
+        if (!el) return;
+        _clearFieldError(el);
+        el.classList.add('field-invalid');
+        var hint = document.createElement('div');
+        hint.className = 'field-invalid-hint';
+        hint.textContent = message;
+        el.insertAdjacentElement('afterend', hint);
+        el._fieldErrorHint = hint;
+        el.addEventListener('input', function clear() {
+            _clearFieldError(el);
+            el.removeEventListener('input', clear);
+        });
+    }
+
+    // A register modal's open/reset routine blanks inputs by setting
+    // `.value` directly, which never fires the `input` event `_setFieldError`
+    // listens for — so a previous failed attempt's red borders/messages
+    // would otherwise still be sitting on a freshly reopened, empty form.
+    // Call this once from each modal's open function.
+    function _clearAllFieldErrors(container) {
+        (container || document).querySelectorAll('.field-invalid').forEach(_clearFieldError);
+    }
+
+    // Maps a failed register/precheck's FastAPI 422 `detail` array (each
+    // {loc, msg, type}) back onto the form via `fieldMap` ({payloadKey:
+    // inputElementId}), so e.g. detail [{loc:["body","name"],msg:"Field
+    // required"}] marks the visible "View name" input instead of the
+    // toast just saying "name: Field required" and leaving the operator to
+    // guess which box that is. Always clears prior marks first — a fixed
+    // field must not still look broken on the next attempt. Returns the
+    // first marked element (for scrolling into view) or null when `detail`
+    // isn't a validation-error array (a plain-string business error, e.g.
+    // "already registered", has no single field to blame).
+    function _applyFieldErrors(detail, fieldMap) {
+        Object.keys(fieldMap).forEach(function(k) {
+            _clearFieldError(document.getElementById(fieldMap[k]));
+        });
+        if (!Array.isArray(detail)) return null;
+        var firstEl = null;
+        detail.forEach(function(e) {
+            if (!e || typeof e !== 'object' || !Array.isArray(e.loc)) return;
+            var key = e.loc[e.loc.length - 1];
+            var el = fieldMap[key] && document.getElementById(fieldMap[key]);
+            if (!el) return;
+            _setFieldError(el, e.msg || 'Invalid value');
+            if (!firstEl) firstEl = el;
+        });
+        if (firstEl) firstEl.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        return firstEl;
+    }
+
     // Emitted whenever Keboola is reachable by EITHER route — gating this
     // whole block on the legacy scalar alone meant a registry-connected,
     // non-keboola-typed instance never got these functions defined at all
@@ -5141,84 +5234,6 @@
             return [];
         }
         return [];
-    }
-
-    // Normalizes a failed-fetch response body into one readable string.
-    // FastAPI's automatic 422 validation errors put `detail` as an ARRAY of
-    // {loc, msg, type} objects — passing that straight to `new Error()` (or
-    // string-concatenating it) renders as "[object Object]" instead of the
-    // actual reason, which is exactly what an admin needs to fix a bad
-    // register-table payload. Also unwraps the {error, kind, details} shape
-    // BqAccess raises for config/auth failures.
-    function _apiErrorMessage(d, fallback) {
-        var detail = d && d.detail;
-        if (typeof detail === 'string' && detail) return detail;
-        if (Array.isArray(detail) && detail.length) {
-            return detail.map(function(e) {
-                if (e && typeof e === 'object') {
-                    var loc = Array.isArray(e.loc) ? e.loc.filter(function(p) { return p !== 'body'; }).join('.') : '';
-                    return (loc ? loc + ': ' : '') + (e.msg || JSON.stringify(e));
-                }
-                return String(e);
-            }).join('; ');
-        }
-        if (detail && typeof detail === 'object') {
-            return detail.error || detail.message || detail.msg || JSON.stringify(detail);
-        }
-        return (d && d.error) || (d && d.message) || fallback;
-    }
-
-    // Pins a validation error onto the actual input — red border + an
-    // inline message right under it — instead of leaving the operator to
-    // map a toast's field name back to a label by eye. Self-clears on the
-    // field's next edit.
-    function _clearFieldError(el) {
-        if (!el) return;
-        el.classList.remove('field-invalid');
-        if (el._fieldErrorHint) { el._fieldErrorHint.remove(); el._fieldErrorHint = null; }
-    }
-
-    function _setFieldError(el, message) {
-        if (!el) return;
-        _clearFieldError(el);
-        el.classList.add('field-invalid');
-        var hint = document.createElement('div');
-        hint.className = 'field-invalid-hint';
-        hint.textContent = message;
-        el.insertAdjacentElement('afterend', hint);
-        el._fieldErrorHint = hint;
-        el.addEventListener('input', function clear() {
-            _clearFieldError(el);
-            el.removeEventListener('input', clear);
-        });
-    }
-
-    // Maps a failed register/precheck's FastAPI 422 `detail` array (each
-    // {loc, msg, type}) back onto the form via `fieldMap` ({payloadKey:
-    // inputElementId}), so e.g. detail [{loc:["body","name"],msg:"Field
-    // required"}] marks the visible "View name" input instead of the
-    // toast just saying "name: Field required" and leaving the operator to
-    // guess which box that is. Always clears prior marks first — a fixed
-    // field must not still look broken on the next attempt. Returns the
-    // first marked element (for scrolling into view) or null when `detail`
-    // isn't a validation-error array (a plain-string business error, e.g.
-    // "already registered", has no single field to blame).
-    function _applyFieldErrors(detail, fieldMap) {
-        Object.keys(fieldMap).forEach(function(k) {
-            _clearFieldError(document.getElementById(fieldMap[k]));
-        });
-        if (!Array.isArray(detail)) return null;
-        var firstEl = null;
-        detail.forEach(function(e) {
-            if (!e || typeof e !== 'object' || !Array.isArray(e.loc)) return;
-            var key = e.loc[e.loc.length - 1];
-            var el = fieldMap[key] && document.getElementById(fieldMap[key]);
-            if (!el) return;
-            _setFieldError(el, e.msg || 'Invalid value');
-            if (!firstEl) firstEl = el;
-        });
-        if (firstEl) firstEl.scrollIntoView({ block: 'center', behavior: 'smooth' });
-        return firstEl;
     }
 
     // Error message that names WHICH project failed, not just why — with
@@ -5812,6 +5827,7 @@
         table = table || {};
         var modal = document.getElementById('registerDatabricksModal');
         if (!modal) return;
+        _clearAllFieldErrors(modal);
         // Default to synced/whole.
         var syncedRadio = modal.querySelector('input[name="dbxAccessMode"][value="synced"]');
         if (syncedRadio) syncedRadio.checked = true;
