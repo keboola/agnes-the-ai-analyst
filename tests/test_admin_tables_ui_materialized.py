@@ -145,8 +145,8 @@ def test_edit_modal_has_bq_parity_fields(seeded_app, bq_instance):
     # Edit modal has the same Discover / List tables / Use-as-base buttons
     # as Register so the operator can re-pick the source from autocomplete
     # without dropping the row.
-    assert "discoverBqDatasets('editBqDatasetList')" in html
-    assert "discoverBqTables('editBqDataset', 'editBqTableList')" in html
+    assert "discoverBqDatasets(this, 'editBqDatasetList')" in html
+    assert "discoverBqTables(this, 'editBqDataset', 'editBqTableList')" in html
     assert "prefillFromTable('editBqSourceQuery')" in html
     assert 'id="editBqDatasetList"' in html
     assert 'id="editBqTableList"' in html
@@ -281,8 +281,8 @@ def test_keboola_edit_modal_parity(seeded_app, monkeypatch):
         assert 'id="editKbSourceQuery"' in html
         assert 'id="editKbSyncSchedule"' in html
         # Discover/List/Use-as-base buttons mirror Register.
-        assert "discoverKeboolaBuckets('editKbBucketList')" in html
-        assert "discoverKeboolaTables('editKbBucket', 'editKbTableList')" in html
+        assert "discoverKeboolaBuckets(this, 'editKbBucketList')" in html
+        assert "discoverKeboolaTables(this, 'editKbBucket', 'editKbTableList')" in html
         assert "prefillFromKeboolaTable('editKbSourceQuery')" in html
         # v26: Strategy dropdown re-added inside Direct-extract panel
         assert 'id="editKbStrategy"' in html

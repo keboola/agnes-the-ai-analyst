@@ -10,6 +10,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- **Discover/List tables on the Register-table drawer gave no sign of life, and its toasts rendered invisibly.** The Keboola Discover/List-tables buttons and the BigQuery Discover/List-tables buttons fired their fetch with no loading state — a slow or hung request looked identical to a dead button. They now disable and relabel ("Discovering…" / "Listing…") for the duration of the call. Separately, the result/error toast (`.toast`, z-index 200) rendered *behind* the register drawer and every other modal on the page (`.ds-drawer` / legacy `.modal-overlay`, z-index 1200 / 1000) — so a "Loaded N buckets" success or a discovery/registration error fired while completely hidden behind the very panel the operator was looking at. Toast z-index raised above both.
+- **A failed register/precheck/update showed the literal text "[object Object]", and even readable errors left the operator guessing which box to fix.** FastAPI's automatic 422 validation errors return `detail` as an array of `{loc, msg, type}` objects; several register-table, precheck, and edit-save error handlers coerced that straight into a string. A shared `_apiErrorMessage()` helper now unwraps validation-error arrays into a readable `field: message` list (and the `{error, kind, details}` shape BigQuery's connectivity checks raise) across the Keboola/BigQuery/Databricks/Snowflake register, precheck, and edit-save paths. On top of the toast, a companion `_applyFieldErrors()` now pins each returned validation error onto the actual input (red border + inline message) via a per-form field map, and the register forms also validate the obvious required combinations (Bucket + Source Table, or the custom-SQL View name + SQL) client-side before the request ever goes out.
+- **The Keboola register drawer didn't make clear that pasting a Table ID and filling Bucket + Source Table are alternatives, not both required.** Added a visual "or fill in directly" divider between them, matching the pattern already used on `/admin/data-sources`.
+
 ## [0.83.80] - 2026-08-19
 
 ### Fixed
