@@ -10,11 +10,17 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
-## [0.83.73] - 2026-08-18
+## [0.83.74] - 2026-08-18
 
 ### Internal
 
 - **Faster cold start of the FastAPI app.** `app/api/admin_mcp.py`, `app/api/admin_source_connections.py`, and `app/api/agent_sessions.py` no longer import `connectors/mcp/extractor.py` (pandas), `connectors/mcp/client.py` (the `mcp` SDK), or `app/chat/e2b_provider.py` (the e2b SDK) at module top — those are only pulled in inside the specific handler/route that actually needs them, deferring the cost from every process/test-worker startup to first real use. No behavior change; `connectors/mcp/extractor.py` and `connectors/mcp/client.py` themselves are untouched (their own top-level SDK imports stay, since several tests monkeypatch them as module attributes).
+
+## [0.83.73] - 2026-08-19
+
+### Fixed
+
+- **Sliced exports from an AWS-staged Keboola project now download instead of failing outright.** A sliced export's manifest lists one URL per slice in whatever scheme the project's backend stages on, and the two sliced download paths rewrote `gs://` (GCS REST + OAuth bearer) and `azure://` (HTTPS + SAS) while assuming AWS had already handed back a presigned HTTPS URL. Projects whose files are staged on S3 list raw `s3://` URIs instead, which `requests` cannot fetch at all — every sliced export on such a project died with `No connection adapters were found for 's3://…'`, and since parquet exports are sliced whenever the table is large enough, that is most real tables. `s3://` is now rewritten to the bucket's HTTPS endpoint and signed with the STS credentials the file detail already carries (SigV4 in the request headers, never presigned into the query string, so the signature stays out of proxy and access logs). A slice naming a bucket other than the export's own is refused rather than signed — the manifest is fetched from the Storage API, but its contents should not be able to aim the export's credentials somewhere the export does not cover. All three sliced download paths now sign through one helper, so a backend fixed for one is fixed for the others: `download_file`'s CSV concat path, `download_file_slices` (which parquet uses), and the legacy SDK client that incremental and partitioned syncs still download through — the last of these rewrote `gs://` only, so on an AWS-staged project it failed exactly the same way.
 
 ## [0.83.72] - 2026-08-18
 
@@ -83,7 +89,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Fixed
 
 - **The MCP SDK is capped below 2.0, which is what turned every CI shard red.** `pyproject.toml` declared an unbounded `mcp>=1.28.1` and CI installs from that range rather than from `uv.lock` (which still pins 1.28.1, so no local run ever reproduced it). When the 2.x SDK shipped, resolution picked it up on every branch at once and two unrelated import-time breakages landed together: `mcp.server.fastmcp` moved (five modules import `FastMCP` from it, including `app/api/mcp/foundation_tools.py`), and the streamable-HTTP transport was renamed `streamablehttp_client` → `streamable_http_client`. Since `app.main` reaches `connectors/mcp/client.py` at import time, neither failed one test — they errored out collection for essentially every test that builds the app, with nothing in any diff to explain it. The cap restores the SDK the callsites are written against; speaking the 2.x API is a migration to do with the callsites, not ahead of them. Two guards in `tests/test_mcp_client_transport.py` hold the line: one asserts the installed SDK still exports `mcp.server.fastmcp` and a streamable-HTTP transport accepting the `headers=` the callsite passes, the other records that the renamed entry point is **not** a drop-in — it takes an `http_client` where the old one takes `headers`, so aliasing the new name to the old (a tempting one-line 'fix' that passes every mocked test in that file) would raise `TypeError` on every HTTP MCP connection and silently send no auth header. A third guard ties `agnes mcp`'s install hint to pyproject's bound — it read `uv pip install 'mcp>=1.0'`, which now resolves the 2.x SDK, so someone hitting the FastMCP `ImportError` and following the printed instruction landed back on the same error. `uv.lock`'s recorded specifier is synced to match; the lock is not in CI's install path and was already stale on `main` (it records 0.83.49), so it is not regenerated here.
-
 
 ## [0.83.56] - 2026-08-18
 
