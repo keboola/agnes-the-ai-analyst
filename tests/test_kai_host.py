@@ -1329,6 +1329,14 @@ def test_every_reader_facing_surface_names_the_scope_the_route_enforces():
     human-facing description may contradict it. The engine's WIRE KEY is still
     `mcp`, which is why the check is written against the phrases that name a
     *scope* rather than against the bare word.
+
+    Twice now this guard has been narrower than the drift. It first omitted
+    CHANGELOG.md, so the release notes — the surface an integrator is most
+    likely to read — kept telling them to mint `mcp`; and its literal phrases
+    did not survive markdown emphasis, so "gated on the **`mcp`** ticket scope"
+    slipped past the "the `mcp` ticket scope" probe. Emphasis is therefore
+    stripped before matching, and every surface that describes this route to a
+    human is in the list.
     """
     from pathlib import Path
 
@@ -1345,19 +1353,30 @@ def test_every_reader_facing_surface_names_the_scope_the_route_enforces():
         "the `mcp` ticket scope",
         "the ``mcp`` ticket scope",
         "``mcp`` scope\n  onto ``mcp``",
+        # Survived the first version of this guard: emphasis broke the probe
+        # above, and CHANGELOG.md was not a surface.
+        "gated on the `mcp` ticket scope",
+        "adds the optional `mcp` scope",
+        "any `mcp`-scoped ticket reaches this route",
     )
     surfaces = (
         "app/api/kai.py",
         "app/switches.py",
         "docs/api-reference.md",
         "docs/feature-flags.md",
+        "CHANGELOG.md",
     )
+
+    def normalize(text: str) -> str:
+        """Strip markdown emphasis so a bolded scope name cannot hide from a probe."""
+        return text.replace("*", "").replace("_", "")
+
     for rel in surfaces:
         text = Path(rel).read_text(encoding="utf-8")
         # Quoting a corrected claim is allowed; asserting it is not.
-        prose = text.replace('this once read "ANY ``mcp``-scoped ticket', "")
+        prose = normalize(text.replace('this once read "ANY ``mcp``-scoped ticket', ""))
         for phrase in stale:
-            assert phrase.lower() not in prose.lower(), (
+            assert normalize(phrase).lower() not in prose.lower(), (
                 f"{rel} still describes the tool route's scope as `mcp`; the route "
                 f"enforces `kai_mcp` and refuses `mcp` with a 401 ({phrase!r})"
             )
@@ -1367,3 +1386,126 @@ def test_every_reader_facing_surface_names_the_scope_the_route_enforces():
         assert "kai_mcp" in Path(rel).read_text(encoding="utf-8"), (
             f"{rel} must name the `kai_mcp` scope an operator's switch actually issues"
         )
+
+
+def test_a_native_sweep_does_reach_the_engines_egress_tickets_on_purpose(seeded_app, kai_env):
+    """The isolation between the two runtimes is one-way, deliberately.
+
+    The engine's rotation is scope-limited and cannot touch a native sandbox's
+    tickets. The native sweep is scope-BLIND and *can* touch the engine's: it
+    deletes every scope for the id except `SWEEP_EXEMPT_SCOPES`. That costs one
+    interrupted engine turn when someone opens the same conversation in web
+    chat, and it is kept because `/api/broker/anthropic` does not check that the
+    session row still exists — so this sweep, reached via `kill()` on permanent
+    delete, is what stops a deleted conversation's `llm` ticket from spending
+    budget for the rest of its TTL.
+
+    Pinned so that "fix the interruption" cannot quietly become "leave a usable
+    LLM ticket behind after a delete". Anyone widening the exemption must make
+    this test fail and go read why.
+    """
+    from src.repositories import ticket_repo
+
+    body = _mint_session(seeded_app)
+    credential = _claims(body["token"])["downstream_credential"]
+    chat_id = body["chat_id"]
+
+    resp = seeded_app["client"].post("/api/kai/tickets", headers={"Authorization": f"Bearer {credential}"})
+    assert resp.status_code == 200
+    egress = resp.json()
+    assert "llm" in egress
+
+    repo = ticket_repo()
+    assert repo.resolve(egress["llm"]) is not None
+
+    # The native sandbox lifecycle sweep, exactly as app/chat/manager.py calls it.
+    repo.revoke_session(chat_id)
+
+    assert repo.resolve(egress["llm"]) is None, (
+        "the native sweep must still reach the engine's egress tickets — that is "
+        "what protects the LLM budget after a conversation is deleted"
+    )
+    # ...while the session credential itself survives, or the engine would be
+    # cut off for good with no channel to hand it a replacement.
+    assert repo.resolve(credential) is not None, (
+        "SWEEP_EXEMPT_SCOPES must keep the long-lived credential out of the sweep"
+    )
+
+
+def test_an_editor_prompt_beats_a_git_template_here_as_it_does_natively(seeded_app, kai_env, monkeypatch, tmp_path):
+    """Override mode is NOT a blanket "the clone's CLAUDE.md wins".
+
+    `run_init`'s OVERRIDE MODE branch skips the rendered-prompt write, which
+    reads as though a registered git template owns CLAUDE.md outright — and an
+    earlier version of this module read it that way. But that branch takes its
+    tree from `build_zip`, which has already overlaid the admin's EDITOR-mode
+    prompt over the clone's `workspace/CLAUDE.md` ("THE chokepoint" for #622).
+    The two mechanisms are layered, not exclusive, so suppressing the prompt in
+    override mode made this route the one surface running the shipped template
+    while every other surface read the admin's edit.
+    """
+    import src.initial_workspace as iw
+
+    import app.chat.workspace_prompt as wp
+
+    clone = tmp_path / "iwt"
+    (clone / "workspace").mkdir(parents=True)
+    (clone / "workspace" / "CLAUDE.md").write_text("# the git template's own\n", encoding="utf-8")
+    monkeypatch.setattr(iw, "get_initial_workspace_dir", lambda: clone)
+    monkeypatch.setattr(iw, "is_configured", lambda: True)
+    monkeypatch.setattr(wp, "render_sandbox_workspace_prompt", lambda *a, **k: "# the admin's edit\n")
+
+    credential = _claims(_mint_session(seeded_app)["token"])["downstream_credential"]
+    headers = {"Authorization": f"Bearer {credential}"}
+
+    # editor-mode prompt set -> the admin's edit wins, override mode included.
+    monkeypatch.setattr(iw, "resolve_prompt", lambda kind, conn=None: ("# admin body", "editor"))
+    got = _claude_md_from(seeded_app["client"].get("/api/kai/workspace", headers=headers).content)
+    assert got == "# the admin's edit\n", (
+        "an editor-mode Workspace Prompt must reach the engine in override mode too — "
+        "build_zip overlays it for the native sandbox"
+    )
+
+    # git-bound prompt -> the clone's file ships verbatim, as build_zip leaves it.
+    monkeypatch.setattr(iw, "resolve_prompt", lambda kind, conn=None: (None, "git"))
+    got = _claude_md_from(seeded_app["client"].get("/api/kai/workspace", headers=headers).content)
+    assert got == "# the git template's own\n"
+
+
+def test_a_deleted_conversation_cannot_spend_budget_with_an_issued_llm_ticket(seeded_app, kai_env):
+    """The deletion hole must close without depending on a chat manager.
+
+    `/api/broker/anthropic` is the one place an ALREADY-issued egress ticket can
+    still spend the instance's LLM budget. The sweep that used to bound it runs
+    only via `ChatManager.kill`, and `_kill_quietly` returns early when
+    `app.state.chat_manager is None` — the normal state for an instance that
+    embeds the engine and does not run Agnes's own sandbox chat. So on exactly
+    the target deployment, a permanently deleted conversation left its ticket
+    spendable for the rest of its TTL.
+    """
+    from src.repositories import chat_session_repo, ticket_repo
+
+    body = _mint_session(seeded_app)
+    credential = _claims(body["token"])["downstream_credential"]
+    chat_id = body["chat_id"]
+
+    egress = seeded_app["client"].post("/api/kai/tickets", headers={"Authorization": f"Bearer {credential}"}).json()
+    llm_ticket = egress["llm"]
+    assert ticket_repo().resolve(llm_ticket) is not None
+
+    # The row goes away with NO sandbox kill and NO ticket sweep — precisely the
+    # engine-only shape, where chat_manager is None and _kill_quietly no-ops.
+    chat_session_repo().hard_delete_session(chat_id)
+    assert ticket_repo().resolve(llm_ticket) is not None, (
+        "fixture check: the ticket must still resolve, or this proves nothing"
+    )
+
+    resp = seeded_app["client"].post(
+        "/api/broker/anthropic/v1/messages",
+        headers={"Authorization": f"Bearer {llm_ticket}"},
+        json={"model": "claude-sonnet-4-5", "messages": [], "max_tokens": 1},
+    )
+    assert resp.status_code == 401, (
+        f"a deleted conversation's llm ticket still reached the LLM broker ({resp.status_code})"
+    )
+    assert resp.json()["detail"] == "ticket_session_gone"

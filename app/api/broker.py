@@ -704,6 +704,31 @@ async def anthropic_proxy(request: Request, row: Dict[str, Any] = Depends(requir
     also authenticate `agnes-api`, which requires `main` and replays the whole
     non-admin `/api/*` surface. Found by Devin Review on #1235."""
     _require_scope(row, "main", "llm")
+    # An `llm` ticket belongs to the embedded kai-agent engine, and its
+    # authority is bounded by the session ROW, not only by its own TTL. This
+    # route is the one place an already-issued egress ticket can still spend the
+    # instance's LLM budget, and nothing else on the path checks the row:
+    # `_require_session_credential` gates `/api/kai/*`, so it stops a deleted
+    # conversation from minting NEW tickets while leaving an outstanding one
+    # spendable.
+    #
+    # `app/api/kai.py` used to justify that gap by pointing at the scope-blind
+    # `revoke_session` sweep that `ChatManager.kill` runs on permanent delete.
+    # That sweep is conditional: `_kill_quietly` returns early when
+    # `app.state.chat_manager is None`, which is the NORMAL state for an
+    # instance that embeds the engine without running Agnes's own sandbox chat
+    # (six branches in `app/main.py` set it, `chat.enabled` false among them).
+    # On exactly the deployment this integration targets, nothing revoked the
+    # ticket at all. Checked here instead — the fix that module already named as
+    # the honest one.
+    #
+    # Narrowed to `llm` on purpose: `main` is the native relay's scope and its
+    # traffic is the busy path, so it keeps paying nothing. Offloaded because a
+    # synchronous DB read must not run on the event loop.
+    # Found by Devin Review on this PR.
+    if row.get("scope") == "llm":
+        if await asyncio.to_thread(lambda: chat_session_repo().get_session(row["session_id"])) is None:
+            raise HTTPException(status_code=401, detail="ticket_session_gone")
     raw_body = await request.body()
     headers = {
         k: v
