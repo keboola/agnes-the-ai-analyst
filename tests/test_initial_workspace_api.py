@@ -1136,3 +1136,29 @@ def test_dry_run_accepts_bundled_template(monkeypatch):
     summary = api._compute_render_dry_run()
     assert summary["ok"] is True
     assert not any("render literally" in w for w in summary["warnings"]), summary["warnings"]
+
+
+def test_dry_run_scans_bound_template_for_unwired_placeholders(monkeypatch):
+    """When the install prompt is git-bound to a custom path, the unwired-
+    placeholder scan must inspect THAT file — the one analysts actually get —
+    not the canonical default template."""
+    from app.api import initial_workspace as api
+    from src import initial_workspace as iw
+
+    def fake_resolve(rel):
+        if rel == "install-prompt/custom.md.tmpl":
+            return ("Broken fork with {connector_tiles} inside", "iwt")
+        if rel == "install-prompt/template.md.tmpl":
+            return ("Clean default at {server_url}", "iwt")
+        return None
+
+    monkeypatch.setattr("src.connectors_manifest.load_manifest", lambda: [])
+    monkeypatch.setattr(iw, "resolve_seed_file", fake_resolve)
+    monkeypatch.setattr(
+        "src.repositories.welcome_template_repo",
+        lambda: _FakePromptMetaRepo({"source_mode": "git", "git_path": "install-prompt/custom.md.tmpl"}),
+    )
+    summary = api._compute_render_dry_run()
+    assert any(
+        "{connector_tiles}" in w and "custom.md.tmpl" in w for w in summary["warnings"]
+    ), summary["warnings"]
