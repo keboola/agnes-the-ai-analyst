@@ -801,6 +801,12 @@ _EXEMPT: dict[str, str] = {
         "credential authenticates against is a privilege-escalation seam). "
         "Reachable via `agnes admin connection chat-tools`; never MCP-exposed"
     ),
+    "/api/admin/data-sources/{source_type}/tables": (
+        "admin-only schema/table discovery for the 'Add data source' wizard's Snowflake "
+        "picker — the connection-less sibling of the Keboola listing below, browse-only "
+        "with no analyst CLI/MCP analogue; `agnes admin register-table` already covers "
+        "the registration step it feeds"
+    ),
     "/api/admin/source-connections/{connection_id}/tables": (
         "admin-only bucket/table discovery for the 'Add data source' wizard (#755) — "
         "keboola-only browse-and-register primitive with no analyst CLI/MCP analogue; "

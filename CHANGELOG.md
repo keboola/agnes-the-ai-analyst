@@ -10,6 +10,27 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+- **The "Add data source" wizard can now browse a Snowflake account instead of
+  asking you to type schema and table names.** `GET /api/admin/data-sources/
+  {source_type}/tables` (admin-only, Snowflake today) lists the schemas and
+  tables the configured user can see, and the wizard's Snowflake step renders
+  them as the same schema-grouped checkbox picker the Keboola step uses —
+  filter, select-all and per-schema counts included. Hand-written rows remain
+  underneath for anything the listing cannot reach, and a failed listing
+  degrades to them instead of blocking the step. Snowflake was the last source
+  type whose step was free-text only: nothing validated the strings against the
+  account, and because the registry id is composed as `schema + "_" + table`, a
+  name pasted with its schema prefix already attached silently produced a
+  doubled id (`gold_gold_bi_supply_demand`) pointing at a table that does not
+  exist — which then never heals, since only a re-save re-runs the
+  remote-extract build. Listing is read-only: it attaches, reads
+  `information_schema.tables`, and writes no extract and no registry row. It
+  refuses hosts outside `AGNES_REMOTE_ATTACH_HOST_ALLOWLIST` (the same egress
+  gate the extract build applies) and answers 502 rather than an empty listing
+  when the driver or catalog query fails, so "the account has no tables" is
+  never a lie.
+
 ## [0.83.86] - 2026-08-19
 
 ### Added
