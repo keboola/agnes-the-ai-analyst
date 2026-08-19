@@ -164,6 +164,19 @@ def test_auto_upgrade_tick_cannot_be_gated_by_the_engine():
     assert "WARN: kai-agent engine sidecar failed to start; base stack recreated" in body
 
 
+def test_auto_upgrade_tick_retries_a_downed_engine_every_tick():
+    # The drift-gated recreate never fires on a no-change tick, so an engine
+    # that failed at boot would stay down indefinitely without this: a
+    # tolerant, ENGINE-TARGETED `up -d kai-agent` runs on every tick, placed
+    # BEFORE the drift detection. Targeting the service (not the full list)
+    # is load-bearing — a full-list up here would recreate drifted app
+    # services and bypass the sync-defer guard.
+    body = Path("scripts/ops/agnes-auto-upgrade.sh").read_text()
+    retry = body.index("up -d kai-agent")
+    assert "retrying next tick" in body
+    assert retry < body.index("Drift-based change detection")
+
+
 def test_tpl_engine_services_are_bounded():
     body = TPL.read_text()
     # Caps + hardening, same posture as the app/scheduler caps and the
