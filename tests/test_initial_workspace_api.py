@@ -1220,3 +1220,27 @@ def test_dry_run_bound_template_render_error_is_surfaced(monkeypatch):
     summary = api._compute_render_dry_run()
     assert summary["ok"] is False
     assert any("does not render" in e for e in summary["errors"]), summary["errors"]
+
+
+def test_dry_run_meta_read_failure_skips_render_validation(monkeypatch):
+    """A meta-read failure makes `_install_prompt_bound_git_path` fall back
+    to the canonical path (conservative for the `{token}` probe), but render
+    validation must NOT fire on that fallback — an editor-mode instance never
+    renders the seed template, so a transient DB hiccup must not hard-fail
+    the sync over it."""
+    from app.api import initial_workspace as api
+    from src import initial_workspace as iw
+
+    def fake_resolve(rel):
+        if rel == "install-prompt/template.md.tmpl":
+            return ("Hello {{ user.email.bogus() }} at {server_url}", "iwt")
+        return None
+
+    def boom():
+        raise RuntimeError("db hiccup")
+
+    monkeypatch.setattr("src.connectors_manifest.load_manifest", lambda: [])
+    monkeypatch.setattr(iw, "resolve_seed_file", fake_resolve)
+    monkeypatch.setattr("src.repositories.welcome_template_repo", boom)
+    summary = api._compute_render_dry_run()
+    assert not any("does not render" in e for e in summary["errors"]), summary["errors"]

@@ -135,7 +135,10 @@ def _has_agnes_marker(workspace: Path) -> bool:
         if (workspace / ".agnes").exists():
             return True
         settings = workspace / ".claude" / "settings.json"
-        return settings.is_file() and "agnes" in settings.read_text(encoding="utf-8")
+        # Bytes, not text: a settings file with invalid UTF-8 must classify
+        # the folder, not crash the gate (UnicodeDecodeError is a ValueError,
+        # which the OSError guard would miss).
+        return settings.is_file() and b"agnes" in settings.read_bytes()
     except OSError:
         return False
 

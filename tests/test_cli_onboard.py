@@ -729,3 +729,13 @@ def test_generic_project_without_agnes_marker_is_unrelated(tmp_path):
     verdict, detail = onb.classify_workspace_dir(tmp_path)
     assert verdict == onb.DIR_UNRELATED
     assert "CLAUDE.md" in detail
+
+
+def test_non_utf8_settings_json_does_not_crash_the_gate(tmp_path):
+    """A Claude Code settings.json with invalid UTF-8 must classify the
+    folder, not blow up the gate with UnicodeDecodeError."""
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude" / "settings.json").write_bytes(b"\xff\xfe{broken}")
+    (tmp_path / "CLAUDE.md").write_text("# something\n", encoding="utf-8")
+    verdict, _ = onb.classify_workspace_dir(tmp_path)
+    assert verdict == onb.DIR_UNRELATED

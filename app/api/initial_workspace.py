@@ -830,7 +830,22 @@ def _compute_render_dry_run() -> dict:
             # surfaces to the operator instead. Editor mode skips this: the
             # seed file is not rendered at all there, and the DB override
             # was already validated at save time.
-            if bound_git_path is not None:
+            # Unlike the `{token}` probe (where a meta-read failure must stay
+            # conservative — a false block beats shipping a token-embedding
+            # seed), render validation must only fire on a CONFIRMED git
+            # binding: `_install_prompt_bound_git_path` falls back to the
+            # canonical path on a meta-read failure, and hard-failing the
+            # sync over a template an editor-mode instance never renders
+            # would turn a transient DB hiccup into a false alarm.
+            confirmed_git = False
+            try:
+                from src.repositories import welcome_template_repo
+
+                confirmed_git = welcome_template_repo().get_meta().get("source_mode") == "git"
+            except Exception:  # noqa: BLE001 — meta unreadable → not confirmed
+                confirmed_git = False
+
+            if bound_git_path is not None and confirmed_git:
                 from app.api.welcome import (
                     _VALIDATION_STUB_CONTEXT,
                     _VALIDATION_STUB_CONTEXT_ANON,
