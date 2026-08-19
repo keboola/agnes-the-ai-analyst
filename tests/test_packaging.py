@@ -118,3 +118,63 @@ def test_structured_output_module_imports_cleanly():
     import importlib
 
     importlib.import_module("app.chat.structured_output")
+
+
+# ---------------------------------------------------------------------------
+# CLI wheel slimming — server-only deps must live in [server], not core.
+#
+# The CLI wheel is `uv build --wheel` of [project.dependencies] alone
+# (Dockerfile installs `.[server,...]` on top for server processes). A dep
+# that only `app/`, `services/`, or `connectors/` code needs — a web
+# framework, a Postgres driver, a BigQuery/gRPC SDK, the chat runner's agent
+# SDK — bloats every analyst's `uv tool install` for no reason and, worse,
+# can drag in a transitive pin (see the kbcstorage/urllib3 story above) that
+# conflicts with a CLI-only resolver context. Mirrors the #176 lesson this
+# module already guards, in the opposite direction: some deps must NOT be
+# core.
+# ---------------------------------------------------------------------------
+
+# Representative sample of the heavy, server-only deps moved out of core.
+# Not exhaustive — the point is to catch a regression where one of these
+# creeps back into [project.dependencies], not to duplicate the full
+# pyproject.toml dependency list here.
+_SERVER_ONLY_SAMPLE = ("claude-agent-sdk", "fastapi", "sqlalchemy", "psycopg", "google-cloud-bigquery")
+
+# The dependencies that MUST remain core even though the import graph looks
+# server-heavy at a glance — see the #176 rationale above (anthropic/openai)
+# and the corresponding jsonschema tests above.
+_CORE_ANCHORS = ("anthropic", "openai", "jsonschema")
+
+
+def test_server_only_deps_are_declared_in_server_extra():
+    """Each dependency in the server-only sample must appear in
+    [project.optional-dependencies].server."""
+    cfg = _read_pyproject()
+    server = cfg["project"]["optional-dependencies"]["server"]
+    for name in _SERVER_ONLY_SAMPLE:
+        assert any(dep.split("[")[0].split(">")[0].split("=")[0].split("<")[0].strip() == name for dep in server), (
+            f"{name} must be declared in [project.optional-dependencies].server"
+        )
+
+
+def test_server_only_deps_are_absent_from_core():
+    """None of the server-only sample may leak back into
+    [project].dependencies — that's the wheel-bloat regression this guard
+    exists to catch."""
+    cfg = _read_pyproject()
+    core = cfg["project"]["dependencies"]
+    core_names = {dep.split("[")[0].split(">")[0].split("=")[0].split("<")[0].strip() for dep in core}
+    for name in _SERVER_ONLY_SAMPLE:
+        assert name not in core_names, f"{name} leaked into [project].dependencies — the CLI wheel must not ship it"
+
+
+def test_core_anchors_remain_core_despite_the_server_split():
+    """anthropic/openai/jsonschema look server-heavy but must stay core —
+    see the #176 rationale and the dedicated tests above. This guard fails
+    loudly if a future re-tier accidentally sweeps them into [server]
+    alongside the genuinely server-only deps."""
+    cfg = _read_pyproject()
+    core = cfg["project"]["dependencies"]
+    core_names = {dep.split("[")[0].split(">")[0].split("=")[0].split("<")[0].strip() for dep in core}
+    for name in _CORE_ANCHORS:
+        assert name in core_names, f"{name} must stay in [project].dependencies"
