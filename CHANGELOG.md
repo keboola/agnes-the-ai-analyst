@@ -48,7 +48,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   The Keboola connector now writes the `_meta` row + inner view like BigQuery,
   Snowflake and Databricks already did (creating `extract.duckdb` when absent,
   which the other three can assume exists), fail-soft so a registration hiccup
-  never loses a published parquet.
+  never loses a published parquet. Which half of that actually carries the
+  fix is worth stating: the `_meta` write opens `extract.duckdb` as a second
+  write handle, and `src/orchestrator.py` already documents that exact call
+  colliding with the read-only ATTACH `rebuild()` holds (`Unique file handle
+  conflict`) for BigQuery's equivalent — which is why the 0.41.0
+  filesystem-fallback pass over `data/*.parquet` exists. So on an instance
+  where that collision fires, the master view still comes from the fallback;
+  the load-bearing change here is **creating `extract.duckdb` at all** for a
+  materialized-only Keboola source, since without it the orchestrator skipped
+  the whole source before the fallback could ever run.
 - **A failed Snowflake table registration now says why, in both places an
   operator looks.** `POST /api/admin/register-table` answered a failed
   remote-extract rebuild with 500 + `{status: "rebuild_failed", message: …}`;
