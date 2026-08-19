@@ -456,8 +456,12 @@ def _render_summary(
         for c in connectors:
             summary = c.get("short_summary", "")
             typer.echo(f"  {c.get('slug', ''):24s} {c.get('display_name', ''):24s} {summary}")
-        typer.echo("  Set one up: run `/connect` in Claude Code, or just ask (e.g. \"set up Jira\").")
-        typer.echo("  Read the steps first with: agnes connectors show <slug>")
+        # Deliberately NOT advertising a slash command here: none of the
+        # Agnes-managed commands (`cli/lib/commands.py`) is a connector
+        # launcher, and a seed template may or may not ship one. Both hints
+        # below exist on every install.
+        typer.echo('  Set one up: ask in the next Claude Code session (e.g. "set up Jira"),')
+        typer.echo("  or read the steps yourself with: agnes connectors show <slug>")
 
     typer.echo("")
     typer.echo(_NEXT_BLOCK)

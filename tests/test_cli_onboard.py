@@ -243,6 +243,8 @@ def test_connectors_section_lists_available_connectors(tmp_path, monkeypatch, st
     out = _clean(runner.invoke(onboard_app, ["--workspace", str(tmp_path)]).output)
     assert "Asana" in out
     assert "Tasks and projects." in out
+    # The follow-up hint points at surfaces that exist on every install.
+    assert "agnes connectors show" in out
 
 
 def test_connectors_section_skipped_when_the_api_fails(tmp_path, monkeypatch, stubbed):
