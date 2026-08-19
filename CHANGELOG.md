@@ -10,15 +10,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
-### Fixed
-
-- **Session pipeline no longer skips a jsonl that is appended while `process_session` is running or while its hash is being computed.** `services/session_pipeline/runner.py` records `read_at = datetime.now(UTC)` before `compute_file_hash(jsonl_path)` and passes it to `SessionProcessorStateRepository.mark_processed(..., read_at=read_at)`. Both DuckDB and Postgres repositories accept the new optional `read_at` and store it as `processed_at`. This closes the mtime-vs-`processed_at` race where a slow hash or processor appends to the file mid-run, the file mtime ends up older than `processed_at`, and the next tick drops the file without re-checking the hash.
-- **The Databricks `/admin/data-sources` wizard rejects malformed workspace hosts client-side and surfaces clearer errors.** It now parses the host with `new URL`, rejects missing hostname, userinfo, path, query strings such as the `?o=...` copied from the browser, and fragments, then reconstructs a bare `https://hostname[:port]`. Save failures also display the server's `detail`/`message` instead of a generic "save failed" string.
+## [0.83.85] - 2026-08-19
 
 ### Changed
 
 - **`cli/skills/agnes-table-registration.md` no longer recommends `agnes admin discover-and-register --source-type=bigquery`.** Bulk discovery is Keboola-only; the skill now points to `agnes admin register-table` for BigQuery, Databricks, and Snowflake with concrete examples.
 
+### Fixed
+
+- **Session pipeline no longer skips a jsonl that is appended while `process_session` is running or while its hash is being computed.** `services/session_pipeline/runner.py` records `read_at = datetime.now(UTC)` before `compute_file_hash(jsonl_path)` and passes it to `SessionProcessorStateRepository.mark_processed(..., read_at=read_at)`. Both DuckDB and Postgres repositories accept the new optional `read_at` and store it as `processed_at`. This closes the mtime-vs-`processed_at` race where a slow hash or processor appends to the file mid-run, the file mtime ends up older than `processed_at`, and the next tick drops the file without re-checking the hash.
+- **The Databricks `/admin/data-sources` wizard rejects malformed workspace hosts client-side and surfaces clearer errors.** It now parses the host with `new URL`, rejects missing hostname, userinfo, path, query strings such as the `?o=...` copied from the browser, and fragments, then reconstructs a bare `https://hostname[:port]`. Save failures also display the server's `detail`/`message` instead of a generic "save failed" string.
+
+### Internal
+
+- **`.test_durations` regenerated on CI hardware — 1,189 more tests now carry a measured duration (19,180 → 20,369).** pytest-split balances the 8 shards off this file, and a test with no entry is assigned blind, which is how one shard ran 24.5 minutes while another finished in 8. Two latent defects surfaced today precisely because adding test files reshuffles those boundaries (a module-level sample cache cleared by a class-scoped fixture, and a ~5%-per-run flake in the Snowflake pasted-key path), so this refresh ships in a PR that gives the new split a full CI round rather than merging a generated file unverified — the automated weekly PR that produced it had no checks run against it at all.
 ## [0.83.84] - 2026-08-19
 
 ### Added
