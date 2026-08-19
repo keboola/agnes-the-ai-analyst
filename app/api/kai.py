@@ -273,16 +273,23 @@ def _create_session_and_credential(user_email: str) -> tuple[str, str]:
     flight then gets `401 invalid_or_expired_ticket` from the broker until the
     next turn re-mints. One interrupted answer, self-healing.
 
-    Sparing the engine's egress scopes too would trade that for something
-    worse. `/api/broker/anthropic` authenticates an `llm` ticket without
-    checking that the session row still exists — only `/api/kai/*` does, via
-    `_require_session_credential` — so today it is precisely this blind sweep,
-    reached through `kill()` on permanent delete, that stops a deleted
-    conversation's ticket from spending the instance's LLM budget for the rest
-    of its TTL. Making the sweep selective would reopen that, and the honest
-    fix is a session-existence check on the broker's hot path, not a wider
-    exemption here. The interruption is the cheaper failure, so it is accepted
-    and documented rather than traded away. Found by Devin Review on this PR.
+    An earlier version of this note justified keeping the blind sweep by saying
+    it was what stopped a deleted conversation's `llm` ticket from spending the
+    instance's LLM budget. That was wrong on the deployment this integration
+    targets: the sweep is reached through `ChatManager.kill`, and
+    `_kill_quietly` returns early when `app.state.chat_manager is None` — the
+    normal state for an instance that embeds the engine without running Agnes's
+    own sandbox chat. So on an engine-only instance nothing revoked the ticket,
+    and the note was resting on a path that never ran.
+
+    `/api/broker/anthropic` now performs the session-existence check itself for
+    `llm`-scoped tickets — the fix this note previously called honest and then
+    declined to make. That closes the deletion hole independently of whether a
+    chat manager exists, which also means the blind sweep is no longer load
+    bearing for it. The sweep is still blind, and the one interrupted turn is
+    still the accepted cost; what changed is that the reason is now the cheaper
+    failure rather than a security dependency. Both halves found by Devin
+    Review on this PR.
 
     That disjointness is a side effect of confining the tool ticket to
     `kai_mcp`, not an independent guarantee — reusing a native scope here would
@@ -940,7 +947,46 @@ def _workspace_source() -> "tuple[Path, bool]":
 _WORKSPACE_PROMPT_ARCNAME = "CLAUDE.md"
 
 
-def _workspace_prompt_for(session: Any) -> Optional[str]:
+def _editor_prompt_overrides_a_git_template() -> bool:
+    """Whether an admin's EDITOR-mode Workspace Prompt is set, i.e. whether it
+    replaces a registered git template's own ``CLAUDE.md``.
+
+    This is the condition ``build_zip`` uses, and getting it from there rather
+    than from ``run_init`` is the whole point. ``run_init``'s OVERRIDE MODE
+    branch does skip the rendered-prompt write, which reads as "a git template
+    owns CLAUDE.md, full stop" — and that is how an earlier version of this
+    module read it. But the branch obtains its tree from ``build_zip``, which
+    has ALREADY overlaid the admin's editor-mode prompt over the clone's
+    ``workspace/CLAUDE.md``; its docstring calls that overlay "THE chokepoint"
+    for #622, because without it the admin editor would ship nothing in
+    override mode. The two mechanisms are not mutually exclusive at all — they
+    are layered, and the skip exists only so the same document is not written
+    twice.
+
+    So the honest condition is the prompt's own ``source_mode``:
+
+    - ``editor`` with content → the admin's prompt wins, in override mode too,
+      and this route must ship it or the engine is the ONE surface running the
+      shipped default while every other reads the admin's.
+    - ``git`` (or nothing set) → the clone's file ships verbatim, exactly as
+      ``build_zip`` leaves it.
+
+    Fails CLOSED to "no overlay": an unreadable prompt must leave the clone's
+    own instructions in place rather than blank them. Found by Devin Review on
+    this PR, against reasoning of mine that was wrong in both directions before
+    it.
+    """
+    try:
+        from src.initial_workspace import resolve_prompt
+
+        content, mode = resolve_prompt("workspace", None)
+        return mode == "editor" and content is not None
+    except Exception:
+        logger.warning("kai workspace: workspace-prompt mode unreadable", exc_info=True)
+        return False
+
+
+def _workspace_prompt_for(session: Any, *, override_active: bool = False) -> Optional[str]:
     """This session's rendered Workspace Prompt, or ``None`` to ship the
     template's static ``CLAUDE.md`` unchanged.
 
@@ -953,6 +999,11 @@ def _workspace_prompt_for(session: Any) -> Optional[str]:
     than a refusal because this route's contract is closed (``200`` or
     ``204``) and a ``403`` would fail the turn instead of degrading it.
     """
+    if override_active and not _editor_prompt_overrides_a_git_template():
+        # Git-bound prompt (or none): the clone's own CLAUDE.md ships verbatim,
+        # which is what the native surface does too. See the helper for why
+        # "override mode" alone is NOT the right condition.
+        return None
     if getattr(session, "is_co_session", False):
         return None
     agent_id = getattr(session, "agent_id", None)
@@ -1017,7 +1068,7 @@ def _build_workspace_archive(session: Any = None) -> Optional[bytes]:
     if not root.is_dir():
         return None
 
-    claude_md = None if override_active or session is None else _workspace_prompt_for(session)
+    claude_md = None if session is None else _workspace_prompt_for(session, override_active=override_active)
 
     paths: Dict[str, Path] = {}
     for path in sorted(root.rglob("*")):

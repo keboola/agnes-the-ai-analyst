@@ -1343,3 +1343,82 @@ def test_a_native_sweep_does_reach_the_engines_egress_tickets_on_purpose(seeded_
     assert repo.resolve(credential) is not None, (
         "SWEEP_EXEMPT_SCOPES must keep the long-lived credential out of the sweep"
     )
+
+
+def test_an_editor_prompt_beats_a_git_template_here_as_it_does_natively(seeded_app, kai_env, monkeypatch, tmp_path):
+    """Override mode is NOT a blanket "the clone's CLAUDE.md wins".
+
+    `run_init`'s OVERRIDE MODE branch skips the rendered-prompt write, which
+    reads as though a registered git template owns CLAUDE.md outright — and an
+    earlier version of this module read it that way. But that branch takes its
+    tree from `build_zip`, which has already overlaid the admin's EDITOR-mode
+    prompt over the clone's `workspace/CLAUDE.md` ("THE chokepoint" for #622).
+    The two mechanisms are layered, not exclusive, so suppressing the prompt in
+    override mode made this route the one surface running the shipped template
+    while every other surface read the admin's edit.
+    """
+    import src.initial_workspace as iw
+
+    import app.chat.workspace_prompt as wp
+
+    clone = tmp_path / "iwt"
+    (clone / "workspace").mkdir(parents=True)
+    (clone / "workspace" / "CLAUDE.md").write_text("# the git template's own\n", encoding="utf-8")
+    monkeypatch.setattr(iw, "get_initial_workspace_dir", lambda: clone)
+    monkeypatch.setattr(iw, "is_configured", lambda: True)
+    monkeypatch.setattr(wp, "render_sandbox_workspace_prompt", lambda *a, **k: "# the admin's edit\n")
+
+    credential = _claims(_mint_session(seeded_app)["token"])["downstream_credential"]
+    headers = {"Authorization": f"Bearer {credential}"}
+
+    # editor-mode prompt set -> the admin's edit wins, override mode included.
+    monkeypatch.setattr(iw, "resolve_prompt", lambda kind, conn=None: ("# admin body", "editor"))
+    got = _claude_md_from(seeded_app["client"].get("/api/kai/workspace", headers=headers).content)
+    assert got == "# the admin's edit\n", (
+        "an editor-mode Workspace Prompt must reach the engine in override mode too — "
+        "build_zip overlays it for the native sandbox"
+    )
+
+    # git-bound prompt -> the clone's file ships verbatim, as build_zip leaves it.
+    monkeypatch.setattr(iw, "resolve_prompt", lambda kind, conn=None: (None, "git"))
+    got = _claude_md_from(seeded_app["client"].get("/api/kai/workspace", headers=headers).content)
+    assert got == "# the git template's own\n"
+
+
+def test_a_deleted_conversation_cannot_spend_budget_with_an_issued_llm_ticket(seeded_app, kai_env):
+    """The deletion hole must close without depending on a chat manager.
+
+    `/api/broker/anthropic` is the one place an ALREADY-issued egress ticket can
+    still spend the instance's LLM budget. The sweep that used to bound it runs
+    only via `ChatManager.kill`, and `_kill_quietly` returns early when
+    `app.state.chat_manager is None` — the normal state for an instance that
+    embeds the engine and does not run Agnes's own sandbox chat. So on exactly
+    the target deployment, a permanently deleted conversation left its ticket
+    spendable for the rest of its TTL.
+    """
+    from src.repositories import chat_session_repo, ticket_repo
+
+    body = _mint_session(seeded_app)
+    credential = _claims(body["token"])["downstream_credential"]
+    chat_id = body["chat_id"]
+
+    egress = seeded_app["client"].post("/api/kai/tickets", headers={"Authorization": f"Bearer {credential}"}).json()
+    llm_ticket = egress["llm"]
+    assert ticket_repo().resolve(llm_ticket) is not None
+
+    # The row goes away with NO sandbox kill and NO ticket sweep — precisely the
+    # engine-only shape, where chat_manager is None and _kill_quietly no-ops.
+    chat_session_repo().hard_delete_session(chat_id)
+    assert ticket_repo().resolve(llm_ticket) is not None, (
+        "fixture check: the ticket must still resolve, or this proves nothing"
+    )
+
+    resp = seeded_app["client"].post(
+        "/api/broker/anthropic/v1/messages",
+        headers={"Authorization": f"Bearer {llm_ticket}"},
+        json={"model": "claude-sonnet-4-5", "messages": [], "max_tokens": 1},
+    )
+    assert resp.status_code == 401, (
+        f"a deleted conversation's llm ticket still reached the LLM broker ({resp.status_code})"
+    )
+    assert resp.json()["detail"] == "ticket_session_gone"
