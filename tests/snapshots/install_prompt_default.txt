@@ -27,7 +27,7 @@ solving it.
 
 1) Install the CLI:
    TMPDIR_WHEEL=$(mktemp -d -t agnes_cli.XXXXXX)
-   (cd "$TMPDIR_WHEEL" && curl -fsSL -OJ {server_url}/cli/download)
+   (cd "$TMPDIR_WHEEL" && curl -fsSL --max-redirs 0 -OJ {server_url}/cli/download)
    WHEEL=$(ls "$TMPDIR_WHEEL"/*.whl 2>/dev/null | head -n1)
    [ -n "$WHEEL" ] || { echo "error: wheel download failed (no .whl in $TMPDIR_WHEEL)" >&2; exit 1; }
    uv tool install --force "$WHEEL"

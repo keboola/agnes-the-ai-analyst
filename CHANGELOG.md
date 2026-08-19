@@ -10,6 +10,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- **The install prompt no longer reads as prompt injection to the agent that executes it.** The bundled seed's `install-prompt/template.md.tmpl` and the `connector-asana` / `connector-atlassian` SKILL.md bodies dropped the force-style phrasing (`REFUSE`, `PROCEED SILENTLY`, "verbatim", "Treat empty/Enter as YES") and the inline names of TLS-verification-disabling flags — text that matches prompt-injection / TLS-interception patterns and stalls a coding agent's safety classifier mid-install. Same steps, same commands, same order; only the wording is now ordinary guidance to a person. The paragraph telling the agent to prefix a blocked `agnes` command with `!` to bypass its own command classifier is gone — a blocked command is now reported to the user, who re-runs it or approves the permission prompt. `tests/test_install_prompt_banned_phrases.py` drops the tier 2/3 known-dirty baselines and their `pytest.skip` branches, so all three tiers are enforced and a reintroduced phrase fails the guard.
+- **A cross-domain redirect on the CLI wheel download now fails loudly instead of being followed silently.** `app/web/setup_instructions.py` step 1 passes `curl --max-redirs 0`, so a hostname alias that 308s to another host aborts the download with `curl: (47) Maximum (0) redirects followed` rather than installing the wheel the redirect target served — `-OJ` takes its filename from the response, which made the substitution invisible.
+
 ## [0.83.85] - 2026-08-19
 
 ### Changed

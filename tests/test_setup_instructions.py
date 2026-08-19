@@ -532,14 +532,18 @@ def test_resolve_lines_with_ca_pem_switches_step_one_to_curl_then_local_install(
     """Step 1 always downloads via /cli/download into a local file first;
     has_ca only changes whether curl carries --cacert and whether uv gets
     --native-tls (avoids rustls CaUsedAsEndEntity):
-    - has_ca=True  → curl --cacert ... | uv tool install --native-tls
-    - has_ca=False → curl ... | uv tool install (no cert flags)
+    - has_ca=True  → curl --cacert ... then uv tool install --native-tls
+    - has_ca=False → curl ... then uv tool install (no cert flags)
+
+    Both forms cap redirects at zero (`-L --max-redirs 0`, curl exit 47):
+    `-OJ` names the saved file from the response, so a cross-host redirect
+    would otherwise install whichever wheel the hop served, silently.
     """
     from app.web.setup_instructions import resolve_lines
 
     joined_ca = "\n".join(resolve_lines("agnes-1.0-py3-none-any.whl", ca_pem=_FAKE_CA_PEM))
     # curl-with-cacert downloads the wheel locally via /cli/download...
-    assert "curl -fsSL --cacert ~/.agnes/ca.pem -OJ {server_url}/cli/download" in joined_ca
+    assert ("curl -fsSL --max-redirs 0 --cacert ~/.agnes/ca.pem -OJ {server_url}/cli/download") in joined_ca
     assert "TMPDIR_WHEEL=$(mktemp -d -t agnes_cli.XXXXXX)" in joined_ca
     # ...then uv installs from the local file with --native-tls.
     assert 'uv tool install --native-tls --force "$WHEEL"' in joined_ca
@@ -548,7 +552,7 @@ def test_resolve_lines_with_ca_pem_switches_step_one_to_curl_then_local_install(
 
     # No-ca_pem path also downloads via /cli/download, but without cert flags.
     joined_plain = "\n".join(resolve_lines("agnes-1.0-py3-none-any.whl"))
-    assert "curl -fsSL -OJ {server_url}/cli/download" in joined_plain
+    assert "curl -fsSL --max-redirs 0 -OJ {server_url}/cli/download" in joined_plain
     assert 'uv tool install --force "$WHEEL"' in joined_plain
     assert "curl -fsSL --cacert" not in joined_plain
     assert "/cli/wheel/" not in joined_plain

@@ -333,6 +333,18 @@ def _install_cli_lines(*, has_ca: bool, server_url_placeholder: str = "{server_u
     `/cli/download` always serves whichever wheel is current at fetch time,
     so the install survives a mid-session version roll.
 
+    `-L --max-redirs 0` is deliberate. `-OJ` takes the saved filename
+    from the response's `Content-Disposition`, so `-L` alone would follow a
+    cross-host redirect and install whichever wheel the hop served, with
+    nothing on screen to say the download moved. Keeping `-L` but capping
+    redirects at zero turns any hop into `curl: (47) Maximum (0) redirects
+    followed` and a non-zero exit — a failure the analyst can report. A
+    hostname alias that 308s to the canonical host must therefore be handed
+    out as the canonical URL, not as the alias. The scheme is deliberately
+    NOT pinned with `--proto '=https'`: a local/dev instance legitimately
+    serves this prompt over http, where that flag would refuse the download
+    outright (`curl: (1) Protocol "http" not supported`).
+
     When the trust block was emitted (`has_ca=True`), we MUST additionally
     avoid `uv tool install <https-url>` against the Agnes server:
     rustls rejects the Agnes leaf cert with `CaUsedAsEndEntity`, regardless
@@ -359,7 +371,7 @@ def _install_cli_lines(*, has_ca: bool, server_url_placeholder: str = "{server_u
             "   download it to a file and show it to me before running it.",
             "",
             "   TMPDIR_WHEEL=$(mktemp -d -t agnes_cli.XXXXXX)",
-            f'   (cd "$TMPDIR_WHEEL" && curl -fsSL --cacert ~/.agnes/ca.pem -OJ {server_url_placeholder}/cli/download)',
+            f'   (cd "$TMPDIR_WHEEL" && curl -fsSL --max-redirs 0 --cacert ~/.agnes/ca.pem -OJ {server_url_placeholder}/cli/download)',
             '   WHEEL=$(ls "$TMPDIR_WHEEL"/*.whl 2>/dev/null | head -n1)',
             '   [ -n "$WHEEL" ] || { echo "error: wheel download failed (no .whl in $TMPDIR_WHEEL)" >&2; exit 1; }',
             '   uv tool install --native-tls --force "$WHEEL"',
@@ -377,7 +389,7 @@ def _install_cli_lines(*, has_ca: bool, server_url_placeholder: str = "{server_u
     return [
         "1) Install the CLI:",
         "   TMPDIR_WHEEL=$(mktemp -d -t agnes_cli.XXXXXX)",
-        f'   (cd "$TMPDIR_WHEEL" && curl -fsSL -OJ {server_url_placeholder}/cli/download)',
+        f'   (cd "$TMPDIR_WHEEL" && curl -fsSL --max-redirs 0 -OJ {server_url_placeholder}/cli/download)',
         '   WHEEL=$(ls "$TMPDIR_WHEEL"/*.whl 2>/dev/null | head -n1)',
         '   [ -n "$WHEEL" ] || { echo "error: wheel download failed (no .whl in $TMPDIR_WHEEL)" >&2; exit 1; }',
         '   uv tool install --force "$WHEEL"',

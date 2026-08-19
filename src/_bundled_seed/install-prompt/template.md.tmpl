@@ -4,15 +4,15 @@ Server: {server_url}
 
 Your login token is already saved on this machine at ~/.agnes/token
 (written by step 4 of the install guide at {server_url}). The steps
-below only reference that file path — never print the token, echo
-it, or paste it into this chat.
+below only reference that file path — please keep the token out of this
+chat: no need to print it, echo it, or paste it here.
 
 Run these, in order. The script is idempotent — safe to re-run if a step
 fails partway through. If a step fails with an unfamiliar error, paste the
-exact error back and stop. Do NOT improvise around TLS errors by disabling
-verification (`-k`, `NODE_TLS_REJECT_UNAUTHORIZED=0`,
-`git -c http.sslVerify=false`, etc.) — those are dead ends that hide the
-real problem.
+exact error back and stop there. A TLS or certificate error means this
+machine does not trust the {instance_brand} server's certificate yet;
+fixing the trust store is the supported path, and turning certificate
+verification off only hides the real problem.
 
 {install_cli_block}
 
@@ -20,15 +20,15 @@ real problem.
    The /home page's "Step 2 — pick a folder" recommended
        mkdir -p ~/Desktop/{workspace_dir} && cd ~/Desktop/{workspace_dir}
    but the install works in any workspace folder the user prepared.
-   Decide where to install using the three branches below — do NOT
-   silently `mkdir`/`cd` anywhere, and do NOT treat the user's current
-   cwd as a mistake unless it lands in the REFUSE list.
+   Decide where to install using the three branches below. Please don't
+   `mkdir`/`cd` anywhere without saying so, and treat the user's current
+   cwd as fine unless it appears in the unsafe list.
 
    Run:
        pwd
 
-   2a) REFUSE — these paths are never safe to install into. STOP and
-       tell the user verbatim:
+   2a) Unsafe locations — these paths are not safe to install into. Stop
+       and tell the user, in these words:
 
            "I won't install {instance_brand} into <pwd> — it's a home or
            system directory and the install would scatter .claude/,
@@ -37,13 +37,13 @@ real problem.
            or ~/work/{workspace_dir}), cd into it, and re-paste this
            script from there."
 
-       Then stop — no `mkdir`, no `cd`, no further steps. The refuse
-       list is exact match on:
+       Then stop there — no `mkdir`, no `cd`, no further steps. The
+       unsafe list is exact match on:
            $HOME    /    /tmp    /etc    /usr    /var    /opt
            /root    /bin    /sbin    /boot    /sys    /proc
 
-   2b) PROCEED SILENTLY — if the cwd is a prepared workspace, just
-       continue to step 3 without prompting. The whitelisted artefacts
+   2b) Already prepared — if the cwd is a prepared workspace, continue
+       to step 3 without prompting. The whitelisted artefacts
        a prepared workspace may already hold are:
            .git    .claude    .agnes    AGNES_WORKSPACE.md    README.md
        To check, run (fixed-string match, no regex):
@@ -55,8 +55,8 @@ real problem.
        folder; continue to step 3 in <pwd>. Remember <pwd> as the
        install dir for step 9.
 
-   2c) CONFIRM — for any other cwd (unrelated content present), tell
-       the user verbatim, exactly once:
+   2c) Ask first — for any other cwd (unrelated content present), tell
+       the user this, once:
 
            "I'll install {instance_brand} in <pwd>. Reply 'ok' to
            continue here, 'default' to install in ~/Desktop/{workspace_dir}
@@ -72,24 +72,23 @@ real problem.
                        Then continue to step 3 in the new cwd.
                        Remember ~/Desktop/{workspace_dir} as the install
                        dir for step 9.
-         - 'abort' / anything else → stop without making any changes.
-                       Do NOT run `mkdir`, do NOT `cd`, do NOT continue.
+         - 'abort' / anything else → stop without making any changes:
+                       no `mkdir`, no `cd`, no further steps.
 
 3) Bootstrap your {instance_brand} workspace in this directory.
    The token was saved to ~/.agnes/token by step 4 of the install
    guide, so there is nothing to write here — `agnes init
-   --token-file` reads it directly (never on the command line, which
-   would trip Claude Code's auto-classifier) and removes the file
-   once the credential is saved to ~/.config/agnes/token.json:
+   --token-file` reads it directly (keeping the token off the command
+   line) and removes the file once the credential is saved to
+   ~/.config/agnes/token.json:
 
    agnes init --server-url "{server_url}" --token-file ~/.agnes/token --workspace .
 
-   If Claude Code still blocks an `agnes` command (e.g. the
-   `agnes init` line above or `agnes catalog` in step 4), prefix
-   it with `!` to run the command directly in your shell,
-   bypassing the auto-classifier — e.g. `! agnes init …`. The
-   `!` prefix is Claude Code's escape hatch for commands you
-   explicitly trust.
+   If an `agnes` command here is blocked (e.g. the `agnes init` line
+   above or `agnes catalog` in step 4), tell the user which command was
+   blocked and ask them to run it themselves in their own terminal, or
+   to approve the permission prompt and let you re-run it. Then carry
+   on with the next step.
 
    This authenticates with the PAT, fetches your CLAUDE.md (RBAC-filtered),
    writes AGNES_WORKSPACE.md (human-facing docs), installs Claude Code
@@ -113,7 +112,7 @@ real problem.
 
    If `git --version` fails ("command not found" or similar), install git:
      - macOS:   brew install git
-     - Windows: winget install --id Git.Git -e --source winget --silent
+     - Windows: winget install --id Git.Git -e --source winget
      - Linux:   sudo apt-get install git    OR    sudo dnf install git
 
    If `claude --version` fails, install Claude Code:
@@ -128,7 +127,7 @@ real problem.
    agnes diagnose
 
    This should print "Overall: healthy". `db_schema: unknown` and
-   `data: 0 tables` are NORMAL in two cases:
+   `data: 0 tables` are normal in two cases:
      - fresh install (no tables registered yet), and
      - non-admin roles (e.g. `analyst`) that don't have grants to read
        the system schema even on populated instances.
@@ -136,9 +135,9 @@ real problem.
 
 8) Connect the user's tools (last interactive ask before Confirm):
 
-   For each tool below, ask the user verbatim: "Set up <NAME> now? (Y/n)".
-   Treat empty/Enter as YES — the default is install. Only skip when the
-   user types an explicit "no" / "n" / "skip". Wait for each answer
+   For each tool below, ask the user: "Set up <NAME> now? (Y/n)". An
+   empty reply means yes — installing is the default. Skip only when the
+   user answers "no" / "n" / "skip". Wait for each answer
    before moving to the next. The prompts below are idempotent and
    safe to re-run if anything goes sideways.
 
@@ -159,4 +158,4 @@ real problem.
    - The `agnes diagnose` overall status
    - Whether skills were copied or left on-demand
    - Confirmation that `~/.agnes/marketplace/.git/` exists (the marketplace clone) and that any granted plugins installed
-   - For each connector listed in step 8: the verbatim ✅ or ❌ line that the connector's verify step emitted earlier in this session (e.g. `✅ Asana ready — ...` or `❌ Atlassian setup failed: ...`). If the user declined a connector, say declined.{ca_bundle_finale_bullet}
+   - For each connector listed in step 8: copy the ✅ or ❌ line that the connector's verify step emitted earlier in this session (e.g. `✅ Asana ready — ...` or `❌ Atlassian setup failed: ...`). If the user declined a connector, say declined.{ca_bundle_finale_bullet}
