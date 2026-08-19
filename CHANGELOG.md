@@ -16,6 +16,19 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **`agnes auth login --server <url>` did not persist the URL, so the next command fell back to localhost.** It only exported `AGNES_SERVER` for its own process — unlike `agnes auth import-token --server`, which has always written it to `~/.config/agnes/config.yaml`. A successful login was therefore followed by `agnes auth whoami` / `agnes pull` (and login's own manual-fallback hint) resolving a different, nonexistent server until `agnes init` eventually seeded the config. `--server` is now persisted, normalized (trailing slash stripped), by both login paths — and only once the sign-in actually succeeded, so a typo'd host that never signed in does not become the saved default.
 - **`agnes admin list-tables` crashed on any table with a NULL `bucket`.** The row formatter passed the value straight into a `:20s` format spec, so `None` raised `TypeError: unsupported format string passed to NoneType.__format__` and killed the listing right after the "Registered tables: N" header — on every instance with a non-Keboola row, since `bucket` is nullable and only Keboola fills it. `.get(key, default)` did not help: the key is present carrying null. `name`, `source_type` and `query_mode` on the same line are hardened the same way.
 - **The emailed magic-link sign-in URL could point at `http://localhost:8000`.** `_build_magic_link` read `SERVER_URL` alone with a hard localhost fallback, ignoring the resolution order every other outbound link uses — so an instance served behind a TLS terminator that never set `SERVER_URL` mailed its users a link to their own laptop. The link now comes from `public_base_url(request=...)`: pinned `AGNES_BASE_URL` / `SERVER_URL` first, otherwise the (proxy-aware) request origin, with localhost only as the local-dev floor. Both senders — the JSON `/auth/email/send-link` and the web-form `/send-link/web` — pass the same resolved origin, and so does the SMTP delivery path that builds the link a second time.
+## [0.83.89] - 2026-08-19
+
+### Added
+
+- **Snowflake semantic views can be imported into the semantic layer** — a new `snowflake_semantic` adapter composes one Apache Ossie document per semantic view (logical tables → datasets, dimensions/facts → fields, metrics → metrics, `FOREIGN_KEY`/`REF_KEY` → relationships, plus the view's own AI instructions and verified queries). Register it as a `connection`-kind source: `agnes admin semantic-source add --kind connection --name "Snowflake semantic views" --adapter snowflake_semantic`; optional `config` scope keys are `database`, `schema` and `like`. Credentials are never taken from the source row — they resolve from the instance's Snowflake connection, and egress stays gated by the existing host allowlist and SECRET. Every imported expression is tagged `SNOWFLAKE`, so it is readable in Agnes but deliberately **not** runnable locally: `src/semantic/dialect.py` refuses to splice a warehouse-specific fragment into a DuckDB query. Declared time dimensions become `dimension.is_time` and each relationship's `join_type` is preserved — both come from an `EXTENSION` row that Snowflake's SQL reference does not document and that carries them nowhere else.
+
+### Changed
+
+- **An unknown semantic-source adapter is now refused at registration** (`400`, naming the adapters that do exist) instead of registering successfully and failing on the first sync.
+
+### Fixed
+
+- **The Snowflake panel on `/admin/data-sources` no longer points semantic views at the table registry.** It claimed "for custom SQL, partitioning or semantic views, use Tables → Register new table", but a semantic view is not a registerable table and that form rejects Snowflake-flavour SQL outright — an admin following the hint hit a dead end. It now points at the semantic-layer page and states that the imported metric SQL is not locally runnable.
 
 ## [0.83.88] - 2026-08-19
 

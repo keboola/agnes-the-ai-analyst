@@ -228,6 +228,54 @@ class TestSemanticSourceCrud:
         deleted = c.delete(f"/api/admin/semantic-sources/{source_id}", headers=_auth(seeded_app["admin_token"]))
         assert deleted.status_code == 204
 
+    def test_an_unknown_adapter_is_refused_at_registration_not_at_first_sync(self, seeded_app):
+        """A typo must fail while the admin is still looking at the form.
+
+        Registering happily and only failing on the first scheduled sync is the
+        "registered but never runs" state the connector validators exist to
+        prevent — and the error must name what IS available.
+        """
+        c = seeded_app["client"]
+        r = c.post(
+            "/api/admin/semantic-sources",
+            json={"kind": "connection", "name": "Typo", "adapter": "snowflake_sematic", "config": {}},
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        assert r.status_code == 400, r.text
+        detail = r.json()["detail"]
+        assert "snowflake_sematic" in detail
+        assert "snowflake_semantic" in detail
+
+    def test_an_unknown_adapter_is_refused_on_update_too(self, seeded_app):
+        c = seeded_app["client"]
+        created = c.post(
+            "/api/admin/semantic-sources",
+            json={"kind": "upload", "name": "Bundle", "adapter": "native", "config": {}},
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        source_id = created.json()["id"]
+        r = c.put(
+            f"/api/admin/semantic-sources/{source_id}",
+            json={"adapter": "nope"},
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        assert r.status_code == 400, r.text
+
+    def test_the_snowflake_semantic_adapter_can_be_registered_as_a_connection_source(self, seeded_app):
+        c = seeded_app["client"]
+        r = c.post(
+            "/api/admin/semantic-sources",
+            json={
+                "kind": "connection",
+                "name": "Snowflake semantic views",
+                "adapter": "snowflake_semantic",
+                "config": {"schema": "PUBLIC"},
+            },
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        assert r.status_code == 201, r.text
+        assert r.json()["adapter"] == "snowflake_semantic"
+
     def test_sync_unknown_source_is_404(self, seeded_app):
         c = seeded_app["client"]
         r = c.post("/api/admin/semantic-sources/nope/sync", headers=_auth(seeded_app["admin_token"]))
