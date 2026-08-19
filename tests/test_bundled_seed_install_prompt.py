@@ -22,8 +22,6 @@ still carrying the fat prompt's blocks.
 
 from __future__ import annotations
 
-import re
-
 # The ONE single-brace placeholder that is substituted on the forked /
 # git-bound prompt path (`app/web/router.py::setup_page` + the JS clipboard
 # renderer replace `{server_url}` at click/preview time). Everything else a
@@ -54,9 +52,8 @@ _RETIRED_PLACEHOLDERS = (
     "{token}",
 )
 
-# Negative lookaround keeps Jinja expressions out: `{{today}}` written
-# without spaces would otherwise match its inner `{today}` pair.
-_PLACEHOLDER_RE = re.compile(r"(?<!\{)\{[a-z][a-z0-9_]*\}(?!\})")
+# Shared with the sync render dry-run so the two scans cannot drift.
+from src.initial_workspace import UNWIRED_PLACEHOLDER_RE as _PLACEHOLDER_RE
 
 
 def _template_text() -> str:

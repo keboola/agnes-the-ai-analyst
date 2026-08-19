@@ -23,6 +23,7 @@ from __future__ import annotations
 import io
 import logging
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -561,6 +562,15 @@ def seed_owns(rel_path: str) -> bool:
 # Canonical repo-relative seed path per managed prompt (used when an operator
 # binds git mode without naming an explicit path, and by the admin git-path
 # validation as the default suggestion).
+# Single-brace placeholder that nothing substitutes on the git-bound install
+# prompt path (only `{server_url}` and the Jinja `{{ ... }}` context are
+# replaced — docs/seed-repo-contract.md §5). Negative lookaround keeps Jinja
+# expressions out: `{{today}}` written without spaces would otherwise match
+# its inner `{today}` pair. Shared by the sync render dry-run
+# (app/api/initial_workspace.py) and the bundled-template guard test
+# (tests/test_bundled_seed_install_prompt.py) so the two scans cannot drift.
+UNWIRED_PLACEHOLDER_RE = re.compile(r"(?<!\{)\{[a-z][a-z0-9_]*\}(?!\})")
+
 PROMPT_SEED_PATHS = {
     "install": "install-prompt/template.md.tmpl",
     "workspace": "workspace/CLAUDE.md",
