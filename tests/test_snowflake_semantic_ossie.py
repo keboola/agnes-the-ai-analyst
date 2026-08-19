@@ -267,3 +267,73 @@ def test_public_access_is_not_restated_on_every_single_field():
     public = {f["name"]: f for f in _model(compose_document(VIEW, rows))["datasets"][0]["fields"]}
     assert "access_modifier" not in json.loads(public["AMOUNT"]["custom_extensions"][0]["data"])
     assert json.loads(fields["AMOUNT"]["custom_extensions"][0]["data"])["object_kind"] == "FACT"
+
+
+class _FakeConn:
+    """Minimal DuckDB stand-in that records whether it was closed."""
+
+    def __init__(self):
+        self.closed = False
+
+    def execute(self, *_args, **_kwargs):
+        return self
+
+    def close(self):
+        self.closed = True
+
+
+def test_the_scratch_connection_is_closed_when_attach_fails(monkeypatch):
+    # A disallowed host, a bad key or a driver problem raises inside _connect,
+    # AFTER the scratch DuckDB is already open. Leaking it there also leaves
+    # the TemporaryDirectory tearing the file out from under a live handle.
+    fake = _FakeConn()
+    monkeypatch.setattr(
+        "connectors.snowflake.settings.resolve_snowflake_settings",
+        lambda: {
+            "account": "acct",
+            "user": "u",
+            "database": "DB",
+            "warehouse": "WH",
+            "role": "",
+            "password": "p",
+        },
+    )
+    monkeypatch.setattr("src.duckdb_conn._open_duckdb", lambda *a, **k: fake)
+    monkeypatch.setattr("connectors.snowflake.attach.install_snowflake_adbc_driver", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "connectors.snowflake.attach.attach_snowflake",
+        lambda *a, **k: (_ for _ in ()).throw(ValueError("host not allowed")),
+    )
+
+    with pytest.raises(ValueError, match="host not allowed"):
+        SnowflakeSemanticAdapter().extract({})
+    assert fake.closed is True
+
+
+def test_an_unrecognized_object_kind_is_reported_not_swallowed(caplog):
+    # A live account already returned one object_kind the SQL reference does
+    # not document. The next one must leave a trail instead of vanishing.
+    rows = _rows() + [_row("FILTER", "ONLY_SHIPPED", "ORDERS", "EXPRESSION", "status = 'S'")]
+    with caplog.at_level("WARNING"):
+        assert validate_document(compose_document(VIEW, rows)).ok
+    # The message must say what is actually wrong. Falling through to the
+    # "row with no object_name" branch would report a lie about a named row.
+    reported = [r.getMessage() for r in caplog.records if "FILTER" in r.getMessage()]
+    assert reported, "an unrecognized object_kind vanished without a trace"
+    assert any("unrecognized object_kind" in m for m in reported), reported
+    assert not any("no object_name" in m for m in reported), reported
+
+
+def test_conflicting_duplicate_property_rows_are_reported(caplog):
+    rows = _rows() + [_row("DIMENSION", "ORDER_DATE", "ORDERS", "COMMENT", "a different comment")]
+    with caplog.at_level("WARNING"):
+        compose_document(VIEW, rows)
+    joined = " ".join(r.getMessage() for r in caplog.records)
+    assert "ORDER_DATE" in joined and "COMMENT" in joined
+
+
+def test_identical_duplicate_property_rows_are_not_noise(caplog):
+    rows = _rows() + [_row("DIMENSION", "ORDER_DATE", "ORDERS", "COMMENT", "Date the order was placed")]
+    with caplog.at_level("WARNING"):
+        compose_document(VIEW, rows)
+    assert not [r for r in caplog.records if "COMMENT" in r.getMessage()]

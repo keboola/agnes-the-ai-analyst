@@ -61,6 +61,14 @@ _DESCRIBE_COLUMNS = ("object_kind", "object_name", "parent_entity", "property", 
 _FIELD_KINDS = ("DIMENSION", "FACT")
 _METRIC_KINDS = ("METRIC", "DERIVED_METRIC")
 
+# "" is the semantic view itself (object_kind NULL). EXTENSION is undocumented
+# but real — see `_parse_extension`.
+_KNOWN_KINDS = frozenset(
+    ("", "TABLE", "RELATIONSHIP", "EXTENSION", "CUSTOM_INSTRUCTIONS", "AI_VERIFIED_QUERY")
+    + _FIELD_KINDS
+    + _METRIC_KINDS
+)
+
 # Snowflake's type vocabulary mapped onto Ossie's DataType enum. NUMBER is
 # resolved by scale (Snowflake's bare NUMBER is NUMBER(38,0), an integer);
 # anything unlisted is omitted rather than guessed, per the schema's own
@@ -193,12 +201,29 @@ def _fqn(view: Mapping[str, Any]) -> str:
     return ".".join(p for p in parts if p)
 
 
-def _group(rows: Iterable[Mapping[str, Any]]) -> Dict[tuple, Dict[str, Any]]:
-    """Collapse the property-per-row shape into one property dict per object."""
+def _group(rows: Iterable[Mapping[str, Any]], *, context: str = "") -> Dict[tuple, Dict[str, Any]]:
+    """Collapse the property-per-row shape into one property dict per object.
+
+    Two rows carrying the same property with DIFFERENT values would otherwise
+    resolve last-write-wins, and DESCRIBE row order is not a contract — so the
+    winner would not even be stable between runs. Keep the first and say so.
+    """
     grouped: Dict[tuple, Dict[str, Any]] = {}
     for row in rows:
         key = (_text(row.get("object_kind")).upper(), _text(row.get("object_name")), _text(row.get("parent_entity")))
-        grouped.setdefault(key, {})[_text(row.get("property")).upper()] = row.get("property_value")
+        prop = _text(row.get("property")).upper()
+        value = row.get("property_value")
+        bucket = grouped.setdefault(key, {})
+        if prop in bucket:
+            if bucket[prop] != value:
+                logger.warning(
+                    "Snowflake semantic adapter: %s%r declares %s twice with different values; keeping the first",
+                    f"{context}: " if context else "",
+                    key[1] or key[0],
+                    prop,
+                )
+            continue
+        bucket[prop] = value
     return grouped
 
 
@@ -355,8 +380,8 @@ def compose_document(view: Mapping[str, Any], rows: Iterable[Mapping[str, Any]])
     at least one dataset, so emitting anything here would guarantee a
     validation failure the operator then has to diagnose.
     """
-    grouped = _group(rows)
     fqn = _fqn(view)
+    grouped = _group(rows, context=fqn)
 
     # Extensions first, in their own pass: they annotate fields and
     # relationships composed below, and DESCRIBE row order is not a contract.
@@ -393,6 +418,17 @@ def compose_document(view: Mapping[str, Any], rows: Iterable[Mapping[str, Any]])
     verified_queries: Dict[str, Dict[str, Any]] = {}
 
     for (kind, name, parent), props in grouped.items():
+        if kind not in _KNOWN_KINDS:
+            # A live account already returned one object_kind the SQL
+            # reference does not document (EXTENSION). The next one must leave
+            # a trail rather than vanishing into a document that looks whole.
+            logger.warning(
+                "Snowflake semantic adapter: %r declares unrecognized object_kind %r (%r); dropped",
+                fqn,
+                kind,
+                name or parent or "",
+            )
+            continue
         if kind == "TABLE" and name:
             datasets[name] = _compose_dataset(name, props)
         elif kind in _FIELD_KINDS and name:
@@ -420,6 +456,9 @@ def compose_document(view: Mapping[str, Any], rows: Iterable[Mapping[str, Any]])
             }
         elif not kind:
             view_comment = _text(props.get("COMMENT")) or view_comment
+        else:
+            # A recognized kind with no object_name has nowhere to land.
+            logger.warning("Snowflake semantic adapter: %r has a %s row with no object_name; dropped", fqn, kind)
 
     if not datasets:
         logger.warning(
@@ -505,8 +544,15 @@ class SnowflakeSemanticAdapter:
         show_sql = build_show_sql(database=database, schema=schema, like=like)
 
         with tempfile.TemporaryDirectory(prefix="agnes-sf-semantic-") as tmp:
-            conn = self._connect(Path(tmp) / "scratch.duckdb", settings)
+            # `_connect` opens the scratch DuckDB BEFORE it loads the
+            # extension and attaches, and either of those can raise — a
+            # disallowed host, a bad key, a missing driver. Connecting outside
+            # the try would leak that handle and leave the TemporaryDirectory
+            # deleting the file out from under it. Same shape as
+            # `connectors/snowflake/extractor.py::materialize_query`.
+            conn = None
             try:
+                conn = self._connect(Path(tmp) / "scratch.duckdb", settings)
                 views = self._pass_through(conn, show_sql)
                 documents: List[str] = []
                 for view in views:
@@ -521,7 +567,8 @@ class SnowflakeSemanticAdapter:
                         documents.append(text)
                 return documents
             finally:
-                conn.close()
+                if conn is not None:
+                    conn.close()
 
     def _connect(self, path: Path, settings: Dict[str, Any]):
         from connectors.snowflake.attach import (
@@ -541,18 +588,25 @@ class SnowflakeSemanticAdapter:
             settings.get("role") or "",
         )
         conn = _open_duckdb(str(path), read_only=False)
-        install_snowflake_adbc_driver()
-        conn.execute(f"INSTALL {SF_EXTENSION} FROM community")
-        conn.execute(f"LOAD {SF_EXTENSION}")
-        # attach_snowflake owns the host-allowlist gate and the SECRET; the
-        # pass-through calls below reference that same SECRET by name.
-        attach_snowflake(
-            conn,
-            alias=SF_ALIAS,
-            url=url,
-            token=settings.get("password") or settings.get("private_key"),
-            passphrase=settings.get("private_key_passphrase"),
-        )
+        try:
+            install_snowflake_adbc_driver()
+            conn.execute(f"INSTALL {SF_EXTENSION} FROM community")
+            conn.execute(f"LOAD {SF_EXTENSION}")
+            # attach_snowflake owns the host-allowlist gate and the SECRET; the
+            # pass-through calls below reference that same SECRET by name.
+            attach_snowflake(
+                conn,
+                alias=SF_ALIAS,
+                url=url,
+                token=settings.get("password") or settings.get("private_key"),
+                passphrase=settings.get("private_key_passphrase"),
+            )
+        except Exception:
+            # The handle exists only in this frame until it is returned, so the
+            # caller's `finally` cannot reach it — a disallowed host or a
+            # missing driver would leak it on every scheduled sync attempt.
+            conn.close()
+            raise
         return conn
 
     def _pass_through_raw(self, conn, sql: str):
