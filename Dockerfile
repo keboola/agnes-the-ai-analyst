@@ -43,6 +43,15 @@ COPY . .
 #   - tls-fetch.sh — generic URL fetcher (sm:// gs:// https:// file://)
 #   - agnes-state-applier.{sh,service,timer} — DB backend state machine
 #     (applies compose lifecycle changes when /data/state/db-state-target.flag changes)
+#   - scripts/ops/agnes-compose-file.sh — the single COMPOSE_FILE resolver,
+#     SOURCED (not executed) by agnes-auto-upgrade.sh and
+#     agnes-state-applier.sh. Kept under its scripts/ops/ sub-path because
+#     both of them source it as "$COMPOSE_DIR/scripts/ops/…", and the
+#     startup script's recursive `docker cp /opt/agnes-host/.` preserves
+#     that shape. Without it in the image, a fresh VM has no resolver until
+#     agnes-auto-upgrade.sh's GitHub fetch lands one — so on an
+#     egress-restricted host the state machine and the upgrade job would
+#     both be dead permanently.
 #   - post-deploy-smoke-test.sh — deploy gate (docs/ONBOARDING.md step 8):
 #     public API + new-instance doctor + host-side consistency checks
 #   - docker-compose.{yml,prod.yml,host-mount.yml,tls.yml} — host runtime
@@ -54,7 +63,8 @@ COPY . .
 #   root-owned, mode 0755 across the board, stable path that won't
 #   shift if /app structure refactors. Stable contract for `docker cp`
 #   consumers.
-RUN mkdir -p /opt/agnes-host/static /opt/agnes-host && \
+RUN mkdir -p /opt/agnes-host/static /opt/agnes-host/scripts/ops && \
+    cp /app/scripts/ops/agnes-compose-file.sh /opt/agnes-host/scripts/ops/ && \
     cp /app/scripts/ops/agnes-auto-upgrade.sh \
        /app/scripts/ops/agnes-tls-rotate.sh \
        /app/scripts/ops/agnes-state-applier.sh \
@@ -85,6 +95,7 @@ RUN mkdir -p /opt/agnes-host/static /opt/agnes-host && \
               /opt/agnes-host/docker-compose.postgres.yml \
               /opt/agnes-host/docker-compose.postgres-host-mount.yml \
               /opt/agnes-host/Caddyfile \
+              /opt/agnes-host/scripts/ops/agnes-compose-file.sh \
               /opt/agnes-host/static/maintenance.html
 
 # Build wheel artifact (served at /cli/download)

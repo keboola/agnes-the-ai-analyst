@@ -81,8 +81,23 @@ export AGNES_TAG
 # the authoritative input HERE: the flag flips to side-car-enabled (and
 # the postgres container must come up) BEFORE instance.yaml leaves the
 # transient *_in_progress value — see agnes-compose-file.sh's docstring.
+#
+# Absence is handled rather than crashed through: under `set -e` a missing
+# file here aborts the tick before the heartbeat is even interpretable, so
+# the operator sees a failing timer with no statement of what is wrong. The
+# resolver ships in the image (Dockerfile bakes it into
+# /opt/agnes-host/scripts/ops/), so the only way to be without one is a VM
+# whose $APP_DIR predates it — mid-upgrade, until the next boot or the next
+# agnes-auto-upgrade.sh tick re-fetches it. Say so and exit cleanly; the
+# timer is back in 30s. Every decision below depends on the resolver, so
+# improvising a partial overlay list would be worse than waiting.
+RESOLVER="$COMPOSE_DIR/scripts/ops/agnes-compose-file.sh"
+if [ ! -f "$RESOLVER" ]; then
+    logger -t agnes-state-applier "ERROR: $RESOLVER missing — skipping this tick; the stack is left exactly as it is"
+    exit 0
+fi
 # shellcheck source=./agnes-compose-file.sh
-. "$COMPOSE_DIR/scripts/ops/agnes-compose-file.sh"
+. "$RESOLVER"
 case "$TARGET" in
     side-car-enabled) _ACF_BACKEND=side_car ;;
     *) _ACF_BACKEND=duckdb ;;
