@@ -255,6 +255,11 @@ _GRANDFATHERED_GET_SYSTEM_DB: set[str] = {
     "app/auth/providers/google.py",
     # app/auth/router.py — the _audit helper dropped its unused get_system_db()
     # handle; audit_repo() is factory-routed. Entry removed.
+    # app/chat/workspace_prompt.py — deliberately NOT here. The shared
+    # workspace-prompt renderer takes an optional conn and opens none itself
+    # (`resolve_prompt` resolves through the factory when given nothing), so
+    # the list keeps shrinking instead of growing for a new module. Devin
+    # review on PR #1235.
     "app/main.py",
     "app/marketplace_server/git_router.py",
     "app/web/router.py",

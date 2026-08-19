@@ -187,6 +187,18 @@ class TestHeaderAuth:
         )
         assert resp.status_code == 403
 
+    def test_cannot_mint_a_kai_engine_session(self, client, monkeypatch):
+        # Same laundering hole for the embedded turn engine's handshake
+        # (app/api/kai.py create_kai_session): it mints an engine session JWT
+        # AND the `kai_session` broker credential behind it, which then mints
+        # per-turn egress tickets and spends the instance's LLM budget. A
+        # captured Storage API token must not walk away with either. The
+        # dependency resolves before the handler's own kill-switch check, so
+        # this 403s whether or not KAI_HOST_JWT_SECRET is set here.
+        monkeypatch.setattr(kv, "verify_storage_token", lambda tok: _identity())
+        resp = client.post("/api/kai/sessions", headers={"X-StorageApi-Token": "tok-kai"})
+        assert resp.status_code == 403
+
     def test_flood_guard_trips_on_distinct_invalid_tokens(self, client, monkeypatch):
         def failing(tok):
             raise kv.KeboolaVerifyError("invalid_token", "no")

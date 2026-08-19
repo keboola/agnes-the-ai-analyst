@@ -508,6 +508,7 @@ from app.api.slack import router as slack_router
 from app.api.admin_chat import router as admin_chat_router
 from app.api.notifications_ws import router as notifications_ws_router
 from app.api.broker import router as broker_router
+from app.api.kai import router as kai_router
 from app.instance_config import get_slack_transport
 from services.slack_bot.socket_mode_client import (
     SocketModeDispatcher,
@@ -1624,39 +1625,30 @@ async def lifespan(app):
                 _server_url = agnes_server_url()
 
                 def _render_workspace_prompt(user_email: str) -> Optional[str]:
-                    """Render the analyst CLAUDE.md (admin Workspace Prompt
-                    override or shipped default), RBAC-filtered for this user —
-                    the same content `agnes init` writes on a laptop via
-                    GET /api/welcome. Returns None on any failure so workdir
-                    init falls back to the bundled static CLAUDE.md."""
-                    try:
-                        from src.db import get_system_db
-                        from src.claude_md import render_claude_md
-                        from src.repositories import use_pg, users_repo
+                    """Render the analyst CLAUDE.md for the chat sandbox.
 
-                        # User read via the factory so it honors use_pg() — a
-                        # direct UserRepository(conn) read the frozen DuckDB
-                        # system file on Postgres instances (#518). The conn
-                        # below is the DuckDB-mode path handed to
-                        # render_claude_md, which routes its own state reads
-                        # through the factory; on Postgres it is None so the
-                        # system DuckDB is never opened (forbidden invariant).
-                        u = users_repo().get_by_email(user_email)
-                        if not u:
-                            return None
-                        conn = None if use_pg() else get_system_db()
-                        try:
-                            # This is the chat sandbox — its filesystem is
-                            # ephemeral and not the analyst's own machine, so
-                            # the rendered prompt must use the sandbox wording
-                            # (e.g. the Charts section's inline-SVG-only rule).
-                            return render_claude_md(conn, user=u, server_url=_server_url, is_sandbox=True)
-                        finally:
-                            if conn is not None:
-                                conn.close()
-                    except Exception:
-                        logger.exception("render workspace prompt failed for %s", user_email)
-                        return None
+                    Delegates so the embedded `kai-agent` turn engine, which
+                    ships the same prompt inside its workspace tarball
+                    (`app/api/kai.py`), cannot drift from what the native
+                    sandbox seeds. Returns None on any failure so workdir init
+                    falls back to the bundled static CLAUDE.md."""
+                    from app.chat.workspace_prompt import render_sandbox_workspace_prompt
+                    from src.db import get_system_db
+                    from src.repositories import use_pg
+
+                    # Conn resolution stays HERE rather than moving into the
+                    # shared helper: the helper opens no connection of its own,
+                    # so it needs no `get_system_db()` grandfather entry, and
+                    # this path keeps the exact behaviour it had — the
+                    # DuckDB-mode conn is handed in, and on Postgres it is None
+                    # so the system DuckDB is never opened (forbidden
+                    # invariant). Devin review on this PR.
+                    conn = None if use_pg() else get_system_db()
+                    try:
+                        return render_sandbox_workspace_prompt(user_email, server_url=_server_url, conn=conn)
+                    finally:
+                        if conn is not None:
+                            conn.close()
 
                 workdir_mgr = WorkdirManager(
                     data_dir=_chat_data_dir,
@@ -2249,6 +2241,12 @@ def create_app() -> FastAPI:
             # the broker's stream-through (#1020) actually reach the sandbox
             # incrementally.
             "/api/broker/anthropic",  # SSE stream — do not gzip
+            # Embedded kai-agent host routes, for both reasons above at once:
+            # /api/kai/mcp proxies a Streamable-HTTP MCP server that may answer
+            # as text/event-stream (buffering it collapses a long tool call
+            # into one burst at the end), and /api/kai/workspace returns an
+            # already-gzipped tarball, where re-compressing only burns CPU.
+            "/api/kai",
             "/cli/wheel/",
             "/cli/download",
             "/marketplace.git",  # git smart-HTTP is self-chunked; double-gzip bloats
@@ -2788,6 +2786,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_chat_router)
     app.include_router(notifications_ws_router)
     app.include_router(broker_router)
+    app.include_router(kai_router)
 
     # Git smart-HTTP endpoint for Claude Code: /marketplace.git/*
     # Native ASGI route that shells out to the real `git http-backend` CLI

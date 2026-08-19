@@ -214,18 +214,29 @@ def require_broker_ticket(request: Request) -> Dict[str, Any]:
     return row
 
 
-def _require_scope(row: Dict[str, Any], scope: str) -> None:
+def _require_scope(row: Dict[str, Any], *scopes: str) -> None:
     """Hard-deny (401) + audit a ticket presented against the wrong-scope route.
 
     A ticket minted for the MCP loopback must never authenticate the main
     CLI's broker route and vice versa — the spawn-time scope is the
     contract, not the identity behind it.
+
+    Several scopes may be listed for a route that more than one kind of caller
+    legitimately reaches. `anthropic_proxy` is the only such route: `main` is
+    the native chat sandbox's general ticket, and `llm` is the embedded
+    engine's LLM-ONLY ticket, which deliberately does not open `agnes-api`.
+    Listing scopes here rather than widening a scope's meaning keeps the
+    narrower ticket narrow.
     """
-    if row.get("scope") != scope:
+    if row.get("scope") not in scopes:
         try:
             audit_repo().log(
                 action="broker_ticket_scope_mismatch",
-                params={"expected_scope": scope, "actual_scope": row.get("scope"), "session_id": row.get("session_id")},
+                params={
+                    "expected_scope": "|".join(scopes),
+                    "actual_scope": row.get("scope"),
+                    "session_id": row.get("session_id"),
+                },
                 result="denied",
                 client_kind="broker",
             )
@@ -686,8 +697,38 @@ async def anthropic_proxy(request: Request, row: Dict[str, Any] = Depends(requir
     review on #849). When LLM_DISPATCHER_URL is set, POST /v1/messages is
     instead forwarded to that dispatcher with LLM_DISPATCHER_API_KEY
     (token-arbitrage PoC); all other subpaths keep the pinned Anthropic
-    upstream."""
-    _require_scope(row, "main")
+    upstream.
+
+    Accepts `llm` alongside `main`: the embedded turn engine's egress ticket
+    (`app/api/kai.py`) is minted in that narrower scope precisely so it cannot
+    also authenticate `agnes-api`, which requires `main` and replays the whole
+    non-admin `/api/*` surface. Found by Devin Review on #1235."""
+    _require_scope(row, "main", "llm")
+    # An `llm` ticket belongs to the embedded kai-agent engine, and its
+    # authority is bounded by the session ROW, not only by its own TTL. This
+    # route is the one place an already-issued egress ticket can still spend the
+    # instance's LLM budget, and nothing else on the path checks the row:
+    # `_require_session_credential` gates `/api/kai/*`, so it stops a deleted
+    # conversation from minting NEW tickets while leaving an outstanding one
+    # spendable.
+    #
+    # `app/api/kai.py` used to justify that gap by pointing at the scope-blind
+    # `revoke_session` sweep that `ChatManager.kill` runs on permanent delete.
+    # That sweep is conditional: `_kill_quietly` returns early when
+    # `app.state.chat_manager is None`, which is the NORMAL state for an
+    # instance that embeds the engine without running Agnes's own sandbox chat
+    # (six branches in `app/main.py` set it, `chat.enabled` false among them).
+    # On exactly the deployment this integration targets, nothing revoked the
+    # ticket at all. Checked here instead — the fix that module already named as
+    # the honest one.
+    #
+    # Narrowed to `llm` on purpose: `main` is the native relay's scope and its
+    # traffic is the busy path, so it keeps paying nothing. Offloaded because a
+    # synchronous DB read must not run on the event loop.
+    # Found by Devin Review on this PR.
+    if row.get("scope") == "llm":
+        if await asyncio.to_thread(lambda: chat_session_repo().get_session(row["session_id"])) is None:
+            raise HTTPException(status_code=401, detail="ticket_session_gone")
     raw_body = await request.body()
     headers = {
         k: v
