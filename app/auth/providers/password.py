@@ -246,6 +246,13 @@ def _render_message(request: Request, title: str, message: str, status_code: int
     return templates.TemplateResponse(request, "_message.html", ctx, status_code=status_code)
 
 
+def _render_reset_request_form(request: Request, email: str = "", error: str = ""):
+    from app.web.router import templates, _build_context
+
+    ctx = _build_context(request, email=email, error=error)
+    return templates.TemplateResponse(request, "password_reset_request.html", ctx)
+
+
 def _render_reset_form(request: Request, email: str, token: str, error: str = "", reason: str = ""):
     from app.web.router import templates, _build_context
 
@@ -470,7 +477,15 @@ async def reset_page(
     token: str = "",
     reason: str = "",
 ):
-    """Render the 'set new password' form when arriving via reset link.
+    """Render the reset flow's GET page.
+
+    With ``email`` + ``token`` (arriving via an emailed reset link) this is
+    the 'set new password' form. Without a token it renders the 'enter your
+    email' request form — the standalone forgot-password page the login page
+    links to. (It used to redirect back to the login page instead, leaving
+    the hidden-email POST from the login form as the only way to request a
+    reset — which silently submitted an empty address when the user clicked
+    Forgot Password before typing their email.)
 
     ``reason=must_change`` marks the forced-rotation arrival (see
     ``password_login_web``): the credentials were correct, but the password
@@ -480,7 +495,7 @@ async def reset_page(
     rejected.
     """
     if not email or not token:
-        return RedirectResponse(url="/login/password", status_code=302)
+        return _render_reset_request_form(request, email=email)
     return _render_reset_form(request, email=email, token=token, reason=reason)
 
 
@@ -502,37 +517,41 @@ async def reset_request(
     # mixed-case row an admin stored as-is is still found when the person types
     # their address in lower case.
     email = (email or "").strip()
-    if email:
-        repo = users_repo()
-        user = repo.get_by_email_ci(email)
-        if user and bool(user.get("active", True)):
-            token = secrets.token_urlsafe(32)
-            repo.update(
-                id=user["id"],
-                reset_token=hash_token(token),
-                reset_token_created=datetime.now(timezone.utc),
+    if not email:
+        # Nothing could have been sent, so the "Check your email" copy below
+        # would be false — re-ask for the address instead. An empty submission
+        # reveals nothing, so anti-enumeration does not apply to this branch.
+        return _render_reset_request_form(request, error="Enter your email address.")
+    repo = users_repo()
+    user = repo.get_by_email_ci(email)
+    if user and bool(user.get("active", True)):
+        token = secrets.token_urlsafe(32)
+        repo.update(
+            id=user["id"],
+            reset_token=hash_token(token),
+            reset_token_created=datetime.now(timezone.utc),
+        )
+        sent = send_reset_email(request, user["email"], token)
+        if _has_email_transport() and not sent:
+            # A configured transport that failed must not render the
+            # success page — the person would wait for a mail that was
+            # never sent. Trades a sliver of anti-enumeration away while
+            # the relay is down (the 500 implies the account exists);
+            # the silent failure was judged worse. Unknown addresses
+            # never attempt a send, so they keep the generic page.
+            # Deliberately NOT bypassed in LOCAL_DEV_MODE (unlike the
+            # magic-link JSON dev path, which returns the link plus a
+            # send_error field): the reset flow has no response field to
+            # carry the failure, and a broken-but-configured relay is
+            # worth surfacing in dev too — the link is already in the
+            # logs either way.
+            return _render_message(
+                request,
+                title="Email delivery failed",
+                message="We could not send the password-reset email. "
+                "Please try again later or contact your administrator.",
+                status_code=500,
             )
-            sent = send_reset_email(request, user["email"], token)
-            if _has_email_transport() and not sent:
-                # A configured transport that failed must not render the
-                # success page — the person would wait for a mail that was
-                # never sent. Trades a sliver of anti-enumeration away while
-                # the relay is down (the 500 implies the account exists);
-                # the silent failure was judged worse. Unknown addresses
-                # never attempt a send, so they keep the generic page.
-                # Deliberately NOT bypassed in LOCAL_DEV_MODE (unlike the
-                # magic-link JSON dev path, which returns the link plus a
-                # send_error field): the reset flow has no response field to
-                # carry the failure, and a broken-but-configured relay is
-                # worth surfacing in dev too — the link is already in the
-                # logs either way.
-                return _render_message(
-                    request,
-                    title="Email delivery failed",
-                    message="We could not send the password-reset email. "
-                    "Please try again later or contact your administrator.",
-                    status_code=500,
-                )
     return _render_message(
         request,
         title="Check your email",

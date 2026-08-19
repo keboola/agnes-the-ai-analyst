@@ -486,7 +486,6 @@ resource "google_compute_instance" "vm" {
     seed_admin_email                = var.seed_admin_email
     seed_admin_password             = var.enable_seed_password ? var.seed_admin_password : ""
     role                            = each.value.role
-    compose_ref                     = var.compose_ref
     oauth_client_id_secret_name     = try(local.per_vm_oauth[each.value.name].id, "")
     oauth_client_secret_secret_name = try(local.per_vm_oauth[each.value.name].secret, "")
     runtime_secret_env              = var.runtime_secret_env

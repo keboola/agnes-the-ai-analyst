@@ -19,7 +19,6 @@ KEBOOLA_STACK_URL="${keboola_stack_url}"
 SEED_ADMIN_EMAIL="${seed_admin_email}"
 SEED_ADMIN_PASSWORD="${seed_admin_password}"
 ROLE="${role}"
-COMPOSE_REF="${compose_ref}"
 
 # uid the agnes-applier system user must be pinned to. MUST equal the app
 # container's uid (Dockerfile `useradd --system --uid 999 ... agnes`, `USER
