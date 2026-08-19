@@ -440,9 +440,25 @@ variable "image_repo" {
 }
 
 variable "compose_ref" {
-  description = "DEPRECATED — no longer used. Compose files now ship inside the docker image at /opt/agnes-host/ and are extracted via `docker cp` from the same `image_tag` the operator pinned. Pin `image_tag` instead. Variable retained for one release cycle to avoid breaking existing terraform plans; will be removed in a future major bump."
+  # RETIRED. This never pinned anything: it was threaded to the startup script
+  # as COMPOSE_REF and then never read. Compose files are extracted from the
+  # image the operator pinned with `image_tag`, and agnes-auto-upgrade.sh
+  # refreshes them from the repository's main branch on every tick — so a root
+  # setting `compose_ref = "stable-YYYY.MM.N"` believed it had pinned its
+  # compose files and had not.
+  #
+  # Kept DECLARED, like `ui_layout` above, so that belief fails loudly instead
+  # of quietly: a root that still sets it gets a plan-time error naming the
+  # retirement, rather than an apply that succeeds and pins nothing. Delete the
+  # line from your root when convenient. To pin, pin `image_tag`.
+  description = "RETIRED — never had any effect. Pin `image_tag` instead; setting this is now a plan-time error."
   type        = string
-  default     = "main"
+  default     = ""
+
+  validation {
+    condition     = var.compose_ref == ""
+    error_message = "compose_ref is retired and never pinned anything — it was passed to the VM and never read. Compose files come from the image `image_tag` selects. Remove the compose_ref line from your root module and pin `image_tag` instead."
+  }
 }
 
 variable "enable_monitoring" {
