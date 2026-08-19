@@ -530,14 +530,18 @@ def resolve_lines(
     needs the bootstrap (typically: skip for publicly-trusted certs like
     Let's Encrypt, emit for self-signed or private corp CA).
 
-    `wheel_filename`, `plugin_install_names` and `connector_manifest` are
-    accepted for caller compatibility and IGNORED — the marketplace and
-    connector work moved into `agnes onboard`, and step 1 downloads via the
-    unversioned `/cli/download` endpoint. See the module docstring. In
-    particular this function never loads the connector manifest, so it
-    stays DB-free, seed-free and cheap enough to call on every page render.
+    `plugin_install_names` and `connector_manifest` are accepted for caller
+    compatibility and IGNORED — the marketplace and connector work moved
+    into `agnes onboard`. See the module docstring. In particular this
+    function never loads the connector manifest, so it stays DB-free,
+    seed-free and cheap enough to call on every page render.
+
+    `wheel_filename` is likewise unused by the built-in body (step 1
+    downloads via the unversioned `/cli/download` endpoint), but its
+    substitution is still applied to every line so an operator-authored
+    `custom_preamble` that references `{wheel_filename}` keeps resolving.
     """
-    del wheel_filename, plugin_install_names, connector_manifest  # accepted, ignored
+    del plugin_install_names, connector_manifest  # accepted, ignored
 
     has_ca = bool(ca_pem and ca_pem.strip())
 
@@ -553,7 +557,8 @@ def resolve_lines(
     lines.extend(_confirm_lines())  # 4
 
     return [
-        line.replace("{server_host}", server_host)
+        line.replace("{wheel_filename}", wheel_filename)
+        .replace("{server_host}", server_host)
         .replace("{workspace_dir}", workspace_dir)
         .replace("{instance_brand}", instance_brand)
         for line in lines

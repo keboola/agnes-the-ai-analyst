@@ -141,9 +141,9 @@ def compute_default_agent_prompt(
     served TLS cert, decides whether the step-0 trust block renders.
     """
     try:
-        from app.web.setup_instructions import resolve_lines
-
         from urllib.parse import urlparse as _urlparse
+
+        from app.web.setup_instructions import resolve_lines
 
         parsed = _urlparse(server_url)
         server_host = parsed.netloc or parsed.hostname or ""
