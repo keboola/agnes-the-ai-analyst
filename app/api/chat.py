@@ -510,6 +510,14 @@ async def list_messages(
             "role": m.role,
             "content": m.content,
             "tool_calls": m.tool_calls,
+            # The composer reads this for two filters, both of which are dead
+            # without it: the ArrowUp prompt-recall stack (a co-drive peer's
+            # prompt must not surface under the owner's history) and
+            # `renderMessage`'s peer-attribution badge, which otherwise
+            # disappears on every reload. `/api/chat/copresence` already
+            # exposes the field to participants and this route is owner-only
+            # (a non-owner 404s above), so it discloses nothing new.
+            "sender_email": m.sender_email,
             "created_at": m.created_at.isoformat(),
             # Recomputed on read rather than stored (see app/chat/sources.py):
             # the pair it needs is already here, so this costs no column, no

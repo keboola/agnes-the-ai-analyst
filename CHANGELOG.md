@@ -10,11 +10,17 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
-
+## [0.84.2] - 2026-08-20
 
 ### Added
 
 - **The chat composer recalls this conversation's own sent messages with ArrowUp/ArrowDown, shell-history style.** ArrowUp only starts recall once the caret is at the top of the draft, so normal multi-line cursor movement is unaffected; once browsing, Up/Down keep cycling regardless of caret position, including messages sent before the current page load (seeded from persisted history on open/reconnect). ArrowDown past the newest entry restores whatever was still being typed.
+
+### Fixed
+
+- **The chat composer's prompt recall could serve a co-drive peer's prompts to the session owner.** `chat.js` filters the ArrowUp history stack on `m.sender_email`, over rows from `GET /api/chat/sessions/{id}/messages` — an endpoint that did not serialize the field. `!m.sender_email` was therefore unconditionally true, the filter was dead code, and after any reload or `full_refresh` the owner's ArrowUp walked back through everyone's prompts. The same absence silently broke `renderMessage`'s peer-attribution badge, which disappeared from the transcript on every reload for the same reason. The endpoint now sends `sender_email`; it is already carried by the repository layer and already exposed to participants by `/api/chat/copresence`, and this route 404s for a non-owner before reaching the payload, so nothing new is disclosed. A guard pins the two halves together, because a source-grep test cannot tell "this code exists" from "this code does anything" — which is how the dead filter shipped green with a resolved review thread.
+
+- **ArrowUp now leaves the caret at the end of the recalled prompt**, matching ArrowDown and the shell history this is modelled on. It used to park at position 0, the one place a reader recalling a prompt to edit its tail has to navigate away from; since browsing makes further Up/Down caret-independent, that bought nothing.
 
 ## [0.83.98] - 2026-08-20
 

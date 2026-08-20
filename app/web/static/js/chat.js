@@ -3871,7 +3871,13 @@ $("chat-input").addEventListener("keydown", (e) => {
       _historyPos -= 1;
       _historyBrowsing = true;
       ta.value = _promptHistory[_historyPos];
-      ta.setSelectionRange(0, 0);
+      // Caret to the END, matching the ArrowDown branch below and the shell
+      // history this is modelled on. Caret-at-0 would put it in the one place
+      // a reader recalling a prompt to tweak its tail has to navigate away
+      // from — and, since `_historyBrowsing` makes further Up/Down
+      // caret-independent, it bought nothing.
+      const upPos = ta.value.length;
+      ta.setSelectionRange(upPos, upPos);
       autosizeComposer();
       return;
     } else if (e.key === "ArrowDown" && _historyBrowsing && _historyPos < _promptHistory.length) {

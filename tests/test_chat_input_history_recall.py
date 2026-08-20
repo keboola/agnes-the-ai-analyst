@@ -128,3 +128,43 @@ def test_manual_edit_resets_history_browsing():
     assert "_historyPos = _promptHistory.length;" in block
     assert "_historyBrowsing = false;" in block
     assert "autosizeComposer();" in block
+
+
+def test_the_recall_filter_has_a_payload_field_to_read():
+    """The two halves of the co-drive filter, pinned together.
+
+    `chat.js` filters the recall stack on `m.sender_email`, over rows from
+    `GET /api/chat/sessions/{id}/messages`. That endpoint did not serialize the
+    field, so `!m.sender_email` was unconditionally true and the filter was
+    dead code — a peer's prompts still surfaced under the owner's ArrowUp after
+    any reload or `full_refresh`, and the review round that asked for the
+    filter was resolved believing it worked.
+
+    A source-grep test cannot tell "this code exists" from "this code does
+    anything", which is exactly how that shipped green. This pins the server
+    half so the client half cannot go back to reading a field nobody sends;
+    `tests/test_chat_api.py::test_get_messages_exposes_sender_email` asserts
+    the payload itself.
+    """
+    from pathlib import Path
+
+    js = Path("app/web/static/js/chat.js").read_text()
+    api = Path("app/api/chat.py").read_text()
+    assert "m.sender_email" in js, "the client filter is gone -- drop this guard with it"
+    assert '"sender_email": m.sender_email' in api, (
+        "chat.js filters on m.sender_email; the messages endpoint must send it"
+    )
+
+
+def test_arrow_up_leaves_the_caret_at_the_end():
+    """Shell history — the model named in this feature's own comments — puts
+    the caret at the end in both directions. ArrowUp used to leave it at 0,
+    the one position a reader recalling a prompt to edit its tail has to move
+    away from, while ArrowDown already used the end."""
+    from pathlib import Path
+
+    js = Path("app/web/static/js/chat.js").read_text()
+    block = js[js.index('if (e.key === "ArrowUp" && (_historyBrowsing || atStart)') :]
+    block = block[: block.index("else if")]
+    assert "setSelectionRange(0, 0)" not in block, "ArrowUp must not park the caret at position 0"
+    assert "ta.value.length" in block
