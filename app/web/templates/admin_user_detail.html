@@ -748,7 +748,7 @@ function renderMemberships() {
       admin: "Added by an admin",
       google_sync: "Synced from Google Workspace",
       system_seed: "System-managed",
-      auto: "Automatic — everyone here is a member",
+      auto: "Auto-joined — everyone here is a member",
     })[m.source] || `Added via ${m.source}`;
     const addedFragment = m.added_at ? ` · ${esc(fmtDate(m.added_at))}` : "";
     // Same chip colour + name-shortening rules as the people list:
