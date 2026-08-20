@@ -408,6 +408,7 @@
   // blocking pre-check and gates the real publish on the verdict.
   var GUARDRAILS_ENABLED = {{ 'true' if guardrails_enabled else 'false' }};
   var GUARDRAILS_LLM_READY = {{ 'true' if guardrails_llm_ready else 'false' }};
+  var IS_ADMIN = {{ 'true' if session.user.is_admin else 'false' }};
   // Drafts never touch the store — they live only in this browser, one slot
   // per type, so an in-progress plugin can't clobber a half-written skill.
   var DRAFT_KEY = 'agnes_builder_draft_v1_' + USER_ID;
@@ -1205,7 +1206,12 @@
       name: (draft.name || '').trim(),
       description: (draft.description || '').trim(),
       category: draft.category || null,
-      skill_md: draft.body || ''
+      skill_md: draft.body || '',
+      // An admin building here is publishing workspace capability — the
+      // Organization trust mark is what analysts should read on it, not
+      // Community. Non-admins never send the field (API default 'user',
+      // and 'organization' is admin-gated server-side anyway).
+      publisher_kind: IS_ADMIN ? 'organization' : 'user'
     };
     if (extra) Object.keys(extra).forEach(function (k) { p[k] = extra[k]; });
     return p;
@@ -1214,6 +1220,7 @@
     var fd = new FormData();
     fd.append('file', bundle, bundle.name);
     fd.append('type', 'plugin');
+    fd.append('publisher_kind', IS_ADMIN ? 'organization' : 'user');
     fd.append('name', (draft.name || '').trim());
     if ((draft.description || '').trim()) fd.append('description', (draft.description || '').trim());
     if (draft.category) fd.append('category', draft.category);

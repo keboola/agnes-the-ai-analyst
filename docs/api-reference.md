@@ -744,6 +744,7 @@ checks against.
 
 - /api/admin/users/{user_id}/activity
 - /api/admin/users/{user_id}/effective-access
+- /api/admin/users/{user_id}/library-preview
 - /api/admin/users/{user_id}/memberships
 - /api/admin/users/{user_id}/memberships/{group_id}
 - /api/admin/users/{user_id}/sessions
