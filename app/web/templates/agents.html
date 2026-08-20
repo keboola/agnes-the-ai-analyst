@@ -1136,16 +1136,29 @@
     schedForm.busy = true;
     btn.disabled = true;
     setSchedErr('');
+    // Same stale-response rule as loadSchedules, read-only here: if a newer
+    // load owns the panel by the time the POST settles (the builder moved to
+    // another agent, or this one was reopened and refetched), drop the
+    // continuation — the row exists on the server and the owning load's GET
+    // is the truth. Without this the success arm pushed agent A's created
+    // row into whatever array the panel renders now (coercing a fresh one
+    // over a mid-load null), and the error arm wrote A's failure into B's
+    // form. The create button only renders once `schedules` is an array, and
+    // any load that resets it also bumps the generation — so inside a
+    // current-generation continuation, plain `schedules.push` is safe.
+    var gen = schedGen;
     schedFetch(schedUrl(a), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'same-origin',
       body: JSON.stringify({ name: name, schedule: cadence, prompt: prompt, enabled: !!schedForm.enabled })
     }).then(function (created) {
-      (schedules = schedules || []).push(created);
+      if (gen !== schedGen) return;
+      schedules.push(created);
       schedForm = blankSchedForm();
       renderBuilder();
     }).catch(function (err) {
+      if (gen !== schedGen) return;
       schedForm.busy = false;
       btn.disabled = false;
       setSchedErr(err.message);
