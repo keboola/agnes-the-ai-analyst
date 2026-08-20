@@ -1987,12 +1987,94 @@ def _public_view(config: dict) -> dict:
     return _redact(copy.deepcopy(config))
 
 
+_REPOINT_SAMPLE_SIZE = 5
+
+
+def _guard_connection_repoint(
+    before: dict,
+    sections: Dict[str, Dict[str, Any]],
+    confirmed: bool,
+) -> None:
+    """Refuse an unconfirmed change to *which upstream* a data source points at.
+
+    Registrations resolve their upstream against the instance's one connection
+    per source (see `app/connection_identity.py`), and the result is baked into
+    the extract's `_remote_attach.url` and each remote view's
+    ``sf."SCHEMA"."TABLE"``. Repointing the connection therefore invalidates
+    every existing row of that source at once — and the failure is silent from
+    the operator's seat: reads fail at bind time deep in a query, materialized
+    syncs fail at COPY time, and `last_sync_status` keeps showing the last
+    successful run. The save path used to apply such a patch without a word.
+
+    Fires only when the source already HAS registrations: first-time setup has
+    nothing to break, and nagging there would train operators to click through.
+    """
+    if confirmed:
+        return
+    patch = sections.get("data_source")
+    if not isinstance(patch, dict):
+        return
+
+    before_ds = before.get("data_source")
+    before_ds = before_ds if isinstance(before_ds, dict) else {}
+
+    from app.connection_identity import identity_changes
+    from src.repositories import table_registry_repo
+
+    for source, source_patch in patch.items():
+        if not isinstance(source_patch, dict):
+            continue
+        before_block = before_ds.get(source)
+        changes = identity_changes(source, before_block if isinstance(before_block, dict) else {}, source_patch)
+        if not changes:
+            continue
+
+        try:
+            affected = table_registry_repo().list_by_source(source)
+        except Exception:
+            # A registry the guard cannot read is not a reason to block a
+            # config save — the operator may be fixing exactly that.
+            logger.exception("connection-repoint guard: registry lookup failed for %s", source)
+            continue
+        if not affected:
+            continue
+
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "connection_change_affects_registrations",
+                "source": source,
+                # Same masking rule as the audit diff — the field name carries
+                # the operator-relevant signal, so a credential-pointer leaf
+                # does not need its value echoed to be understood.
+                "changes": [
+                    {
+                        "field": c["field"],
+                        "before": _mask(c["before"]) if _is_secret_key(c["field"]) else c["before"],
+                        "after": _mask(c["after"]) if _is_secret_key(c["field"]) else c["after"],
+                    }
+                    for c in changes
+                ],
+                "affected_tables": len(affected),
+                "sample_tables": [str(r.get("id")) for r in affected[:_REPOINT_SAMPLE_SIZE]],
+                "hint": (
+                    f"{len(affected)} registered table(s) resolve against the current "
+                    f"{source} connection and will stop resolving after this change; "
+                    "they need re-registering (or a matching schema on the new "
+                    "upstream). Resend with confirm_connection_change=true to apply."
+                ),
+            },
+        )
+
+
 class ServerConfigUpdateRequest(BaseModel):
     """Patch payload for POST /api/admin/server-config.
 
     Only the sections listed in `_EDITABLE_SECTIONS` are accepted; anything
     else is rejected with 400. `confirm_danger` must be true if the patch
-    touches any danger-zone section (auth.*, server.*).
+    touches any danger-zone section (auth.*, server.*), and
+    `confirm_connection_change` must be true to repoint a data source that
+    already has registrations.
     """
 
     sections: Dict[str, Dict[str, Any]] = Field(
@@ -2002,6 +2084,14 @@ class ServerConfigUpdateRequest(BaseModel):
     confirm_danger: bool = Field(
         default=False,
         description="Must be true to apply changes touching auth.* or server.*",
+    )
+    confirm_connection_change: bool = Field(
+        default=False,
+        description=(
+            "Must be true to repoint a data_source connection that registered "
+            "tables already resolve against (see 409 "
+            "connection_change_affects_registrations)"
+        ),
     )
 
 
@@ -2414,6 +2504,11 @@ async def update_server_config(
         # we acquired the lock.
         reset_cache()
         before = _load_current_instance_yaml()
+
+        # Blast-radius gate, INSIDE the lock and before any write: `before` is
+        # the snapshot the merge below is computed from, so the count the
+        # operator confirmed against is the one that actually applies.
+        _guard_connection_repoint(before, scrubbed_sections, request.confirm_connection_change)
 
         # Deep merge — section-by-section so we never accidentally delete a
         # sibling section the patch didn't touch. Use the redaction-scrubbed
@@ -3872,6 +3967,7 @@ class ConfigureRequest(BaseModel):
     bigquery_location: Optional[str] = None
     instance_name: Optional[str] = None
     allowed_domain: Optional[str] = None
+    confirm_connection_change: bool = False
 
 
 @router.get("/discover-tables")
@@ -6474,6 +6570,34 @@ async def configure_instance(
                     detail=f"refusing to overwrite corrupt overlay at {config_path} ({e}); "
                     "back up and remove the file, or fix it by hand",
                 ) from e
+
+        # Same repoint gate as POST /server-config. This endpoint writes the
+        # very same `data_source.<source>` coordinates, so skipping it here
+        # would leave a second, unguarded door to the same silent breakage
+        # (the wizard is admin-callable long after first boot). Compared
+        # against the EFFECTIVE config, not the overlay: a connection that
+        # lives in the static instance.yaml is what registrations resolved
+        # against, and reading only the overlay would score it as unset and
+        # report a change where there is none.
+        repoint_patch: Dict[str, Dict[str, Any]] = {}
+        if request.data_source == "keboola":
+            repoint_patch = {"keboola": {"stack_url": request.keboola_url, "token_env": "KEBOOLA_STORAGE_TOKEN"}}
+        elif request.data_source == "bigquery":
+            repoint_patch = {
+                "bigquery": {
+                    "project": request.bigquery_project,
+                    "location": request.bigquery_location or "us",
+                }
+            }
+        if repoint_patch:
+            from app.instance_config import reset_cache as _reset_config_cache
+
+            _reset_config_cache()
+            _guard_connection_repoint(
+                _load_current_instance_yaml(),
+                {"data_source": repoint_patch},
+                request.confirm_connection_change,
+            )
 
         # Merge instance settings into the overlay only — never seed from the
         # env-resolved merged config.
