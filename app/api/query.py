@@ -366,11 +366,24 @@ def _local_extract_catalogs(conn) -> set[str]:
     """Attached local extract catalogs (per-source ``extract.duckdb`` files).
 
     Each source is ATTACHed as its own catalog named after the source
-    (``src/db.py``). These are file-backed ``duckdb`` attachments; the default
-    catalog (where the analyst-facing master views live) and the
-    remote-extension catalogs (``bq``/``kbc``, type ``bigquery``/``keboola``)
-    are excluded — the latter keep their own registry gate in
-    ``_bq_guardrail_inputs``.
+    (``src/db.py``). These are file-backed ``duckdb`` attachments, so the
+    default catalog (where the analyst-facing master views live) and the
+    remote-extension catalogs (type ``bigquery``/``keboola``) fall outside this
+    set.
+
+    That exclusion is only safe for a prefix that has a gate of its own, and
+    the two are not equal. ``bq`` does (``_bq_guardrail_inputs``), as do ``sf``
+    (``_sf_guardrail_inputs``) and ``dbx``
+    (``connectors.databricks.remote.guardrail_inputs``). **``kbc`` does not** —
+    ``_bq_guardrail_inputs`` scans ``BQ_PATH`` only, Keboola is not registered
+    in ``src.remote_engines._ENGINES``, and no ``_kbc_guardrail_inputs``
+    exists. An earlier version of this docstring asserted the opposite. So on
+    an instance whose Keboola extract wrote a ``_remote_attach`` row (every
+    Keboola sync does — ``connectors/keboola/extractor.py``), a
+    ``kbc."bucket"."table"`` path is gated by neither this catalog check nor a
+    registry/grant/policy one. Pre-existing and tracked separately from the
+    engine-path policy gates; recorded here so the next reader does not infer
+    coverage from the exclusion.
     """
     try:
         default = conn.execute("SELECT current_database()").fetchone()[0]

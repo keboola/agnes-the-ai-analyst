@@ -510,3 +510,90 @@ class TestHappyPath:
         assert row["access_policy_sql"] is None
         assert row["access_policy_note"] is None
         assert row["access_policy_updated_by"] is None
+
+
+@pytest.mark.journey
+class TestTwoPoliciedRowsStayUnwindable:
+    """Two POLICIED rows over one physical source are legal (§3.2 says so
+    explicitly: "each read goes through a policy, and which one an admin wants
+    where is their call"). What follows from that has to be checked, because
+    the twin scan runs on the MERGED record: clearing either policy leaves an
+    unpolicied row over a source the other row still policies — the exact
+    disclosure the interlock exists to refuse — so BOTH clears are 422 and
+    neither ordering unwinds the pair.
+
+    That refusal is correct on the merits and stays. What was not correct is
+    the wording: the rejection told an admin who was *removing* a policy to
+    "attach a policy to this row too", and the docstring on
+    ``_check_policied_row_has_no_unpolicied_twin`` promised a safety valve
+    ("an admin can always undo the policy") that this shape does not have.
+    Two escapes do exist — repoint the row at a different source first, or
+    unregister one of the pair — and the message has to name them.
+    """
+
+    def _pair(self, c, token):
+        first = _register(c, token, name="pair_a", server_only=True, bucket="in.c-main", source_table="ledger")
+        assert (
+            c.put(
+                f"/api/admin/registry/{first}",
+                json={"access_policy_sql": _policy_sql("pair_a"), "access_policy_note": "a"},
+                headers=_auth(token),
+            ).status_code
+            == 200
+        )
+        # The second row cannot be registered unpolicied (that is the twin
+        # interlock), so it arrives pointed elsewhere and is repointed by a
+        # PUT that attaches its own policy in the same write.
+        second = _register(c, token, name="pair_b", server_only=True, bucket="in.c-main", source_table="other")
+        moved = c.put(
+            f"/api/admin/registry/{second}",
+            json={
+                "source_table": "ledger",
+                "access_policy_sql": _policy_sql("pair_b"),
+                "access_policy_note": "b",
+            },
+            headers=_auth(token),
+        )
+        assert moved.status_code == 200, moved.text
+        return first, second
+
+    def test_clearing_either_policy_is_refused_in_both_orders(self, seeded_app, monkeypatch):
+        monkeypatch.setenv("AGNES_ACCESS_POLICIES_ENABLED", "1")
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        first, second = self._pair(c, token)
+
+        for target in (first, second):
+            resp = c.put(
+                f"/api/admin/registry/{target}",
+                json={"access_policy_sql": None},
+                headers=_auth(token),
+            )
+            assert resp.status_code == 422, resp.text
+            assert "access_policy_physical_source_conflict" in resp.text
+            # The message must not steer the admin into the one action that
+            # cannot help — they are removing a policy, not missing one.
+            assert "attach a policy to this row too" not in resp.text, resp.text
+            # …and it must name an escape that works.
+            assert "unregister" in resp.text, resp.text
+
+    def test_repointing_first_unwinds_the_pair(self, seeded_app, monkeypatch):
+        """The escape the message now names, exercised end to end: keep the
+        policy while moving the row off the shared source, then clear it."""
+        monkeypatch.setenv("AGNES_ACCESS_POLICIES_ENABLED", "1")
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        first, _second = self._pair(c, token)
+
+        moved = c.put(
+            f"/api/admin/registry/{first}",
+            json={"source_table": "ledger_archive"},
+            headers=_auth(token),
+        )
+        assert moved.status_code == 200, moved.text
+        cleared = c.put(
+            f"/api/admin/registry/{first}",
+            json={"access_policy_sql": None},
+            headers=_auth(token),
+        )
+        assert cleared.status_code == 200, cleared.text
