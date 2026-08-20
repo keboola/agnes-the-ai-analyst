@@ -389,20 +389,20 @@ def test_run_init_passes_every_init_parameter(monkeypatch):
 
 
 def test_server_url_prefers_the_explicit_flag(monkeypatch):
-    monkeypatch.setattr(onb, "load_config", lambda: {"server": "https://saved.example.com"})
+    monkeypatch.setattr("cli.config.load_config", lambda: {"server": "https://saved.example.com"})
     monkeypatch.delenv("AGNES_SERVER", raising=False)
     assert onb._resolve_server_url("https://flag.example.com/") == "https://flag.example.com"
 
 
 def test_server_url_falls_back_to_saved_config(monkeypatch):
     monkeypatch.delenv("AGNES_SERVER", raising=False)
-    monkeypatch.setattr(onb, "load_config", lambda: {"server": "https://saved.example.com"})
+    monkeypatch.setattr("cli.config.load_config", lambda: {"server": "https://saved.example.com"})
     assert onb._resolve_server_url(None) == "https://saved.example.com"
 
 
 def test_server_url_missing_fails_fast(tmp_path, monkeypatch, stubbed):
     monkeypatch.delenv("AGNES_SERVER", raising=False)
-    monkeypatch.setattr(onb, "load_config", dict)
+    monkeypatch.setattr("cli.config.load_config", dict)
     monkeypatch.setattr(onb, "_resolve_server_url", _REAL_RESOLVE_SERVER_URL)
     result = runner.invoke(onboard_app, ["--workspace", str(tmp_path)])
     assert result.exit_code == onb.EXIT_CONFIG

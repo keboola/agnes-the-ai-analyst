@@ -1096,7 +1096,9 @@ pre.code-block-wrap code .hljs-deletion {
    The block layout: small "card" sitting inline in the messages
    feed, capped at the reading column so wide previews share the
    same gutter as message bubbles. Args + full-result are tucked
-   inside collapsed <details> below the header. */
+   inside collapsed <details> below the header — and the card itself
+   is a <details> too (chat.js renderToolCallStart), open while the
+   turn runs and folded to just the header once it ends. */
 .cloud-chat-tool {
   margin: var(--space-2) auto;
   padding: var(--space-3) var(--space-4);
@@ -1118,6 +1120,17 @@ pre.code-block-wrap code .hljs-deletion {
   gap: var(--space-2);
   flex-wrap: wrap;
 }
+/* Only the plain tool-call card's head is a real <summary> (approval/question
+   cards reuse this class on a plain <div> and stay non-collapsible — no
+   pointer cursor should imply otherwise there). display:flex already drops
+   the native disclosure marker in Chrome/Firefox, but Safari keeps a
+   ::-webkit-details-marker regardless of display, so it needs its own
+   suppression. */
+summary.cloud-chat-tool-head {
+  cursor: pointer;
+  list-style: none;
+}
+summary.cloud-chat-tool-head::-webkit-details-marker { display: none; }
 .cloud-chat-tool-icon {
   flex: 0 0 auto;
   font-size: var(--text-md);
@@ -1157,6 +1170,12 @@ pre.code-block-wrap code .hljs-deletion {
   color: var(--ds-text-muted);
   font-variant-numeric: tabular-nums;
 }
+.cloud-chat-tool-chevron {
+  flex: 0 0 auto;
+  color: var(--ds-text-muted);
+  transition: transform var(--transition-fast);
+}
+.cloud-chat-tool[open] .cloud-chat-tool-chevron { transform: rotate(90deg); }
 
 .cloud-chat-tool-args,
 .cloud-chat-tool-result-full {
