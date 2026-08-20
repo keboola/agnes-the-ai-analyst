@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.84.1] - 2026-08-20
+
 ### Changed
 
 - **Every admin↔analyst crossing now carries its origin, so no crossing loses your place.** The seam between the governance tree (`/admin/*`) and the consumption tree (Library, `/catalog/*`) was crossed by links that forgot where you came from: the package workspace's *"View as analyst"* landed on the reading page whose back link pointed at the Library; the Simulate lens's *"Share it →"* landed on the package **index** with the person dropped; and coming back to `/admin/access` reset the filter, scope and tree. The `?from=` pattern the store pages proved (`?from=admin-moderation`) is now the general contract: **"Open analyst page →"** (renamed — the reader arrives as themselves, so the old label claimed a preview it never was) carries `?from=admin` and the reading page's back link becomes *"← Back to Admin: {package}"*; Simulate's stop rows land on the specific package with `?from=simulate&user=`, the page shows *"Fixing access for {person} — their groups: …"* with a one-click *"Re-check {person} →"* back into the same preview; the picked person rides the URL (`?user=` deep link in and out), and the Access workspace's working set (filter, scope) survives the round trip. Grant rows on `/admin/access` are links now — the page that decides "who gets what" can finally answer "what *is* that" in one click — and the rail keeps **Library** lit on `/catalog/*`, `/memory/d/*`, `/apps/detail/*` and `/marketplace/*`, which used to highlight nothing at all.
