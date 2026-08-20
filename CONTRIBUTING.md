@@ -11,7 +11,7 @@ too. Full design: `docs/superpowers/specs/2026-06-05-agnes-dev-agent-kit-design.
 3. Keep changes vendor-agnostic — this is the public OSS distribution. No
    customer-specific deployments, project IDs, internal hostnames, or
    cross-references to private repos in code, config, comments, docs, or commits.
-4. Run the full suite before pushing: `.venv/bin/pytest tests/ --tb=short -n auto -q`.
+4. Run the full suite before pushing: `.venv/bin/pytest tests/ connectors/ --tb=short -n auto -q`.
 5. Add a `## [Unreleased]` CHANGELOG bullet for any user-visible behavior change.
 
 ## Verification loop
@@ -21,7 +21,7 @@ fails until each passes:
 
 ```bash
 python3 scripts/verify_syncmap.py          # instant, no venv — the sync-map rows below
-.venv/bin/pytest tests/ --tb=short -n auto -q
+.venv/bin/pytest tests/ connectors/ --tb=short -n auto -q
 /agnes-review                              # judgment only, once the above are green
 ```
 

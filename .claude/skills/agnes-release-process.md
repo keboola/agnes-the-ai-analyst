@@ -92,6 +92,6 @@ live in `docs/RELEASING.md`.
 
 ## Tests before push
 
-Run `.venv/bin/pytest tests/ --tb=short -n auto -q` before every push.
+Run `.venv/bin/pytest tests/ connectors/ --tb=short -n auto -q` before every push.
 Failures in code you touched: fix before pushing. Failures unrelated:
 confirm they reproduce on a clean branch, note in the PR body, do not block.
