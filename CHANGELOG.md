@@ -10,6 +10,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- **An access policy no longer protects only the name it is attached to.** Two separate doors led around it, both verified against a live instance. (1) A second registry row over the SAME physical source that carried no policy of its own served the raw, unmasked rows to anyone granted it — the twin interlock only ever fired for *distributable* twins (`local`/`materialized`), on the reasoning that `agnes pull` is how data escapes, so an unpolicied `server_only` / `remote` twin was explicitly allowed to coexist. It is not safe: `/api/query` resolves that twin by name server-side and returns exactly what the policy withholds. The interlock now keys on physical-source overlap plus "the other row has no policy of its own", in both directions (register and attach); distributability only changes the wording of the rejection. (2) A direct `sf."SCHEMA"."TABLE"` / `bq."dataset"."table"` path (including the full-backtick BigQuery form) named the physical source, which `rewrite_sql` — matching by registry *name* — never substitutes, so the policy simply did not apply; each engine's gate checked only that the path was registered and that the caller held a grant. Such a path is now refused for non-admins with `sf_path_policied` / `bq_path_policied`, naming the registered table to query instead.
+
+### Changed
+
+- **BREAKING (admin API): registering or editing a table whose physical source is already covered by an access policy now returns 422**, even when the new row is `server_only=true` or `query_mode='remote'`, and attaching a policy is refused while any unpolicied row over the same source exists. Previously only distributable twins were refused. Instances that already have such a pair keep serving reads unchanged, but the next policy write or twin registration will fail until the twin is given its own policy, pointed at a different source, or unregistered — the rejection message says which row is in the way.
+
 ## [0.83.95] - 2026-08-20
 
 ### Fixed
