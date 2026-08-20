@@ -10,6 +10,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+
+
+### Added
+
+- **The chat composer recalls this conversation's own sent messages with ArrowUp/ArrowDown, shell-history style.** ArrowUp only starts recall once the caret is at the top of the draft, so normal multi-line cursor movement is unaffected; once browsing, Up/Down keep cycling regardless of caret position, including messages sent before the current page load (seeded from persisted history on open/reconnect). ArrowDown past the newest entry restores whatever was still being typed.
+
 ## [0.83.98] - 2026-08-20
 
 ### Fixed

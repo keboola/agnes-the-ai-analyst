@@ -1411,6 +1411,13 @@ async function newChat(agentSlug) {
  * logic made callable a second time. */
 async function loadAndRenderHistory(chatId) {
   $("chat-messages").innerHTML = "";
+  // Reset recall state for the chat being loaded up front, not after a
+  // successful fetch — a failed fetch must not leave ArrowUp/ArrowDown
+  // browsing the PREVIOUS conversation's prompts under the new chatId.
+  _promptHistory = [];
+  _historyPos = 0;
+  _historyDraft = "";
+  _historyBrowsing = false;
   let history = [];
   try {
     history = await api(`/api/chat/sessions/${chatId}/messages`);
@@ -1443,7 +1450,23 @@ async function loadAndRenderHistory(chatId) {
     lastUserText = "";
     for (const m of history) {
       renderMessage(m);
-      if (m.role === "user") lastUserText = m.content || "";
+      if (m.role === "user") {
+        lastUserText = m.content || "";
+        // Recall is "this conversation's own sent messages" — a co-drive
+        // peer's prompt (sender_email set and not ours) must not surface
+        // under MY ArrowUp, matching submitUserMessage's live-send path,
+        // which only ever appends the local sender's own text and skips a
+        // repeat of the immediately preceding entry (same reason here: a
+        // reload/full_refresh must rebuild the identical recall stack a
+        // live session would have ended up with, not re-materialize
+        // duplicates the live path would have collapsed).
+        if (
+          (!m.sender_email || m.sender_email === currentUserEmail) &&
+          _promptHistory[_promptHistory.length - 1] !== lastUserText
+        ) {
+          _promptHistory.push(lastUserText);
+        }
+      }
     }
     // A reload must end in the same state as the live turn: the follow-up
     // chips belong under the newest assistant answer — and only while it is
@@ -1459,6 +1482,10 @@ async function loadAndRenderHistory(chatId) {
       );
     }
   }
+  // Only _historyPos needs re-syncing here — the else branch above grew
+  // _promptHistory via push(); draft/browsing were already reset up top
+  // and nothing since has touched them.
+  _historyPos = _promptHistory.length;
   // Re-draw any approval still waiting for an answer. The wipe above is a
   // transcript redraw, and a pending card is not transcript — without this
   // a full_refresh racing a replayed card erases it and the blocked command
@@ -1896,6 +1923,17 @@ async function copyTextToClipboard(text) {
 // button on the latest assistant turn can re-fire it. Updated by
 // submitUserMessage() on every send.
 let lastUserText = "";
+
+// ArrowUp/ArrowDown recall of this chat's own sent messages, shell-history
+// style. _promptHistory is seeded from persisted history on load/reconnect
+// (loadAndRenderHistory) and appended to on every send (submitUserMessage).
+// _historyPos indexes into it; _promptHistory.length means "not browsing,
+// show the live draft". _historyDraft holds that draft so ArrowDown past
+// the newest entry restores whatever the user was mid-typing.
+let _promptHistory = [];
+let _historyPos = 0;
+let _historyDraft = "";
+let _historyBrowsing = false;
 
 // Tracks the most recent assistant message so the "Ask again"
 // affordance + any other "latest only" UI can be moved as the
@@ -3682,6 +3720,12 @@ async function submitUserMessage(text) {
   _clearNextActions();
   renderMessage({ role: "user", content: text });
   lastUserText = text;
+  if (_promptHistory[_promptHistory.length - 1] !== text) {
+    _promptHistory.push(text);
+  }
+  _historyPos = _promptHistory.length;
+  _historyDraft = "";
+  _historyBrowsing = false;
 
   // Chat-driven onboarding: greet once, advance the journey, and — on an empty
   // Stack — resolve the knowledge gap right here before the model runs. When it
@@ -3812,6 +3856,35 @@ $("chat-input").addEventListener("keydown", (e) => {
       return;
     }
   }
+  // Recall this chat's own sent messages, shell-history style. ArrowUp only
+  // starts browsing once the caret is already at the very top of the draft
+  // (so it first moves you through a multi-line message the normal way,
+  // same as a shell only recalling once you're on the top line); once
+  // browsing is underway either key keeps cycling regardless of caret
+  // position so Up/Down chain smoothly like a real history stack.
+  if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+    const ta = e.target;
+    const atStart = ta.selectionStart === 0 && ta.selectionEnd === 0;
+    if (e.key === "ArrowUp" && (_historyBrowsing || atStart) && _historyPos > 0) {
+      e.preventDefault();
+      if (_historyPos === _promptHistory.length) _historyDraft = ta.value;
+      _historyPos -= 1;
+      _historyBrowsing = true;
+      ta.value = _promptHistory[_historyPos];
+      ta.setSelectionRange(0, 0);
+      autosizeComposer();
+      return;
+    } else if (e.key === "ArrowDown" && _historyBrowsing && _historyPos < _promptHistory.length) {
+      e.preventDefault();
+      _historyPos += 1;
+      ta.value = _historyPos === _promptHistory.length ? _historyDraft : _promptHistory[_historyPos];
+      if (_historyPos === _promptHistory.length) _historyBrowsing = false;
+      const pos = ta.value.length;
+      ta.setSelectionRange(pos, pos);
+      autosizeComposer();
+      return;
+    }
+  }
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
     e.preventDefault();
     $("chat-form").dispatchEvent(new SubmitEvent("submit", { cancelable: true }));
@@ -3822,6 +3895,11 @@ $("chat-input").addEventListener("keydown", (e) => {
   }
 });
 $("chat-input").addEventListener("input", () => {
+  // A manual edit ends history browsing — it becomes the new draft, so the
+  // next ArrowUp starts over from the newest entry rather than resuming
+  // mid-history with a value that no longer matches what's stored there.
+  _historyPos = _promptHistory.length;
+  _historyBrowsing = false;
   autosizeComposer();
   _onSlashInputChanged();
 });
