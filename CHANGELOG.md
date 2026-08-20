@@ -10,6 +10,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.83.94] - 2026-08-20
+
+### Fixed
+
+- **A malformed `attrs` on one ADF node no longer costs a Jira issue every attachment id after it.** `JiraService._extract_media_from_adf` walks a comment body for the `media` / `mediaInline` / `mediaSingle` nodes that reference an uploaded attachment, and read the id as `node.get("attrs", {}).get("id")`. `attrs` is third-party JSON and is not guaranteed to be an object; a string, a list or `null` raised `AttributeError`, and the raise escaped the whole recursion rather than the one node — so a single malformed node dropped every media id that came after it, not just its own. A node whose `attrs` is not an object is now skipped and the walk continues. No live document in a 1,594-body sample carries one, so this is the malformed-input path rather than a loss anyone is currently hitting; the walk also had no test coverage at all, and now has 21 cases.
+
 ## [0.83.93] - 2026-08-20
 
 ### Fixed
