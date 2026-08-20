@@ -42,6 +42,133 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Internal
 
 - **The Catalog/Marketplace fold's stale-guard debt paid down.** Deleted the two orphaned browse-shell templates (`catalog_unified.html`, `marketplace.html`) and the test files that asserted their markup (`test_web_catalog_unified.py`, `test_web_catalog_reshape.py`, `test_web_stack_card_v56_metadata.py`), removed the dead `_catalog_card_data`/`_catalog_card_memory` adapters (their upload sibling survives — the Artefacts band renders through it), repointed the toolbar/tour guards from the retired `#lib-stack-toggle` to the Scope segment, retired the per-page assertions that read the folded shells (`most_popular` placeholder, marketplace browse CTA/facet, classic memory-grid add-state — each with a pointer to where the surviving behavior is guarded), gave `/marketplace/guide/curated` a reciprocal inbound link from the flea guide (its only door was the deleted browse page), and rewrote `scripts/e2e/smoke_catalog.sh` to smoke the page the redirect actually lands on.
+
+## [0.83.95] - 2026-08-20
+
+### Fixed
+
+- **A long chat answer no longer collapses under the reader the moment it finishes.** The web chat clamped any message body over 480px (~20 lines) to that height behind a fade and a "Show more" button — and because the clamp runs at finalize while the stream itself paints uncapped, an answer streamed in full and then snapped shut mid-sentence, with every long message pre-collapsed after a reload. At 480px that fired on nearly every real answer, making the toggle a control whose only job was to undo a limit Agnes had imposed on itself. The cap now applies from 2500px, so it only catches the extreme bodies it was meant for. The threshold is duplicated by construction — `COLLAPSE_THRESHOLD_PX` in `chat.js` decides whether to collapse, `max-height` in `chat.css` decides where the cut lands — so a guard now fails if the two drift.
+
+- **Creating a schedule no longer writes into another agent's panel when the builder moves on mid-request.** The Schedules panel's create POST could settle after a newer schedules load took over (opening a different agent, or reopening the same one): its success arm pushed the created row into whatever list the panel rendered by then, and its error arm wrote the stale failure into the new agent's form. Both arms now drop a superseded continuation using the same generation token the loads already use — the created row still exists on the server and renders on the next open.
+
+### Removed
+
+- **The never-routed My Workspace template is gone.** `app/web/templates/workspace.html` shipped in the paper-theme redesign (#1104) without any `app.web.router` handler rendering it and never gained one; the Library (`/library?stack=in_stack`, the #1088 /stack retirement) covers the same browse-your-resources ground, and the template's tab vocabulary ("In Workspace / Available / Required") predates the current "In stack" wording. Deleted along with its standalone markup test (`tests/test_web_workspace_sort_dropdown.py`) and the paper-skin `.ws-select` override that existed only for it.
+
+## [0.83.94] - 2026-08-20
+
+### Fixed
+
+- **A malformed `attrs` on one ADF node no longer costs a Jira issue every attachment id after it.** `JiraService._extract_media_from_adf` walks a comment body for the `media` / `mediaInline` / `mediaSingle` nodes that reference an uploaded attachment, and read the id as `node.get("attrs", {}).get("id")`. `attrs` is third-party JSON and is not guaranteed to be an object; a string, a list or `null` raised `AttributeError`, and the raise escaped the whole recursion rather than the one node — so a single malformed node dropped every media id that came after it, not just its own. A node whose `attrs` is not an object is now skipped and the walk continues. No live document in a 1,594-body sample carries one, so this is the malformed-input path rather than a loss anyone is currently hitting; the walk also had no test coverage at all, and now has 21 cases.
+
+## [0.83.93] - 2026-08-20
+
+### Fixed
+
+- **Jira link URLs no longer vanish when ADF rich text is flattened into `comments.body`, `issues.description` and `issues.context`.** `extract_text_from_adf` walked `text` nodes only, and two ADF constructs keep their target outside any text node. A smart link (`inlineCard` / `blockCard` / `embedCard`) has no text child at all — just `attrs.url` — so a comment whose whole body was one smart link stored as `''`. Worse, a `text` node with a `link` mark keeps its target in `marks[].attrs.href`: the anchor text survived and the href did not, so the sentence still read as valid data with the URL gone and nothing downstream could tell. In a 1,000-comment live sample, 98 comments carried a smart link and 357 carried link marks (402 hrefs); across 100 sampled issue descriptions, 76 of 181 link targets were missing from the stored text — `mailto:` unsubscribe addresses included. Both targets are now inlined into the same text column: a card is emitted as a bare URL token taking the spacing a word in that position would get, and a labelled link as `anchor text (href)`. No new column and no schema change, deliberately — the consumers of these columns are LLM analysis and full-text search over the text itself, which is exactly what makes an inlined URL findable. Where the anchor text *is* the target the parenthesised copy is suppressed: an href differing only by a trailing slash emits the href, and one that is the anchor text plus a scheme Jira's autolinker inferred emits the anchor text, because Jira links a bare `SKILL.md` to `http://SKILL.md` and rewriting an authored word into a URL that never existed is its own kind of wrong. Hrefs are otherwise emitted verbatim, `mailto:` and all, with one deliberate exception: a **credential-bearing parameter value is redacted** to `REDACTED`. Jira hands out URLs that carry bearer credentials in the query string — a Service Desk `unsubscribe?jwt=…` link is a signed token authorising an action, and these columns are distributed to analyst laptops as parquet and read by agents, so inlining them verbatim would copy live credentials into a wide blast radius (CWE-598). The URL stays whole and identifiable; only the values go, and path, scheme, ordering, separators and non-secret parameters are untouched. Parameter names are matched in two tiers, because over-redaction is the same bug class as the loss being fixed: a separator-insensitive substring match on `token`/`jwt`/`secret`/`password`/`signature`/`credential`/`apikey` (so one entry covers `access_token`, `mfaManagementToken`, `api_key`, `api-key`), and a whole-name match for short or ambiguous names (`tok`, `sig`, `key`, `pin`, `auth`, `code`, `sdata`) that as substrings would fire on `design`, `author` or `keyword`. The fragment is covered too, since OAuth's implicit flow puts the token after the `#`. The autolink comparison deliberately runs on the *raw* href — redacting first would make a tokened URL stop matching its own anchor text, and the labelled form would then print the credential it had just removed. Anchor text is prose and is never rewritten, so an author documenting `?token=<project-token>` keeps it. On the live sample this redacted 51 of 846 URLs (6%) — `signature`, `tok`, `token`, `jwt`, `pin`, `mfaManagementToken`, `sdata`, every one a genuine credential — and it also strips credentials the pre-fix walk was *already* storing whenever the author had pasted a tokened URL as its own anchor text. Whitespace is the other half of the contract: a fragment that renders to nothing (a `media` node, a `hardBreak`, the space-only text node Jira appends after an inline card) is now dropped rather than joined, so it no longer leaves a gap — inlining a URL next to one would otherwise read as `answered in  https://`. Only fragment *edges* are normalised, so a `codeBlock`'s newlines and indentation still survive verbatim, and a run of spaces an author typed is still content. Verified against 1,000 live comment bodies and 100 live descriptions: no output gains a space run the source text nodes did not already contain, and every whitespace-delimited token the old walk kept is either still present or was dropped by redaction with the redacted URL in its place (23 tokens, all of them credentials; zero dropped for any other reason). `changelog.from_value` / `to_value` do NOT share this renderer — they are Jira's own wiki-markup strings from `fromString` / `toString` and never touch ADF. **Historical rows are not re-transformed by this change**; they keep their lossy text (and any credential a pre-fix walk had already stored) until a re-transform of the cached raw JSON, which needs no Jira traffic. Worth sizing before that run: the whitespace rule makes it a wider diff than "links only" — about 63k of 124k stored comment bodies and 9k descriptions currently hold a gratuitous double space, and every one of them collapses.
+
+## [0.83.92] - 2026-08-20
+
+### Changed
+
+- **Jira `comments.public_visibility` is protected where it is written, not by refusing to write.** v0.83.70 stopped the webhook fetch-failure fallback from nulling an observed value by widening `_embedded_comments_are_complete`: a thread was "complete" only if every embedded comment carried a boolean `jsdPublic`, so a flagless embed marked the issue `_comments_incomplete` and the whole comment update was deferred to the next successful refetch. Measurement has superseded that lever. `jsdPublic` is a Jira **Cloud platform** field, not a JSM-licensed one — Atlassian's v2/v3 OpenAPI schema documents it as defaulting to `true` "when the site doesn't use Jira Service Desk", and it was verified live in August 2026 as a boolean on 100% of comments sampled across two **JSM-unlicensed** public Cloud instances (thread heads from 2003 and 2006 included) as well as a licensed one. Jira Data Center/Server is the only deployment that lacks the field, and it cannot run this connector at all (`/rest/api/3` is hardcoded, as is `/search/jql` in the backfill). What stays genuinely unsampled is whether Cloud *webhook bodies* serialize the flag — so rather than keep guessing at a payload shape nobody can GET, the value-protection moved to the write layer: `_comment_records` now carries a stored `public_visibility` forward when the incoming row is NULL **and** the stored row is the same comment version (same `(issue_key, comment_id)`, identical `updated_at`). An incoming boolean always wins, and a differing `updated_at` — a comment edit, which is what a JSM visibility flip rides — stays honestly NULL rather than serving a possibly pre-flip value as observed. This makes the loss class impossible on *every* incremental write path (webhook refetch, fallback, SLA poll, consistency-check repair) instead of on the one path a completeness gate could decline to take, and it removes the deferral the gate imposed on flagless embeds. The completeness check is structural again — comment field present, list at least as long as the reported `total` — which is what its name promises. The per-issue WARNING stays (on every deployment this connector can reach, a missing flag is a genuine anomaly and the operator's only signal) and is reworded to what it measures: the count is taken **before** the carry, so it names what arrived rather than what was stored. Each incremental write logs how many values it carried and how many stayed NULL, so a silent never-carry regression shows up in the logs and not only in the data. Note the durability boundary: the carry repairs the parquet row, not the cached raw JSON, so a full batch re-transform of a month whose comments were saved from a flagless fallback embed re-NULLs them — refetch those issues first. `connectors/jira/README.md` now states what NULL means per deployment kind (Cloud+JSM, Cloud without JSM, Data Center), the carry rule, and that caveat.
+
+### Fixed
+
+- **A Jira webhook event that downloaded an attachment logged the missing-`jsdPublic` warning twice.** `save_issue` runs the transform twice for such an event by design — once before the download so parquet lands even if a large attachment kills the worker, once after so the freshly attached file gets a `local_path` — and both passes ran the comments transform. The count an operator uses to size the anomaly was therefore doubled, but only for attachment-bearing events, which is worse than a uniform overcount. The post-download re-transform now passes `warn_unresolved=False` (threaded through `trigger_incremental_transform` and `transform_single_issue`), the same suppression the batch path's throwaway grouping pass already used. The deletion path and every other caller keep the default.
+- **A deleted Jira comment or attachment no longer tombstones the entire issue.** `process_webhook_event` routed on `"deleted" in webhookEvent`, so `comment_deleted`, `attachment_deleted` and `worklog_deleted` all reached the issue-deletion path: `_deleted_at` was stamped on the stored JSON and every row for that issue was removed from all six parquet tables, on what is really an ordinary content change. Not permanent — `save_issue` replaces the stored JSON wholesale, so the marker does not survive the issue's next webhook event and the rows rebuild — but an issue that then went quiet stayed missing until a backfill, with nothing logged to explain it. Routing now matches the issue-deletion events by name (`jira:issue_deleted` / `issue_deleted`); a sub-entity deletion falls through to the ordinary refetch, which is what makes the deleted comment disappear from the stored thread. Deliberately an allowlist of spellings rather than one equality, because the failure directions are asymmetric: tombstoning too eagerly costs rows until the next event, while MISSING a real issue deletion is permanent (deletion webhooks fire once and nothing ever re-deletes the row). Found by automated review on this PR.
+- **The Jira webhook fetch-failure fallback no longer wipes an issue's stored changelog rows.** `transform_changelog` returned `[]` for a payload with no `changelog` key, and the changelog table had no preserve selector — so every fallback save ran an issue-scoped delete-then-insert with zero rows and deleted the issue's entire stored history, on a path that runs precisely when a refetch has already failed. Webhook bodies never carry a changelog (a successful `fetch_issue`/backfill always does, via `expand=renderedFields,changelog`), so this fired on every fallback save. `transform_changelog` now returns `None` for an absent key — `{"histories": []}` still returns `[]`, because that is a successful fetch confirming the issue has no history and stale rows must go — and a named `_changelog_records` selector preserves the stored rows, the identical contract `_remote_links` has carried since #203. The full-rebuild path (`transform_all`) guards the widened return: without it a rebuild would raise mid-issue inside a blind per-file `except` and silently drop every table's rows for that issue while still reporting success.
+## [0.83.91] - 2026-08-19
+
+### Changed
+
+- **The default workspace prompt's "Remote Queries" section is vendor-neutral.** The decision tree, snapshot discipline, and the engine-shared failure modes stay for every instance, while BigQuery-specific guidance (BQ SQL flavor for `--where`, bytes-scanned cost discipline, `bq_query_timeout_ms` / `cross_project_forbidden` / `bq_path_not_registered` failure rows, the personal-GCP-auth warning) renders only when the instance's primary data source is BigQuery or a BigQuery-backed table is visible to the calling user. Instances with Databricks `query_mode='remote'` tables get a Databricks SQL flavor block instead. Previously every instance — Keboola-, Snowflake-, or local-backed — told its agent about BigQuery dialects and error codes it does not have.
+- The workspace-prompt render context exposes `data_source.source_types` (sorted distinct `source_type` values of the tables visible to the calling user) and each `tables` row now carries `source_type`, so admin-authored overrides can gate engine-specific sections the same way the default does.
+
+### Fixed
+
+- The shipped default workspace-prompt template no longer trips the `/admin/prompts` stale-override banner when saved as an override: its stale-docs bullet mentioned a legacy CLI spelling that the legacy-string scanner flags.
+
+## [0.83.90] - 2026-08-19
+
+### Added
+
+- **Keboola tables can now be registered as live (`query_mode='remote'`) from
+  the Add-data wizard.** Each row in the bucket browser carries a
+  live/materialized select (shown once the table is checked, defaulting to
+  materialized — the previous hardcoded behavior). Live rows resolve through
+  the Keboola DuckDB extension at query time via `_remote_attach`, exactly
+  like rows registered through the API; previously the wizard forced every
+  Keboola table to `materialized` and remote registration was API/CLI-only.
+
+### Changed
+
+- **The bundled reference install-prompt template is thin and self-contained.** `src/_bundled_seed/install-prompt/template.md.tmpl` mirrors the thin default (install the CLI inline, `agnes onboard`, restart, confirm) and references only what a forked template can actually use: `{server_url}` plus the Jinja `{{ ... }}` context. `docs/seed-repo-contract.md` §5 now documents that contract, and a new guard test keeps retired/unwired placeholders out of the bundle. Bundled-seed provenance (`.source_ref`) is refreshed to the current upstream tip.
+- **The Initial Workspace sync dry-run warns about unusable install-prompt placeholders.** It scans the template the prompt is actually bound to (custom `git_path` included) for single-brace names nothing substitutes on the git-bound path, instead of exercising the built-in renderer, which no longer reads seed content.
+
+### Fixed
+
+- **Registering a valid Snowflake remote table marked it failed whenever some OTHER row was broken, and correcting a row failed to clear its error for the same reason.** `rebuild_from_registry` walks every `query_mode='remote'` Snowflake row and the API collapsed all per-table errors into one aggregate string, so on an instance already carrying a phantom row every subsequent valid registration read `error` in `/admin/sync` and `GET /api/admin/registry` quoting a table the operator had never typed — while the edit path, gated on that same aggregate, could never clear a corrected row at all. The rebuild helper now reports which tables actually failed and whether it ran at all (a benign skip reports success by design, so a skip used to wipe a real failure and turn an unusable table green); recording and clearing both key off this row's own outcome — and the edit path hands the rebuild the row's POST-update name, since a rename would otherwise leave the old name absent from the failed set no matter what the rebuild found.
+- **A failed bulk registration on `/admin/data-sources` showed HTML entities instead of the server's message.** Two of the three status sinks ran the message through `_esc()` before assigning it to `textContent`, which escapes on its own — so `Catalog Error: … Did you mean "Y"?` reached the operator as `Did you mean &quot;Y&quot;?`, mangling the one string those sinks exist to relay. Not an escaping hole (all three write `textContent`, never `innerHTML`); the single-row path already got this right.
+- **A `SERVER_URL` with stray whitespace re-initialized every chat workspace on every attach.** The `.claude/init-complete` sentinel reader strips what it reads back, so an unstripped comparand never equalled the value just written and `WorkdirManager.needs_reinit()` stayed True forever. Non-destructive — the init path only overwrites template-owned files — but a malformed env var cost a full template copy per session. Both sides strip now.
+- **`agnes onboard` refuses a `--workspace` target that does not exist** (exit 23) instead of letting `agnes init` create it while later steps resolved paths against an unclassified directory — the command never creates directories on the user's behalf.
+- **Re-running `agnes onboard` in a workspace it already created no longer demands `--accept-dir`.** The directory gate recognizes the `.claude/init-complete` sentinel (checked after the home/system-dir refusal, so a stray sentinel can't bless `$HOME`), and the allowlist covers the artefacts an interrupted init leaves behind.
+- **A benign `agnes update` early-out no longer aborts `agnes onboard` as a failed init.** `typer.Exit(0)` (the single-instance lock held by the background SessionStart refresh) is reported as "another update is already running"; a non-zero exit stays fatal with a legible message. A convergence that reported failed stages now marks the init row `warning` and degrades the report's `overall` instead of reading as "already configured".
+
+- **Keboola `query_mode='materialized'` tables were registered, reported
+  `last_sync=ok` with a row count, and could not be read.** `materialize_query`
+  published the parquet but never registered it in the source's
+  `extract.duckdb`, and `SyncOrchestrator.rebuild()` only ever walks `_meta` —
+  so no master view was created and every read 400d with "registered as
+  query_mode='materialized' but is not yet materialized in this instance's
+  analytics views". On an instance whose Keboola rows were ALL materialized
+  there was no `extract.duckdb` at all, so the orchestrator skipped the entire
+  source behind a debug-level log line and nothing surfaced to the operator.
+  The Keboola connector now writes the `_meta` row + inner view like BigQuery,
+  Snowflake and Databricks already did (creating `extract.duckdb` when absent,
+  which the other three can assume exists), fail-soft so a registration hiccup
+  never loses a published parquet. Which half of that actually carries the
+  fix is worth stating: the `_meta` write opens `extract.duckdb` as a second
+  write handle, and `src/orchestrator.py` already documents that exact call
+  colliding with the read-only ATTACH `rebuild()` holds (`Unique file handle
+  conflict`) for BigQuery's equivalent — which is why the 0.41.0
+  filesystem-fallback pass over `data/*.parquet` exists. So on an instance
+  where that collision fires, the master view still comes from the fallback;
+  the load-bearing change here is **creating `extract.duckdb` at all** for a
+  materialized-only Keboola source, since without it the orchestrator skipped
+  the whole source before the fallback could ever run.
+- **A failed Snowflake table registration now says why, in both places an
+  operator looks.** `POST /api/admin/register-table` answered a failed
+  remote-extract rebuild with 500 + `{status: "rebuild_failed", message: …}`;
+  the admin UI reads `detail`, so the real reason (`Catalog Error: Table with
+  name X does not exist! Did you mean "Y"?`) was thrown away and the wizard
+  showed a bare "✗ failed". The response now carries the reason under `detail`
+  as well, the UI falls back through both keys, and the row — kept on purpose
+  so a mistyped name can be edited rather than re-entered — is marked failed in
+  `sync_state` instead of reading `pending` / "never synced" forever, which is
+  indistinguishable from a row waiting for its first tick.
+- **Correcting a bad Snowflake schema/table now clears the row's recorded
+  failure.** `PUT /api/admin/registry/{id}` re-runs the remote-extract rebuild,
+  but a success left the previous failure in `sync_state`, so `/admin/sync` and
+  `GET /api/admin/registry` kept serving the old error until the next full
+  orchestrator sweep re-derived state from `_meta` — the fix looked like it had
+  not taken.
+
+- **A per-user chat workspace re-initializes when the instance's `SERVER_URL` changes.** `WorkdirManager.needs_reinit()` compared only the marketplace SHA and the Agnes version, so a workspace initialized under one URL kept serving a rendered `CLAUDE.md` naming the pre-migration host after an operator moved the instance to a new domain — the in-sandbox agent read the mismatch as a phishing indicator, and the workspace only converged when the next version bump happened to force a re-init. The server URL recorded in the `.claude/init-complete` sentinel (new reader: `src/initial_workspace.py::read_sentinel_server_url`) is now part of the re-init decision; a sentinel predating the `server_url` line triggers one self-healing re-init that re-stamps it.
+
+### Security
+
+- **A Snowflake private key is no longer echoed into an error message.** The
+  key loader treats a single-line, non-PEM value under 4 KiB as a possible file
+  path; when such a value named a real file that could not be read or decoded,
+  the raised error interpolated the value itself — and the underlying
+  `OSError`'s own text ends with the same string. That message reaches the
+  `register-table` response and (as of this release) the persisted
+  `sync_state.error` that `/admin/sync`, `GET /api/admin/registry` and `agnes
+  admin list-tables` render unredacted. It now names only the failure class and
+  the setting to check; the original exception stays chained for a local
+  traceback.
+
 ## [0.83.89] - 2026-08-19
 
 ### Added

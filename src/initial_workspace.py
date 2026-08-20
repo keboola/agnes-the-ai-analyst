@@ -23,6 +23,7 @@ from __future__ import annotations
 import io
 import logging
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -561,6 +562,15 @@ def seed_owns(rel_path: str) -> bool:
 # Canonical repo-relative seed path per managed prompt (used when an operator
 # binds git mode without naming an explicit path, and by the admin git-path
 # validation as the default suggestion).
+# Single-brace placeholder that nothing substitutes on the git-bound install
+# prompt path (only `{server_url}` and the Jinja `{{ ... }}` context are
+# replaced — docs/seed-repo-contract.md §5). Negative lookaround keeps Jinja
+# expressions out: `{{today}}` written without spaces would otherwise match
+# its inner `{today}` pair. Shared by the sync render dry-run
+# (app/api/initial_workspace.py) and the bundled-template guard test
+# (tests/test_bundled_seed_install_prompt.py) so the two scans cannot drift.
+UNWIRED_PLACEHOLDER_RE = re.compile(r"(?<!\{)\{[a-z][a-z0-9_]*\}(?!\})")
+
 PROMPT_SEED_PATHS = {
     "install": "install-prompt/template.md.tmpl",
     "workspace": "workspace/CLAUDE.md",
@@ -830,6 +840,30 @@ def is_override_workspace(workspace: Path) -> bool:
         if key.strip().lower() == "override" and value.strip().lower() == "true":
             return True
     return False
+
+
+def read_sentinel_server_url(workspace: Path) -> Optional[str]:
+    """Read the ``server_url`` recorded in ``.claude/init-complete``.
+
+    Returns ``None`` when the sentinel is missing or unreadable, or when it
+    carries no ``server_url`` line (sentinels written before the key existed).
+    Same whitespace-tolerant line parsing as :func:`is_override_workspace`.
+    """
+    sentinel = workspace / ".claude" / "init-complete"
+    if not sentinel.exists():
+        return None
+    try:
+        text = sentinel.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or ":" not in stripped:
+            continue
+        key, _, value = stripped.partition(":")
+        if key.strip().lower() == "server_url":
+            return value.strip()
+    return None
 
 
 def initialize_workspace_from_template(
