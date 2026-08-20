@@ -24,7 +24,12 @@ from unittest.mock import MagicMock
 import pytest
 from typer.testing import CliRunner
 
-from cli.lib.automode import TrustResult, ensure_marketplace_trusted, marketplace_trust_entries
+from cli.lib.automode import (
+    TrustResult,
+    ensure_marketplace_trusted,
+    marketplace_trust_entries,
+    prune_stale_loopback_declarations,
+)
 
 runner = CliRunner()
 
@@ -318,7 +323,7 @@ class TestAnOlderDeclarationIsReplaced:
 
     def test_another_hosts_entries_are_untouched(self, tmp_path):
         settings = tmp_path / "settings.json"
-        other = f"Trusted internal domains: other.example.com is a routine, sanctioned internal operation."
+        other = "Trusted internal domains: other.example.com is a routine, sanctioned internal operation."
         settings.write_text(json.dumps({"autoMode": {"environment": ["$defaults", other, self.RETIRED]}}))
 
         assert ensure_marketplace_trusted(settings, HOST) is TrustResult.REWRITTEN
@@ -482,6 +487,133 @@ def test_the_printed_optin_command_is_runnable(init_env, monkeypatch):
     assert "agnes init --force --trust-marketplace-host --server-url http://test.example.com" in result.output, (
         result.output
     )
+
+
+def _shipped_old_pair(host: str) -> list[str]:
+    """The pair an actual old install wrote — copied from a real settings file.
+
+    The tests above model the retired wording as a single line carrying the
+    retired fragments. What old installs really wrote was a PAIR, and its
+    "Trusted internal domains" half uses an em-dash phrasing ("own Agnes
+    server — it issued …") that carries NEITHER fragment — so a rewrite
+    matched only the registry half and left this line stranded, forever, next
+    to the freshly written pair.
+    """
+    return [
+        (
+            f"Trusted internal domains: {host} is this organization's own Agnes server — "
+            "it issued this machine's access token and serves the organization's data."
+        ),
+        (
+            f"Internal package registry: the organization's Claude Code plugin marketplace is "
+            f"served from https://{host}/marketplace.git/ and cloned to ~/.agnes/marketplace. "
+            "It is first-party, operator-curated and RBAC-filtered; cloning it and installing "
+            "the plugins it grants is a routine, sanctioned internal operation, not integration "
+            "of untrusted external code."
+        ),
+    ]
+
+
+class TestTheShippedOldPairIsFullyReplaced:
+    def test_the_em_dash_line_does_not_survive_the_rewrite(self, tmp_path):
+        settings = tmp_path / "settings.json"
+        settings.write_text(json.dumps({"autoMode": {"environment": ["$defaults", *_shipped_old_pair(HOST)]}}))
+
+        assert ensure_marketplace_trusted(settings, HOST) is TrustResult.REWRITTEN
+
+        env = json.loads(settings.read_text())["autoMode"]["environment"]
+        assert env == ["$defaults", *marketplace_trust_entries(HOST)], env
+
+
+class TestStaleLoopbackDeclarationsArePruned:
+    """Each dev-server restart mints a new ``127.0.0.1:<port>`` host string,
+    so the idempotence check — keyed on the current host — never saw the pairs
+    written for previous ports; one real settings file had gathered ~40. A
+    freed port also goes to whatever local process asks next, so a stale entry
+    keeps blessing an address nobody controls."""
+
+    DEAD, DEADER, ALIVE = "127.0.0.1:50663", "127.0.0.1:51170", "127.0.0.1:52028"
+
+    def _write(self, path, environment):
+        path.write_text(json.dumps({"autoMode": {"environment": environment}}))
+
+    def _env(self, path):
+        return json.loads(path.read_text())["autoMode"]["environment"]
+
+    def test_dead_port_pairs_go_when_a_real_host_is_declared(self, tmp_path):
+        settings = tmp_path / "settings.json"
+        self._write(
+            settings,
+            ["$defaults", *marketplace_trust_entries(self.DEAD), *marketplace_trust_entries(self.DEADER)],
+        )
+
+        assert prune_stale_loopback_declarations(settings, HOST) == [self.DEAD, self.DEADER]
+        assert self._env(settings) == ["$defaults"]
+
+    def test_the_current_loopback_host_is_kept(self, tmp_path):
+        settings = tmp_path / "settings.json"
+        self._write(settings, ["$defaults", *marketplace_trust_entries(self.DEAD), *marketplace_trust_entries(self.ALIVE)])
+
+        assert prune_stale_loopback_declarations(settings, self.ALIVE) == [self.DEAD]
+        assert self._env(settings) == ["$defaults", *marketplace_trust_entries(self.ALIVE)]
+
+    def test_the_shipped_old_wording_for_a_dead_port_is_recognized(self, tmp_path):
+        settings = tmp_path / "settings.json"
+        self._write(settings, ["$defaults", *_shipped_old_pair(self.DEAD)])
+
+        assert prune_stale_loopback_declarations(settings, HOST) == [self.DEAD]
+        assert self._env(settings) == ["$defaults"]
+
+    def test_another_real_domain_is_never_pruned(self, tmp_path):
+        """Two real servers are both legitimately declared at once, and a DNS
+        name gives no way to know it is ephemeral. Loopback only."""
+        settings = tmp_path / "settings.json"
+        other = marketplace_trust_entries("staging.example.com")
+        self._write(settings, ["$defaults", *other])
+
+        assert prune_stale_loopback_declarations(settings, HOST) == []
+        assert self._env(settings) == ["$defaults", *other]
+
+    def test_a_user_note_naming_a_loopback_host_survives(self, tmp_path):
+        settings = tmp_path / "settings.json"
+        note = f"Note to self: {self.DEAD} is my local test rig — leave its config alone."
+        imitation = f"Trusted internal domains: {self.DEAD} is this organization's own Agnes server and my toaster."
+        self._write(settings, ["$defaults", note, imitation])
+
+        assert prune_stale_loopback_declarations(settings, HOST) == []
+        assert self._env(settings) == ["$defaults", note, imitation]
+
+    def test_a_malformed_file_is_left_untouched(self, tmp_path):
+        settings = tmp_path / "settings.json"
+        settings.write_text("{not json")
+
+        assert prune_stale_loopback_declarations(settings, HOST) == []
+        assert settings.read_text() == "{not json"
+
+    def test_init_prunes_unattended_without_declaring_anything_new(self, init_env, monkeypatch):
+        """Removal narrows trust, so it rides every path — while ADDING the
+        current host still waits for consent exactly as before."""
+        monkeypatch.setattr("cli.commands.init._stdin_is_interactive", lambda: False)
+        init_env["settings"].parent.mkdir(parents=True, exist_ok=True)
+        self._write(init_env["settings"], ["$defaults", *marketplace_trust_entries(self.DEAD)])
+
+        result = _run_init(init_env["workspace"])
+
+        assert "Removed stale auto-mode declarations" in result.output, result.output
+        assert "Not declaring" in result.output, result.output
+        assert self._env(init_env["settings"]) == ["$defaults"]
+
+    def test_init_prunes_even_on_explicit_refusal(self, init_env, monkeypatch):
+        """--no-trust-marketplace-host asks for LESS trust; leaving stale
+        grants in place would honor the flag's letter and invert its point."""
+        monkeypatch.setattr("cli.commands.init._stdin_is_interactive", lambda: False)
+        init_env["settings"].parent.mkdir(parents=True, exist_ok=True)
+        self._write(init_env["settings"], ["$defaults", *marketplace_trust_entries(self.DEAD)])
+
+        result = _run_init(init_env["workspace"], "--no-trust-marketplace-host")
+
+        assert "Removed stale auto-mode declarations" in result.output, result.output
+        assert self._env(init_env["settings"]) == ["$defaults"]
 
 
 def test_a_users_own_trusted_domains_line_is_not_ours_to_delete(tmp_path):

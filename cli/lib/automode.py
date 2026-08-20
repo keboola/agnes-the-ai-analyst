@@ -27,11 +27,14 @@ the caller asks first — see ``cli.commands.init._maybe_declare_marketplace_tru
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
+import re
 import sys
 from enum import StrEnum
 from pathlib import Path
+from urllib.parse import urlsplit
 
 
 class TrustResult(StrEnum):
@@ -60,6 +63,11 @@ class TrustResult(StrEnum):
 _RETIRED_FRAGMENTS = (
     "routine, sanctioned internal operation",
     "not integration of untrusted external code",
+    # The companion line the retired registry sentence shipped WITH. Its
+    # em-dash phrasing carries neither fragment above, so a rewrite matched
+    # only its sibling and left this line stranded next to the fresh pair —
+    # real settings files from old installs carry exactly this shape.
+    "own agnes server — it issued this machine's access token",
 )
 
 
@@ -90,6 +98,102 @@ def _is_ours(entry: str, host: str) -> bool:
 def _is_retired(entry: str) -> bool:
     lowered = entry.lower()
     return any(fragment in lowered for fragment in _RETIRED_FRAGMENTS)
+
+
+#: How the declared host is recovered from an entry: both templates — current
+#: and retired wording alike — keep a stable prefix around the host. The match
+#: alone does not make an entry ours; ``_declared_host`` still puts it through
+#: ``_is_ours`` for the extracted host.
+_HOST_PATTERNS = (
+    re.compile(r"^Trusted internal domains: (?P<host>\S+) is this organization's own Agnes server"),
+    re.compile(r"^Internal package registry: [^/]{0,120} served from https://(?P<host>[^/\s]+)/marketplace\.git/"),
+)
+
+
+def _declared_host(entry: str) -> str | None:
+    """The host *entry* declares — but only when the entry is OURS for it.
+
+    ``_is_ours`` needs the host up front, which is exactly what a caller
+    walking entries written for OTHER hosts does not have. Recover the host
+    from the template shape, then hold the entry to the same byte-for-byte
+    standard as everywhere else — a user's own note that happens to imitate
+    the prefix still comes back None.
+    """
+    for pattern in _HOST_PATTERNS:
+        match = pattern.match(entry.strip())
+        if match and _is_ours(entry, match.group("host")):
+            return match.group("host")
+    return None
+
+
+def _is_loopback_host(host: str) -> bool:
+    """True for ``localhost``, ``127.0.0.0/8`` and ``::1`` — port or not."""
+    try:
+        hostname = urlsplit(f"//{host}").hostname
+    except ValueError:
+        return False
+    if not hostname:
+        return False
+    if hostname == "localhost" or hostname.endswith(".localhost"):
+        return True
+    try:
+        return ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return False
+
+
+def prune_stale_loopback_declarations(settings_path: Path, keep_host: str) -> list[str]:
+    """Remove OUR declarations for loopback hosts other than *keep_host*.
+
+    A dev server bound to an ephemeral port mints a fresh ``127.0.0.1:<port>``
+    host string on every start, so the idempotence check — keyed on the
+    current host — could not see the pairs written for previous ports, and
+    they accumulated forever (a real settings file had gathered ~40). Worse
+    than clutter: the OS hands a freed port to whatever asks next, so a stale
+    entry declares trust in an address any local process can claim.
+
+    Only loopback hosts are pruned. Two real domains (staging and production,
+    say) are both legitimately declared at once, and this module cannot know
+    that a DNS name is ephemeral. Entries that are not byte-for-byte ours —
+    a user's own notes above all — are never touched, per ``_is_ours``.
+
+    Returns the pruned hosts (deduplicated, in file order); ``[]`` when there
+    was nothing to prune or the file could not be read. Unlike
+    ``ensure_marketplace_trusted`` this never warns on a malformed file: it
+    runs on every ``agnes init`` before any consent gate, and removal is the
+    caller's housekeeping, not something the operator asked for by name.
+    """
+    keep = (keep_host or "").strip()
+    if not settings_path.exists():
+        return []
+    try:
+        loaded = json.loads(settings_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    if not isinstance(loaded, dict):
+        return []
+    auto_mode = loaded.get("autoMode")
+    if not isinstance(auto_mode, dict):
+        return []
+    environment = auto_mode.get("environment")
+    if not isinstance(environment, list):
+        return []
+
+    pruned: list[str] = []
+    kept: list[object] = []
+    for entry in environment:
+        if isinstance(entry, str):
+            declared = _declared_host(entry)
+            if declared and declared != keep and _is_loopback_host(declared):
+                if declared not in pruned:
+                    pruned.append(declared)
+                continue
+        kept.append(entry)
+    if not pruned:
+        return []
+    auto_mode["environment"] = kept
+    _atomic_write(settings_path, loaded)
+    return pruned
 
 
 def _atomic_write(settings_path: Path, settings: dict) -> None:
