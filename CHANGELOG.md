@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- **A long chat answer no longer collapses under the reader the moment it finishes.** The web chat clamped any message body over 480px (~20 lines) to that height behind a fade and a "Show more" button — and because the clamp runs at finalize while the stream itself paints uncapped, an answer streamed in full and then snapped shut mid-sentence, with every long message pre-collapsed after a reload. At 480px that fired on nearly every real answer, making the toggle a control whose only job was to undo a limit Agnes had imposed on itself. The cap now applies from 2500px, so it only catches the extreme bodies it was meant for. The threshold is duplicated by construction — `COLLAPSE_THRESHOLD_PX` in `chat.js` decides whether to collapse, `max-height` in `chat.css` decides where the cut lands — so a guard now fails if the two drift.
+
 ### Removed
 
 - **The never-routed My Workspace template is gone.** `app/web/templates/workspace.html` shipped in the paper-theme redesign (#1104) without any `app.web.router` handler rendering it and never gained one; the Library (`/library?stack=in_stack`, the #1088 /stack retirement) covers the same browse-your-resources ground, and the template's tab vocabulary ("In Workspace / Available / Required") predates the current "In stack" wording. Deleted along with its standalone markup test (`tests/test_web_workspace_sort_dropdown.py`) and the paper-skin `.ws-select` override that existed only for it.

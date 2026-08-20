@@ -1892,8 +1892,25 @@ function _sortTableByColumn(table, headers, columnIdx) {
 // body height with a fade-out gradient and surface a "Show more"
 // toggle. Keeps the scroll feed scannable; expanded state is per-
 // message-element so it doesn't bleed across re-renders.
+//
+// Why the threshold is this high. The collapse runs at FINALIZE, never
+// mid-stream (_renderStreamingMarkdown paints uncapped) — so a body over
+// the threshold streams in fully and then snaps shut under a reader who
+// was mid-sentence. At the original 480px (~20 lines) that fired on
+// nearly every real answer, which made the toggle a "Show more" whose
+// only job was to undo a limit we had imposed ourselves — the pattern
+// the rail retired on purpose (see rail_history.js). The cap is kept for
+// genuine extremes, where an unbounded body would swallow the whole
+// viewport and bury the composer, and moved far above the height of an
+// ordinary answer.
+//
+// Must stay equal to the `max-height` on `.msg-bubble.is-collapsible
+// .msg-body` in chat.css: this constant decides WHETHER to collapse,
+// that declaration decides WHERE the cut lands, and a mismatch clamps a
+// body at a height it was never judged against. Pinned by
+// tests/test_chat_tool_rendering_ui.py.
 
-const COLLAPSE_THRESHOLD_PX = 480;
+const COLLAPSE_THRESHOLD_PX = 2500;
 
 function maybeMakeCollapsible(article) {
   if (!article) return;
