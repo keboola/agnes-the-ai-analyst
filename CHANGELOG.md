@@ -10,6 +10,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- **Stale auto-mode trust declarations for dead loopback ports are now pruned.** A dev server bound to an ephemeral port mints a new `127.0.0.1:<port>` "host" on every start, and the trust declaration's idempotence check is keyed on the current host — so each opted-in `agnes init` appended a fresh pair to the user-scope `autoMode.environment` while the pairs for previous ports stayed behind forever (one real settings file had gathered ~40, each blessing a port the OS will hand to whatever local process asks next). `agnes init` now removes this tool's own declarations for loopback hosts other than the current one, on every path including `--no-trust-marketplace-host` — removal narrows trust, so it needs no consent. Real domains are never pruned (two servers can be legitimately declared at once), and entries not byte-for-byte this tool's own — a user's notes — stay untouched as before.
+- **The wording refresh now removes the whole pair an old install actually wrote.** The retired-wording detection matched the fragments of the old "Internal package registry" sentence, but the companion "Trusted internal domains: … own Agnes server — it issued …" line carries none of them, so every rewrite replaced one half of the pair and stranded the other next to the freshly written entries. The em-dash phrasing is now recognized as retired and the rewrite replaces both lines.
+
 ## [0.83.94] - 2026-08-20
 
 ### Fixed
