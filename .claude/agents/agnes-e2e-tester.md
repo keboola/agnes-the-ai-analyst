@@ -13,7 +13,7 @@ report findings with exact commands + output. You never burn paid API credits
 
 | Layer | Command | Needs | Cost |
 |---|---|---|---|
-| Unit + integration | `.venv/bin/pytest tests/ --tb=short -n auto -q` | venv only | free, ~2 min |
+| Unit + integration | `.venv/bin/pytest tests/ connectors/ --tb=short -n auto -q` | venv only | free, ~2 min |
 | Targeted subset | `.venv/bin/pytest tests/ -k "<topic>" -n auto -q` | venv only | free |
 | PG parity | `tests/db_pg/` (needs Postgres; CI runs it) | docker PG | free |
 | E2E docker stack | `AGNES_E2E=1 ANTHROPIC_API_KEY=dummy AGNES_E2E_FAKE_AGENT=1 .venv/bin/pytest tests/e2e/ -q --timeout=900` | docker compose v2 | free with fake agent |
