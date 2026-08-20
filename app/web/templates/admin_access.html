@@ -516,6 +516,11 @@
     background: var(--ds-surface-sunken); color: var(--ds-text-secondary);
   }
   .ax-tag--data { background: var(--ds-kind-data-soft); color: var(--ds-kind-data); }
+  /* Shown only while a section is expanded (it lives after </summary>, which
+     <details> hides when closed) — the type-level caveat (e.g. "Tables"
+     grants don't reach analyst visibility, see app/resource_types.py) that a
+     hover-only tooltip on the header would leave undiscoverable. */
+  .ax-type-desc { margin: -2px 0 8px 22px; font-size: 11.5px; line-height: 1.4; color: var(--ds-text-muted); max-width: 62ch; }
   .ax-sec__body { padding: 0 0 12px; }
   /* A nested type indents its buckets rather than its rows: the bucket is
      the thing you scan, and the rows only exist once you have opened one. */
@@ -1219,8 +1224,9 @@
       const granted = blocks.reduce((n, b) => n + b.granted, 0);
       const lead = t.type_key === LEAD_TYPE;
       const head = (cnt) => `
-        <summary><span class="car">▶</span> <span class="ax-tag ${lead ? "ax-tag--data" : ""}">${esc(t.type_display)}</span>
-          <span class="cnt">${cnt}</span></summary>`;
+        <summary title="${esc(t.type_description || "")}"><span class="car">▶</span> <span class="ax-tag ${lead ? "ax-tag--data" : ""}">${esc(t.type_display)}</span>
+          <span class="cnt">${cnt}</span></summary>
+        ${t.type_description ? `<p class="ax-type-desc">${esc(t.type_description)}</p>` : ""}`;
       if (!items.length) {
         return `<details class="ax-sec">${head("none registered")}
           <div class="ax-empty" style="padding-left:22px;">Nothing of this kind exists on the instance yet.</div>
