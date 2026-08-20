@@ -75,6 +75,7 @@ const DBState = {
 
   renderState(data) {
     const backend = data.backend;
+    this._currentBackend = backend;
 
     // Status header — hero strip on /admin/database, or the legacy
     // single-card view (#db-state-card) that older calls still render.
@@ -100,6 +101,7 @@ const DBState = {
     const transitionBtns = data.allowed_transitions.map(t => ({
       target: t,
       label: this._transitionLabel(backend, t),
+      disabled: this._isNotYetSupported(t),
     }));
 
     if (actionsEl) {
@@ -111,14 +113,14 @@ const DBState = {
         }
       } else {
         actionsEl.innerHTML = transitionBtns
-          .map(b => `<button class="btn" data-target="${b.target}">${b.label}</button>`)
+          .map(b => `<button class="btn" data-target="${b.target}"${b.disabled ? ' disabled title="Not yet available"' : ''}>${b.label}</button>`)
           .join(' ');
         if (helpEl) {
           helpEl.textContent = `Pick a target to start a migration. The
             host applier will copy data, restart the app on the new backend,
             and verify row counts. Progress shows below.`;
         }
-        actionsEl.querySelectorAll('button[data-target]').forEach(btn => {
+        actionsEl.querySelectorAll('button[data-target]:not([disabled])').forEach(btn => {
           btn.addEventListener('click', () => this.handleTransitionClick(btn.dataset.target));
         });
       }
@@ -171,15 +173,37 @@ const DBState = {
         ? 'Migrate straight to managed Postgres'
         : 'Migrate to managed Postgres';
     }
+    if (target === 'duckdb_quack') {
+      return 'Migrate to DuckDB Quack (coming soon)';
+    }
     return `Migrate to ${target}`;
   },
 
+  // Targets reserved in the state-machine's transition graph but not yet
+  // runtime-supported (the migrate endpoint always 501s them today).
+  _isNotYetSupported(target) {
+    return target === 'duckdb_quack';
+  },
+
   async handleTransitionClick(target) {
+    const label = this._transitionLabel(this._currentBackend, target);
     let cloudUrl = null;
     if (target === 'cloud') {
-      cloudUrl = await promptModal('Cloud PG connection string (postgresql+psycopg://user:pass@host:5432/db):');
+      cloudUrl = await promptModal({
+        title: 'Migrate to managed cloud Postgres',
+        message: 'Cloud PG connection string (postgresql+psycopg://user:pass@host:5432/db):',
+        inputType: 'password',
+      });
       if (!cloudUrl) return;
     }
+    const confirmed = await confirmModal({
+      title: `${label}?`,
+      message: 'This starts a real backend cutover. It cannot be cancelled '
+        + 'once the copy completes, and there is no path back to DuckDB.',
+      danger: true,
+      confirmText: 'Migrate',
+    });
+    if (!confirmed) return;
     try {
       const { job_id } = await this.startMigration(target, cloudUrl);
       this.startPolling(job_id);
