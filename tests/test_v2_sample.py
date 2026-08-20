@@ -1000,7 +1000,36 @@ class TestRemoteLiveMeansLive:
             conn.close()
         # The decision itself, read directly — no fixture can observe a cache
         # hit without also observing the fetch it skipped.
-        assert v2_sample._sample_is_cacheable(query_mode="local", has_access_policy=False) is True
-        assert v2_sample._sample_is_cacheable(query_mode="materialized", has_access_policy=False) is True
-        assert v2_sample._sample_is_cacheable(query_mode="remote", has_access_policy=False) is False
-        assert v2_sample._sample_is_cacheable(query_mode="local", has_access_policy=True) is False
+        cacheable = v2_sample._sample_is_cacheable
+        assert cacheable(source_type="snowflake", query_mode="local", has_access_policy=False) is True
+        assert cacheable(source_type="snowflake", query_mode="materialized", has_access_policy=False) is True
+        assert cacheable(source_type="snowflake", query_mode="remote", has_access_policy=False) is False
+        assert cacheable(source_type="snowflake", query_mode="local", has_access_policy=True) is False
+
+    def test_bigquery_remote_previews_stay_cached(self):
+        """The exemption is about liveness for the extension-resolved engines;
+        for BigQuery it would have been a COST regression instead.
+
+        A BQ remote row takes the branch above the new one — `source_type ==
+        "bigquery"` and not `materialized` — into `_fetch_bq_sample`, which
+        pushes the statement to BigQuery. That is a metered, billable scan per
+        call, unlike every other engine on this surface, and it was cacheable
+        before the exemption existed (`cacheable = not has_access_policy`). So
+        every catalog tile render and every `agnes describe` would have billed
+        a fresh query. Caught in review on the train that introduced it.
+
+        A policied BQ row is still uncacheable — the identity-free cache key
+        is the reason there, and it outranks cost."""
+        from app.api import v2_sample as mod
+
+        cacheable = mod._sample_is_cacheable
+        assert cacheable(source_type="bigquery", query_mode="remote", has_access_policy=False) is True
+        assert cacheable(source_type="BigQuery", query_mode="remote", has_access_policy=False) is True, (
+            "source_type comparison must not be case-sensitive"
+        )
+        assert cacheable(source_type="bigquery", query_mode="remote", has_access_policy=True) is False, (
+            "a policied row stays uncacheable regardless of engine -- the key has no identity in it"
+        )
+        # Non-vacuity: the exemption still bites for the engines it was for.
+        assert cacheable(source_type="keboola", query_mode="remote", has_access_policy=False) is False
+        assert cacheable(source_type="databricks", query_mode="remote", has_access_policy=False) is False

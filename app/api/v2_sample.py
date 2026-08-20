@@ -224,10 +224,10 @@ def _fetch_remote_view_sample(table_id: str, row: dict, n: int) -> list[dict]:
         conn.close()
 
 
-def _sample_is_cacheable(*, query_mode: str, has_access_policy: bool) -> bool:
+def _sample_is_cacheable(*, source_type: str, query_mode: str, has_access_policy: bool) -> bool:
     """Whether this row's 5-row preview may be served from ``_sample_cache``.
 
-    Two exemptions, for different reasons.
+    Two exemptions, for different reasons, and one carve-out inside the second.
 
     A policied row is uncacheable because the cache key is ``{table_id}|{n}``
     with no identity in it, so one caller's slice would be handed to the next.
@@ -239,16 +239,27 @@ def _sample_is_cacheable(*, query_mode: str, has_access_policy: bool) -> bool:
     parquet resolution, so that a row flipped materialized→remote cannot
     preview its stale leftover parquet. Serving a copy up to
     ``_sample_cache``'s hour old is that same staleness from a different
-    store, and it would make the branch's own comment untrue.
+    store, and it would make the branch's own comment untrue. The cost that
+    gives up is small and bounded: ``SELECT * FROM <view> LIMIT n`` with
+    ``n <= _MAX_N``, a capped pull through the extension for Snowflake and
+    Keboola. Only Databricks with the experimental, off-by-default
+    ``attach_enabled`` turns it into a parquet read.
 
-    The cost this gives up is small and bounded: ``SELECT * FROM <view> LIMIT
-    n`` with ``n <= _MAX_N``. For Snowflake and Keboola that is a capped pull
-    through the extension. Only Databricks with the experimental, off-by-
-    default ``attach_enabled`` turns it into a parquet read, which is not
-    worth buying with a stale preview on the two engines that are supported.
+    **BigQuery is excluded from that exemption**, and the reason is not
+    liveness but billing. A BQ remote row takes the branch above this one
+    (``source_type == "bigquery"`` and not ``materialized``) into
+    ``_fetch_bq_sample``, which pushes the statement to BigQuery — a metered,
+    billable scan per call, unlike every other engine here. It was cacheable
+    before this exemption existed (``cacheable = not has_access_policy``), so
+    exempting it would have made every catalog tile render and every ``agnes
+    describe`` bill a fresh query. That is a cost regression, not a
+    correctness gain, and it is also outside the scope of a change about the
+    NON-BigQuery live branch: BQ's caching is left exactly as it was.
     """
     if has_access_policy:
         return False
+    if (source_type or "").lower() == "bigquery":
+        return True
     return query_mode != "remote"
 
 
@@ -324,6 +335,7 @@ def build_sample(
 
     cache_key = f"{table_id}|{n}"
     cacheable = _sample_is_cacheable(
+        source_type=str(source_type or ""),
         query_mode=str(row.get("query_mode") or ""),
         has_access_policy=has_access_policy,
     )
