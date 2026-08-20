@@ -797,7 +797,6 @@ def test_session_responses_carry_agent_id_on_postgres(engine, monkeypatch):
     """
     from unittest.mock import AsyncMock, MagicMock
 
-    import duckdb
     from fastapi import Depends, FastAPI
     from fastapi.testclient import TestClient
 
@@ -808,13 +807,18 @@ def test_session_responses_carry_agent_id_on_postgres(engine, monkeypatch):
     from app.chat.manager import ChatManager
     from app.chat.persistence import ChatRepository
     from app.chat.workdir import WorkdirManager
+    from src.duckdb_conn import _open_duckdb
 
     user = {"id": "pguser1", "email": "pg-agent@test.com", "is_admin": False}
 
     # A PG-backed ChatRepository: the constructor only wires its `_sessions_pg`
     # delegate when `use_pg()` is true, which is exactly the branch under test.
     monkeypatch.setenv("DATABASE_URL", str(engine.url))
-    repo = ChatRepository(duckdb.connect(":memory:"))
+    # Through the sanctioned opener, not bare `duckdb.connect`: the UTC-pinning
+    # guard in tests/test_duckdb_session_tz.py is a ratchet, and an unused
+    # throwaway handle is not a reason to widen it. The connection is inert
+    # here anyway — the PG delegate below is what serves every call.
+    repo = ChatRepository(_open_duckdb(":memory:"))
     assert repo._sessions_pg is not None, (
         "the repository fell back to DuckDB, so this test would prove nothing about Postgres"
     )
