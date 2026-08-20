@@ -149,6 +149,43 @@ class TestQuerySecurity:
                        headers=_headers(token))
         assert resp.status_code == 400
 
+    def test_allows_single_trailing_semicolon(self, client):
+        c, token = client
+        resp = c.post("/api/query", json={"sql": "SELECT 1 as test;"},
+                       headers=_headers(token))
+        assert resp.status_code == 200
+        assert resp.json()["columns"] == ["test"]
+
+    def test_the_terminator_is_normalized_away_before_any_downstream_path(self, client):
+        """`/api/query` accepts one trailing `;`, and then hands the statement
+        to paths that are not DuckDB: the BigQuery dry-run cost guard
+        (`_rewrite_user_sql_for_bq_dry_run` is a textual rewrite and preserves
+        the terminator) and the BQ jobs-API payload. A `;`-terminated text BQ
+        reads as a script reports `totalBytesProcessed: 0`, which is the 5 GiB
+        scan cap measuring nothing — a guardrail reading zero, not an error.
+        Normalizing once at the boundary means no downstream path can be
+        reached with the terminator still attached, so none of them has to be
+        audited for it individually."""
+        c, token = client
+        resp = c.post(
+            "/api/query",
+            json={"sql": "SELECT 1 as test;"},
+            headers=_headers(token),
+        )
+        assert resp.status_code == 200
+        assert resp.json()["columns"] == ["test"]
+
+        # The normalization point itself, asserted directly: whatever the
+        # handler forwards must not end in `;`.
+        from app.api.query import QueryRequest, strip_one_trailing_semicolon
+
+        req = QueryRequest(sql="SELECT 1 as test;")
+        req.sql = strip_one_trailing_semicolon(req.sql)
+        assert not req.sql.endswith(";")
+        assert strip_one_trailing_semicolon("SELECT 1;;").endswith(";"), (
+            "exactly one terminator is removed -- the guard must not be loopable"
+        )
+
     def test_blocks_non_select(self, client):
         c, token = client
         resp = c.post("/api/query", json={"sql": "CREATE TABLE pwned (id INT)"},

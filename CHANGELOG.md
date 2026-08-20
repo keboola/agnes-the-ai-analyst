@@ -26,6 +26,111 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 - **The section sidenav now tracks scroll position** (highlights the section currently in view, not just the last-clicked one) and no longer shows a transient rendering gap above its first row during a fast scroll — `position: sticky` and the list's own internal scroll were combined on one element, which can push the sticky recalculation off the compositor thread on a fast gesture; they're now on two separate elements, matching the pattern the admin-nav column (which never had this issue) already uses.
 
+## [0.84.0] - 2026-08-20
+
+### Added
+- **The "Add data source" wizard can now browse a Snowflake account instead of
+  asking you to type schema and table names.** `GET /api/admin/data-sources/
+  {source_type}/tables` (admin-only, Snowflake today) lists the schemas and
+  tables the configured user can see, and the wizard's Snowflake step renders
+  them as the same schema-grouped checkbox picker the Keboola step uses —
+  filter, select-all and per-schema counts included. Hand-written rows remain
+  underneath for anything the listing cannot reach, and a failed listing
+  degrades to them instead of blocking the step. Snowflake was the last source
+  type whose step was free-text only: nothing validated the strings against the
+  account, and because the registry id is composed as `schema + "_" + table`, a
+  name pasted with its schema prefix already attached silently produced a
+  doubled id (`gold_gold_bi_supply_demand`) pointing at a table that does not
+  exist — which then never heals, since only a re-save re-runs the
+  remote-extract build. Listing is read-only: it attaches, reads
+  `information_schema.tables`, and writes no extract and no registry row. It
+  refuses hosts outside `AGNES_REMOTE_ATTACH_HOST_ALLOWLIST` (the same egress
+  gate the extract build applies) and answers 502 rather than an empty listing
+  when the driver or catalog query fails, so "the account has no tables" is
+  never a lie.
+
+### Security
+
+- **A failing Snowflake ATTACH no longer carries the credential in its error.**
+  `attach_snowflake` executes a `CREATE OR REPLACE SECRET … (PASSWORD '…')` /
+  `PRIVATE_KEY $PK$…$PK$` statement, and DuckDB's parser-class errors quote the
+  offending statement back — so on a build whose extension does not recognise one
+  of those options, the raised error carried the secret. Every caller then
+  forwarded it somewhere durable: a listing 502 and a server log line, and the
+  extract build into `sync_state.error`, which the admin registry, `/admin/sync`
+  and `agnes admin list-tables` render unredacted. The value is now scrubbed at
+  the one place that holds it, so all callers inherit the guarantee — and the
+  scrub covers the key-pair arm, which is the one that actually leaks. The
+  statement does not embed the stored credential there: it embeds
+  `_private_key_pem_and_passphrase(...)`'s output, which normalizes the key to
+  an unencrypted PKCS#8 PEM. For a PKCS#1 key, an encrypted key plus
+  passphrase, a JSON wrapper or a filesystem path — most real key-pair
+  deployments — that PEM is not a substring of the stored token, so scrubbing
+  the token alone matched nothing, and the `PRIVATE_KEY $PK$…$PK$` regex needs
+  a closing delimiter that a truncated parser echo has already cut off. The
+  builder now returns the values it embedded, and the literal patterns have
+  unterminated variants, so a whole private key can no longer ride out on a
+  truncated error.
+
+### Fixed
+- **Catalog preview now works for `query_mode='remote'` tables.** The sample
+  endpoint (`GET /api/v2/sample/{id}`, feeding the catalog preview and
+  `agnes describe`) refused every non-BigQuery remote row with "never
+  materialized — no sample to preview". It now serves a live sample through
+  the same analytics view `/api/query` uses (`_remote_attach` re-ATTACH), so
+  Snowflake/Keboola/Databricks-with-attach remote rows preview like any other
+  table. The mode check also runs before parquet resolution, so a row flipped
+  materialized→remote no longer previews its stale leftover parquet. Rows
+  with an access policy stay fail-closed on this surface (same ratchet as the
+  BigQuery live branch); when the view cannot serve, the refusal message now
+  carries the real error instead of only the reassurance. `remote` rows are
+  also exempt from the 5-minute-to-an-hour sample cache: "every read goes
+  live" is the argument for evaluating this branch ahead of parquet
+  resolution, and serving an hour-old cached copy would be the same staleness
+  from a different store. `docs/table-access-policies.md`'s known-gap list
+  named only BigQuery and Databricks for the fail-closed preview refusal and
+  now covers every remote engine, including the note that the two
+  quick-preview surfaces have diverged (`/api/v2/sample` serves unpolicied
+  remote rows live, `/api/v2/scan` still refuses them).
+
+- **The "Add data source" Snowflake picker showed its per-row registration
+  results where nobody could see them.** With more than one schema every group
+  renders collapsed, and `_registerSfRows` wrote `registering…` / `✗ failed`
+  straight into those hidden rows — while step 2's handler returns silently on
+  zero successes precisely because it assumes the statuses are on screen. A
+  wholly-failed registration was therefore an enabled button that appeared to
+  do nothing. It now drops any active filter and opens the groups being
+  written to first, the same preparation the Keboola picker's
+  `registerSelected` already did.
+
+## [0.83.99] - 2026-08-20
+
+### Changed
+
+- **Web chat tool-call cards collapse to their header line once the turn ends.** A card used to stay fully expanded forever, so a Bash/query card's stdout/stderr sat under the finished answer for the rest of the session. Each card is now a `<details>` element, open while its turn runs and folded shut (one click re-expands it) by every terminal frame — `done`, `cancelled`, `error`, `confirmation_required`. A card that FAILED is left open: it is marked `is-error` because its output is the thing the reader needs, and the `error` frame is exactly where folding it would hide the explanation for the turn that just died.
+
+### Fixed
+
+- **Stale auto-mode trust declarations for dead loopback ports are now pruned.** A dev server bound to an ephemeral port mints a new `127.0.0.1:<port>` "host" on every start, and the trust declaration's idempotence check is keyed on the current host — so each opted-in `agnes init` appended a fresh pair to the user-scope `autoMode.environment` while the pairs for previous ports stayed behind forever (one real settings file had gathered ~40, each blessing a port the OS will hand to whatever local process asks next). `agnes init` now removes this tool's own declarations for loopback hosts other than the current one, on every path including `--no-trust-marketplace-host` — removal narrows trust, so it needs no consent. Real domains are never pruned (two servers can be legitimately declared at once), and entries not byte-for-byte this tool's own — a user's notes — stay untouched as before.
+- **The wording refresh now removes the whole pair an old install actually wrote.** The retired-wording detection matched the fragments of the old "Internal package registry" sentence, but the companion "Trusted internal domains: … own Agnes server — it issued …" line carries none of them, so every rewrite replaced one half of the pair and stranded the other next to the freshly written entries. The em-dash phrasing is now recognized as retired and the rewrite replaces both lines.
+- **`/api/query` and the BigQuery hybrid-query path rejected valid single-`SELECT` queries that ended in a semicolon.** `_assert_select_only` (`app/api/query.py`) and its `src/remote_query.py` counterparts (`_validate_sql`, `_validate_bq_sql`, whose only consumer is `/api/query/hybrid`) all blocked `;` as a bare substring anywhere in the SQL to catch multi-statement injection, but that also caught the single trailing semicolon most LLM-generated or CLI-issued queries end with — rejecting e.g. `SELECT * FROM orders;` with "Only single SELECT queries are allowed" even though it's one statement. Each validator now strips exactly one trailing semicolon before scanning; a `;` anywhere else (a genuine second statement) is still blocked. Four downstream execution paths needed the same tolerance one level deeper, since each embeds the caller's now-accepted statement inside its own subquery wrapper, where a trailing `;` is a parse error rather than a harmless terminator: the Databricks remote path's `wrap_with_limit` (`connectors/databricks/remote.py`, `SELECT * FROM (…) LIMIT n`), the internal-table path's CTE wrap in `execute_internal_query` (`connectors/internal/access.py`, `SELECT * FROM (…) AS _agnes_user_query`), the BigQuery hybrid-query path's row-count pre-check in `RemoteQueryEngine.register_bq` (`src/remote_query.py`, `SELECT COUNT(*) FROM (…) AS _cnt`), and the MCP `query_local` tool (`cli/mcp/server.py`, `SELECT * FROM (…) AS _q LIMIT n`) — the agent-facing surface where the trailing-semicolon habit originates, which kept raising a raw DuckDB `ParserException` on exactly the input the others had learned to accept. Five site-local copies of a one-character rule is why a sixth was missed, so all of them plus the validators now call one shared `strip_one_trailing_semicolon`, and `/api/query` normalizes the terminator away once at its boundary rather than leaving each downstream path to strip it — which also removes the question of whether a `;`-terminated statement reaching BigQuery's dry run would be read as a script and report zero scanned bytes to the cost cap.
+
+## [0.83.98] - 2026-08-20
+
+### Fixed
+
+- **An access policy no longer protects only the name it is attached to.** Two separate doors led around it, both verified against a live instance. (1) A second registry row over the SAME physical source that carried no policy of its own served the raw, unmasked rows to anyone granted it — the twin interlock only ever fired for *distributable* twins (`local`/`materialized`), on the reasoning that `agnes pull` is how data escapes, so an unpolicied `server_only` / `remote` twin was explicitly allowed to coexist. It is not safe: `/api/query` resolves that twin by name server-side and returns exactly what the policy withholds. The interlock now keys on physical-source overlap plus "the other row has no policy of its own", in both directions (register and attach); distributability only changes the wording of the rejection. (2) A direct engine-qualified path named the physical source, which `rewrite_sql` — matching by registry *name* — never substitutes, so the policy simply did not apply; each engine's gate checked only that the path was registered and that the caller held a grant. All three engines that accept such a path are now closed for non-admins, each naming the registered table to query instead: `sf."SCHEMA"."TABLE"` → `sf_path_policied`, `bq."dataset"."table"` (including the full-backtick form) → `bq_path_policied`, and `dbx."<catalog.schema>"."<table>"` plus the bare three-part Databricks path → `dbx_path_policied`. Databricks was the worst of the three: its gate checked registration and the grant but never `access_policy_sql`, so the raw statement reached the warehouse under Agnes's service PAT — and when a policied name rode along in the same statement, the response still reported `policied_tables`, claiming a filter it had not applied. Every fixture in the Databricks suite happened to register `name == source_table`, the one case where the bare-name rewrite fires by accident, which is why the suite could not see it.
+- **`agnes auth login` silently signed in against `http://localhost:8000` when no server was configured.** With no `--server`, no `AGNES_SERVER` and no saved config, login fell through to `get_server_url()`'s local-dev default and opened a browser there, so the only symptom was "localhost refused to connect" with nothing naming the real cause — the same trap `agnes onboard` already refuses ("onboarding against an invented default would fail deep inside"). Both login paths (browser loopback and `--password`) now resolve the server through the shared `cli.config.resolve_server_url` — flag, then `AGNES_SERVER`, then saved config — and exit 1 naming the fix when all three are empty. A local instance is still reachable, explicitly: `--server http://localhost:8000`.
+- **`agnes auth login --server <url>` did not persist the URL, so the next command fell back to localhost.** It only exported `AGNES_SERVER` for its own process — unlike `agnes auth import-token --server`, which has always written it to `~/.config/agnes/config.yaml`. A successful login was therefore followed by `agnes auth whoami` / `agnes pull` (and login's own manual-fallback hint) resolving a different, nonexistent server until `agnes init` eventually seeded the config. `--server` is now persisted, normalized (trailing slash stripped), by both login paths — and only once the sign-in actually succeeded, so a typo'd host that never signed in does not become the saved default.
+- **`agnes admin list-tables` crashed on any table with a NULL `bucket`.** The row formatter passed the value straight into a `:20s` format spec, so `None` raised `TypeError: unsupported format string passed to NoneType.__format__` and killed the listing right after the "Registered tables: N" header — on every instance with a non-Keboola row, since `bucket` is nullable and only Keboola fills it. `.get(key, default)` did not help: the key is present carrying null. `name`, `source_type` and `query_mode` on the same line are hardened the same way.
+- **The emailed magic-link sign-in URL could point at `http://localhost:8000`.** `_build_magic_link` read `SERVER_URL` alone with a hard localhost fallback, ignoring the resolution order every other outbound link uses — so an instance served behind a TLS terminator that never set `SERVER_URL` mailed its users a link to their own laptop. The link now comes from `public_base_url(request=...)`: pinned `AGNES_BASE_URL` / `SERVER_URL` first, otherwise the (proxy-aware) request origin, with localhost only as the local-dev floor. Both senders — the JSON `/auth/email/send-link` and the web-form `/send-link/web` — pass the same resolved origin, and so does the SMTP delivery path that builds the link a second time.
+
+### Changed
+
+- **BREAKING (admin API): registering or editing a table whose physical source is already covered by an access policy now returns 422**, even when the new row is `server_only=true` or `query_mode='remote'`, and attaching a policy is refused while any unpolicied row over the same source exists. Previously only distributable twins were refused. Instances that already have such a pair keep serving reads unchanged, but the next policy write or twin registration will fail until the twin is given its own policy, pointed at a different source, or unregistered — the rejection message says which row is in the way.
+
+- **The physical-source rejection now names an escape that exists.** Two *policied* rows over one source are legal, and clearing either one's policy is refused — correctly, since it produces exactly the unpolicied-twin shape the interlock exists to forbid — but the message told the admin to "attach a policy to this row too", the one thing they were in the middle of undoing, and named neither route that works. It now says to repoint the row first (its policy travels with it, so the clear then succeeds) or unregister one of the pair; the `discover-and-register` dry-run's rejection no longer suggests registering the twin `server_only=true`, which the same interlock refuses; and `docs/table-access-policies.md` no longer describes the check as distributability-keyed and now carries entries for the three engine-path refusals.
+
 ## [0.83.97] - 2026-08-20
 
 ### Added
