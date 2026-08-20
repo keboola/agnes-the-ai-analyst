@@ -4416,6 +4416,7 @@ def register_table(
         source_query=request.source_query,
         query_mode=request.query_mode,
         server_only=bool(request.server_only),
+        has_access_policy=False,
         exclude_id=None,
     )
 
@@ -4911,29 +4912,32 @@ def _find_policied_physical_source_twin(
     return None
 
 
-def _find_distributable_physical_source_twin(
+def _find_unpolicied_physical_source_twin(
     my_signals: set,
     *,
     exclude_id: Optional[str],
 ) -> Optional[Dict[str, Any]]:
-    """The mirror of :func:`_find_policied_physical_source_twin`: the first
-    existing registry row that is itself DISTRIBUTABLE and whose
-    physical-source signals intersect ``my_signals``. ``None`` when there
-    is no such row.
+    """The first existing registry row that carries NO policy and whose
+    physical-source signals intersect ``my_signals`` — the row a caller
+    granted it reads the raw data through, no matter what policy protects
+    the other name.
 
-    This is the direction the attach path needs. A row carrying a policy
-    is by construction non-distributable (§3.1 forces ``query_mode=
-    'remote'`` or ``server_only=true``), so
-    ``_check_access_policy_physical_source_conflict`` — which returns
-    early unless the row it is called for is itself distributable — can
-    only ever reject the TWIN's own write. Nothing PUTs a twin that was
-    registered before the policy existed, so without this scan the leak
-    stays open indefinitely.
+    Supersedes the distributable-only scan this file shipped first. That
+    one keyed on ``agnes pull``: a twin that never leaves the server was
+    treated as harmless, and two undistributed rows over one source were
+    explicitly allowed to coexist. Verified against a live instance, that
+    is false — ``/api/query`` resolves the twin's own name server-side and
+    returns the unfiltered, unmasked rows to anyone granted it, which is
+    the same disclosure the parquet would have made, minus the file. The
+    scan is therefore on physical-source overlap plus "has no policy of
+    its own", not on distributability. Two POLICIED rows over one source
+    stay legal: each read goes through a policy, and which one an admin
+    wants where is their call.
     """
     if not my_signals:
         return None
     for other in table_registry_repo().list_all():
-        if other.get("id") == exclude_id or not _is_distributable_registry_row(other):
+        if other.get("id") == exclude_id or other.get("access_policy_sql"):
             continue
         if my_signals & _policy_physical_source_signals(other):
             return other
@@ -4950,6 +4954,8 @@ def _check_access_policy_physical_source_conflict(
     source_query: Optional[str],
     query_mode: Optional[str],
     server_only: bool,
+    has_access_policy: bool = False,
+    clearing_policy: bool = False,
     exclude_id: Optional[str] = None,
 ) -> None:
     """§3.2 (table access policies design doc) — the physical-source twin.
@@ -4958,18 +4964,20 @@ def _check_access_policy_physical_source_conflict(
     ``register_table``, or the merged shape ``update_table`` is about to
     persist) when BOTH:
 
-    - it would itself be distributable (``query_mode in ('local',
-      'materialized')`` and not ``server_only`` — the shape ``agnes pull``
-      downloads), AND
+    - it carries no policy of its own (``has_access_policy=False``), AND
     - its physical source (``bq_fqn`` / ``(source_type, connection_id,
       bucket, source_table)`` / non-Keboola ``source_query`` — see
       ``_policy_physical_source_signals``) matches that of ANY existing
       registry row carrying ``access_policy_sql``.
 
-    A row that stays undistributed never hands the raw rows to an analyst
-    via ``agnes pull``, so it is never blocked here regardless of
-    physical-source overlap — mirrors the update-time interlock this was
-    extracted from.
+    The first draft of this check also required the row to be
+    DISTRIBUTABLE, on the reasoning that a row which never leaves the
+    server hands nothing to an analyst. That is wrong, and was wrong in
+    production: ``/api/query`` resolves an undistributed row by name
+    server-side and returns its raw rows to anyone granted it, so an
+    unpolicied ``server_only`` / ``remote`` twin discloses exactly what
+    the policy withholds. Distributability now only changes the wording of
+    the rejection, never whether it fires.
 
     Shared between ``register_table`` (a brand-new row, not yet persisted —
     call with ``exclude_id=None``) and ``update_table`` (an existing row
@@ -4980,15 +4988,26 @@ def _check_access_policy_physical_source_conflict(
     (for ``register_table``) before any materialization can run — a row
     rejected here must never reach disk.
 
-    The ATTACH direction — a policy going onto a row that already has a
-    distributable twin — is the mirror check
-    ``_check_policied_row_has_no_distributable_twin`` below; this one
-    structurally cannot cover it (a policied row is never distributable,
-    so the guard above returns early).
+    The ATTACH direction — a policy going onto a row that already has an
+    unpolicied twin — is the mirror check
+    ``_check_policied_row_has_no_unpolicied_twin`` below; this one
+    structurally cannot cover it (the row being written IS the policied
+    one there, so the guard above returns early).
+
+    ``clearing_policy`` changes only the WORDING, never the verdict. Two
+    policied rows over one source are legal, and clearing either one's policy
+    leaves an unpolicied name over a source the other still policies — the
+    disclosure this check exists to refuse, so it must still fire. But the
+    default wording ("attach a policy to this row too") is nonsense addressed
+    to an admin who is *removing* one, and it names neither escape that
+    actually works: repoint this row at a different physical source first (its
+    policy travels with it, so the clear then succeeds), or unregister one of
+    the pair. Set by ``update_table`` when the pre-write row carried a policy
+    and the merged one does not.
 
     Raises ``HTTPException(422, "access_policy_physical_source_conflict")``.
     """
-    if not _is_distributable_registry_row({"query_mode": query_mode, "server_only": server_only}):
+    if has_access_policy:
         return
     my_signals = _policy_physical_source_signals(
         {
@@ -5002,61 +5021,92 @@ def _check_access_policy_physical_source_conflict(
     )
     other = _find_policied_physical_source_twin(my_signals, exclude_id=exclude_id)
     if other is not None:
+        if clearing_policy:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "access_policy_physical_source_conflict: clearing this "
+                    "table's access policy would leave it an unpolicied name "
+                    "over the same physical source as table "
+                    f"{other.get('id')!r} ({other.get('name')!r}), which still "
+                    "carries one -- and an unpolicied name returns the "
+                    "unfiltered rows to anyone granted it. Point this row at a "
+                    "different physical source first (its policy travels with "
+                    "it, so the clear then succeeds), or unregister one of the "
+                    "two rows"
+                ),
+            )
         raise HTTPException(
             status_code=422,
             detail=(
                 "access_policy_physical_source_conflict: this table's "
                 f"physical source matches table {other.get('id')!r} "
                 f"({other.get('name')!r}), which has an access policy "
-                "attached -- keep this row server_only=true (or "
-                "query_mode='remote') so the policy can't be routed "
-                "around, or point it at a different physical source"
+                "attached -- a second, unpolicied name over the same "
+                "source returns the unfiltered rows to anyone granted it, "
+                "so attach a policy to this row too, point it at a "
+                "different physical source, unregister one of the two rows, "
+                "or read the policied table by its own name"
             ),
         )
 
 
-def _check_policied_row_has_no_distributable_twin(merged: Dict[str, Any], *, table_id: str) -> None:
+def _check_policied_row_has_no_unpolicied_twin(merged: Dict[str, Any], *, table_id: str) -> None:
     """§3.2, the ATTACH direction — refuse to leave a policy on a row that
-    an EXISTING distributable row already resolves to the same physical
-    source as.
+    an EXISTING unpolicied row resolves to the same physical source as.
 
     ``_check_access_policy_physical_source_conflict`` above asks "is THIS
-    row a distributable twin of a policied one" and returns early unless
-    the row is itself distributable. A row carrying a policy never is
-    (§3.1 forces ``query_mode='remote'`` or ``server_only=true``), so on
-    the attach path that check always short-circuits: registering
-    ``twin`` (``query_mode='local'``, same bucket/source_table) and only
-    THEN attaching the policy to ``orig`` used to be accepted with no scan
-    at all — and since nothing ever PUTs ``twin`` again, the twin-side
-    interlock never runs and ``agnes pull`` keeps distributing its
-    unfiltered parquet. This is the symmetric scan that closes it.
+    row an unpolicied twin of a policied one", so on the attach path it
+    always short-circuits: the row being written is the policied one.
+    Registering ``twin`` first and only THEN attaching the policy to
+    ``orig`` would otherwise be accepted with no scan at all — and since
+    nothing ever PUTs ``twin`` again, the twin-side interlock never runs
+    for it. This is the symmetric scan that closes it.
+
+    A distributable twin leaks through ``agnes pull``; an undistributed
+    one leaks through ``/api/query`` resolving its name server-side for
+    anyone granted it. Both are refused here — the first draft exempted
+    the second, which a live instance disproved.
 
     Evaluated against the MERGED record on every write that leaves a
     policy attached — not only the PUT that attaches one — exactly like
     the §3.1 interlock, so the incoherent shape can't be reached in two
-    steps either. Clearing ``access_policy_sql`` short-circuits (no policy
-    on the merged record, nothing to protect), which keeps the safety
-    valve: an admin can always undo the policy.
+    steps either. Clearing ``access_policy_sql`` short-circuits HERE (no
+    policy on the merged record, nothing to protect) — but that is not by
+    itself a safety valve, and the earlier version of this docstring claiming
+    "an admin can always undo the policy" was wrong. The twin check on the
+    other side then sees an unpolicied row over a still-policied source and
+    refuses, which is correct: two policied rows over one source are legal,
+    an unpolicied one beside a policied one is the disclosure. What unwinds
+    such a pair is repointing one row (its policy travels with it, so the
+    clear then succeeds) or unregistering one — both named in that
+    rejection.
 
     Raises ``HTTPException(422, "access_policy_physical_source_conflict")``.
     """
     if not merged.get("access_policy_sql"):
         return
     my_signals = _policy_physical_source_signals(merged)
-    other = _find_distributable_physical_source_twin(my_signals, exclude_id=table_id)
+    other = _find_unpolicied_physical_source_twin(my_signals, exclude_id=table_id)
     if other is not None:
+        distributable = _is_distributable_registry_row(other)
+        reach = (
+            "agnes pull would hand out the unfiltered rows this policy exists to withhold"
+            if distributable
+            else "any caller granted it reads the unfiltered rows "
+            "server-side under that name, which is the same disclosure "
+            "without the parquet"
+        )
         raise HTTPException(
             status_code=422,
             detail=(
                 "access_policy_physical_source_conflict: table "
                 f"{other.get('id')!r} ({other.get('name')!r}) points at this "
-                "table's physical source and is distributable "
+                "table's physical source and carries no policy of its own "
                 f"(query_mode={str(other.get('query_mode') or 'local')!r}, "
-                "server_only=false), so agnes pull would hand out the "
-                "unfiltered rows this policy exists to withhold -- set that "
-                "row server_only=true (or query_mode='remote'), unregister "
-                "it, or point it at a different physical source, then "
-                "attach the policy"
+                f"server_only={bool(other.get('server_only'))}), so {reach} "
+                "-- attach a policy to that row, unregister it, or point it "
+                "at a different physical source, then attach this policy"
             ),
         )
 
@@ -5416,15 +5466,17 @@ async def update_table(
                 ),
             )
 
-        # §3.2 — the physical-source twin: a DIFFERENT, distributable row
-        # pointing at the exact same physical source as an existing policied
-        # table would hand every granted analyst (via agnes pull) the raw
-        # rows the policy exists to withhold. Runs on every write to a
-        # distributable row, independent of which fields this particular
-        # PUT changed — the danger is the merged row's current shape, not
-        # the delta. Shared with register_table's own call to the same
-        # helper via _check_access_policy_physical_source_conflict, so a
-        # brand-new twin is caught at registration too, not only here.
+        # §3.2 — the physical-source twin: a DIFFERENT row with no policy of
+        # its own, pointing at the exact same physical source as an existing
+        # policied table, hands every granted analyst the raw rows the policy
+        # exists to withhold — through `agnes pull` when it is distributable,
+        # and through `/api/query` resolving its name server-side when it is
+        # not. Runs on every write that leaves the merged row UNPOLICIED (the
+        # earlier draft keyed on distributability, which a live instance
+        # disproved), independent of which fields this particular PUT changed —
+        # the danger is the merged row's current shape, not the delta. Shared
+        # with register_table's own call to the same helper, so a brand-new twin
+        # is caught at registration too, not only here.
         _check_access_policy_physical_source_conflict(
             source_type=merged.get("source_type"),
             connection_id=merged.get("connection_id"),
@@ -5434,17 +5486,22 @@ async def update_table(
             source_query=merged.get("source_query"),
             query_mode=merged.get("query_mode"),
             server_only=bool(merged.get("server_only")),
+            has_access_policy=bool(merged.get("access_policy_sql")),
+            # Wording only — see the helper. A PUT that REMOVES a policy is
+            # still refused while another policied row covers the same source
+            # (that is the disclosure), but the default message tells the admin
+            # to attach a policy they are in the middle of removing.
+            clearing_policy=bool(existing.get("access_policy_sql")) and not merged.get("access_policy_sql"),
             exclude_id=table_id,
         )
 
         # §3.2, the OTHER direction — the check just above is structurally
-        # blind to it. It returns early unless the row it is called for is
-        # itself distributable, and a policied row never is (the §3.1 check
-        # right above forces remote/server_only), so on the attach path it
-        # can only ever reject the TWIN's own write. A twin registered
-        # BEFORE the policy existed is never PUT again, so nothing would
-        # ever run that check for it: scan for one here instead.
-        _check_policied_row_has_no_distributable_twin(merged, table_id=table_id)
+        # blind to it. It returns early whenever the row it is called for
+        # carries a policy of its own, which on the attach path is always the
+        # case, so it can only ever reject the TWIN's own write. A twin
+        # registered BEFORE the policy existed is never PUT again, so nothing
+        # would ever run that check for it: scan for one here instead.
+        _check_policied_row_has_no_unpolicied_twin(merged, table_id=table_id)
 
         # §14.6 — the live LIMIT 0 execution probe. Runs LAST among the
         # policy-write checks: after static validation (rule 1-5, above)
@@ -6724,9 +6781,10 @@ def _build_keboola_discovery_plan(
                         "access_policy_physical_source_conflict: this source is already "
                         f"registered as {policied_twin.get('id')!r} "
                         f"({policied_twin.get('name')!r}) with an access policy attached -- "
-                        "auto-discovery would register a distributable copy that routes the "
-                        "policy around; register it by hand with server_only=true if you "
-                        "need a second row"
+                        "auto-discovery would register a copy with no policy of its own, "
+                        "which routes the policy around; if you need a second row, register "
+                        "it by hand and attach a policy to it in the same breath, or point "
+                        "it at a different physical source"
                     ),
                 }
             )

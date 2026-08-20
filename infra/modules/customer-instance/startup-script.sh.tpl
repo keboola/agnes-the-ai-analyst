@@ -92,7 +92,7 @@ if [ -b "$DATA_DEV" ]; then
     # keeps both app and DB ownership correct across reboots and also
     # self-heals disks damaged by the old blanket chown.
     find "$DATA_MNT" -mindepth 1 -maxdepth 1 \
-        ! -name postgres ! -name dispatcher-postgres \
+        ! -name postgres ! -name dispatcher-postgres ! -name kai-agent-postgres \
         -exec chown -R 999:999 {} +
     chown 999:999 "$DATA_MNT"
 fi
@@ -702,6 +702,231 @@ DOCKER_GID=$(stat -c '%g' /var/run/docker.sock 2>/dev/null || echo 999)
 DATA_APPS_RUNTIME_IMAGE="${data_apps_runtime_image}"
 APPS_RUNNER_IMAGE_PREFIX="$${DATA_APPS_RUNTIME_IMAGE%:*}"
 %{ endif ~}
+%{ if kai_agent_enabled ~}
+# --- 4c. Opt-in embedded kai-agent turn engine ---
+# Runs the kai-agent turn engine (an external Claude-Agent-SDK engine that
+# embeds in Agnes through its jwt host adapter; the Agnes half of the contract
+# lives in app/api/kai.py) as extra compose services: the engine, its own
+# Postgres, and a one-shot schema migrate between them. The overlay rides the
+# existing lifecycle for free, exactly like the dispatcher's: agnes-auto-
+# upgrade honors COMPOSE_FILE from .env (pull + up include the overlay), and
+# agnes-state-applier only targets named services with --no-deps.
+KAI_DIR="$APP_DIR/kai-agent"
+mkdir -p "$KAI_DIR"
+
+# Both fetches fail LOUDLY (same posture as the dispatcher's): an enabled
+# engine without the shared JWT secret cannot authenticate a single session,
+# and without the E2B key it cannot spawn a sandbox.
+KAI_HOST_JWT_SECRET=$(gcloud secrets versions access latest --secret=${kai_agent_jwt_secret})
+KAI_E2B_API_KEY=$(gcloud secrets versions access latest --secret=${kai_agent_e2b_key_secret})
+
+# Engine Postgres password — same durability dance as the dispatcher ledger's:
+# the data dir on the persistent DATA disk honors POSTGRES_PASSWORD on first
+# initdb only, while .env lives on the wipeable BOOT disk. Precedence:
+# existing keyfile on the data disk > value already in .env (adopted into the
+# keyfile so it survives the NEXT recreate) > mint fresh.
+# --- kai-agent-pg-password begin (extracted + executed by tests/test_startup_kai_agent_toggle.py) ---
+# The keyfile must NOT live inside $DATA_MNT/kai-agent-postgres — that
+# directory is bind-mounted as the container's PGDATA, and postgres:16-alpine's
+# initdb aborts on first boot if PGDATA contains anything but "lost+found".
+KAI_AGENT_PG_PASSWORD_FILE="$DATA_MNT/state/kai-agent-pg-password"
+KAI_AGENT_PG_PASSWORD=""
+if [ -f "$KAI_AGENT_PG_PASSWORD_FILE" ]; then
+    KAI_AGENT_PG_PASSWORD=$(tr -d '[:space:]' < "$KAI_AGENT_PG_PASSWORD_FILE" || true)
+fi
+if [ -z "$KAI_AGENT_PG_PASSWORD" ] && [ -f "$APP_DIR/.env" ]; then
+    KAI_AGENT_PG_PASSWORD=$(grep -E '^KAI_AGENT_PG_PASSWORD=' "$APP_DIR/.env" | head -1 | cut -d= -f2- | tr -d '"' || true)
+fi
+if [ -z "$KAI_AGENT_PG_PASSWORD" ]; then
+    KAI_AGENT_PG_PASSWORD=$(openssl rand -hex 24)
+fi
+
+mkdir -p "$DATA_MNT/state"
+(umask 077; printf '%s\n' "$KAI_AGENT_PG_PASSWORD" > "$KAI_AGENT_PG_PASSWORD_FILE")
+chmod 600 "$KAI_AGENT_PG_PASSWORD_FILE"
+
+mkdir -p "$DATA_MNT/kai-agent-postgres"
+# --- kai-agent-pg-password end ---
+# Outside the extracted test block: chown needs root, which the block's test
+# harness doesn't have (same note as the dispatcher's; this dir is excluded
+# from the blanket data-disk chown in section 2).
+chown -R 70:70 "$DATA_MNT/kai-agent-postgres"
+
+# Artifact Registry images authenticate through the VM SA via gcloud's docker
+# credential helper — configured for the image's own registry host only, and
+# persisted in root's docker config so the agnes-auto-upgrade pulls keep
+# working. Best-effort (`|| echo WARN`): the engine must never gate the
+# machine, and a genuine credential problem still surfaces as a failed
+# engine pull in the tolerant block in section 5. Any other private registry
+# needs pre-authenticated pull access on the VM (not provided here).
+KAI_AGENT_IMAGE_HOST="${kai_agent_image}"
+KAI_AGENT_IMAGE_HOST="$${KAI_AGENT_IMAGE_HOST%%/*}"
+case "$KAI_AGENT_IMAGE_HOST" in
+    *-docker.pkg.dev) gcloud auth configure-docker "$KAI_AGENT_IMAGE_HOST" --quiet \
+        || echo "WARN: gcloud auth configure-docker $KAI_AGENT_IMAGE_HOST failed — the engine image pull will likely fail below" >&2 ;;
+esac
+
+# An engine without a public origin cannot serve a single turn: its E2B
+# sandbox must reach the LLM broker from the public internet. SERVER_URL is
+# legitimately empty when the VM has no domain AND the metadata read for the
+# external IP failed (that read is deliberately tolerant) — pasting that
+# into the URL below would configure the broker as "/api/broker/anthropic"
+# and every conversation would fail with nothing in the boot log saying why.
+# SKIP the engine materialization this boot rather than abort: the metadata
+# blip is transient, and the engine must never turn a degraded add-on into
+# an unprovisioned machine — the base stack, TLS, cron and watchdog proceed
+# untouched; a reboot or VM recreate retries with a fresh derivation.
+KAI_AGENT_MATERIALIZE=1
+if [ -z "$SERVER_URL" ] && [ -z "$DOMAIN" ]; then
+    # The transient case the skip below exists for: the earlier tolerant
+    # metadata read may have raced the network coming up. Retry it briefly
+    # here, so a mere blip recovers in-place instead of costing the engine
+    # until the next reboot (a skipped boot tears the engine down and drops
+    # the overlay from COMPOSE_FILE, so the tick cannot re-materialize it).
+    # A persistent failure still skips — deliberately louder than broken.
+    # Scoped to the engine: the app's own SERVER_URL line for this boot is
+    # already decided, an accepted pre-existing degradation on such a boot.
+    for _kai_ip_try in 1 2 3; do
+        sleep 5
+        KAI_EXTERNAL_IP=$(curl -sf -H "Metadata-Flavor: Google" \
+            "http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip" \
+            2>/dev/null || true)
+        if [ -n "$KAI_EXTERNAL_IP" ]; then
+            SERVER_URL="http://$KAI_EXTERNAL_IP:8000"
+            break
+        fi
+    done
+fi
+if [ -z "$SERVER_URL" ]; then
+    echo "WARN: kai-agent engine SKIPPED this boot — no resolvable public origin (set a domain on the instance, or the GCE metadata read failed); reboot or recreate to retry" >&2
+    KAI_AGENT_MATERIALIZE=0
+elif [ "$TLS_MODE" = "caddy" ] && [ -z "$DOMAIN" ]; then
+    # A caddy VM without a domain derives http://<external-ip>:8000, but the
+    # web_raw firewall rule only tags tls_mode != "caddy" VMs — so :8000 is
+    # CLOSED and the sandbox could never reach the broker. As loud as the
+    # empty case, and for the same reason: a URL that resolves but is
+    # unreachable fails every conversation with nothing saying why.
+    case "$SERVER_URL" in
+        http://*:8000*)
+            echo "WARN: kai-agent engine SKIPPED this boot — SERVER_URL ($SERVER_URL) is the raw :8000 shape on a tls_mode=caddy VM, whose firewall does not expose that port; set a domain (or hand-set a reachable SERVER_URL in /opt/agnes/.env) and reboot" >&2
+            KAI_AGENT_MATERIALIZE=0
+            ;;
+    esac
+fi
+if [ "$KAI_AGENT_MATERIALIZE" = "0" ] && [ -f "$APP_DIR/docker-compose.kai-agent.yml" ]; then
+    # A PREVIOUS boot materialized the engine. Left alone, its containers
+    # would keep running under restart:always with that boot's env (stale
+    # broker URL; a stale HOST_JWT_SECRET if the secret rotated) while the
+    # .env rewrite below drops the overlay from COMPOSE_FILE — live but
+    # outside compose management, and the tick's retry would not see them.
+    # Converge a skipped boot to a clean "engine off" state instead. The old
+    # .env is still on disk here (the rewrite happens after this block), so
+    # compose can interpolate the overlay's variables for the teardown.
+    # `rm -sf` (stop + remove the file's services), NOT `down`: down would
+    # also try to remove the project's default network, which the base
+    # stack's containers still hold — that removal fails with "active
+    # endpoints" and a non-zero exit, firing the WARN on a teardown that
+    # actually succeeded.
+    (cd "$APP_DIR" && docker compose -f docker-compose.kai-agent.yml rm -sf 2>/dev/null) \
+        || echo "WARN: could not tear down the previous boot's kai-agent containers — check 'docker ps' by hand" >&2
+    rm -f "$APP_DIR/docker-compose.kai-agent.yml"
+fi
+if [ "$KAI_AGENT_MATERIALIZE" = "1" ]; then
+
+# The engine's env. Derived URLs split by who calls them: the E2B sandbox
+# egresses to the LLM broker from the public internet, so that URL must be
+# the deployment's public origin (SERVER_URL — a domain-less plain-HTTP VM
+# only works if its :8000 is reachable from the sandbox, so give the instance
+# a domain); the ticket + workspace fetches are made by the engine's own
+# server and ride compose DNS to the app, avoiding a TLS hairpin.
+# HOST_JWT_ISSUER/AUDIENCE mirror the app-side defaults in app/api/kai.py.
+# The caller's kai_agent_env is appended AFTER these lines: env_file gives
+# later duplicate keys precedence, so the map can override any derived value.
+cat > "$KAI_DIR/.env" <<KAIENVEOF
+HOST_MODULE=jwt
+HOST_JWT_SECRET=$KAI_HOST_JWT_SECRET
+HOST_JWT_ISSUER=agnes
+HOST_JWT_AUDIENCE=kai-agent
+HOST_BROKER_LLM_URL=$SERVER_URL/api/broker/anthropic
+HOST_BROKER_TICKET_URL=http://app:8000/api/kai/tickets
+HOST_WORKSPACE_URL=http://app:8000/api/kai/workspace
+POSTGRES_URL=postgresql://kai:$KAI_AGENT_PG_PASSWORD@kai-agent-pg:5432/kai_agent
+E2B_API_KEY=$KAI_E2B_API_KEY
+KAIENVEOF
+echo "${kai_agent_env_b64}" | base64 -d >> "$KAI_DIR/.env"
+chmod 600 "$KAI_DIR/.env"
+
+# Quoted heredoc: the $${...} below are resolved by docker compose from
+# /opt/agnes/.env at `compose up` time, not by this shell. The one-shot
+# migrate runs from the engine's app dir inside the image because its
+# migrator resolves the ./drizzle folder relative to the cwd; the engine
+# waits on it via service_completed_successfully (the migrator is
+# idempotent, so the auto-upgrade tick re-running it is harmless).
+cat > "$APP_DIR/docker-compose.kai-agent.yml" <<'KAIYAML'
+services:
+  kai-agent:
+    image: $${KAI_AGENT_IMAGE}
+    restart: always
+    env_file: /opt/agnes/kai-agent/.env
+    # Bounded like the app/scheduler containers (heavy work happens in the
+    # remote E2B sandbox, not here), and hardened like the data-app
+    # containers: caps are ceilings, not reservations. The values come from
+    # the per-VM kai_agent_mem_limit / kai_agent_cpus / kai_agent_pg_mem_limit
+    # TF fields via /opt/agnes/.env — NOT from hand-edits of that file, which
+    # every boot rewrites from scratch (the same reason app_mem_limit is a TF
+    # field). The :-defaults below are a belt-and-braces fallback only.
+    mem_limit: $${KAI_AGENT_MEM_LIMIT:-2g}
+    cpus: $${KAI_AGENT_CPUS:-1.0}
+    pids_limit: 512
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - "127.0.0.1:3001:3000" # host-side testing via SSH tunnel; the app uses compose DNS
+    depends_on:
+      kai-agent-pg:
+        condition: service_healthy
+      kai-agent-migrate:
+        condition: service_completed_successfully
+  kai-agent-migrate:
+    image: $${KAI_AGENT_IMAGE}
+    restart: "no"
+    working_dir: /app/apps/kai-agent
+    command: ["node", "dist/db/migrate.js"]
+    env_file: /opt/agnes/kai-agent/.env
+    mem_limit: $${KAI_AGENT_MEM_LIMIT:-2g}
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      kai-agent-pg:
+        condition: service_healthy
+  kai-agent-pg:
+    image: postgres:16-alpine
+    restart: always
+    environment:
+      POSTGRES_USER: kai
+      POSTGRES_PASSWORD: $${KAI_AGENT_PG_PASSWORD}
+      POSTGRES_DB: kai_agent
+    # no-new-privileges is safe here: the entrypoint drops root -> postgres
+    # via setuid()/su-exec syscalls, which no_new_privs does not restrict
+    # (it blocks GAINING privilege across execve, not shedding it).
+    mem_limit: $${KAI_AGENT_PG_MEM_LIMIT:-1g}
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - /data/kai-agent-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kai"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+KAIYAML
+
+COMPOSE_FILE_VALUE="$COMPOSE_FILE_VALUE:docker-compose.kai-agent.yml"
+
+# Closes the KAI_AGENT_MATERIALIZE guard: everything above (engine env,
+# overlay, COMPOSE_FILE append) is skipped on a boot with no public origin.
+fi
+%{ endif ~}
 cat > "$APP_DIR/.env" <<ENVEOF
 JWT_SECRET_KEY=$JWT_KEY
 SESSION_SECRET=$SESSION_KEY
@@ -746,6 +971,14 @@ DISPATCHER_IMAGE=${dispatcher_image}
 DISPATCHER_PG_PASSWORD=$DISPATCHER_PG_PASSWORD
 LLM_DISPATCHER_URL=http://dispatcher:8600
 LLM_DISPATCHER_API_KEY=$DISPATCHER_KEY
+%{ endif ~}
+%{ if kai_agent_enabled ~}
+KAI_HOST_JWT_SECRET=$KAI_HOST_JWT_SECRET
+KAI_AGENT_IMAGE=${kai_agent_image}
+KAI_AGENT_PG_PASSWORD=$KAI_AGENT_PG_PASSWORD
+KAI_AGENT_MEM_LIMIT=${kai_agent_mem_limit}
+KAI_AGENT_CPUS=${kai_agent_cpus}
+KAI_AGENT_PG_MEM_LIMIT=${kai_agent_pg_mem_limit}
 %{ endif ~}
 COMPOSE_FILE=$COMPOSE_FILE_VALUE
 %{ if data_apps_enabled ~}
@@ -813,6 +1046,18 @@ COMPOSE_FILE_DEFAULT="docker-compose.yml:docker-compose.prod.yml:docker-compose.
 # shellcheck disable=SC1091
 set -a; . "$APP_DIR/.env"; set +a
 export COMPOSE_FILE="$${COMPOSE_FILE:-$COMPOSE_FILE_DEFAULT}"
+%{ if kai_agent_enabled ~}
+# The engine overlay is OPTIONAL and must never gate the machine: its
+# one-shot migrate is a hard start condition for the engine SERVICE, so an
+# unpullable engine image or a failed migration would fail the strict
+# pull/up below and abort this script BEFORE the auto-upgrade cron and the
+# watchdog are installed — an engine-enabled VM would then sit half
+# provisioned while the app looks healthy. Pull + start the BASE stack
+# strictly first (overlay stripped; it was appended last in section 4c),
+# then bring the engine up tolerantly after the strict block.
+KAI_FULL_COMPOSE_FILE="$COMPOSE_FILE"
+export COMPOSE_FILE="$${COMPOSE_FILE%:docker-compose.kai-agent.yml}"
+%{ endif ~}
 
 docker compose $COMPOSE_PROFILES_ARG pull
 %{ if data_apps_enabled ~}
@@ -849,6 +1094,24 @@ if [ "$COMPOSE_UP_OK" != "1" ]; then
     echo "ERROR: docker compose up failed after 3 attempts"
     exit 1
 fi
+%{ if kai_agent_enabled ~}
+# Now the engine, tolerantly: the base stack (incl. Caddy/TLS) is up, and the
+# sections below (auto-upgrade cron, watchdog) must install regardless of the
+# engine's fate. TARGETED at the engine services — a full-list pull/up here
+# would fetch and start the whole stack a second time on every boot, and an
+# unrelated base-stack failure would be reported as an engine problem.
+# Gated on materialization: a skipped boot has no overlay to bring up. On
+# failure the .env keeps the FULL list, so the next auto-upgrade tick (and
+# any operator `docker compose up -d`) retries the engine with no state to
+# repair.
+if [ "$KAI_AGENT_MATERIALIZE" = "1" ]; then
+    export COMPOSE_FILE="$KAI_FULL_COMPOSE_FILE"
+    if ! docker compose $COMPOSE_PROFILES_ARG pull kai-agent kai-agent-migrate kai-agent-pg \
+        || ! docker compose $COMPOSE_PROFILES_ARG up -d kai-agent; then
+        echo "WARN: kai-agent engine sidecar failed to pull or start; base stack is up — fix the engine image/migration and re-run docker compose up -d (or wait for the auto-upgrade tick)" >&2
+    fi
+fi
+%{ endif ~}
 
 # --- 6. Auto-upgrade via cron (pulls new image digest on $UPGRADE_SCHEDULE) ---
 if [ "$UPGRADE_MODE" = "auto" ]; then

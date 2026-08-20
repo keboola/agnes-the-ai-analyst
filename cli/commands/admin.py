@@ -611,8 +611,13 @@ def list_tables(as_json: bool = typer.Option(False, "--json")):
     else:
         typer.echo(f"Registered tables: {data['count']}")
         for t in data["tables"]:
+            # `or` rather than `.get(key, default)`: `bucket` is nullable in
+            # table_registry (every non-Keboola row has none) and the key IS
+            # present carrying null, so a default never fired and `None` hit a
+            # `:20s` format spec — TypeError, listing dead after the header.
             typer.echo(
-                f"  {t['name']:30s} src={t.get('source_type', '?'):10s} mode={t.get('query_mode', '?'):6s} bucket={t.get('bucket', ''):20s}"
+                f"  {t.get('name') or '?':30s} src={t.get('source_type') or '?':10s} "
+                f"mode={t.get('query_mode') or '?':6s} bucket={t.get('bucket') or '':20s}"
             )
             # #754 — surface WHY a table shows 0 rows synced (sync_state's
             # status + persisted skip-reason/error), so "N total, 0 synced"

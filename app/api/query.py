@@ -59,6 +59,7 @@ from src.remote_engines import (
     name_reference_re,
     qualified_path_re,
     rewrite_bare_names,
+    strip_one_trailing_semicolon,
 )
 from src.remote_query import _strip_leading_sql_comments
 from src.repositories import (
@@ -366,11 +367,24 @@ def _local_extract_catalogs(conn) -> set[str]:
     """Attached local extract catalogs (per-source ``extract.duckdb`` files).
 
     Each source is ATTACHed as its own catalog named after the source
-    (``src/db.py``). These are file-backed ``duckdb`` attachments; the default
-    catalog (where the analyst-facing master views live) and the
-    remote-extension catalogs (``bq``/``kbc``, type ``bigquery``/``keboola``)
-    are excluded — the latter keep their own registry gate in
-    ``_bq_guardrail_inputs``.
+    (``src/db.py``). These are file-backed ``duckdb`` attachments, so the
+    default catalog (where the analyst-facing master views live) and the
+    remote-extension catalogs (type ``bigquery``/``keboola``) fall outside this
+    set.
+
+    That exclusion is only safe for a prefix that has a gate of its own, and
+    the two are not equal. ``bq`` does (``_bq_guardrail_inputs``), as do ``sf``
+    (``_sf_guardrail_inputs``) and ``dbx``
+    (``connectors.databricks.remote.guardrail_inputs``). **``kbc`` does not** —
+    ``_bq_guardrail_inputs`` scans ``BQ_PATH`` only, Keboola is not registered
+    in ``src.remote_engines._ENGINES``, and no ``_kbc_guardrail_inputs``
+    exists. An earlier version of this docstring asserted the opposite. So on
+    an instance whose Keboola extract wrote a ``_remote_attach`` row (every
+    Keboola sync does — ``connectors/keboola/extractor.py``), a
+    ``kbc."bucket"."table"`` path is gated by neither this catalog check nor a
+    registry/grant/policy one. Pre-existing and tracked separately from the
+    engine-path policy gates; recorded here so the next reader does not infer
+    coverage from the exclusion.
     """
     try:
         default = conn.execute("SELECT current_database()").fetchone()[0]
@@ -1319,20 +1333,25 @@ def _assert_select_only(sql_lower: str) -> None:
     """Raise HTTPException(400) unless ``sql_lower`` is a single SELECT/WITH
     query free of the blocked keywords/functions. ``sql_lower`` MUST already
     be ``.strip().lower()``-ed by the caller."""
-    if any(keyword in sql_lower for keyword in _BLOCKED_SQL_TOKENS):
+    # Tolerate exactly one trailing semicolon — a routine SQL-formatting habit
+    # (LLM-generated queries, most CLI/DB clients) rather than a second
+    # statement. A ";" that remains after stripping it is a genuine
+    # multi-statement attempt and still blocked below.
+    body = strip_one_trailing_semicolon(sql_lower)
+    if any(keyword in body for keyword in _BLOCKED_SQL_TOKENS):
         raise HTTPException(status_code=400, detail="Only single SELECT queries are allowed")
     # File-path table source anywhere in the FROM graph (direct / comma-list /
     # glob), detected precisely via sqlglot — the position regex is used only as
     # the parse-failure fallback inside _has_file_table_source, so functional
     # FROM clauses (TRIM/EXTRACT/SUBSTRING) don't false-positive.
-    if _has_file_table_source(sql_lower):
+    if _has_file_table_source(body):
         raise HTTPException(
             status_code=400,
             detail="File-path table sources are not allowed; query registered views by name",
         )
     # SQL-as-a-string table functions (query/query_table/…): their target never
     # appears as a matchable token, so the RBAC name denylist cannot see it.
-    if _has_sql_string_table_function(sql_lower):
+    if _has_sql_string_table_function(body):
         raise HTTPException(
             status_code=400,
             detail=(
@@ -1346,7 +1365,7 @@ def _assert_select_only(sql_lower: str) -> None:
     # comment isn't rejected — DuckDB and the local `agnes query` path tolerate
     # them. The blocklist above still scans the full SQL, so a comment can't
     # smuggle a blocked keyword through.
-    if not re.match(r"^(select|with)\s", _strip_leading_sql_comments(sql_lower)):
+    if not re.match(r"^(select|with)\s", _strip_leading_sql_comments(body)):
         raise HTTPException(status_code=400, detail="Query must start with SELECT or WITH")
 
 
@@ -1373,6 +1392,29 @@ def execute_query(
     sql_lower = request.sql.strip().lower()
 
     _assert_select_only(sql_lower)
+
+    # One trailing `;` is now accepted (it is a terminator, not a second
+    # statement), so normalize it away HERE, once, instead of at each place
+    # that embeds the statement. Two reasons this is the boundary and not a
+    # sixth site-local strip:
+    #
+    #   - `_bq_quota_and_cap_guard` below passes `request.sql` through
+    #     `_rewrite_user_sql_for_bq_dry_run` — a purely textual rewrite that
+    #     preserves the terminator — into a BigQuery dry run. If BQ classifies
+    #     a `;`-terminated text as a script, the dry run reports
+    #     `totalBytesProcessed: 0` and the scan cap silently passes a query it
+    #     was meant to measure. That is a cost guardrail reading zero, not an
+    #     error message, and it is not something this repo's tests can
+    #     observe. Normalizing removes the question rather than answering it.
+    #   - The jobs-API execution wrap at the bottom of the BQ arm nests the
+    #     statement inside a dollar-quoted payload, so DuckDB never sees the
+    #     `;` — but BigQuery does, verbatim.
+    #
+    # Accepted/rejected outcomes do not change: the guard above has already
+    # ruled on the statement, and `sql_lower` is recomputed from the
+    # normalized text so every check below reads the same string that runs.
+    request.sql = strip_one_trailing_semicolon(request.sql)
+    sql_lower = request.sql.strip().lower()
 
     # ----- Internal-source short-circuit ----------------------------------
     # SQL referencing one of the seeded internal tables (agnes_sessions,
@@ -2115,6 +2157,27 @@ def _bq_guardrail_inputs(
                         "registered_as": row["name"],
                     },
                 )
+            policied = _policied_row_over_physical_source(
+                repo,
+                source_type="bigquery",
+                bucket=bucket_raw,
+                source_table=source_table_raw,
+            )
+            if policied is not None:
+                return (
+                    [],
+                    [],
+                    {
+                        "reason": "bq_path_policied",
+                        "path": f"bq.{quote_ident(bucket_raw)}.{quote_ident(source_table_raw)}",
+                        "registered_as": policied["name"],
+                        "hint": (
+                            "This BigQuery table carries an access policy, which is "
+                            f"enforced under its registered name. Query {policied['name']!r} "
+                            "instead of the direct bq.* path."
+                        ),
+                    },
+                )
         # Add to dry-run set if not already covered by bare-name pass.
         bucket = row["bucket"]
         source_table = row["source_table"]
@@ -2186,6 +2249,27 @@ def _bq_guardrail_inputs(
                             "reason": "bq_path_access_denied",
                             "path": f"`{proj}.{ds}.{tbl}`",
                             "registered_as": row["name"],
+                        },
+                    )
+                policied = _policied_row_over_physical_source(
+                    repo,
+                    source_type="bigquery",
+                    bucket=ds,
+                    source_table=tbl,
+                )
+                if policied is not None:
+                    return (
+                        [],
+                        [],
+                        {
+                            "reason": "bq_path_policied",
+                            "path": f"`{proj}.{ds}.{tbl}`",
+                            "registered_as": policied["name"],
+                            "hint": (
+                                "This BigQuery table carries an access policy, which is "
+                                f"enforced under its registered name. Query {policied['name']!r} "
+                                "instead of the direct path."
+                            ),
                         },
                     )
             bucket = row["bucket"]
@@ -2261,6 +2345,51 @@ def _caller_is_unrestricted_admin(user, sys_conn) -> bool:
     )
 
 
+def _policied_row_over_physical_source(
+    repo,
+    *,
+    source_type: str,
+    bucket: str,
+    source_table: str,
+):
+    """The registry row carrying an access policy over this physical
+    source, if any — the reason an engine-qualified path must be refused.
+
+    ``rewrite_sql`` substitutes policied tables by registry NAME (§5.2), and
+    an ``sf."SCHEMA"."TABLE"`` / ``bq."ds"."tbl"`` reference names the
+    PHYSICAL source instead, so the rewrite never fires for it and the
+    policy simply does not apply. Each engine's gate below already proves
+    the path is registered and that the caller holds a grant on the row it
+    resolved to — neither of which says anything about a policy, and the
+    row it resolves to need not even be the policied one when a source is
+    registered twice. Fail closed and send the caller to the registered
+    name, where enforcement lives.
+
+    Scans ``list_by_source`` (both backends implement it) rather than
+    adding a repository lookup, matching the existing ``sf.*`` gate's own
+    scan; the registry is bounded by an instance's table count.
+
+    Matches on ``(bucket, source_table)`` only, which is what both gates
+    already resolve a path with. A BigQuery row registered with ONLY
+    ``bq_fqn`` and no bucket/source_table is invisible here — but also to
+    ``find_by_bq_path``, so such a path is refused one step earlier as
+    unregistered. The uncovered shape is a policied ``bq_fqn``-only row
+    beside an unpolicied bucket/source_table row for the same table; that
+    pair already escapes ``_policy_physical_source_signals`` (the two
+    signals never intersect), so closing it belongs there, not here.
+    """
+    bucket_l = (bucket or "").lower()
+    table_l = (source_table or "").lower()
+    if not bucket_l or not table_l:
+        return None
+    for row in repo.list_by_source(source_type):
+        if not row.get("access_policy_sql"):
+            continue
+        if (row.get("bucket") or "").lower() == bucket_l and (row.get("source_table") or "").lower() == table_l:
+            return row
+    return None
+
+
 def _sf_guardrail_inputs(sql: str, sql_lower: str, sys_conn, user, allowed) -> Optional[dict]:
     """Registry + RBAC gate for direct ``sf."schema"."table"`` paths.
 
@@ -2301,6 +2430,23 @@ def _sf_guardrail_inputs(sql: str, sql_lower: str, sys_conn, user, allowed) -> O
                     "reason": "sf_path_access_denied",
                     "path": f"sf.{quote_ident(schema_raw)}.{quote_ident(table_raw)}",
                     "registered_as": row["name"],
+                }
+            policied = _policied_row_over_physical_source(
+                repo,
+                source_type="snowflake",
+                bucket=schema_raw,
+                source_table=table_raw,
+            )
+            if policied is not None:
+                return {
+                    "reason": "sf_path_policied",
+                    "path": f"sf.{quote_ident(schema_raw)}.{quote_ident(table_raw)}",
+                    "registered_as": policied["name"],
+                    "hint": (
+                        "This Snowflake table carries an access policy, which is "
+                        f"enforced under its registered name. Query {policied['name']!r} "
+                        "instead of the direct sf.* path."
+                    ),
                 }
     return None
 
