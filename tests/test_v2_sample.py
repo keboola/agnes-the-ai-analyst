@@ -930,3 +930,77 @@ class TestSampleAccessPolicyBqBranch:
         finally:
             conn.close()
         assert data["rows"] == rows
+
+
+class TestRemoteLiveMeansLive:
+    """The `remote` branch justifies its position — ahead of parquet
+    resolution — with "`remote` means every read goes live", and then wrote
+    its result into a one-hour `TTLCache` under a plain `{table_id}|{n}` key.
+    Serving a 60-minute-old copy is the same staleness the branch was moved to
+    avoid, just from a different store.
+
+    Cost was the reason to cache, and it does not survive contact with the
+    numbers: the read is `SELECT * FROM <view> LIMIT n` with n ≤ 100. For
+    Snowflake and Keboola that is a bounded pull through the extension. Only
+    Databricks-with-`attach_enabled` — off by default and marked experimental
+    — makes it a parquet read, and buying liveness for the two supported
+    engines at that price is the right trade.
+    """
+
+    _register_remote = staticmethod(TestRemoteRowLiveSample._register_remote)
+    _create_analytics_view = staticmethod(TestRemoteRowLiveSample._create_analytics_view)
+
+    @staticmethod
+    def _replace_view(table_id, rows_sql):
+        import os
+        from pathlib import Path
+
+        import duckdb as _duckdb
+
+        c = _duckdb.connect(str(Path(os.environ["DATA_DIR"]) / "analytics" / "server.duckdb"))
+        try:
+            c.execute(f'CREATE OR REPLACE TABLE "{table_id}" AS {rows_sql}')
+        finally:
+            c.close()
+
+    def test_a_second_read_sees_the_upstream_change(self, reload_db):
+        from app.api import v2_sample
+
+        conn = reload_db.get_system_db()
+        try:
+            _ensure_admin1(conn)
+            self._register_remote(conn, "sf_fresh")
+            self._create_analytics_view("sf_fresh", "SELECT 'v1' AS v")
+            user = {"id": "admin1", "email": "a@x.com"}
+            first = v2_sample.build_sample(conn, user, "sf_fresh", n=5, bq=_bq())
+            assert first["rows"] == [{"v": "v1"}]
+
+            self._replace_view("sf_fresh", "SELECT 'v2' AS v")
+            second = v2_sample.build_sample(conn, user, "sf_fresh", n=5, bq=_bq())
+        finally:
+            conn.close()
+
+        assert second["rows"] == [{"v": "v2"}], (
+            "a 'live' remote sample was served from the 1h cache -- the branch's own "
+            "justification for running ahead of parquet resolution says every read goes live"
+        )
+
+    def test_a_local_row_still_caches(self, reload_db, monkeypatch):
+        """Non-vacuity: only `remote` opts out. A local/materialized row keeps
+        the cache it has always had, so this is a targeted exemption rather
+        than a quiet removal of the whole cache."""
+        from app.api import v2_sample
+
+        assert v2_sample._sample_cache is not None
+        conn = reload_db.get_system_db()
+        try:
+            _ensure_admin1(conn)
+            self._register_remote(conn, "sf_cached_check")
+        finally:
+            conn.close()
+        # The decision itself, read directly — no fixture can observe a cache
+        # hit without also observing the fetch it skipped.
+        assert v2_sample._sample_is_cacheable(query_mode="local", has_access_policy=False) is True
+        assert v2_sample._sample_is_cacheable(query_mode="materialized", has_access_policy=False) is True
+        assert v2_sample._sample_is_cacheable(query_mode="remote", has_access_policy=False) is False
+        assert v2_sample._sample_is_cacheable(query_mode="local", has_access_policy=True) is False

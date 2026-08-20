@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.83.98] - 2026-08-20
+
 ### Added
 - **The "Add data source" wizard can now browse a Snowflake account instead of
   asking you to type schema and table names.** `GET /api/admin/data-sources/
@@ -41,7 +43,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   forwarded it somewhere durable: a listing 502 and a server log line, and the
   extract build into `sync_state.error`, which the admin registry, `/admin/sync`
   and `agnes admin list-tables` render unredacted. The value is now scrubbed at
-  the one place that holds it, so all callers inherit the guarantee.
+  the one place that holds it, so all callers inherit the guarantee — and the
+  scrub covers the key-pair arm, which is the one that actually leaks. The
+  statement does not embed the stored credential there: it embeds
+  `_private_key_pem_and_passphrase(...)`'s output, which normalizes the key to
+  an unencrypted PKCS#8 PEM. For a PKCS#1 key, an encrypted key plus
+  passphrase, a JSON wrapper or a filesystem path — most real key-pair
+  deployments — that PEM is not a substring of the stored token, so scrubbing
+  the token alone matched nothing, and the `PRIVATE_KEY $PK$…$PK$` regex needs
+  a closing delimiter that a truncated parser echo has already cut off. The
+  builder now returns the values it embedded, and the literal patterns have
+  unterminated variants, so a whole private key can no longer ride out on a
+  truncated error.
 
 ### Fixed
 - **Catalog preview now works for `query_mode='remote'` tables.** The sample
@@ -54,7 +67,25 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   materialized→remote no longer previews its stale leftover parquet. Rows
   with an access policy stay fail-closed on this surface (same ratchet as the
   BigQuery live branch); when the view cannot serve, the refusal message now
-  carries the real error instead of only the reassurance.
+  carries the real error instead of only the reassurance. `remote` rows are
+  also exempt from the 5-minute-to-an-hour sample cache: "every read goes
+  live" is the argument for evaluating this branch ahead of parquet
+  resolution, and serving an hour-old cached copy would be the same staleness
+  from a different store. `docs/table-access-policies.md`'s known-gap list
+  named only BigQuery and Databricks for the fail-closed preview refusal and
+  now covers every remote engine, including the note that the two
+  quick-preview surfaces have diverged (`/api/v2/sample` serves unpolicied
+  remote rows live, `/api/v2/scan` still refuses them).
+
+- **The "Add data source" Snowflake picker showed its per-row registration
+  results where nobody could see them.** With more than one schema every group
+  renders collapsed, and `_registerSfRows` wrote `registering…` / `✗ failed`
+  straight into those hidden rows — while step 2's handler returns silently on
+  zero successes precisely because it assumes the statuses are on screen. A
+  wholly-failed registration was therefore an enabled button that appeared to
+  do nothing. It now drops any active filter and opens the groups being
+  written to first, the same preparation the Keboola picker's
+  `registerSelected` already did.
 
 ## [0.83.95] - 2026-08-20
 

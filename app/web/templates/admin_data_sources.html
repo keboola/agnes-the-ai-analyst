@@ -3554,11 +3554,35 @@ function _sfRowHtml() {
 
 async function _registerSfRows() {
   // Two sources of truth, same shape downstream: boxes ticked in the picker
-  // (real names, so the doubled-prefix / typo class of bug cannot happen) and
-  // any hand-written rows. Picker entries come first so a schema+table named in
-  // both is registered once, from the picker.
+  // (real names off the account, so a mistyped schema or table is out of the
+  // question — the derived id is still `schema + "_" + table` below, so a table
+  // genuinely called GOLD_BI_X in schema GOLD still reads doubled; the picker
+  // removes typos, not that) and any hand-written rows. Picker entries come
+  // first so a schema+table named in both is registered once, from the picker.
   const pickerMode = (document.getElementById("ds-sf-picker-mode") || {}).value || "remote";
-  const picked = [...document.querySelectorAll("#ds-sf-picker [data-sf-pick]:checked")].map((box) => ({
+  // Per-row "registering…/✗ failed" is the only account of what happened, and
+  // with more than one schema every group renders collapsed (`openByDefault =
+  // schemas.length === 1`). Step 2's handler returns silently on zero
+  // successes on the assumption those statuses are visible — so without this,
+  // a wholly-failed registration is an enabled button that appears to do
+  // nothing. Same preparation `registerSelected` does for the Keboola picker:
+  // drop any filter and open the groups being written to.
+  const sfChecked = [...document.querySelectorAll("#ds-sf-picker [data-sf-pick]:checked")];
+  if (sfChecked.length) {
+    // Resolve the root through `_pickerRoot`, not `#ds-sf-picker` directly, so
+    // this agrees with what the delegated picker handlers consider the root.
+    const sfRoot = _pickerRoot(sfChecked[0]) || document.getElementById("ds-sf-picker");
+    if (sfRoot) {
+      const search = sfRoot.querySelector("[data-picker-search]");
+      if (search && search.value) { search.value = ""; _filterPicker(sfRoot, ""); }
+      for (const cb of sfChecked) {
+        const group = cb.closest("[data-bucket-group]");
+        if (group && !group.classList.contains("is-open")) _setBucketOpen(group, true);
+      }
+      _syncPicker(sfRoot);
+    }
+  }
+  const picked = sfChecked.map((box) => ({
     row: box.closest(".ds-table-row"),
     schema: box.dataset.sfPickSchema || "",
     table: box.dataset.sfPickTable || "",

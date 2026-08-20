@@ -265,3 +265,91 @@ def test_attach_failure_does_not_leak_the_credential(monkeypatch):
     assert "PASSWORD '" not in msg, msg
     # Still has to be actionable.
     assert "snowflake" in msg.lower(), msg
+
+
+def test_attach_failure_does_not_leak_a_normalized_private_key(monkeypatch):
+    """The key-pair arm, which the password test above cannot reach.
+
+    `_create_snowflake_secret_sql` does not embed `token` — it embeds
+    `_private_key_pem_and_passphrase(token, passphrase)`, which NORMALIZES the
+    key to an unencrypted PKCS#8 PEM. Whenever the stored credential is PKCS#1,
+    an encrypted key + passphrase, a JSON wrapper with escaped newlines, or a
+    filesystem path (i.e. most real key-pair deployments), the embedded PEM is
+    not a substring of `token`, so scrubbing `token` matches nothing.
+
+    The only remaining guard was the `PRIVATE_KEY $PK$ … $PK$` regex, and that
+    needs the CLOSING delimiter — which is exactly what a truncated DuckDB
+    parser echo ("LINE 1: " + a prefix) does not have. The whole private key
+    then rode out into the 502 body, the server log, and `sync_state.error`.
+    """
+    from unittest.mock import MagicMock
+
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    from connectors.snowflake.attach import attach_snowflake, _private_key_pem_and_passphrase
+
+    monkeypatch.delenv("AGNES_REMOTE_ATTACH_HOST_ALLOWLIST", raising=False)
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    pkcs1 = key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.TraditionalOpenSSL,
+        serialization.NoEncryption(),
+    ).decode()
+    normalized, _ = _private_key_pem_and_passphrase(pkcs1)
+    assert normalized != pkcs1, "precondition: the embedded PEM differs from the stored credential"
+    material = normalized.strip().splitlines()[1]
+
+    conn = MagicMock()
+    conn.execute.side_effect = lambda sql, *a, **k: (_ for _ in ()).throw(
+        # Truncated echo: the closing $PK$ never arrives.
+        RuntimeError('Parser Error: syntax error at or near "PRIVATE_KEY_FILE"\nLINE 1: ' + sql[:900])
+    )
+
+    with pytest.raises(Exception) as exc_info:
+        attach_snowflake(
+            conn,
+            alias="sf",
+            url="https://acct-123.snowflakecomputing.com?database=PROD&warehouse=WH&user=SVC",
+            token=pkcs1,
+        )
+
+    msg = str(exc_info.value)
+    assert "-----BEGIN PRIVATE KEY-----" not in msg, msg[:400]
+    assert material not in msg, msg[:400]
+    assert "snowflake" in msg.lower(), msg
+
+
+def test_attach_failure_does_not_leak_a_password_truncated_mid_value(monkeypatch):
+    """The same open-delimiter hole on the PASSWORD arm. The substring pass
+    usually saves it there (the password IS passed verbatim), so this pins the
+    backstop itself rather than relying on that coincidence."""
+    from unittest.mock import MagicMock
+
+    from connectors.snowflake.attach import _scrub_secret_material
+
+    truncated = "CREATE OR REPLACE SECRET s (TYPE snowflake, USER 'U', PASSWORD 'Tr0ub4dor-and"
+    # Nothing passed as a known value: this is the backstop path, for a secret
+    # the scrub site does not hold.
+    out = _scrub_secret_material(truncated)
+    assert "Tr0ub4dor" not in out, out
+
+
+def test_the_snowflake_picker_prepares_its_status_lines_before_registering():
+    """Per-row "registering…/✗ failed" is the only account of what happened,
+    and with more than one schema every group renders collapsed
+    (`openByDefault = schemas.length === 1`). Step 2's handler returns silently
+    on zero successes on the assumption those statuses are visible — so a
+    wholly-failed registration reads as a dead button unless the picker is
+    prepared first. `registerSelected` already does this for the Keboola
+    picker; `_registerSfRows` did not.
+    """
+    from pathlib import Path
+
+    html = Path("app/web/templates/admin_data_sources.html").read_text()
+    fn = html[html.index("async function _registerSfRows()") :]
+    fn = fn[: fn.index("\n}\n")]
+    assert "_setBucketOpen(group, true)" in fn, "checked groups must be opened before the status writes"
+    assert "_filterPicker(" in fn, "an active filter would hide the rows being written to"
+    assert "_syncPicker(" in fn, "counts must stay honest after the programmatic open"

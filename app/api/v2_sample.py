@@ -224,6 +224,34 @@ def _fetch_remote_view_sample(table_id: str, row: dict, n: int) -> list[dict]:
         conn.close()
 
 
+def _sample_is_cacheable(*, query_mode: str, has_access_policy: bool) -> bool:
+    """Whether this row's 5-row preview may be served from ``_sample_cache``.
+
+    Two exemptions, for different reasons.
+
+    A policied row is uncacheable because the cache key is ``{table_id}|{n}``
+    with no identity in it, so one caller's slice would be handed to the next.
+    (Today a policied row fails closed on this surface before it could cache
+    anything, but the key would be wrong the moment enforcement is wired in.)
+
+    A ``remote`` row is uncacheable because ``remote`` means the read goes live
+    — that is the whole argument for evaluating the remote branch AHEAD of
+    parquet resolution, so that a row flipped materialized→remote cannot
+    preview its stale leftover parquet. Serving a copy up to
+    ``_sample_cache``'s hour old is that same staleness from a different
+    store, and it would make the branch's own comment untrue.
+
+    The cost this gives up is small and bounded: ``SELECT * FROM <view> LIMIT
+    n`` with ``n <= _MAX_N``. For Snowflake and Keboola that is a capped pull
+    through the extension. Only Databricks with the experimental, off-by-
+    default ``attach_enabled`` turns it into a parquet read, which is not
+    worth buying with a stale preview on the two engines that are supported.
+    """
+    if has_access_policy:
+        return False
+    return query_mode != "remote"
+
+
 def build_sample(
     conn: duckdb.DuckDBPyConnection,
     user: dict,
@@ -295,7 +323,10 @@ def build_sample(
     has_access_policy = bool(row.get("access_policy_sql"))
 
     cache_key = f"{table_id}|{n}"
-    cacheable = not has_access_policy
+    cacheable = _sample_is_cacheable(
+        query_mode=str(row.get("query_mode") or ""),
+        has_access_policy=has_access_policy,
+    )
     if cacheable:
         cached = _sample_cache.get(cache_key)
         if cached is not None:
@@ -349,7 +380,10 @@ def build_sample(
         # parity twin of the BQ branch above (these rows used to be refused
         # outright as not-previewable). Checked BEFORE parquet resolution on
         # purpose: a row flipped materialized→remote can leave a stale
-        # parquet on disk, and `remote` means every read goes live.
+        # parquet on disk, and `remote` means every read goes live. The same
+        # sentence is why `_sample_is_cacheable` exempts these rows from
+        # `_sample_cache` — an hour-old copy is the same staleness with a
+        # different store.
         if has_access_policy:
             # Same fail-closed ratchet as the BQ branch above (Task 13):
             # policy rewrite is not wired into this surface either, so a
