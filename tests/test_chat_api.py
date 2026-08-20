@@ -127,6 +127,32 @@ def test_list_sessions(api_client: TestClient, logged_in_user):
     assert arr[0]["surface"] == "web"
 
 
+def test_create_session_reports_the_agent_it_runs_as(api_client: TestClient, logged_in_user):
+    """``agent_id`` on the wire.
+
+    ``chat_sessions.agent_id`` has recorded this since v101 and both backends
+    round-trip it into ``ChatSession``, but no response ever carried it — which
+    is what made the composer's agent picker impossible to build: a client had
+    no way to learn who a conversation was with. Never null, because an unnamed
+    web session is attributed to the caller's default agent.
+    """
+    from src.repositories import agents_repo
+
+    r = api_client.post("/api/chat/sessions", json={"surface": "web"})
+    assert r.status_code == 201, r.text
+    assert r.json()["agent_id"] == agents_repo().get_or_create_default(TEST_USER["id"])["id"]
+
+
+def test_list_sessions_reports_the_agent_of_each(api_client: TestClient, logged_in_user):
+    """Without this the sidebar cannot restore the picker's label on reopen."""
+    created = api_client.post("/api/chat/sessions", json={"surface": "web"})
+    assert created.status_code == 201, created.text
+    r = api_client.get("/api/chat/sessions")
+    assert r.status_code == 200
+    row = next(s for s in r.json() if s["id"] == created.json()["id"])
+    assert row["agent_id"] == created.json()["agent_id"]
+
+
 def test_create_session_accepts_known_profile(api_client: TestClient, logged_in_user):
     r = api_client.post("/api/chat/sessions", json={"surface": "web", "profile": "data-package-builder"})
     assert r.status_code == 201, r.text
