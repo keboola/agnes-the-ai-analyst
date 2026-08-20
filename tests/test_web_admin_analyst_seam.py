@@ -196,6 +196,34 @@ class TestNoDeadEnds:
         assert r.status_code == 403
         assert "/catalog/p/seam-bridge" in r.text, "the 403 must name the analyst page"
 
+    def test_the_bridge_also_fires_for_a_reader_with_no_grant_at_all(self, seeded_app) -> None:
+        """The bridge lookup is NOT scoped to packages the caller can reach, so
+        this pins the real blast radius rather than the happy path.
+
+        Deliberate, on the argument in ``app/main.py``: ``/catalog/p/{slug}``
+        already 403s-with-name for any authenticated caller regardless of grant
+        (data packages are the existence-visible kind; collections 404), so the
+        bridge reveals nothing that split did not. What it adds is reachability
+        from an admin-only URL — and only to someone who already holds the raw
+        id, which is ``pkg_`` + 12 hex, not a guessable slug. Possessing the id
+        is the access control here.
+
+        Pinned because it is the assertion that makes the decision visible: if
+        the bridge is ever narrowed to granted packages, this test is what has
+        to change, deliberately, instead of the scope quietly shifting.
+        """
+        pkg_id = _make_package(seeded_app, "seam-bridge-ungranted", granted=False)
+        c = seeded_app["client"]
+        r = c.get(
+            f"/admin/data-packages/{pkg_id}",
+            headers={**_auth(seeded_app["analyst_token"]), **_HTML},
+        )
+        assert r.status_code == 403
+        assert "/catalog/p/seam-bridge-ungranted" in r.text, (
+            "the bridge stopped firing for an ungranted reader — if that was intended, "
+            "narrow it deliberately and rewrite this test"
+        )
+
 
 class TestPublisherKindAtCreate:
     """An admin publishing from the builder stands behind it as the
