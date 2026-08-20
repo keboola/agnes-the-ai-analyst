@@ -19,6 +19,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 - **The chat dashboard's suggested prompts drop their per-row "Start →" and centre under the input.** Four rows sitting under an input, each already a button, do not need a per-row verb to say so — and the four repeated CTAs pulled the eye down the right margin, away from the titles that are the only thing distinguishing one row from the next. The row stays the control (same click target, same aria-label carrying title + description); only the label and its arrow are gone, along with the now-dead arrow icon and the trailing-CTA styling. The list centres as a BLOCK rather than row by row: the rows differ in width by a few pixels, so per-row centring left the icon column visibly ragged, while sizing the list to its widest row and centring that box keeps every icon on one vertical line.
 
+### Fixed
+
+- **`GET /api/chat/sessions` answers a restricted principal with 403 instead of crashing.** `require_resource_access` hands back a frozen dataclass for a co-session or agent-session principal, so `user["email"]` raised `TypeError` and the caller got a 500 where 403 was the answer. Seven sibling routes on that router already carried `_reject_restricted_principal` for exactly this hazard; this one was missed, and listing "your" conversations has no restricted-principal meaning anyway — a co-session has no single identity whose history it would be, and an agent-session must not enumerate its owner's. Found while projecting `agent_id` onto that same response. A structural guard now walks every handler on the router, so a NEW route cannot quietly join the three that still lack it (`reissue_ticket`, `list_messages`, `archive_session` — left alone deliberately: for those a restricted principal may be legitimate, and guarding them blind would break co-drive rather than harden it).
+
 ## [0.83.92] - 2026-08-20
 
 ### Changed

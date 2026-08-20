@@ -772,3 +772,82 @@ def test_hard_delete_session_removes_participants(_chat_env):
     assert repo.get_session(s.id) is None
     assert repo.get_session_participants(s.id) == []
     assert repo.list_sessions_for_participant("mate@example.com") == []
+
+
+# ---------------------------------------------------------------------------
+# Wire-level parity for the agent_id projection
+# ---------------------------------------------------------------------------
+
+
+def test_session_responses_carry_agent_id_on_postgres(engine, monkeypatch):
+    """``agent_id`` reaches the JSON body when the active backend is Postgres.
+
+    The repo-level round-trip above proves the COLUMN survives on both engines,
+    which is a different claim from "the two responses that now project it are
+    correct on both". ``POST``/``GET /api/chat/sessions`` sit in the
+    route-coverage exclusion list for the parameter-free status sweep (they need
+    a live ChatManager), so without this the projection was exercised on DuckDB
+    only — the dual-backend rule in CONTRIBUTING.md wants the API-level
+    behaviour proven on the engine it will actually run on.
+
+    Built like ``tests/test_chat_api.py::_make_app``: real router, real
+    repository, no-op sandbox provider, and the access gate delegated to
+    ``get_current_user`` so this asserts the projection rather than re-testing
+    RBAC (covered in tests/test_chat_session_as_agent.py).
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    import duckdb
+    from fastapi import Depends, FastAPI
+    from fastapi.testclient import TestClient
+
+    from app.api.chat import require_chat_access
+    from app.api.chat import router as chat_router
+    from app.auth.dependencies import get_current_user
+    from app.chat.config import ChatConfig
+    from app.chat.manager import ChatManager
+    from app.chat.persistence import ChatRepository
+    from app.chat.workdir import WorkdirManager
+
+    user = {"id": "pguser1", "email": "pg-agent@test.com", "is_admin": False}
+
+    # A PG-backed ChatRepository: the constructor only wires its `_sessions_pg`
+    # delegate when `use_pg()` is true, which is exactly the branch under test.
+    monkeypatch.setenv("DATABASE_URL", str(engine.url))
+    repo = ChatRepository(duckdb.connect(":memory:"))
+    assert repo._sessions_pg is not None, (
+        "the repository fell back to DuckDB, so this test would prove nothing about Postgres"
+    )
+
+    provider = MagicMock()
+    provider.spawn = AsyncMock()
+    workdirs = MagicMock(spec=WorkdirManager)
+    workdirs.ensure_user_workdir = MagicMock()
+    workdirs.prepare_session_dir = MagicMock(return_value="/tmp/fake")
+
+    app = FastAPI()
+    app.include_router(chat_router)
+    app.state.chat_repo = repo
+    app.state.chat_manager = ChatManager(
+        provider=provider,
+        workdir_mgr=workdirs,
+        repo=repo,
+        config=ChatConfig(enabled=True, concurrency_per_user=3),
+    )
+
+    async def _granted(u: dict = Depends(get_current_user)) -> dict:
+        return u
+
+    app.dependency_overrides[get_current_user] = lambda: user
+    app.dependency_overrides[require_chat_access] = _granted
+    client = TestClient(app)
+
+    created = client.post("/api/chat/sessions", json={"surface": "web"})
+    assert created.status_code == 201, created.text
+    agent_id = created.json()["agent_id"]
+    assert agent_id, "POST projected a null agent_id — an unnamed web session is attributed to the default agent"
+
+    listed = client.get("/api/chat/sessions")
+    assert listed.status_code == 200, listed.text
+    row = next(s for s in listed.json() if s["id"] == created.json()["id"])
+    assert row["agent_id"] == agent_id

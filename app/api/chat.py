@@ -210,6 +210,13 @@ async def list_sessions(
     request: Request,
     user: dict = Depends(require_chat_access),
 ):
+    # Seven sibling routes on this router carry this guard; this one never did,
+    # so a restricted principal got a 500 (``user["email"]`` on a frozen
+    # dataclass) where 403 is the answer. Listing "your" conversations has no
+    # restricted-principal meaning anyway — a co-session has no single identity
+    # whose history this would be, and an agent-session must not enumerate its
+    # owner's.
+    _reject_restricted_principal(user, "list conversations")
     repo = _get_repo(request)
     rows = repo.list_sessions(user["email"])
     return [

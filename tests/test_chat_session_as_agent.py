@@ -222,6 +222,63 @@ class TestAgentSlugDeepLinkDoesNotRaceASessionDeepLink:
         assert idx_capture < idx_open_call
 
 
+class TestEveryChatRouteRefusesARestrictedPrincipal:
+    """`require_resource_access` hands back a FROZEN DATACLASS for a restricted
+    principal, so any handler that subscripts `user` returns 500 where 403 is
+    the answer. Seven routes on this router carry `_reject_restricted_principal`
+    for that reason; `GET /sessions` did not, which surfaced while adding the
+    `agent_id` projection to it.
+
+    Asserted structurally over the whole router rather than one route at a time:
+    the failure mode is a route that FORGETS the guard, and a per-route test can
+    only ever pin the routes someone remembered to write one for.
+    """
+
+    #: Routes that subscript `user` and do NOT yet carry the guard. These are
+    #: NOT blessed — each needs a co-presence decision that this change is the
+    #: wrong place to make, because for these three a restricted principal may
+    #: have a legitimate meaning and adding the guard blind would break
+    #: co-drive rather than harden it:
+    #:
+    #:   reissue_ticket  — a co-session participant plausibly needs a WS ticket
+    #:                     to attach to the conversation it is party to.
+    #:   list_messages   — likewise for reading the transcript it is party to.
+    #:   archive_session — a mutation, so probably SHOULD be guarded, but it is
+    #:                     the owner's shelf and the answer depends on the same
+    #:                     co-presence model as the two above.
+    #:
+    #: The set is a RATCHET BASELINE, not an allow-list to grow: it exists so a
+    #: NEW route cannot quietly join them. Shrink it, never extend it.
+    UNRESOLVED = frozenset({"reissue_ticket", "list_messages", "archive_session"})
+
+    def test_no_new_handler_subscripts_user_without_the_guard(self):
+        import inspect
+
+        from app.api import chat as chat_api
+
+        src = inspect.getsource(chat_api)
+        # Split on handler definitions so each body can be inspected alone.
+        bodies = src.split("\n@router.")[1:]
+        missing = set()
+        for body in bodies:
+            if "async def " not in body:
+                continue
+            name = body.split("async def ", 1)[-1].split("(", 1)[0]
+            if 'user["' in body and "_reject_restricted_principal(user" not in body:
+                missing.add(name)
+        new_gaps = missing - self.UNRESOLVED
+        assert not new_gaps, (
+            "these chat handlers subscript `user` without refusing a restricted "
+            f"principal first, so they 500 instead of 403: {sorted(new_gaps)}"
+        )
+        # And the baseline must shrink, not rot: a name that no longer has the
+        # gap has to leave the set, or the set stops describing anything.
+        assert self.UNRESOLVED <= missing, (
+            "UNRESOLVED names a handler that now carries the guard — remove it: "
+            f"{sorted(self.UNRESOLVED - missing)}"
+        )
+
+
 class TestTheSessionSaysWhichAgentItRunsAs:
     """``agent_id`` on the wire.
 
