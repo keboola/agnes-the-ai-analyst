@@ -18,11 +18,13 @@ Map changed paths → in-scope reviewers:
 | Reviewer | Fires when a changed path matches |
 |---|---|
 | `agnes-reviewer-rules` | always |
+| `agnes-reviewer-adversarial` | always |
 | `agnes-reviewer-architecture` | `src/orchestrator.py`, `src/db.py`, `connectors/*/extractor.py`, `connectors/*/extract_init.py`, new `connectors/**` |
 | `agnes-reviewer-rbac` | `app/api/`, `app/auth/`, `app/resource_types.py` |
 | `agnes-reviewer-parity` | `src/repositories/`, `src/db.py`, `migrations/`, `tests/db_pg/` |
 
-`agnes-reviewer-rules` always runs; add the others only if their paths matched.
+`agnes-reviewer-rules` and `agnes-reviewer-adversarial` always run; add the
+others only if their paths matched.
 
 ## 2. Run the team
 
