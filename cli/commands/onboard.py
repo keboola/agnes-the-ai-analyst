@@ -54,7 +54,7 @@ from typing import Callable, Optional
 
 import typer
 
-from cli.config import load_config
+from cli.config import resolve_server_url
 from cli.v2_client import V2ClientError, api_get_json
 
 onboard_app = typer.Typer(
@@ -229,17 +229,11 @@ def _resolve_server_url(explicit: Optional[str]) -> Optional[str]:
     Deliberately does NOT reuse `cli.config.get_server_url`, which falls back
     to ``http://localhost:8000``: onboarding against an invented default would
     fail deep inside `agnes init` with a connection error instead of here with
-    "pass --server-url".
+    "pass --server-url". `agnes auth login` needs the same answer, so the logic
+    now lives in `cli.config.resolve_server_url` and this stays as the local
+    name onboarding's callers already use.
     """
-    if explicit:
-        return explicit.rstrip("/")
-    env = os.environ.get("AGNES_SERVER")
-    if env:
-        return env.rstrip("/")
-    saved = (load_config() or {}).get("server")
-    if saved:
-        return str(saved).rstrip("/")
-    return None
+    return resolve_server_url(explicit)
 
 
 def _quiet_stdout(quiet: bool):
