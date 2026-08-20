@@ -340,6 +340,14 @@
   .ds-table-row:hover { background: var(--border-light, var(--ds-surface-dim)); }
   .ds-table-row label { flex: 1; cursor: pointer; display: flex; align-items: center; gap: 8px; min-width: 0; }
   .ds-table-name { color: var(--text-primary, var(--ds-text-primary)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ds-table-name-input {
+    flex: 1; min-width: 0; font: inherit; font-size: 12px; padding: 2px 6px;
+    border: 1px solid var(--ds-accent-warn-line); border-radius: 6px;
+    background: var(--surface, var(--ds-surface)); color: var(--text-primary, var(--ds-text-primary));
+  }
+  .ds-table-name-input:focus-visible {
+    outline: var(--ds-focus-outline); outline-offset: var(--ds-focus-outline-offset);
+  }
   .ds-table-rows { color: var(--text-secondary, var(--ds-text-secondary)); flex-shrink: 0; font-variant-numeric: tabular-nums; }
   .ds-table-mode {
     flex: 0 0 auto; display: none; font: inherit; font-size: 11px; padding: 2px 6px;
@@ -1278,6 +1286,31 @@ function _esc(s) {
   return (s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
+// Mirrors register_table's identifier derivation in app/api/admin.py BYTE FOR
+// BYTE: `request.name.strip().lower().replace(" ", "_")` validated against
+// `re.fullmatch(r"[a-z_][a-z0-9_]*", table_id)`. Kept in lockstep so the
+// bulk Keboola picker never treats a name as safe that the server then 422s
+// on (or the reverse). Do not drift from the server regex without updating
+// both.
+function _wouldPassRegisterCheck(rawName) {
+  const id = (rawName || "").trim().toLowerCase().replace(/ /g, "_");
+  return /^[a-z_][a-z0-9_]*$/.test(id);
+}
+
+// A suggested identifier for a raw Keboola name the check above rejects —
+// pre-filled into an editable input, never submitted silently (the "no
+// silent rewrite" policy also documented above the BigQuery register-table
+// check in admin.py). Broader than the server's own normalization: every RUN
+// of characters outside [a-z0-9] collapses to a single underscore, not just
+// spaces, so a Shopify-style `inventory-items` suggests `inventory_items`
+// instead of leaving the admin to find the hyphen by trial and error.
+function _suggestTableName(rawName) {
+  return (rawName || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
 // Server-rendered by the shared icon macro, read once and interpolated into
 // the JS-built cards. Trusted markup by construction — it never touches user
 // input — and it keeps this page from growing a private copy of two glyphs.
@@ -1577,7 +1610,10 @@ function _connectionCardHtml(row) {
     <div class="ds-src__fact">
       <span class="ds-src__fact-k">Managed in</span>
       <span class="ds-src__fact-v">${_esc(row.settings_label || "Instance settings")}</span>
-      <span class="ds-src__fact-a"><a class="btn btn-secondary" href="${_esc(row.settings_href || "/admin")}">Open</a></span>
+      <span class="ds-src__fact-a">
+        ${row.source_type === "keboola" && row.stack_url ? `<button type="button" class="btn btn-primary" onclick="importKeboolaConnection('${id}')">Import as managed connection</button>` : ""}
+        <a class="btn btn-secondary" href="${_esc(row.settings_href || "/admin")}">Open</a>
+      </span>
     </div>
     <div class="ds-src__fact">
       <span class="ds-src__fact-k">Tables</span>
@@ -1651,6 +1687,50 @@ async function loadConnections() {
     renderConnList();
   } catch (e) {
     list.innerHTML = `<div class="ds-empty">Failed to load data sources.</div>`;
+  }
+}
+
+// The derived Keboola card's one-click fix for the old two-hop detour: card
+// -> "Open" -> server-config -> back to "+ Add source" before an admin could
+// actually browse and register tables. This imports the SAME instance-level
+// credential (stack_url + token_env, read server-side in
+// `_keboola_instance_config()`) into a real `source_connections` row, so the
+// card immediately gets the full inline browse+register experience instead
+// of pointing away from it. Additive only — `data_source.keboola` in
+// server-config is left untouched, so tables already registered against the
+// legacy instance-level connection keep resolving exactly as before.
+async function importKeboolaConnection(id) {
+  const row = _connections.find((c) => c.id === id);
+  if (!row || !row.stack_url) {
+    showToast("No Keboola connection URL configured — set one in Server config first.", false);
+    return;
+  }
+  try {
+    const r = await fetch(API_CONNECTIONS, {
+      method: "POST", credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "Keboola",
+        source_type: "keboola",
+        config: { stack_url: row.stack_url },
+        token_env: row.token_env || undefined,
+      }),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (r.ok) {
+      showToast("Keboola imported as a managed connection.", true);
+      // `DERIVED_SOURCES` is the page-load constant `loadConnections()`
+      // re-spreads on every refresh; drop the now-superseded entry from it
+      // so the reload below doesn't render the derived card ALONGSIDE the
+      // real one it just replaced.
+      const idx = DERIVED_SOURCES.findIndex((d) => d.source_type === "keboola");
+      if (idx !== -1) DERIVED_SOURCES.splice(idx, 1);
+      await loadConnections();
+    } else {
+      showToast("Import failed: " + (data.detail || `HTTP ${r.status}`), false);
+    }
+  } catch (e) {
+    showToast("Request failed.", false);
   }
 }
 
@@ -2118,13 +2198,24 @@ function _renderBucketPicker(connId, buckets) {
       const bare = (t.id && b.id && t.id.startsWith(b.id + "."))
         ? t.id.slice(b.id.length + 1)
         : (t.name || t.id || "");
+      // A raw Keboola name with hyphens (Shopify exports especially) fails
+      // register-table's identifier check outright, and the bulk picker gave
+      // the operator no way to retype it — a dead end on every row in the
+      // same batch. Rows that would fail get an editable, pre-suggested
+      // input instead of a plain label; rows that already pass are untouched.
+      const needsRename = !_wouldPassRegisterCheck(t.name);
+      const nameField = needsRename
+        ? `<input type="text" class="ds-table-name-input" value="${_esc(_suggestTableName(t.name))}"
+             aria-label="Registered name for ${_esc(t.name)}"
+             title="&quot;${_esc(t.name)}&quot; isn't a valid table name — letters, digits, and underscores only. Edit this suggestion before registering.">`
+        : `<span class="ds-table-name">${_esc(t.name)}</span>`;
       return `
       <div class="ds-table-row" data-search="${_esc((t.name || "").toLowerCase())}">
         <label>
           <input type="checkbox" class="ds-table-checkbox" data-conn="${connId}"
                  data-bucket="${_esc(b.id)}" data-table-id="${_esc(t.id)}" data-table-name="${_esc(t.name)}"
                  data-table-bare="${_esc(bare)}">
-          <span class="ds-table-name">${_esc(t.name)}</span>
+          ${nameField}
         </label>
         <span class="ds-table-rows">${(t.rows ?? 0).toLocaleString()} rows</span>
         <select class="ds-table-mode" data-kb-mode aria-label="How ${_esc(t.name)} is served"
@@ -2394,6 +2485,12 @@ async function registerSelected(connId, errElId) {
     const statusId = rowEl.querySelector(".ds-table-status").id;
     const statusEl = document.getElementById(statusId);
     const modeSel = rowEl.querySelector("[data-kb-mode]");
+    // A row whose raw Keboola name failed `_wouldPassRegisterCheck` renders an
+    // editable input instead of a plain label (see `_renderBucketPicker`) —
+    // its current value is the name actually being registered. Untouched rows
+    // have no such input, so they keep sending the raw Keboola name.
+    const nameInput = rowEl.querySelector(".ds-table-name-input");
+    const effectiveName = nameInput ? (nameInput.value.trim() || cb.dataset.tableName) : cb.dataset.tableName;
     statusEl.textContent = "registering…";
     statusEl.className = "ds-table-status";
     try {
@@ -2401,11 +2498,12 @@ async function registerSelected(connId, errElId) {
         method: "POST", credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          name: cb.dataset.tableName,
+          name: effectiveName,
           source_type: "keboola",
           bucket: cb.dataset.bucket,
           // BARE in-bucket name — the full `bucket.table` id here doubled
-          // the bucket when the sync path re-composed the export id.
+          // the bucket when the sync path re-composed the export id. Always
+          // the REAL Keboola table, regardless of a renamed registry `name`.
           source_table: cb.dataset.tableBare || cb.dataset.tableName,
           query_mode: modeSel ? modeSel.value : "materialized",
           connection_id: connId,
@@ -2417,10 +2515,11 @@ async function registerSelected(connId, errElId) {
         statusEl.className = "ds-table-status ok";
         cb.disabled = true;
         if (modeSel) modeSel.disabled = true;
+        if (nameInput) nameInput.disabled = true;
         okCount++;
         registered.push({
-          id: (cb.dataset.tableName || "").trim().toLowerCase().replace(/ /g, "_"),
-          name: cb.dataset.tableName,
+          id: effectiveName.trim().toLowerCase().replace(/ /g, "_"),
+          name: effectiveName,
           bucket: cb.dataset.bucket || "",
         });
       } else if (r.status === 409) {
@@ -2431,8 +2530,8 @@ async function registerSelected(connId, errElId) {
         // toast read "0 table(s) registered." after a wholly successful step.
         alreadyCount++;
         registered.push({
-          id: (cb.dataset.tableName || "").trim().toLowerCase().replace(/ /g, "_"),
-          name: cb.dataset.tableName,
+          id: effectiveName.trim().toLowerCase().replace(/ /g, "_"),
+          name: effectiveName,
           bucket: cb.dataset.bucket || "",
         });
       } else {

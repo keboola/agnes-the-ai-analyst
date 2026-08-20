@@ -7133,7 +7133,14 @@ def _source_inventory() -> dict:
             continue
         did = f"derived:{stype}"
         by_conn[did] = own_tables
-        derived.append({"id": did, "source_type": stype, "derived": True, **meta})
+        row = {"id": did, "source_type": stype, "derived": True, **meta}
+        if stype == "keboola":
+            # The "Import as managed connection" button on this card needs
+            # these two values to POST straight to
+            # `/api/admin/source-connections` without a second round trip —
+            # see `_keboola_instance_config()`.
+            row["stack_url"], row["token_env"] = _keboola_instance_config()
+        derived.append(row)
 
     try:
         states = {s["table_id"]: s for s in sync_state_repo().get_all_states()}
@@ -7373,6 +7380,24 @@ def _db_cap(key: str, default: int) -> int:
         return default
 
 
+def _keboola_instance_config() -> tuple[str, str]:
+    """The instance-level Keboola `stack_url` + `token_env`, however they got
+    there (`instance.yaml` or `/admin/server-config`).
+
+    Shared by `_keboola_credentialed()` (which only needs the boolean half)
+    and the derived Keboola card's "Import as managed connection" button
+    (`_source_inventory()`), which needs the actual values to POST to
+    `POST /api/admin/source-connections` without a second round trip.
+    """
+    from app.instance_config import get_value
+
+    stack_url = (get_value("data_source", "keboola", "stack_url", default="") or "").strip()
+    token_env = (
+        get_value("data_source", "keboola", "token_env", default="KEBOOLA_STORAGE_TOKEN") or "KEBOOLA_STORAGE_TOKEN"
+    ).strip()
+    return stack_url, token_env
+
+
 def _keboola_credentialed() -> bool:
     """Whether this instance has an instance-level Keboola stack URL + token
     — the pre-flight half of the same check
@@ -7388,15 +7413,10 @@ def _keboola_credentialed() -> bool:
     `app/connections_seed.py` seeding one on first boot only when both are
     already present.
     """
-    from app.instance_config import get_value
-
-    stack_url = (get_value("data_source", "keboola", "stack_url", default="") or "").strip()
+    stack_url, token_env = _keboola_instance_config()
     if not stack_url:
         return False
 
-    token_env = (
-        get_value("data_source", "keboola", "token_env", default="KEBOOLA_STORAGE_TOKEN") or "KEBOOLA_STORAGE_TOKEN"
-    ).strip()
     if os.environ.get(token_env, "").strip():
         return True
     if os.environ.get("KEBOOLA_STORAGE_TOKEN", "").strip():

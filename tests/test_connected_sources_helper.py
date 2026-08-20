@@ -260,3 +260,51 @@ class TestKeboolaDerivedCard:
         # The real connection's own pipeline entry must still be present —
         # it must not be silently swallowed by the derived-card logic.
         assert "conn1" in inventory["pipelines"]
+
+    def test_derived_card_carries_stack_url_and_token_env_for_import(self, seeded_app, monkeypatch):
+        """The derived card's "Import as managed connection" button needs the
+        instance-level `stack_url` + `token_env` to POST straight to
+        `/api/admin/source-connections` without a second round trip — see
+        `_keboola_instance_config()`."""
+        import app.web.router as router_module
+
+        _patch_registry(monkeypatch, rows=[])
+        monkeypatch.setattr(router_module, "_keboola_credentialed", lambda: True)
+        monkeypatch.setattr(
+            router_module,
+            "_keboola_instance_config",
+            lambda: ("https://connection.keboola.com", "KEBOOLA_STORAGE_TOKEN"),
+        )
+        _patch_credential_probes(monkeypatch, router_module)
+
+        inventory = router_module._source_inventory()
+        card = next(d for d in inventory["derived"] if d["source_type"] == "keboola")
+        assert card["stack_url"] == "https://connection.keboola.com"
+        assert card["token_env"] == "KEBOOLA_STORAGE_TOKEN"
+
+    def test_other_derived_cards_carry_no_keboola_import_fields(self, seeded_app, monkeypatch):
+        """`stack_url`/`token_env` are Keboola-only additions to the derived
+        row — the other derived connectors (bigquery, jira, local, …) are out
+        of scope for the import affordance and must not grow these keys."""
+        import uuid
+
+        from src.repositories import table_registry_repo
+
+        tid = f"bqnoimport-{uuid.uuid4().hex[:6]}"
+        table_registry_repo().register(
+            id=tid,
+            name=f"bq_noimport_{tid[-6:]}",
+            source_type="bigquery",
+            bucket="analytics",
+            source_table="noimport",
+            query_mode="remote",
+        )
+        try:
+            import app.web.router as router_module
+
+            inventory = router_module._source_inventory()
+            card = next(d for d in inventory["derived"] if d["source_type"] == "bigquery")
+            assert "stack_url" not in card
+            assert "token_env" not in card
+        finally:
+            table_registry_repo().unregister(tid)

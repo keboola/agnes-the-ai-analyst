@@ -10,6 +10,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- **The derived Keboola card on `/admin/data-sources` was a navigation dead end.** An instance whose Keboola connection was configured the old way (`data_source.keboola.*` + a token, no `source_connections` row) rendered a card whose only action opened server-config — which has no route back into table browsing or registration. The card now offers "Import as managed connection", a one-click POST of the existing `stack_url` + `token_env` to the connection registry; the card immediately flips to a real, fully-interactive connection with the inline browse-and-register panel, and existing tables registered against the legacy instance-level connection keep resolving exactly as before.
+- **Bulk Keboola table registration 422ed on hyphenated names with no way to fix them.** Names like `inventory-items` (common in Shopify exports) fail the registry's identifier check — correct, intentional, unchanged — but the bulk table picker gave the operator no way to retype a name before submitting, so a whole batch failed with nothing to click. Rows whose raw name would fail now render an editable input pre-filled with a suggested valid identifier (`inventory-items` → `inventory_items`); the suggestion is shown, not silently applied, and the register call sends whatever the operator leaves in the field.
+
 ## [0.84.5] - 2026-08-20
 
 ### Fixed
