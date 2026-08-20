@@ -193,6 +193,13 @@ async def create_session(
         "id": s.id,
         "surface": s.surface.value,
         "title": s.title,
+        # Which agent this session runs AS. Always set (an unnamed web session
+        # is attributed to the caller's default agent, see _resolve_agent_id),
+        # so a client tells "named agent" from "default" by comparing against
+        # the `is_default` row in GET /api/agents rather than by null-checking.
+        # The composer's agent picker needs this to label a session it did not
+        # itself create.
+        "agent_id": s.agent_id,
         "ws_ticket": ticket,
         "ws_url": f"/api/chat/sessions/{s.id}/stream?ticket={ticket}",
     }
@@ -203,6 +210,13 @@ async def list_sessions(
     request: Request,
     user: dict = Depends(require_chat_access),
 ):
+    # Seven sibling routes on this router carry this guard; this one never did,
+    # so a restricted principal got a 500 (``user["email"]`` on a frozen
+    # dataclass) where 403 is the answer. Listing "your" conversations has no
+    # restricted-principal meaning anyway — a co-session has no single identity
+    # whose history this would be, and an agent-session must not enumerate its
+    # owner's.
+    _reject_restricted_principal(user, "list conversations")
     repo = _get_repo(request)
     rows = repo.list_sessions(user["email"])
     return [
@@ -214,6 +228,10 @@ async def list_sessions(
             "last_message_at": s.last_message_at.isoformat() if s.last_message_at else None,
             "message_count": s.message_count,
             "paused": s.sandbox_paused_at is not None,
+            # See create_session: lets the composer's agent picker show WHO a
+            # reopened conversation is with. Column has existed since v101;
+            # it was simply never projected onto the wire.
+            "agent_id": s.agent_id,
             # Pin state for the history panel's Pinned group. `pinned_at` is
             # also exposed so a client can order pins itself; the repo already
             # returns pinned-first, so the flag alone is enough for the rail.
