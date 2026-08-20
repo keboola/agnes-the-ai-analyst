@@ -10,7 +10,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
-## [0.84.1] - 2026-08-20
+## [0.84.2] - 2026-08-20
 
 ### Changed
 
@@ -44,6 +44,22 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Internal
 
 - **The Catalog/Marketplace fold's stale-guard debt paid down.** Deleted the two orphaned browse-shell templates (`catalog_unified.html`, `marketplace.html`) and the test files that asserted their markup (`test_web_catalog_unified.py`, `test_web_catalog_reshape.py`, `test_web_stack_card_v56_metadata.py`), removed the dead `_catalog_card_data`/`_catalog_card_memory` adapters (their upload sibling survives — the Artefacts band renders through it), repointed the toolbar/tour guards from the retired `#lib-stack-toggle` to the Scope segment, retired the per-page assertions that read the folded shells (`most_popular` placeholder, marketplace browse CTA/facet, classic memory-grid add-state — each with a pointer to where the surviving behavior is guarded), gave `/marketplace/guide/curated` a reciprocal inbound link from the flea guide (its only door was the deleted browse page), and rewrote `scripts/e2e/smoke_catalog.sh` to smoke the page the redirect actually lands on.
+
+## [0.84.1] - 2026-08-20
+
+### Fixed
+
+- **`/admin/database` backend-migration buttons now confirm before starting a cutover**, instead of firing immediately on click — a real, effectively irreversible backend switch triggered by one stray click. The cloud-Postgres connection-string prompt now also masks its input (`type="password"`) instead of showing the embedded DB password in plaintext, `promptModal` gained an `inputType` option for this. The reserved `duckdb_quack` target no longer shows its raw enum value as the button label — it gets a friendly "coming soon" label and is disabled until the backend supports it. Separately, the "Allowed transitions" reference card no longer sits visibly narrower than the rest of the page on large desktops — it had a stray `max-width: 760px` no sibling card carries.
+- **`/admin/server-config` no longer overflows horizontally below ~1200px, and its section sidenav no longer collapses on mobile.** The page's two-column layout (`216px 1fr`) used a bare `1fr` grid track, which never shrinks below its content's min-content width — every viewport narrower than that stayed locked at the desktop width and scrolled sideways instead of reflowing. Fixed with `minmax(0, 1fr)` — the same override `.admin-split` has carried since #1326 plus a mobile breakpoint that stacks the sidenav above the cards. Separately, `.admin-nav`'s own intended mobile hide (`display: none` below 820px) was dead code — an unconditional `display: flex` declared later in the same stylesheet always won over the media query it was meant to override; the media query now runs after it.
+- **Five real config sections (`access_policies`, `chat`, `features`, `mcp`, `studio`) were missing from the page's sidenav/title registry.** They rendered with raw snake_case titles in an unlabelled tail group physically below "Danger zone" — so the danger section was never actually last on the page. All five now have proper titles and sit in their matching existing group (General/Integrations/Services).
+- **Casing consistency across the admin surface.** `Corporate Memory` → `Corporate memory` (`admin_server_config.html`, the command palette, and its regression test) to match the sentence-case convention used everywhere else; same fix for `Curated Marketplaces`, `Moderation & Trust`, and `Flea Submissions` in the command palette (`_app_scripts.html`), which had drifted from the admin sidebar's own labels for the same pages.
+- **The section sidenav's own dropdowns (theme, distribution mode, etc.) now use the app's branded `.ds-dropdown` component** instead of an unstyled native `<select>`. `ds_dropdown.js` only self-initializes at `DOMContentLoaded`, before this page's fields exist (built from an async fetch) — it now also exports `window.dsDropdownInit` for exactly this case.
+- **"Test BigQuery/Keboola connection" results now show in the same banner "Save" already used**, instead of a raw colored `<span>` wrapped into the button row.
+- **The `.ds-dropdown` component stopped leaking a pair of `document` listeners per dropdown per save.** `init()` attached its Esc and outside-click handlers on `document`, once per host, with no teardown — and `/admin/server-config` rebuilds every section's markup on every save and re-runs the `dsDropdownInit` sweep over it. With a dropdown for each bool and enum leaf across 21 sections that is ~80 new permanent `document` listeners per save, each executing on every subsequent click and pinning the detached DOM it closed over. They no-op behaviourally, so this was degradation and retention rather than incorrectness. Esc and outside-click now live once at module scope and resolve the open menu at event time; `init` registers the host's own closer in a `WeakMap`, so re-initing a rebuilt host is idempotent for the global handlers and the old host becomes collectable.
+
+- **The config page's dropdowns had no accessible name on the default theme.** Each field's `<label for>` points at the native `<select>`, which the `paper` skin sets to `display:none`, so the visible `.ds-dropdown-btn` announced a bare "true" with no indication which setting it belonged to — the exact failure the `dropdown` macro's `aria_label` parameter exists to prevent. `dsDropdownMarkup` now emits the same visually-hidden name span and `aria-labelledby` pair the macro does, and the page ships the per-page markup test every other `.ds-dropdown` conversion in this repo already had.
+
+- **The section sidenav now tracks scroll position** (highlights the section currently in view, not just the last-clicked one) and no longer shows a transient rendering gap above its first row during a fast scroll — `position: sticky` and the list's own internal scroll were combined on one element, which can push the sticky recalculation off the compositor thread on a fast gesture; they're now on two separate elements, matching the pattern the admin-nav column (which never had this issue) already uses.
 
 ## [0.84.0] - 2026-08-20
 
