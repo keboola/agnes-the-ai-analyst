@@ -310,6 +310,14 @@ class RemoteQueryEngine:
 
         _validate_bq_sql(bq_sql)
 
+        # The guard above tolerates one trailing semicolon; strip it here so
+        # neither the COUNT(*) pre-check subquery wrap below nor the data
+        # fetch sees an embedded ";" (legal at top level, a parse error once
+        # wrapped).
+        bq_sql = bq_sql.rstrip()
+        if bq_sql.endswith(";"):
+            bq_sql = bq_sql[:-1]
+
         client = self._get_bq_client()
 
         # Tag the BQ jobs for per-user/workload cost attribution.

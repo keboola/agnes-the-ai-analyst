@@ -557,6 +557,13 @@ def execute_internal_query(
       naturally per request. The SQL stays in SELECT space; existing
       keyword-denylist + sanitised-username defenses still apply.
     """
+    # The SELECT-only guard upstream (_assert_select_only) tolerates one
+    # trailing semicolon, but it would terminate the CTE-wrapped subquery
+    # below early; strip the same single trailing semicolon here.
+    sql = sql.rstrip()
+    if sql.endswith(";"):
+        sql = sql[:-1]
+
     refs = find_internal_refs(sql)
     if not refs:
         raise InternalAccessError("no internal-table references in SQL")
