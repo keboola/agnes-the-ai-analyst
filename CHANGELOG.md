@@ -10,7 +10,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
-## [0.83.96] - 2026-08-20
+## [0.83.97] - 2026-08-20
 
 ### Fixed
 
@@ -25,6 +25,21 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **BREAKING (admin API): registering or editing a table whose physical source is already covered by an access policy now returns 422**, even when the new row is `server_only=true` or `query_mode='remote'`, and attaching a policy is refused while any unpolicied row over the same source exists. Previously only distributable twins were refused. Instances that already have such a pair keep serving reads unchanged, but the next policy write or twin registration will fail until the twin is given its own policy, pointed at a different source, or unregistered — the rejection message says which row is in the way.
 
 - **The physical-source rejection now names an escape that exists.** Two *policied* rows over one source are legal, and clearing either one's policy is refused — correctly, since it produces exactly the unpolicied-twin shape the interlock exists to forbid — but the message told the admin to "attach a policy to this row too", the one thing they were in the middle of undoing, and named neither route that works. It now says to repoint the row first (its policy travels with it, so the clear then succeeds) or unregister one of the pair; the `discover-and-register` dry-run's rejection no longer suggests registering the twin `server_only=true`, which the same interlock refuses; and `docs/table-access-policies.md` no longer describes the check as distributability-keyed and now carries entries for the three engine-path refusals.
+
+## [0.83.96] - 2026-08-20
+
+
+### Added
+
+- **The chat composer picks which agent you're talking to, and the agent opens by introducing itself.** Agents could be built and even run — `POST /api/chat/sessions` has taken an `agent_slug` and `chat_sessions.agent_id` has recorded the answer since v101 — but the only door in was the Chat button on an agent card, and once inside, nothing said who you were talking to. A picker now trails the strip under the composer, landing under the send button with the Stack context line leading it, so the row reads as one sentence about the conversation: what it runs *with*, then who it runs *as*. It lists the agents you own and marks the current one. In a live conversation the control is replaced by a plain label rather than disabled in place — there is nothing left to choose, and a greyed-out button both announces itself as a button to assistive tech and keeps inviting the click it must refuse. An agent is bound at session **creation** (its scope, memory notebook, pinned model and token budget are fixed for the session's life), so it never pretends to re-target a live thread: choosing an agent starts a new session as that agent, and once a conversation has turns the label's title names the way out ("start a new chat to switch agent"). The disabled rule keys on *turns*, not on a session row existing — a row exists the moment you click "+ New chat", and keying on that would have dead-ended the picker permanently; switching away from an empty session just spawns another, and the orphan is soft-archived by the GC that already cleans up repeated "+ New chat" clicks. An empty agent session opens with the `greeting` its owner wrote in the builder (v110) — authored text that until now only ever appeared in the builder's own preview bubble — rendered client-side rather than generated, because a model-produced hello would force a sandbox spawn and burn a turn before the reader has typed anything. Two responses grew a field to make this possible: `POST /api/chat/sessions` and `GET /api/chat/sessions` now carry `agent_id` (never null — an unnamed web session is attributed to your default agent), which is what lets a reopened conversation say who it is with. The picker offers only agents you **own**, since a slug resolves against your own rows and a merely-shared agent would 404 on click.
+
+### Changed
+
+- **The chat dashboard's suggested prompts drop their per-row "Start →" and centre under the input.** Four rows sitting under an input, each already a button, do not need a per-row verb to say so — and the four repeated CTAs pulled the eye down the right margin, away from the titles that are the only thing distinguishing one row from the next. The row stays the control (same click target, same aria-label carrying title + description); only the label and its arrow are gone, along with the now-dead arrow icon and the trailing-CTA styling. The list centres as a BLOCK rather than row by row: the rows differ in width by a few pixels, so per-row centring left the icon column visibly ragged, while sizing the list to its widest row and centring that box keeps every icon on one vertical line.
+
+### Fixed
+
+- **`GET /api/chat/sessions` answers a restricted principal with 403 instead of crashing.** `require_resource_access` hands back a frozen dataclass for a co-session or agent-session principal, so `user["email"]` raised `TypeError` and the caller got a 500 where 403 was the answer. Seven sibling routes on that router already carried `_reject_restricted_principal` for exactly this hazard; this one was missed, and listing "your" conversations has no restricted-principal meaning anyway — a co-session has no single identity whose history it would be, and an agent-session must not enumerate its owner's. Found while projecting `agent_id` onto that same response. A structural guard now walks every handler on the router, so a NEW route cannot quietly join the three that still lack it (`reissue_ticket`, `list_messages`, `archive_session` — left alone deliberately: for those a restricted principal may be legitimate, and guarding them blind would break co-drive rather than harden it).
 
 ## [0.83.95] - 2026-08-20
 
