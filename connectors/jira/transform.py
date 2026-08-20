@@ -375,12 +375,192 @@ def apply_schema(df: pd.DataFrame, schema: dict) -> pa.Table:
     return pa.Table.from_pandas(df, schema=pa_schema, preserve_index=False)
 
 
+#: ADF smart-link nodes. All three carry their target in ``attrs`` and have NO
+#: text child at all, so a text-node-only walk emitted nothing for them and a
+#: comment whose whole body is one smart link stored as ``''``.
+_ADF_CARD_TYPES = frozenset({"inlineCard", "blockCard", "embedCard"})
+
+
+def _nonempty_str(value: object) -> str | None:
+    """``value`` stripped, or ``None`` if it is not a non-blank string.
+
+    One definition of "a usable URL string", because every ADF attribute this
+    module reads comes from third-party JSON and may be absent, null or mistyped.
+    """
+    return stripped if isinstance(value, str) and (stripped := value.strip()) else None
+
+
+#: Query/fragment parameter names whose VALUE is a credential. Two tiers because
+#: the vocabulary is not standardised: a substring match catches every vendor
+#: spelling built around a known word (``access_token``, ``refresh_token``,
+#: ``mfaManagementToken``, ``X-Amz-Signature``), while short or ambiguous names
+#: have to be matched whole or they would fire on innocent params — ``sig``
+#: as a substring would redact ``design``, ``auth`` would redact ``author``.
+_SECRET_PARAM_SUBSTRINGS = ("token", "jwt", "secret", "password", "passwd", "signature", "credential", "apikey")
+_SECRET_PARAM_NAMES = frozenset({"tok", "sig", "key", "pin", "auth", "code", "sdata"})
+
+#: Deliberately a word, not an ellipsis: it survives a CSV round-trip, greps
+#: cleanly, and reads as a decision rather than as truncated data.
+_REDACTED_VALUE = "REDACTED"
+
+#: Splits on ``&``/``;`` while KEEPING the separators, so a redacted URL differs
+#: from the original only in the values removed. One character class, no
+#: alternation to backtrack over — linear on adversarial input (security
+#: playbook rule 5).
+_PARAM_SPLIT_RE = re.compile(r"([&;])")
+
+
+#: Separators vendors sprinkle through parameter names. Stripping them before the
+#: substring match is what makes one entry cover `api_key`, `api-key` and
+#: `apiKey`. Only the substring tier is normalised: the exact tier must keep
+#: seeing `api_key` as a different name from `key`.
+_PARAM_NAME_SEPARATORS = str.maketrans("", "", "_-.")
+
+
+def _is_secret_param(name: str) -> bool:
+    lowered = name.lower()
+    if lowered in _SECRET_PARAM_NAMES:
+        return True
+    squashed = lowered.translate(_PARAM_NAME_SEPARATORS)
+    return any(word in squashed for word in _SECRET_PARAM_SUBSTRINGS)
+
+
+def _redact_param_values(blob: str) -> str:
+    """``blob`` (a query string or fragment) with credential values removed."""
+    pieces = _PARAM_SPLIT_RE.split(blob)
+    for index in range(0, len(pieces), 2):  # odd indices are the separators
+        name, equals, _value = pieces[index].partition("=")
+        if equals and _is_secret_param(name):
+            pieces[index] = f"{name}={_REDACTED_VALUE}"
+    return "".join(pieces)
+
+
+def _redact_url_secrets(url: str) -> str:
+    """``url`` with any credential-bearing parameter value replaced.
+
+    Inlining a href verbatim is the whole point of this renderer, but Jira hands
+    out URLs that carry bearer credentials in the query string — a Service Desk
+    ``unsubscribe?jwt=…`` link is a signed token authorising an action, and these
+    columns are distributed to analyst laptops as parquet and read by agents. So
+    the URL is kept whole and identifiable and only the *values* go. Everything
+    else — path, scheme, ordering, separators, non-secret params — is verbatim.
+
+    The fragment is covered too, because OAuth's implicit flow puts the token
+    there rather than in the query.
+    """
+    head, hash_sep, fragment = url.partition("#")
+    base, query_sep, query = head.partition("?")
+
+    out = base
+    if query_sep:
+        out += query_sep + _redact_param_values(query)
+    if hash_sep:
+        out += hash_sep + _redact_param_values(fragment)
+    return out
+
+
+def _adf_card_url(node: dict) -> str | None:
+    """Target of a smart-link node, or ``None`` if it carries none.
+
+    A blockCard resolved by the Smart Links service can arrive with an embedded
+    JSON-LD object instead of a flat ``url`` — same target, different spelling.
+    """
+    attrs = node.get("attrs")
+    if not isinstance(attrs, dict):
+        return None
+    data = attrs.get("data")
+    if not isinstance(data, dict):
+        data = {}
+    for candidate in (attrs.get("url"), data.get("url"), data.get("@id")):
+        if url := _nonempty_str(candidate):
+            return _redact_url_secrets(url)
+    return None
+
+
+def _adf_link_href(node: dict) -> str | None:
+    """Href of the ``link`` mark on a text node, or ``None`` if it has none."""
+    marks = node.get("marks")
+    if not isinstance(marks, list):
+        return None
+    for mark in marks:
+        if not isinstance(mark, dict) or mark.get("type") != "link":
+            continue
+        attrs = mark.get("attrs")
+        if isinstance(attrs, dict) and (href := _nonempty_str(attrs.get("href"))):
+            return href
+    return None
+
+
+def _without_inferred_scheme(target: str) -> str:
+    """``target`` without a leading ``http://`` / ``https://``.
+
+    Two prefixes rather than a URL parser on purpose: the question is only
+    whether Jira's autolinker prepended a scheme to text the author typed, and
+    ``http://SKILL.md`` is not a URL anyone wants normalised. Only the FIRST
+    scheme goes, so a doubled ``https://http://x`` keeps its second one.
+    """
+    for scheme in ("https://", "http://"):
+        if target.startswith(scheme):
+            return target[len(scheme) :]
+    return target
+
+
+def _render_adf_link(text: str, href: str) -> str:
+    """Render one link-marked text node so the href survives the flattening.
+
+    The anchor text alone is what a text-node walk kept, and for a labelled link
+    ("DMD-1943" pointing at a Linear issue) that discards the only copy of the
+    target. ``label (href)`` keeps both and still reads as a sentence.
+
+    An autolink is the exception — Jira marks up a URL the author typed by using
+    it as its own anchor text, so the parenthesised copy would be pure noise. Two
+    spellings of the same link count as one:
+
+    * the href differs only by a trailing slash: emit the href, one copy of a URL
+      that is already whole either way;
+    * the href is the anchor text plus a scheme Jira inferred: emit the anchor
+      text. The scheme is the autolinker's guess, not authored content, and Jira
+      guesses freely — it links a bare ``SKILL.md`` to ``http://SKILL.md``.
+      Emitting the href there would rewrite a word into a URL that never existed,
+      and the text already carries every character of the target.
+
+    Every URL leaves through ``_redact_url_secrets``, but the comparisons above
+    run on the RAW href on purpose: redacting first would make an autolinked
+    ``?token=`` URL stop matching its own anchor text, and this would emit
+    ``<raw url> (<redacted url>)`` — printing the credential it just removed.
+    """
+    label = text.strip()
+    if not label:
+        return _redact_url_secrets(href)
+    bare_label = label.rstrip("/")
+    if bare_label == href.rstrip("/"):
+        return _redact_url_secrets(href)
+    if bare_label == _without_inferred_scheme(href).rstrip("/"):
+        # This branch fires only when the label IS the target, so the label is a
+        # URL and earns the same redaction rather than an exemption.
+        return _redact_url_secrets(label)
+    return f"{label} ({_redact_url_secrets(href)})"
+
+
+def _join_adf_parts(parts: list[str]) -> str:
+    """Join fragments, dropping the ones that render to nothing.
+
+    Only fragment *edges* are stripped, never a ``codeBlock``'s interior.
+    """
+    return " ".join([stripped for part in parts if (stripped := part.strip())])
+
+
 def extract_text_from_adf(node: dict | list | None) -> str:
     """
     Extract plain text from Atlassian Document Format (ADF) content.
 
     ADF is a nested JSON structure used by Jira for rich text.
     This function recursively extracts all text content.
+
+    URLs are inlined rather than dropped: a smart-link node keeps its target in
+    ``attrs``, a ``link`` mark keeps its in ``marks[].attrs.href``, and a walk
+    over ``text`` nodes alone saw neither. ``_adf_card_url`` and
+    ``_render_adf_link`` carry the per-construct rules.
     """
     if node is None:
         return ""
@@ -389,7 +569,7 @@ def extract_text_from_adf(node: dict | list | None) -> str:
         return node
 
     if isinstance(node, list):
-        return " ".join(extract_text_from_adf(item) for item in node)
+        return _join_adf_parts([extract_text_from_adf(item) for item in node])
 
     if not isinstance(node, dict):
         return ""
@@ -397,15 +577,25 @@ def extract_text_from_adf(node: dict | list | None) -> str:
     # Get text from this node
     text_parts = []
 
-    # Direct text content
-    if "text" in node:
-        text_parts.append(node["text"])
+    # Smart links: no text child, target lives in attrs. Emitted as a bare token
+    # in the sentence flow, taking the spacing a word in that position would get.
+    if node.get("type") in _ADF_CARD_TYPES:
+        card_url = _adf_card_url(node)
+        if card_url:
+            text_parts.append(card_url)
+
+    # Direct text content. A missing key and an explicit null both fall out of
+    # the isinstance guard, so it stands in for the old `"text" in node` too.
+    text = node.get("text")
+    if isinstance(text, str):
+        href = _adf_link_href(node)
+        text_parts.append(_render_adf_link(text, href) if href else text)
 
     # Recursive content
     if "content" in node:
         text_parts.append(extract_text_from_adf(node["content"]))
 
-    return " ".join(text_parts).strip()
+    return _join_adf_parts(text_parts)
 
 
 def extract_user_info(user: dict | None) -> dict:

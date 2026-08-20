@@ -161,8 +161,9 @@ uv pip install ".[dev,server]"
 # Run FastAPI locally
 uvicorn app.main:app --reload
 
-# Run tests
-.venv/bin/pytest tests/ --tb=short -n auto -q
+# Run tests (connectors/ too — every connector keeps its tests beside the
+# code, and CI runs both; `tests/` alone silently skips them)
+.venv/bin/pytest tests/ connectors/ --tb=short -n auto -q
 
 # Trigger sync manually
 curl -X POST http://localhost:8000/api/sync/trigger
@@ -437,7 +438,7 @@ Full recipe, deploy workflows, manual rollback runbook, weekly tag-housekeeping,
 
 - **Changelog discipline.** Every PR that changes user-visible behavior MUST add a bullet under `## [Unreleased]` in `CHANGELOG.md`, in the same PR — grouped Added/Changed/Fixed/Removed/Internal, `**BREAKING**` prefix for breaking changes. No follow-ups.
 - **Release-cut belongs to the PR.** The version bump (`pyproject.toml`) + CHANGELOG rename + new empty `[Unreleased]` are the LAST commit on the PR that earned the version — never a standalone follow-up PR. If a PR lands the only `[Unreleased]` content, the release-cut ships in the same merge. After merge: tag `vX.Y.Z` on the merge commit + create the GitHub Release.
-- **Run the full test suite before every push** — `.venv/bin/pytest tests/ --tb=short -n auto -q` (this is what CI runs). Failures in code you touched: fix before pushing. Failures unrelated to your diff: confirm with `git stash` they reproduce on a clean branch, note them in the PR body, don't block on them.
+- **Run the full test suite before every push** — `.venv/bin/pytest tests/ connectors/ --tb=short -n auto -q` (this is what CI runs). `connectors/` is not optional: every connector keeps its tests beside the code, so `tests/` alone skips them and a connector regression passes a "full" local run and fails in CI. Failures in code you touched: fix before pushing. Failures unrelated to your diff: confirm with `git stash` they reproduce on a clean branch, note them in the PR body, don't block on them.
 - **Watch the post-merge `release.yml` run.** On `main` pushes a `smoke-test` job pulls the just-built `:stable` image and runs a docker-compose stack; if it fails, the `rollback-on-smoke-fail` job calls the reusable `rollback.yml` workflow which re-points `:stable` to the previous known-good build and opens a tracking issue labeled `bug`. Success signal after merge = `smoke-test` green + `rollback-on-smoke-fail` skipped. If the rollback fires, the merge shipped a broken image to GHCR — investigate the tracking issue before any further push (the issue body has the failing image, commit SHA, deprecated tag, and rollback target). Manual rollback / forced target / weekly tag-pruning operator commands are in [`docs/RELEASING.md`](docs/RELEASING.md).
 
 ## Specialized agents, skills & commands
