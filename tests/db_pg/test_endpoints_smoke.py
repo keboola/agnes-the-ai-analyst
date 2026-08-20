@@ -2061,6 +2061,14 @@ KNOWN_UNTESTED = {
     "PUT /api/admin/mcp",
     "GET /api/admin/slack-secrets",
     "PUT /api/admin/slack-secrets",
+    # Source-catalog discovery for the add-data-source wizard's Snowflake picker.
+    # Backend-independent: it reads `data_source.snowflake` config and talks to
+    # the warehouse over the DuckDB extension, touching neither app-state
+    # backend, and every branch (grouping, schema filter, unconfigured, host
+    # allowlist, driver failure, admin gate) is covered in
+    # tests/test_snowflake_discovery.py. A parameter-free sweep here would only
+    # assert that an unconfigured instance answers 400.
+    "GET /api/admin/data-sources/{source_type}/tables",
     # Admin source-connections (multi-project Keboola, #731) — tested in test_admin_source_connections.py
     "GET /api/admin/source-connections",
     "POST /api/admin/source-connections",

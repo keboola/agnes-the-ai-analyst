@@ -22,6 +22,111 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 - **ArrowUp now leaves the caret at the end of the recalled prompt**, matching ArrowDown and the shell history this is modelled on. It used to park at position 0, the one place a reader recalling a prompt to edit its tail has to navigate away from; since browsing makes further Up/Down caret-independent, that bought nothing.
 
+## [0.84.1] - 2026-08-20
+
+### Fixed
+
+- **`/admin/database` backend-migration buttons now confirm before starting a cutover**, instead of firing immediately on click — a real, effectively irreversible backend switch triggered by one stray click. The cloud-Postgres connection-string prompt now also masks its input (`type="password"`) instead of showing the embedded DB password in plaintext, `promptModal` gained an `inputType` option for this. The reserved `duckdb_quack` target no longer shows its raw enum value as the button label — it gets a friendly "coming soon" label and is disabled until the backend supports it. Separately, the "Allowed transitions" reference card no longer sits visibly narrower than the rest of the page on large desktops — it had a stray `max-width: 760px` no sibling card carries.
+- **`/admin/server-config` no longer overflows horizontally below ~1200px, and its section sidenav no longer collapses on mobile.** The page's two-column layout (`216px 1fr`) used a bare `1fr` grid track, which never shrinks below its content's min-content width — every viewport narrower than that stayed locked at the desktop width and scrolled sideways instead of reflowing. Fixed with `minmax(0, 1fr)` — the same override `.admin-split` has carried since #1326 plus a mobile breakpoint that stacks the sidenav above the cards. Separately, `.admin-nav`'s own intended mobile hide (`display: none` below 820px) was dead code — an unconditional `display: flex` declared later in the same stylesheet always won over the media query it was meant to override; the media query now runs after it.
+- **Five real config sections (`access_policies`, `chat`, `features`, `mcp`, `studio`) were missing from the page's sidenav/title registry.** They rendered with raw snake_case titles in an unlabelled tail group physically below "Danger zone" — so the danger section was never actually last on the page. All five now have proper titles and sit in their matching existing group (General/Integrations/Services).
+- **Casing consistency across the admin surface.** `Corporate Memory` → `Corporate memory` (`admin_server_config.html`, the command palette, and its regression test) to match the sentence-case convention used everywhere else; same fix for `Curated Marketplaces`, `Moderation & Trust`, and `Flea Submissions` in the command palette (`_app_scripts.html`), which had drifted from the admin sidebar's own labels for the same pages.
+- **The section sidenav's own dropdowns (theme, distribution mode, etc.) now use the app's branded `.ds-dropdown` component** instead of an unstyled native `<select>`. `ds_dropdown.js` only self-initializes at `DOMContentLoaded`, before this page's fields exist (built from an async fetch) — it now also exports `window.dsDropdownInit` for exactly this case.
+- **"Test BigQuery/Keboola connection" results now show in the same banner "Save" already used**, instead of a raw colored `<span>` wrapped into the button row.
+- **The `.ds-dropdown` component stopped leaking a pair of `document` listeners per dropdown per save.** `init()` attached its Esc and outside-click handlers on `document`, once per host, with no teardown — and `/admin/server-config` rebuilds every section's markup on every save and re-runs the `dsDropdownInit` sweep over it. With a dropdown for each bool and enum leaf across 21 sections that is ~80 new permanent `document` listeners per save, each executing on every subsequent click and pinning the detached DOM it closed over. They no-op behaviourally, so this was degradation and retention rather than incorrectness. Esc and outside-click now live once at module scope and resolve the open menu at event time; `init` registers the host's own closer in a `WeakMap`, so re-initing a rebuilt host is idempotent for the global handlers and the old host becomes collectable.
+
+- **The config page's dropdowns had no accessible name on the default theme.** Each field's `<label for>` points at the native `<select>`, which the `paper` skin sets to `display:none`, so the visible `.ds-dropdown-btn` announced a bare "true" with no indication which setting it belonged to — the exact failure the `dropdown` macro's `aria_label` parameter exists to prevent. `dsDropdownMarkup` now emits the same visually-hidden name span and `aria-labelledby` pair the macro does, and the page ships the per-page markup test every other `.ds-dropdown` conversion in this repo already had.
+
+- **The section sidenav now tracks scroll position** (highlights the section currently in view, not just the last-clicked one) and no longer shows a transient rendering gap above its first row during a fast scroll — `position: sticky` and the list's own internal scroll were combined on one element, which can push the sticky recalculation off the compositor thread on a fast gesture; they're now on two separate elements, matching the pattern the admin-nav column (which never had this issue) already uses.
+
+## [0.84.0] - 2026-08-20
+
+### Added
+- **The "Add data source" wizard can now browse a Snowflake account instead of
+  asking you to type schema and table names.** `GET /api/admin/data-sources/
+  {source_type}/tables` (admin-only, Snowflake today) lists the schemas and
+  tables the configured user can see, and the wizard's Snowflake step renders
+  them as the same schema-grouped checkbox picker the Keboola step uses —
+  filter, select-all and per-schema counts included. Hand-written rows remain
+  underneath for anything the listing cannot reach, and a failed listing
+  degrades to them instead of blocking the step. Snowflake was the last source
+  type whose step was free-text only: nothing validated the strings against the
+  account, and because the registry id is composed as `schema + "_" + table`, a
+  name pasted with its schema prefix already attached silently produced a
+  doubled id (`gold_gold_bi_supply_demand`) pointing at a table that does not
+  exist — which then never heals, since only a re-save re-runs the
+  remote-extract build. Listing is read-only: it attaches, reads
+  `information_schema.tables`, and writes no extract and no registry row. It
+  refuses hosts outside `AGNES_REMOTE_ATTACH_HOST_ALLOWLIST` (the same egress
+  gate the extract build applies) and answers 502 rather than an empty listing
+  when the driver or catalog query fails, so "the account has no tables" is
+  never a lie.
+
+### Security
+
+- **A failing Snowflake ATTACH no longer carries the credential in its error.**
+  `attach_snowflake` executes a `CREATE OR REPLACE SECRET … (PASSWORD '…')` /
+  `PRIVATE_KEY $PK$…$PK$` statement, and DuckDB's parser-class errors quote the
+  offending statement back — so on a build whose extension does not recognise one
+  of those options, the raised error carried the secret. Every caller then
+  forwarded it somewhere durable: a listing 502 and a server log line, and the
+  extract build into `sync_state.error`, which the admin registry, `/admin/sync`
+  and `agnes admin list-tables` render unredacted. The value is now scrubbed at
+  the one place that holds it, so all callers inherit the guarantee — and the
+  scrub covers the key-pair arm, which is the one that actually leaks. The
+  statement does not embed the stored credential there: it embeds
+  `_private_key_pem_and_passphrase(...)`'s output, which normalizes the key to
+  an unencrypted PKCS#8 PEM. For a PKCS#1 key, an encrypted key plus
+  passphrase, a JSON wrapper or a filesystem path — most real key-pair
+  deployments — that PEM is not a substring of the stored token, so scrubbing
+  the token alone matched nothing, and the `PRIVATE_KEY $PK$…$PK$` regex needs
+  a closing delimiter that a truncated parser echo has already cut off. The
+  builder now returns the values it embedded, and the literal patterns have
+  unterminated variants, so a whole private key can no longer ride out on a
+  truncated error.
+
+### Fixed
+- **Catalog preview now works for `query_mode='remote'` tables.** The sample
+  endpoint (`GET /api/v2/sample/{id}`, feeding the catalog preview and
+  `agnes describe`) refused every non-BigQuery remote row with "never
+  materialized — no sample to preview". It now serves a live sample through
+  the same analytics view `/api/query` uses (`_remote_attach` re-ATTACH), so
+  Snowflake/Keboola/Databricks-with-attach remote rows preview like any other
+  table. The mode check also runs before parquet resolution, so a row flipped
+  materialized→remote no longer previews its stale leftover parquet. Rows
+  with an access policy stay fail-closed on this surface (same ratchet as the
+  BigQuery live branch); when the view cannot serve, the refusal message now
+  carries the real error instead of only the reassurance. `remote` rows are
+  also exempt from the 5-minute-to-an-hour sample cache: "every read goes
+  live" is the argument for evaluating this branch ahead of parquet
+  resolution, and serving an hour-old cached copy would be the same staleness
+  from a different store. `docs/table-access-policies.md`'s known-gap list
+  named only BigQuery and Databricks for the fail-closed preview refusal and
+  now covers every remote engine, including the note that the two
+  quick-preview surfaces have diverged (`/api/v2/sample` serves unpolicied
+  remote rows live, `/api/v2/scan` still refuses them).
+
+- **The "Add data source" Snowflake picker showed its per-row registration
+  results where nobody could see them.** With more than one schema every group
+  renders collapsed, and `_registerSfRows` wrote `registering…` / `✗ failed`
+  straight into those hidden rows — while step 2's handler returns silently on
+  zero successes precisely because it assumes the statuses are on screen. A
+  wholly-failed registration was therefore an enabled button that appeared to
+  do nothing. It now drops any active filter and opens the groups being
+  written to first, the same preparation the Keboola picker's
+  `registerSelected` already did.
+
+## [0.83.99] - 2026-08-20
+
+### Changed
+
+- **Web chat tool-call cards collapse to their header line once the turn ends.** A card used to stay fully expanded forever, so a Bash/query card's stdout/stderr sat under the finished answer for the rest of the session. Each card is now a `<details>` element, open while its turn runs and folded shut (one click re-expands it) by every terminal frame — `done`, `cancelled`, `error`, `confirmation_required`. A card that FAILED is left open: it is marked `is-error` because its output is the thing the reader needs, and the `error` frame is exactly where folding it would hide the explanation for the turn that just died.
+
+### Fixed
+
+- **Stale auto-mode trust declarations for dead loopback ports are now pruned.** A dev server bound to an ephemeral port mints a new `127.0.0.1:<port>` "host" on every start, and the trust declaration's idempotence check is keyed on the current host — so each opted-in `agnes init` appended a fresh pair to the user-scope `autoMode.environment` while the pairs for previous ports stayed behind forever (one real settings file had gathered ~40, each blessing a port the OS will hand to whatever local process asks next). `agnes init` now removes this tool's own declarations for loopback hosts other than the current one, on every path including `--no-trust-marketplace-host` — removal narrows trust, so it needs no consent. Real domains are never pruned (two servers can be legitimately declared at once), and entries not byte-for-byte this tool's own — a user's notes — stay untouched as before.
+- **The wording refresh now removes the whole pair an old install actually wrote.** The retired-wording detection matched the fragments of the old "Internal package registry" sentence, but the companion "Trusted internal domains: … own Agnes server — it issued …" line carries none of them, so every rewrite replaced one half of the pair and stranded the other next to the freshly written entries. The em-dash phrasing is now recognized as retired and the rewrite replaces both lines.
+- **`/api/query` and the BigQuery hybrid-query path rejected valid single-`SELECT` queries that ended in a semicolon.** `_assert_select_only` (`app/api/query.py`) and its `src/remote_query.py` counterparts (`_validate_sql`, `_validate_bq_sql`, whose only consumer is `/api/query/hybrid`) all blocked `;` as a bare substring anywhere in the SQL to catch multi-statement injection, but that also caught the single trailing semicolon most LLM-generated or CLI-issued queries end with — rejecting e.g. `SELECT * FROM orders;` with "Only single SELECT queries are allowed" even though it's one statement. Each validator now strips exactly one trailing semicolon before scanning; a `;` anywhere else (a genuine second statement) is still blocked. Four downstream execution paths needed the same tolerance one level deeper, since each embeds the caller's now-accepted statement inside its own subquery wrapper, where a trailing `;` is a parse error rather than a harmless terminator: the Databricks remote path's `wrap_with_limit` (`connectors/databricks/remote.py`, `SELECT * FROM (…) LIMIT n`), the internal-table path's CTE wrap in `execute_internal_query` (`connectors/internal/access.py`, `SELECT * FROM (…) AS _agnes_user_query`), the BigQuery hybrid-query path's row-count pre-check in `RemoteQueryEngine.register_bq` (`src/remote_query.py`, `SELECT COUNT(*) FROM (…) AS _cnt`), and the MCP `query_local` tool (`cli/mcp/server.py`, `SELECT * FROM (…) AS _q LIMIT n`) — the agent-facing surface where the trailing-semicolon habit originates, which kept raising a raw DuckDB `ParserException` on exactly the input the others had learned to accept. Five site-local copies of a one-character rule is why a sixth was missed, so all of them plus the validators now call one shared `strip_one_trailing_semicolon`, and `/api/query` normalizes the terminator away once at its boundary rather than leaving each downstream path to strip it — which also removes the question of whether a `;`-terminated statement reaching BigQuery's dry run would be read as a script and report zero scanned bytes to the cost cap.
+
 ## [0.83.98] - 2026-08-20
 
 ### Fixed
