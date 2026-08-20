@@ -928,13 +928,20 @@ pre.code-block-wrap code .hljs-deletion {
 }
 
 /* ---------- Collapsible long messages ----------
-   When a turn's content exceeds COLLAPSE_THRESHOLD_PX (480 by
-   default, set in chat.js), the JS sets .is-collapsible on the
-   bubble. CSS clamps the body height + paints a fade-out gradient
-   over the bottom so the cut feels intentional, and the inserted
-   .msg-toggle-collapse button flips .is-expanded. */
+   When a turn's content exceeds COLLAPSE_THRESHOLD_PX (set in
+   chat.js), the JS sets .is-collapsible on the bubble. CSS clamps the
+   body height + paints a fade-out gradient over the bottom so the cut
+   feels intentional, and the inserted .msg-toggle-collapse button
+   flips .is-expanded.
+
+   The max-height below MUST equal COLLAPSE_THRESHOLD_PX: the constant
+   decides whether a body collapses, this declaration decides where it
+   is cut, and a mismatch clamps a body at a height it was never judged
+   against (raising only the JS side would still cut a long answer at
+   the old 480px). chat.js carries the rationale for the value; a guard
+   in tests/test_chat_tool_rendering_ui.py fails if the two drift. */
 .msg-bubble.is-collapsible .msg-body {
-  max-height: 480px;
+  max-height: 2500px;
   overflow: hidden;
   position: relative;
 }
