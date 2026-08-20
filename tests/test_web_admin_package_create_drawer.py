@@ -133,3 +133,157 @@ class TestTheTablesLensKeepsTheEntryPointsAndDropsTheMarkup:
         # the new package comes back as a chip on the table being edited.
         assert "chip-create" in html
         assert "chipHost: host" in html
+
+
+class TestThePackagePageEditsItsOwnPackage:
+    """The package's own page could not edit the package.
+
+    `/admin/data-packages/{id}` is the surface whose whole docstring is "ONE
+    package, end to end", yet renaming it, re-describing it or retiring it
+    meant following an "Edit details…" LINK to `/admin/tables?edit_package=`
+    — the Tables lens, a page about something else — where a legacy centred
+    modal did the work. The drawer that already owns *creating* a package now
+    owns editing one too, so the verb happens on the object you are standing
+    on, exactly as create already does.
+
+    The legacy modal on /admin/tables is deliberately NOT retired here: it is
+    still the only surface carrying composition + the RBAC matrix, and
+    `?edit_package=` still routes to it. This pins the new door, not the old
+    one's removal.
+    """
+
+    def test_the_component_carries_an_edit_mode(self) -> None:
+        src = COMPONENT.read_text()
+        assert "'edit'" in src, "the drawer must branch on an edit mode"
+        assert "PUT" in src, "editing writes through PUT /api/admin/data-packages/{id}"
+
+    def test_the_slug_is_not_editable_when_editing(self) -> None:
+        """The slug is permanent — it is in URLs and in grants, and `PUT`
+        carries no slug field, so an editable box would silently discard what
+        the admin typed. The legacy modal disabled it for the same reason."""
+        src = COMPONENT.read_text()
+        assert "slug.disabled" in src
+
+    def test_the_package_page_opens_the_drawer_instead_of_linking_out(self, seeded_app) -> None:
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        pkg_id = seeded_app_package_id(seeded_app)
+        html = c.get(f"/admin/data-packages/{pkg_id}", headers=_auth(token)).text
+        assert "/admin/tables?edit_package=" not in html, (
+            "the package page must edit in place, not send the admin to the Tables lens"
+        )
+        assert "js/components/package_drawer.js" in html
+        assert "css/package_drawer.css" in html
+        assert "css/drawer.css" in html
+
+
+def seeded_app_package_id(seeded_app) -> str:
+    """A package id for the id-keyed detail route.
+
+    Created through the public admin API rather than seeded in the fixture, so
+    the test owns its own subject and cannot start passing (or failing) because
+    some other suite changed what the fixture happens to contain.
+    """
+    c = seeded_app["client"]
+    auth = _auth(seeded_app["admin_token"])
+    rows = c.get("/api/admin/data-packages", headers=auth).json()
+    if rows:
+        return rows[0]["id"]
+    created = c.post(
+        "/api/admin/data-packages",
+        headers=auth,
+        json={"name": "Edit drawer subject", "slug": "edit-drawer-subject"},
+    )
+    assert created.status_code == 201, created.text
+    return created.json()["id"]
+
+
+class TestTheEditDrawerAlsoOwnsComposition:
+    """Editing a package from the Library must include what is IN it.
+
+    The first cut of edit mode carried metadata only, on the reasoning that
+    composition belonged behind the "Manage in Admin" door. That split the one
+    question an admin actually has open — "is this package right?" — across two
+    surfaces, so the drawer now owns membership too. Create mode does not: a
+    package being created has no id yet, so there is nothing to attach a table
+    to.
+
+    Membership is DIFFED and applied on Save rather than written per tick,
+    because the drawer offers Cancel and a click that had already hit the API
+    would make that button a lie.
+    """
+
+    def test_composition_is_in_the_drawer(self) -> None:
+        src = COMPONENT.read_text()
+        assert "pdw-tables" in src, "the drawer needs a table list"
+        assert "/tables" in src, "membership writes through the package tables endpoint"
+        assert "'DELETE'" in src, "and removes through it too"
+
+    def test_the_table_list_is_edit_only(self) -> None:
+        """`tablesField.hidden = !editing` — a create has no package to attach
+        a table to, so offering the list there would collect ticks it could
+        not honour."""
+        src = COMPONENT.read_text()
+        assert "tablesField.hidden = !editing" in src
+
+    def test_membership_is_applied_on_save_not_on_tick(self) -> None:
+        src = COMPONENT.read_text()
+        assert "tablesOriginal" in src and "tablesSelected" in src, (
+            "a diff needs both the loaded set and the edited one"
+        )
+
+    def test_a_failed_table_change_does_not_report_a_failed_save(self) -> None:
+        """The metadata PUT has already succeeded by the time membership is
+        applied, so a failure there must name what did not happen rather than
+        claim the save failed."""
+        src = COMPONENT.read_text()
+        assert "The other details were saved." in src
+
+
+class TestTheTableListFollowsTheSourceStructure:
+    """~500 tables across a handful of projects and a hundred-odd buckets.
+
+    A package is almost never "these three arbitrary tables" — it is "this
+    bucket" or "everything from that project", because that is how the source
+    systems are organised. A flat list made the admin tick that structure back
+    in by hand, one row at a time.
+
+    Two levels, PROJECT › BUCKET, and both carry a tri-state box. Neither is an
+    Agnes concept: a project is a source connection and a bucket is its own
+    grouping inside it, which is exactly why the list says so in as many words
+    (the package is the Agnes container).
+    """
+
+    def test_the_list_groups_by_project_then_bucket(self) -> None:
+        src = COMPONENT.read_text()
+        assert "pdw-grp--project" in src and "pdw-grp--bucket" in src
+        assert 'data-group="project"' in src and 'data-group="bucket"' in src
+
+    def test_a_group_box_is_tri_state(self) -> None:
+        """all / some / none. `indeterminate` is a property with no HTML
+        attribute, so it cannot ride the markup and must be set after paint —
+        a group that reads 'all' with one child unticked is a lie."""
+        src = COMPONENT.read_text()
+        assert "function tallyState" in src
+        assert "'some'" in src and "b.indeterminate = true;" in src
+
+    def test_ticking_a_partly_selected_group_selects_the_rest(self) -> None:
+        """`indeterminate` reads as unchecked to `.checked`, so a click on a
+        partly-selected group must mean "select the rest", never "clear it"."""
+        src = COMPONENT.read_text()
+        assert "var want = box.checked;" in src
+
+    def test_a_group_tick_honours_the_search(self) -> None:
+        """`tablesUnder` reads the FILTERED groups, so ticking a group while a
+        search is active takes what the reader can see under it, not the whole
+        registry."""
+        src = COMPONENT.read_text()
+        assert "function tablesUnder" in src and "tableGroups().forEach" in src
+
+    def test_project_headings_are_names_not_enum_values(self) -> None:
+        """A raw `bigquery` beside a real project's name reads as leaked data.
+        Tables with no source CONNECTION group under their source's display
+        name instead."""
+        src = COMPONENT.read_text()
+        assert "SOURCE_LABELS" in src
+        assert "'/api/admin/source-connections'" in src, "project names come from the connections"

@@ -368,6 +368,26 @@ class TestAddDataWizard:
         assert "/api/admin/grants" in body
         assert "/api/admin/groups" in body
 
+    def test_bundle_step_can_add_to_existing_packages(self, seeded_app):
+        """New tables don't always deserve a NEW package — a fresh source's
+        churn table usually belongs in the Customer 360 that already exists.
+        The board offers an existing-package picker; picking one adds an
+        attach-only tray whose Finish POSTs tables to the package it names,
+        creating nothing and leaving its sharing untouched (so it must stay
+        off the share step — a card there would offer to write a second copy
+        of grants that already stand)."""
+        body = self._page(seeded_app)
+        assert 'id="ds-existing-pkg-sel"' in body
+        # The tray renders as a different authority than a to-be-created one…
+        assert "ds-tray-exist" in body
+        # …its name belongs to the package (read-only here)…
+        assert "tray.committed || tray.existing" in body
+        # …Finish attaches instead of creating…
+        assert "tray.existing" in body and "/tables" in body
+        # …and the outcome is SAID on the share step even when no new
+        # package earned a card.
+        assert "_wizardExistingAdds" in body
+
     def test_old_register_only_exit_is_preserved(self, seeded_app):
         """The pre-redesign behavior — register the selection and stop — is
         an explicit escape hatch, not removed."""
