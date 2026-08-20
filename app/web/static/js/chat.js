@@ -1193,6 +1193,13 @@ async function newChat(agentSlug) {
  * logic made callable a second time. */
 async function loadAndRenderHistory(chatId) {
   $("chat-messages").innerHTML = "";
+  // Reset recall state for the chat being loaded up front, not after a
+  // successful fetch — a failed fetch must not leave ArrowUp/ArrowDown
+  // browsing the PREVIOUS conversation's prompts under the new chatId.
+  _promptHistory = [];
+  _historyPos = 0;
+  _historyDraft = "";
+  _historyBrowsing = false;
   let history = [];
   try {
     history = await api(`/api/chat/sessions/${chatId}/messages`);
@@ -1200,7 +1207,6 @@ async function loadAndRenderHistory(chatId) {
     setStatus(`Could not load history: ${err.message}`, "warn");
     return;
   }
-  _promptHistory = [];
   if (history.length === 0) {
     showCapabilities();
   } else {
@@ -1228,9 +1234,10 @@ async function loadAndRenderHistory(chatId) {
       );
     }
   }
+  // Only _historyPos needs re-syncing here — the else branch above grew
+  // _promptHistory via push(); draft/browsing were already reset up top
+  // and nothing since has touched them.
   _historyPos = _promptHistory.length;
-  _historyDraft = "";
-  _historyBrowsing = false;
   // Re-draw any approval still waiting for an answer. The wipe above is a
   // transcript redraw, and a pending card is not transcript — without this
   // a full_refresh racing a replayed card erases it and the blocked command

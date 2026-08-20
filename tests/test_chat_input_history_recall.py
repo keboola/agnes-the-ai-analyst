@@ -38,6 +38,21 @@ def test_load_and_render_history_seeds_prompt_history_from_persisted_messages():
     assert "_historyBrowsing = false;" in body
 
 
+def test_history_reset_happens_before_the_fetch_that_can_fail():
+    """A failed history fetch (network hiccup while switching chats) must not
+    leave ArrowUp/ArrowDown browsing the PREVIOUS conversation's prompts under
+    the new chatId — the reset has to happen before the `await api(...)` call
+    that the `catch` block can bail out of, not after it succeeds."""
+    js = _chat_js()
+    start = js.index("async function loadAndRenderHistory")
+    end = js.index("async function openSession")
+    body = js[start:end]
+    reset = body.index("_promptHistory = [];")
+    fetch = body.index("await api(`/api/chat/sessions/${chatId}/messages`)")
+    catch_return = body.index("setStatus(`Could not load history")
+    assert reset < fetch < catch_return
+
+
 def test_submit_user_message_appends_sent_prompt_to_history():
     js = _chat_js()
     start = js.index("async function submitUserMessage")
