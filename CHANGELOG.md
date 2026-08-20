@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- **`/admin/database` backend-migration buttons now confirm before starting a cutover**, instead of firing immediately on click — a real, effectively irreversible backend switch triggered by one stray click. The cloud-Postgres connection-string prompt now also masks its input (`type="password"`) instead of showing the embedded DB password in plaintext, `promptModal` gained an `inputType` option for this. The reserved `duckdb_quack` target no longer shows its raw enum value as the button label — it gets a friendly "coming soon" label and is disabled until the backend supports it. Separately, the "Allowed transitions" reference card no longer sits visibly narrower than the rest of the page on large desktops — it had a stray `max-width: 760px` no sibling card carries.
+
 ## [0.83.91] - 2026-08-19
 
 ### Changed
