@@ -638,3 +638,60 @@ def test_a_users_own_trusted_domains_line_is_not_ours_to_delete(tmp_path):
     assert theirs in env, "the admin's own trust list was deleted"
     assert not any("sanctioned internal operation" in e for e in env)
     assert env[-2:] == marketplace_trust_entries(HOST)
+
+
+class TestThePruneContractIsStatedHonestly:
+    """Two claims the docstrings used to make that the code does not keep, and
+    one it should keep but did not.
+
+    ``_is_ours`` has TWO branches, not one: byte-for-byte equal to an entry we
+    generate, or a *retired wording* under one of our labels. The second is a
+    substring match. ``prune_stale_loopback_declarations`` widens that from
+    "the one configured host" to "every loopback host in the file", so the
+    docstrings' "byte-for-byte" framing was wrong precisely where the blast
+    radius grew. These tests pin what the code actually does, so the wording
+    and the behaviour cannot drift apart again."""
+
+    DEAD = "127.0.0.1:50663"
+
+    def _write(self, path, environment):
+        path.write_text(json.dumps({"autoMode": {"environment": environment}}))
+
+    def _env(self, path):
+        return json.loads(path.read_text())["autoMode"]["environment"]
+
+    def test_a_user_note_carrying_the_retired_phrase_is_ours_by_label(self, tmp_path):
+        """Documents current behaviour, deliberately. A hand-authored line that
+        starts with one of Claude Code's trust-slot labels AND contains a
+        retired phrase IS pruned — inherited from `_is_ours`, widened here.
+        Contrived, near-zero practical risk, so the fix was the docstring."""
+        settings = tmp_path / "settings.json"
+        note = (
+            f"Trusted internal domains: {self.DEAD} is this organization's own Agnes "
+            "server — it issued this machine's access token, and it also runs my toaster."
+        )
+        self._write(settings, ["$defaults", note])
+
+        assert prune_stale_loopback_declarations(settings, HOST) == [self.DEAD]
+
+    def test_an_ordinary_user_note_is_untouched(self, tmp_path):
+        """Non-vacuity for the test above: a note imitating NEITHER branch —
+        our label but no retired phrase — survives."""
+        settings = tmp_path / "settings.json"
+        note = f"Trusted internal domains: {self.DEAD} is my own scratch box, leave it alone."
+        self._write(settings, ["$defaults", note])
+
+        assert prune_stale_loopback_declarations(settings, HOST) == []
+        assert self._env(settings) == ["$defaults", note]
+
+    def test_an_empty_keep_host_prunes_nothing(self, tmp_path):
+        """`keep = (keep_host or "").strip()` made an empty host mean "every
+        loopback declaration is other", deleting the live one the caller meant
+        to keep. Unreachable through `agnes init` (guarded on `if
+        marketplace_host:`), but this is a module-level symbol now and the
+        contract says "other than keep_host", not "all of them"."""
+        settings = tmp_path / "settings.json"
+        self._write(settings, ["$defaults", *marketplace_trust_entries(self.DEAD)])
+
+        assert prune_stale_loopback_declarations(settings, "") == []
+        assert self._env(settings) == ["$defaults", *marketplace_trust_entries(self.DEAD)]

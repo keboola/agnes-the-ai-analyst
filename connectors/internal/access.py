@@ -29,6 +29,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from src.remote_engines import strip_one_trailing_semicolon
 from src.sql_ident import quote_ident
 
 logger = logging.getLogger(__name__)
@@ -560,9 +561,7 @@ def execute_internal_query(
     # The SELECT-only guard upstream (_assert_select_only) tolerates one
     # trailing semicolon, but it would terminate the CTE-wrapped subquery
     # below early; strip the same single trailing semicolon here.
-    sql = sql.rstrip()
-    if sql.endswith(";"):
-        sql = sql[:-1]
+    sql = strip_one_trailing_semicolon(sql)
 
     refs = find_internal_refs(sql)
     if not refs:

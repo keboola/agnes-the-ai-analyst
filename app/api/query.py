@@ -59,6 +59,7 @@ from src.remote_engines import (
     name_reference_re,
     qualified_path_re,
     rewrite_bare_names,
+    strip_one_trailing_semicolon,
 )
 from src.remote_query import _strip_leading_sql_comments
 from src.repositories import (
@@ -1323,7 +1324,7 @@ def _assert_select_only(sql_lower: str) -> None:
     # (LLM-generated queries, most CLI/DB clients) rather than a second
     # statement. A ";" that remains after stripping it is a genuine
     # multi-statement attempt and still blocked below.
-    body = sql_lower[:-1] if sql_lower.endswith(";") else sql_lower
+    body = strip_one_trailing_semicolon(sql_lower)
     if any(keyword in body for keyword in _BLOCKED_SQL_TOKENS):
         raise HTTPException(status_code=400, detail="Only single SELECT queries are allowed")
     # File-path table source anywhere in the FROM graph (direct / comma-list /
@@ -1378,6 +1379,29 @@ def execute_query(
     sql_lower = request.sql.strip().lower()
 
     _assert_select_only(sql_lower)
+
+    # One trailing `;` is now accepted (it is a terminator, not a second
+    # statement), so normalize it away HERE, once, instead of at each place
+    # that embeds the statement. Two reasons this is the boundary and not a
+    # sixth site-local strip:
+    #
+    #   - `_bq_quota_and_cap_guard` below passes `request.sql` through
+    #     `_rewrite_user_sql_for_bq_dry_run` — a purely textual rewrite that
+    #     preserves the terminator — into a BigQuery dry run. If BQ classifies
+    #     a `;`-terminated text as a script, the dry run reports
+    #     `totalBytesProcessed: 0` and the scan cap silently passes a query it
+    #     was meant to measure. That is a cost guardrail reading zero, not an
+    #     error message, and it is not something this repo's tests can
+    #     observe. Normalizing removes the question rather than answering it.
+    #   - The jobs-API execution wrap at the bottom of the BQ arm nests the
+    #     statement inside a dollar-quoted payload, so DuckDB never sees the
+    #     `;` — but BigQuery does, verbatim.
+    #
+    # Accepted/rejected outcomes do not change: the guard above has already
+    # ruled on the statement, and `sql_lower` is recomputed from the
+    # normalized text so every check below reads the same string that runs.
+    request.sql = strip_one_trailing_semicolon(request.sql)
+    sql_lower = request.sql.strip().lower()
 
     # ----- Internal-source short-circuit ----------------------------------
     # SQL referencing one of the seeded internal tables (agnes_sessions,

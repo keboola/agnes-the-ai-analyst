@@ -586,3 +586,22 @@ def test_tool_head_summary_gets_pointer_cursor_scoped_to_the_real_toggle():
     css = _read(CHAT_CSS)
     assert "summary.cloud-chat-tool-head" in css
     assert re.search(r"(?<!summary)\.cloud-chat-tool-head\s*\{[^}]*cursor:\s*pointer", css) is None
+
+
+def test_a_failed_tool_card_is_not_folded_shut():
+    """renderToolCallEnd marks a failed card `is-error` — red border, warning
+    icon — because its output is the thing the reader needs. Folding it is
+    worst on the `error` terminal frame: the turn died mid-tool and the card
+    that explains why would go behind a click nobody knows to make."""
+    js = _read(CHAT_JS)
+    fn = js[js.index("function _collapseFinishedToolCalls") :]
+    fn = fn[: fn.index("\n}")]
+    assert "is-error" in fn, "a failed card's output must survive the fold"
+
+
+def test_the_tool_card_comment_does_not_claim_a_persisted_record():
+    """Cards are built only from live `tool_call` frames; loadAndRenderHistory
+    replays messages, not tool calls, so a reload leaves no card at all. The
+    header line is the trail for the session, not a permanent record."""
+    js = _read(CHAT_JS)
+    assert "as the permanent record" not in js

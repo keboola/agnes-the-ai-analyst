@@ -33,7 +33,13 @@ import logging
 import re
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from src.remote_engines import mask_backticks, name_reference_re, qualified_path_re, rewrite_bare_names
+from src.remote_engines import (
+    mask_backticks,
+    name_reference_re,
+    qualified_path_re,
+    rewrite_bare_names,
+    strip_one_trailing_semicolon,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -554,9 +560,7 @@ def wrap_with_limit(sql: str, limit: int) -> str:
     tolerates exactly one trailing ``;`` (routine SQL formatting), so strip it
     here too or that tolerated query fails at the warehouse instead of running.
     """
-    body = sql.rstrip()
-    if body.endswith(";"):
-        body = body[:-1]
+    body = strip_one_trailing_semicolon(sql)
     return f"SELECT * FROM (\n{body}\n) AS agnes_remote_q LIMIT {int(limit)}"
 
 

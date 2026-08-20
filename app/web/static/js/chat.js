@@ -2715,7 +2715,10 @@ function renderToolCallStart(frame) {
   // <details>/<summary> — same collapsible idiom as the args/result panels
   // below, but for the whole card. Open by default so a running (and just-
   // finished) call stays visible; _collapseFinishedToolCalls folds it once
-  // the turn ends, leaving just this header line as the permanent record.
+  // the turn ends, leaving just this header line as the trail for the rest
+  // of the session. Not a persisted record: cards are built only from live
+  // `tool_call` frames and `loadAndRenderHistory` does not replay them, so a
+  // reload leaves no card at all.
   const wrap = document.createElement("details");
   wrap.className = "cloud-chat-tool is-running";
   wrap.open = true;
@@ -2841,11 +2844,19 @@ function renderToolCallEnd(frame) {
  *  to its header line. Called once per turn, from each of handleFrame's
  *  terminal cases (done / cancelled / error / confirmation_required) — a
  *  turn that stops for any reason leaves behind the same settled transcript:
- *  the answer (or note) plus a scannable trail of "what ran", not a
- *  permanently-expanded dump of every stdout/stderr. Each card's own
- *  <details> toggle still opens it back up on click. */
+ *  the answer (or note) plus a scannable trail of "what ran", not an
+ *  expanded dump of every stdout/stderr sitting under the finished answer.
+ *  Each card's own <details> toggle still opens it back up on click.
+ *
+ *  A FAILED card is left open. `renderToolCallEnd` marks it `is-error` (red
+ *  border, warning icon) precisely because its output is the thing the reader
+ *  needs, and the `error` terminal case is the one where that matters most: a
+ *  turn that died mid-tool would otherwise fold shut the very card explaining
+ *  why, behind a click nobody knows to make. Folding is for the noise, not
+ *  for the diagnosis. */
 function _collapseFinishedToolCalls() {
   for (const wrap of _currentTurnToolCards) {
+    if (wrap.classList.contains("is-error")) continue;
     wrap.open = false;
   }
   _currentTurnToolCards = [];

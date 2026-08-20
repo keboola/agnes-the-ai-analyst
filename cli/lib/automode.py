@@ -115,9 +115,13 @@ def _declared_host(entry: str) -> str | None:
 
     ``_is_ours`` needs the host up front, which is exactly what a caller
     walking entries written for OTHER hosts does not have. Recover the host
-    from the template shape, then hold the entry to the same byte-for-byte
-    standard as everywhere else — a user's own note that happens to imitate
-    the prefix still comes back None.
+    from the template shape, then hold the entry to the same standard as
+    everywhere else — which is ``_is_ours``'s standard, and that is two
+    branches, not one: byte-for-byte equal to an entry we currently generate,
+    OR carrying a retired wording under one of our labels. The second branch
+    is a substring match, so a hand-authored line that starts with one of
+    Claude Code's trust-slot labels AND contains a retired phrase does count
+    as ours. Saying "byte-for-byte" here would overstate it.
     """
     for pattern in _HOST_PATTERNS:
         match = pattern.match(entry.strip())
@@ -154,8 +158,17 @@ def prune_stale_loopback_declarations(settings_path: Path, keep_host: str) -> li
 
     Only loopback hosts are pruned. Two real domains (staging and production,
     say) are both legitimately declared at once, and this module cannot know
-    that a DNS name is ephemeral. Entries that are not byte-for-byte ours —
-    a user's own notes above all — are never touched, per ``_is_ours``.
+    that a DNS name is ephemeral.
+
+    "Ours" is ``_is_ours``'s definition and no wider: byte-for-byte one of the
+    entries we generate for that host, or a retired wording under one of our
+    labels. Note what the second branch means HERE specifically — this
+    function widens ``_is_ours``'s blast radius from "the one configured host"
+    to "every loopback host in the file", so a hand-authored line that both
+    starts with one of Claude Code's trust-slot labels and contains a retired
+    phrase is removed. Contrived, but real, and pinned by
+    ``test_a_user_note_carrying_the_retired_phrase_is_ours_by_label``. An
+    ordinary user note that imitates neither is untouched.
 
     Returns the pruned hosts (deduplicated, in file order); ``[]`` when there
     was nothing to prune or the file could not be read. Unlike
@@ -164,6 +177,13 @@ def prune_stale_loopback_declarations(settings_path: Path, keep_host: str) -> li
     caller's housekeeping, not something the operator asked for by name.
     """
     keep = (keep_host or "").strip()
+    if not keep:
+        # Without a host to keep, every loopback declaration is "other" —
+        # including the live one the caller meant to preserve. `agnes init`
+        # guards on `if marketplace_host:` so this is unreachable today, but
+        # this is a module-level symbol now and the contract says "other than
+        # keep_host", not "all of them".
+        return []
     if not settings_path.exists():
         return []
     try:
