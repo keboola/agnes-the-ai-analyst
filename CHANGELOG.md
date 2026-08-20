@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Changed
+
+- **The `/admin/access` grant tree now explains what each resource type actually does.** Every `ResourceTypeSpec.description` renders as a header tooltip and an expanded-section caption — previously the field existed but nothing rendered it, so an admin had no way to learn, e.g., that a `TABLE` grant doesn't reach analyst visibility. `ResourceType.TABLE`'s description now says so explicitly: analyst table access flows entirely through Data Packages, and a direct table grant only sets the ceiling that agent scoping (`tables_mode='selected'`) and co-session grant intersection narrow against — a no-op unless one of those is in use. `docs/RBAC.md`'s stale v49 union formula for `TABLE`/`DATA_PACKAGE` is corrected to match, with a new section documenting the agent-scope/co-session ceiling behavior.
+
 ## [0.84.5] - 2026-08-20
 
 ### Fixed
