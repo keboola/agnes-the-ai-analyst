@@ -33,7 +33,13 @@ import logging
 import re
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from src.remote_engines import mask_backticks, name_reference_re, qualified_path_re, rewrite_bare_names
+from src.remote_engines import (
+    mask_backticks,
+    name_reference_re,
+    qualified_path_re,
+    rewrite_bare_names,
+    strip_one_trailing_semicolon,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -620,8 +626,15 @@ def wrap_with_limit(sql: str, limit: int) -> str:
     The outer wrap is legal Spark SQL for any SELECT, including one that
     already carries its own ``LIMIT`` (the inner limit simply wins when it is
     smaller).
+
+    A single trailing semicolon is a legal top-level statement terminator but
+    an illegal one once embedded inside this subquery wrap — Spark SQL parses
+    it as ending the statement early. ``/api/query``'s SELECT-only guard
+    tolerates exactly one trailing ``;`` (routine SQL formatting), so strip it
+    here too or that tolerated query fails at the warehouse instead of running.
     """
-    return f"SELECT * FROM (\n{sql}\n) AS agnes_remote_q LIMIT {int(limit)}"
+    body = strip_one_trailing_semicolon(sql)
+    return f"SELECT * FROM (\n{body}\n) AS agnes_remote_q LIMIT {int(limit)}"
 
 
 #: Databricks manifest ``type_name`` → Arrow type. Only matters for a
