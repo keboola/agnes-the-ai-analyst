@@ -1220,8 +1220,15 @@ async function loadAndRenderHistory(chatId) {
         // Recall is "this conversation's own sent messages" — a co-drive
         // peer's prompt (sender_email set and not ours) must not surface
         // under MY ArrowUp, matching submitUserMessage's live-send path,
-        // which only ever appends the local sender's own text.
-        if (!m.sender_email || m.sender_email === currentUserEmail) {
+        // which only ever appends the local sender's own text and skips a
+        // repeat of the immediately preceding entry (same reason here: a
+        // reload/full_refresh must rebuild the identical recall stack a
+        // live session would have ended up with, not re-materialize
+        // duplicates the live path would have collapsed).
+        if (
+          (!m.sender_email || m.sender_email === currentUserEmail) &&
+          _promptHistory[_promptHistory.length - 1] !== lastUserText
+        ) {
           _promptHistory.push(lastUserText);
         }
       }

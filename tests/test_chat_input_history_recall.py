@@ -67,6 +67,19 @@ def test_history_seeding_skips_co_drive_peers_own_messages_only():
     assert guard < push
 
 
+def test_history_seeding_dedupes_consecutive_identical_prompts():
+    """The live-send path collapses a repeat of the immediately preceding
+    prompt (see test_submit_user_message_appends_sent_prompt_to_history).
+    Seeding from persisted history must apply the same dedup, or a
+    reload/full_refresh re-materializes duplicates the live session had
+    already collapsed, producing a different recall stack than before."""
+    js = _chat_js()
+    start = js.index("async function loadAndRenderHistory")
+    end = js.index("async function openSession")
+    body = js[start:end]
+    assert "_promptHistory[_promptHistory.length - 1] !== lastUserText" in body
+
+
 def test_submit_user_message_appends_sent_prompt_to_history():
     js = _chat_js()
     start = js.index("async function submitUserMessage")
