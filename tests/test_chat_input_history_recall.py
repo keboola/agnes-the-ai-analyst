@@ -53,6 +53,20 @@ def test_history_reset_happens_before_the_fetch_that_can_fail():
     assert reset < fetch < catch_return
 
 
+def test_history_seeding_skips_co_drive_peers_own_messages_only():
+    """Recall is 'this conversation's OWN sent messages' — a co-drive peer's
+    prompt (m.sender_email set and not ours) must not surface under my
+    ArrowUp, matching submitUserMessage's live-send path, which only ever
+    appends the local sender's own text."""
+    js = _chat_js()
+    start = js.index("async function loadAndRenderHistory")
+    end = js.index("async function openSession")
+    body = js[start:end]
+    guard = body.index("!m.sender_email || m.sender_email === currentUserEmail")
+    push = body.index("_promptHistory.push(lastUserText);")
+    assert guard < push
+
+
 def test_submit_user_message_appends_sent_prompt_to_history():
     js = _chat_js()
     start = js.index("async function submitUserMessage")

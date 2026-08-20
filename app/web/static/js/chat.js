@@ -1217,7 +1217,13 @@ async function loadAndRenderHistory(chatId) {
       renderMessage(m);
       if (m.role === "user") {
         lastUserText = m.content || "";
-        _promptHistory.push(lastUserText);
+        // Recall is "this conversation's own sent messages" — a co-drive
+        // peer's prompt (sender_email set and not ours) must not surface
+        // under MY ArrowUp, matching submitUserMessage's live-send path,
+        // which only ever appends the local sender's own text.
+        if (!m.sender_email || m.sender_email === currentUserEmail) {
+          _promptHistory.push(lastUserText);
+        }
       }
     }
     // A reload must end in the same state as the live turn: the follow-up
