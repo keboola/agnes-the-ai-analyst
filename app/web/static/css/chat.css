@@ -3541,3 +3541,215 @@ html[data-ui-layout="rail"] .cloud-chat-shell.has-thread .cloud-chat-main::after
   color: var(--ds-text-secondary);
   font-size: 0.85em;
 }
+
+/* ── Composer footer row ──────────────────────────────────────────────────
+   The strip UNDER the input, present in both states. Reads left to right as a
+   sentence about the conversation: the Stack context line (what it runs with,
+   dashboard only) leads, the agent (who it runs as) trails at the right edge,
+   under the send button.
+
+   The Stack line used to lead #chat-empty-extras and inherited that column's
+   centring (`align-self: center; width: var(--rdb-col-narrow)`). In this row
+   it is a flex item beside the picker, so those are unset below rather than
+   left to fight the row. */
+.cloud-chat-composer-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  /* Matches the composer pill's own inset, so the leading text sits under the
+     input's text and the trailing agent lands under the send button rather
+     than past it. */
+  padding: 6px 8px 0;
+  min-width: 0;
+}
+/* The agent trails the row in every state — including the one where the Stack
+   line is hidden and it is the row's only occupant. `margin-left: auto` (not
+   `justify-content: flex-end`) is what makes both cases the same rule. */
+.cloud-chat-agent-wrap {
+  margin-left: auto;
+}
+html[data-ui-layout="rail"] .cloud-chat-composer-foot .rdb-context {
+  align-self: auto;
+  width: auto;
+  min-width: 0;
+  padding: 0;
+  /* The row already spaces its items; the line's own leading gap would double
+     the distance from the picker. */
+  flex: 0 1 auto;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+/* The context line belongs to the empty state — it hides with the dashboard,
+   leaving the picker alone on the row in a live conversation. #chat-form is a
+   later sibling of #chat-capabilities, which is what makes this reachable now
+   that the line no longer rides #chat-empty-extras. */
+#chat-capabilities[hidden] ~ #chat-form .rdb-context { display: none; }
+
+/* ── Composer agent picker ────────────────────────────────────────────────
+   Which agent the conversation runs AS. A low-emphasis text pill leading the
+   footer row, so it reads as a status label first and a control second — the
+   agent is far more often something you check than something you change.
+
+   The agent is bound at session creation (scope, memory notebook, pinned
+   model and budget are fixed for the session's life), so the button carries a
+   real :disabled state during an active conversation instead of silently
+   doing nothing. Popover mechanics mirror .cloud-chat-plus-menu above,
+   including the dashboard flip to opening downward. */
+.cloud-chat-agent-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
+.cloud-chat-agent-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 12rem;
+  height: 30px;
+  padding: 0 var(--space-2);
+  border: 1px solid transparent;
+  border-radius: var(--ds-radius-pill, 999px);
+  background: transparent;
+  color: var(--ds-text-secondary);
+  font-size: var(--text-xs);
+  font-weight: var(--font-medium);
+  font-family: inherit;
+  cursor: pointer;
+  transition:
+    background var(--ds-motion-fast, 120ms) var(--ds-ease-standard, ease),
+    color var(--ds-motion-fast, 120ms) var(--ds-ease-standard, ease),
+    border-color var(--ds-motion-fast, 120ms);
+}
+.cloud-chat-agent-btn:hover:not(:disabled) {
+  background: var(--ds-surface-dim);
+  border-color: var(--ds-border);
+  color: var(--ds-text-primary);
+}
+.cloud-chat-agent-btn.is-open {
+  background: var(--ds-accent-info-bg);
+  border-color: var(--ds-accent-info-line);
+  color: var(--ds-accent-info-ink);
+}
+.cloud-chat-agent-btn:focus-visible {
+  outline: var(--ds-focus-outline);
+  outline-offset: var(--ds-focus-outline-offset);
+}
+/* Mid-conversation the button is swapped out entirely for this label (see the
+   template): the agent is fixed at session creation, so there is nothing to
+   choose and a greyed-out button would keep offering a click it must refuse.
+   Plain text in the same muted register as the Stack line it replaces — an
+   answer, not a control. */
+.cloud-chat-agent-label {
+  max-width: 14rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-family: var(--ds-font);
+  color: var(--ds-text-muted);
+}
+.cloud-chat-agent-label[hidden] { display: none; }
+.cloud-chat-agent-btn-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cloud-chat-agent-btn-caret {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;
+}
+
+.cloud-chat-agent-menu {
+  position: absolute;
+  /* Anchored to the wrap's RIGHT edge and growing leftward: the button sits at
+     the row's right end, so a left-anchored menu would run off the composer. */
+  right: 0;
+  left: auto;
+  bottom: calc(100% + var(--space-2));
+  z-index: 20;
+  min-width: 240px;
+  max-width: min(320px, 90vw);
+  max-height: 320px;
+  overflow-y: auto;
+  background: var(--ds-surface);
+  border: 1px solid var(--ds-border);
+  border-radius: var(--ds-radius-lg, 12px);
+  box-shadow: var(--shadow-elevated, 0 8px 24px rgba(0,0,0,.10));
+  padding: var(--space-2);
+  list-style: none;
+  margin: 0;
+  animation: cloudchat-menu-in 100ms var(--ds-ease-enter, ease) both;
+}
+/* Dashboard: the composer sits high on the page and the footer row is lower
+   still, so an upward menu would cover the input it belongs to — open down.
+   In a live conversation the composer is pinned to the bottom, where the
+   default upward direction is the only one with room. */
+html[data-ui-layout="rail"] .cloud-chat-main:has(#chat-capabilities:not([hidden])) .cloud-chat-agent-menu {
+  top: calc(100% + var(--space-2));
+  bottom: auto;
+  animation-name: cloudchat-menu-in-down;
+}
+.cloud-chat-agent-menu[hidden] { display: none; }
+@media (prefers-reduced-motion: reduce) {
+  .cloud-chat-agent-menu { animation: none; }
+}
+
+.cloud-chat-agent-menu-item {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: 8px var(--space-3);
+  border-radius: var(--ds-radius-md, 8px);
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition:
+    background var(--ds-motion-fast, 120ms),
+    border-color var(--ds-motion-fast, 120ms);
+}
+.cloud-chat-agent-menu-item:hover,
+.cloud-chat-agent-menu-item:focus-visible {
+  background: var(--ds-accent-info-bg);
+  border-color: var(--ds-accent-info-line);
+  outline: none;
+}
+.cloud-chat-agent-menu-item-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.cloud-chat-agent-menu-item-label {
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  color: var(--ds-text-primary);
+}
+.cloud-chat-agent-menu-item-hint {
+  font-size: var(--text-xs);
+  color: var(--ds-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Check mark on the agent this conversation is already with. */
+.cloud-chat-agent-menu-item-tick {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  color: var(--ds-assistant);
+  visibility: hidden;
+}
+.cloud-chat-agent-menu-item.is-current .cloud-chat-agent-menu-item-tick {
+  visibility: visible;
+}
+/* Empty / error state inside the menu — not a menuitem, not clickable. */
+.cloud-chat-agent-menu-note {
+  padding: 8px var(--space-3);
+  font-size: var(--text-xs);
+  color: var(--ds-text-secondary);
+}
