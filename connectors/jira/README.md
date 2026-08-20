@@ -237,11 +237,71 @@ python -m connectors.jira.transform \
 > the file instead: every row it held belongs to a deleted issue.
 
 **Common transformations (both modes):**
-- Extracts plain text from ADF (Atlassian Document Format)
+- Extracts plain text from ADF (Atlassian Document Format), inlining link URLs
+  into the text — see [ADF link URLs](#adf-link-urls)
 - Maps custom field IDs to human-readable names
 - Normalizes nested structures into flat tables
 - Links attachments to local file paths
 - Enforces explicit PyArrow schema for consistent types across months
+
+#### ADF link URLs
+
+`extract_text_from_adf` feeds three stored columns — `comments.body`,
+`issues.description` and `issues.context` — and two ADF constructs keep their
+target *outside* any text node, so a text-node walk lost both:
+
+| construct | where the URL lives | rendered as |
+|---|---|---|
+| `inlineCard` / `blockCard` / `embedCard` (smart link) | `attrs.url` (or `attrs.data.url` / `attrs.data["@id"]` on a resolved blockCard) — **no text child at all** | the bare URL, as a token in the sentence flow |
+| `text` node with a `link` mark | `marks[].attrs.href` — only the anchor text is a text node | `anchor text (href)` |
+
+Hrefs are emitted verbatim, `mailto:` scheme included, **except that a
+credential-bearing parameter value is replaced with `REDACTED`**. Jira hands out
+URLs carrying bearer credentials in the query string (a Service Desk
+`unsubscribe?jwt=…` link is a signed token authorising an action), and these
+columns are distributed to analyst laptops as parquet and read by agents — so
+the URL is kept whole and identifiable and only the values go. Path, scheme,
+ordering, separators and non-secret parameters are untouched, and the fragment
+is covered as well as the query, because OAuth's implicit flow puts the token
+after the `#`.
+
+Parameter names are matched in two tiers, because over-redacting is the same
+bug class as the loss this renderer exists to fix:
+
+| tier | names | covers |
+|---|---|---|
+| separator-insensitive substring | `token`, `jwt`, `secret`, `password`, `passwd`, `signature`, `credential`, `apikey` | `access_token`, `refresh_token`, `mfaManagementToken`, `api_key`, `api-key` |
+| whole name only | `tok`, `sig`, `key`, `pin`, `auth`, `code`, `sdata` | as substrings these would fire on `design`, `author`, `keyword` |
+
+Two boundaries worth knowing. The autolink comparison runs on the **raw** href:
+redacting first would make a tokened URL stop matching its own anchor text, and
+the labelled form would then print the credential it had just removed. And
+anchor text is prose, never rewritten — an author documenting
+`?token=<project-token>` keeps it, exactly as before this change. Only URLs the
+renderer itself emits are redacted.
+
+The parenthesised copy is suppressed where the anchor text already *is* the
+target: an href differing only by a trailing slash emits the href, and one that
+is the anchor text plus a scheme Jira's autolinker inferred emits the anchor
+text — Jira links a bare `SKILL.md` to `http://SKILL.md`, and emitting that href
+would rewrite an authored word into a URL that never existed.
+
+A fragment that renders to nothing — a `media` node, a `hardBreak`, the
+space-only text node Jira appends after an inline card — is dropped rather than
+joined, so it leaves no gap in the sentence. Only fragment *edges* are
+normalised: a `codeBlock`'s newlines and indentation are content and survive
+verbatim, as does a run of spaces an author typed.
+
+Two things this does **not** cover:
+
+- `changelog.from_value` / `to_value` never touch this renderer. They are Jira's
+  own wiki-markup strings from `fromString` / `toString`.
+- **Rows written before this landed keep their lossy text**, and keep any
+  credential a pre-fix walk had already stored from a pasted tokened URL.
+  Re-transforming them is a separate operation over the cached raw JSON — no
+  Jira traffic needed — and it applies the redaction above as it goes. Table
+  structure (cell and row boundaries collapse to whitespace) and `media` alt
+  text are likewise still flattened away.
 
 ### 5. Data Distribution
 
