@@ -174,6 +174,53 @@ class TestEmailAuth:
         assert resp.status_code == 200
         assert "Check Your Email" in resp.text
 
+    def test_magic_link_falls_back_to_request_origin_not_localhost(self, client, monkeypatch):
+        """With no pinned public origin, the emailed link must follow the
+        request, not the `http://localhost:8000` literal.
+
+        `_build_magic_link` used to read SERVER_URL alone with a hard localhost
+        default, so an instance served behind a TLS terminator that never set
+        SERVER_URL mailed its users a sign-in link pointing at their own laptop.
+        """
+        monkeypatch.delenv("SERVER_URL", raising=False)
+        monkeypatch.delenv("AGNES_BASE_URL", raising=False)
+        monkeypatch.setenv("LOCAL_DEV_MODE", "1")
+        resp = client.post("/auth/email/send-link", json={"email": "ml@test.com"})
+        assert resp.status_code == 200
+        link = resp.json()["dev_link"]
+        assert link.startswith("http://testserver/auth/email/verify"), link
+        assert "localhost:8000" not in link
+
+    def test_magic_link_web_form_falls_back_to_request_origin(self, client, monkeypatch):
+        """Same fallback on the web-form door — asserted on the DELIVERED mail,
+        which is built by a second call site (`_send_email`) that has to agree
+        with the one feeding the dev/console link."""
+        monkeypatch.delenv("SERVER_URL", raising=False)
+        monkeypatch.delenv("AGNES_BASE_URL", raising=False)
+        monkeypatch.delenv("LOCAL_DEV_MODE", raising=False)
+        monkeypatch.setenv("SMTP_HOST", "smtp.test.invalid")
+        sent: list = []
+        monkeypatch.setattr("smtplib.SMTP", _recording_smtp(sent))
+        resp = client.post("/auth/email/send-link/web", data={"email": "ml@test.com"})
+        assert resp.status_code == 200
+        assert len(sent) == 1, "no mail recorded"
+        body = str(sent[0])
+        assert "http://testserver/auth/email/verify" in body, body
+        assert "localhost:8000" not in body
+
+    def test_magic_link_honors_pinned_public_origin(self, client, monkeypatch):
+        """An operator-pinned origin still wins over the request, and
+        AGNES_BASE_URL takes precedence over SERVER_URL (public_base_url's
+        documented order)."""
+        monkeypatch.setenv("LOCAL_DEV_MODE", "1")
+        monkeypatch.setenv("SERVER_URL", "https://from-server-url.example.com")
+        resp = client.post("/auth/email/send-link", json={"email": "ml@test.com"})
+        assert resp.json()["dev_link"].startswith("https://from-server-url.example.com/auth/email/verify")
+
+        monkeypatch.setenv("AGNES_BASE_URL", "https://pinned.example.com/")
+        resp = client.post("/auth/email/send-link", json={"email": "ml@test.com"})
+        assert resp.json()["dev_link"].startswith("https://pinned.example.com/auth/email/verify")
+
     def test_verify_invalid_token(self, client):
         resp = client.post(
             "/auth/email/verify",
