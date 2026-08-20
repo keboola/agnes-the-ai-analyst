@@ -679,24 +679,35 @@ function encodePath(segments) {
 // renderAll()). `options` is `[{value, label}]`, already fully known at
 // construction time (a fixed bool pair, or the registry's own `options`
 // list) — not the case ds.dropdown()'s own callers avoid it for elsewhere
-// (an option list rebuilt later with no re-init hook; see workspace.html's
-// `#ws-owner`).
-function dsDropdownMarkup(fieldId, options, selectedValue) {
+// (an option list rebuilt later with no re-init hook).
+function dsDropdownMarkup(fieldId, options, selectedValue, ariaLabel) {
   const current = options.some(o => o.value === selectedValue)
     ? selectedValue
     : (options[0] ? options[0].value : null);
   const currentLabel = (options.find(o => o.value === current) || {}).label || "";
   const items = options.map(o => `<li class="ds-dropdown-menu-item${o.value === current ? " is-selected" : ""}" role="menuitemradio" aria-checked="${o.value === current}" tabindex="0" data-value="${escHtml(o.value)}">${escHtml(o.label)}</li>`).join("");
+  // The field's own <label for="..."> points at the NATIVE <select>, which
+  // `paper-skin.css` sets to `display:none` on the default theme — so without
+  // this the visible control has no accessible name and a screen reader
+  // announces a bare "true" with no indication which setting that is. Same
+  // shape the `dropdown` macro in `_components.html` uses for its `aria_label`
+  // parameter: a visually-hidden name span, then `aria-labelledby`
+  // concatenating field name and current value.
+  const name = ariaLabel ? String(ariaLabel) : "";
+  const nameSpan = name
+    ? `<span class="ds-dropdown-name" id="${fieldId}-dd-name">${escHtml(name)}</span>`
+    : "";
+  const labelledBy = name ? ` aria-labelledby="${fieldId}-dd-name ${fieldId}-dd-btn-label"` : "";
   return `<div class="ds-dropdown" data-ds-dropdown-target="${fieldId}">
-    <button type="button" class="ds-dropdown-btn" id="${fieldId}-dd-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="${fieldId}-dd-menu">
-      <span class="ds-dropdown-btn-label" id="${fieldId}-dd-btn-label">${escHtml(currentLabel)}</span>
+    <button type="button" class="ds-dropdown-btn" id="${fieldId}-dd-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="${fieldId}-dd-menu"${labelledBy}>
+      ${nameSpan}<span class="ds-dropdown-btn-label" id="${fieldId}-dd-btn-label">${escHtml(currentLabel)}</span>
       <svg class="ds-dropdown-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
     </button>
-    <ul class="ds-dropdown-menu" id="${fieldId}-dd-menu" role="menu" aria-label="Options" hidden>${items}</ul>
+    <ul class="ds-dropdown-menu" id="${fieldId}-dd-menu" role="menu" aria-label="${escHtml(name || "Options")}" hidden>${items}</ul>
   </div>`;
 }
 
-function renderLeafInput(fieldId, section, pathSegments, kind, value, opts, isUnset) {
+function renderLeafInput(fieldId, section, pathSegments, kind, value, opts, isUnset, fieldLabel) {
   const dottedKey = (pathSegments || []).join(".");
   const dataPath = encodePath(pathSegments);
   const leafKey = pathSegments && pathSegments.length ? pathSegments[pathSegments.length - 1] : "";
@@ -730,7 +741,7 @@ function renderLeafInput(fieldId, section, pathSegments, kind, value, opts, isUn
       <option value="false" ${!v ? "selected" : ""}>false</option>
     </select>`;
     const ddOptions = [{ value: "true", label: "true" }, { value: "false", label: "false" }];
-    return nativeSelect + dsDropdownMarkup(fieldId, ddOptions, v ? "true" : "false");
+    return nativeSelect + dsDropdownMarkup(fieldId, ddOptions, v ? "true" : "false", fieldLabel);
   }
   if (kind === "select" && Array.isArray(opts && opts.spec && opts.spec.options)) {
     const sel = value == null ? "" : String(value);
@@ -739,7 +750,7 @@ function renderLeafInput(fieldId, section, pathSegments, kind, value, opts, isUn
       `<option value="${escHtml(o.value)}" ${sel === o.value ? "selected" : ""}>${escHtml(o.label)}</option>`
     ).join("");
     const nativeSelect = `<select id="${fieldId}" data-section="${section}" data-key="${escHtml(dottedKey)}" data-path="${dataPath}" class="ds-dropdown-native">${options}</select>`;
-    return nativeSelect + dsDropdownMarkup(fieldId, ddOptions, sel);
+    return nativeSelect + dsDropdownMarkup(fieldId, ddOptions, sel, fieldLabel);
   }
   // Default: text. Use the registry's default when unset, else the value.
   const v = isUnset
@@ -1018,7 +1029,7 @@ function renderNestedField(section, pathSegments, label, value, spec, depth) {
     const dataPath = encodePath(segs);
     inp = `<textarea id="${fieldId}" data-section="${section}" data-key="${escHtml(dottedKey)}" data-path="${dataPath}" data-cast="json" placeholder="${isUnset ? 'unset — paste JSON to populate' : ''}">${escHtml(blobValue)}</textarea>`;
   } else {
-    inp = renderLeafInput(fieldId, section, segs, kind, value, { spec }, isUnset);
+    inp = renderLeafInput(fieldId, section, segs, kind, value, { spec }, isUnset, label);
   }
 
   return `
