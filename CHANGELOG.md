@@ -10,7 +10,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
-<<<<<<< HEAD
 ### Changed
 
 - **Every admin↔analyst crossing now carries its origin, so no crossing loses your place.** The seam between the governance tree (`/admin/*`) and the consumption tree (Library, `/catalog/*`) was crossed by links that forgot where you came from: the package workspace's *"View as analyst"* landed on the reading page whose back link pointed at the Library; the Simulate lens's *"Share it →"* landed on the package **index** with the person dropped; and coming back to `/admin/access` reset the filter, scope and tree. The `?from=` pattern the store pages proved (`?from=admin-moderation`) is now the general contract: **"Open analyst page →"** (renamed — the reader arrives as themselves, so the old label claimed a preview it never was) carries `?from=admin` and the reading page's back link becomes *"← Back to Admin: {package}"*; Simulate's stop rows land on the specific package with `?from=simulate&user=`, the page shows *"Fixing access for {person} — their groups: …"* with a one-click *"Re-check {person} →"* back into the same preview; the picked person rides the URL (`?user=` deep link in and out), and the Access workspace's working set (filter, scope) survives the round trip. Grant rows on `/admin/access` are links now — the page that decides "who gets what" can finally answer "what *is* that" in one click — and the rail keeps **Library** lit on `/catalog/*`, `/memory/d/*`, `/apps/detail/*` and `/marketplace/*`, which used to highlight nothing at all.
@@ -43,7 +42,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Internal
 
 - **The Catalog/Marketplace fold's stale-guard debt paid down.** Deleted the two orphaned browse-shell templates (`catalog_unified.html`, `marketplace.html`) and the test files that asserted their markup (`test_web_catalog_unified.py`, `test_web_catalog_reshape.py`, `test_web_stack_card_v56_metadata.py`), removed the dead `_catalog_card_data`/`_catalog_card_memory` adapters (their upload sibling survives — the Artefacts band renders through it), repointed the toolbar/tour guards from the retired `#lib-stack-toggle` to the Scope segment, retired the per-page assertions that read the folded shells (`most_popular` placeholder, marketplace browse CTA/facet, classic memory-grid add-state — each with a pointer to where the surviving behavior is guarded), gave `/marketplace/guide/curated` a reciprocal inbound link from the flea guide (its only door was the deleted browse page), and rewrote `scripts/e2e/smoke_catalog.sh` to smoke the page the redirect actually lands on.
-=======
+
 ## [0.83.99] - 2026-08-20
 
 ### Changed
@@ -92,7 +91,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Fixed
 
 - **`GET /api/chat/sessions` answers a restricted principal with 403 instead of crashing.** `require_resource_access` hands back a frozen dataclass for a co-session or agent-session principal, so `user["email"]` raised `TypeError` and the caller got a 500 where 403 was the answer. Seven sibling routes on that router already carried `_reject_restricted_principal` for exactly this hazard; this one was missed, and listing "your" conversations has no restricted-principal meaning anyway — a co-session has no single identity whose history it would be, and an agent-session must not enumerate its owner's. Found while projecting `agent_id` onto that same response. A structural guard now walks every handler on the router, so a NEW route cannot quietly join the three that still lack it (`reissue_ticket`, `list_messages`, `archive_session` — left alone deliberately: for those a restricted principal may be legitimate, and guarding them blind would break co-drive rather than harden it).
->>>>>>> origin/main
 
 ## [0.83.95] - 2026-08-20
 
