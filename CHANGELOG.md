@@ -10,6 +10,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.84.4] - 2026-08-20
+
+### Fixed
+
+- **The install prompt read as prompt injection to Claude Code's own classifier.** The rendered CLI setup guide (`/home` step 4, `app/web/setup_instructions.py`) told the agent things it had no business asserting on the reader's behalf: with a TLS trust block emitted it appended that the fallback chain "is documented and OK to use", and it instructed "never print the token" — text that pre-empts a safety judgement reads as written to defuse one, and a real install transcript quoted that reassurance back as the reason to distrust the prompt. The preamble now states brand, host and binary as one system without arguing for trust, and the token line says the steps use the file path rather than forbidding display. `scripts/dev/prompt_phrases.py` gains the five phrases so they cannot come back, and the bundled seed template is reworded to match — tier 2 of the banned-phrase guard is now enforced with no baseline for it. **Both install-prompt sources carry the hardening, not just the renderer**: which one a deployment serves is an operator setting (`resolve_prompt` honors the prompt's `source_mode`, and `'git'` binds to the IWT clone's copy of the template instead of the Python renderer), so the redirect cap and the two-signal token pre-check are applied to the seed template as well, with a guard asserting the pair rather than the banned-phrase tiers, which can only check that text is absent.
+
+- **The setup guide's token pre-check told the agent to continue when nobody had signed in.** It keyed on `~/.config/agnes/token.json` alone — a file holding `{access_token, email}` and never a server, one per machine, so on a laptop signed in to a different Agnes deployment it exists and proves nothing. Keying on `config.yaml`'s `server:` key instead swapped one false positive for a worse one: `/cli/install.sh` writes that key at install time and prints "1. Sign in…" immediately after, so the ordinary fresh-install path matched and the agent was sent past a genuinely absent credential to fail three steps later inside `agnes init --token-file`. The check now requires **both** signals in one command, and anything else — including the short-circuit's empty output — stops and points at `/home` step 4.
+
+- **The CLI wheel downloads no longer follow a redirect.** `curl -L` was retained deliberately so a hop is an explicit failure (exit 47) rather than a silent fetch from wherever the redirect points; `--max-redirs 0` is now on both wheel downloads in the rendered guide and on the `/cli/install.sh` copy.
+
+- **`agnes auth login` printed the sign-in URL only when it could not open a browser.** On a host where the browser launch silently no-ops, the flow waited on a URL the user never saw. The URL is now printed unconditionally, with "(could not launch a browser automatically)" reserved for the case that actually happened. The pre-flight echo of a bare `/cli/auth/start` URL is gone — that address cannot complete the flow, so printing it invited a dead end.
+
+- **The workspace template hard-coded an example host.** `config/agnes_workspace_template.txt` shipped `--server-url https://agnes.example.com` where `agnes init` substitutes `{server_url}`, so the rendered file named a server nobody runs.
+
 ## [0.84.3] - 2026-08-20
 
 ### Added
