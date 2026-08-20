@@ -1430,13 +1430,14 @@ class JiraService:
         # Check if this node is a media node
         node_type = node.get("type", "")
         if node_type in ("mediaSingle", "mediaInline", "media"):
-            attrs = node.get("attrs", {})
-            media_id = attrs.get("id")
-            if media_id:
+            # ``attrs`` is third-party JSON and need not be an object; reading it
+            # as one raised, and the raise escaped the walk, not just this node.
+            attrs = node.get("attrs")
+            if isinstance(attrs, dict) and (media_id := attrs.get("id")):
                 media_ids.append(media_id)
 
         # Recursively check content
-        content = node.get("content", [])
+        content = node.get("content")
         if isinstance(content, list):
             for child in content:
                 media_ids.extend(self._extract_media_from_adf(child))
