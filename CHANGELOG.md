@@ -43,6 +43,83 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 - **The Catalog/Marketplace fold's stale-guard debt paid down.** Deleted the two orphaned browse-shell templates (`catalog_unified.html`, `marketplace.html`) and the test files that asserted their markup (`test_web_catalog_unified.py`, `test_web_catalog_reshape.py`, `test_web_stack_card_v56_metadata.py`), removed the dead `_catalog_card_data`/`_catalog_card_memory` adapters (their upload sibling survives — the Artefacts band renders through it), repointed the toolbar/tour guards from the retired `#lib-stack-toggle` to the Scope segment, retired the per-page assertions that read the folded shells (`most_popular` placeholder, marketplace browse CTA/facet, classic memory-grid add-state — each with a pointer to where the surviving behavior is guarded), gave `/marketplace/guide/curated` a reciprocal inbound link from the flea guide (its only door was the deleted browse page), and rewrote `scripts/e2e/smoke_catalog.sh` to smoke the page the redirect actually lands on.
 
+## [0.84.0] - 2026-08-20
+
+### Added
+- **The "Add data source" wizard can now browse a Snowflake account instead of
+  asking you to type schema and table names.** `GET /api/admin/data-sources/
+  {source_type}/tables` (admin-only, Snowflake today) lists the schemas and
+  tables the configured user can see, and the wizard's Snowflake step renders
+  them as the same schema-grouped checkbox picker the Keboola step uses —
+  filter, select-all and per-schema counts included. Hand-written rows remain
+  underneath for anything the listing cannot reach, and a failed listing
+  degrades to them instead of blocking the step. Snowflake was the last source
+  type whose step was free-text only: nothing validated the strings against the
+  account, and because the registry id is composed as `schema + "_" + table`, a
+  name pasted with its schema prefix already attached silently produced a
+  doubled id (`gold_gold_bi_supply_demand`) pointing at a table that does not
+  exist — which then never heals, since only a re-save re-runs the
+  remote-extract build. Listing is read-only: it attaches, reads
+  `information_schema.tables`, and writes no extract and no registry row. It
+  refuses hosts outside `AGNES_REMOTE_ATTACH_HOST_ALLOWLIST` (the same egress
+  gate the extract build applies) and answers 502 rather than an empty listing
+  when the driver or catalog query fails, so "the account has no tables" is
+  never a lie.
+
+### Security
+
+- **A failing Snowflake ATTACH no longer carries the credential in its error.**
+  `attach_snowflake` executes a `CREATE OR REPLACE SECRET … (PASSWORD '…')` /
+  `PRIVATE_KEY $PK$…$PK$` statement, and DuckDB's parser-class errors quote the
+  offending statement back — so on a build whose extension does not recognise one
+  of those options, the raised error carried the secret. Every caller then
+  forwarded it somewhere durable: a listing 502 and a server log line, and the
+  extract build into `sync_state.error`, which the admin registry, `/admin/sync`
+  and `agnes admin list-tables` render unredacted. The value is now scrubbed at
+  the one place that holds it, so all callers inherit the guarantee — and the
+  scrub covers the key-pair arm, which is the one that actually leaks. The
+  statement does not embed the stored credential there: it embeds
+  `_private_key_pem_and_passphrase(...)`'s output, which normalizes the key to
+  an unencrypted PKCS#8 PEM. For a PKCS#1 key, an encrypted key plus
+  passphrase, a JSON wrapper or a filesystem path — most real key-pair
+  deployments — that PEM is not a substring of the stored token, so scrubbing
+  the token alone matched nothing, and the `PRIVATE_KEY $PK$…$PK$` regex needs
+  a closing delimiter that a truncated parser echo has already cut off. The
+  builder now returns the values it embedded, and the literal patterns have
+  unterminated variants, so a whole private key can no longer ride out on a
+  truncated error.
+
+### Fixed
+- **Catalog preview now works for `query_mode='remote'` tables.** The sample
+  endpoint (`GET /api/v2/sample/{id}`, feeding the catalog preview and
+  `agnes describe`) refused every non-BigQuery remote row with "never
+  materialized — no sample to preview". It now serves a live sample through
+  the same analytics view `/api/query` uses (`_remote_attach` re-ATTACH), so
+  Snowflake/Keboola/Databricks-with-attach remote rows preview like any other
+  table. The mode check also runs before parquet resolution, so a row flipped
+  materialized→remote no longer previews its stale leftover parquet. Rows
+  with an access policy stay fail-closed on this surface (same ratchet as the
+  BigQuery live branch); when the view cannot serve, the refusal message now
+  carries the real error instead of only the reassurance. `remote` rows are
+  also exempt from the 5-minute-to-an-hour sample cache: "every read goes
+  live" is the argument for evaluating this branch ahead of parquet
+  resolution, and serving an hour-old cached copy would be the same staleness
+  from a different store. `docs/table-access-policies.md`'s known-gap list
+  named only BigQuery and Databricks for the fail-closed preview refusal and
+  now covers every remote engine, including the note that the two
+  quick-preview surfaces have diverged (`/api/v2/sample` serves unpolicied
+  remote rows live, `/api/v2/scan` still refuses them).
+
+- **The "Add data source" Snowflake picker showed its per-row registration
+  results where nobody could see them.** With more than one schema every group
+  renders collapsed, and `_registerSfRows` wrote `registering…` / `✗ failed`
+  straight into those hidden rows — while step 2's handler returns silently on
+  zero successes precisely because it assumes the statuses are on screen. A
+  wholly-failed registration was therefore an enabled button that appeared to
+  do nothing. It now drops any active filter and opens the groups being
+  written to first, the same preparation the Keboola picker's
+  `registerSelected` already did.
+
 ## [0.83.99] - 2026-08-20
 
 ### Changed

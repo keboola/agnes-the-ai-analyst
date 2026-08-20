@@ -429,6 +429,7 @@ from app.api.admin_contributed_skills import router as admin_contributed_skills_
 from app.api.admin_datasource_secrets import router as admin_datasource_secrets_router
 from app.api.admin_slack_secrets import router as admin_slack_secrets_router
 from app.api.admin_source_connections import router as source_connections_admin_router
+from app.api.admin_source_discovery import router as source_discovery_admin_router
 from app.api.mcp_passthrough import router as mcp_passthrough_router
 from app.api.mcp_per_table import router as mcp_per_table_router
 from app.api.mcp_user_secrets import router as mcp_user_secrets_router
@@ -2668,6 +2669,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_datasource_secrets_router)
     app.include_router(admin_slack_secrets_router)
     app.include_router(source_connections_admin_router)
+    app.include_router(source_discovery_admin_router)
     app.include_router(mcp_passthrough_router)
     app.include_router(mcp_user_secrets_router)
     app.include_router(mcp_oauth_connect_router)

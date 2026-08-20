@@ -11244,7 +11244,7 @@
   "info": {
     "description": "Self-hosted AI harness: governed data access, skills marketplace, corporate memory, and agent workspaces",
     "title": "AI Harness",
-    "version": "0.83.78"
+    "version": "0.83.93"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -16842,6 +16842,87 @@
         "summary": "Remove Tool From Package",
         "tags": [
           "data-packages"
+        ]
+      }
+    },
+    "/api/admin/data-sources/{source_type}/tables": {
+      "get": {
+        "description": "List the schemas + tables the configured Snowflake user can see.\n\nPowers the \"Add data source\" wizard's Snowflake table picker, so the\noperator selects real names instead of typing them. Read-only: it attaches,\nreads ``information_schema.tables`` and detaches \u2014 no extract is written and\nno registry row is touched (registration stays\n``POST /api/admin/register-table``).\n\nREST-only \u2014 admin-UI browse helper with no analyst-facing CLI/MCP analogue,\nexactly like its Keboola sibling (see ``_EXEMPT`` in\n``tests/test_documentation_api_triple_surface.py``). The registration step\nit feeds is already triple-surface.\n\n400 when ``source_type`` is not browsable, or when Snowflake is not\nconfigured on this instance, or when the resolved host is outside\n``AGNES_REMOTE_ATTACH_HOST_ALLOWLIST``. 502 when the driver or the catalog\nquery fails \u2014 deliberately not an empty listing, which would read as \"the\naccount has no tables\".\n\nReturns ``{\"source_type\", \"database\", \"schemas\": [{\"name\", \"tables\":\n[{\"name\", \"table_type\"}, ...]}, ...]}``.",
+        "operationId": "list_source_tables_api_admin_data_sources__source_type__tables_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "source_type",
+            "required": true,
+            "schema": {
+              "title": "Source Type",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Narrow the listing to one schema.",
+            "in": "query",
+            "name": "schema",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Narrow the listing to one schema.",
+              "title": "Schema"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Source Tables",
+        "tags": [
+          "admin"
         ]
       }
     },

@@ -1043,6 +1043,25 @@ real test message through the same send path the login flows use. CLI:
 
 - /api/admin/keboola/test-connection
 
+### `/api/admin/data-sources` — Source catalog discovery
+
+Admin-only, read-only browse of a configured source's catalog, for the
+"Add data source" wizard's table picker. Keyed on `source_type` rather than a
+connection id, because the sources that need it have no connection record — their
+coordinates live in `data_source.<name>` (instance.yaml / `/admin/server-config`).
+Snowflake today; Keboola keeps its per-connection listing below.
+
+- /api/admin/data-sources/{source_type}/tables
+
+`GET …/{source_type}/tables` attaches, reads `information_schema.tables` and
+detaches — no extract is written and no registry row touched (registration stays
+`POST /api/admin/register-table`). Optional `?schema=` narrows to one schema.
+Returns `{source_type, database, schemas: [{name, tables: [{name, table_type}]}]}`.
+400 when the source type is not browsable, when the source is not configured, or
+when the resolved host is outside `AGNES_REMOTE_ATTACH_HOST_ALLOWLIST`; 502 when
+the driver or catalog query fails — never an empty listing, which would read as
+"the account has no tables".
+
 ### `/api/admin/source-connections` — Named source connections (multi-project Keboola, #731)
 
 Admin-only CRUD for named data-source connections. Enables multiple Keboola projects
