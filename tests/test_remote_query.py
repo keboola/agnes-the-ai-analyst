@@ -266,6 +266,18 @@ class TestValidateSql:
     @pytest.mark.parametrize(
         "sql",
         [
+            "SELECT id FROM orders;",
+            "select count(*) from orders;",
+        ],
+    )
+    def test_allows_single_trailing_semicolon(self, sql):
+        # A single trailing `;` is routine SQL formatting, not a second
+        # statement — must not be confused with the multi-statement guard.
+        _validate_sql(sql)
+
+    @pytest.mark.parametrize(
+        "sql",
+        [
             "-- leading comment\nSELECT 1 AS x",
             "-- first\n-- second\nSELECT id FROM orders",
             "/* block comment */ SELECT 1 AS x",
@@ -343,6 +355,18 @@ class TestValidateBqSql:
     def test_allowed_bq_sql(self, sql):
         """Valid read-only BQ queries must pass."""
         # Should not raise
+        _validate_bq_sql(sql)
+
+    @pytest.mark.parametrize(
+        "sql",
+        [
+            "SELECT id FROM project.dataset.table;",
+            "SELECT * FROM dataset.INFORMATION_SCHEMA.COLUMNS;",
+        ],
+    )
+    def test_allows_single_trailing_semicolon(self, sql):
+        # A single trailing `;` is routine SQL formatting, not a second
+        # statement — must not be confused with the multi-statement guard.
         _validate_bq_sql(sql)
 
     @pytest.mark.parametrize(

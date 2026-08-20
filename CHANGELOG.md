@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- **`/api/query` and the BigQuery hybrid-query path rejected valid single-`SELECT` queries that ended in a semicolon.** `_assert_select_only` (`app/api/query.py`) and its `src/remote_query.py` counterparts (`_validate_sql`, `_validate_bq_sql`, used by `/api/query/hybrid` and `run_remote_select_to_arrow`) all blocked `;` as a bare substring anywhere in the SQL to catch multi-statement injection, but that also caught the single trailing semicolon most LLM-generated or CLI-issued queries end with — rejecting e.g. `SELECT * FROM orders;` with "Only single SELECT queries are allowed" even though it's one statement. Each validator now strips exactly one trailing semicolon before scanning; a `;` anywhere else (a genuine second statement) is still blocked.
+
 ## [0.83.92] - 2026-08-20
 
 ### Changed

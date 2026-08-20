@@ -149,6 +149,13 @@ class TestQuerySecurity:
                        headers=_headers(token))
         assert resp.status_code == 400
 
+    def test_allows_single_trailing_semicolon(self, client):
+        c, token = client
+        resp = c.post("/api/query", json={"sql": "SELECT 1 as test;"},
+                       headers=_headers(token))
+        assert resp.status_code == 200
+        assert resp.json()["columns"] == ["test"]
+
     def test_blocks_non_select(self, client):
         c, token = client
         resp = c.post("/api/query", json={"sql": "CREATE TABLE pwned (id INT)"},

@@ -161,9 +161,12 @@ def _validate_sql(sql: str) -> None:
         RemoteQueryError: with error_type="query_error" if validation fails.
     """
     sql_lower = sql.strip().lower()
+    # Tolerate exactly one trailing semicolon (see app/api/query.py's
+    # _assert_select_only) rather than treating it as a second statement.
+    body = sql_lower[:-1] if sql_lower.endswith(";") else sql_lower
 
     for keyword in _BLOCKED_KEYWORDS:
-        if keyword in sql_lower:
+        if keyword in body:
             raise RemoteQueryError(
                 f"Blocked SQL pattern: {keyword!r}",
                 error_type="query_error",
@@ -171,7 +174,7 @@ def _validate_sql(sql: str) -> None:
             )
 
     import re as _re
-    if not _re.match(r"^(select|with)\s", _strip_leading_sql_comments(sql_lower)):
+    if not _re.match(r"^(select|with)\s", _strip_leading_sql_comments(body)):
         raise RemoteQueryError(
             "Query must start with SELECT or WITH",
             error_type="query_error",
@@ -195,14 +198,17 @@ _BQ_BLOCKED_KEYWORDS = [
 def _validate_bq_sql(sql: str) -> None:
     """Validate BQ SQL — narrower than DuckDB blocklist, only blocks writes."""
     sql_lower = sql.strip().lower()
+    # Tolerate exactly one trailing semicolon (see app/api/query.py's
+    # _assert_select_only) rather than treating it as a second statement.
+    body = sql_lower[:-1] if sql_lower.endswith(";") else sql_lower
     for keyword in _BQ_BLOCKED_KEYWORDS:
-        if keyword in sql_lower:
+        if keyword in body:
             raise RemoteQueryError(
                 f"Blocked BQ SQL keyword: {keyword.strip()}",
                 error_type="query_error",
             )
     import re as _re
-    if not _re.match(r"^(select|with)\s", _strip_leading_sql_comments(sql_lower)):
+    if not _re.match(r"^(select|with)\s", _strip_leading_sql_comments(body)):
         raise RemoteQueryError(
             "BQ query must start with SELECT or WITH",
             error_type="query_error",
