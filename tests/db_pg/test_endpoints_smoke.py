@@ -432,6 +432,47 @@ class TestRBACSmoke:
 
 
 # ---------------------------------------------------------------------------
+# Admin Simulate — Library preview
+# ---------------------------------------------------------------------------
+
+
+class TestAdminLibraryPreviewSmoke:
+    COVERED_ROUTES = {
+        "GET /api/admin/users/{user_id}/library-preview",
+    }
+
+    def test_library_preview_for_admin(self, seeded_app_both):
+        """200 + the {mode, sections} envelope. A freshly seeded analyst has no
+        grants, so sections is legitimately empty — the shape is what this
+        asserts; the projection itself is StackResolver.browse, covered where
+        the resolver is."""
+        r = seeded_app_both["client"].get(
+            "/api/admin/users/analyst1/library-preview",
+            headers=_admin_headers(seeded_app_both),
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["mode"] in ("auto", "classic")
+        assert isinstance(body["sections"], list)
+
+    def test_library_preview_denied_for_non_admin(self, seeded_app_both):
+        """Simulate is an admin lens on someone else's Library — 403 even when
+        the caller asks about themselves."""
+        r = seeded_app_both["client"].get(
+            "/api/admin/users/analyst1/library-preview",
+            headers=_analyst_headers(seeded_app_both),
+        )
+        assert r.status_code == 403, r.text
+
+    def test_library_preview_unknown_user_404(self, seeded_app_both):
+        r = seeded_app_both["client"].get(
+            "/api/admin/users/nope-does-not-exist/library-preview",
+            headers=_admin_headers(seeded_app_both),
+        )
+        assert r.status_code == 404, r.text
+
+
+# ---------------------------------------------------------------------------
 # Sync
 # ---------------------------------------------------------------------------
 
