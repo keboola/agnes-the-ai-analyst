@@ -87,6 +87,12 @@ function renderMarkdownSafe(text) {
 let ws = null;
 let currentChatId = null;
 let inFlightToolCalls = new Map();
+// Cards rendered by renderToolCallStart during the turn in progress. Collapsed
+// in one pass once the turn ends (see _collapseFinishedToolCalls) so the
+// transcript settles into answer + a scannable trail of "what ran" instead of
+// a permanently-expanded dump of every stdout/stderr. Cleared by that same
+// pass — a card belongs to exactly one turn's collapse.
+let _currentTurnToolCards = [];
 // tool_use_ids of in-flight preview tools. tool_result frames carry the call id
 // in `frame.tool` (NOT the tool name — see runner._emit_tool_result), so a
 // non-directive preview result (error / data_apps_disabled) is identified by
@@ -1438,7 +1444,8 @@ function handleFrame(frame) {
       resolveQuestionCard(frame);
       break;
     // The terminal frames below all disarm the long-run notification nudge —
-    // a turn that has stopped is no longer worth offering to be pinged about.
+    // a turn that has stopped is no longer worth offering to be pinged about
+    // — and collapse this turn's tool-call cards down to their header line.
     case "cancelled":
       _flushStreamingTail();
       renderSystemNote("Turn cancelled.", "warn");
@@ -1446,6 +1453,7 @@ function handleFrame(frame) {
       $("cancel-btn").hidden = true;
       clearThinkingPlaceholder();
       onboardingNoteTurnEnded();
+      _collapseFinishedToolCalls();
       break;
     case "confirmation_required":
       // The runner stopped the turn at the per-turn tool budget — often no
@@ -1460,6 +1468,7 @@ function handleFrame(frame) {
       $("cancel-btn").hidden = true;
       clearThinkingPlaceholder();
       onboardingNoteTurnEnded();
+      _collapseFinishedToolCalls();
       break;
     case "error":
       _flushStreamingTail();
@@ -1471,6 +1480,7 @@ function handleFrame(frame) {
       $("cancel-btn").hidden = true;
       clearThinkingPlaceholder();
       onboardingNoteTurnEnded();
+      _collapseFinishedToolCalls();
       break;
     case "done":
       // A turn that stopped without ever finalizing (interrupt surfaced as
@@ -1479,6 +1489,7 @@ function handleFrame(frame) {
       _resetStreamingState();
       $("cancel-btn").hidden = true;
       onboardingNoteTurnEnded();
+      _collapseFinishedToolCalls();
       break;
     case "session_participants":
       // §5.3 Co-presence: full re-render of the participant roster.
@@ -2684,13 +2695,19 @@ function resolveQuestionCard(frame) {
 
 function renderToolCallStart(frame) {
   clearThinkingPlaceholder();
-  const wrap = document.createElement("section");
+  // <details>/<summary> — same collapsible idiom as the args/result panels
+  // below, but for the whole card. Open by default so a running (and just-
+  // finished) call stays visible; _collapseFinishedToolCalls folds it once
+  // the turn ends, leaving just this header line as the permanent record.
+  const wrap = document.createElement("details");
   wrap.className = "cloud-chat-tool is-running";
+  wrap.open = true;
   wrap.dataset.tool = frame.tool;
   wrap.dataset.startedAt = String(performance.now());
 
-  // Header line — icon + tool name + args summary. Always visible.
-  const head = document.createElement("div");
+  // Header line — icon + tool name + args summary. Always visible, even
+  // collapsed: it's a <summary>, not a body element.
+  const head = document.createElement("summary");
   head.className = "cloud-chat-tool-head";
   const icon = document.createElement("span");
   icon.className = "cloud-chat-tool-icon";
@@ -2730,6 +2747,15 @@ function renderToolCallStart(frame) {
   meta.textContent = "running…";
   head.appendChild(meta);
 
+  // Chevron — the only visual cue once collapsed that this header still
+  // hides a body. .cloud-chat-tool-head sets display:flex, which drops the
+  // <summary>'s native disclosure marker, so the affordance has to be explicit.
+  const chevron = document.createElement("span");
+  chevron.className = "cloud-chat-tool-chevron";
+  chevron.setAttribute("aria-hidden", "true");
+  chevron.textContent = "›";
+  head.appendChild(chevron);
+
   wrap.appendChild(head);
 
   // Args panel — collapsed by default. Surfaced as a small <details>
@@ -2751,6 +2777,7 @@ function renderToolCallStart(frame) {
 
   $("chat-messages").appendChild(wrap);
   inFlightToolCalls.set(_toolCallId(frame), wrap);
+  _currentTurnToolCards.push(wrap);
   maybeScrollToBottom();
   $("cancel-btn").hidden = false;
 }
@@ -2791,6 +2818,20 @@ function renderToolCallEnd(frame) {
   if (body) wrap.appendChild(body);
 
   maybeScrollToBottom();
+}
+
+/** Fold every tool-call card opened during the turn that just ended back down
+ *  to its header line. Called once per turn, from each of handleFrame's
+ *  terminal cases (done / cancelled / error / confirmation_required) — a
+ *  turn that stops for any reason leaves behind the same settled transcript:
+ *  the answer (or note) plus a scannable trail of "what ran", not a
+ *  permanently-expanded dump of every stdout/stderr. Each card's own
+ *  <details> toggle still opens it back up on click. */
+function _collapseFinishedToolCalls() {
+  for (const wrap of _currentTurnToolCards) {
+    wrap.open = false;
+  }
+  _currentTurnToolCards = [];
 }
 
 /** Heuristic: a stringified tool error coming back from the agent SDK

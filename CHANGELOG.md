@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Changed
+
+- **Web chat tool-call cards collapse to their header line once the turn ends.** A card used to stay fully expanded forever, so a Bash/query card's stdout/stderr sat under the finished answer permanently. Each card is now a `<details>` element, open while its turn runs and folded shut (one click re-expands it) by every terminal frame — `done`, `cancelled`, `error`, `confirmation_required`.
+
 ## [0.83.92] - 2026-08-20
 
 ### Changed

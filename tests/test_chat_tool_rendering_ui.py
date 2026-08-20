@@ -465,3 +465,53 @@ def test_next_action_chips_wear_the_button_radius():
 def test_system_note_styles_exist():
     css = _read(CHAT_CSS)
     assert ".cloud-chat-system-note" in css
+
+
+# ── tool cards: collapse once the turn that opened them ends ────────────────
+# A tool card used to stay fully expanded forever — stdout/stderr sitting in
+# the transcript under the answer with no way to tidy it up. The fix: the
+# card itself is a <details>, open while its turn runs, and every one opened
+# during a turn is folded to its header line the moment that turn ends.
+
+
+def test_tool_call_card_is_a_details_element_open_while_running():
+    js = _read(CHAT_JS)
+    start = js[js.index("function renderToolCallStart") : js.index("function renderToolCallEnd")]
+    assert 'document.createElement("details")' in start, (
+        "the whole card must be collapsible, not just its nested args/result panels"
+    )
+    assert 'document.createElement("summary")' in start, "the header becomes the <details>'s native toggle"
+    assert "wrap.open = true" in start, "expanded while the turn is running and just after — unchanged live behavior"
+    assert "_currentTurnToolCards.push(wrap)" in start, (
+        "tracked so every card opened this turn folds together at turn end"
+    )
+
+
+def test_collapse_finished_tool_calls_folds_and_clears_the_turn_list():
+    js = _read(CHAT_JS)
+    assert "function _collapseFinishedToolCalls" in js
+    fn = js[js.index("function _collapseFinishedToolCalls") : js.index("function _looksLikeToolError")]
+    assert "wrap.open = false" in fn
+    assert "_currentTurnToolCards = []" in fn, "a card belongs to exactly one turn's collapse pass"
+
+
+def test_every_turn_terminal_frame_collapses_this_turns_tool_cards():
+    """done is the normal path, but cancelled/error/confirmation_required also
+    stop the turn — a card left permanently expanded under a note instead of
+    an answer is the same clutter this feature exists to avoid."""
+    js = _read(CHAT_JS)
+    sw = js[js.index("switch (frame.type)") : js.index("function applySessionRename")]
+    for case in ('case "done":', 'case "cancelled":', 'case "confirmation_required":', 'case "error":'):
+        start = sw.index(case)
+        block = sw[start : sw.index("break;", start)]
+        assert "_collapseFinishedToolCalls()" in block, f"{case} must collapse this turn's tool cards"
+
+
+def test_tool_head_summary_gets_pointer_cursor_scoped_to_the_real_toggle():
+    """.cloud-chat-tool-head is also reused (on a plain <div>) by the
+    approval/question cards, which are not collapsible — a bare-class cursor
+    rule would paint a false affordance on those too. The rule must be
+    scoped to the actual <summary>."""
+    css = _read(CHAT_CSS)
+    assert "summary.cloud-chat-tool-head" in css
+    assert re.search(r"(?<!summary)\.cloud-chat-tool-head\s*\{[^}]*cursor:\s*pointer", css) is None
