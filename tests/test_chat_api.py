@@ -171,6 +171,33 @@ def test_get_messages_empty(api_client: TestClient, logged_in_user):
     assert r.json() == []
 
 
+def test_get_messages_exposes_sender_email(api_client: TestClient, logged_in_user):
+    """`chat.js` filters two things on `m.sender_email`: the ArrowUp prompt-recall
+    stack (so a co-drive peer's prompt never surfaces under the owner's history)
+    and `renderMessage`'s peer-attribution badge. Both read rows from THIS
+    endpoint, which did not serialize the field — so `!m.sender_email` was
+    unconditionally true, the recall filter was dead code, and peer names
+    vanished from the transcript after a reload.
+
+    The value is already carried by the repository layer and already exposed to
+    participants by `/api/chat/copresence`; this route is owner-only (a
+    non-owner gets 404 before reaching the payload), so serializing it here
+    discloses nothing new.
+    """
+    c = api_client.post("/api/chat/sessions", json={"surface": "web"}).json()
+    repo = api_client.app.state.chat_repo
+    repo.append_message(session_id=c["id"], role="user", content="mine", sender_email=None)
+    repo.append_message(session_id=c["id"], role="user", content="theirs", sender_email="peer@example.com")
+
+    rows = api_client.get(f"/api/chat/sessions/{c['id']}/messages").json()
+    assert len(rows) == 2, rows
+    assert all("sender_email" in r for r in rows), (
+        "chat.js's recall filter and peer badge both read m.sender_email -- "
+        "omitting it makes both dead code"
+    )
+    assert [r["sender_email"] for r in rows] == [None, "peer@example.com"]
+
+
 def test_archive_session(api_client: TestClient, logged_in_user):
     c = api_client.post("/api/chat/sessions", json={"surface": "web"}).json()
     r = api_client.delete(f"/api/chat/sessions/{c['id']}")
