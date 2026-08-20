@@ -14,6 +14,15 @@
  *
  * Self-bootstraps on every `.ds-dropdown` present at load — no explicit
  * init call needed, same contract as chip-input.js.
+ *
+ * `window.dsDropdownInit(host)` covers the one case load-time bootstrap
+ * can't: markup built entirely client-side from an async fetch (fixed
+ * option list, just not present in the DOM yet at DOMContentLoaded — see
+ * admin_server_config.html). It's the same internal `init` bootstrapAll()
+ * uses, exported rather than duplicated — call it once per host, right
+ * after that host is inserted; init() isn't idempotent (each call adds a
+ * fresh set of listeners), so a host bootstrapAll() already caught must
+ * not be passed here too.
  * ===================================================================== */
 (function () {
   "use strict";
@@ -110,6 +119,8 @@
   function bootstrapAll() {
     document.querySelectorAll(".ds-dropdown").forEach(init);
   }
+
+  window.dsDropdownInit = init;
 
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", bootstrapAll);
