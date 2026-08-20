@@ -156,3 +156,39 @@ def test_bundled_connector_skills_tier3():
             "bundled connector SKILL.md file(s) still have known-dirty "
             f"phrase(s), pending the seed repo re-mirror: {known}"
         )
+
+
+def test_the_seed_template_carries_the_same_two_hardenings_as_the_renderer():
+    """Both install-prompt sources must carry the security-relevant fixes.
+
+    There are two, and which one a deployment serves is an operator setting:
+    `resolve_prompt("install", conn)` honors the prompt's `source_mode`, and
+    `'git'` binds to the IWT clone's copy of this template instead of
+    `app/web/setup_instructions.py`'s renderer (`src/welcome_template.py`).
+
+    So a fix applied only to the Python side silently misses every
+    `source_mode='git'` instance. That happened: the renderer gained
+    `--max-redirs 0` and the two-signal token pre-check while this template
+    kept a bare `curl -fsSL -OJ` and the original "an earlier run already
+    saved the credential, so just continue" false positive — which tells the
+    agent to proceed on a machine where `/cli/install.sh` wrote `server:` and
+    nobody ever signed in.
+
+    The banned-phrase tiers cannot catch this: they scan for phrases that must
+    be ABSENT, and both gaps are about text that must be PRESENT.
+    """
+    from src.connectors_manifest import bundled_seed_path
+    from app.web.setup_instructions import resolve_lines
+
+    tmpl = (bundled_seed_path() / "install-prompt" / "template.md.tmpl").read_text(encoding="utf-8")
+    # The renderer is compared on its RENDERED output, not its source: its
+    # docstrings quote the old wording to explain why it was wrong, and a
+    # source scan would read those as the wording itself.
+    rendered = "\n".join(resolve_lines("agnes.whl"))
+
+    for source, text in (("seed template", tmpl), ("rendered prompt", rendered)):
+        assert "--max-redirs 0" in text, f"{source}: wheel download must refuse redirects"
+        assert "test -f ~/.config/agnes/token.json &&" in text, (
+            f"{source}: the token pre-check must require a saved credential, not just a server match"
+        )
+        assert "so just continue" not in text, f"{source}: the false-positive wording is back"
