@@ -187,7 +187,11 @@ def login(
     token_name = f"Agnes CLI ({socket.gethostname()})"[:80]
 
     if not no_browser:
-        typer.echo(f"Opening {server_url}/cli/auth/start in your browser…")
+        # Deliberately NOT echoing a bare `{server_url}/cli/auth/start` here.
+        # That form is missing the loopback `port` and `state`, so a user who
+        # copied it because no browser appeared would land on a page that
+        # cannot hand the code back. `capture_code_via_browser` prints the
+        # real, complete URL for every run — that is the one to paste.
         typer.echo("Sign in and approve the request — waiting for it to complete.")
 
     try:
@@ -350,7 +354,9 @@ def import_token(
             # read it as neither a rejection nor a fault, so login "verified"
             # against a server it never reached. (Devin Review on #1266.)
             if is_redirect(resp.status_code):
-                typer.echo(moved_server_message(resp.status_code, resp.headers.get("Location", ""), verify_url), err=True)
+                typer.echo(
+                    moved_server_message(resp.status_code, resp.headers.get("Location", ""), verify_url), err=True
+                )
                 raise typer.Exit(1)
             if resp.status_code == 401:
                 detail = "unauthorized"
