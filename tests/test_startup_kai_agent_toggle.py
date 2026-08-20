@@ -240,6 +240,12 @@ def test_auto_upgrade_tick_retries_a_downed_engine_every_tick():
     retry = body.index("up -d kai-agent >/dev/null")
     assert "retrying next tick" in body
     assert gate < retry < body.index("Drift-based change detection")
+    # Role-split VMs: the rolling recreate never touches the engine and the
+    # every-tick retry only starts a DOWN one, so the role-split branch must
+    # recreate the engine itself or an image bump never lands via the tick.
+    role_split_abort = body.index("role-split rolling recreate ABORTED")
+    engine_after_rollout = body.index("up -d kai-agent", role_split_abort)
+    assert engine_after_rollout < body.index("elif [[ \":$COMPOSE_FILE:\"", role_split_abort)
 
 
 def test_tpl_skipped_boot_tears_down_stale_engine_containers():
