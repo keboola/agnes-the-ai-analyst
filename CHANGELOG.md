@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Changed
+
+- **Web chat tool-call cards collapse to their header line once the turn ends.** A card used to stay fully expanded forever, so a Bash/query card's stdout/stderr sat under the finished answer permanently. Each card is now a `<details>` element, open while its turn runs and folded shut (one click re-expands it) by every terminal frame — `done`, `cancelled`, `error`, `confirmation_required`.
+
 ### Fixed
 
 - **`/api/query` and the BigQuery hybrid-query path rejected valid single-`SELECT` queries that ended in a semicolon.** `_assert_select_only` (`app/api/query.py`) and its `src/remote_query.py` counterparts (`_validate_sql`, `_validate_bq_sql`, used by `/api/query/hybrid` and `run_remote_select_to_arrow`) all blocked `;` as a bare substring anywhere in the SQL to catch multi-statement injection, but that also caught the single trailing semicolon most LLM-generated or CLI-issued queries end with — rejecting e.g. `SELECT * FROM orders;` with "Only single SELECT queries are allowed" even though it's one statement. Each validator now strips exactly one trailing semicolon before scanning; a `;` anywhere else (a genuine second statement) is still blocked. Three downstream execution paths needed the same tolerance one level deeper, since each embeds the caller's now-accepted statement inside its own subquery wrapper, where a trailing `;` is a parse error rather than a harmless terminator: the Databricks remote path's `wrap_with_limit` (`connectors/databricks/remote.py`, `SELECT * FROM (…) LIMIT n`), the internal-table path's CTE wrap in `execute_internal_query` (`connectors/internal/access.py`, `SELECT * FROM (…) AS _agnes_user_query`), and the BigQuery hybrid-query path's row-count pre-check in `RemoteQueryEngine.register_bq` (`src/remote_query.py`, `SELECT COUNT(*) FROM (…) AS _cnt`). All three now strip the same single trailing semicolon before wrapping.
