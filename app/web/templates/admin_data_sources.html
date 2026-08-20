@@ -2779,13 +2779,17 @@ async function _saveSnowflakeAndContinue() {
   const sf = { account, user, database, warehouse, auth_type: authType };
   if (role) sf.role = role;
   try {
-    const r = await fetch(API_SERVER_CONFIG, {
-      method: "POST", credentials: "include",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sections: { data_source: { snowflake: sf } } }),
+    /* Every leaf this wizard sends is a connection-identity leaf, so on an
+       instance that already has Snowflake rows the server refuses with 409
+       until the operator confirms. saveConnectionConfig shows the blast radius
+       and re-sends on confirm — without it this form would be a dead end for
+       credential rotation on exactly the instances that have data. */
+    const saved = await window.saveConnectionConfig(API_SERVER_CONFIG, {
+      sections: { data_source: { snowflake: sf } },
     });
-    if (!r.ok) throw new Error("server-config save failed");
-    const savedCfg = await r.json().catch(() => ({}));
+    if (saved.cancelled) return;
+    if (!saved.ok) throw new Error(window.apiDetailText(saved.data.detail, `server-config save failed (${saved.status})`));
+    const savedCfg = saved.data || {};
     _sfRestartRequired = !!savedCfg.restart_required;
     const storedUnder = [];
     if (!_sfCredStatus) _sfCredStatus = { password: { source: "unset", has_value: false }, key: { source: "unset", has_value: false } };
@@ -2968,16 +2972,18 @@ async function _saveDatabricksAndContinue() {
     return;
   }
   try {
-    const r = await fetch(API_SERVER_CONFIG, {
-      method: "POST", credentials: "include",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sections: { data_source: { databricks: { host, warehouse_id: warehouse, catalog } } } }),
+    /* Same as the Snowflake branch above: host/warehouse_id/catalog are all
+       connection identity, so a save on an instance with Databricks rows needs
+       the confirmation this helper carries. It also renders an object `detail`
+       (this 409's shape) instead of stringifying it to "[object Object]". */
+    const saved = await window.saveConnectionConfig(API_SERVER_CONFIG, {
+      sections: { data_source: { databricks: { host, warehouse_id: warehouse, catalog } } },
     });
-    if (!r.ok) {
-      const body = await r.json().catch(() => ({}));
-      throw new Error(body.detail || body.message || `server-config save failed (${r.status})`);
+    if (saved.cancelled) return;
+    if (!saved.ok) {
+      throw new Error(window.apiDetailText(saved.data.detail, `server-config save failed (${saved.status})`));
     }
-    const savedCfg = await r.json().catch(() => ({}));
+    const savedCfg = saved.data || {};
     if (!_dbxCredStatus) _dbxCredStatus = { source: "unset", has_value: false };
     let storedUnder = "";
     if (token) {

@@ -1840,14 +1840,21 @@ function saveResultMessage(section, data) {
 
 async function postPatch(section, patch, confirmDanger) {
   try {
-    const r = await fetch(CFG_API, {
-      method: "POST", credentials: "include",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sections: { [section]: patch }, confirm_danger: confirmDanger }),
+    // saveConnectionConfig (js/connection_repoint.js) is a plain POST unless the
+    // server answers the repoint 409 — then it shows the blast radius and
+    // re-sends with confirm_connection_change only if the operator agrees. It is
+    // shared with the Add-data wizard and the setup flow, which post the same
+    // data_source patches, so the refusal reads the same wherever you hit it.
+    const { ok, status, data, cancelled } = await window.saveConnectionConfig(CFG_API, {
+      sections: { [section]: patch },
+      confirm_danger: confirmDanger,
     });
-    const data = await r.json().catch(() => ({}));
-    if (!r.ok) {
-      showBanner(`Save failed: ${data.detail || r.statusText}`, "error");
+    if (cancelled) {
+      showBanner("Cancelled — the connection was left unchanged.", "");
+      return;
+    }
+    if (!ok) {
+      showBanner(`Save failed: ${window.apiDetailText(data.detail) || status}`, "error");
       return;
     }
     showBanner(saveResultMessage(section, data), "success");

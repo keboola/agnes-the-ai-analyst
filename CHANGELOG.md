@@ -10,6 +10,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- **`agnes schema <table>` on a Snowflake `query_mode='remote'` row said "Table 'X' not found in the registry."** — on a table that is registered and answers `agnes query --remote` fine. `/api/v2/schema/{table_id}` has upstream branches for BigQuery remote and Databricks remote but never grew a Snowflake one, so a remote row fell through to the local-parquet branch, found no parquet (a remote row has none) and 404-ed. It now reads the column list from Snowflake's own `information_schema.columns` through the same ATTACH the query path uses, so what `agnes schema` reports and what a query can bind cannot drift apart. `sql_flavor` stays `duckdb` — unlike Databricks there is no per-query ship to the warehouse; the analyst queries the ATTACHed `sf` catalog. An instance with no Snowflake connection configured still answers 404, which is honest there.
+
+### Added
+
+- **Repointing a data source now names the tables it will break, and asks first.** `POST /api/admin/server-config` answers **409 `connection_change_affects_registrations`** when a patch changes a *connection-identity* leaf under `data_source.<source>` — Snowflake's `account`/`database`/`warehouse`/`user`/`role`/`auth_type`/credential-pointer, BigQuery's `project`/`billing_project`/`location`, Databricks' `host`/`warehouse_id`/`catalog`/`token_env`, Keboola's `stack_url`/`token_env` — while registrations of that source exist. The body carries the changed coordinates, the affected-table count and a sample; `confirm_connection_change: true` applies it. `POST /api/admin/configure` (the setup wizard) is gated the same way — it writes the same block, so leaving it out would keep a second unguarded door open. All four surfaces that save a connection — instance settings, the Snowflake and Databricks branches of the Add-data wizard, and the setup flow — answer the refusal through one shared confirm-and-retry helper (`js/connection_repoint.js`), so the dialog reads the same wherever you hit it and none of them becomes a dead end. Tuning knobs in the same block (scan caps, timeouts, pool sizes) and first-time setup are unaffected, and a leaf re-sent at its own default (the wizards always write `auth_type` / `token_env`) is not a change.
+
+  Why it earns a gate: a registration resolves its upstream against the instance's one connection per source, and the result is baked into the extract's `_remote_attach.url` and into each remote view's `sf."SCHEMA"."TABLE"`. Repointing invalidates every existing row of that source at once, and the failure is invisible from the operator's seat — remote reads fail at bind time deep inside a query, materialized syncs fail at COPY time, and `last_sync_status` keeps reporting the last *successful* run.
+
 ## [0.84.3] - 2026-08-20
 
 ### Added
