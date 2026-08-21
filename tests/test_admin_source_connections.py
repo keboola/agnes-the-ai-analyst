@@ -308,6 +308,46 @@ class TestSeedFromInstanceCredentials:
         assert "storage.tokenInvalid" in body["token_seed_error"]
         assert body["has_secret"] is False
 
+    def test_a_non_http_seed_error_also_reports_failure_without_failing_the_create(self, seeded_app, monkeypatch):
+        """Devin Review: the seeding step's try/except only caught
+        `HTTPException`, so a non-HTTPException failure inside
+        `_store_connection_secret` (e.g. a `ValueError` from the Keboola
+        client, or a vault failure that isn't `VaultKeyNotConfiguredError`)
+        escaped and turned a connection that WAS created into a 500 the
+        admin reads as total failure."""
+        monkeypatch.setattr(
+            "app.datasource_secrets.keboola_instance_token",
+            lambda token_env: ("vault-sourced-token", "vault"),
+        )
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        with (
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.verify_token",
+                side_effect=ValueError("boom"),
+            ),
+            patch("app.api.admin._validate_url_not_private", return_value=None),
+        ):
+            resp = c.post(
+                BASE,
+                json={
+                    "name": "test-seed-non-http-error",
+                    "source_type": "keboola",
+                    "config": {"stack_url": "https://connection.example.com"},
+                    "token_env": "KEBOOLA_STORAGE_TOKEN",
+                    "seed_from_instance_credentials": True,
+                },
+                headers=_auth(token),
+            )
+        assert resp.status_code == 201, resp.text
+        body = resp.json()
+        assert body["token_seeded"] is False
+        assert "boom" in body["token_seed_error"]
+        assert body["has_secret"] is False
+
+        row = c.get(f"{BASE}/{body['id']}", headers=_auth(token)).json()
+        assert row["has_secret"] is False
+
     def test_flag_is_ignored_for_non_keboola_source_types(self, seeded_app, monkeypatch):
         called = []
         monkeypatch.setattr(

@@ -873,6 +873,15 @@ async def _seed_keboola_instance_credential(connection_id: str, row: Dict[str, A
         row["token_seeded"] = False
         row["token_seed_error"] = detail
         return row
+    except Exception as exc:  # noqa: BLE001 — the connection row already landed; never fail the POST
+        logger.warning(
+            "Keboola import for connection %s: could not seed the instance-vault token",
+            connection_id,
+            exc_info=True,
+        )
+        row["token_seeded"] = False
+        row["token_seed_error"] = str(exc)
+        return row
 
     refreshed = _with_secret_status(source_connections_repo().get(connection_id)) or row
     refreshed["token_seeded"] = True
