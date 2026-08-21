@@ -86,6 +86,20 @@ class _GatedStream(httpx.AsyncByteStream):
         return None
 
 
+class _RawStream(httpx.AsyncByteStream):
+    """SSE body from raw bytes — for wire shapes _GatedStream can't express
+    (e.g. a stream that closes without the trailing blank line)."""
+
+    def __init__(self, raw: bytes) -> None:
+        self._raw = raw
+
+    async def __aiter__(self):
+        yield self._raw
+
+    async def aclose(self) -> None:
+        return None
+
+
 class FakeEngine(httpx.AsyncBaseTransport):
     """Just enough of the engine's HTTP surface: POST /api/chat (SSE),
     POST /api/chat/{id}/stop, POST /api/chat/{id}/approval."""
@@ -107,11 +121,12 @@ class FakeEngine(httpx.AsyncBaseTransport):
             status = spec.get("status", 200)
             if status != 200:
                 return httpx.Response(status, json={"message": "refused"})
-            return httpx.Response(
-                200,
-                headers={"content-type": "text/event-stream"},
-                stream=_GatedStream(spec.get("pre", []), spec.get("gate"), spec.get("post")),
-            )
+            stream: httpx.AsyncByteStream
+            if "raw" in spec:
+                stream = _RawStream(spec["raw"])
+            else:
+                stream = _GatedStream(spec.get("pre", []), spec.get("gate"), spec.get("post"))
+            return httpx.Response(200, headers={"content-type": "text/event-stream"}, stream=stream)
         if request.method == "POST" and path.endswith("/stop"):
             self.stop_count += 1
             return httpx.Response(200, json={"stopped": True})
@@ -246,6 +261,38 @@ def test_http_refusal_emits_error_then_done():
         assert _types(frames) == ["runner_ready", "error", "done"]
         assert frames[1]["kind"] == "engine_error"
         assert "409" in frames[1]["message"]
+
+    asyncio.run(_run())
+
+
+def test_final_record_without_trailing_blank_line_still_counts():
+    """A stream that closes right after its last `data:` line (no trailing
+    blank-line record boundary) must still dispatch that record — dropping it
+    loses whatever the engine said last (Devin Review on this PR)."""
+
+    async def _run():
+        engine = FakeEngine()
+        raw = (
+            b'data: {"type": "text-delta", "id": "a", "delta": "whole answer"}\n\n'
+            b'data: {"type": "finish"}\n'  # stream ends here — no blank line
+        )
+        engine.turns = [{"raw": raw}]
+        provider = KaiEngineProvider(base_url="http://engine:3000", mint=_mint_factory([]), transport=engine)
+        handle = await _spawn(provider)
+        await _send(handle, {"type": "user_msg", "text": "hi"})
+        frames = await _drain_until_done(handle)
+        await handle.kill()
+        assert _types(frames) == ["runner_ready", "token", "assistant_message", "done"]
+        # And a final PAYLOAD-BEARING record is translated, not just `finish`:
+        engine2 = FakeEngine()
+        engine2.turns = [{"raw": b'data: {"type": "text-delta", "id": "a", "delta": "tail"}\n'}]
+        provider2 = KaiEngineProvider(base_url="http://engine:3000", mint=_mint_factory([]), transport=engine2)
+        handle2 = await _spawn(provider2)
+        await _send(handle2, {"type": "user_msg", "text": "hi"})
+        frames2 = await _drain_until_done(handle2)
+        await handle2.kill()
+        assert any(f.get("type") == "token" and f["text"] == "tail" for f in frames2)
+        assert any(f.get("type") == "assistant_message" and f["content"] == "tail" for f in frames2)
 
     asyncio.run(_run())
 
