@@ -1360,10 +1360,7 @@ class ChatManager:
                 handle = await self._provider.resume(
                     sandbox_id=session.sandbox_id,
                     runner_pid=session.runner_pid,
-                    # The session identity, for providers whose resumed handle
-                    # needs it (the engine provider re-mints its session JWT
-                    # from these; the sandbox providers ignore env on resume).
-                    env={"AGNES_SESSION_ID": session.id, "AGNES_USER_EMAIL": session.user_email},
+                    env=self._provider_resume_env(session),
                 )
             except Exception:
                 logger.warning("resume failed for %s — fresh spawn fallback", live.chat_id)
@@ -1432,9 +1429,7 @@ class ChatManager:
             handle = await self._provider.resume(
                 sandbox_id=session.sandbox_id,
                 runner_pid=session.runner_pid,
-                # See _resume_live's twin call: session identity for providers
-                # whose resumed handle needs it.
-                env={"AGNES_SESSION_ID": session.id, "AGNES_USER_EMAIL": session.user_email},
+                env=self._provider_resume_env(session),
             )
         except Exception:
             logger.warning(
@@ -2089,6 +2084,23 @@ class ChatManager:
                 "agnes wheel upload failed; `agnes` CLI will be absent in sandbox for session %s",
                 session.id,
             )
+
+    def _provider_resume_env(self, session: "ChatSession") -> dict:
+        """The env a provider's ``resume()`` receives: session identity plus
+        the operator knobs a rebuilt handle must not lose.
+
+        The engine provider reads all four (identity to re-mint its session
+        JWT, ``AGNES_APPROVALS``/``AGNES_APPROVAL_TIMEOUT_SECONDS`` to keep the
+        approvals kill-switch and card label sticky across pause/resume —
+        identity alone silently flipped approvals back ON after any resume);
+        the sandbox providers ignore env on resume.
+        """
+        return {
+            "AGNES_SESSION_ID": session.id,
+            "AGNES_USER_EMAIL": session.user_email,
+            "AGNES_APPROVAL_TIMEOUT_SECONDS": str(self._config.approval_timeout_seconds),
+            "AGNES_APPROVALS": "on" if self._config.approvals_enabled else "off",
+        }
 
     def _revoke_native_tickets(self, chat_id: str) -> None:
         """``revoke_session``, skipped for a provider that owns its own
