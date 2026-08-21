@@ -730,7 +730,13 @@ class TestKeboolaImportAsManagedConnection:
     could actually browse and register tables. "Import as managed
     connection" posts the instance-level credential straight to
     `POST /api/admin/source-connections`, so the card flips to a real,
-    fully-interactive connection in place."""
+    fully-interactive connection in place.
+
+    A prior adversarial review flagged the string-substring tests below as
+    unable to catch a regression that keeps the literal text but breaks the
+    actual behavior — the node-executed `TestImportKeboolaConnectionBehavior`
+    class exercises the real function against a mocked `fetch` instead.
+    """
 
     @staticmethod
     def _template_text() -> str:
@@ -741,7 +747,9 @@ class TestKeboolaImportAsManagedConnection:
 
     def test_button_only_renders_for_the_keboola_derived_card(self):
         tpl = self._template_text()
-        assert 'row.source_type === "keboola" && row.stack_url' in tpl
+        # Gated on a working credential, not merely a configured stack_url —
+        # a stack_url with no token anywhere has nothing to import.
+        assert 'row.source_type === "keboola" && row.stack_url && row.credentialed' in tpl
         assert "importKeboolaConnection('${id}')" in tpl
         # Scoped to Keboola only — the other derived connectors keep their
         # plain "Open" action untouched.
@@ -750,13 +758,14 @@ class TestKeboolaImportAsManagedConnection:
 
     def test_import_posts_the_instance_credential_without_a_secret_paste(self):
         """`create_connection` accepts `token_env` alone — no secret paste
-        required — so the button must send exactly `name`, `source_type`,
-        `config.stack_url`, and `token_env`."""
+        required — so the button must send `name`, `source_type`,
+        `config.stack_url`, `token_env`, and the vault-seeding opt-in."""
         tpl = self._template_text()
         fn = tpl.split("async function importKeboolaConnection(id) {", 1)[1].split("\nasync function ", 1)[0]
         assert 'source_type: "keboola"' in fn
         assert "config: { stack_url: row.stack_url }" in fn
         assert "token_env: row.token_env" in fn
+        assert "seed_from_instance_credentials: true" in fn
         assert "fetch(API_CONNECTIONS, {" in fn
 
     def test_success_drops_the_stale_derived_entry_and_reloads_the_list(self):
@@ -769,6 +778,188 @@ class TestKeboolaImportAsManagedConnection:
         assert "DERIVED_SOURCES.findIndex" in fn
         assert "DERIVED_SOURCES.splice(idx, 1)" in fn
         assert "await loadConnections();" in fn
+
+
+class TestImportKeboolaConnectionBehavior:
+    """`importKeboolaConnection()` executed for real via `node` against a
+    mocked `fetch`/`showToast`/`loadConnections` — not just string-matched
+    against the template source. A future edit could keep every literal
+    string above intact while breaking the guard, the request body, or the
+    response handling, and none of those tests would notice; these would.
+    """
+
+    @staticmethod
+    def _extract_function(tpl: str, signature: str) -> str:
+        """The function's exact source, found by brace-matching from
+        `signature` rather than by looking for the NEXT declaration (which
+        broke once a plain, non-`async` function could follow)."""
+        start = tpl.index(signature)
+        depth = 0
+        started = False
+        for i in range(start, len(tpl)):
+            ch = tpl[i]
+            if ch == "{":
+                depth += 1
+                started = True
+            elif ch == "}":
+                depth -= 1
+                if started and depth == 0:
+                    return tpl[start : i + 1]
+        raise AssertionError(f"unbalanced braces extracting {signature!r}")
+
+    def _run(self, *, row: dict, fetch_ok: bool, fetch_status: int, response_json: dict) -> dict:
+        """Runs `importKeboolaConnection('derived:keboola')` under node with
+        a stubbed `fetch`, `showToast`, and `loadConnections`, and returns
+        what happened: the request actually sent (or `None`), every toast
+        call, how many times the list was reloaded, and the resulting
+        `DERIVED_SOURCES` length."""
+        import json
+        import subprocess
+        import tempfile
+        from pathlib import Path
+
+        tpl = (Path(__file__).resolve().parents[1] / "app" / "web" / "templates" / "admin_data_sources.html").read_text(
+            encoding="utf-8"
+        )
+        fn = self._extract_function(tpl, "async function importKeboolaConnection(id) {")
+
+        script = f"""
+{fn}
+
+const API_CONNECTIONS = "/api/admin/source-connections";
+let _connections = [{json.dumps(row)}];
+let DERIVED_SOURCES = [{json.dumps(row)}];
+const toasts = [];
+function showToast(msg, ok) {{ toasts.push([msg, ok]); }}
+let loadCalls = 0;
+async function loadConnections() {{ loadCalls++; }}
+let sentRequest = null;
+global.fetch = async (url, opts) => {{
+  sentRequest = {{ url, opts }};
+  return {{
+    ok: {str(fetch_ok).lower()},
+    status: {fetch_status},
+    json: async () => ({json.dumps(response_json)}),
+  }};
+}};
+
+(async () => {{
+  await importKeboolaConnection("derived:keboola");
+  console.log(JSON.stringify({{
+    body: sentRequest ? JSON.parse(sentRequest.opts.body) : null,
+    url: sentRequest ? sentRequest.url : null,
+    toasts,
+    loadCalls,
+    derivedSourcesLength: DERIVED_SOURCES.length,
+  }}));
+}})();
+"""
+        with tempfile.NamedTemporaryFile("w", suffix=".mjs", delete=False) as f:
+            f.write(script)
+            path = f.name
+        try:
+            proc = subprocess.run(["node", path], capture_output=True, text=True)
+        finally:
+            Path(path).unlink(missing_ok=True)
+        if proc.returncode == 127:
+            pytest.skip("node unavailable")
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        return json.loads(proc.stdout)
+
+    def test_the_guard_refuses_to_request_when_not_credentialed(self):
+        """A stale render (or a race with a background refresh) must not let
+        the click through to a POST that would create a connection with
+        nothing to actually reach Keboola with."""
+        result = self._run(
+            row={
+                "id": "derived:keboola",
+                "source_type": "keboola",
+                "stack_url": "https://connection.keboola.com",
+                "token_env": "KEBOOLA_STORAGE_TOKEN",
+                "credentialed": False,
+            },
+            fetch_ok=True,
+            fetch_status=201,
+            response_json={"id": "new-conn"},
+        )
+        assert result["body"] is None, "no request should have been sent"
+        assert result["loadCalls"] == 0
+        assert result["toasts"], "the admin must be told why nothing happened"
+        assert result["toasts"][0][1] is False
+
+    def test_a_successful_import_posts_the_seeding_flag_and_toasts_ok(self):
+        result = self._run(
+            row={
+                "id": "derived:keboola",
+                "source_type": "keboola",
+                "stack_url": "https://connection.keboola.com",
+                "token_env": "KEBOOLA_STORAGE_TOKEN",
+                "credentialed": True,
+            },
+            fetch_ok=True,
+            fetch_status=201,
+            response_json={"id": "new-conn", "has_secret": True, "token_seeded": True},
+        )
+        assert result["url"] == "/api/admin/source-connections"
+        assert result["body"] == {
+            "name": "Keboola",
+            "source_type": "keboola",
+            "config": {"stack_url": "https://connection.keboola.com"},
+            "token_env": "KEBOOLA_STORAGE_TOKEN",
+            "seed_from_instance_credentials": True,
+        }
+        assert result["toasts"] == [["Keboola imported as a managed connection.", True]]
+        assert result["loadCalls"] == 1
+        # The stale derived entry is dropped before the reload.
+        assert result["derivedSourcesLength"] == 0
+
+    def test_a_seed_failure_still_creates_the_connection_but_toasts_honestly(self):
+        """The server created the row but could not verify the vault-sourced
+        token (e.g. it was stale). Success-looking silence here is exactly
+        what the review flagged: the admin would only find out on the next
+        failed sync."""
+        result = self._run(
+            row={
+                "id": "derived:keboola",
+                "source_type": "keboola",
+                "stack_url": "https://connection.keboola.com",
+                "token_env": "KEBOOLA_STORAGE_TOKEN",
+                "credentialed": True,
+            },
+            fetch_ok=True,
+            fetch_status=201,
+            response_json={
+                "id": "new-conn",
+                "has_secret": False,
+                "token_seeded": False,
+                "token_seed_error": "storage_api_error: token invalid",
+            },
+        )
+        assert result["toasts"] == [
+            [
+                "Connection created, but the stored credential couldn't be verified — "
+                "use Rotate to add a working token.",
+                False,
+            ]
+        ]
+        # The connection still exists server-side, so the list still refreshes.
+        assert result["loadCalls"] == 1
+
+    def test_a_non_ok_response_reports_the_failure_and_never_refreshes(self):
+        result = self._run(
+            row={
+                "id": "derived:keboola",
+                "source_type": "keboola",
+                "stack_url": "https://connection.keboola.com",
+                "token_env": "KEBOOLA_STORAGE_TOKEN",
+                "credentialed": True,
+            },
+            fetch_ok=False,
+            fetch_status=409,
+            response_json={"detail": "connection_name_exists"},
+        )
+        assert result["toasts"] == [["Import failed: connection_name_exists", False]]
+        assert result["loadCalls"] == 0
 
 
 class TestKeboolaBulkPickerRenameSuggestion:

@@ -1611,7 +1611,7 @@ function _connectionCardHtml(row) {
       <span class="ds-src__fact-k">Managed in</span>
       <span class="ds-src__fact-v">${_esc(row.settings_label || "Instance settings")}</span>
       <span class="ds-src__fact-a">
-        ${row.source_type === "keboola" && row.stack_url ? `<button type="button" class="btn btn-primary" onclick="importKeboolaConnection('${id}')">Import as managed connection</button>` : ""}
+        ${row.source_type === "keboola" && row.stack_url && row.credentialed ? `<button type="button" class="btn btn-primary" onclick="importKeboolaConnection('${id}')">Import as managed connection</button>` : ""}
         <a class="btn btn-secondary" href="${_esc(row.settings_href || "/admin")}">Open</a>
       </span>
     </div>
@@ -1699,10 +1699,21 @@ async function loadConnections() {
 // of pointing away from it. Additive only — `data_source.keboola` in
 // server-config is left untouched, so tables already registered against the
 // legacy instance-level connection keep resolving exactly as before.
+//
+// `seed_from_instance_credentials: true` tells `create_connection` to copy
+// the instance-level token into the NEW connection's own vault slot unless
+// that token resolves under the EXACT `token_env` name this new row
+// inherits (see `_seed_keboola_instance_credential`) — only then does the
+// new row's own token resolver already find it unaided. A generic
+// `KEBOOLA_STORAGE_TOKEN` fallback behind a DIFFERENT configured
+// `token_env`, or a vault-only credential, both still need the copy. The
+// button itself only renders when `row.credentialed` is true
+// (server-computed — see `_source_inventory()`), but the guard below stays
+// as a second line of defense against a stale render.
 async function importKeboolaConnection(id) {
   const row = _connections.find((c) => c.id === id);
-  if (!row || !row.stack_url) {
-    showToast("No Keboola connection URL configured — set one in Server config first.", false);
+  if (!row || !row.stack_url || !row.credentialed) {
+    showToast("No working Keboola credential yet — set one in Server config first.", false);
     return;
   }
   try {
@@ -1714,11 +1725,24 @@ async function importKeboolaConnection(id) {
         source_type: "keboola",
         config: { stack_url: row.stack_url },
         token_env: row.token_env || undefined,
+        seed_from_instance_credentials: true,
       }),
     });
     const data = await r.json().catch(() => ({}));
     if (r.ok) {
-      showToast("Keboola imported as a managed connection.", true);
+      if (data.token_seeded === false) {
+        // The instance-vault token existed but the server's own preflight
+        // rejected it (stale/expired) — the connection was still created,
+        // but with no working credential of its own. A plain success toast
+        // here would be a lie the admin only discovers on the next sync
+        // failure.
+        showToast(
+          "Connection created, but the stored credential couldn't be verified — use Rotate to add a working token.",
+          false,
+        );
+      } else {
+        showToast("Keboola imported as a managed connection.", true);
+      }
       // `DERIVED_SOURCES` is the page-load constant `loadConnections()`
       // re-spreads on every refresh; drop the now-superseded entry from it
       // so the reload below doesn't render the derived card ALONGSIDE the
