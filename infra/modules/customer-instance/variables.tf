@@ -129,6 +129,17 @@ variable "prod_instance" {
     kai_agent_mem_limit    = optional(string, "2g")
     kai_agent_cpus         = optional(string, "1.0")
     kai_agent_pg_mem_limit = optional(string, "1g")
+    # Opt-in: let the engine's sandbox reach this instance's own MCP tool
+    # surface. Sets both halves of the pair that only work together — the
+    # app-side ticket-scope switch (KAI_BROKER_MCP_ENABLED=true in the app
+    # .env) and the engine-side broker URL (HOST_BROKER_MCP_URL derived from
+    # the VM's own public origin, the same SERVER_URL the LLM broker line
+    # uses, since the E2B sandbox egresses to it from the public internet).
+    # One flag rather than two knobs because either half alone is a silent
+    # failure: URL without the scope 401s every tool call, scope without the
+    # URL simply never registers the tool server. Inert unless
+    # kai_agent_enabled is also true on this VM.
+    kai_agent_broker_mcp_enabled = optional(bool, false)
 
     # --- Vendor-neutral per-instance branding (all OPTIONAL) ---
     # Written into the VM's /data/state/instance.yaml on FIRST boot only. The
@@ -297,6 +308,9 @@ variable "dev_instances" {
     kai_agent_mem_limit    = optional(string, "2g")
     kai_agent_cpus         = optional(string, "1.0")
     kai_agent_pg_mem_limit = optional(string, "1g")
+    # Engine → instance MCP tool surface — see prod_instance for the
+    # rationale; same default, inert without kai_agent_enabled.
+    kai_agent_broker_mcp_enabled = optional(bool, false)
     # See prod_instance for the rationale; same default.
     upgrade_schedule = optional(string, "*/5 * * * *")
 

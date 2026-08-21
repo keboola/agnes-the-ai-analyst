@@ -533,6 +533,7 @@ resource "google_compute_instance" "vm" {
     kai_agent_mem_limit             = each.value.kai_agent_mem_limit
     kai_agent_cpus                  = each.value.kai_agent_cpus
     kai_agent_pg_mem_limit          = each.value.kai_agent_pg_mem_limit
+    kai_agent_broker_mcp_enabled    = each.value.kai_agent_broker_mcp_enabled
     kai_agent_image                 = var.kai_agent_image
     kai_agent_jwt_secret            = var.kai_agent_jwt_secret
     kai_agent_e2b_key_secret        = var.kai_agent_e2b_key_secret

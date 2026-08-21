@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- **`customer-instance` module: per-VM `kai_agent_broker_mcp_enabled` flag — give the embedded kai-agent engine's sandbox this instance's own MCP tool surface.** One flag renders both halves of a pair that only works together: the app-side ticket-scope switch (`KAI_BROKER_MCP_ENABLED=true` in the VM's app `.env`, which makes `/api/kai/tickets` issue the `kai_mcp` scope and unlocks `POST /api/kai/mcp`) and the engine-side broker URL (`HOST_BROKER_MCP_URL` derived from the VM's public origin, the same `SERVER_URL` the LLM broker line rides, because the E2B sandbox egresses to it from the public internet). Either half alone fails silently — the URL without the scope 401s every tool call, the scope without the URL never registers the tool server — which is why it is one flag and not two env keys. Per-VM like `kai_agent_enabled` itself (the flag hands the engine the caller's tool surface, so a dev-first enable must not widen prod), default `false`, inert without `kai_agent_enabled`, and overridable via `kai_agent_env` (the caller map is appended after the derived lines, and env_file gives later keys precedence).
+
 ## [0.84.6] - 2026-08-21
 
 ### Fixed
