@@ -883,14 +883,22 @@ materialize:
 chat:
   enabled: false
   # Sandbox provider:
-  #   e2b    — cloud microVMs (needs an E2B account + a built template).
-  #   docker — self-hosted containers on the local Docker daemon, created
-  #            through the apps-runner sidecar (compose profile `apps`).
-  #            No E2B account; the workspace is bind-mounted instead of
-  #            uploaded, so there is no 100 MB cap. See docs/cloud-chat.md
-  #            → "Docker provider (self-hosted)".
+  #   e2b       — cloud microVMs (needs an E2B account + a built template).
+  #   docker    — self-hosted containers on the local Docker daemon, created
+  #               through the apps-runner sidecar (compose profile `apps`).
+  #               No E2B account; the workspace is bind-mounted instead of
+  #               uploaded, so there is no 100 MB cap. See docs/cloud-chat.md
+  #               → "Docker provider (self-hosted)".
+  #   kai-agent — sessions run on the embedded kai-agent turn engine (the
+  #               /api/kai/* integration; requires KAI_HOST_JWT_SECRET).
+  #               The engine owns the agent loop, transcript and sandbox;
+  #               Agnes spawns nothing per session. See docs/cloud-chat.md
+  #               → "kai-agent provider (embedded turn engine)".
   # There is deliberately no mock provider.
   provider: e2b
+  # Where the embedded engine listens (provider=kai-agent only). Default is
+  # the compose service the customer-instance module materializes.
+  # kai_agent_url: "http://kai-agent:3000"
   # E2B template id returned by `e2b template build` inside
   # app/initial_workspace_default/e2b-template/. Required when
   # provider=e2b and enabled=true; startup gate refuses otherwise.
