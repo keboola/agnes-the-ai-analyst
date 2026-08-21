@@ -21,7 +21,7 @@
  *   window.AgnesPackageDrawer.open({
  *     typed:     'Sales bundle',   // prefill the name
  *     chipHost:  hostEl,           // chip-input to append the new chip to
- *     onCreated: function (pkg, grantFailures) { … },
+ *     onCreated: function (pkg, grantFailures, tableFailures) { … },
  *   })
  *
  * No endpoint is new here — the same three the modal used:
@@ -172,11 +172,14 @@
       '          </div>' +
       '        </div>' +
       '      </div>' +
-      // Composition — EDIT ONLY. A package being created has no id yet, so
-      // there is nothing to attach a table to; the create flow's own copy
-      // already says the package "stays editable on its own page afterwards".
-      '      <div class="ds-drawer__field" id="pdw-tables-field" hidden>' +
-      '        <label for="pdw-tables-search">Tables in this package</label>' +
+      // Composition, in BOTH modes. It was edit-only on the reasoning that a
+      // package being created has no id to attach a table to — but the group
+      // picks below are collected the same way and applied after the POST
+      // answers, so "no id yet" was never the obstacle it looked like. A
+      // create that cannot choose tables makes an empty package and sends the
+      // admin to a second surface to fill it.
+      '      <div class="ds-drawer__field" id="pdw-tables-field">' +
+      '        <label for="pdw-tables-search" id="pdw-tables-label">Tables in this package</label>' +
       '        <p class="ds-drawer__hint" style="margin:0 0 8px;">Tick a table to include it.' +
       '          <strong>Buckets</strong> come from the source project — they are not Agnes containers.</p>' +
       '        <input type="text" id="pdw-tables-search" class="pdw-tables__search"' +
@@ -227,6 +230,7 @@
       access: root.querySelector('#pdw-access'),
       groups: root.querySelector('#pdw-groups'),
       tablesField: root.querySelector('#pdw-tables-field'),
+      tablesLabel: root.querySelector('#pdw-tables-label'),
       tablesSearch: root.querySelector('#pdw-tables-search'),
       tables: root.querySelector('#pdw-tables'),
       err: root.querySelector('#pdw-err'),
@@ -352,7 +356,9 @@
       ? 'Permanent — it is in this package’s URL and in every grant written against it.'
       : 'URL-safe identifier; follows the name until you edit it.';
     els.access.hidden = false;
-    els.tablesField.hidden = !editing;
+    // Both modes carry the list; only the label differs, because on a create
+    // there is no existing membership for "in this package" to refer to.
+    els.tablesLabel.textContent = editing ? 'Tables in this package' : 'Tables to include';
     els.submit.textContent = editing ? 'Save changes' : 'Create package';
   }
 
@@ -483,9 +489,12 @@
     return out;
   }
 
+  /* `pkgId` is null on a create: the registry and the project names are
+     fetched exactly the same way, and the member set is simply empty. */
   function hydrateTables(pkgId) {
     Promise.all([
-      api(PKG_API + '/' + encodeURIComponent(pkgId)),
+      pkgId ? api(PKG_API + '/' + encodeURIComponent(pkgId))
+            : Promise.resolve({ tables: [] }),
       api(REGISTRY_API),
       // The registry carries `connection_id`, not the project's NAME. A raw
       // uuid is not a group heading anyone can read, so resolve it here; a
@@ -583,6 +592,10 @@
       els.access.open = true;
       hydrateGroups();
       hydrateGrants(opts.pkgId);
+    } else {
+      // The registry is the same fetch in create mode; only the member set
+      // differs (empty), so the picker is usable before the package exists.
+      hydrateTables(null);
     }
     setTimeout(function () { els.name.focus({ preventScroll: true }); }, 60);
   }
@@ -891,6 +904,10 @@
     els.submit.disabled = true;
     els.submit.textContent = 'Creating…';
     var grants = chosenGrants();
+    // Snapshot both collected sets before the POST, for the same reason the
+    // group picks are snapshotted: `st` belongs to the open drawer, and the
+    // writes below happen after it has been told to close.
+    var tableIds = st ? Array.from(st.tablesSelected) : [];
 
     api(PKG_API, {
       method: 'POST',
@@ -910,10 +927,13 @@
       // callback reading `pkg.name` would otherwise get `undefined` (which
       // is exactly what the chip and the toast used to show).
       var pkg = { id: created.id, name: name, slug: slug };
-      // Grants are secondary: a failed one does NOT roll the package back
-      // (it exists, and both Access editors can write the grant), so the
-      // count rides out to the caller for its own message.
-      return Promise.allSettled(grants.map(function (g) {
+      // Grants and tables are both secondary: a failure in either does NOT
+      // roll the package back (it exists, and both are writable from its own
+      // page), so the counts ride out to the caller for its own message.
+      // They are counted SEPARATELY — "3 grants failed" and "3 tables failed"
+      // send an admin to different places, so one merged number would be a
+      // worse message than either.
+      var grantCalls = grants.map(function (g) {
         return api(GRANTS_API, {
           method: 'POST',
           body: JSON.stringify({
@@ -923,15 +943,28 @@
             requirement: g.requirement,
           }),
         });
-      })).then(function (results) {
-        var failures = results.filter(function (r) { return r.status === 'rejected'; }).length;
+      });
+      // Membership is written only now, because only now is there an id to
+      // attach it to — the same collect-then-apply order the group picks use.
+      var tableCalls = tableIds.map(function (id) {
+        return api(PKG_API + '/' + encodeURIComponent(pkg.id) + '/tables', {
+          method: 'POST', body: JSON.stringify({ table_id: id }),
+        });
+      });
+      return Promise.all([
+        Promise.allSettled(grantCalls),
+        Promise.allSettled(tableCalls),
+      ]).then(function (settled) {
+        function rejected(r) { return r.status === 'rejected'; }
+        var failures = settled[0].filter(rejected).length;
+        var tableFailures = settled[1].filter(rejected).length;
         var host = st && st.chipHost;
         var done = (st && st.onCreated) || function () {};
         if (host && host.addChip) host.addChip({ id: pkg.id, name: pkg.name });
         close();
         // The package exists by now, so a caller's own error must not be
         // reported as a failed create on a drawer that has already closed.
-        try { done(pkg, failures); } catch (_) { /* the caller's problem */ }
+        try { done(pkg, failures, tableFailures); } catch (_) { /* the caller's problem */ }
       });
     }).catch(function (e) {
       els.submit.textContent = 'Create package';
