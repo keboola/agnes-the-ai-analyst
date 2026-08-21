@@ -528,10 +528,23 @@ class KaiEngineHandle:
                     await resp.aread()
                     self._emit_turn_failure(state, self._engine_error_message(resp))
                     return
+
                 # SSE record assembly: consecutive `data:` lines belong to ONE
                 # record, dispatched at the blank line (the CLI's SSE consumer
                 # documents the same rules) — a proxy that reflows a long
                 # payload across lines must not turn it into parse failures.
+                def _dispatch_record(lines: list[str]) -> None:
+                    payload = "\n".join(lines)
+                    if not payload or payload == "[DONE]":
+                        return
+                    try:
+                        event = json.loads(payload)
+                    except json.JSONDecodeError:
+                        state.dropped_events += 1
+                        return
+                    if isinstance(event, dict):
+                        self._translate(state, event)
+
                 data_lines: list[str] = []
                 async for line in resp.aiter_lines():
                     if line.startswith("data:"):
@@ -540,17 +553,13 @@ class KaiEngineHandle:
                     if line.strip() and not line.startswith(":"):
                         continue  # id:/event: fields — not record boundaries
                     if not line.strip() and data_lines:
-                        payload = "\n".join(data_lines)
-                        data_lines = []
-                        if not payload or payload == "[DONE]":
-                            continue
-                        try:
-                            event = json.loads(payload)
-                        except json.JSONDecodeError:
-                            state.dropped_events += 1
-                            continue
-                        if isinstance(event, dict):
-                            self._translate(state, event)
+                        record, data_lines = data_lines, []
+                        _dispatch_record(record)
+                if data_lines:
+                    # Stream closed mid-record (no trailing blank line): the
+                    # final record still counts — dropping it here would lose
+                    # whatever the engine said last.
+                    _dispatch_record(data_lines)
         except asyncio.CancelledError:
             raise
         except httpx.ReadTimeout:
