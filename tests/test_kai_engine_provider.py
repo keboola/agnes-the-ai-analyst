@@ -597,10 +597,19 @@ def test_resume_takes_owner_from_env_with_repo_fallback(monkeypatch):
         handle = await provider.resume(
             sandbox_id=f"kai-engine:{chat_id}",
             runner_pid=1,
-            env={"AGNES_SESSION_ID": chat_id, "AGNES_USER_EMAIL": "owner@x"},
+            env={
+                "AGNES_SESSION_ID": chat_id,
+                "AGNES_USER_EMAIL": "owner@x",
+                # The approval knobs must stay sticky across pause/resume —
+                # identity alone silently flipped approvals back ON.
+                "AGNES_APPROVALS": "off",
+                "AGNES_APPROVAL_TIMEOUT_SECONDS": "900",
+            },
         )
         assert handle.sandbox_id == f"kai-engine:{chat_id}"
         assert handle._user_email == "owner@x"
+        assert handle._approvals_enabled is False
+        assert handle._approval_timeout_seconds == 900
         await handle.kill()
         fake_repo.get_session.assert_not_called()
         # Fallback: an env-less caller recovers the owner through the factory.
