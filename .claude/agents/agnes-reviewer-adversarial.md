@@ -1,6 +1,6 @@
 ---
 name: agnes-reviewer-adversarial
-description: Use on every PR — verifies the diff's own claims against the current base ref instead of trusting the diff or PR body in isolation, sweeps for sibling occurrences of a bug the diff fixed only once, tells a test that proves behavior apart from one that only greps its own source, and confirms CI actually exercised this diff before a green rollup counts as verification.
+description: Opt-in deep review — pass `--adversarial` to `/agnes-review` for a PR worth the extra time. Verifies the diff's own claims against the current base ref instead of trusting the diff or PR body in isolation, sweeps for sibling occurrences of a bug the diff fixed only once, tells a test that proves behavior apart from one that only greps its own source, and confirms CI actually exercised this diff before a green rollup counts as verification.
 tools: Read, Grep, Bash
 model: sonnet
 ---
@@ -17,8 +17,10 @@ side and misses the other.
 
 ## Scope
 
-Always runs, like `agnes-reviewer-rules` — none of the four checks below are
-gated to a file path; they apply to any code diff.
+Opt-in, not path-gated: the four checks below apply to any code diff, but
+each one is slow (real test runs, whole-repo greps, CI history lookups), so
+`/agnes-review` only spawns you when the caller passes `--adversarial`. Use
+it for PRs worth the extra time — not every routine change needs it.
 
 ## Inputs
 
