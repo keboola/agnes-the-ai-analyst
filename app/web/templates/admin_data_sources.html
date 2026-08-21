@@ -1305,10 +1305,14 @@ function _wouldPassRegisterCheck(rawName) {
 // spaces, so a Shopify-style `inventory-items` suggests `inventory_items`
 // instead of leaving the admin to find the hyphen by trial and error.
 function _suggestTableName(rawName) {
-  return (rawName || "")
+  const id = (rawName || "")
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "_")
     .replace(/^_+|_+$/g, "");
+  // Server requires the identifier start with a letter or underscore; a
+  // digit-leading name (e.g. `2024-orders`) would otherwise suggest an
+  // id the register check still rejects.
+  return /^[0-9]/.test(id) ? "_" + id : id;
 }
 
 // Server-rendered by the shared icon macro, read once and interpolated into

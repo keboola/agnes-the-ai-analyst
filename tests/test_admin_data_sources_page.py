@@ -1038,6 +1038,11 @@ assert.strictEqual(_suggestTableName("inventory-items"), "inventory_items");
 assert.strictEqual(_suggestTableName("inventory-levels"), "inventory_levels");
 assert.strictEqual(_suggestTableName("line-item"), "line_item");
 assert.strictEqual(_suggestTableName("product-images"), "product_images");
+// A digit-leading name must not suggest an identifier that itself starts
+// with a digit — the server's check requires a leading letter/underscore.
+assert.strictEqual(_suggestTableName("2024-orders"), "_2024_orders");
+assert.strictEqual(_wouldPassRegisterCheck("2024-orders"), false);
+assert.strictEqual(_wouldPassRegisterCheck(_suggestTableName("2024-orders")), true);
 console.log("OK");
 """
         )
