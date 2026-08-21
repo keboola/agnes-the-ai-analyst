@@ -204,9 +204,13 @@ class TestTheEditDrawerAlsoOwnsComposition:
     The first cut of edit mode carried metadata only, on the reasoning that
     composition belonged behind the "Manage in Admin" door. That split the one
     question an admin actually has open — "is this package right?" — across two
-    surfaces, so the drawer now owns membership too. Create mode does not: a
-    package being created has no id yet, so there is nothing to attach a table
-    to.
+    surfaces, so the drawer now owns membership too. BOTH modes do: create was
+    excluded on the reasoning that a package with no id yet has nothing to
+    attach a table to, but the group picks in the same form are collected
+    before the id exists and applied once the POST answers. So the id was never
+    the obstacle — and a create that could not choose tables produced an empty
+    package and sent the admin to a second surface to fill it, which is the
+    split this drawer exists to close.
 
     Membership is DIFFED and applied on Save rather than written per tick,
     because the drawer offers Cancel and a click that had already hit the API
@@ -219,12 +223,43 @@ class TestTheEditDrawerAlsoOwnsComposition:
         assert "/tables" in src, "membership writes through the package tables endpoint"
         assert "'DELETE'" in src, "and removes through it too"
 
-    def test_the_table_list_is_edit_only(self) -> None:
-        """`tablesField.hidden = !editing` — a create has no package to attach
-        a table to, so offering the list there would collect ticks it could
-        not honour."""
+    def test_the_table_list_is_offered_in_both_modes(self) -> None:
+        """The picker used to be hidden on a create (`tablesField.hidden =
+        !editing`). It is not any more: the field carries no `hidden` attribute
+        and nothing re-hides it per mode, so choosing tables is part of making
+        a package rather than a second trip to another surface."""
         src = COMPONENT.read_text()
-        assert "tablesField.hidden = !editing" in src
+        assert "tablesField.hidden" not in src, (
+            "the create/edit split on the table picker is what this change removed"
+        )
+        assert '<div class="ds-drawer__field" id="pdw-tables-field">' in src, (
+            "the field must not ship hidden either"
+        )
+
+    def test_create_hydrates_the_registry_before_the_package_exists(self) -> None:
+        """A create has no package to read members from, so `hydrateTables` is
+        called with a null id and resolves an empty member set — the registry
+        and the project-name lookup are the same two fetches either way."""
+        src = COMPONENT.read_text()
+        assert "hydrateTables(null)" in src
+        assert "Promise.resolve({ tables: [] })" in src
+
+    def test_create_applies_membership_after_the_id_exists(self) -> None:
+        """Ticks are collected before the POST and written after it answers —
+        the same collect-then-apply order the group picks already used. The
+        snapshot matters: `st` belongs to the open drawer and the writes land
+        after it closes."""
+        src = COMPONENT.read_text()
+        assert "Array.from(st.tablesSelected)" in src, "the ticked set must be snapshotted"
+        assert "tableIds.map(" in src, "and applied once there is an id"
+
+    def test_grant_and_table_failures_are_counted_separately(self) -> None:
+        """One merged number would be a worse message than either: a failed
+        grant and a failed table send the admin to different places."""
+        src = COMPONENT.read_text()
+        assert "done(pkg, failures, tableFailures)" in src
+        caller = (TEMPLATES / "admin_tables.html").read_text(encoding="utf-8")
+        assert "table(s) not added" in caller, "the only caller that shows the count must name it"
 
     def test_membership_is_applied_on_save_not_on_tick(self) -> None:
         src = COMPONENT.read_text()

@@ -3052,14 +3052,19 @@
         window.AgnesPackageDrawer.open({
           typed: typed,
           chipHost: host,
-          onCreated: function (pkg, grantFailures) {
+          onCreated: function (pkg, grantFailures, tableFailures) {
             if (typeof loadDataPackagesSection === 'function') {
               try { loadDataPackagesSection(); } catch (_) {}
             }
             if (typeof showToast === 'function') {
               const msg = 'Data Package "' + pkg.name + '" created';
-              if (grantFailures > 0) {
-                showToast(msg + ' — ' + grantFailures + ' grant(s) failed', 'error');
+              // Named separately: a failed grant and a failed table send the
+              // admin to different places, so the toast says which happened.
+              const parts = [];
+              if (grantFailures > 0) parts.push(grantFailures + ' grant(s) failed');
+              if (tableFailures > 0) parts.push(tableFailures + ' table(s) not added');
+              if (parts.length) {
+                showToast(msg + ' — ' + parts.join(', '), 'error');
               } else {
                 showToast(msg, 'success');
               }
