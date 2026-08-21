@@ -30,11 +30,19 @@ class SlackConfig:
 @dataclass(frozen=True)
 class ChatConfig:
     enabled: bool = False
-    # Sandbox provider id. ``e2b`` (cloud microVMs) and ``docker``
-    # (self-hosted containers, driven through the apps-runner sidecar)
-    # are the production-supported values; a further variant would
-    # extend the gate in ``app/main.py``.
+    # Sandbox provider id. ``e2b`` (cloud microVMs), ``docker``
+    # (self-hosted containers, driven through the apps-runner sidecar) and
+    # ``kai-agent`` (the embedded kai-agent turn engine — sessions run on the
+    # engine's own agent loop + sandbox, see app/chat/kai_engine_provider.py;
+    # requires the KAI_HOST_JWT_SECRET host wiring from app/api/kai.py) are
+    # the production-supported values; a further variant would extend the
+    # gate in ``app/main.py``.
     provider: str = "e2b"
+    # Where the embedded engine listens, for ``provider: kai-agent`` only.
+    # The default is the compose service name the customer-instance module
+    # materializes; the engine is loopback/compose-network-only by design,
+    # so this is never a public URL.
+    kai_agent_url: str = "http://kai-agent:3000"
     # Agent harness id — which engine drives the in-sandbox session
     # (app/chat/harness.py seam; validated against APPROVED_HARNESSES at
     # boot). ``claude-code`` is the only production harness today.
@@ -325,6 +333,7 @@ def load_chat_config(instance_yaml: Path) -> ChatConfig:
     return ChatConfig(
         enabled=_resolve_chat_enabled(raw),
         provider=_raw_str(raw, "provider", "e2b"),
+        kai_agent_url=_raw_str(raw, "kai_agent_url", "http://kai-agent:3000"),
         harness=_raw_str(raw, "harness", "claude-code"),
         concurrency_per_user=_raw_int(raw, "concurrency_per_user", 3),
         idle_ttl_seconds=_raw_int(raw, "idle_ttl_seconds", 30 * 60),

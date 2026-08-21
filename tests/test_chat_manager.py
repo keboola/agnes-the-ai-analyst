@@ -1972,7 +1972,14 @@ def test_resume_from_row_reconnects_after_restart(manager: ChatManager, monkeypa
         live = await manager._resume_from_row(row)
 
         assert live is not None
-        manager._provider.resume.assert_awaited_once_with(sandbox_id="sbx-restart", runner_pid=555, env={})
+        # env carries the session identity for providers whose resumed handle
+        # needs it (the kai-agent engine re-mints its session JWT from these);
+        # the sandbox providers ignore env on resume.
+        manager._provider.resume.assert_awaited_once_with(
+            sandbox_id="sbx-restart",
+            runner_pid=555,
+            env={"AGNES_SESSION_ID": s.id, "AGNES_USER_EMAIL": s.user_email},
+        )
         manager._provider.spawn.assert_not_awaited()
         assert live.state == SessionState.ACTIVE
         await manager.kill(s.id, reason="test_done")
