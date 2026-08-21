@@ -282,6 +282,48 @@ class TestKeboolaDerivedCard:
         assert card["stack_url"] == "https://connection.keboola.com"
         assert card["token_env"] == "KEBOOLA_STORAGE_TOKEN"
 
+    def test_token_env_allowlisted_flag_is_true_for_the_default_name(self, seeded_app, monkeypatch):
+        """Devin Review: `create_connection` runs `_reject_disallowed_token_env`
+        before anything else, so a credentialed card whose configured
+        `token_env` isn't on the remote-attach allowlist would 400 on Import
+        despite looking ready. `KEBOOLA_STORAGE_TOKEN` is on the default
+        allowlist, so the common case is unaffected."""
+        import app.web.router as router_module
+
+        _patch_registry(monkeypatch, rows=[])
+        monkeypatch.setattr(router_module, "_keboola_credentialed", lambda: True)
+        monkeypatch.setattr(
+            router_module,
+            "_keboola_instance_config",
+            lambda: ("https://connection.keboola.com", "KEBOOLA_STORAGE_TOKEN"),
+        )
+        _patch_credential_probes(monkeypatch, router_module)
+
+        inventory = router_module._source_inventory()
+        card = next(d for d in inventory["derived"] if d["source_type"] == "keboola")
+        assert card["token_env_allowlisted"] is True
+
+    def test_token_env_allowlisted_flag_is_false_for_a_custom_unallowlisted_name(self, seeded_app, monkeypatch):
+        """A custom `token_env` that isn't on the remote-attach allowlist
+        must not offer the import button — the card can still be
+        `credentialed` (via the generic env var or the instance vault) while
+        the configured `token_env` itself is some other, unallowlisted name."""
+        import app.web.router as router_module
+
+        _patch_registry(monkeypatch, rows=[])
+        monkeypatch.setattr(router_module, "_keboola_credentialed", lambda: True)
+        monkeypatch.setattr(
+            router_module,
+            "_keboola_instance_config",
+            lambda: ("https://connection.keboola.com", "SOME_UNALLOWLISTED_NAME"),
+        )
+        _patch_credential_probes(monkeypatch, router_module)
+
+        inventory = router_module._source_inventory()
+        card = next(d for d in inventory["derived"] if d["source_type"] == "keboola")
+        assert card["credentialed"] is True
+        assert card["token_env_allowlisted"] is False
+
     def test_credentialed_flag_is_true_when_the_probe_says_so(self, seeded_app, monkeypatch):
         """The "Import as managed connection" button (`app/web/templates/
         admin_data_sources.html`) gates on this flag — a stack_url with no
@@ -385,5 +427,6 @@ class TestKeboolaDerivedCard:
             card = next(d for d in inventory["derived"] if d["source_type"] == "bigquery")
             assert "stack_url" not in card
             assert "token_env" not in card
+            assert "token_env_allowlisted" not in card
         finally:
             table_registry_repo().unregister(tid)

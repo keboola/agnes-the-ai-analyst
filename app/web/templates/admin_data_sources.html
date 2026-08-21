@@ -1615,7 +1615,7 @@ function _connectionCardHtml(row) {
       <span class="ds-src__fact-k">Managed in</span>
       <span class="ds-src__fact-v">${_esc(row.settings_label || "Instance settings")}</span>
       <span class="ds-src__fact-a">
-        ${row.source_type === "keboola" && row.stack_url && row.credentialed ? `<button type="button" class="btn btn-primary" onclick="importKeboolaConnection('${id}')">Import as managed connection</button>` : ""}
+        ${row.source_type === "keboola" && row.stack_url && row.credentialed && row.token_env_allowlisted ? `<button type="button" class="btn btn-primary" onclick="importKeboolaConnection('${id}')">Import as managed connection</button>` : ""}
         <a class="btn btn-secondary" href="${_esc(row.settings_href || "/admin")}">Open</a>
       </span>
     </div>
@@ -1711,13 +1711,24 @@ async function loadConnections() {
 // new row's own token resolver already find it unaided. A generic
 // `KEBOOLA_STORAGE_TOKEN` fallback behind a DIFFERENT configured
 // `token_env`, or a vault-only credential, both still need the copy. The
-// button itself only renders when `row.credentialed` is true
-// (server-computed — see `_source_inventory()`), but the guard below stays
-// as a second line of defense against a stale render.
+// button itself only renders when `row.credentialed` AND
+// `row.token_env_allowlisted` are both true (server-computed — see
+// `_source_inventory()`) — a credentialed-via-generic-env-or-vault instance
+// whose configured `token_env` isn't on the remote-attach allowlist would
+// otherwise 400 at `create_connection`'s own `_reject_disallowed_token_env`
+// check, dead-ending the very button that promises a one-click path. The
+// guard below stays as a second line of defense against a stale render.
 async function importKeboolaConnection(id) {
   const row = _connections.find((c) => c.id === id);
   if (!row || !row.stack_url || !row.credentialed) {
     showToast("No working Keboola credential yet — set one in Server config first.", false);
+    return;
+  }
+  if (!row.token_env_allowlisted) {
+    showToast(
+      "This instance's configured token_env isn't on the remote-attach allowlist — use Server config to add it via AGNES_REMOTE_ATTACH_TOKEN_ENVS, or connect a new project from “+ Add data source” instead.",
+      false,
+    );
     return;
   }
   try {

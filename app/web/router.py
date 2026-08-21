@@ -7150,6 +7150,16 @@ def _source_inventory() -> dict:
             # claimed otherwise.
             row["stack_url"], row["token_env"] = _keboola_instance_config()
             row["credentialed"] = keboola_credentialed
+            # `create_connection` rejects an unallowlisted `token_env` before
+            # anything else (`_reject_disallowed_token_env`) — a card can be
+            # credentialed via the generic env var or the instance vault
+            # while `data_source.keboola.token_env` is still some custom,
+            # unallowlisted name, in which case Import would 400 even though
+            # the card looks ready. Gate the button on this too rather than
+            # advertise a one-click path that dead-ends for that config.
+            from src.orchestrator_security import is_token_env_allowed
+
+            row["token_env_allowlisted"] = is_token_env_allowed(row["token_env"])
         derived.append(row)
 
     try:

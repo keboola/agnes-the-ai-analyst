@@ -749,7 +749,7 @@ class TestKeboolaImportAsManagedConnection:
         tpl = self._template_text()
         # Gated on a working credential, not merely a configured stack_url —
         # a stack_url with no token anywhere has nothing to import.
-        assert 'row.source_type === "keboola" && row.stack_url && row.credentialed' in tpl
+        assert 'row.source_type === "keboola" && row.stack_url && row.credentialed && row.token_env_allowlisted' in tpl
         assert "importKeboolaConnection('${id}')" in tpl
         # Scoped to Keboola only — the other derived connectors keep their
         # plain "Open" action untouched.
@@ -887,6 +887,29 @@ global.fetch = async (url, opts) => {{
         assert result["toasts"], "the admin must be told why nothing happened"
         assert result["toasts"][0][1] is False
 
+    def test_the_guard_refuses_to_request_when_token_env_is_not_allowlisted(self):
+        """Devin Review: `create_connection` rejects an unallowlisted
+        `token_env` before anything else — a credentialed card whose
+        configured `token_env` isn't on the remote-attach allowlist would
+        otherwise dead-end at a 400 despite looking ready to import."""
+        result = self._run(
+            row={
+                "id": "derived:keboola",
+                "source_type": "keboola",
+                "stack_url": "https://connection.keboola.com",
+                "token_env": "SOME_UNALLOWLISTED_NAME",
+                "credentialed": True,
+                "token_env_allowlisted": False,
+            },
+            fetch_ok=True,
+            fetch_status=201,
+            response_json={"id": "new-conn"},
+        )
+        assert result["body"] is None, "no request should have been sent"
+        assert result["loadCalls"] == 0
+        assert result["toasts"], "the admin must be told why nothing happened"
+        assert result["toasts"][0][1] is False
+
     def test_a_successful_import_posts_the_seeding_flag_and_toasts_ok(self):
         result = self._run(
             row={
@@ -895,6 +918,7 @@ global.fetch = async (url, opts) => {{
                 "stack_url": "https://connection.keboola.com",
                 "token_env": "KEBOOLA_STORAGE_TOKEN",
                 "credentialed": True,
+                "token_env_allowlisted": True,
             },
             fetch_ok=True,
             fetch_status=201,
@@ -925,6 +949,7 @@ global.fetch = async (url, opts) => {{
                 "stack_url": "https://connection.keboola.com",
                 "token_env": "KEBOOLA_STORAGE_TOKEN",
                 "credentialed": True,
+                "token_env_allowlisted": True,
             },
             fetch_ok=True,
             fetch_status=201,
@@ -953,6 +978,7 @@ global.fetch = async (url, opts) => {{
                 "stack_url": "https://connection.keboola.com",
                 "token_env": "KEBOOLA_STORAGE_TOKEN",
                 "credentialed": True,
+                "token_env_allowlisted": True,
             },
             fetch_ok=False,
             fetch_status=409,
