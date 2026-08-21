@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.84.6] - 2026-08-21
+
 ### Fixed
 
 - **Creating a data package could not choose the tables that go in it** — from the Library's "+ Add → New data package" or from `/admin/data-packages`' "+ New package", the form collected a name, slug, description, status, category, icon, colour, cover image and group access, and then made an *empty* package. The tables it exists to hold were a second trip: open the package's own page, click Edit, tick them there. The two-level PROJECT › BUCKET picker was already built and already in this drawer — search, tri-state boxes, project headings resolved from `source_connections` so a heading is a name rather than a raw uuid — but `applyMode()` hid it on a create (`tablesField.hidden = !editing`) and `hydrateTables()` only ran in edit mode. The stated reason was that a package being created has no id to attach a table to, which is true and was never the obstacle: the group picks in the same form are collected before the id exists and written once `POST /api/admin/data-packages` answers. Ticks now ride the same collect-then-apply order, so the picker is offered in both modes and membership is written immediately after the create. No endpoint is new — the same `POST /{id}/tables` edit mode has always used. Grant failures and table failures are counted **separately** out to the caller (`onCreated(pkg, grantFailures, tableFailures)`), because one merged number would send an admin looking in the wrong place; `/admin/tables`' toast names each. Since the picker lives in the shared component, `/admin/data-packages` gains it in the same change — the gap was never Library-specific, it was every create.
