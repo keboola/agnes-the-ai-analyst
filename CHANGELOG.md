@@ -10,6 +10,21 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.84.8] - 2026-08-22
+
+### Added
+
+- **`chat.provider: kai-agent` — web chat on the embedded kai-agent turn engine.** A third sandbox provider next to `e2b` and `docker`: sessions run on the embedded engine the `/api/kai/*` host wiring already serves (its own agent loop, transcript store and remote sandbox), so Agnes spawns nothing per session. The provider (`app/chat/kai_engine_provider.py`) translates the engine's SSE turn stream into the runner frame protocol the chat stack already speaks — history, mid-turn reconnect replay, message-rate limits, the concurrency cap and the web approval card all behave as with the native providers, with zero frontend changes. Sessions authenticate with a host-minted engine session JWT (`mint_engine_session_token`, the `POST /api/kai/sessions` claim contract extracted so the two cannot drift) and are created with UUID ids on both creation paths, web and the Slack producer (the engine's chat key is a uuid column). Cancel maps to the engine's stop endpoint, approval decisions to its approval endpoint (`chat.approvals_enabled: false` auto-denies, matching the native kill-switch), and pause/resume is pure bookkeeping — the manager also skips the native ticket mint/revoke pair for this provider, so a resume never 401s the engine's in-flight turn. Boot-gated on `KAI_HOST_JWT_SECRET`; the engine's address is `chat.kai_agent_url` (default `http://kai-agent:3000`). Stated limitations (docs/cloud-chat.md → "kai-agent provider (embedded turn engine)"): the engine stream carries no token usage, so `daily_anthropic_spend_usd`/`max_session_tokens` do not meter engine sessions; per-session personas (agent profiles/memories, co-drive grant intersection) do not reach the engine — and the two narrowed session kinds fail closed rather than widening to the owner, so a co-drive turn on this provider reaches no Agnes tool surface at all (`403 mcp_not_available_to_co_session`) instead of running unscoped; `per_tool_call_seconds`/`tool_calls_per_turn_budget` are inert; single-gateway only.
+
+
+- **Both session forks honour a caller-owned id, so co-drive works on the engine provider.** `chat.provider: kai-agent` needs every session id to be a uuid, and `ChatManager.create_session` plus the Slack twin thread one in — but a fork is a session creator too. `fork_session_as_co_session` and `fork_co_session_to_private` minted `chat_<hex>` unconditionally, on **both** backends, so on an engine instance a brand-new co-drive session could never spawn and the error card told the user their seconds-old conversation "predates" the provider — advice that produced another dead one. Both forks now take an optional `session_id`, the co-presence endpoints pass the same decision, and the dead-handle copy no longer asserts a cause the handle cannot know. Contract-tested on both backends.
+
+- **`daily_anthropic_spend_usd` and `max_session_tokens` no longer go silently inert.** Both are enforced off `chat_messages.tokens_in/out`, which only a usage-carrying frame writes; the engine's stream carries none. Both ship live defaults ($20/day, 200k/session), so switching provider removed two budgets instance-wide with nothing in the log or `/admin`. Boot now warns per configured cap and `GET /api/chat/readiness` reports them as `unmetered_caps`. Per-agent `token_budget_monthly` still applies — the broker enforces it on the engine's `llm` ticket.
+
+- **The public agent API refuses on this provider instead of answering with the wrong persona.** `POST /api/v1/agents/{slug}/sessions` delivers an agent's system prompt, tone, greeting and memories by materializing them into the session workspace, which a self-credentialed provider never reads — so the caller got the instance template persona under the agent's name, and a narrowed-scope agent 403'd on every tool call. Now `503 agent_sessions_unavailable_on_provider`, refused before the session row is created.
+
+- A refused engine Stop is logged instead of read as success (the turn used to hang with the composer locked until the SSE read timeout), and `/admin`'s chat banner labels `KAI_HOST_JWT_SECRET` instead of showing the raw payload key.
+
 ## [0.84.7] - 2026-08-21
 
 ### Added

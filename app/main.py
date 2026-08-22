@@ -220,6 +220,42 @@ def _chat_e2b_template_id_ok(chat_config) -> bool:
     return False
 
 
+def _chat_kai_agent_ok(chat_config) -> bool:
+    """Refuse ``chat.provider=kai-agent`` without the engine host wiring.
+
+    The provider authenticates every engine call with a session JWT signed by
+    ``KAI_HOST_JWT_SECRET`` (the same shared secret that turns on the
+    ``/api/kai/*`` host surface the engine itself depends on — tickets, LLM
+    broker, workspace). Without it every spawn would 503 at mint time; refuse
+    the manager at boot instead, mirroring the e2b/docker gates.
+    """
+    if not chat_config.enabled:
+        return True
+    if chat_config.provider != "kai-agent":
+        return True
+    url = getattr(chat_config, "kai_agent_url", "") or ""
+    if not url.startswith(("http://", "https://")):
+        # Every engine call carries the session bearer token to this URL —
+        # refuse a shape that cannot be the compose-internal engine rather
+        # than let a typo ship credentials somewhere surprising.
+        logging.getLogger("app.main").error(
+            "chat.provider=kai-agent with chat.kai_agent_url=%r — must be an "
+            "http(s) URL (default http://kai-agent:3000); refusing to spawn ChatManager",
+            url,
+        )
+        return False
+    if os.environ.get("TESTING", "").lower() in ("1", "true"):
+        return True
+    if os.environ.get("KAI_HOST_JWT_SECRET", "").strip():
+        return True
+    logging.getLogger("app.main").error(
+        "chat.enabled=true with provider=kai-agent requires KAI_HOST_JWT_SECRET "
+        "env (the embedded engine's shared secret — the same one that enables "
+        "/api/kai/*); refusing to spawn ChatManager",
+    )
+    return False
+
+
 def _chat_harness_ok(chat_config) -> bool:
     """Refuse an explicitly configured ``chat.harness`` outside the
     ``APPROVED_HARNESSES`` allowlist (app/chat/harness.py seam).
@@ -1558,13 +1594,14 @@ async def lifespan(app):
             if not role_enabled(Role.GATEWAY):
                 logger.info("chat: disabled in this process (role split; gateway role owns chat)")
                 app.state.chat_manager = None
-            elif app.state.chat_config.provider not in ("e2b", "docker"):
+            elif app.state.chat_config.provider not in ("e2b", "docker", "kai-agent"):
                 logger.error(
                     "chat.provider=%r is not supported — the accepted values are "
-                    "'e2b' (cloud microVMs) and 'docker' (self-hosted containers "
-                    "via the apps-runner sidecar; see docs/cloud-chat.md). There "
-                    "is deliberately no mock provider. Set chat.provider: e2b or "
-                    "docker in instance.yaml, or flip chat.enabled: false.",
+                    "'e2b' (cloud microVMs), 'docker' (self-hosted containers "
+                    "via the apps-runner sidecar) and 'kai-agent' (the embedded "
+                    "kai-agent turn engine; see docs/cloud-chat.md). There "
+                    "is deliberately no mock provider. Set chat.provider in "
+                    "instance.yaml to one of those, or flip chat.enabled: false.",
                     app.state.chat_config.provider,
                 )
                 app.state.chat_manager = None
@@ -1601,6 +1638,9 @@ async def lifespan(app):
                 # Fatal already logged inside the helper.
                 app.state.chat_manager = None
             elif not _chat_e2b_template_id_ok(app.state.chat_config):
+                # Fatal already logged inside the helper.
+                app.state.chat_manager = None
+            elif not _chat_kai_agent_ok(app.state.chat_config):
                 # Fatal already logged inside the helper.
                 app.state.chat_manager = None
             elif not _chat_harness_ok(app.state.chat_config):
@@ -1703,6 +1743,31 @@ async def lifespan(app):
 
                     for _mismatch in egress_compose_mismatches(app.state.chat_config):
                         logger.warning("chat egress: %s", _mismatch)
+                elif app.state.chat_config.provider == "kai-agent":
+                    from app.chat.kai_engine_provider import KaiEngineProvider
+
+                    # Sessions run on the embedded kai-agent turn engine: the
+                    # engine owns the agent loop, the transcript store and the
+                    # remote sandbox, so there is nothing to spawn locally —
+                    # the provider's handles translate the engine's SSE stream
+                    # into the runner frame protocol. Gated above on
+                    # KAI_HOST_JWT_SECRET (_chat_kai_agent_ok).
+                    provider = KaiEngineProvider(base_url=app.state.chat_config.kai_agent_url)
+                    # Two cost caps read chat_messages.tokens_in/out, which only
+                    # a usage-carrying frame writes; the engine's stream carries
+                    # none. Both ship LIVE defaults ($20/day, 200k/session), so
+                    # this provider silently removes two budgets instance-wide.
+                    # Say so at boot rather than let it surface as a bill —
+                    # `/api/chat/readiness` reports the same list as
+                    # `unmetered_caps` so /admin can show it too.
+                    for _cap in ("daily_anthropic_spend_usd", "max_session_tokens"):
+                        if getattr(app.state.chat_config, _cap, None):
+                            logger.warning(
+                                "chat provider 'kai-agent': %s is configured but NOT enforced — the engine "
+                                "stream carries no token usage, so nothing accrues against it. Cap engine "
+                                "spend per agent with token_budget_monthly instead.",
+                                _cap,
+                            )
                 else:
                     from app.chat.e2b_provider import E2BProvider
 
@@ -1736,11 +1801,14 @@ async def lifespan(app):
                     if int(os.environ.get("UVICORN_WORKERS", "1")) <= 1 and _chat_is_all_in_one()
                     else "multi-worker/replica (coordination.backend=redis)"
                 )
-                _chat_sandbox_desc = (
-                    f"image={app.state.chat_config.docker_image}, egress={app.state.chat_config.docker_egress_mode}"
-                    if app.state.chat_config.provider == "docker"
-                    else f"template={app.state.chat_config.e2b_template_id}"
-                )
+                if app.state.chat_config.provider == "docker":
+                    _chat_sandbox_desc = (
+                        f"image={app.state.chat_config.docker_image}, egress={app.state.chat_config.docker_egress_mode}"
+                    )
+                elif app.state.chat_config.provider == "kai-agent":
+                    _chat_sandbox_desc = f"engine={app.state.chat_config.kai_agent_url}"
+                else:
+                    _chat_sandbox_desc = f"template={app.state.chat_config.e2b_template_id}"
                 logger.info(
                     "chat.enabled: ChatManager started (provider=%s, "
                     "%s, idle_ttl=%ds, concurrency_per_user=%d, "

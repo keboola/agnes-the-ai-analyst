@@ -735,6 +735,7 @@ class ChatRepository:
         invitee_email: str,
         invitee_user_id: str,
         seed_summary: Optional[str] = None,
+        session_id: Optional[str] = None,
     ) -> ChatSession:
         """Create a fresh co-session (is_co_session=TRUE, ephemeral=TRUE) with
         the owner + invitee as participants. Never blind-clones the source
@@ -753,8 +754,9 @@ class ChatRepository:
                 invitee_email=invitee_email,
                 invitee_user_id=invitee_user_id,
                 seed_summary=seed_summary,
+                session_id=session_id,
             )
-        chat_id = _gen_id("chat")
+        chat_id = session_id or _gen_id("chat")
         now = datetime.now(timezone.utc)
         self._conn.execute(
             "INSERT INTO chat_sessions "
@@ -790,6 +792,7 @@ class ChatRepository:
         *,
         source_session_id: str,
         owner_email: str,
+        session_id: Optional[str] = None,
     ) -> str:
         """Fork a co-session into a private non-ephemeral session for ``owner_email``.
 
@@ -804,8 +807,9 @@ class ChatRepository:
             return self._participants_pg.fork_co_session_to_private(
                 source_session_id=source_session_id,
                 owner_email=owner_email,
+                session_id=session_id,
             )
-        chat_id = _gen_id("chat")
+        chat_id = session_id or _gen_id("chat")
         now = datetime.now(timezone.utc)
         self._conn.execute(
             "INSERT INTO chat_sessions "
