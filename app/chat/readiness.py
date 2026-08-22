@@ -31,7 +31,7 @@ ENV_APPS_RUNNER_TOKEN = "APPS_RUNNER_TOKEN"
 # Machine-readable LLM-failure reasons. Shared by the admin "test connection"
 # probe and the runtime broker forward path so both classify an auth/credit/
 # outage failure identically (#884).
-LLM_REASON_AUTH = "auth_invalid"        # 401/403 — key invalid, expired, or lacking permission
+LLM_REASON_AUTH = "auth_invalid"  # 401/403 — key invalid, expired, or lacking permission
 LLM_REASON_CREDIT = "credit_exhausted"  # 400 "credit balance too low" — valid key, unfunded account
 LLM_REASON_PROVIDER = "provider_error"  # network / rate-limit / provider outage / other
 
@@ -55,6 +55,7 @@ def secret_status(chat_config: Any) -> dict:
     provider = getattr(chat_config, "provider", "e2b") or "e2b"
     e2b_needed = enabled and provider == "e2b"
     docker_needed = enabled and provider == "docker"
+    kai_agent_needed = enabled and provider == "kai-agent"
     # In workload_identity mode there is intentionally NO static ANTHROPIC_API_KEY
     # — don't flag it as a missing secret in the admin UI.
     llm_auth = getattr(chat_config, "llm_auth", "api_key")
@@ -78,6 +79,10 @@ def secret_status(chat_config: Any) -> dict:
             "set": bool(getattr(chat_config, "docker_image", None)),
             "required": docker_needed,
         },
+        # kai-agent provider: the shared engine JWT secret is the one boot
+        # requirement (_chat_kai_agent_ok mirrors this) — without it every
+        # session mint 503s, so the admin banner must show it as missing.
+        "kai_host_jwt_secret": {"set": _is_set("KAI_HOST_JWT_SECRET"), "required": kai_agent_needed},
     }
     missing = sorted(k for k, v in secrets.items() if v["required"] and not v["set"])
     return {
