@@ -136,8 +136,10 @@ variable "prod_instance" {
     # the VM's own public origin, the same SERVER_URL the LLM broker line
     # uses, since the E2B sandbox egresses to it from the public internet).
     # One flag rather than two knobs because either half alone is a silent
-    # failure: URL without the scope 401s every tool call, scope without the
-    # URL simply never registers the tool server. Inert unless
+    # failure: URL without the scope answers 503 kai_mcp_not_enabled on every
+    # tool call (`_require_mcp_surface` is declared ahead of the ticket
+    # dependency so it decides before any credential is inspected), scope
+    # without the URL simply never registers the tool server. Inert unless
     # kai_agent_enabled is also true on this VM.
     kai_agent_broker_mcp_enabled = optional(bool, false)
 
@@ -685,9 +687,13 @@ variable "kai_agent_env" {
         engine's env validation even though the jwt host path never reads
         them (all LLM traffic transits the Agnes broker); placeholders are
         fine and expected.
-    Optional extras: LLM_MODEL_NAME, HOST_BROKER_MCP_URL (point it at
-    $SERVER_URL/api/kai/mcp only when the instance also enables the app-side
-    `kai.broker_mcp_enabled` switch), LOG_LEVEL, ...
+    Optional extras: LLM_MODEL_NAME, LOG_LEVEL, ...
+
+    HOST_BROKER_MCP_URL is normally NOT set here: the per-VM
+    kai_agent_broker_mcp_enabled flag derives it from this instance's own
+    origin AND sets the app-side switch that makes it work, which is the
+    pairing this key alone cannot complete. Set it here only to override the
+    derived value (split-horizon, say).
 
     Values must be SINGLE-LINE: the map is rendered as KEY=VALUE lines into
     the engine's env_file, where an embedded line break truncates the value

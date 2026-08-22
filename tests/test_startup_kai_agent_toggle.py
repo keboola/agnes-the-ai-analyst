@@ -197,7 +197,7 @@ def test_tpl_broker_mcp_halves_are_flag_gated_and_paired():
     body = TPL.read_text()
     # One flag renders BOTH halves of a pair that only works together: the
     # engine-side broker URL and the app-side ticket-scope switch. Either
-    # half alone is a silent runtime failure (URL without the scope 401s
+    # half alone is a silent runtime failure (URL without the scope 503s
     # every tool call; scope without the URL never registers the server).
     assert body.count("%{ if kai_agent_broker_mcp_enabled ~}") == 2
     assert "!kai_agent_broker_mcp_enabled" not in body
@@ -448,3 +448,49 @@ def test_two_runs_are_stable(tmp_path):
     first, keyfile, _ = _run_block(tmp_path)
     second, _, _ = _run_block(tmp_path, keyfile_content=keyfile.read_text())
     assert first == second
+
+
+def test_the_documented_half_configured_failure_code_matches_the_code():
+    """The operator-facing text must name the status an operator will actually
+    see, because it is the string they grep when a pairing is half-configured.
+
+    `_require_mcp_surface` (`app/api/kai.py`) is declared AHEAD of the ticket
+    dependency precisely so an unconfigured instance answers 503
+    `kai_mcp_not_enabled` rather than `401 missing_broker_ticket` — its own
+    docstring records that 401 was the pre-fix behavior. Two tests in
+    `tests/test_kai_host.py` pin the 503. So a doc claiming 401 describes a
+    surface that no longer exists.
+    """
+    from pathlib import Path
+
+    handler = Path("app/api/kai.py").read_text()
+    surface = handler[handler.index("def _require_mcp_surface") :]
+    surface = surface[: surface.index("\n@router")]
+    assert 'status_code=503, detail="kai_mcp_not_enabled"' in surface, (
+        "the surface's refusal changed — update the docs this test guards"
+    )
+
+    vbody = (MODULE / "variables.tf").read_text()
+    block = vbody[: vbody.index("kai_agent_broker_mcp_enabled = optional")]
+    block = block[-900:]
+    assert "401" not in block, "the flag's own comment names a status the surface does not return"
+    assert "kai_mcp_not_enabled" in block
+
+    changelog = Path("CHANGELOG.md").read_text()
+    entry = changelog[changelog.index("per-VM `kai_agent_broker_mcp_enabled` flag") :][:2000]
+    assert "401s every tool call" not in entry
+    assert "kai_mcp_not_enabled" in entry
+
+
+def test_kai_agent_env_docs_point_at_the_flag_not_the_manual_pairing():
+    """`kai_agent_env` used to instruct operators to hand-set
+    HOST_BROKER_MCP_URL "only when the instance also enables the app-side
+    switch" — a pairing the module offered no way to complete until this
+    flag existed. It must point at the flag, not at the dead manual path."""
+    vbody = (MODULE / "variables.tf").read_text()
+    block = vbody[vbody.index('variable "kai_agent_env"') :]
+    block = block[: block.index("type ")]
+    assert "kai_agent_broker_mcp_enabled" in block, (
+        "the kai_agent_env docs must point at the flag that completes the pairing"
+    )
+    assert "only when the instance also enables the app-side" not in block
