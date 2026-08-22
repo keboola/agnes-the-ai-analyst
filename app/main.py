@@ -1753,6 +1753,21 @@ async def lifespan(app):
                     # into the runner frame protocol. Gated above on
                     # KAI_HOST_JWT_SECRET (_chat_kai_agent_ok).
                     provider = KaiEngineProvider(base_url=app.state.chat_config.kai_agent_url)
+                    # Two cost caps read chat_messages.tokens_in/out, which only
+                    # a usage-carrying frame writes; the engine's stream carries
+                    # none. Both ship LIVE defaults ($20/day, 200k/session), so
+                    # this provider silently removes two budgets instance-wide.
+                    # Say so at boot rather than let it surface as a bill —
+                    # `/api/chat/readiness` reports the same list as
+                    # `unmetered_caps` so /admin can show it too.
+                    for _cap in ("daily_anthropic_spend_usd", "max_session_tokens"):
+                        if getattr(app.state.chat_config, _cap, None):
+                            logger.warning(
+                                "chat provider 'kai-agent': %s is configured but NOT enforced — the engine "
+                                "stream carries no token usage, so nothing accrues against it. Cap engine "
+                                "spend per agent with token_budget_monthly instead.",
+                                _cap,
+                            )
                 else:
                     from app.chat.e2b_provider import E2BProvider
 

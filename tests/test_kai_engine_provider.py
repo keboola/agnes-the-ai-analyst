@@ -959,3 +959,55 @@ def test_mint_engine_session_token_signs_the_route_claim_set(monkeypatch):
     # Signature verifies under the shared secret (the engine's check).
     expected = hmac.new(secret.encode(), f"{header_b64}.{payload_b64}".encode("ascii"), hashlib.sha256).digest()
     assert _b64url_decode(sig_b64) == expected
+
+
+def test_a_failed_stop_is_not_reported_as_a_successful_one(caplog):
+    """`_post_approval` raises for status; `_post_stop` did not. A 4xx/5xx
+    refusal therefore read as a successful stop, and the turn hung with the
+    composer locked until the SSE read timeout — the user pressed Stop,
+    nothing happened, and nothing reached the log either."""
+    import logging
+
+    src = Path("app/chat/kai_engine_provider.py").read_text()
+    fn = src[src.index("async def _post_stop") :]
+    fn = fn[: fn.index("async def _post_approval")]
+    assert "raise_for_status()" in fn, "a refused stop must be logged, not swallowed as success"
+    assert "logger.warning" in fn
+    del logging, caplog
+
+
+def test_the_dead_handle_does_not_assert_a_cause_it_cannot_know():
+    """The handle sees only the id shape. Claiming the conversation
+    "predates" the provider was wrong for the co-drive sessions that used to
+    reach here seconds after creation, and it sent the user to make another
+    dead one."""
+    src = Path("app/chat/kai_engine_provider.py").read_text()
+    assert "predates chat.provider=kai-agent" not in src
+    assert "not in the engine's format" in src
+
+
+def test_the_admin_banner_labels_the_engine_secret():
+    """`secret_status` reports `kai_host_jwt_secret`; without a label the row
+    renders the raw snake_case key instead of the env var an operator sets."""
+    tpl = Path("app/web/templates/admin_server_config.html").read_text()
+    labels = tpl[tpl.index("const CHAT_SECRET_LABELS") :]
+    labels = labels[: labels.index("};")]
+    assert "kai_host_jwt_secret" in labels and "KAI_HOST_JWT_SECRET" in labels
+
+
+def test_the_agent_api_refuses_rather_than_running_the_wrong_persona():
+    """`POST /api/v1/agents/{slug}/sessions` promises to run as THAT agent.
+
+    The persona and memory notebook reach a turn by being materialized into
+    the session workspace, which a self-credentialed provider never reads —
+    so the caller would get the instance template persona under the agent's
+    name, and a narrowed-scope agent would 403 on every tool call besides.
+    Silently answering wrong is worse than refusing.
+    """
+    src = Path("app/api/agent_sessions.py").read_text()
+    fn = src[src.index("async def create_agent_session") :]
+    fn = fn[: fn.index("\n@router") if "\n@router" in fn else len(fn)]
+    assert "provides_own_credentials" in fn, "the agent API must not run on a provider that skips the workspace"
+    assert "agent_sessions_unavailable_on_provider" in fn
+    # Refused BEFORE the session is created, not after.
+    assert fn.index("provides_own_credentials") < fn.index("manager.create_session")

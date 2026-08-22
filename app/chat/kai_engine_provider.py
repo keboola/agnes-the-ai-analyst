@@ -435,10 +435,15 @@ class KaiEngineHandle:
     async def _post_stop(self) -> None:
         try:
             token = await self._bearer()
-            await self._client.post(
+            resp = await self._client.post(
                 f"{self._base_url}/api/chat/{self._chat_id}/stop",
                 headers={"Authorization": f"Bearer {token}"},
             )
+            # `raise_for_status` as the approval post does: without it a 4xx/5xx
+            # refusal reads as a successful stop, and the turn then hangs with
+            # the composer locked until the SSE read timeout — the user pressed
+            # Stop and nothing happened, with nothing in the log either.
+            resp.raise_for_status()
         except Exception:  # noqa: BLE001 - a failed stop must not kill the handle
             logger.warning("kai engine handle: stop failed for %s", self._chat_id, exc_info=True)
 
@@ -747,9 +752,14 @@ class KaiEngineProvider:
             # engine chat — the engine's uuid column rejects it. A DEAD handle
             # (error frame per message) is the legible surface: raising here
             # tears the WebSocket down with no user-facing explanation.
+            # Do not assert WHY: the handle sees only the id shape. Before the
+            # forks learned to honour a caller-owned id this also caught
+            # brand-new co-drive sessions, and telling a user their
+            # seconds-old conversation "predates" the provider sent them to
+            # create another dead one.
             fail_reason = (
-                "This conversation predates chat.provider=kai-agent and cannot "
-                "run on the embedded engine — start a new conversation."
+                "This conversation cannot run on the embedded engine — its id "
+                "is not in the engine's format. Start a new conversation."
             )
         return KaiEngineHandle(
             chat_id=chat_id,
