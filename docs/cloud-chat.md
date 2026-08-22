@@ -521,7 +521,15 @@ docstring):
 - **Per-session personas do not reach the engine.** The engine's workspace
   comes from `GET /api/kai/workspace` (the instance-wide template), so agent
   profiles, agent memories and the co-drive grant-intersection workspace are
-  not materialized into engine turns.
+  not materialized into engine turns. The two narrowed session kinds fail
+  **closed**, not open: `POST /api/kai/mcp` answers a co-session or a
+  scope-limited agent `403` (`mcp_not_available_to_co_session` /
+  `mcp_not_available_to_scoped_agent`) rather than resolving it to the owner,
+  and `GET /api/kai/workspace` ships the unfiltered bundled `CLAUDE.md`
+  instead of the owner's RBAC-filtered Workspace Prompt. So a collaborator's
+  engine turn reaches **no** Agnes tool surface — it cannot inherit the
+  owner's wider authority. Co-drive on this provider is therefore a
+  conversation without host data access, not an unscoped one.
 - **`chat.per_tool_call_seconds` and `chat.tool_calls_per_turn_budget` are
   inert** — the engine enforces its own tool policies.
 - **Single-gateway deployments only** (like the docker provider): the
