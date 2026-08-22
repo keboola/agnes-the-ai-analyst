@@ -213,7 +213,7 @@ async def create_agent_session(
     # narrowed-scope agent would additionally 403 on every tool call.
     # Refuse rather than answer wrongly: this endpoint's whole contract is
     # "run as THIS agent".
-    if getattr(manager._provider, "provides_own_credentials", False) is True:
+    if getattr(getattr(manager, "_provider", None), "provides_own_credentials", False) is True:
         raise HTTPException(
             status_code=503,
             detail={

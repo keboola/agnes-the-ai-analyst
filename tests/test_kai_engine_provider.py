@@ -1008,6 +1008,10 @@ def test_the_agent_api_refuses_rather_than_running_the_wrong_persona():
     fn = src[src.index("async def create_agent_session") :]
     fn = fn[: fn.index("\n@router") if "\n@router" in fn else len(fn)]
     assert "provides_own_credentials" in fn, "the agent API must not run on a provider that skips the workspace"
+    # Reach the provider defensively: a manager without `_provider` (any test
+    # double, and the api-role thin producer) must not turn this guard into an
+    # AttributeError 500 on a route that has nothing to do with the engine.
+    assert 'getattr(manager, "_provider", None)' in fn, "reading manager._provider directly 500s on a manager without one"
     assert "agent_sessions_unavailable_on_provider" in fn
     # Refused BEFORE the session is created, not after.
     assert fn.index("provides_own_credentials") < fn.index("manager.create_session")
