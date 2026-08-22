@@ -129,6 +129,19 @@ variable "prod_instance" {
     kai_agent_mem_limit    = optional(string, "2g")
     kai_agent_cpus         = optional(string, "1.0")
     kai_agent_pg_mem_limit = optional(string, "1g")
+    # Opt-in: let the engine's sandbox reach this instance's own MCP tool
+    # surface. Sets both halves of the pair that only work together — the
+    # app-side ticket-scope switch (KAI_BROKER_MCP_ENABLED=true in the app
+    # .env) and the engine-side broker URL (HOST_BROKER_MCP_URL derived from
+    # the VM's own public origin, the same SERVER_URL the LLM broker line
+    # uses, since the E2B sandbox egresses to it from the public internet).
+    # One flag rather than two knobs because either half alone is a silent
+    # failure: URL without the scope answers 503 kai_mcp_not_enabled on every
+    # tool call (`_require_mcp_surface` is declared ahead of the ticket
+    # dependency so it decides before any credential is inspected), scope
+    # without the URL simply never registers the tool server. Inert unless
+    # kai_agent_enabled is also true on this VM.
+    kai_agent_broker_mcp_enabled = optional(bool, false)
 
     # --- Vendor-neutral per-instance branding (all OPTIONAL) ---
     # Written into the VM's /data/state/instance.yaml on FIRST boot only. The
@@ -297,6 +310,9 @@ variable "dev_instances" {
     kai_agent_mem_limit    = optional(string, "2g")
     kai_agent_cpus         = optional(string, "1.0")
     kai_agent_pg_mem_limit = optional(string, "1g")
+    # Engine → instance MCP tool surface — see prod_instance for the
+    # rationale; same default, inert without kai_agent_enabled.
+    kai_agent_broker_mcp_enabled = optional(bool, false)
     # See prod_instance for the rationale; same default.
     upgrade_schedule = optional(string, "*/5 * * * *")
 
@@ -671,9 +687,13 @@ variable "kai_agent_env" {
         engine's env validation even though the jwt host path never reads
         them (all LLM traffic transits the Agnes broker); placeholders are
         fine and expected.
-    Optional extras: LLM_MODEL_NAME, HOST_BROKER_MCP_URL (point it at
-    $SERVER_URL/api/kai/mcp only when the instance also enables the app-side
-    `kai.broker_mcp_enabled` switch), LOG_LEVEL, ...
+    Optional extras: LLM_MODEL_NAME, LOG_LEVEL, ...
+
+    HOST_BROKER_MCP_URL is normally NOT set here: the per-VM
+    kai_agent_broker_mcp_enabled flag derives it from this instance's own
+    origin AND sets the app-side switch that makes it work, which is the
+    pairing this key alone cannot complete. Set it here only to override the
+    derived value (split-horizon, say).
 
     Values must be SINGLE-LINE: the map is rendered as KEY=VALUE lines into
     the engine's env_file, where an embedded line break truncates the value

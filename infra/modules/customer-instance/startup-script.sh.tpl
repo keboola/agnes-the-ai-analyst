@@ -850,6 +850,9 @@ HOST_JWT_AUDIENCE=kai-agent
 HOST_BROKER_LLM_URL=$SERVER_URL/api/broker/anthropic
 HOST_BROKER_TICKET_URL=http://app:8000/api/kai/tickets
 HOST_WORKSPACE_URL=http://app:8000/api/kai/workspace
+%{ if kai_agent_broker_mcp_enabled ~}
+HOST_BROKER_MCP_URL=$SERVER_URL/api/kai/mcp
+%{ endif ~}
 POSTGRES_URL=postgresql://kai:$KAI_AGENT_PG_PASSWORD@kai-agent-pg:5432/kai_agent
 E2B_API_KEY=$KAI_E2B_API_KEY
 KAIENVEOF
@@ -979,6 +982,9 @@ KAI_AGENT_PG_PASSWORD=$KAI_AGENT_PG_PASSWORD
 KAI_AGENT_MEM_LIMIT=${kai_agent_mem_limit}
 KAI_AGENT_CPUS=${kai_agent_cpus}
 KAI_AGENT_PG_MEM_LIMIT=${kai_agent_pg_mem_limit}
+%{ if kai_agent_broker_mcp_enabled ~}
+KAI_BROKER_MCP_ENABLED=true
+%{ endif ~}
 %{ endif ~}
 COMPOSE_FILE=$COMPOSE_FILE_VALUE
 %{ if data_apps_enabled ~}
